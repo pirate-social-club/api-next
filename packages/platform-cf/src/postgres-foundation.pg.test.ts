@@ -281,6 +281,12 @@ const mediaProcessingRuntimeBridgeMigrationSql = await Bun.file(
     import.meta.url,
   ),
 ).text();
+const dataRegistrationPersistenceMigrationSql = await Bun.file(
+  new URL(
+    "../../../db/postgres/migrations/0057_data_registration_persistence.sql",
+    import.meta.url,
+  ),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -568,6 +574,11 @@ const mediaProcessingRuntimeBridgeMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0056_media_processing_runtime_bridge.sql"] ?? "",
   sql: mediaProcessingRuntimeBridgeMigrationSql,
 };
+const dataRegistrationPersistenceMigration: PostgresMigration = {
+  version: "0057_data_registration_persistence.sql",
+  checksum: checksumManifest.migrations["0057_data_registration_persistence.sql"] ?? "",
+  sql: dataRegistrationPersistenceMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -625,6 +636,7 @@ const migrations: readonly PostgresMigration[] = [
   communityHandleSalesMigration,
   megapotClaimReconciliationMigration,
   mediaProcessingRuntimeBridgeMigration,
+  dataRegistrationPersistenceMigration,
 ];
 
 function checksum(value: string): string {
@@ -896,6 +908,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       expect(checksum(mediaProcessingRuntimeBridgeMigrationSql)).toBe(
         mediaProcessingRuntimeBridgeMigration.checksum,
       );
+      expect(checksum(dataRegistrationPersistenceMigrationSql)).toBe(
+        dataRegistrationPersistenceMigration.checksum,
+      );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
@@ -1001,6 +1016,14 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "community_streaks",
         "content_publication_outbox",
         "custody_solvency_observations",
+        "data_registration_artifacts",
+        "data_registration_attempt_transitions",
+        "data_registration_command_replays",
+        "data_registration_operations",
+        "data_registration_outbox",
+        "data_registration_pin_verifications",
+        "data_registration_receipt_observations",
+        "data_registration_signing_attempts",
         "decision_records",
         "evidence_receipts",
         "handle_account_directory_bindings",
@@ -1273,6 +1296,11 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "community_route_revalidation_snapshot_append_only",
         "community_streak_days_append_only",
         "custody_solvency_observations_append_only",
+        "data_registration_artifacts_append_only",
+        "data_registration_pins_append_only",
+        "data_registration_receipts_append_only",
+        "data_registration_replays_append_only",
+        "data_registration_transitions_append_only",
         "decision_records_append_only",
         "evidence_receipts_append_only",
         "evidence_receipts_validate_metadata",

@@ -627,6 +627,59 @@ CREATE FUNCTION current_hns_sale_namespace_dependency_v1(input_community_id text
    WHERE database_now IS NOT NULL
 $$;
 
+CREATE FUNCTION data_registration_pins_are_ready(operation_id text) RETURNS boolean
+    LANGUAGE sql STABLE
+    AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM data_registration_artifacts artifact
+    WHERE artifact.registration_operation_id = operation_id
+      AND artifact.artifact_kind = 'canonical_audio'
+  )
+  AND EXISTS (
+    SELECT 1 FROM data_registration_artifacts artifact
+    WHERE artifact.registration_operation_id = operation_id
+      AND artifact.artifact_kind = 'ip_metadata'
+  )
+  AND EXISTS (
+    SELECT 1 FROM data_registration_artifacts artifact
+    WHERE artifact.registration_operation_id = operation_id
+      AND artifact.artifact_kind = 'nft_metadata'
+  )
+  AND NOT EXISTS (
+    SELECT 1
+    FROM data_registration_artifacts artifact
+    WHERE artifact.registration_operation_id = operation_id
+      AND NOT EXISTS (
+        SELECT 1
+        FROM data_registration_pin_verifications primary_pin
+        JOIN data_registration_pin_verifications redundant_pin
+          ON redundant_pin.registration_operation_id = primary_pin.registration_operation_id
+         AND redundant_pin.artifact_id = primary_pin.artifact_id
+         AND redundant_pin.role = 'redundant'
+         AND redundant_pin.outcome = 'verified'
+         AND redundant_pin.cid = primary_pin.cid
+         AND redundant_pin.canonical_sha256 = primary_pin.canonical_sha256
+         AND redundant_pin.byte_length = primary_pin.byte_length
+         AND redundant_pin.provider_id <> primary_pin.provider_id
+        JOIN data_registration_pin_verifications gateway
+          ON gateway.registration_operation_id = primary_pin.registration_operation_id
+         AND gateway.artifact_id = primary_pin.artifact_id
+         AND gateway.role = 'independent_gateway'
+         AND gateway.outcome = 'verified'
+         AND gateway.cid = primary_pin.cid
+         AND gateway.canonical_sha256 = primary_pin.canonical_sha256
+         AND gateway.byte_length = primary_pin.byte_length
+         AND gateway.provider_id NOT IN (primary_pin.provider_id, redundant_pin.provider_id)
+        WHERE primary_pin.registration_operation_id = operation_id
+          AND primary_pin.artifact_id = artifact.artifact_id
+          AND primary_pin.role = 'primary'
+          AND primary_pin.outcome = 'verified'
+          AND primary_pin.canonical_sha256 = artifact.canonical_sha256
+          AND primary_pin.byte_length = artifact.byte_length
+      )
+  );
+$$;
+
 CREATE FUNCTION decrement_handle_account_offering_grant_counter_v1() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -2755,6 +2808,229 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION guard_data_registration_append_only() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    RAISE EXCEPTION '% is append-only', TG_TABLE_NAME;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION guard_data_registration_attempt() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE prior data_registration_signing_attempts%ROWTYPE;
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'DATA registration attempt cannot be deleted';
+  END IF;
+  IF TG_OP = 'INSERT' THEN
+    IF NEW.state <> 'signing_intent'
+       OR NOT data_registration_pins_are_ready(NEW.registration_operation_id) THEN
+      RAISE EXCEPTION 'DATA registration attempt requires verified redundant pins';
+    END IF;
+    IF NEW.supersedes_submission_attempt_id IS NOT NULL THEN
+      SELECT * INTO prior FROM data_registration_signing_attempts
+        WHERE submission_attempt_id=NEW.supersedes_submission_attempt_id FOR SHARE;
+      IF prior.registration_operation_id IS DISTINCT FROM NEW.registration_operation_id
+         OR prior.attempt_number >= NEW.attempt_number
+         OR prior.state NOT IN ('broadcast', 'mined', 'replaced', 'reconciliation_required') THEN
+        RAISE EXCEPTION 'DATA registration replacement lineage is invalid';
+      END IF;
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF ROW(
+    NEW.submission_attempt_id, NEW.registration_operation_id, NEW.chain_id,
+    NEW.attempt_number, NEW.signer_namespace, NEW.signer_address,
+    NEW.signing_intent_id, NEW.calldata_hash,
+    NEW.supersedes_submission_attempt_id, NEW.created_at
+  ) IS DISTINCT FROM ROW(
+    OLD.submission_attempt_id, OLD.registration_operation_id, OLD.chain_id,
+    OLD.attempt_number, OLD.signer_namespace, OLD.signer_address,
+    OLD.signing_intent_id, OLD.calldata_hash,
+    OLD.supersedes_submission_attempt_id, OLD.created_at
+  ) THEN
+    RAISE EXCEPTION 'DATA registration attempt identity is immutable';
+  END IF;
+  IF NEW.updated_at <= OLD.updated_at THEN
+    RAISE EXCEPTION 'DATA registration attempt timestamp must advance';
+  END IF;
+  IF NOT (
+    (OLD.state = 'signing_intent' AND NEW.state IN ('nonce_reserved', 'failed'))
+    OR (OLD.state = 'nonce_reserved' AND NEW.state IN (
+      'prepared', 'failed', 'reconciliation_required'
+    ))
+    OR (OLD.state = 'prepared' AND NEW.state IN ('broadcast', 'reconciliation_required'))
+    OR (OLD.state = 'broadcast' AND NEW.state IN (
+      'mined', 'replaced', 'reverted', 'reconciliation_required'
+    ))
+    OR (OLD.state = 'mined' AND NEW.state IN (
+      'broadcast', 'confirmed', 'reverted', 'reconciliation_required'
+    ))
+    OR (OLD.state = 'confirmed' AND NEW.state = 'reconciliation_required')
+    OR (OLD.state = 'reconciliation_required' AND NEW.state IN (
+      'broadcast', 'mined', 'confirmed', 'replaced', 'reverted', 'failed'
+    ))
+  ) THEN
+    RAISE EXCEPTION 'invalid DATA registration attempt transition';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION guard_data_registration_operation_update() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'DATA registration operation cannot be deleted';
+  END IF;
+  IF ROW(
+    NEW.registration_operation_id, NEW.community_id, NEW.actor_user_id,
+    NEW.submission_id, NEW.media_operation_id, NEW.post_id, NEW.asset_id,
+    NEW.chain_id, NEW.registration_revision, NEW.publication_creation_revision,
+    NEW.publication_audio_revision, NEW.publication_analysis_revision,
+    NEW.publication_decision_revision, NEW.canonical_audio_sha256,
+    NEW.created_at
+  ) IS DISTINCT FROM ROW(
+    OLD.registration_operation_id, OLD.community_id, OLD.actor_user_id,
+    OLD.submission_id, OLD.media_operation_id, OLD.post_id, OLD.asset_id,
+    OLD.chain_id, OLD.registration_revision, OLD.publication_creation_revision,
+    OLD.publication_audio_revision, OLD.publication_analysis_revision,
+    OLD.publication_decision_revision, OLD.canonical_audio_sha256,
+    OLD.created_at
+  ) THEN
+    RAISE EXCEPTION 'DATA registration operation identity is immutable';
+  END IF;
+  IF NEW.updated_at <= OLD.updated_at THEN
+    RAISE EXCEPTION 'DATA registration operation timestamp must advance';
+  END IF;
+  IF NEW.workflow_revision IS DISTINCT FROM OLD.workflow_revision
+     OR NEW.workflow_instance_id IS DISTINCT FROM OLD.workflow_instance_id THEN
+    IF OLD.state = 'registered'
+       OR NEW.workflow_revision IS DISTINCT FROM OLD.workflow_revision + 1
+       OR NEW.workflow_instance_id IS DISTINCT FROM
+          'data-registration-workflow:' || NEW.registration_operation_id || ':r' || NEW.workflow_revision::text
+       OR ROW(
+         NEW.state, NEW.current_attempt_id, NEW.registered_ip_id,
+         NEW.confirmed_transaction_hash, NEW.confirmed_block_number,
+         NEW.confirmed_block_hash, NEW.confirmed_log_index, NEW.confirmed_at,
+         NEW.failure_code, NEW.failure_evidence_ref
+       ) IS DISTINCT FROM ROW(
+         OLD.state, OLD.current_attempt_id, OLD.registered_ip_id,
+         OLD.confirmed_transaction_hash, OLD.confirmed_block_number,
+         OLD.confirmed_block_hash, OLD.confirmed_log_index, OLD.confirmed_at,
+         OLD.failure_code, OLD.failure_evidence_ref
+       ) THEN
+      RAISE EXCEPTION 'DATA registration workflow replacement is invalid';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF NOT (
+    (OLD.state = 'pending' AND NEW.state IN ('signing', 'failed'))
+    OR (OLD.state = 'signing' AND NEW.state IN (
+      'broadcast', 'failed', 'reconciliation_required'
+    ))
+    OR (OLD.state = 'broadcast' AND NEW.state IN (
+      'signing', 'confirming', 'failed', 'reconciliation_required'
+    ))
+    OR (OLD.state = 'confirming' AND NEW.state IN (
+      'signing', 'broadcast', 'registered', 'failed', 'reconciliation_required'
+    ))
+    OR (OLD.state = 'reconciliation_required' AND NEW.state IN (
+      'signing', 'broadcast', 'confirming', 'registered', 'failed'
+    ))
+    OR (OLD.state = 'failed' AND NEW.state = 'registered')
+    OR (OLD.state = 'registered' AND NEW.state IN ('failed', 'reconciliation_required'))
+  ) THEN
+    RAISE EXCEPTION 'invalid DATA registration operation transition';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION guard_data_registration_outbox_update() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'DATA registration outbox cannot be deleted';
+  END IF;
+  IF ROW(
+    NEW.outbox_id, NEW.registration_operation_id, NEW.workflow_revision,
+    NEW.workflow_instance_id, NEW.event_type, NEW.effect_identity,
+    NEW.payload, NEW.created_at
+  ) IS DISTINCT FROM ROW(
+    OLD.outbox_id, OLD.registration_operation_id, OLD.workflow_revision,
+    OLD.workflow_instance_id, OLD.event_type, OLD.effect_identity,
+    OLD.payload, OLD.created_at
+  ) THEN
+    RAISE EXCEPTION 'DATA registration outbox identity is immutable';
+  END IF;
+  IF NEW.updated_at <= OLD.updated_at OR NEW.claim_fence < OLD.claim_fence
+     OR NEW.delivery_attempts < OLD.delivery_attempts THEN
+    RAISE EXCEPTION 'DATA registration outbox fence must advance';
+  END IF;
+  IF OLD.state IN ('pending', 'failed') AND (
+      NEW.state <> 'running'
+      OR NEW.delivery_attempts <> OLD.delivery_attempts + 1
+      OR NEW.claim_fence <> OLD.claim_fence + 1
+      OR NEW.claim_owner IS NULL OR NEW.lease_expires_at <= clock_timestamp()
+      OR (OLD.state = 'failed' AND (
+        OLD.next_eligible_at IS NULL OR OLD.next_eligible_at > clock_timestamp()
+      ))
+    ) THEN
+    RAISE EXCEPTION 'DATA registration outbox claim is not allowed';
+  END IF;
+  IF OLD.state = 'running' AND NEW.state IN ('delivered', 'failed', 'exhausted') AND (
+      NEW.delivery_attempts <> OLD.delivery_attempts
+      OR NEW.claim_fence <> OLD.claim_fence
+      OR NEW.claim_owner IS NOT NULL OR OLD.lease_expires_at <= clock_timestamp()
+      OR (NEW.state = 'failed' AND NEW.next_eligible_at IS NULL)
+      OR (NEW.state = 'exhausted' AND (
+        NEW.delivery_attempts <> 5 OR NEW.next_eligible_at IS NOT NULL
+      ))
+    ) THEN
+    RAISE EXCEPTION 'DATA registration outbox completion is not allowed';
+  END IF;
+  IF OLD.state = 'running' AND NEW.state = 'running' AND (
+      OLD.lease_expires_at > clock_timestamp()
+      OR NEW.delivery_attempts <> OLD.delivery_attempts + 1
+      OR NEW.claim_fence <> OLD.claim_fence + 1
+      OR NEW.claim_owner IS NULL OR NEW.lease_expires_at <= clock_timestamp()
+    ) THEN
+    RAISE EXCEPTION 'DATA registration outbox reclaim is not allowed';
+  END IF;
+  IF OLD.state NOT IN ('pending', 'failed', 'running') THEN
+    RAISE EXCEPTION 'DATA registration outbox is terminal';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION guard_data_registration_receipt_insert() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE attempt data_registration_signing_attempts%ROWTYPE;
+BEGIN
+  SELECT * INTO attempt FROM data_registration_signing_attempts
+    WHERE registration_operation_id=NEW.registration_operation_id
+      AND submission_attempt_id=NEW.submission_attempt_id FOR SHARE;
+  IF attempt.submission_attempt_id IS NULL
+     OR attempt.transaction_hash IS DISTINCT FROM NEW.transaction_hash
+     OR attempt.state NOT IN (
+       'broadcast', 'mined', 'confirmed', 'replaced', 'reconciliation_required'
+     ) THEN
+    RAISE EXCEPTION 'DATA receipt observation is not owned by a broadcast attempt';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION guard_handle_grant_change_v2() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -3355,12 +3631,63 @@ CREATE FUNCTION guard_media_publication_projection_update() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 DECLARE alignment_record media_alignment_projections%ROWTYPE;
+        registration_record data_registration_operations%ROWTYPE;
 BEGIN
-  IF ROW(NEW.submission_id,NEW.community_id,NEW.actor_user_id,NEW.operation_id,NEW.post_id,NEW.creation_revision,NEW.audio_revision,NEW.analysis_revision,NEW.decision_revision,NEW.canonical_audio_sha256,NEW.title,NEW.audio_asset_ref,NEW.cover_artifact_ref,NEW.language_status,NEW.primary_language_bcp47,NEW.secondary_language_bcp47,NEW.lyrics_explicitness,NEW.analysis_badges,NEW.data_registration,NEW.locked_delivery,NEW.projected_at) IS DISTINCT FROM ROW(OLD.submission_id,OLD.community_id,OLD.actor_user_id,OLD.operation_id,OLD.post_id,OLD.creation_revision,OLD.audio_revision,OLD.analysis_revision,OLD.decision_revision,OLD.canonical_audio_sha256,OLD.title,OLD.audio_asset_ref,OLD.cover_artifact_ref,OLD.language_status,OLD.primary_language_bcp47,OLD.secondary_language_bcp47,OLD.lyrics_explicitness,OLD.analysis_badges,OLD.data_registration,OLD.locked_delivery,OLD.projected_at) THEN RAISE EXCEPTION 'media publication accepted evidence is immutable'; END IF;
+  IF ROW(
+    NEW.submission_id, NEW.community_id, NEW.actor_user_id, NEW.operation_id,
+    NEW.post_id, NEW.creation_revision, NEW.audio_revision, NEW.analysis_revision,
+    NEW.decision_revision, NEW.canonical_audio_sha256, NEW.title,
+    NEW.audio_asset_ref, NEW.cover_artifact_ref, NEW.language_status,
+    NEW.primary_language_bcp47, NEW.secondary_language_bcp47,
+    NEW.lyrics_explicitness, NEW.analysis_badges, NEW.locked_delivery,
+    NEW.author_persona_id, NEW.lyrics_status, NEW.lyrics_revision,
+    NEW.lyrics_text, NEW.projected_at
+  ) IS DISTINCT FROM ROW(
+    OLD.submission_id, OLD.community_id, OLD.actor_user_id, OLD.operation_id,
+    OLD.post_id, OLD.creation_revision, OLD.audio_revision, OLD.analysis_revision,
+    OLD.decision_revision, OLD.canonical_audio_sha256, OLD.title,
+    OLD.audio_asset_ref, OLD.cover_artifact_ref, OLD.language_status,
+    OLD.primary_language_bcp47, OLD.secondary_language_bcp47,
+    OLD.lyrics_explicitness, OLD.analysis_badges, OLD.locked_delivery,
+    OLD.author_persona_id, OLD.lyrics_status, OLD.lyrics_revision,
+    OLD.lyrics_text, OLD.projected_at
+  ) THEN
+    RAISE EXCEPTION 'media publication accepted evidence is immutable';
+  END IF;
   IF NEW.alignment IS DISTINCT FROM OLD.alignment THEN
-    SELECT * INTO alignment_record FROM media_alignment_projections WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id AND post_id=NEW.post_id FOR SHARE;
-    IF alignment_record.submission_id IS NULL OR alignment_record.status IS DISTINCT FROM NEW.alignment OR alignment_record.audio_revision IS DISTINCT FROM NEW.audio_revision OR alignment_record.analysis_revision IS DISTINCT FROM NEW.analysis_revision OR alignment_record.canonical_audio_sha256 IS DISTINCT FROM NEW.canonical_audio_sha256 THEN
+    SELECT * INTO alignment_record FROM media_alignment_projections
+      WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id
+        AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id
+        AND post_id=NEW.post_id FOR SHARE;
+    IF alignment_record.submission_id IS NULL
+       OR alignment_record.status IS DISTINCT FROM NEW.alignment
+       OR alignment_record.audio_revision IS DISTINCT FROM NEW.audio_revision
+       OR alignment_record.analysis_revision IS DISTINCT FROM NEW.analysis_revision
+       OR alignment_record.canonical_audio_sha256 IS DISTINCT FROM NEW.canonical_audio_sha256 THEN
       RAISE EXCEPTION 'publication alignment is not owned by the exact alignment projection';
+    END IF;
+  END IF;
+  IF NEW.data_registration IS DISTINCT FROM OLD.data_registration THEN
+    SELECT * INTO registration_record FROM data_registration_operations
+      WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id
+        AND post_id=NEW.post_id
+      ORDER BY registration_revision DESC LIMIT 1 FOR SHARE;
+    IF registration_record.registration_operation_id IS NULL
+       OR registration_record.community_id IS DISTINCT FROM NEW.community_id
+       OR registration_record.actor_user_id IS DISTINCT FROM NEW.actor_user_id
+       OR registration_record.submission_id IS DISTINCT FROM NEW.submission_id
+       OR registration_record.media_operation_id IS DISTINCT FROM NEW.operation_id
+       OR registration_record.publication_creation_revision IS DISTINCT FROM NEW.creation_revision
+       OR registration_record.publication_audio_revision IS DISTINCT FROM NEW.audio_revision
+       OR registration_record.publication_analysis_revision IS DISTINCT FROM NEW.analysis_revision
+       OR registration_record.publication_decision_revision IS DISTINCT FROM NEW.decision_revision
+       OR registration_record.canonical_audio_sha256 IS DISTINCT FROM NEW.canonical_audio_sha256
+       OR NEW.data_registration IS DISTINCT FROM (CASE registration_record.state
+         WHEN 'registered' THEN 'registered'
+         WHEN 'failed' THEN 'failed'
+         ELSE 'pending'
+       END) THEN
+      RAISE EXCEPTION 'publication DATA state is not owned by the exact registration operation';
     END IF;
   END IF;
   RETURN NEW;
@@ -13078,6 +13405,237 @@ CREATE TABLE custody_solvency_observations (
     CONSTRAINT custody_solvency_observations_token_address_check CHECK ((token_address ~ '^0x[0-9a-f]{40}$'::text))
 );
 
+CREATE TABLE data_registration_artifacts (
+    artifact_id text NOT NULL,
+    registration_operation_id text NOT NULL,
+    artifact_kind text NOT NULL,
+    source_ref text NOT NULL,
+    media_type text NOT NULL,
+    byte_length bigint NOT NULL,
+    canonical_sha256 text NOT NULL,
+    canonicalization_revision text,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT data_registration_artifact_canonicalization_shape CHECK ((((artifact_kind = ANY (ARRAY['ip_metadata'::text, 'nft_metadata'::text])) AND (media_type = 'application/json'::text) AND (canonicalization_revision = 'rfc8785-jcs-v1'::text)) OR ((artifact_kind = ANY (ARRAY['canonical_audio'::text, 'normalized_artwork'::text])) AND (canonicalization_revision IS NULL)))),
+    CONSTRAINT data_registration_artifact_identity CHECK ((artifact_id = ((registration_operation_id || ':artifact:'::text) || artifact_kind))),
+    CONSTRAINT data_registration_artifacts_artifact_id_check CHECK (((btrim(artifact_id) <> ''::text) AND (artifact_id = btrim(artifact_id)) AND (octet_length(artifact_id) <= 512))),
+    CONSTRAINT data_registration_artifacts_artifact_kind_check CHECK ((artifact_kind = ANY (ARRAY['canonical_audio'::text, 'normalized_artwork'::text, 'ip_metadata'::text, 'nft_metadata'::text]))),
+    CONSTRAINT data_registration_artifacts_byte_length_check CHECK ((byte_length > 0)),
+    CONSTRAINT data_registration_artifacts_canonical_sha256_check CHECK ((canonical_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT data_registration_artifacts_canonicalization_revision_check CHECK (((canonicalization_revision IS NULL) OR ((btrim(canonicalization_revision) <> ''::text) AND (canonicalization_revision = btrim(canonicalization_revision))))),
+    CONSTRAINT data_registration_artifacts_media_type_check CHECK ((media_type ~ '^[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+$'::text)),
+    CONSTRAINT data_registration_artifacts_source_ref_check CHECK (((btrim(source_ref) <> ''::text) AND (source_ref = btrim(source_ref))))
+);
+
+CREATE TABLE data_registration_attempt_transitions (
+    transition_id text NOT NULL,
+    registration_operation_id text NOT NULL,
+    submission_attempt_id text NOT NULL,
+    transition_sequence bigint NOT NULL,
+    from_state text,
+    to_state text NOT NULL,
+    evidence_ref text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT data_registration_attempt_transitions_evidence_ref_check CHECK ((btrim(evidence_ref) <> ''::text)),
+    CONSTRAINT data_registration_attempt_transitions_from_state_check CHECK (((from_state IS NULL) OR (from_state = ANY (ARRAY['signing_intent'::text, 'nonce_reserved'::text, 'prepared'::text, 'broadcast'::text, 'mined'::text, 'confirmed'::text, 'replaced'::text, 'reverted'::text, 'failed'::text, 'reconciliation_required'::text])))),
+    CONSTRAINT data_registration_attempt_transitions_to_state_check CHECK ((to_state = ANY (ARRAY['signing_intent'::text, 'nonce_reserved'::text, 'prepared'::text, 'broadcast'::text, 'mined'::text, 'confirmed'::text, 'replaced'::text, 'reverted'::text, 'failed'::text, 'reconciliation_required'::text]))),
+    CONSTRAINT data_registration_attempt_transitions_transition_id_check CHECK ((btrim(transition_id) <> ''::text)),
+    CONSTRAINT data_registration_attempt_transitions_transition_sequence_check CHECK ((transition_sequence > 0)),
+    CONSTRAINT data_registration_transition_identity CHECK ((transition_id = ((submission_attempt_id || ':transition:'::text) || (transition_sequence)::text)))
+);
+
+CREATE TABLE data_registration_command_replays (
+    endpoint_template text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    registration_operation_id text NOT NULL,
+    response_snapshot_bytes bytea NOT NULL,
+    response_snapshot_sha256 text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT data_registration_command_replay_response_snapshot_sha256_check CHECK ((response_snapshot_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT data_registration_command_replays_endpoint_template_check CHECK ((btrim(endpoint_template) <> ''::text)),
+    CONSTRAINT data_registration_command_replays_idempotency_key_check CHECK ((btrim(idempotency_key) <> ''::text)),
+    CONSTRAINT data_registration_command_replays_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT data_registration_command_replays_response_snapshot_bytes_check CHECK ((octet_length(response_snapshot_bytes) > 0)),
+    CONSTRAINT data_registration_replay_response_hash CHECK ((encode(sha256(response_snapshot_bytes), 'hex'::text) = response_snapshot_sha256))
+);
+
+CREATE TABLE data_registration_operations (
+    registration_operation_id text NOT NULL,
+    community_id text NOT NULL,
+    actor_user_id text NOT NULL,
+    submission_id text NOT NULL,
+    media_operation_id text NOT NULL,
+    post_id text NOT NULL,
+    asset_id text NOT NULL,
+    chain_id bigint NOT NULL,
+    registration_revision bigint NOT NULL,
+    publication_creation_revision bigint NOT NULL,
+    publication_audio_revision bigint NOT NULL,
+    publication_analysis_revision bigint NOT NULL,
+    publication_decision_revision bigint NOT NULL,
+    canonical_audio_sha256 text NOT NULL,
+    state text DEFAULT 'pending'::text NOT NULL,
+    workflow_revision bigint DEFAULT 1 NOT NULL,
+    workflow_instance_id text NOT NULL,
+    current_attempt_id text,
+    registered_ip_id text,
+    confirmed_transaction_hash text,
+    confirmed_block_number bigint,
+    confirmed_block_hash text,
+    confirmed_log_index integer,
+    confirmed_at timestamp with time zone,
+    failure_code text,
+    failure_evidence_ref text,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT data_registration_operation_identity CHECK (((registration_operation_id = ((((('data-registration:'::text || (chain_id)::text) || ':'::text) || asset_id) || ':'::text) || (registration_revision)::text)) AND (asset_id = post_id) AND (workflow_instance_id = ((('data-registration-workflow:'::text || registration_operation_id) || ':r'::text) || (workflow_revision)::text)))),
+    CONSTRAINT data_registration_operation_outcome_shape CHECK ((((state = 'registered'::text) AND (current_attempt_id IS NOT NULL) AND (registered_ip_id IS NOT NULL) AND (btrim(registered_ip_id) <> ''::text) AND (confirmed_transaction_hash IS NOT NULL) AND (confirmed_block_number IS NOT NULL) AND (confirmed_block_hash IS NOT NULL) AND (confirmed_log_index IS NOT NULL) AND (confirmed_at IS NOT NULL) AND (failure_code IS NULL) AND (failure_evidence_ref IS NULL)) OR ((state = 'failed'::text) AND (failure_code IS NOT NULL) AND (failure_evidence_ref IS NOT NULL) AND (confirmed_at IS NULL)) OR ((state <> ALL (ARRAY['registered'::text, 'failed'::text])) AND (registered_ip_id IS NULL) AND (confirmed_transaction_hash IS NULL) AND (confirmed_block_number IS NULL) AND (confirmed_block_hash IS NULL) AND (confirmed_log_index IS NULL) AND (confirmed_at IS NULL) AND (failure_code IS NULL) AND (failure_evidence_ref IS NULL)))),
+    CONSTRAINT data_registration_operations_asset_id_check CHECK (((btrim(asset_id) <> ''::text) AND (asset_id = btrim(asset_id)) AND (octet_length(asset_id) <= 256))),
+    CONSTRAINT data_registration_operations_canonical_audio_sha256_check CHECK ((canonical_audio_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT data_registration_operations_chain_id_check CHECK ((chain_id > 0)),
+    CONSTRAINT data_registration_operations_confirmed_block_hash_check CHECK (((confirmed_block_hash IS NULL) OR (confirmed_block_hash ~ '^0x[0-9a-f]{64}$'::text))),
+    CONSTRAINT data_registration_operations_confirmed_block_number_check CHECK (((confirmed_block_number IS NULL) OR (confirmed_block_number >= 0))),
+    CONSTRAINT data_registration_operations_confirmed_log_index_check CHECK (((confirmed_log_index IS NULL) OR (confirmed_log_index >= 0))),
+    CONSTRAINT data_registration_operations_confirmed_transaction_hash_check CHECK (((confirmed_transaction_hash IS NULL) OR (confirmed_transaction_hash ~ '^0x[0-9a-f]{64}$'::text))),
+    CONSTRAINT data_registration_operations_failure_code_check CHECK (((failure_code IS NULL) OR (failure_code = ANY (ARRAY['pin_verification_failed'::text, 'signing_failed'::text, 'broadcast_failed'::text, 'receipt_reverted'::text, 'confirmation_timeout'::text, 'chain_reorganization'::text, 'invalid_receipt'::text, 'configuration_invalid'::text])))),
+    CONSTRAINT data_registration_operations_failure_evidence_ref_check CHECK (((failure_evidence_ref IS NULL) OR ((btrim(failure_evidence_ref) <> ''::text) AND (failure_evidence_ref = btrim(failure_evidence_ref))))),
+    CONSTRAINT data_registration_operations_publication_analysis_revisio_check CHECK ((publication_analysis_revision > 0)),
+    CONSTRAINT data_registration_operations_publication_audio_revision_check CHECK ((publication_audio_revision > 0)),
+    CONSTRAINT data_registration_operations_publication_creation_revisio_check CHECK ((publication_creation_revision > 0)),
+    CONSTRAINT data_registration_operations_publication_decision_revisio_check CHECK ((publication_decision_revision > 0)),
+    CONSTRAINT data_registration_operations_registration_operation_id_check CHECK (((btrim(registration_operation_id) <> ''::text) AND (registration_operation_id = btrim(registration_operation_id)) AND (octet_length(registration_operation_id) <= 512))),
+    CONSTRAINT data_registration_operations_registration_revision_check CHECK ((registration_revision > 0)),
+    CONSTRAINT data_registration_operations_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'signing'::text, 'broadcast'::text, 'confirming'::text, 'registered'::text, 'failed'::text, 'reconciliation_required'::text]))),
+    CONSTRAINT data_registration_operations_workflow_instance_id_check CHECK (((btrim(workflow_instance_id) <> ''::text) AND (workflow_instance_id = btrim(workflow_instance_id)))),
+    CONSTRAINT data_registration_operations_workflow_revision_check CHECK ((workflow_revision > 0))
+);
+
+CREATE TABLE data_registration_outbox (
+    outbox_id text NOT NULL,
+    registration_operation_id text NOT NULL,
+    workflow_revision bigint NOT NULL,
+    workflow_instance_id text NOT NULL,
+    event_type text NOT NULL,
+    effect_identity text NOT NULL,
+    payload jsonb NOT NULL,
+    state text DEFAULT 'pending'::text NOT NULL,
+    delivery_attempts integer DEFAULT 0 NOT NULL,
+    claim_owner text,
+    claim_fence bigint DEFAULT 0 NOT NULL,
+    lease_expires_at timestamp with time zone,
+    next_eligible_at timestamp with time zone,
+    failure_code text,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT data_registration_outbox_claim_fence_check CHECK ((claim_fence >= 0)),
+    CONSTRAINT data_registration_outbox_delivery_attempts_check CHECK (((delivery_attempts >= 0) AND (delivery_attempts <= 5))),
+    CONSTRAINT data_registration_outbox_effect_identity_check CHECK ((btrim(effect_identity) <> ''::text)),
+    CONSTRAINT data_registration_outbox_event_type_check CHECK ((event_type = ANY (ARRAY['registration_launch'::text, 'workflow_replacement'::text]))),
+    CONSTRAINT data_registration_outbox_failure_code_check CHECK (((failure_code IS NULL) OR (failure_code = ANY (ARRAY['queue_unavailable'::text, 'workflow_unavailable'::text, 'invalid_binding'::text])))),
+    CONSTRAINT data_registration_outbox_identity CHECK (((outbox_id = ((registration_operation_id || ':outbox:r'::text) || (workflow_revision)::text)) AND (workflow_instance_id = ((('data-registration-workflow:'::text || registration_operation_id) || ':r'::text) || (workflow_revision)::text)) AND (payload = jsonb_build_object('operation_id', registration_operation_id, 'outbox_id', outbox_id)))),
+    CONSTRAINT data_registration_outbox_outbox_id_check CHECK ((btrim(outbox_id) <> ''::text)),
+    CONSTRAINT data_registration_outbox_payload_check CHECK ((jsonb_typeof(payload) = 'object'::text)),
+    CONSTRAINT data_registration_outbox_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'running'::text, 'delivered'::text, 'failed'::text, 'exhausted'::text]))),
+    CONSTRAINT data_registration_outbox_state_shape CHECK ((((state = 'pending'::text) AND (delivery_attempts = 0) AND (claim_owner IS NULL) AND (claim_fence = 0) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NULL) AND (failure_code IS NULL)) OR ((state = 'running'::text) AND (delivery_attempts > 0) AND (claim_owner IS NOT NULL) AND (claim_fence > 0) AND (lease_expires_at IS NOT NULL) AND (next_eligible_at IS NULL) AND (failure_code IS NULL)) OR ((state = 'delivered'::text) AND (delivery_attempts > 0) AND (claim_owner IS NULL) AND (claim_fence > 0) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NULL) AND (failure_code IS NULL)) OR ((state = 'failed'::text) AND ((delivery_attempts >= 1) AND (delivery_attempts <= 4)) AND (claim_owner IS NULL) AND (claim_fence > 0) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NOT NULL) AND (failure_code IS NOT NULL)) OR ((state = 'exhausted'::text) AND (delivery_attempts = 5) AND (claim_owner IS NULL) AND (claim_fence > 0) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NULL) AND (failure_code IS NOT NULL)))),
+    CONSTRAINT data_registration_outbox_workflow_instance_id_check CHECK ((btrim(workflow_instance_id) <> ''::text)),
+    CONSTRAINT data_registration_outbox_workflow_revision_check CHECK ((workflow_revision > 0))
+);
+
+CREATE TABLE data_registration_pin_verifications (
+    pin_verification_id text NOT NULL,
+    registration_operation_id text NOT NULL,
+    artifact_id text NOT NULL,
+    artifact_kind text NOT NULL,
+    role text NOT NULL,
+    provider_id text NOT NULL,
+    attempt_number integer NOT NULL,
+    outcome text NOT NULL,
+    cid text,
+    canonical_sha256 text,
+    byte_length bigint,
+    evidence_ref text NOT NULL,
+    verified_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT data_registration_pin_outcome_shape CHECK ((((outcome = 'verified'::text) AND (cid IS NOT NULL) AND (btrim(cid) <> ''::text) AND (cid = btrim(cid)) AND (canonical_sha256 ~ '^[0-9a-f]{64}$'::text) AND (byte_length > 0) AND (verified_at IS NOT NULL)) OR ((outcome = 'failed'::text) AND (cid IS NULL) AND (canonical_sha256 IS NULL) AND (byte_length IS NULL) AND (verified_at IS NULL)))),
+    CONSTRAINT data_registration_pin_verifications_attempt_number_check CHECK (((attempt_number >= 1) AND (attempt_number <= 10))),
+    CONSTRAINT data_registration_pin_verifications_evidence_ref_check CHECK (((btrim(evidence_ref) <> ''::text) AND (evidence_ref = btrim(evidence_ref)))),
+    CONSTRAINT data_registration_pin_verifications_outcome_check CHECK ((outcome = ANY (ARRAY['verified'::text, 'failed'::text]))),
+    CONSTRAINT data_registration_pin_verifications_pin_verification_id_check CHECK (((btrim(pin_verification_id) <> ''::text) AND (pin_verification_id = btrim(pin_verification_id)) AND (octet_length(pin_verification_id) <= 512))),
+    CONSTRAINT data_registration_pin_verifications_provider_id_check CHECK (((btrim(provider_id) <> ''::text) AND (provider_id = btrim(provider_id)) AND (octet_length(provider_id) <= 128))),
+    CONSTRAINT data_registration_pin_verifications_role_check CHECK ((role = ANY (ARRAY['primary'::text, 'redundant'::text, 'independent_gateway'::text])))
+);
+
+CREATE TABLE data_registration_receipt_observations (
+    receipt_observation_id text NOT NULL,
+    registration_operation_id text NOT NULL,
+    submission_attempt_id text NOT NULL,
+    observation_sequence bigint NOT NULL,
+    transaction_hash text NOT NULL,
+    outcome text NOT NULL,
+    block_number bigint,
+    block_hash text,
+    log_index integer,
+    confirmations integer NOT NULL,
+    registered_ip_id text,
+    ip_metadata_uri text,
+    ip_metadata_hash text,
+    nft_metadata_uri text,
+    nft_metadata_hash text,
+    evidence_ref text NOT NULL,
+    observed_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT data_registration_receipt_identity CHECK ((receipt_observation_id = ((submission_attempt_id || ':receipt:'::text) || (observation_sequence)::text))),
+    CONSTRAINT data_registration_receipt_observat_receipt_observation_id_check CHECK ((btrim(receipt_observation_id) <> ''::text)),
+    CONSTRAINT data_registration_receipt_observatio_observation_sequence_check CHECK ((observation_sequence > 0)),
+    CONSTRAINT data_registration_receipt_observations_block_hash_check CHECK (((block_hash IS NULL) OR (block_hash ~ '^0x[0-9a-f]{64}$'::text))),
+    CONSTRAINT data_registration_receipt_observations_block_number_check CHECK (((block_number IS NULL) OR (block_number >= 0))),
+    CONSTRAINT data_registration_receipt_observations_confirmations_check CHECK ((confirmations >= 0)),
+    CONSTRAINT data_registration_receipt_observations_evidence_ref_check CHECK ((btrim(evidence_ref) <> ''::text)),
+    CONSTRAINT data_registration_receipt_observations_ip_metadata_hash_check CHECK (((ip_metadata_hash IS NULL) OR (ip_metadata_hash ~ '^0x[0-9a-f]{64}$'::text))),
+    CONSTRAINT data_registration_receipt_observations_log_index_check CHECK (((log_index IS NULL) OR (log_index >= 0))),
+    CONSTRAINT data_registration_receipt_observations_nft_metadata_hash_check CHECK (((nft_metadata_hash IS NULL) OR (nft_metadata_hash ~ '^0x[0-9a-f]{64}$'::text))),
+    CONSTRAINT data_registration_receipt_observations_outcome_check CHECK ((outcome = ANY (ARRAY['pending'::text, 'mined'::text, 'confirmed'::text, 'reverted'::text, 'orphaned'::text]))),
+    CONSTRAINT data_registration_receipt_observations_transaction_hash_check CHECK ((transaction_hash ~ '^0x[0-9a-f]{64}$'::text)),
+    CONSTRAINT data_registration_receipt_shape CHECK ((((outcome = 'pending'::text) AND (block_number IS NULL) AND (block_hash IS NULL) AND (log_index IS NULL) AND (confirmations = 0) AND (registered_ip_id IS NULL) AND (ip_metadata_uri IS NULL) AND (ip_metadata_hash IS NULL) AND (nft_metadata_uri IS NULL) AND (nft_metadata_hash IS NULL)) OR ((outcome = ANY (ARRAY['mined'::text, 'reverted'::text, 'orphaned'::text])) AND (block_number IS NOT NULL) AND (block_hash IS NOT NULL) AND (registered_ip_id IS NULL) AND (ip_metadata_uri IS NULL) AND (ip_metadata_hash IS NULL) AND (nft_metadata_uri IS NULL) AND (nft_metadata_hash IS NULL)) OR ((outcome = 'confirmed'::text) AND (block_number IS NOT NULL) AND (block_hash IS NOT NULL) AND (log_index IS NOT NULL) AND (confirmations > 0) AND (registered_ip_id IS NOT NULL) AND (btrim(registered_ip_id) <> ''::text) AND (ip_metadata_uri IS NOT NULL) AND (btrim(ip_metadata_uri) <> ''::text) AND (ip_metadata_hash IS NOT NULL) AND (nft_metadata_uri IS NOT NULL) AND (btrim(nft_metadata_uri) <> ''::text) AND (nft_metadata_hash IS NOT NULL))))
+);
+
+CREATE TABLE data_registration_signing_attempts (
+    submission_attempt_id text NOT NULL,
+    registration_operation_id text NOT NULL,
+    chain_id bigint NOT NULL,
+    attempt_number integer NOT NULL,
+    signer_namespace text NOT NULL,
+    signer_address text NOT NULL,
+    signing_intent_id text NOT NULL,
+    calldata_hash text NOT NULL,
+    nonce numeric(78,0),
+    signed_transaction bytea,
+    signed_transaction_hash text,
+    transaction_hash text,
+    supersedes_submission_attempt_id text,
+    state text NOT NULL,
+    failure_code text,
+    failure_evidence_ref text,
+    prepared_at timestamp with time zone,
+    broadcast_at timestamp with time zone,
+    terminal_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT data_registration_attempt_identity CHECK (((submission_attempt_id = ((registration_operation_id || ':attempt:'::text) || (attempt_number)::text)) AND (signing_intent_id = (submission_attempt_id || ':signing-intent'::text)))),
+    CONSTRAINT data_registration_attempt_shape CHECK ((((state = 'signing_intent'::text) AND (nonce IS NULL) AND (signed_transaction IS NULL) AND (signed_transaction_hash IS NULL) AND (transaction_hash IS NULL) AND (prepared_at IS NULL) AND (broadcast_at IS NULL) AND (terminal_at IS NULL) AND (failure_code IS NULL) AND (failure_evidence_ref IS NULL)) OR ((state = 'nonce_reserved'::text) AND (nonce IS NOT NULL) AND (signed_transaction IS NULL) AND (signed_transaction_hash IS NULL) AND (transaction_hash IS NULL) AND (prepared_at IS NULL) AND (broadcast_at IS NULL) AND (terminal_at IS NULL) AND (failure_code IS NULL) AND (failure_evidence_ref IS NULL)) OR ((state = 'prepared'::text) AND (nonce IS NOT NULL) AND (octet_length(signed_transaction) > 0) AND (signed_transaction_hash IS NOT NULL) AND (transaction_hash IS NULL) AND (prepared_at IS NOT NULL) AND (broadcast_at IS NULL) AND (terminal_at IS NULL) AND (failure_code IS NULL) AND (failure_evidence_ref IS NULL)) OR ((state = ANY (ARRAY['broadcast'::text, 'mined'::text])) AND (nonce IS NOT NULL) AND (octet_length(signed_transaction) > 0) AND (signed_transaction_hash IS NOT NULL) AND (transaction_hash = signed_transaction_hash) AND (prepared_at IS NOT NULL) AND (broadcast_at IS NOT NULL) AND (terminal_at IS NULL) AND (failure_code IS NULL) AND (failure_evidence_ref IS NULL)) OR ((state = ANY (ARRAY['confirmed'::text, 'replaced'::text])) AND (nonce IS NOT NULL) AND (octet_length(signed_transaction) > 0) AND (signed_transaction_hash IS NOT NULL) AND (transaction_hash = signed_transaction_hash) AND (prepared_at IS NOT NULL) AND (broadcast_at IS NOT NULL) AND (terminal_at IS NOT NULL) AND (failure_code IS NULL) AND (failure_evidence_ref IS NULL)) OR ((state = ANY (ARRAY['reverted'::text, 'failed'::text, 'reconciliation_required'::text])) AND (failure_code IS NOT NULL) AND (failure_evidence_ref IS NOT NULL) AND (terminal_at IS NOT NULL)))),
+    CONSTRAINT data_registration_signing_attempt_signed_transaction_hash_check CHECK (((signed_transaction_hash IS NULL) OR (signed_transaction_hash ~ '^0x[0-9a-f]{64}$'::text))),
+    CONSTRAINT data_registration_signing_attempts_attempt_number_check CHECK (((attempt_number >= 1) AND (attempt_number <= 20))),
+    CONSTRAINT data_registration_signing_attempts_calldata_hash_check CHECK ((calldata_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT data_registration_signing_attempts_failure_code_check CHECK (((failure_code IS NULL) OR (failure_code = ANY (ARRAY['signing_failed'::text, 'broadcast_failed'::text, 'receipt_reverted'::text, 'confirmation_timeout'::text, 'chain_reorganization'::text, 'invalid_receipt'::text])))),
+    CONSTRAINT data_registration_signing_attempts_failure_evidence_ref_check CHECK (((failure_evidence_ref IS NULL) OR ((btrim(failure_evidence_ref) <> ''::text) AND (failure_evidence_ref = btrim(failure_evidence_ref))))),
+    CONSTRAINT data_registration_signing_attempts_signer_address_check CHECK ((signer_address ~ '^0x[0-9a-fA-F]{40}$'::text)),
+    CONSTRAINT data_registration_signing_attempts_signer_namespace_check CHECK (((btrim(signer_namespace) <> ''::text) AND (signer_namespace = btrim(signer_namespace)))),
+    CONSTRAINT data_registration_signing_attempts_signing_intent_id_check CHECK (((btrim(signing_intent_id) <> ''::text) AND (signing_intent_id = btrim(signing_intent_id)))),
+    CONSTRAINT data_registration_signing_attempts_state_check CHECK ((state = ANY (ARRAY['signing_intent'::text, 'nonce_reserved'::text, 'prepared'::text, 'broadcast'::text, 'mined'::text, 'confirmed'::text, 'replaced'::text, 'reverted'::text, 'failed'::text, 'reconciliation_required'::text]))),
+    CONSTRAINT data_registration_signing_attempts_submission_attempt_id_check CHECK (((btrim(submission_attempt_id) <> ''::text) AND (submission_attempt_id = btrim(submission_attempt_id)) AND (octet_length(submission_attempt_id) <= 512))),
+    CONSTRAINT data_registration_signing_attempts_transaction_hash_check CHECK (((transaction_hash IS NULL) OR (transaction_hash ~ '^0x[0-9a-f]{64}$'::text)))
+);
+
 CREATE TABLE decision_records (
     decision_record_id text NOT NULL,
     community_id text NOT NULL,
@@ -17064,6 +17622,75 @@ ALTER TABLE ONLY content_publication_outbox
 ALTER TABLE ONLY custody_solvency_observations
     ADD CONSTRAINT custody_solvency_observations_pkey PRIMARY KEY (observation_id);
 
+ALTER TABLE ONLY data_registration_artifacts
+    ADD CONSTRAINT data_registration_artifacts_pkey PRIMARY KEY (artifact_id);
+
+ALTER TABLE ONLY data_registration_artifacts
+    ADD CONSTRAINT data_registration_artifacts_registration_operation_id_arti_key1 UNIQUE (registration_operation_id, artifact_id);
+
+ALTER TABLE ONLY data_registration_artifacts
+    ADD CONSTRAINT data_registration_artifacts_registration_operation_id_arti_key2 UNIQUE (registration_operation_id, artifact_id, canonical_sha256, byte_length);
+
+ALTER TABLE ONLY data_registration_artifacts
+    ADD CONSTRAINT data_registration_artifacts_registration_operation_id_artif_key UNIQUE (registration_operation_id, artifact_kind);
+
+ALTER TABLE ONLY data_registration_attempt_transitions
+    ADD CONSTRAINT data_registration_attempt_tra_submission_attempt_id_transit_key UNIQUE (submission_attempt_id, transition_sequence);
+
+ALTER TABLE ONLY data_registration_attempt_transitions
+    ADD CONSTRAINT data_registration_attempt_transitions_pkey PRIMARY KEY (transition_id);
+
+ALTER TABLE ONLY data_registration_command_replays
+    ADD CONSTRAINT data_registration_command_replays_pkey PRIMARY KEY (endpoint_template, idempotency_key);
+
+ALTER TABLE ONLY data_registration_operations
+    ADD CONSTRAINT data_registration_operations_chain_id_asset_id_registration_key UNIQUE (chain_id, asset_id, registration_revision);
+
+ALTER TABLE ONLY data_registration_operations
+    ADD CONSTRAINT data_registration_operations_pkey PRIMARY KEY (registration_operation_id);
+
+ALTER TABLE ONLY data_registration_operations
+    ADD CONSTRAINT data_registration_operations_registration_operation_id_chai_key UNIQUE (registration_operation_id, chain_id);
+
+ALTER TABLE ONLY data_registration_operations
+    ADD CONSTRAINT data_registration_operations_registration_operation_id_post_key UNIQUE (registration_operation_id, post_id);
+
+ALTER TABLE ONLY data_registration_outbox
+    ADD CONSTRAINT data_registration_outbox_effect_identity_key UNIQUE (effect_identity);
+
+ALTER TABLE ONLY data_registration_outbox
+    ADD CONSTRAINT data_registration_outbox_pkey PRIMARY KEY (outbox_id);
+
+ALTER TABLE ONLY data_registration_outbox
+    ADD CONSTRAINT data_registration_outbox_registration_operation_id_workflow_key UNIQUE (registration_operation_id, workflow_revision, event_type);
+
+ALTER TABLE ONLY data_registration_pin_verifications
+    ADD CONSTRAINT data_registration_pin_verific_registration_operation_id_art_key UNIQUE (registration_operation_id, artifact_id, role, provider_id, attempt_number);
+
+ALTER TABLE ONLY data_registration_pin_verifications
+    ADD CONSTRAINT data_registration_pin_verifications_pkey PRIMARY KEY (pin_verification_id);
+
+ALTER TABLE ONLY data_registration_receipt_observations
+    ADD CONSTRAINT data_registration_receipt_obs_submission_attempt_id_observa_key UNIQUE (submission_attempt_id, observation_sequence);
+
+ALTER TABLE ONLY data_registration_receipt_observations
+    ADD CONSTRAINT data_registration_receipt_observations_pkey PRIMARY KEY (receipt_observation_id);
+
+ALTER TABLE ONLY data_registration_signing_attempts
+    ADD CONSTRAINT data_registration_signing_att_registration_operation_id_att_key UNIQUE (registration_operation_id, attempt_number);
+
+ALTER TABLE ONLY data_registration_signing_attempts
+    ADD CONSTRAINT data_registration_signing_att_registration_operation_id_cal_key UNIQUE (registration_operation_id, calldata_hash, attempt_number);
+
+ALTER TABLE ONLY data_registration_signing_attempts
+    ADD CONSTRAINT data_registration_signing_att_registration_operation_id_sub_key UNIQUE (registration_operation_id, submission_attempt_id);
+
+ALTER TABLE ONLY data_registration_signing_attempts
+    ADD CONSTRAINT data_registration_signing_attempts_pkey PRIMARY KEY (submission_attempt_id);
+
+ALTER TABLE ONLY data_registration_signing_attempts
+    ADD CONSTRAINT data_registration_signing_attempts_signing_intent_id_key UNIQUE (signing_intent_id);
+
 ALTER TABLE ONLY decision_records
     ADD CONSTRAINT decision_records_pkey PRIMARY KEY (decision_record_id);
 
@@ -18119,6 +18746,14 @@ CREATE INDEX cpf_attempts_selection_idx ON community_purchase_funding_reconcilia
 
 CREATE INDEX custody_solvency_observations_latest_idx ON custody_solvency_observations USING btree (attestation_id, block_number DESC, observation_id);
 
+CREATE INDEX data_registration_outbox_eligible_idx ON data_registration_outbox USING btree (state, next_eligible_at, lease_expires_at, outbox_id) WHERE (state = ANY (ARRAY['pending'::text, 'running'::text, 'failed'::text]));
+
+CREATE INDEX data_registration_pin_verified_idx ON data_registration_pin_verifications USING btree (registration_operation_id, artifact_id, role, provider_id) WHERE (outcome = 'verified'::text);
+
+CREATE UNIQUE INDEX data_registration_signer_nonce_unique ON data_registration_signing_attempts USING btree (chain_id, lower(signer_address), nonce) WHERE (nonce IS NOT NULL);
+
+CREATE UNIQUE INDEX data_registration_transaction_hash_unique ON data_registration_signing_attempts USING btree (transaction_hash) WHERE (transaction_hash IS NOT NULL);
+
 CREATE INDEX decision_records_policy_created_idx ON decision_records USING btree (policy_version_id, created_at DESC, decision_record_id);
 
 CREATE UNIQUE INDEX decision_records_request_uidx ON decision_records USING btree (community_id, user_id, request_id) WHERE (request_id IS NOT NULL);
@@ -18490,6 +19125,24 @@ CREATE TRIGGER community_streak_days_append_only BEFORE DELETE OR UPDATE ON comm
 CREATE TRIGGER community_streaks_change_guard BEFORE DELETE OR UPDATE ON community_streaks FOR EACH ROW EXECUTE FUNCTION guard_streak_projection();
 
 CREATE TRIGGER custody_solvency_observations_append_only BEFORE DELETE OR UPDATE ON custody_solvency_observations FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
+
+CREATE TRIGGER data_registration_artifacts_append_only BEFORE DELETE OR UPDATE ON data_registration_artifacts FOR EACH ROW EXECUTE FUNCTION guard_data_registration_append_only();
+
+CREATE TRIGGER data_registration_attempt_guard BEFORE INSERT OR DELETE OR UPDATE ON data_registration_signing_attempts FOR EACH ROW EXECUTE FUNCTION guard_data_registration_attempt();
+
+CREATE TRIGGER data_registration_operation_update_guard BEFORE DELETE OR UPDATE ON data_registration_operations FOR EACH ROW EXECUTE FUNCTION guard_data_registration_operation_update();
+
+CREATE TRIGGER data_registration_outbox_update_guard BEFORE DELETE OR UPDATE ON data_registration_outbox FOR EACH ROW EXECUTE FUNCTION guard_data_registration_outbox_update();
+
+CREATE TRIGGER data_registration_pins_append_only BEFORE DELETE OR UPDATE ON data_registration_pin_verifications FOR EACH ROW EXECUTE FUNCTION guard_data_registration_append_only();
+
+CREATE TRIGGER data_registration_receipt_insert_guard BEFORE INSERT ON data_registration_receipt_observations FOR EACH ROW EXECUTE FUNCTION guard_data_registration_receipt_insert();
+
+CREATE TRIGGER data_registration_receipts_append_only BEFORE DELETE OR UPDATE ON data_registration_receipt_observations FOR EACH ROW EXECUTE FUNCTION guard_data_registration_append_only();
+
+CREATE TRIGGER data_registration_replays_append_only BEFORE DELETE OR UPDATE ON data_registration_command_replays FOR EACH ROW EXECUTE FUNCTION guard_data_registration_append_only();
+
+CREATE TRIGGER data_registration_transitions_append_only BEFORE DELETE OR UPDATE ON data_registration_attempt_transitions FOR EACH ROW EXECUTE FUNCTION guard_data_registration_append_only();
 
 CREATE TRIGGER decision_records_append_only BEFORE DELETE OR UPDATE ON decision_records FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
@@ -19570,6 +20223,48 @@ ALTER TABLE ONLY custody_solvency_observations
 
 ALTER TABLE ONLY custody_solvency_observations
     ADD CONSTRAINT custody_solvency_observations_attestation_id_fkey FOREIGN KEY (attestation_id) REFERENCES megapot_deployment_attestations(attestation_id);
+
+ALTER TABLE ONLY data_registration_artifacts
+    ADD CONSTRAINT data_registration_artifacts_registration_operation_id_fkey FOREIGN KEY (registration_operation_id) REFERENCES data_registration_operations(registration_operation_id);
+
+ALTER TABLE ONLY data_registration_attempt_transitions
+    ADD CONSTRAINT data_registration_attempt_tra_registration_operation_id_su_fkey FOREIGN KEY (registration_operation_id, submission_attempt_id) REFERENCES data_registration_signing_attempts(registration_operation_id, submission_attempt_id);
+
+ALTER TABLE ONLY data_registration_attempt_transitions
+    ADD CONSTRAINT data_registration_attempt_transition_submission_attempt_id_fkey FOREIGN KEY (submission_attempt_id) REFERENCES data_registration_signing_attempts(submission_attempt_id);
+
+ALTER TABLE ONLY data_registration_command_replays
+    ADD CONSTRAINT data_registration_command_replay_registration_operation_id_fkey FOREIGN KEY (registration_operation_id) REFERENCES data_registration_operations(registration_operation_id);
+
+ALTER TABLE ONLY data_registration_operations
+    ADD CONSTRAINT data_registration_operations_community_id_actor_user_id_po_fkey FOREIGN KEY (community_id, actor_user_id, post_id) REFERENCES media_publication_projections(community_id, actor_user_id, post_id);
+
+ALTER TABLE ONLY data_registration_operations
+    ADD CONSTRAINT data_registration_operations_community_id_actor_user_id_su_fkey FOREIGN KEY (community_id, actor_user_id, submission_id, media_operation_id) REFERENCES media_post_submissions(community_id, actor_user_id, submission_id, operation_id);
+
+ALTER TABLE ONLY data_registration_operations
+    ADD CONSTRAINT data_registration_operations_current_attempt_fk FOREIGN KEY (current_attempt_id) REFERENCES data_registration_signing_attempts(submission_attempt_id) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY data_registration_outbox
+    ADD CONSTRAINT data_registration_outbox_registration_operation_id_fkey FOREIGN KEY (registration_operation_id) REFERENCES data_registration_operations(registration_operation_id);
+
+ALTER TABLE ONLY data_registration_pin_verifications
+    ADD CONSTRAINT data_registration_pin_verifi_registration_operation_id_ar_fkey1 FOREIGN KEY (registration_operation_id, artifact_id) REFERENCES data_registration_artifacts(registration_operation_id, artifact_id);
+
+ALTER TABLE ONLY data_registration_pin_verifications
+    ADD CONSTRAINT data_registration_pin_verifi_registration_operation_id_ar_fkey2 FOREIGN KEY (registration_operation_id, artifact_kind) REFERENCES data_registration_artifacts(registration_operation_id, artifact_kind);
+
+ALTER TABLE ONLY data_registration_pin_verifications
+    ADD CONSTRAINT data_registration_pin_verific_registration_operation_id_ar_fkey FOREIGN KEY (registration_operation_id, artifact_id, canonical_sha256, byte_length) REFERENCES data_registration_artifacts(registration_operation_id, artifact_id, canonical_sha256, byte_length);
+
+ALTER TABLE ONLY data_registration_receipt_observations
+    ADD CONSTRAINT data_registration_receipt_obs_registration_operation_id_su_fkey FOREIGN KEY (registration_operation_id, submission_attempt_id) REFERENCES data_registration_signing_attempts(registration_operation_id, submission_attempt_id);
+
+ALTER TABLE ONLY data_registration_signing_attempts
+    ADD CONSTRAINT data_registration_signing_att_registration_operation_id_ch_fkey FOREIGN KEY (registration_operation_id, chain_id) REFERENCES data_registration_operations(registration_operation_id, chain_id);
+
+ALTER TABLE ONLY data_registration_signing_attempts
+    ADD CONSTRAINT data_registration_signing_att_supersedes_submission_attemp_fkey FOREIGN KEY (supersedes_submission_attempt_id) REFERENCES data_registration_signing_attempts(submission_attempt_id);
 
 ALTER TABLE ONLY decision_records
     ADD CONSTRAINT decision_records_community_fk FOREIGN KEY (community_id) REFERENCES communities(community_id);
