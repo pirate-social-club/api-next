@@ -4578,6 +4578,38 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION guard_moderation_platform_floor_current_change() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  prior_revision BIGINT;
+  next_revision BIGINT;
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'moderation platform floor current pointer cannot be deleted';
+  END IF;
+  IF NEW.singleton IS DISTINCT FROM OLD.singleton THEN
+    RAISE EXCEPTION 'moderation platform floor current identity is immutable';
+  END IF;
+  IF NEW.updated_at <= OLD.updated_at THEN
+    RAISE EXCEPTION 'moderation platform floor current timestamp must advance';
+  END IF;
+
+  SELECT revision INTO prior_revision
+    FROM moderation_platform_floor_revisions
+   WHERE policy_revision_id = OLD.policy_revision_id
+     AND policy_hash = OLD.policy_hash;
+  SELECT revision INTO next_revision
+    FROM moderation_platform_floor_revisions
+   WHERE policy_revision_id = NEW.policy_revision_id
+     AND policy_hash = NEW.policy_hash;
+  IF prior_revision IS NULL OR next_revision IS NULL OR next_revision <= prior_revision THEN
+    RAISE EXCEPTION 'moderation platform floor current revision must advance';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION guard_namespace_ownership_completion_attempt_change() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -20225,6 +20257,8 @@ CREATE TRIGGER megapot_usdc_approval_receipt_evidence_change_guard BEFORE INSERT
 CREATE TRIGGER moderation_platform_floor_categories_append_only BEFORE DELETE OR UPDATE ON moderation_platform_floor_category_decisions FOR EACH ROW EXECUTE FUNCTION reject_text_moderation_append_only_change();
 
 CREATE CONSTRAINT TRIGGER moderation_platform_floor_category_completeness_guard AFTER INSERT OR DELETE OR UPDATE ON moderation_platform_floor_category_decisions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_moderation_platform_floor_revision();
+
+CREATE TRIGGER moderation_platform_floor_current_change_guard BEFORE DELETE OR UPDATE ON moderation_platform_floor_current FOR EACH ROW EXECUTE FUNCTION guard_moderation_platform_floor_current_change();
 
 CREATE CONSTRAINT TRIGGER moderation_platform_floor_revision_completeness_guard AFTER INSERT OR UPDATE ON moderation_platform_floor_revisions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_moderation_platform_floor_revision();
 

@@ -376,6 +376,16 @@ suite("community moderation authority and policy migration", () => {
         ),
       ).rejects.toThrow("moderation_platform_floor_revisions is append-only");
       await expect(
+        admin.query("DELETE FROM moderation_platform_floor_current WHERE singleton"),
+      ).rejects.toThrow("moderation platform floor current pointer cannot be deleted");
+      await expect(
+        admin.query(
+          `UPDATE moderation_platform_floor_current
+              SET updated_at = clock_timestamp()
+            WHERE singleton`,
+        ),
+      ).rejects.toThrow("moderation platform floor current revision must advance");
+      await expect(
         admin.query(
           `UPDATE community_moderation_policy_category_decisions
               SET decision = 'block'

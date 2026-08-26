@@ -1,3 +1,5 @@
+import { Predicate } from "effect";
+
 export const MODERATION_POLICY_CATEGORIES_V1 = [
   "harassment",
   "harassment/threatening",
@@ -88,15 +90,15 @@ const DECISION_SEVERITY: Readonly<Record<ModerationPolicyDecisionV1, number>> = 
 const ADULT_RATING_CATEGORIES = new Set<ModerationPolicyCategoryV1>(["sexual", "violence/graphic"]);
 
 function isPolicyCategory(value: unknown): value is ModerationPolicyCategoryV1 {
-  return typeof value === "string" && CATEGORY_SET.has(value);
+  return Predicate.isString(value) && CATEGORY_SET.has(value);
 }
 
 function isPolicyDecision(value: unknown): value is ModerationPolicyDecisionV1 {
-  return typeof value === "string" && DECISION_SET.has(value);
+  return Predicate.isString(value) && DECISION_SET.has(value);
 }
 
 function isPolicyTable(value: unknown): value is ModerationPolicyTableV1 {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  if (!Predicate.isObject(value)) return false;
   const keys = Object.keys(value);
   if (
     keys.length !== MODERATION_POLICY_CATEGORIES_V1.length ||

@@ -484,6 +484,43 @@ SELECT TRUE, policy_revision_id, policy_hash
   FROM moderation_platform_floor_revisions
  WHERE policy_revision_id = 'moderation-platform-floor-v1';
 
+CREATE OR REPLACE FUNCTION guard_moderation_platform_floor_current_change()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  prior_revision BIGINT;
+  next_revision BIGINT;
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'moderation platform floor current pointer cannot be deleted';
+  END IF;
+  IF NEW.singleton IS DISTINCT FROM OLD.singleton THEN
+    RAISE EXCEPTION 'moderation platform floor current identity is immutable';
+  END IF;
+  IF NEW.updated_at <= OLD.updated_at THEN
+    RAISE EXCEPTION 'moderation platform floor current timestamp must advance';
+  END IF;
+
+  SELECT revision INTO prior_revision
+    FROM moderation_platform_floor_revisions
+   WHERE policy_revision_id = OLD.policy_revision_id
+     AND policy_hash = OLD.policy_hash;
+  SELECT revision INTO next_revision
+    FROM moderation_platform_floor_revisions
+   WHERE policy_revision_id = NEW.policy_revision_id
+     AND policy_hash = NEW.policy_hash;
+  IF prior_revision IS NULL OR next_revision IS NULL OR next_revision <= prior_revision THEN
+    RAISE EXCEPTION 'moderation platform floor current revision must advance';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER moderation_platform_floor_current_change_guard
+BEFORE UPDATE OR DELETE ON moderation_platform_floor_current
+FOR EACH ROW EXECUTE FUNCTION guard_moderation_platform_floor_current_change();
+
 CREATE TRIGGER moderation_platform_floor_revisions_append_only
 BEFORE UPDATE OR DELETE ON moderation_platform_floor_revisions
 FOR EACH ROW EXECUTE FUNCTION reject_text_moderation_append_only_change();
