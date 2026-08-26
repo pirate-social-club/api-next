@@ -28,6 +28,8 @@
     "./money/community-purchase-funding-observation": "./src/money/community-purchase-funding-observation.ts",
     "./money/community-purchase-funding-producer": "./src/money/community-purchase-funding-producer.ts",
     "./money/community-purchase-funding-query": "./src/money/community-purchase-funding-query.ts",
+    "./media/submission-service": "./src/media/submission-service.ts",
+    "./media/submission-sealing": "./src/media/submission-sealing.ts",
     "./rewards/song-reward-offers": "./src/rewards/song-reward-offers.ts",
     "./rewards/reward-projections": "./src/rewards/reward-projections.ts",
     "./verification": "./src/verification/index.ts",

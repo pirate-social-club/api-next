@@ -139,7 +139,7 @@ describe("Infisical secret drift audit", () => {
     );
   });
 
-  test("allows staging media runtime provisioning names without requiring them", () => {
+  test("allows staging media runtime provisioning names without requiring them", async () => {
     const stagingBase = emptySnapshot("staging");
     const stagingWithoutProvisioning: InfisicalSnapshot = {
       ...stagingBase,
@@ -178,10 +178,24 @@ describe("Infisical secret drift audit", () => {
           "ELEVENLABS_API_KEY",
           "FILEBASE_IPFS_TOKEN",
           "MEDIA_CLASSIFIER_API_KEY",
+          "MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID",
+          "MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY",
         ],
       },
     };
     expect(auditInfisicalSnapshots([stagingWithProvisioning]).violations).toEqual([]);
+
+    const httpWorkerConfig = await Bun.file("apps/http-worker/wrangler.jsonc").text();
+    const processorWorkerConfig = await Bun.file("apps/media-processor-worker/wrangler.jsonc")
+      .text()
+      .catch(() => "");
+    for (const name of [
+      "MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID",
+      "MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY",
+    ]) {
+      expect(httpWorkerConfig).not.toContain(name);
+      expect(processorWorkerConfig).not.toContain(name);
+    }
 
     const retiredR2Names: InfisicalSnapshot = {
       ...stagingWithProvisioning,

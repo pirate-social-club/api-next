@@ -246,6 +246,40 @@ describe("HTTP production composition", () => {
     expect(callbackBody).not.toContain("future.provider");
   });
 
+  test("keeps media inert by default and mounts it only from complete fixed bindings", async () => {
+    const configured = await bindings();
+    await expect(
+      createProductionHttpWorker({ ...configured, MEDIA_UPLOADS_ENABLED: "true" }),
+    ).rejects.toThrow("HTTP worker configuration is incomplete or invalid");
+
+    const worker = await createProductionHttpWorker({
+      ...configured,
+      MEDIA_UPLOADS_ENABLED: "true",
+      MEDIA_INGRESS_R2_ACCOUNT_ID: "0123456789abcdef0123456789abcdef",
+      MEDIA_INGRESS_R2_BUCKET_NAME: "pirate-media-ingress-staging",
+      MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID: "test-access-key",
+      MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY: "test-secret-key",
+      MEDIA_INGRESS: {
+        head: async () => null,
+        get: async () => null,
+      },
+      MEDIA_IMMUTABLE_ORIGINALS: {
+        head: async () => null,
+        put: async () => null,
+      },
+    });
+    const response = await worker.request(
+      "https://worker.test/communities/community-1/media-upload-reservations",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: "https://solid.test" },
+        body: "{}",
+      },
+    );
+    expect(response.status).toBe(401);
+    expect(await response.json()).toMatchObject({ error: { code: "auth_error" } });
+  });
+
   test("fails closed before route construction when a provider setting is absent", async () => {
     const complete = await bindings();
     const { PRIVY_JWT_ISSUER: _omitted, ...incomplete } = complete;

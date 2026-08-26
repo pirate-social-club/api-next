@@ -9,6 +9,7 @@
   "include": [
     "packages/platform-cf",
     "apps/jobs-worker",
+    "apps/media-processor-worker",
     "tests"
   ],
   "exclude": [
