@@ -5,7 +5,7 @@ const base = {
   CONTROL_PLANE: { connectionString: "postgres://postgres:postgres@127.0.0.1:5432/postgres" },
   DATA_REGISTRATION_WORKFLOW: {
     get: async () => ({ status: async () => ({ status: "unknown" }) }),
-    create: async () => undefined,
+    createBatch: async () => [],
   },
 };
 

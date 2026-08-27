@@ -25,7 +25,6 @@ const record = (
 
 function queueHarness(options: { create?: "created" | "already_exists" | "throw" } = {}) {
   let current = record();
-  let present = false;
   const calls: string[] = [];
   const store = {
     getOutbox: async () => current,
@@ -90,17 +89,12 @@ function queueHarness(options: { create?: "created" | "already_exists" | "throw"
   const workflow: MediaProcessingWorkflowLauncher = {
     get: async () => {
       calls.push("get");
-      return present ? "present" : "missing";
+      return "present";
     },
     create: async () => {
       calls.push("create");
       if (options.create === "throw") throw new Error("transport unavailable");
-      if (options.create === "already_exists") {
-        present = true;
-        return "already_exists";
-      }
-      present = true;
-      return "created";
+      return options.create === "already_exists" ? "already_exists" : "created";
     },
     notify: async () => {
       calls.push("notify");
@@ -135,11 +129,11 @@ describe("media processing Queue ingress", () => {
       { store: harness.store, workflow: harness.workflow, workerId: "queue-worker-1" },
     );
     expect(result).toEqual({ disposition: "ack" });
-    expect(harness.calls).toEqual(["claim", "get", "create", "complete"]);
+    expect(harness.calls).toEqual(["claim", "create", "complete"]);
     expect(harness.current().state).toBe("delivered");
   });
 
-  test("duplicate create converges through get without a second identity", async () => {
+  test("duplicate deterministic create converges without a preflight get", async () => {
     const harness = queueHarness({ create: "already_exists" });
     expect(
       await consumeMediaProcessingQueueMessage(
@@ -147,7 +141,19 @@ describe("media processing Queue ingress", () => {
         { store: harness.store, workflow: harness.workflow, workerId: "queue-worker-1" },
       ),
     ).toEqual({ disposition: "ack" });
-    expect(harness.calls).toEqual(["claim", "get", "create", "get", "complete"]);
+    expect(harness.calls).toEqual(["claim", "create", "complete"]);
+  });
+
+  test("delivers a decision wakeup only after converging on the retained instance", async () => {
+    const harness = queueHarness({ create: "already_exists" });
+    harness.setCurrent(record({ eventType: "decision_wakeup" }));
+    expect(
+      await consumeMediaProcessingQueueMessage(
+        { outbox_id: "outbox-1" },
+        { store: harness.store, workflow: harness.workflow, workerId: "queue-worker-1" },
+      ),
+    ).toEqual({ disposition: "ack" });
+    expect(harness.calls).toEqual(["claim", "create", "notify", "complete"]);
   });
 
   test("persists failure before retry and reaches DLQ on the third attempt", async () => {

@@ -18,15 +18,30 @@ describe("Cloudflare DATA registration adapters", () => {
       get: async () => ({
         status: async () => ({ status: present ? "running" : "unknown" }),
       }),
-      create: async () => {
+      createBatch: async () => {
+        if (present) return [];
         present = true;
-        throw new Error("already exists");
+        return [{}];
       },
     };
     const launcher = makeCloudflareDataRegistrationWorkflowLauncher(binding, () => false);
 
+    expect(await launcher.create("workflow-1", payload)).toBe("created");
     expect(await launcher.create("workflow-1", payload)).toBe("already_exists");
     expect(await launcher.get("workflow-1")).toBe("present");
+  });
+
+  test("propagates createBatch transport failure without a get probe", async () => {
+    const binding: CloudflareDataRegistrationWorkflowBinding = {
+      get: async () => {
+        throw new Error("get must not be called");
+      },
+      createBatch: async () => {
+        throw new Error("transport unavailable");
+      },
+    };
+    const launcher = makeCloudflareDataRegistrationWorkflowLauncher(binding, () => false);
+    await expect(launcher.create("workflow-1", payload)).rejects.toThrow("transport unavailable");
   });
 
   test("maps persisted queue dispositions to message ack and retry controls", () => {

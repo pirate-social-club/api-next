@@ -84,15 +84,7 @@ export async function consumeDataRegistrationQueueMessage(
     return { disposition: "dlq" };
   }
   try {
-    if ((await dependencies.workflow.get(deterministicId)) === "missing") {
-      const created = await dependencies.workflow.create(deterministicId, payloadFrom(claimed));
-      if (
-        created === "already_exists" &&
-        (await dependencies.workflow.get(deterministicId)) === "missing"
-      ) {
-        throw new Error("workflow identity did not converge");
-      }
-    }
+    await dependencies.workflow.create(deterministicId, payloadFrom(claimed));
     const completed = await dependencies.store.completeOutbox(
       outboxId,
       dependencies.workerId,

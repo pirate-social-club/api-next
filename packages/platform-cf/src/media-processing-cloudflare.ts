@@ -17,10 +17,12 @@ export interface CloudflareMediaWorkflowBinding {
       readonly payload: MediaProcessingWorkflowPayload;
     }) => Promise<void>;
   }>;
-  readonly create: (options: {
-    readonly id: string;
-    readonly params: MediaProcessingWorkflowPayload;
-  }) => Promise<unknown>;
+  readonly createBatch: (
+    options: readonly {
+      readonly id: string;
+      readonly params: MediaProcessingWorkflowPayload;
+    }[],
+  ) => Promise<readonly unknown[]>;
 }
 
 export interface CloudflareMediaQueueMessage {
@@ -46,8 +48,8 @@ async function workflowIsPresent(
 
 /**
  * Wraps the Cloudflare Workflow binding without exposing platform types to the
- * application layer. A failed create is converged through get because create
- * rejects when a retained deterministic instance id already exists.
+ * application layer. Cloudflare's createBatch is idempotent: a retained
+ * deterministic instance id is skipped rather than rejected.
  */
 export function makeCloudflareMediaProcessingWorkflowLauncher(
   binding: CloudflareMediaWorkflowBinding,
@@ -63,18 +65,10 @@ export function makeCloudflareMediaProcessingWorkflowLauncher(
       }
     },
     create: async (instanceId, payload) => {
-      try {
-        await binding.create({ id: instanceId, params: payload });
-        return "created";
-      } catch (createError) {
-        try {
-          if (await workflowIsPresent(binding, instanceId)) return "already_exists";
-          throw createError;
-        } catch (getError) {
-          if (!isMissingInstanceError(getError)) throw getError;
-          throw createError;
-        }
-      }
+      const created = await binding.createBatch([{ id: instanceId, params: payload }]);
+      if (created.length === 1) return "created";
+      if (created.length === 0) return "already_exists";
+      throw new Error("Workflow createBatch returned an unexpected instance count");
     },
     notify: async (instanceId, eventType, payload) => {
       const instance = await binding.get(instanceId);
