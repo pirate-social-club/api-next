@@ -5,10 +5,10 @@
   "version": "0.26.0",
   "releaseType": "community-moderation-owner-runtime-v2",
   "wireContract": "spec-010-sections-4.1-and-7-owner-only-mvp",
-  "sourceCommit": "f7d9fb2",
+  "sourceCommit": "251c115",
   "artifact": {
     "path": "artifacts/api-client/pirate-api-client-0.26.0.tgz",
-    "sha256": "f1d89dae4e10bd1b6bf03151602555255bdad1db0db3754800f08ae91fdd02bd",
+    "sha256": "dacafe7f13823414f0adbd518cf603ca582b7e416e651dcf5bc3d9110928132a",
     "contents": [
       "package/package.json",
       "package/src/generated/client.ts",
@@ -17,8 +17,8 @@
     ]
   },
   "provenance": {
-    "sourceIdentifier": "api-next-contracts@7a326c9b54e3fff1a00925e71bb80c88d7b2c2c696a40b33041acc9b78a89d83",
-    "openapiSha256": "7a326c9b54e3fff1a00925e71bb80c88d7b2c2c696a40b33041acc9b78a89d83",
+    "sourceIdentifier": "api-next-contracts@39b52b77311c9221b5f343ebb45f0d57f16216cf665665f87d1d1fd53fea8f59",
+    "openapiSha256": "39b52b77311c9221b5f343ebb45f0d57f16216cf665665f87d1d1fd53fea8f59",
     "clientSha256": "f1db58f66c37479e75c0a11169ddab6e4abe739c143c6ec121b1abbb69ca6780"
   },
   "verification": {
@@ -28,10 +28,10 @@
       "baselineCommit": "84c8104",
       "reason": "Ratified spec 010 replaces the frozen V1 moderation action wire with TextModerationActionV2 and adds the owner-only moderation surface."
     },
-    "focusedRuntimeTests": "18 passed",
-    "postgresModerationSuite": "4 passed",
+    "focusedRuntimeTests": "18 text moderation and 29 media contract/application/handler tests passed",
+    "postgresModerationSuite": "4 text moderation and 28 media persistence tests passed",
     "workerdFocusedSuites": "15 passed",
-    "fullUnitSuite": "1976 passed, 297 database-gated tests skipped, 0 failed",
+    "fullUnitSuite": "1974 passed, 297 database-gated tests skipped, 0 failed",
     "fullWorkerdSuite": "90 passed, 0 failed",
     "postgres17Suite": "259 passed, 3 intentional skips, 0 failed; 27 completion sentinels verified",
     "wranglerDryRuns": "jobs-worker and http-worker passed",
