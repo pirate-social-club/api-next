@@ -9,6 +9,9 @@ const contentRepository = await Bun.file(
 const textSubmissionRepository = await Bun.file(
   new URL("./text-submission-repository.ts", import.meta.url),
 ).text();
+const communityModerationRepository = await Bun.file(
+  new URL("./community-moderation-repository.ts", import.meta.url),
+).text();
 
 describe("optional-route-v2 migration authority", () => {
   test("pins generated-id creation to one human requirement and no namespace requirement", () => {
@@ -68,6 +71,10 @@ describe("optional-route-v2 migration authority", () => {
     expect(contentRepository).not.toContain("effective_active_route");
     expect(textSubmissionRepository).toContain("SELECT active_community_effect($1, $2) AS allowed");
     expect(textSubmissionRepository).not.toContain("effective_active_route");
-    expect(textSubmissionRepository).toContain("moderation-action.approve.active-community-effect");
+    expect(communityModerationRepository).toContain("community-moderation.approve-author-effect");
+    expect(communityModerationRepository).toContain(
+      "SELECT active_community_effect($1, $2) AS allowed",
+    );
+    expect(communityModerationRepository).not.toContain("effective_active_route");
   });
 });

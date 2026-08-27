@@ -9,11 +9,7 @@ import {
   ReplyDepthExceeded,
 } from "@pirate/contracts";
 import { Effect, Schema } from "effect";
-import type {
-  CommentReportReasonCode,
-  ModerationAction,
-  TextPostRepositoryFailure,
-} from "../../ports.ts";
+import type { CommentReportReasonCode, TextPostRepositoryFailure } from "../../ports.ts";
 import { type M2Actor, TextPostRepositoryError, type TextPostStore } from "../../ports.ts";
 import { canonicalBodyHash, validateHumanDirectActor, validateIdentifier } from "./common.ts";
 
@@ -22,12 +18,6 @@ type CommentReportResponse = Readonly<{
   readonly report_id: string;
   readonly case_ref: string;
   readonly status: "open" | "coalesced";
-}>;
-type ModerationCaseActionResponse = Readonly<{
-  readonly action_id: string;
-  readonly case_ref: string;
-  readonly action: ModerationAction;
-  readonly target_status: "held" | "published" | "hidden" | "removed";
 }>;
 const ReportBody = Schema.Struct({
   idempotency_key: Schema.String,
@@ -41,23 +31,13 @@ const ReportBody = Schema.Struct({
     "other",
   ]),
 });
-const ActionBody = Schema.Struct({
-  idempotency_key: Schema.String,
-  action: Schema.Literals(["approve", "dismiss", "hide", "remove", "restore"]),
-});
 
 export type ReportCommentInput = Readonly<{
   readonly commentId: string;
   readonly actor: M2Actor;
   readonly body: unknown;
 }>;
-export type ModerateCaseActionInput = Readonly<{
-  readonly caseRef: string;
-  readonly actor: M2Actor;
-  readonly body: unknown;
-}>;
-
-const decode = (schema: typeof ReportBody | typeof ActionBody, input: unknown) =>
+const decode = (schema: typeof ReportBody, input: unknown) =>
   Effect.try({
     try: () => Schema.decodeUnknownSync(schema, exactParseOptions)(input),
     catch: () => new BadRequest({ message: "Invalid moderation request body" }),
@@ -139,48 +119,4 @@ export const reportComment = Effect.fn("reportComment")(function* (
     })
     .pipe(Effect.mapError((failure) => mapReportFailure(failure, input.commentId)));
   return { report_id: outcome.reportId, case_ref: outcome.caseRef, status: outcome.status };
-});
-
-export const moderateCaseAction = Effect.fn("moderateCaseAction")(function* (
-  input: ModerateCaseActionInput,
-  services: { readonly textPostStore?: TextPostStore["Service"] },
-): Effect.fn.Return<
-  ModerationCaseActionResponse,
-  | BadRequest
-  | CommentsLocked
-  | Conflict
-  | IdempotencyConflict
-  | InternalError
-  | MembershipRequired
-  | NotFound
-  | ReplyDepthExceeded
-> {
-  const store = services.textPostStore;
-  if (store?.moderateCaseAction === undefined)
-    return yield* new NotFound({ message: "Moderation case not found" });
-  yield* validateIdentifier(input.caseRef, "Invalid moderation case identifier");
-  yield* validateHumanDirectActor(input.actor);
-  const body = (yield* decode(ActionBody, input.body)) as Schema.Schema.Type<typeof ActionBody>;
-  if (body.idempotency_key.trim() === "")
-    return yield* new BadRequest({ message: "An idempotency key is required" });
-  const requestHash = yield* canonicalBodyHash({
-    endpoint: "POST /moderation/cases/:caseRef/actions",
-    case_ref: input.caseRef,
-    body,
-  });
-  const outcome = yield* store
-    .moderateCaseAction({
-      caseRef: input.caseRef,
-      actor: input.actor,
-      idempotencyKey: body.idempotency_key,
-      action: body.action as ModerationAction,
-      requestHash,
-    })
-    .pipe(Effect.mapError((failure) => mapFailure(failure, input.caseRef)));
-  return {
-    action_id: outcome.actionId,
-    case_ref: outcome.caseRef,
-    action: outcome.action,
-    target_status: outcome.targetStatus,
-  };
 });
