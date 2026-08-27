@@ -73,6 +73,10 @@
   ],
   "cleanBreakOperations": [
     {
+      "operationId": "post_moderationCasesCaseRefActions",
+      "reason": "2026-08-27 owner-ratified spec 010 sections 4.1 and 7 clean break: V1 moderation actions remain replay-only from durable bytes while fresh commands require TextModerationActionV2, expected_case_revision, and owner-ledger authority."
+    },
+    {
       "operationId": "post_communityCreationIntents",
       "reason": "2026-08-24 account/persona amendment to the optional-route v2 clean break: creation requires one active owned persona_id in the route-free draft, freezes it into idempotency, and projects only the public owner persona while private account authority remains server-derived."
     },
