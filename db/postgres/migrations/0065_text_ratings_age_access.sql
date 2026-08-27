@@ -227,9 +227,6 @@ BEGIN
      WHERE parent.community_id = NEW.community_id
        AND parent.comment_id = NEW.parent_comment_id;
   END IF;
-  IF parent_rating IS NULL THEN
-    RAISE EXCEPTION 'comment rating requires a text parent';
-  END IF;
   IF parent_rating = 'adult_18' THEN
     NEW.content_rating := 'adult_18';
   END IF;
