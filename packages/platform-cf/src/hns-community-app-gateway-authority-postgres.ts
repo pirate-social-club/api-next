@@ -24,6 +24,7 @@ export function makePostgresHnsCommunityAppGatewayAuthorityV1(
 ): HnsCommunityAppGatewayPostgresAuthorityV1 {
   const authoritySource = makeControlPlaneHnsCommunityAppHostAuthoritySource(
     makeReadOnlyPostgresControlPlaneLayer(connectionString, options),
+    { authority_schema: "api_next" },
   );
   return Object.freeze({
     authority_source: authoritySource,

@@ -248,7 +248,12 @@ export interface HnsFirstPartyHostPersistenceRepositoryV1 {
 
 export function makeControlPlaneHnsFirstPartyHostPersistenceRepository(
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+  options: Readonly<{ authority_schema?: "api_next" }> = {},
 ): HnsFirstPartyHostPersistenceRepositoryV1 {
+  const authorityResolver =
+    options.authority_schema === "api_next"
+      ? "api_next.resolve_hns_community_app_host_authority_v1"
+      : "resolve_hns_community_app_host_authority_v1";
   const execute = <A>(
     statement: Readonly<{
       label: string;
@@ -422,7 +427,7 @@ export function makeControlPlaneHnsFirstPartyHostPersistenceRepository(
           const db = yield* ControlPlaneDb;
           const result = yield* db.execute<Row>({
             label: "hns.hosts.community-app.resolve-authority",
-            text: "SELECT * FROM resolve_hns_community_app_host_authority_v1($1, clock_timestamp())",
+            text: `SELECT * FROM ${authorityResolver}($1, clock_timestamp())`,
             values: [normalizedHost],
             readonly: true,
           });
@@ -435,7 +440,8 @@ export function makeControlPlaneHnsFirstPartyHostPersistenceRepository(
 
 export function makeControlPlaneHnsCommunityAppHostAuthoritySource(
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+  options: Readonly<{ authority_schema?: "api_next" }> = {},
 ): HnsForwarderGatewayAuthoritySourceV1 & HnsForwarderWorkerAuthoritySourceV1 {
-  const repository = makeControlPlaneHnsFirstPartyHostPersistenceRepository(runtime);
+  const repository = makeControlPlaneHnsFirstPartyHostPersistenceRepository(runtime, options);
   return Object.freeze({ resolve: repository.resolveCommunityAppHost });
 }
