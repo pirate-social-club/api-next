@@ -50,6 +50,7 @@ describe("comments and replies contracts", () => {
     const schema = schemaToOpenApi(requestBody);
     expect(schema.required).toEqual(["idempotency_key", "persona_id", "body"]);
     expect(Object.keys(schemaProperties(requestBody)).sort()).toEqual([
+      "author_declared_rating",
       "body",
       "idempotency_key",
       "persona_id",

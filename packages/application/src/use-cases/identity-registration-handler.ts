@@ -55,6 +55,11 @@ type RegistrationFailure = AuthError | BadRequest | Conflict | InternalError | R
 
 type RegistrationRequest = {
   readonly privy_access_token: string;
+  readonly minimum_age_attestation: {
+    readonly version: "minimum-age-attestation-v1";
+    readonly minimum_age: 16;
+    readonly affirmed: true;
+  };
 };
 
 type RegistrationResponse = Schema.Schema.Type<typeof RegisterIdentity.response>;
@@ -73,7 +78,9 @@ const decodeRequest = (input: unknown): RegistrationRequest => {
     if (
       typeof input !== "object" ||
       input === null ||
-      Object.keys(input).some((key) => key !== "privy_access_token")
+      Object.keys(input).some(
+        (key) => key !== "privy_access_token" && key !== "minimum_age_attestation",
+      )
     ) {
       throw new Error("unexpected registration fields");
     }
@@ -175,7 +182,11 @@ export const registerIdentityRequest = Effect.fn("registerIdentityRequest")(func
   }
 
   const registration = yield* registerIdentity(
-    { providerAppId: services.providerAppId, providerSubject: verified.sourceUserId },
+    {
+      providerAppId: services.providerAppId,
+      providerSubject: verified.sourceUserId,
+      minimumAgeAttestation: request.minimum_age_attestation,
+    },
     services.registration,
   ).pipe(Effect.mapError(safeFailure));
   const account = yield* Effect.try({

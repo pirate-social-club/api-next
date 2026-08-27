@@ -53,6 +53,7 @@
     "./use-cases/content/text-post": "./src/use-cases/content/text-post.ts",
     "./use-cases/identity-account": "./src/use-cases/identity-account.ts",
     "./use-cases/current-user": "./src/use-cases/current-user.ts",
+    "./use-cases/age-access": "./src/use-cases/age-access.ts",
     "./use-cases/feed/home-feed": "./src/use-cases/feed/home-feed.ts",
     "./use-cases/feed/public-community-threads": "./src/use-cases/feed/public-community-threads.ts",
     "./use-cases/handles/sales": "./src/use-cases/handles/sales.ts",

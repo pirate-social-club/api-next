@@ -43,6 +43,11 @@ export interface IdentityRegistrationStore {
     readonly credentialId: string;
     readonly userId: string;
     readonly account: IdentityAccountDocument;
+    readonly minimumAgeAttestation: {
+      readonly version: "minimum-age-attestation-v1";
+      readonly minimum_age: 16;
+      readonly affirmed: true;
+    };
   }) => Effect.Effect<IdentityRegistrationStoreOutcome, IdentityRegistrationStoreFailure>;
   readonly getFirstPersonaWalletPreparation: (
     accountId: string,
@@ -179,7 +184,15 @@ export function makeUnverifiedIdentityAccount(
 }
 
 export const registerIdentity = Effect.fn("registerIdentity")(function* (
-  input: { readonly providerAppId: string; readonly providerSubject: string },
+  input: {
+    readonly providerAppId: string;
+    readonly providerSubject: string;
+    readonly minimumAgeAttestation: {
+      readonly version: "minimum-age-attestation-v1";
+      readonly minimum_age: 16;
+      readonly affirmed: true;
+    };
+  },
   services: IdentityRegistrationServices,
 ): Effect.fn.Return<
   {
@@ -210,6 +223,7 @@ export const registerIdentity = Effect.fn("registerIdentity")(function* (
         credentialId: candidate.credentialId,
         userId: candidate.userId,
         account: makeUnverifiedIdentityAccount(candidate),
+        minimumAgeAttestation: input.minimumAgeAttestation,
       })
       .pipe(Effect.mapError((error) => new IdentityRegistrationFailed({ reason: error.reason })));
 

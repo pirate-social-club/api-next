@@ -217,6 +217,7 @@ const listTextPostsStatement = (input: {
   readonly communityId: string;
   readonly snapshotMillis: number;
   readonly cursor: ThreadsCursor | null;
+  readonly viewerUserId?: string;
 }) => ({
   label: "public-community-threads.posts.list-text",
   text: `SELECT p.post_id,
@@ -245,6 +246,7 @@ const listTextPostsStatement = (input: {
             AND p.post_type = 'text'
             AND p.status = 'published'
             AND p.visibility = 'public'
+            AND can_account_view_content_rating_v1($6, p.content_rating)
             AND p.created_at <= to_timestamp($2::double precision / 1000)
             AND (
               $3::double precision IS NULL
@@ -261,6 +263,7 @@ const listTextPostsStatement = (input: {
     input.cursor?.created ?? null,
     input.cursor?.postId ?? null,
     PAGE_SIZE + 1,
+    input.viewerUserId ?? null,
   ],
   readonly: true,
 });
@@ -419,7 +422,12 @@ export function makeControlPlanePublicCommunityThreadsRepository(
         }
 
         const posts = yield* db.execute<Row>(
-          listTextPostsStatement({ communityId: preview.id, snapshotMillis, cursor }),
+          listTextPostsStatement({
+            communityId: preview.id,
+            snapshotMillis,
+            cursor,
+            ...(input.viewerUserId === undefined ? {} : { viewerUserId: input.viewerUserId }),
+          }),
         );
         const selected = posts.rows.slice(0, PAGE_SIZE);
         const items = selected.map((row) =>

@@ -21,6 +21,16 @@ const candidate = (suffix: string): IdentityRegistrationCandidate => ({
   createdAt: "2026-08-19T00:00:00.000Z",
 });
 
+const registrationInput = (providerSubject: string) => ({
+  providerAppId: "privy-staging",
+  providerSubject,
+  minimumAgeAttestation: {
+    version: "minimum-age-attestation-v1" as const,
+    minimum_age: 16 as const,
+    affirmed: true as const,
+  },
+});
+
 const failureOf = <A, E>(exit: Exit.Exit<A, E>): E => {
   if (!Exit.isFailure(exit)) throw new Error("expected failure");
   const failure = Cause.findError(exit.cause);
@@ -62,10 +72,7 @@ describe("identity registration use case", () => {
       },
     };
     const result = await Effect.runPromise(
-      registerIdentity(
-        { providerAppId: "privy-staging", providerSubject: "did:privy:one" },
-        services,
-      ),
+      registerIdentity(registrationInput("did:privy:one"), services),
     );
     expect(result).toEqual({
       status: "created",
@@ -87,24 +94,21 @@ describe("identity registration use case", () => {
     let candidateCalls = 0;
     let storeCalls = 0;
     const result = await Effect.runPromiseExit(
-      registerIdentity(
-        { providerAppId: "privy-staging", providerSubject: "did:privy:collision" },
-        {
-          candidates: {
-            next: () => {
-              candidateCalls += 1;
-              return Effect.succeed(candidate(String(candidateCalls)));
-            },
-          },
-          store: {
-            getFirstPersonaWalletPreparation: () => Effect.succeed(null),
-            registerCredential: () => {
-              storeCalls += 1;
-              return Effect.succeed({ kind: "candidate_collision", field: "handle" });
-            },
+      registerIdentity(registrationInput("did:privy:collision"), {
+        candidates: {
+          next: () => {
+            candidateCalls += 1;
+            return Effect.succeed(candidate(String(candidateCalls)));
           },
         },
-      ),
+        store: {
+          getFirstPersonaWalletPreparation: () => Effect.succeed(null),
+          registerCredential: () => {
+            storeCalls += 1;
+            return Effect.succeed({ kind: "candidate_collision", field: "handle" });
+          },
+        },
+      }),
     );
     expect(failureOf(result)).toEqual(
       new IdentityRegistrationExhausted({ attempts: MAX_IDENTITY_REGISTRATION_ATTEMPTS }),
@@ -116,44 +120,38 @@ describe("identity registration use case", () => {
   test("fails immediately for tombstones and invalid generated handles", async () => {
     let tombstoneCalls = 0;
     const tombstone = await Effect.runPromiseExit(
-      registerIdentity(
-        { providerAppId: "privy-staging", providerSubject: "did:privy:tombstoned" },
-        {
-          candidates: { next: () => Effect.succeed(candidate("tombstone")) },
-          store: {
-            getFirstPersonaWalletPreparation: () => Effect.succeed(null),
-            registerCredential: () => {
-              tombstoneCalls += 1;
-              return Effect.succeed({ kind: "tombstoned" });
-            },
+      registerIdentity(registrationInput("did:privy:tombstoned"), {
+        candidates: { next: () => Effect.succeed(candidate("tombstone")) },
+        store: {
+          getFirstPersonaWalletPreparation: () => Effect.succeed(null),
+          registerCredential: () => {
+            tombstoneCalls += 1;
+            return Effect.succeed({ kind: "tombstoned" });
           },
         },
-      ),
+      }),
     );
     expect(failureOf(tombstone)).toBeInstanceOf(IdentityCredentialTombstoned);
     expect(tombstoneCalls).toBe(1);
 
     let invalidStoreCalls = 0;
     const invalid = await Effect.runPromiseExit(
-      registerIdentity(
-        { providerAppId: "privy-staging", providerSubject: "did:privy:invalid" },
-        {
-          candidates: {
-            next: () => Effect.succeed({ ...candidate("invalid"), handleLabel: "admin.pirate" }),
-          },
-          store: {
-            getFirstPersonaWalletPreparation: () => Effect.succeed(null),
-            registerCredential: () => {
-              invalidStoreCalls += 1;
-              return Effect.succeed({
-                kind: "created",
-                canonicalUserId: "impossible",
-                account: makeUnverifiedIdentityAccount(candidate("invalid")),
-              });
-            },
+      registerIdentity(registrationInput("did:privy:invalid"), {
+        candidates: {
+          next: () => Effect.succeed({ ...candidate("invalid"), handleLabel: "admin.pirate" }),
+        },
+        store: {
+          getFirstPersonaWalletPreparation: () => Effect.succeed(null),
+          registerCredential: () => {
+            invalidStoreCalls += 1;
+            return Effect.succeed({
+              kind: "created",
+              canonicalUserId: "impossible",
+              account: makeUnverifiedIdentityAccount(candidate("invalid")),
+            });
           },
         },
-      ),
+      }),
     );
     expect(failureOf(invalid)).toEqual(
       new IdentityRegistrationFailed({ reason: "invalid-candidate" }),
@@ -164,21 +162,18 @@ describe("identity registration use case", () => {
   test("preserves identity inconsistency separately from storage failure", async () => {
     let storeCalls = 0;
     const result = await Effect.runPromiseExit(
-      registerIdentity(
-        { providerAppId: "privy-staging", providerSubject: "did:privy:inconsistent" },
-        {
-          candidates: { next: () => Effect.succeed(candidate("inconsistent")) },
-          store: {
-            getFirstPersonaWalletPreparation: () => Effect.succeed(null),
-            registerCredential: () => {
-              storeCalls += 1;
-              return Effect.fail(
-                new IdentityRegistrationStoreFailure({ reason: "identity-conflict" }),
-              );
-            },
+      registerIdentity(registrationInput("did:privy:inconsistent"), {
+        candidates: { next: () => Effect.succeed(candidate("inconsistent")) },
+        store: {
+          getFirstPersonaWalletPreparation: () => Effect.succeed(null),
+          registerCredential: () => {
+            storeCalls += 1;
+            return Effect.fail(
+              new IdentityRegistrationStoreFailure({ reason: "identity-conflict" }),
+            );
           },
         },
-      ),
+      }),
     );
     expect(failureOf(result)).toEqual(
       new IdentityRegistrationFailed({ reason: "identity-conflict" }),

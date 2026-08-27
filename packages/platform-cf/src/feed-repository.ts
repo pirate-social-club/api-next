@@ -347,6 +347,8 @@ const homeFeedStatement = (input: {
                ON c.community_id = h.community_id
             WHERE c.status = 'active'
               AND p.status = 'published'
+              AND (p.post_type <> 'text'
+                OR can_account_view_content_rating_v1($1, p.content_rating))
               AND ($2::double precision IS NULL OR EXTRACT(EPOCH FROM p.created_at) >= $2)
               AND (
                 p.visibility = 'public'

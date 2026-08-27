@@ -185,6 +185,11 @@ suite("Postgres 17 identity repository", () => {
                 providerSubject: "did:privy:concurrent",
                 credentialId: `credential-${suffix}`,
                 userId: `user-${suffix}`,
+                minimumAgeAttestation: {
+                  version: "minimum-age-attestation-v1",
+                  minimum_age: 16,
+                  affirmed: true,
+                },
                 account: account(
                   `user-${suffix}`,
                   `handle-${suffix}`,

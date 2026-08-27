@@ -42,6 +42,7 @@ const CommentReplyBody = Schema.Struct({
   idempotency_key: Schema.String,
   persona_id: PersonaIdV1,
   body: Schema.String,
+  author_declared_rating: Schema.optional(Schema.Literals(["general", "adult_18"])),
 });
 
 export type CreateCommentReplyInput = Readonly<{
@@ -258,6 +259,7 @@ export const createCommentReply = Effect.fn("createCommentReply")(function* (
         inputSha256: canonical.sha256,
         store: services.textPostStoreV2,
         provider: moderationProvider,
+        authorDeclaredRating: body.author_declared_rating ?? "general",
       }).pipe(Effect.mapError(mapStoreFailure));
       evaluation = evaluated.evaluation;
       restrictedEvidence = evaluated.restrictedEvidence;

@@ -1,5 +1,11 @@
 import { Effect, Schema } from "effect";
+import {
+  GetMyAgeCapability,
+  MinimumAgeAttestationV1,
+  PutMyMinimumAgeAttestation,
+} from "./age-access.ts";
 import { Auth } from "./auth.ts";
+import { ContentRatingV1 } from "./community-moderation-policy.ts";
 import {
   GetCommunityModerationCapabilities,
   GetCommunityModerationCase,
@@ -680,6 +686,7 @@ const CreatePostCommon = {
   body: Schema.optional(Schema.NullOr(Schema.String)),
   visibility: Schema.optional(Schema.Literals(["public", "members_only"])),
   title: Schema.optional(Schema.NullOr(Schema.String)),
+  author_declared_rating: Schema.optional(ContentRatingV1),
 };
 
 const CreatePostRequest = Schema.Struct({ ...CreatePostCommon, post_type: Schema.Literal("text") });
@@ -1158,6 +1165,7 @@ const TextCommentReplyRequestV1 = Schema.Struct({
   idempotency_key: Schema.String,
   persona_id: PersonaIdV1,
   body: Schema.String,
+  author_declared_rating: Schema.optional(ContentRatingV1),
 });
 
 const Jwk = Schema.Struct({
@@ -1189,7 +1197,12 @@ export const RegisterIdentity = endpoint({
   method: "POST",
   path: "/auth/register",
   auth: Auth.public(),
-  request: { body: Schema.Struct({ privy_access_token: Schema.String }) },
+  request: {
+    body: Schema.Struct({
+      privy_access_token: Schema.String,
+      minimum_age_attestation: MinimumAgeAttestationV1,
+    }),
+  },
   response: Schema.Union([
     SessionExchangeResponse,
     Schema.Struct({
@@ -1699,6 +1712,8 @@ export const v1Registry = {
   SessionExchange,
   RegisterIdentity,
   SessionLogout,
+  GetMyAgeCapability,
+  PutMyMinimumAgeAttestation,
   GetCurrentUser,
   GetMyProfile,
   GetPublicProfileByHandle,

@@ -11,6 +11,7 @@ export {
   makeControlPlaneActivityQualificationRepository,
   makeControlPlaneActivityQualificationStore,
 } from "./activity-qualification-repository";
+export * from "./age-access-repository.ts";
 export {
   type AlertSinkBindings,
   AlertSinkConfigurationError,

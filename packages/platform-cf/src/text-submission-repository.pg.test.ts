@@ -51,7 +51,6 @@ const cutoverMigrationIndex = migrations.findIndex(
 );
 if (cutoverMigrationIndex < 1) throw new Error("OpenAI moderation cutover migration is missing");
 const historicalV1Migrations = migrations.slice(0, cutoverMigrationIndex);
-
 afterEach(() => {
   completedTestCount += 1;
 });
@@ -74,6 +73,7 @@ const body = {
   body: "terminal text",
 } as CreatePostBody;
 const policyHash = "b0a8fd06312d7f9a99d7100633bc03fafc44b16aae5340899d290f54cb64df9d";
+const policyRevision = "text-moderation-policy-v1";
 const input = {
   version: "text-moderation-input-v1" as const,
   surface: "text_post" as const,
@@ -90,7 +90,7 @@ const evaluation: TextPostModerationEvaluation = {
   surface: "text_post",
   decision: "allow",
   reason_codes: [],
-  policy_revision: "text-moderation-policy-v1",
+  policy_revision: policyRevision,
   policy_hash: policyHash,
   input_sha256: inputSha,
   evidence_ref: null,
@@ -117,7 +117,7 @@ const commentEvaluation: TextPostModerationEvaluation = {
   surface: "comment",
   decision: "allow",
   reason_codes: [],
-  policy_revision: "text-moderation-policy-v1",
+  policy_revision: policyRevision,
   policy_hash: policyHash,
   input_sha256: commentInputSha,
   evidence_ref: null,
@@ -834,7 +834,7 @@ suite("Postgres 17 terminal text submission repository", () => {
          (SELECT count(*)::int FROM text_moderation_cases) AS cases`,
       );
       expect(counts.rows[0]).toEqual({ submissions: 1, posts: 0, feed: 0, held: 1, cases: 1 });
-    });
+    }, historicalV1Migrations);
   }, 30_000);
 
   test("publishes posts and comments without a namespace binding", async () => {

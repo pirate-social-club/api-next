@@ -28,7 +28,7 @@ let completedTestCount = 0;
 const migrations = await loadPostgresMigrations();
 const foundationMigrationVersion = "0059_community_moderation_authority_policy.sql";
 const cutoverMigrationVersion = "0061_openai_moderation_driver_cutover.sql";
-const runtimeMigrationVersion = "0063_community_moderation_owner_runtime.sql";
+const runtimeMigrationVersion = "0065_text_ratings_age_access.sql";
 const foundationMigrationIndex = migrations.findIndex(
   (migration) => migration.version === foundationMigrationVersion,
 );
@@ -884,6 +884,14 @@ suite("community moderation authority and policy migration", () => {
       const postId = published.rows[0]?.published_post_id;
       expect(postId).toBeString();
       if (postId === undefined) throw new Error("approved post was not persisted");
+      await expect(
+        admin.query(
+          "SELECT author_declared_rating, content_rating FROM posts WHERE community_id = $1 AND post_id = $2",
+          ["moderation-runtime", postId],
+        ),
+      ).resolves.toMatchObject({
+        rows: [{ author_declared_rating: "general", content_rating: "general" }],
+      });
 
       const firstReport = await Effect.runPromise(
         store.reportTarget({
@@ -944,7 +952,7 @@ suite("community moderation authority and policy migration", () => {
         [approved.action_id],
       );
       expect(audit.rows[0]).toMatchObject({
-        resolved_age_capability: "unavailable_owner_only_mvp",
+        resolved_age_capability: "general",
       });
       expect(audit.rows[0]?.presenting_persona_id).toBeString();
       expect(audit.rows[0]?.owner_role_assignment_id).toBeString();

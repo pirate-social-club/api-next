@@ -122,7 +122,14 @@ describe("registration Durable Object limiters", () => {
     };
 
     const input = {
-      body: { privy_access_token: "workerd-proof" },
+      body: {
+        privy_access_token: "workerd-proof",
+        minimum_age_attestation: {
+          version: "minimum-age-attestation-v1" as const,
+          minimum_age: 16 as const,
+          affirmed: true as const,
+        },
+      },
       edgeClientIp: "198.51.100.23",
     };
     for (let attempt = 0; attempt < 5; attempt += 1) {

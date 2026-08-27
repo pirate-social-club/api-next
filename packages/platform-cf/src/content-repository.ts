@@ -922,8 +922,11 @@ export function makeControlPlaneContentRepository(): ContentRepository {
                           public_persona_projection(author_persona_id) AS author_persona,
                           post_type,status,visibility,title,body,
                           comments_locked, created_at
-                   FROM posts WHERE community_id = $1 AND post_id = $2`,
-            values: [communityId, postId],
+                   FROM posts
+                  WHERE community_id = $1 AND post_id = $2
+                    AND (post_type <> 'text'
+                      OR can_account_view_content_rating_v1($3, content_rating))`,
+            values: [communityId, postId, viewerUserId],
             readonly: true,
           });
           const row = yield* oneRow(result.rows, "get-post");

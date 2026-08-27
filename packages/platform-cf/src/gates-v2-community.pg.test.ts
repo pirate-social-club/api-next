@@ -119,7 +119,7 @@ async function insertCompletedEvidence(
         requested_claim_ids, subject_binding_intent, started_at, expires_at,
         upstream_session_ref
       ) VALUES (
-        'proof-age', 'user-a', 'intent-age', repeat('a', 64), 'zkpassport',
+        'proof-age', 'user-a', 'platform.document.age-18', repeat('a', 64), 'zkpassport',
         'managed', 'community-age', '1', 'document', 'zkpassport',
         'issuer_rp_scope', 'pirate-social', NULL, 'curated', 'gates-v2', 'test', 'pending',
         $1::jsonb, $2::jsonb, 'establish', clock_timestamp(),
@@ -554,6 +554,9 @@ suite("Gates v2 curated age community vertical", () => {
     await withSchema(async (connection, admin) => {
       await prepareCommunity(connection, "community-pass");
       await insertCompletedEvidence(admin, { age: "18" });
+      await expect(
+        admin.query("SELECT current_account_age_capability_v1('user-a') AS capability"),
+      ).resolves.toMatchObject({ rows: [{ capability: "adult_18" }] });
 
       await expect(
         runStore(connection, (store) =>
@@ -742,6 +745,9 @@ suite("Gates v2 curated age community vertical", () => {
     await withSchema(async (connection, admin) => {
       await prepareCommunity(connection, "community-expired");
       await insertCompletedEvidence(admin, { age: "18", expired: true });
+      await expect(
+        admin.query("SELECT current_account_age_capability_v1('user-a') AS capability"),
+      ).resolves.toMatchObject({ rows: [{ capability: "general" }] });
       await expect(
         runStore(connection, (store) =>
           store.join({

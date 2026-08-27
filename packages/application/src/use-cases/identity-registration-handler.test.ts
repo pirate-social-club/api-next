@@ -13,6 +13,15 @@ import {
   registerIdentityRequest,
 } from "./identity-registration-handler.ts";
 
+const registrationBody = (privy_access_token: string) => ({
+  privy_access_token,
+  minimum_age_attestation: {
+    version: "minimum-age-attestation-v1" as const,
+    minimum_age: 16 as const,
+    affirmed: true as const,
+  },
+});
+
 const candidate: IdentityRegistrationCandidate = {
   credentialId: "credential-1",
   userId: "user-1",
@@ -71,7 +80,7 @@ describe("identity registration HTTP use case", () => {
     const configured = services();
     const result = await Effect.runPromise(
       registerIdentityRequest(
-        { body: { privy_access_token: "access-token" }, edgeClientIp: "203.0.113.8" },
+        { body: registrationBody("access-token"), edgeClientIp: "203.0.113.8" },
         services({
           registration: {
             candidates: configured.registration.candidates,
@@ -116,7 +125,7 @@ describe("identity registration HTTP use case", () => {
   test("creates an account and mints the browser session", async () => {
     const result = await Effect.runPromise(
       registerIdentityRequest(
-        { body: { privy_access_token: "access-token" }, edgeClientIp: "203.0.113.8" },
+        { body: registrationBody("access-token"), edgeClientIp: "203.0.113.8" },
         services(),
       ),
     );
@@ -126,7 +135,7 @@ describe("identity registration HTTP use case", () => {
   test("returns the same account for an already-registered credential", async () => {
     const result = await Effect.runPromise(
       registerIdentityRequest(
-        { body: { privy_access_token: "access-token" }, edgeClientIp: "203.0.113.8" },
+        { body: registrationBody("access-token"), edgeClientIp: "203.0.113.8" },
         services({
           registration: {
             candidates: { next: () => Effect.succeed(candidate) },
@@ -150,7 +159,7 @@ describe("identity registration HTTP use case", () => {
     let mintCalls = 0;
     const exit = await Effect.runPromiseExit(
       registerIdentityRequest(
-        { body: { privy_access_token: "access-token" }, edgeClientIp: "203.0.113.8" },
+        { body: registrationBody("access-token"), edgeClientIp: "203.0.113.8" },
         services({
           productReadiness: { isReady: () => Effect.succeed(false) },
           tokenMinter: {
@@ -171,7 +180,7 @@ describe("identity registration HTTP use case", () => {
   test("maps a tombstoned credential to a permanent conflict", async () => {
     const exit = await Effect.runPromiseExit(
       registerIdentityRequest(
-        { body: { privy_access_token: "access-token" }, edgeClientIp: "203.0.113.8" },
+        { body: registrationBody("access-token"), edgeClientIp: "203.0.113.8" },
         services({
           registration: {
             candidates: { next: () => Effect.succeed(candidate) },
@@ -189,7 +198,7 @@ describe("identity registration HTTP use case", () => {
   test("hides identity inconsistency as an internal failure", async () => {
     const exit = await Effect.runPromiseExit(
       registerIdentityRequest(
-        { body: { privy_access_token: "access-token" }, edgeClientIp: "203.0.113.8" },
+        { body: registrationBody("access-token"), edgeClientIp: "203.0.113.8" },
         services({
           registration: {
             candidates: { next: () => Effect.succeed(candidate) },
@@ -209,7 +218,7 @@ describe("identity registration HTTP use case", () => {
     let registrationCalls = 0;
     const exit = await Effect.runPromiseExit(
       registerIdentityRequest(
-        { body: { privy_access_token: "bad" }, edgeClientIp: "203.0.113.8" },
+        { body: registrationBody("bad"), edgeClientIp: "203.0.113.8" },
         services({
           proofVerifier: { verifyPrivy: () => Effect.fail(new Error("invalid proof")) },
           registration: {
@@ -238,7 +247,7 @@ describe("identity registration HTTP use case", () => {
     let proofCalls = 0;
     const exit = await Effect.runPromiseExit(
       registerIdentityRequest(
-        { body: { privy_access_token: "access-token" } },
+        { body: registrationBody("access-token") },
         services({
           proofVerifier: {
             verifyPrivy: () =>
@@ -261,7 +270,7 @@ describe("identity registration HTTP use case", () => {
   test("fails closed on either limiter and rejects identity metadata fields", async () => {
     const limited = await Effect.runPromiseExit(
       registerIdentityRequest(
-        { body: { privy_access_token: "access-token" }, edgeClientIp: "203.0.113.8" },
+        { body: registrationBody("access-token"), edgeClientIp: "203.0.113.8" },
         services({
           rateLimiter: {
             checkIp: () => Effect.fail(new RegistrationLimiterRejected({ retryAfterSeconds: 4 })),
@@ -274,7 +283,7 @@ describe("identity registration HTTP use case", () => {
 
     const unavailable = await Effect.runPromiseExit(
       registerIdentityRequest(
-        { body: { privy_access_token: "access-token" }, edgeClientIp: "203.0.113.8" },
+        { body: registrationBody("access-token"), edgeClientIp: "203.0.113.8" },
         services({
           rateLimiter: {
             checkIp: () => Effect.fail(new RegistrationLimiterUnavailable()),
@@ -288,7 +297,10 @@ describe("identity registration HTTP use case", () => {
     const identityMetadata = await Effect.runPromiseExit(
       registerIdentityRequest(
         {
-          body: { privy_access_token: "access-token", privy_identity_token: "identity-token" },
+          body: {
+            ...registrationBody("access-token"),
+            privy_identity_token: "identity-token",
+          },
           edgeClientIp: "203.0.113.8",
         },
         services(),
