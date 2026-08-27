@@ -349,6 +349,17 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION can_account_view_content_rating_v1(target_account_id text, target_rating text) RETURNS boolean
+    LANGUAGE sql STABLE
+    AS $$
+  SELECT CASE
+    WHEN target_rating = 'general' THEN TRUE
+    WHEN target_rating = 'adult_18' AND target_account_id IS NOT NULL
+      THEN current_account_age_capability_v1(target_account_id) = 'adult_18'
+    ELSE FALSE
+  END;
+$$;
+
 CREATE FUNCTION change_hns_community_app_host_status_v1(input_operation_id text, input_idempotency_key text, input_request_hash text, input_app_host_activation_id text, input_expected_activation_generation bigint, input_target_status text, input_reason_code text) RETURNS TABLE(outcome text, app_host_activation_id text, app_host_activation_generation bigint, status text)
     LANGUAGE plpgsql
     AS $$
@@ -670,6 +681,113 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION current_account_age_capability_v1(target_account_id text) RETURNS text
+    LANGUAGE sql STABLE
+    AS $_$
+  SELECT CASE WHEN EXISTS (
+    SELECT 1
+      FROM assertions AS assertion
+      JOIN evidence_receipts AS receipt
+        ON receipt.evidence_receipt_id = assertion.evidence_receipt_id
+       AND receipt.user_id = assertion.user_id
+      JOIN proof_sessions AS session
+        ON session.proof_session_id = receipt.proof_session_id
+       AND session.actor_id = assertion.user_id
+       AND session.status = 'completed'
+       AND session.completed_at = session.terminal_at
+       AND session.intent_id = 'platform.document.age-18'
+       AND session.method = 'document'
+       AND session.scope_kind = 'issuer_rp_scope'
+       AND session.issuer_rp_scope = 'pirate-social'
+       AND session.issuer_rp_action_scope IS NULL
+       AND session.requested_requirements = '[{"claim_id":"age.minimum","minimum_age":"18"},{"claim_id":"credential.subject_unique"},{"claim_id":"document.valid"}]'::jsonb
+       AND session.requested_claim_ids = '["age.minimum","credential.subject_unique","document.valid"]'::jsonb
+      JOIN assertion_bindings AS binding
+        ON binding.binding_group_id = assertion.binding_group_id
+       AND binding.user_id = assertion.user_id
+       AND binding.binding_mode = 'same_subject'
+       AND binding.subject_key_id = assertion.subject_key_id
+      JOIN active_subject_key_bindings AS active_binding
+        ON active_binding.subject_key_id = assertion.subject_key_id
+       AND active_binding.user_id = assertion.user_id
+       AND active_binding.binding_event_id = binding.subject_binding_event_id
+       AND active_binding.binding_epoch = binding.subject_binding_epoch
+     WHERE assertion.user_id = target_account_id
+       AND assertion.claim_id = 'age.minimum'
+       AND assertion.assurance = 'document_zk'
+       AND receipt.provider_id IN ('self.pass', 'self.enterprise', 'zkpassport')
+       AND receipt.subject_key_id = assertion.subject_key_id
+       AND assertion.assertion_value ? 'minimum_age'
+       AND assertion.assertion_value->>'minimum_age' ~ '^(0|[1-9][0-9]*)$'
+       AND (assertion.assertion_value->>'minimum_age')::NUMERIC >= 18
+       AND (assertion.expires_at IS NULL OR assertion.expires_at > clock_timestamp())
+       AND (receipt.expires_at IS NULL OR receipt.expires_at > clock_timestamp())
+       AND EXISTS (
+         SELECT 1
+           FROM assertions AS credential
+           JOIN evidence_receipts AS credential_receipt
+             ON credential_receipt.evidence_receipt_id = credential.evidence_receipt_id
+            AND credential_receipt.proof_session_id = session.proof_session_id
+            AND credential_receipt.user_id = assertion.user_id
+            AND credential_receipt.subject_key_id = assertion.subject_key_id
+          WHERE credential.user_id = assertion.user_id
+            AND credential.binding_group_id = assertion.binding_group_id
+            AND credential.subject_key_id = assertion.subject_key_id
+            AND credential.claim_id = 'credential.subject_unique'
+            AND credential.assertion_value = '{"subject_unique":true}'::jsonb
+            AND credential.assurance = 'document_zk'
+            AND (credential.expires_at IS NULL OR credential.expires_at > clock_timestamp())
+            AND (credential_receipt.expires_at IS NULL OR credential_receipt.expires_at > clock_timestamp())
+       )
+       AND EXISTS (
+         SELECT 1
+           FROM assertions AS document
+           JOIN evidence_receipts AS document_receipt
+             ON document_receipt.evidence_receipt_id = document.evidence_receipt_id
+            AND document_receipt.proof_session_id = session.proof_session_id
+            AND document_receipt.user_id = assertion.user_id
+            AND document_receipt.subject_key_id = assertion.subject_key_id
+          WHERE document.user_id = assertion.user_id
+            AND document.binding_group_id = assertion.binding_group_id
+            AND document.subject_key_id = assertion.subject_key_id
+            AND document.claim_id = 'document.valid'
+            AND document.assertion_value = '{"valid":true}'::jsonb
+            AND document.assurance = 'document_zk'
+            AND (document.expires_at IS NULL OR document.expires_at > clock_timestamp())
+            AND (document_receipt.expires_at IS NULL OR document_receipt.expires_at > clock_timestamp())
+       )
+       AND NOT EXISTS (
+         SELECT 1
+           FROM LATERAL (
+             SELECT event.outcome
+               FROM assertion_revalidation_events AS event
+              WHERE event.assertion_id = assertion.assertion_id
+                AND event.user_id = assertion.user_id
+           ORDER BY event.observed_at DESC, event.created_at DESC,
+                    event.assertion_revalidation_event_id DESC
+              LIMIT 1
+           ) AS latest
+          WHERE latest.outcome <> 'accepted'
+       )
+       AND NOT EXISTS (
+         SELECT 1
+           FROM assertions AS sibling
+           JOIN LATERAL (
+             SELECT event.outcome
+               FROM assertion_revalidation_events AS event
+              WHERE event.assertion_id = sibling.assertion_id
+                AND event.user_id = sibling.user_id
+           ORDER BY event.observed_at DESC, event.created_at DESC,
+                    event.assertion_revalidation_event_id DESC
+              LIMIT 1
+           ) AS latest ON TRUE
+          WHERE sibling.user_id = assertion.user_id
+            AND sibling.binding_group_id = assertion.binding_group_id
+            AND latest.outcome <> 'accepted'
+       )
+  ) THEN 'adult_18' ELSE 'general' END;
+$_$;
+
 CREATE FUNCTION current_hns_sale_namespace_dependency_v1(input_community_id text, input_namespace_authority_reference text, input_namespace_authority_generation bigint, input_dns_zone_activation_id text, input_dns_zone_activation_generation bigint, database_now timestamp with time zone) RETURNS TABLE(canonical_root text, display_root text, namespace_authority_current boolean, dns_zone_current boolean, dns_delegation_current boolean)
     LANGUAGE sql STABLE
     AS $$
@@ -839,6 +957,20 @@ BEGIN
   END IF;
   RETURN NEW;
 END
+$$;
+
+CREATE FUNCTION default_text_post_rating_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.post_type = 'text' THEN
+    NEW.author_declared_rating := COALESCE(NEW.author_declared_rating, 'general');
+    NEW.content_rating := COALESCE(NEW.content_rating, 'general');
+  ELSIF NEW.author_declared_rating IS NOT NULL OR NEW.content_rating IS NOT NULL THEN
+    RAISE EXCEPTION 'non-text post cannot carry a text content rating';
+  END IF;
+  RETURN NEW;
+END;
 $$;
 
 CREATE FUNCTION effective_active_route(expected_community_id text, database_now timestamp with time zone) RETURNS TABLE(community_id text, route_binding_id text, family text, root_label text, root_label_display text, path_segment text, href text, verified_evidence_ref text, binding_generation bigint, evidence_expires_at timestamp with time zone)
@@ -1065,6 +1197,34 @@ CREATE FUNCTION effective_route_authority_v2(expected_community_id text, databas
      AND binding.route_lifecycle_status = 'active'
      AND binding.ownership_status <> 'verified'
      AND binding.verified_evidence_ref IS NULL
+$$;
+
+CREATE FUNCTION enforce_text_rating_ancestry_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  parent_rating TEXT;
+BEGIN
+  IF NEW.parent_comment_id IS NULL THEN
+    SELECT post.content_rating INTO parent_rating
+      FROM posts AS post
+     WHERE post.community_id = NEW.community_id
+       AND post.post_id = NEW.post_id
+       AND post.post_type = 'text';
+  ELSE
+    SELECT parent.content_rating INTO parent_rating
+      FROM comments AS parent
+     WHERE parent.community_id = NEW.community_id
+       AND parent.comment_id = NEW.parent_comment_id;
+  END IF;
+  IF parent_rating IS NULL THEN
+    RAISE EXCEPTION 'comment rating requires a text parent';
+  END IF;
+  IF parent_rating = 'adult_18' THEN
+    NEW.content_rating := 'adult_18';
+  END IF;
+  RETURN NEW;
+END;
 $$;
 
 CREATE FUNCTION ensure_handle_persona_public_footprint_v1(input_persona_id text, input_occurred_at timestamp with time zone) RETURNS void
@@ -1668,6 +1828,21 @@ CREATE FUNCTION grade_study_answer_v1(candidate_answer jsonb, stored_answer_key 
   END
 $$;
 
+CREATE FUNCTION guard_account_minimum_age_attestation_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'UPDATE' AND ROW(NEW.account_id, NEW.version, NEW.minimum_age, NEW.affirmed)
+      IS DISTINCT FROM ROW(OLD.account_id, OLD.version, OLD.minimum_age, OLD.affirmed) THEN
+    RAISE EXCEPTION 'minimum-age attestation is immutable';
+  END IF;
+  IF TG_OP = 'UPDATE' AND NEW.attested_at <> OLD.attested_at THEN
+    RAISE EXCEPTION 'minimum-age attestation timestamp is immutable';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION guard_account_streak_clock() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -1800,6 +1975,24 @@ BEGIN
   END IF;
   RETURN NEW;
 END
+$$;
+
+CREATE FUNCTION guard_comment_publication_rating_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  resource_rating TEXT;
+BEGIN
+  SELECT comment.content_rating INTO resource_rating
+    FROM comments AS comment
+   WHERE comment.community_id = NEW.community_id
+     AND comment.comment_id = NEW.comment_id;
+  IF resource_rating IS NULL THEN
+    RAISE EXCEPTION 'comment projection rating disagrees with resource';
+  END IF;
+  NEW.content_rating := resource_rating;
+  RETURN NEW;
+END;
 $$;
 
 CREATE FUNCTION guard_community_canonical_route_binding_change() RETURNS trigger
@@ -2181,85 +2374,92 @@ CREATE FUNCTION guard_community_moderation_action_v2_insert() RETURNS trigger
     AS $$
 DECLARE
   target_case community_moderation_cases_v2%ROWTYPE;
+  submission text_content_submissions%ROWTYPE;
   rating TEXT;
+  age_capability TEXT;
 BEGIN
   SELECT * INTO target_case
     FROM community_moderation_cases_v2
-   WHERE community_id = NEW.community_id
-     AND case_ref = NEW.case_ref
+   WHERE community_id = NEW.community_id AND case_ref = NEW.case_ref
    FOR UPDATE;
-  IF NOT FOUND
-    OR target_case.visibility <> 'owner'
-    OR target_case.view_state NOT IN ('open', 'hidden')
-  THEN
+  IF NOT FOUND OR target_case.visibility <> 'owner'
+    OR target_case.view_state NOT IN ('open', 'hidden') THEN
     RAISE EXCEPTION 'moderation case is not owner-actionable';
   END IF;
   IF NOT has_community_moderation_capability_v1(
-    NEW.actor_user_id,
-    NEW.community_id,
-    'moderation.act'
+    NEW.actor_user_id, NEW.community_id, 'moderation.act'
   ) THEN
     RAISE EXCEPTION 'moderation action requires active owner authority';
   END IF;
   IF NOT EXISTS (
-    SELECT 1
-      FROM community_role_assignments AS assignment
+    SELECT 1 FROM community_role_assignments AS assignment
      WHERE assignment.role_assignment_id = NEW.owner_role_assignment_id
        AND assignment.community_id = NEW.community_id
        AND assignment.account_id = NEW.actor_user_id
-       AND assignment.role = 'owner'
-       AND assignment.status = 'active'
+       AND assignment.role = 'owner' AND assignment.status = 'active'
   ) THEN
     RAISE EXCEPTION 'moderation action owner snapshot is invalid';
   END IF;
   IF NOT EXISTS (
-    SELECT 1
-      FROM personas AS persona
+    SELECT 1 FROM personas AS persona
      WHERE persona.persona_id = NEW.presenting_persona_id
        AND persona.account_id = NEW.actor_user_id
        AND persona.status = 'active'
   ) THEN
     RAISE EXCEPTION 'moderation action presenting persona is invalid';
   END IF;
-  SELECT COALESCE(submission.resulting_content_rating, 'adult_18')
-    INTO rating
-    FROM text_content_submissions AS submission
-   WHERE submission.community_id = target_case.community_id
-     AND submission.submission_id = target_case.submission_id;
+
+  SELECT * INTO submission
+    FROM text_content_submissions
+   WHERE community_id = target_case.community_id
+     AND submission_id = target_case.submission_id;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'moderation action submission is missing';
+  END IF;
+  rating := NEW.before_rating;
+  IF COALESCE(submission.resulting_content_rating, 'adult_18') <> rating
+    AND NOT (
+      NEW.action = 'approve_as_adult_18'
+      AND submission.resulting_content_rating = NEW.after_rating
+    ) THEN
+    RAISE EXCEPTION 'moderation action submission rating is stale';
+  END IF;
+  age_capability := current_account_age_capability_v1(NEW.actor_user_id);
+  IF NEW.resolved_age_capability <> age_capability THEN
+    RAISE EXCEPTION 'moderation action age capability snapshot is stale';
+  END IF;
   IF NEW.expected_case_revision <> target_case.case_revision
     OR NEW.before_view_state <> target_case.view_state
     OR NEW.before_target_status <> target_case.target_status
-    OR NEW.before_rating <> rating
-  THEN
+    OR NEW.before_rating <> rating THEN
     RAISE EXCEPTION 'moderation action case revision is stale';
   END IF;
-  IF NOT EXISTS (
-    SELECT 1
-      FROM text_content_submissions AS submission
-     WHERE submission.community_id = target_case.community_id
-       AND submission.submission_id = target_case.submission_id
-       AND submission.platform_policy_revision_id = NEW.platform_policy_revision_id
-       AND submission.platform_policy_hash = NEW.platform_policy_hash
-       AND submission.community_policy_revision_id = NEW.community_policy_revision_id
-       AND submission.community_policy_hash = NEW.community_policy_hash
-       AND submission.evidence_ref IS NOT DISTINCT FROM NEW.evidence_ref
-  ) THEN
+  IF submission.platform_policy_revision_id <> NEW.platform_policy_revision_id
+    OR submission.platform_policy_hash <> NEW.platform_policy_hash
+    OR submission.community_policy_revision_id <> NEW.community_policy_revision_id
+    OR submission.community_policy_hash <> NEW.community_policy_hash
+    OR submission.evidence_ref IS DISTINCT FROM NEW.evidence_ref THEN
     RAISE EXCEPTION 'moderation action policy evidence snapshot is invalid';
   END IF;
-  IF NEW.action IN ('approve_as_adult_18', 'raise_rating_to_adult_18') THEN
-    RAISE EXCEPTION 'adult rating actions require the rating projection lane';
+  IF NEW.action = 'approve_as_general'
+    AND submission.author_declared_rating = 'adult_18' THEN
+    RAISE EXCEPTION 'adult author declaration cannot be approved as general';
   END IF;
-  IF rating = 'adult_18' AND NEW.action NOT IN ('hide', 'reject') THEN
-    RAISE EXCEPTION 'adult moderation action fails closed';
+  IF (
+    NEW.action = 'approve_as_adult_18'
+    OR (rating = 'adult_18' AND NEW.action IN ('dismiss_report', 'restore'))
+  ) AND age_capability <> 'adult_18' THEN
+    RAISE EXCEPTION 'moderation action requires adult capability';
   END IF;
+
   IF NOT (
-    (NEW.action = 'approve_as_general'
+    (NEW.action IN ('approve_as_general', 'approve_as_adult_18')
       AND target_case.view_state = 'open'
       AND target_case.target_status = 'held'
-      AND rating = 'general'
       AND NEW.after_view_state = 'resolved'
       AND NEW.after_target_status = 'published'
-      AND NEW.after_rating = 'general')
+      AND NEW.after_rating = CASE NEW.action
+        WHEN 'approve_as_adult_18' THEN 'adult_18' ELSE rating END)
     OR (NEW.action = 'reject'
       AND target_case.view_state = 'open'
       AND target_case.target_status = 'held'
@@ -2279,6 +2479,13 @@ BEGIN
       AND NEW.after_view_state = 'hidden'
       AND NEW.after_target_status = 'hidden'
       AND NEW.after_rating = rating)
+    OR (NEW.action = 'raise_rating_to_adult_18'
+      AND target_case.view_state = 'open'
+      AND target_case.target_status = 'published'
+      AND rating = 'general'
+      AND NEW.after_view_state = 'resolved'
+      AND NEW.after_target_status = 'published'
+      AND NEW.after_rating = 'adult_18')
     OR (NEW.action = 'restore'
       AND target_case.view_state = 'hidden'
       AND target_case.target_status = 'hidden'
@@ -6402,73 +6609,52 @@ CREATE FUNCTION guard_text_content_submission_update() RETURNS trigger
     AS $$
 BEGIN
   IF ROW(
-    NEW.community_id,
-    NEW.submission_id,
-    NEW.operation_id,
-    NEW.actor_user_id,
-    NEW.author_persona_id,
-    NEW.surface,
-    NEW.target_post_id,
-    NEW.target_parent_comment_id,
-    NEW.idempotency_key,
-    NEW.request_hash,
-    NEW.moderation_decision,
-    NEW.policy_revision_id,
-    NEW.policy_hash,
-    NEW.platform_policy_revision_id,
-    NEW.platform_policy_hash,
-    NEW.community_policy_revision_id,
-    NEW.community_policy_hash,
-    NEW.input_sha256,
-    NEW.internal_reason_codes,
-    NEW.evidence_ref,
-    NEW.author_declared_rating,
-    NEW.resulting_content_rating,
-    NEW.matched_categories,
-    NEW.category_decisions,
-    NEW.effective_policy_decision,
-    NEW.created_at,
-    NEW.response_snapshot_bytes,
-    NEW.response_snapshot_sha256
+    NEW.community_id, NEW.submission_id, NEW.operation_id, NEW.actor_user_id,
+    NEW.author_persona_id, NEW.surface, NEW.target_post_id,
+    NEW.target_parent_comment_id, NEW.idempotency_key, NEW.request_hash,
+    NEW.moderation_decision, NEW.policy_revision_id, NEW.policy_hash,
+    NEW.platform_policy_revision_id, NEW.platform_policy_hash,
+    NEW.community_policy_revision_id, NEW.community_policy_hash,
+    NEW.input_sha256, NEW.internal_reason_codes, NEW.evidence_ref,
+    NEW.created_at, NEW.response_snapshot_bytes, NEW.response_snapshot_sha256,
+    NEW.author_declared_rating, NEW.matched_categories,
+    NEW.category_decisions, NEW.effective_policy_decision
   ) IS DISTINCT FROM ROW(
-    OLD.community_id,
-    OLD.submission_id,
-    OLD.operation_id,
-    OLD.actor_user_id,
-    OLD.author_persona_id,
-    OLD.surface,
-    OLD.target_post_id,
-    OLD.target_parent_comment_id,
-    OLD.idempotency_key,
-    OLD.request_hash,
-    OLD.moderation_decision,
-    OLD.policy_revision_id,
-    OLD.policy_hash,
-    OLD.platform_policy_revision_id,
-    OLD.platform_policy_hash,
-    OLD.community_policy_revision_id,
-    OLD.community_policy_hash,
-    OLD.input_sha256,
-    OLD.internal_reason_codes,
-    OLD.evidence_ref,
-    OLD.author_declared_rating,
-    OLD.resulting_content_rating,
-    OLD.matched_categories,
-    OLD.category_decisions,
-    OLD.effective_policy_decision,
-    OLD.created_at,
-    OLD.response_snapshot_bytes,
-    OLD.response_snapshot_sha256
+    OLD.community_id, OLD.submission_id, OLD.operation_id, OLD.actor_user_id,
+    OLD.author_persona_id, OLD.surface, OLD.target_post_id,
+    OLD.target_parent_comment_id, OLD.idempotency_key, OLD.request_hash,
+    OLD.moderation_decision, OLD.policy_revision_id, OLD.policy_hash,
+    OLD.platform_policy_revision_id, OLD.platform_policy_hash,
+    OLD.community_policy_revision_id, OLD.community_policy_hash,
+    OLD.input_sha256, OLD.internal_reason_codes, OLD.evidence_ref,
+    OLD.created_at, OLD.response_snapshot_bytes, OLD.response_snapshot_sha256,
+    OLD.author_declared_rating, OLD.matched_categories,
+    OLD.category_decisions, OLD.effective_policy_decision
   ) THEN
     RAISE EXCEPTION 'text content submission evidence and creation snapshot are immutable';
   END IF;
-  IF OLD.status <> 'manual_review' OR NEW.status NOT IN ('published', 'blocked') THEN
-    RAISE EXCEPTION 'text content submission transition is not allowed: % -> %',
-      OLD.status,
-      NEW.status;
-  END IF;
   IF NEW.updated_at <= OLD.updated_at THEN
     RAISE EXCEPTION 'text content submission updated_at must advance';
+  END IF;
+  IF OLD.status = 'published' AND NEW.status = 'published' THEN
+    IF OLD.resulting_content_rating <> 'general'
+      OR NEW.resulting_content_rating <> 'adult_18'
+      OR ROW(NEW.public_reason_code, NEW.published_post_id,
+             NEW.published_comment_id, NEW.review_ref)
+         IS DISTINCT FROM
+         ROW(OLD.public_reason_code, OLD.published_post_id,
+             OLD.published_comment_id, OLD.review_ref) THEN
+      RAISE EXCEPTION 'published text submission permits only an adult rating raise';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF OLD.status <> 'manual_review' OR NEW.status NOT IN ('published', 'blocked') THEN
+    RAISE EXCEPTION 'text content submission transition is not allowed: % -> %',
+      OLD.status, NEW.status;
+  END IF;
+  IF OLD.resulting_content_rating = 'adult_18'
+    AND NEW.resulting_content_rating <> 'adult_18' THEN
+    RAISE EXCEPTION 'text content submission rating cannot be lowered';
   END IF;
   RETURN NEW;
 END;
@@ -7645,6 +7831,61 @@ CREATE FUNCTION public_persona_projection(expected_persona_id text) RETURNS json
     ) AS handle ON true
    WHERE persona.persona_id = expected_persona_id
      AND persona.status = 'active'
+$$;
+
+CREATE FUNCTION raise_text_rating_with_descendants_v1(target_community_id text, target_kind text, target_resource_id text, transition_at timestamp with time zone) RETURNS integer
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  changed_count INTEGER := 0;
+  latest_count INTEGER := 0;
+BEGIN
+  IF target_kind = 'text_post' THEN
+    UPDATE posts
+       SET content_rating = 'adult_18', updated_at = transition_at
+     WHERE community_id = target_community_id
+       AND post_id = target_resource_id
+       AND post_type = 'text';
+    GET DIAGNOSTICS changed_count = ROW_COUNT;
+    UPDATE comments
+       SET content_rating = 'adult_18', updated_at = transition_at
+     WHERE community_id = target_community_id
+       AND post_id = target_resource_id
+       AND content_rating <> 'adult_18';
+    GET DIAGNOSTICS latest_count = ROW_COUNT;
+    changed_count := changed_count + latest_count;
+  ELSIF target_kind IN ('comment', 'reply') THEN
+    WITH RECURSIVE descendants AS (
+      SELECT comment_id
+        FROM comments
+       WHERE community_id = target_community_id
+         AND comment_id = target_resource_id
+      UNION ALL
+      SELECT child.comment_id
+        FROM comments AS child
+        JOIN descendants AS parent ON parent.comment_id = child.parent_comment_id
+       WHERE child.community_id = target_community_id
+    )
+    UPDATE comments AS comment
+       SET content_rating = 'adult_18', updated_at = transition_at
+      FROM descendants
+     WHERE comment.community_id = target_community_id
+       AND comment.comment_id = descendants.comment_id
+       AND comment.content_rating <> 'adult_18';
+    GET DIAGNOSTICS changed_count = ROW_COUNT;
+  ELSE
+    RAISE EXCEPTION 'unsupported text rating target kind';
+  END IF;
+
+  UPDATE comment_publication_projection AS projection
+     SET content_rating = comment.content_rating, updated_at = transition_at
+    FROM comments AS comment
+   WHERE projection.community_id = target_community_id
+     AND comment.community_id = projection.community_id
+     AND comment.comment_id = projection.comment_id
+     AND projection.content_rating IS DISTINCT FROM comment.content_rating;
+  RETURN changed_count;
+END;
 $$;
 
 CREATE FUNCTION record_hns_dns_zone_health_v1(input_operation_id text, input_idempotency_key text, input_request_hash text, input_dns_zone_activation_id text, input_activation_generation bigint, input_expected_health_generation bigint, input_delegation_snapshot_reference text, input_delegation_snapshot_digest text, input_observed_zone_bytes_digest text, input_observed_dnssec_keyset_reference text, input_observed_dnssec_keyset_version text, input_observed_gateway_deployment_reference text, input_observed_gateway_certificate_spki_sha256 text, input_delegation_matches boolean, input_ds_authenticates_zone boolean, input_retained_zone_digest_matches boolean, input_gateway_healthy boolean, input_valid_for_seconds integer) RETURNS TABLE(outcome text, dns_zone_activation_id text, activation_generation bigint, health_generation bigint)
@@ -12927,6 +13168,18 @@ CREATE TABLE account_aliases (
     CONSTRAINT account_aliases_status_check CHECK ((status = ANY (ARRAY['active'::text, 'finalizing'::text, 'completed'::text, 'inactive'::text])))
 );
 
+CREATE TABLE account_minimum_age_attestations (
+    account_id text NOT NULL,
+    version text NOT NULL,
+    minimum_age integer NOT NULL,
+    affirmed boolean NOT NULL,
+    attested_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT account_minimum_age_attestations_affirmed_check CHECK (affirmed),
+    CONSTRAINT account_minimum_age_attestations_minimum_age_check CHECK ((minimum_age = 16)),
+    CONSTRAINT account_minimum_age_attestations_version_check CHECK ((version = 'minimum-age-attestation-v1'::text))
+);
+
 CREATE TABLE account_streak_clocks (
     account_id text NOT NULL,
     timezone text NOT NULL,
@@ -13149,6 +13402,8 @@ CREATE TABLE comment_publication_projection (
     updated_at timestamp with time zone NOT NULL,
     actor_account_id text GENERATED ALWAYS AS (author_user_id) STORED NOT NULL,
     author_persona_id text NOT NULL,
+    content_rating text DEFAULT 'general'::text NOT NULL,
+    CONSTRAINT comment_publication_projection_content_rating_check CHECK ((content_rating = ANY (ARRAY['general'::text, 'adult_18'::text]))),
     CONSTRAINT comment_publication_projection_depth_check CHECK (((depth >= 0) AND (depth <= 8))),
     CONSTRAINT comment_publication_projection_status_check CHECK ((status = ANY (ARRAY['published'::text, 'hidden'::text, 'removed'::text])))
 );
@@ -13184,9 +13439,14 @@ CREATE TABLE comments (
     depth integer DEFAULT 0 NOT NULL,
     reply_count integer DEFAULT 0 NOT NULL,
     author_persona_id text,
+    author_declared_rating text DEFAULT 'general'::text NOT NULL,
+    content_rating text DEFAULT 'general'::text NOT NULL,
+    CONSTRAINT comments_author_declared_rating_check CHECK ((author_declared_rating = ANY (ARRAY['general'::text, 'adult_18'::text]))),
     CONSTRAINT comments_author_persona_shape CHECK ((((author_user_id IS NULL) AND (author_persona_id IS NULL)) OR ((author_user_id IS NOT NULL) AND (author_persona_id IS NOT NULL)))),
+    CONSTRAINT comments_content_rating_check CHECK ((content_rating = ANY (ARRAY['general'::text, 'adult_18'::text]))),
     CONSTRAINT comments_depth_check CHECK ((depth >= 0)),
     CONSTRAINT comments_not_self_parent CHECK (((parent_comment_id IS NULL) OR (parent_comment_id <> comment_id))),
+    CONSTRAINT comments_rating_raise_only CHECK (((content_rating = 'adult_18'::text) OR (author_declared_rating = 'general'::text))),
     CONSTRAINT comments_reply_count_nonnegative CHECK ((reply_count >= 0)),
     CONSTRAINT comments_status_check CHECK ((status = ANY (ARRAY['published'::text, 'hidden'::text, 'removed'::text, 'deleted'::text])))
 );
@@ -13786,7 +14046,7 @@ CREATE TABLE community_moderation_actions_v2 (
     CONSTRAINT community_moderation_actions_v2_expected_case_revision_check CHECK ((expected_case_revision > 0)),
     CONSTRAINT community_moderation_actions_v2_platform_policy_hash_check CHECK ((platform_policy_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT community_moderation_actions_v2_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT community_moderation_actions_v2_resolved_age_capability_check CHECK ((resolved_age_capability = 'unavailable_owner_only_mvp'::text)),
+    CONSTRAINT community_moderation_actions_v2_resolved_age_capability_check CHECK ((resolved_age_capability = ANY (ARRAY['general'::text, 'adult_18'::text]))),
     CONSTRAINT community_moderation_actions_v2_response_hash CHECK ((encode(sha256(response_snapshot_bytes), 'hex'::text) = response_snapshot_sha256)),
     CONSTRAINT community_moderation_actions_v2_response_snapshot_bytes_check CHECK ((octet_length(response_snapshot_bytes) > 0)),
     CONSTRAINT community_moderation_actions_v2_response_snapshot_sha256_check CHECK ((response_snapshot_sha256 ~ '^[0-9a-f]{64}$'::text))
@@ -17727,11 +17987,14 @@ CREATE TABLE posts (
     upvote_count integer DEFAULT 0 NOT NULL,
     downvote_count integer DEFAULT 0 NOT NULL,
     author_persona_id text,
+    author_declared_rating text,
+    content_rating text,
     CONSTRAINT posts_author_persona_shape CHECK ((((author_user_id IS NULL) AND (author_persona_id IS NULL)) OR ((author_user_id IS NOT NULL) AND (author_persona_id IS NOT NULL)))),
     CONSTRAINT posts_comment_count_nonnegative CHECK ((comment_count >= 0)),
     CONSTRAINT posts_downvote_count_nonnegative CHECK ((downvote_count >= 0)),
     CONSTRAINT posts_post_type_check CHECK ((post_type = ANY (ARRAY['text'::text, 'image'::text, 'video'::text, 'link'::text, 'song'::text, 'crosspost'::text, 'file'::text]))),
     CONSTRAINT posts_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'processing'::text, 'published'::text, 'failed'::text, 'hidden'::text, 'removed'::text, 'deleted'::text]))),
+    CONSTRAINT posts_text_rating_shape CHECK ((((post_type = 'text'::text) AND (author_declared_rating = ANY (ARRAY['general'::text, 'adult_18'::text])) AND (content_rating = ANY (ARRAY['general'::text, 'adult_18'::text])) AND ((content_rating = 'adult_18'::text) OR (author_declared_rating = 'general'::text))) OR ((post_type <> 'text'::text) AND (author_declared_rating IS NULL) AND (content_rating IS NULL)))),
     CONSTRAINT posts_upvote_count_nonnegative CHECK ((upvote_count >= 0)),
     CONSTRAINT posts_visibility_check CHECK ((visibility = ANY (ARRAY['public'::text, 'members_only'::text])))
 );
@@ -18723,6 +18986,9 @@ CREATE TABLE verification_start_reservations (
 
 ALTER TABLE ONLY account_aliases
     ADD CONSTRAINT account_aliases_pkey PRIMARY KEY (source_user_id);
+
+ALTER TABLE ONLY account_minimum_age_attestations
+    ADD CONSTRAINT account_minimum_age_attestations_pkey PRIMARY KEY (account_id);
 
 ALTER TABLE ONLY account_streak_clocks
     ADD CONSTRAINT account_streak_clocks_pkey PRIMARY KEY (account_id);
@@ -20620,6 +20886,8 @@ CREATE UNIQUE INDEX verification_start_reservations_creation_idempotency_uidx ON
 
 CREATE INDEX verification_start_reservations_lease_idx ON verification_start_reservations USING btree (state, lease_expires_at);
 
+CREATE TRIGGER account_minimum_age_attestation_guard_v1 BEFORE DELETE OR UPDATE ON account_minimum_age_attestations FOR EACH ROW EXECUTE FUNCTION guard_account_minimum_age_attestation_v1();
+
 CREATE TRIGGER account_streak_clocks_change_guard BEFORE INSERT OR DELETE OR UPDATE ON account_streak_clocks FOR EACH ROW EXECUTE FUNCTION guard_account_streak_clock();
 
 CREATE TRIGGER account_streak_timezone_actions_append_only BEFORE INSERT OR DELETE OR UPDATE ON account_streak_timezone_actions FOR EACH ROW EXECUTE FUNCTION guard_account_streak_timezone_action();
@@ -20642,7 +20910,11 @@ CREATE TRIGGER assertions_append_only BEFORE DELETE OR UPDATE ON assertions FOR 
 
 CREATE TRIGGER assertions_validate_binding BEFORE INSERT OR UPDATE ON assertions FOR EACH ROW EXECUTE FUNCTION gates_v2_validate_assertion_binding();
 
+CREATE TRIGGER comment_publication_rating_guard_v1 BEFORE INSERT OR UPDATE OF content_rating ON comment_publication_projection FOR EACH ROW EXECUTE FUNCTION guard_comment_publication_rating_v1();
+
 CREATE TRIGGER comments_active_persona BEFORE INSERT ON comments FOR EACH ROW EXECUTE FUNCTION require_active_author_persona();
+
+CREATE TRIGGER comments_text_rating_ancestry_v1 BEFORE INSERT OR UPDATE OF community_id, post_id, parent_comment_id, content_rating ON comments FOR EACH ROW EXECUTE FUNCTION enforce_text_rating_ancestry_v1();
 
 CREATE CONSTRAINT TRIGGER communities_canonical_route_binding_guard AFTER INSERT OR UPDATE OF status, canonical_route_binding_id, route_authority_version ON communities DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_community_canonical_route_reference();
 
@@ -21278,6 +21550,8 @@ CREATE TRIGGER policy_versions_append_only BEFORE DELETE OR UPDATE ON policy_ver
 
 CREATE TRIGGER posts_active_persona BEFORE INSERT ON posts FOR EACH ROW EXECUTE FUNCTION require_active_author_persona();
 
+CREATE TRIGGER posts_text_rating_default_v1 BEFORE INSERT ON posts FOR EACH ROW EXECUTE FUNCTION default_text_post_rating_v1();
+
 CREATE TRIGGER proof_session_completion_events_append_only BEFORE DELETE OR UPDATE ON proof_session_completion_events FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
 CREATE TRIGGER proof_session_completion_events_validate BEFORE INSERT ON proof_session_completion_events FOR EACH ROW EXECUTE FUNCTION gates_v2_validate_proof_session_completion_event();
@@ -21399,6 +21673,9 @@ CREATE TRIGGER text_moderation_policy_revisions_append_only BEFORE DELETE OR UPD
 CREATE TRIGGER used_action_grants_append_only BEFORE DELETE OR UPDATE ON used_action_grants FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
 CREATE TRIGGER users_provision_first_persona AFTER INSERT ON users FOR EACH ROW EXECUTE FUNCTION provision_first_persona_for_new_account();
+
+ALTER TABLE ONLY account_minimum_age_attestations
+    ADD CONSTRAINT account_minimum_age_attestations_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
 
 ALTER TABLE ONLY account_streak_clocks
     ADD CONSTRAINT account_streak_clocks_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
