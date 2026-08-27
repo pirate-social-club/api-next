@@ -305,6 +305,7 @@ adapters remain disabled and runtime composition is absent.
 | `ACRCLOUD_ACCESS_SECRET` | ACRCloud identification signing secret |
 | `ELEVENLABS_API_KEY` | Platform-funded forced-alignment key; v1 has no ASR |
 | `FILEBASE_IPFS_TOKEN` | Filebase bucket-scoped IPFS bearer token |
+| `DATA_REGISTRATION_STAGING_PRIVATE_KEY` | Staging-only Aeneid DATA registration EOA; never shared with Megapot or production |
 | `MEDIA_CLASSIFIER_API_KEY` | Provider-neutral media-classifier credential |
 | `MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID` | Ingress-bucket-only R2 S3 access-key identifier |
 | `MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY` | Ingress-bucket-only R2 S3 signing secret |
@@ -315,17 +316,26 @@ it is not evidence of a usable provider credential or enabled integration.
 Replacing a sentinel, validating provider-specific shape, and enabling an
 adapter remain separate reviewed actions.
 
-No current Worker receives these names. The two ingress names remain invalid
-`PENDING` sentinels and are absent from every checked-in Worker secret
-declaration while media is disabled. Future synchronization must select
-only the names consumed by the exact Worker whose reviewed composition enables
-that adapter; blanket synchronization of `/services/api-next` is forbidden.
-The HTTP and jobs Workers must not receive the provider-runtime names. The shared
-ElevenLabs name may be synchronized to each exact ASR or alignment consumer
-only when that consumer is enabled. The Filebase and classifier names likewise
-follow their owning role rather than a provider-named Worker. Any such change
-must update the destination Worker's binding contract and Wrangler declaration
-in the same reviewed tranche.
+`DATA_REGISTRATION_STAGING_PRIVATE_KEY` is the sole exception to the initial
+provider-placeholder pattern: it is admitted only after the typed signer
+adapter is independently reviewed. It must correspond to the checked staging
+`DATA_REGISTRATION_SIGNER_ADDRESS`, is accepted only for chain 1315 and the
+`data_registration` namespace, and may sign only the persisted zero-value
+transaction envelope. Production custody remains separately gated.
+
+Checked-in name declarations assign Transloadit, ACRCloud and ElevenLabs only
+to the disabled media-processor Worker, and assign Filebase plus the staging
+DATA signer only to the disabled DATA-registration Worker. They do not install
+or read values. The two ingress names remain invalid `PENDING` sentinels and
+are absent from every checked-in Worker secret declaration while ingress is
+disabled. Synchronization must select only the names consumed by the exact
+Worker whose reviewed composition enables that adapter; blanket
+synchronization of `/services/api-next` is forbidden. The HTTP and jobs
+Workers must not receive provider-runtime names. ElevenLabs may be synchronized
+only to the exact forced-alignment consumer when enabled. Filebase and the
+classifier likewise follow their owning roles. Any future assignment must
+update the destination Worker's binding contract and Wrangler declaration in
+the same reviewed tranche.
 
 `MEDIA_CLASSIFIER_API_KEY` is deliberately provider-neutral. The current
 OpenRouter scaffold does not own the credential name, and changing the selected

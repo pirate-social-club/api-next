@@ -204,12 +204,15 @@ function run<A>(
     submissionStore: ReturnType<typeof makeControlPlaneMediaSubmissionRepository>,
     outboxStore: ReturnType<typeof makeControlPlaneMediaOutboxRepository>,
   ) => Effect.Effect<A, unknown, ControlPlaneDb>,
+  dataRegistrationChainId?: bigint,
 ): Promise<A> {
   const layer = makeDirectPostgresControlPlaneLayer(connection);
   return Effect.runPromise(
     Effect.scoped(
       program(
-        makeControlPlaneMediaSubmissionRepository(),
+        makeControlPlaneMediaSubmissionRepository(
+          dataRegistrationChainId === undefined ? {} : { dataRegistrationChainId },
+        ),
         makeControlPlaneMediaOutboxRepository(),
       ).pipe(Effect.provide(layer)),
     ),
@@ -619,15 +622,22 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       });
       const postId = `media-post-${operation}`;
       expect(
-        await run(connection, (store) =>
-          store.publish({
-            ...command(connection, "/media-post-submissions/:submissionId/publish", "publish-key"),
-            expectedCreationRevision: 2,
-            expectedAudioRevision: 1,
-            expectedAnalysisRevision: 1,
-            expectedDecisionRevision: 1,
-            postId,
-          }),
+        await run(
+          connection,
+          (store) =>
+            store.publish({
+              ...command(
+                connection,
+                "/media-post-submissions/:submissionId/publish",
+                "publish-key",
+              ),
+              expectedCreationRevision: 2,
+              expectedAudioRevision: 1,
+              expectedAnalysisRevision: 1,
+              expectedDecisionRevision: 1,
+              postId,
+            }),
+          1315n,
         ),
       ).toMatchObject({ kind: "committed", postId });
       const counts = await admin.query<{
@@ -636,8 +646,10 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         publications: string;
         alignment: string;
         hns: string;
+        registrations: string;
+        registration_outbox: string;
       }>({
-        text: "SELECT (SELECT count(*)::text FROM media_submission_events WHERE submission_id=$1) AS events,(SELECT count(*)::text FROM media_submission_outbox WHERE submission_id=$1) AS effects,(SELECT count(*)::text FROM media_publication_projections WHERE submission_id=$1) AS publications,(SELECT alignment FROM media_publication_projections WHERE submission_id=$1) AS alignment,(SELECT count(*)::text FROM hns_control_observer_operations) AS hns",
+        text: "SELECT (SELECT count(*)::text FROM media_submission_events WHERE submission_id=$1) AS events,(SELECT count(*)::text FROM media_submission_outbox WHERE submission_id=$1) AS effects,(SELECT count(*)::text FROM media_publication_projections WHERE submission_id=$1) AS publications,(SELECT alignment FROM media_publication_projections WHERE submission_id=$1) AS alignment,(SELECT count(*)::text FROM hns_control_observer_operations) AS hns,(SELECT count(*)::text FROM data_registration_operations WHERE submission_id=$1) AS registrations,(SELECT count(*)::text FROM data_registration_outbox WHERE registration_operation_id=(SELECT registration_operation_id FROM data_registration_operations WHERE submission_id=$1)) AS registration_outbox",
         values: [submission],
       });
       expect(counts.rows[0]).toEqual({
@@ -646,7 +658,39 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         publications: "1",
         alignment: "not_applicable",
         hns: "1",
+        registrations: "1",
+        registration_outbox: "1",
       });
+      expect(
+        await run(
+          connection,
+          (store) =>
+            store.publish({
+              ...command(
+                connection,
+                "/media-post-submissions/:submissionId/publish",
+                "publish-key",
+              ),
+              expectedCreationRevision: 2,
+              expectedAudioRevision: 1,
+              expectedAnalysisRevision: 1,
+              expectedDecisionRevision: 1,
+              postId,
+            }),
+          1315n,
+        ),
+      ).toMatchObject({ kind: "replay", submissionId: submission, operationId: operation });
+      expect(
+        (
+          await admin.query<{
+            registrations: string;
+            registration_outbox: string;
+          }>(
+            "SELECT (SELECT count(*)::text FROM data_registration_operations WHERE submission_id=$1) AS registrations,(SELECT count(*)::text FROM data_registration_outbox WHERE registration_operation_id=(SELECT registration_operation_id FROM data_registration_operations WHERE submission_id=$1)) AS registration_outbox",
+            [submission],
+          )
+        ).rows[0],
+      ).toEqual({ registrations: "1", registration_outbox: "1" });
       expect(
         (
           await admin.query(

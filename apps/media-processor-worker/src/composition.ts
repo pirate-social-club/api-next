@@ -40,6 +40,8 @@ export type MediaProcessorRuntimeEnv = MediaProcessorWorkerEnv &
     readonly ACRCLOUD_ACCESS_KEY?: string;
     readonly ACRCLOUD_ACCESS_SECRET?: string;
     readonly ELEVENLABS_API_KEY?: string;
+    readonly DATA_REGISTRATION_ENABLED?: string;
+    readonly DATA_REGISTRATION_CHAIN_ID?: string;
   }>;
 
 function requiredText(value: string | undefined, name: string): string {
@@ -185,7 +187,16 @@ export function makeMediaProcessorComposition(
     "MEDIA_PROCESSING_WORKFLOW",
   );
   const runtime = makeHyperdriveControlPlaneLayer(controlPlane);
-  const store = makeMediaProcessingStore(runtime);
+  const dataRegistrationEnabled = env.DATA_REGISTRATION_ENABLED === "true";
+  const dataRegistrationChainId = dataRegistrationEnabled
+    ? BigInt(requiredText(env.DATA_REGISTRATION_CHAIN_ID, "DATA_REGISTRATION_CHAIN_ID"))
+    : undefined;
+  if (dataRegistrationChainId !== undefined && dataRegistrationChainId !== 1315n) {
+    throw new Error("only Aeneid DATA registration is authorized in staging");
+  }
+  const store = makeMediaProcessingStore(runtime, {
+    ...(dataRegistrationChainId === undefined ? {} : { dataRegistrationChainId }),
+  });
   const workflow = makeCloudflareMediaProcessingWorkflowLauncher(
     workflowBinding,
     workflowIsNeverMissingByThrownError,

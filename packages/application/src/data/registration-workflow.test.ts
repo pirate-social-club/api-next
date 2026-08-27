@@ -117,7 +117,11 @@ const ARTIFACTS = [
   artifact("nft_metadata", "c"),
 ];
 
-function harness(receipt: "confirmed" | "orphaned" = "confirmed") {
+function harness(
+  receipt: "confirmed" | "orphaned" = "confirmed",
+  stagedArtifacts = false,
+  gatewayRetryAfterPrimary = false,
+) {
   let currentOperation = operation();
   let currentAttempt: DataRegistrationSigningAttempt | null = null;
   const artifacts = new Map<string, DataRegistrationArtifact>();
@@ -224,9 +228,30 @@ function harness(receipt: "confirmed" | "orphaned" = "confirmed") {
     signingReader: { getSigningAttempt: async () => currentAttempt },
     pinReader: { listPinVerifications: async () => [...pins.values()] },
     artifacts: {
-      prepare: async () => ARTIFACTS,
+      prepare: async () =>
+        stagedArtifacts &&
+        ![...pins.values()].some(
+          (pin) =>
+            pin.artifactKind === "canonical_audio" &&
+            pin.role === "primary" &&
+            pin.outcome === "verified",
+        )
+          ? ARTIFACTS.slice(0, 1)
+          : ARTIFACTS,
       pinAndVerify: async (_operation, prepared) => {
         calls.push(`provider-pin:${prepared.artifact.artifactKind}`);
+        if (gatewayRetryAfterPrimary) {
+          return {
+            status: "primary_verified" as const,
+            cid: "bafycanonicalaudio",
+            byteLength: prepared.artifact.byteLength,
+            canonicalSha256: prepared.artifact.canonicalSha256,
+            primaryEvidenceRef: "evidence://filebase/canonical_audio",
+            gatewayEvidenceRef: "evidence://ipfs.io/canonical_audio/not-found",
+            verifiedAt: "2026-08-27T00:00:00.000Z",
+            gatewayRetryable: true,
+          };
+        }
         return {
           status: "verified" as const,
           cid: `bafy${prepared.artifact.artifactKind}`,
@@ -336,6 +361,35 @@ describe("DATA registration Workflow interpreter", () => {
     );
     expect(state.calls).toContain("broadcast");
     expect(state.calls).toContain("confirm");
+  });
+
+  test("pins audio before preparing metadata that depends on its CID", async () => {
+    const state = harness("confirmed", true);
+    expect(await advanceDataRegistrationWorkflow(payload, state.dependencies)).toEqual({
+      outcome: "progress",
+    });
+    expect(state.calls).toContain("provider-pin:canonical_audio");
+    expect(state.calls).not.toContain("artifact:ip_metadata");
+
+    expect(await advanceDataRegistrationWorkflow(payload, state.dependencies)).toEqual({
+      outcome: "progress",
+    });
+    expect(state.calls).toContain("artifact:ip_metadata");
+    expect(state.calls).toContain("artifact:nft_metadata");
+  });
+
+  test("persists a successful Filebase pin before retrying gateway propagation", async () => {
+    const state = harness("confirmed", true, true);
+
+    expect(await advanceDataRegistrationWorkflow(payload, state.dependencies)).toEqual({
+      outcome: "waiting",
+    });
+    expect(state.pins()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ role: "primary", outcome: "verified" }),
+        expect.objectContaining({ role: "independent_gateway", outcome: "failed" }),
+      ]),
+    );
   });
 
   test("reloads and replays after pin, sign, and broadcast edges", async () => {
