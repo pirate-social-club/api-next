@@ -323,17 +323,19 @@ adapter is independently reviewed. It must correspond to the checked staging
 `data_registration` namespace, and may sign only the persisted zero-value
 transaction envelope. Production custody remains separately gated.
 
-No current Worker receives these names. The two ingress names remain invalid
-`PENDING` sentinels and are absent from every checked-in Worker secret
-declaration while media is disabled. Future synchronization must select
-only the names consumed by the exact Worker whose reviewed composition enables
-that adapter; blanket synchronization of `/services/api-next` is forbidden.
-The HTTP and jobs Workers must not receive the provider-runtime names. The shared
-ElevenLabs name may be synchronized to each exact ASR or alignment consumer
-only when that consumer is enabled. The Filebase and classifier names likewise
-follow their owning role rather than a provider-named Worker. Any such change
-must update the destination Worker's binding contract and Wrangler declaration
-in the same reviewed tranche.
+Checked-in name declarations assign Transloadit, ACRCloud and ElevenLabs only
+to the disabled media-processor Worker, and assign Filebase plus the staging
+DATA signer only to the disabled DATA-registration Worker. They do not install
+or read values. The two ingress names remain invalid `PENDING` sentinels and
+are absent from every checked-in Worker secret declaration while ingress is
+disabled. Synchronization must select only the names consumed by the exact
+Worker whose reviewed composition enables that adapter; blanket
+synchronization of `/services/api-next` is forbidden. The HTTP and jobs
+Workers must not receive provider-runtime names. ElevenLabs may be synchronized
+only to the exact forced-alignment consumer when enabled. Filebase and the
+classifier likewise follow their owning roles. Any future assignment must
+update the destination Worker's binding contract and Wrangler declaration in
+the same reviewed tranche.
 
 `MEDIA_CLASSIFIER_API_KEY` is deliberately provider-neutral. The current
 OpenRouter scaffold does not own the credential name, and changing the selected
