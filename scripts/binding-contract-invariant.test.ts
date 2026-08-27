@@ -296,11 +296,12 @@ const HTTP_ALWAYS_REQUIRED = [
   "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
   "MEGAPOT_REWARDS_ENABLED",
   "MEGAPOT_CHAIN_ID",
-  "MEGAPOT_V2_RPC_URL",
   "MEGAPOT_ATTESTATION_ID",
   "MEGAPOT_REQUIRED_CONFIRMATIONS",
   "OPENAI_MODERATION_ENABLED",
 ] as const;
+
+const HTTP_MEGAPOT_REQUIRED = ["MEGAPOT_V2_RPC_URL"] as const;
 
 const HTTP_OPENAI_MODERATION_REQUIRED = [
   "OPENAI_API_KEY",
@@ -475,6 +476,9 @@ const requiredNamesFor = (
   }
   if (environment.vars.HNS_COMMUNITY_APP_API_ENABLED === "true") {
     required.push(...HTTP_HNS_COMMUNITY_APP_REQUIRED);
+  }
+  if (environment.vars.MEGAPOT_REWARDS_ENABLED === "true") {
+    required.push(...HTTP_MEGAPOT_REQUIRED);
   }
   if (environment.vars.VERY_OAUTH_ENABLED === "true") {
     required.push(...HTTP_VERY_OAUTH_REQUIRED);
