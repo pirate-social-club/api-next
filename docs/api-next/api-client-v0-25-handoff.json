@@ -5,10 +5,10 @@
   "version": "0.25.0",
   "releaseType": "platform-pirate-cleanup-rename-v1",
   "wireContract": "spec-012-section-5.2",
-  "sourceCommit": "6f223a2",
+  "sourceCommit": "de0bc24",
   "artifact": {
     "path": "artifacts/api-client/pirate-api-client-0.25.0.tgz",
-    "sha256": "08907153aaaa616649b16a22b953bc4e3b6664d9fabe2afb75d098955d8beced",
+    "sha256": "1d10384bdea723b7a788c2d7af377fde9f067216e2a01b308a55ab3e7c99597c",
     "contents": [
       "package/package.json",
       "package/src/generated/client.ts",
@@ -17,8 +17,8 @@
     ]
   },
   "provenance": {
-    "sourceIdentifier": "api-next-contracts@dcf4d77076d3826c973bad26f9d9ad8fafe64c0811bed8a682545e53057f035e",
-    "openapiSha256": "dcf4d77076d3826c973bad26f9d9ad8fafe64c0811bed8a682545e53057f035e",
+    "sourceIdentifier": "api-next-contracts@dccaf3cf3dcfb46dfa3bffc3539cd870d10fdf59a5f570f75721fc24c4ccf6fa",
+    "openapiSha256": "dccaf3cf3dcfb46dfa3bffc3539cd870d10fdf59a5f570f75721fc24c4ccf6fa",
     "clientSha256": "1368abc8e0461f03e54eb79996eb1847e29becfc3fbb6f5404eb1662aa5a0ed8"
   },
   "verification": {
@@ -28,11 +28,11 @@
       "baselineCommit": "ea402ea",
       "reason": "The owner-ratified Spec 012 section 5.2 adds the one-time platform Pirate cleanup rename contract."
     },
-    "focusedRuntimeTests": "19 passed",
+    "focusedRuntimeTests": "20 passed, including browser-session and bearer-rejection fixtures",
     "postgresFocusedSuites": "28 passed after current-schema identity correction",
     "postgresRequiredSuite": "257 passed, 3 skipped; one stale predecessor-prefix fixture corrected and rerun before all 27 sentinels passed",
-    "unitSuite": "1972 passed, 295 skipped",
-    "workerdSuites": "86 passed",
+    "unitSuite": "1973 passed, 295 skipped",
+    "workerdSuites": "87 passed",
     "packageVerifier": "passed",
     "repositoryCheck": "passed"
   }
