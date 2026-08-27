@@ -78,7 +78,8 @@ export class PersonaWalletStoreConflict extends Data.TaggedError("PersonaWalletS
     | "idempotency-mismatch"
     | "wallet-index-collision"
     | "wallet-address-collision"
-    | "reservation-mismatch";
+    | "reservation-mismatch"
+    | "first-persona-required";
 }> {}
 
 export type EmbeddedEvmWalletAttestation = Readonly<{

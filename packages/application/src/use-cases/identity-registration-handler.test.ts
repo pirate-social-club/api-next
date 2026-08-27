@@ -56,6 +56,7 @@ function services(
       ttlSeconds: 3_600,
       mint: () => Effect.succeed("session-token"),
     },
+    productReadiness: { isReady: () => Effect.succeed(true) },
     rateLimiter: {
       checkIp: () => Effect.succeed(undefined),
       checkApplication: () => Effect.succeed(undefined),
@@ -143,6 +144,28 @@ describe("identity registration HTTP use case", () => {
       ),
     );
     expect(result.sessionToken).toBe("session-token");
+  });
+
+  test("refuses a product session when registration replay has no pending or active first persona", async () => {
+    let mintCalls = 0;
+    const exit = await Effect.runPromiseExit(
+      registerIdentityRequest(
+        { body: { privy_access_token: "access-token" }, edgeClientIp: "203.0.113.8" },
+        services({
+          productReadiness: { isReady: () => Effect.succeed(false) },
+          tokenMinter: {
+            scope: "api-next-browser-session",
+            ttlSeconds: 3_600,
+            mint: () => {
+              mintCalls += 1;
+              return Effect.succeed("must-not-mint");
+            },
+          },
+        }),
+      ),
+    );
+    expect(failureOf(exit)).toBeInstanceOf(AuthError);
+    expect(mintCalls).toBe(0);
   });
 
   test("maps a tombstoned credential to a permanent conflict", async () => {

@@ -3141,6 +3141,40 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION guard_first_persona_handle_reservation() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  handle_lock TEXT := 'handle-id:' || NEW.handle_id;
+  label_lock TEXT := 'handle-label:' || NEW.label_normalized;
+  collision_found BOOLEAN;
+BEGIN
+  PERFORM pg_advisory_xact_lock(hashtextextended(least(handle_lock, label_lock), 14000060));
+  PERFORM pg_advisory_xact_lock(hashtextextended(greatest(handle_lock, label_lock), 14000060));
+
+  IF TG_TABLE_NAME = 'persona_pending_first_handles' THEN
+    SELECT EXISTS (
+      SELECT 1 FROM public_handle_index AS published
+       WHERE published.handle_id=NEW.handle_id
+          OR published.label_normalized=NEW.label_normalized
+    ) INTO collision_found;
+  ELSE
+    SELECT EXISTS (
+      SELECT 1 FROM persona_pending_first_handles AS pending
+       WHERE (pending.handle_id=NEW.handle_id
+          OR pending.label_normalized=NEW.label_normalized)
+         AND pending.persona_id IS DISTINCT FROM NEW.owner_persona_id
+    ) INTO collision_found;
+  END IF;
+
+  IF collision_found THEN
+    RAISE EXCEPTION 'first persona handle is already reserved'
+      USING ERRCODE='23505', CONSTRAINT='first_persona_handle_reservation_unique';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
 CREATE FUNCTION guard_handle_grant_change_v2() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -20378,6 +20412,8 @@ CREATE TRIGGER persona_activity_presentations_change_guard BEFORE DELETE OR UPDA
 
 CREATE TRIGGER persona_create_actions_append_only BEFORE DELETE OR UPDATE ON persona_create_actions FOR EACH ROW EXECUTE FUNCTION prevent_persona_create_action_change();
 
+CREATE TRIGGER persona_pending_first_handles_cross_surface_guard BEFORE INSERT OR UPDATE OF handle_id, label_normalized ON persona_pending_first_handles FOR EACH ROW EXECUTE FUNCTION guard_first_persona_handle_reservation();
+
 CREATE CONSTRAINT TRIGGER persona_pending_profiles_activation_invariant AFTER INSERT OR DELETE ON persona_pending_profiles DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_persona_wallet_activation();
 
 CREATE CONSTRAINT TRIGGER persona_profiles_activation_invariant AFTER INSERT OR DELETE ON persona_profiles DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_persona_wallet_activation();
@@ -20415,6 +20451,8 @@ CREATE TRIGGER proof_sessions_lifecycle BEFORE INSERT OR DELETE OR UPDATE ON pro
 CREATE CONSTRAINT TRIGGER proof_sessions_terminal_completion_event AFTER INSERT OR UPDATE ON proof_sessions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION gates_v2_require_terminal_completion_event();
 
 CREATE TRIGGER public_handle_index_default_persona BEFORE INSERT OR UPDATE OF owner_user_id, owner_persona_id ON public_handle_index FOR EACH ROW EXECUTE FUNCTION default_public_handle_persona();
+
+CREATE TRIGGER public_handle_index_pending_first_guard BEFORE INSERT OR UPDATE OF handle_id, label_normalized ON public_handle_index FOR EACH ROW EXECUTE FUNCTION guard_first_persona_handle_reservation();
 
 CREATE CONSTRAINT TRIGGER public_handle_index_redirect_integrity AFTER INSERT OR UPDATE OF status, owner_user_id, owner_persona_id, redirect_target_handle_id ON public_handle_index DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION public_handle_index_validate_redirects();
 

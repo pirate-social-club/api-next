@@ -117,6 +117,7 @@ describe("registration Durable Object limiters", () => {
         ttlSeconds: 3_600,
         mint: () => Effect.succeed("workerd-session-token"),
       },
+      productReadiness: { isReady: () => Effect.succeed(true) },
       rateLimiter,
     };
 

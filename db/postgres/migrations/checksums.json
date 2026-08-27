@@ -60,6 +60,6 @@
     "0057_data_registration_persistence.sql": "a11f28beba567660b4350ab6de117a3999c495e70ecc51a5897aa2638d1e1921",
     "0058_data_ipfs_and_signing_intent_repair.sql": "550be77e955da377a0de24df9496e0d1a37a0b1f4ad133d1ff309d34647aed07",
     "0059_community_moderation_authority_policy.sql": "0ff247fc81ea719bf90e40c693613cb456e46648c668ab10314b4ab527937f90",
-    "0060_persona_wallet_provisioning.sql": "fa437fb5bd69c4bf39541e7fd554868b20f063f194f6f280a88aa3551007a5fc"
+    "0060_persona_wallet_provisioning.sql": "1c07a066a155c65bcd0d7326dcb66ae39d92d27dd86b535586a0e4236e66c9ba"
   }
 }

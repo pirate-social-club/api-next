@@ -172,6 +172,7 @@ const registrationServices: IdentityRegistrationHandlerServices = {
     },
   },
   tokenMinter: sessionServices.tokenMinter,
+  productReadiness: { isReady: () => Effect.succeed(true) },
   rateLimiter: {
     checkIp: () => Effect.succeed(undefined),
     checkApplication: () => Effect.succeed(undefined),
@@ -243,6 +244,7 @@ describe("contracts-generated HTTP worker", () => {
       body: JSON.stringify({ privy_access_token: "privy-proof" }),
     });
     expect(response.status).toBe(201);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
     expect(response.headers.get("set-cookie")).toContain("__Host-pirate_session=");
 
     const missingIp = await app.request("http://worker.test/auth/register", {
@@ -251,6 +253,20 @@ describe("contracts-generated HTTP worker", () => {
       body: JSON.stringify({ privy_access_token: "privy-proof" }),
     });
     expect(missingIp.status).toBe(400);
+    expect(missingIp.headers.get("cache-control")).toBe("private, no-store");
+  });
+
+  it("marks authenticated persona state and its failures private and no-store", async () => {
+    const app = protectedWorker("ListMyPersonas", async () => ({ personas: [] }));
+    const response = await app.request("http://worker.test/personas", {
+      headers: { authorization: "account-persona-cache" },
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+
+    const unauthorized = await app.request("http://worker.test/personas");
+    expect(unauthorized.status).toBe(401);
+    expect(unauthorized.headers.get("cache-control")).toBe("private, no-store");
   });
 
   it("requires exact Origin for browser session exchange", async () => {

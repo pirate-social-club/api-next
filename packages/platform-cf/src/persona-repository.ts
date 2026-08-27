@@ -284,7 +284,7 @@ export function makeControlPlanePersonaRepository() {
                 text: `INSERT INTO personas (
                        persona_id, account_id, status, is_first_persona,
                        created_at, retired_at
-                     ) VALUES ($1,$2,'pending_wallet',false,$3::timestamptz,NULL)`,
+                       ) VALUES ($1,$2,'pending_wallet',false,$3::timestamptz,NULL)`,
                 values: [personaId, accountId, createdAt],
                 readonly: false,
               });
@@ -312,15 +312,8 @@ export function makeControlPlanePersonaRepository() {
                          reservation_idempotency_key,assigned_at,tombstoned_at,
                          created_at,updated_at
                        ) VALUES ($1,$2,$3,'evm',NULL,$4,NULL,'pending',$5,NULL,NULL,
-                                 $6::timestamptz,$6::timestamptz)`,
-                values: [
-                  assignmentId,
-                  personaId,
-                  accountId,
-                  hdWalletIndex,
-                  idempotencyKey,
-                  createdAt,
-                ],
+                                 clock_timestamp(),clock_timestamp())`,
+                values: [assignmentId, personaId, accountId, hdWalletIndex, idempotencyKey],
                 readonly: false,
               });
               yield* transaction.execute({
@@ -533,9 +526,10 @@ export function makeControlPlanePersonaWalletRepository() {
               const owned = yield* transaction.execute<{
                 status: string;
                 retired_at: Date | string | null;
+                is_first_persona: boolean;
               }>({
                 label: "personas.retire.authority",
-                text: `SELECT status,retired_at FROM personas
+                text: `SELECT status,retired_at,is_first_persona FROM personas
                         WHERE account_id=$1 AND persona_id=$2 FOR UPDATE`,
                 values: [accountId, personaId],
                 readonly: false,
@@ -543,6 +537,11 @@ export function makeControlPlanePersonaWalletRepository() {
               if (owned.rows.length === 0) return null;
               if (owned.rows.length !== 1) return yield* Effect.die("duplicate owned persona");
               const existing = owned.rows[0];
+              if (existing?.is_first_persona === true) {
+                return yield* new PersonaWalletStoreConflict({
+                  reason: "first-persona-required",
+                });
+              }
               let retiredAt = existing?.retired_at;
               if (existing?.status !== "retired") {
                 const tombstoned = yield* transaction.execute({

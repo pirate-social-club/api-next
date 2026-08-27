@@ -45,6 +45,9 @@ export interface IdentityRegistrationHandlerServices {
   readonly proofVerifier: SessionProofVerifier;
   readonly registration: IdentityRegistrationServices;
   readonly tokenMinter: SessionTokenMinter;
+  readonly productReadiness: {
+    readonly isReady: (accountId: string) => Effect.Effect<boolean, unknown>;
+  };
   readonly rateLimiter: IdentityRegistrationRateLimiter;
 }
 
@@ -191,6 +194,15 @@ export const registerIdentityRequest = Effect.fn("registerIdentityRequest")(func
     return yield* new InternalError({ message: "Registration failed" });
   }
   const walletSetup = registration.walletSetup ?? null;
+  const productReady =
+    walletSetup === null
+      ? yield* services.productReadiness
+          .isReady(account.canonicalUserId)
+          .pipe(Effect.mapError(() => new InternalError({ message: "Registration failed" })))
+      : false;
+  if (walletSetup === null && !productReady) {
+    return yield* new AuthError({ message: "Wallet activation required" });
+  }
   const sessionToken = yield* services.tokenMinter
     .mint({
       subject: account.canonicalUserId,

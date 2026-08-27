@@ -259,20 +259,21 @@ export function makeControlPlaneIdentityRepository(): IdentityRepository {
         catch: () => invalid(),
       });
       const db = yield* ControlPlaneDb;
-      yield* db.withTransaction((transaction) =>
-        Effect.gen(function* () {
-          yield* transaction.execute({
-            label: "identity.users.upsert-account",
-            text: `INSERT INTO users (user_id, status, account, created_at)
+      yield* db
+        .withTransaction((transaction) =>
+          Effect.gen(function* () {
+            yield* transaction.execute({
+              label: "identity.users.upsert-account",
+              text: `INSERT INTO users (user_id, status, account, created_at)
                    VALUES ($1, 'active', $2::jsonb, $3::timestamptz)
                    ON CONFLICT (user_id) DO UPDATE
                      SET status = 'active', account = EXCLUDED.account`,
-            values: [userId, encodedAccount, document.user.created_at],
-            readonly: false,
-          });
-          yield* transaction.execute({
-            label: "identity.personas.sync-first-profile",
-            text: `UPDATE persona_profiles AS profile
+              values: [userId, encodedAccount, document.user.created_at],
+              readonly: false,
+            });
+            yield* transaction.execute({
+              label: "identity.personas.sync-first-profile",
+              text: `UPDATE persona_profiles AS profile
                       SET display_name=$2::jsonb #>> '{profile,display_name}',
                           avatar_ref=$2::jsonb #>> '{profile,avatar_ref}',
                           cover_ref=$2::jsonb #>> '{profile,cover_ref}',
@@ -284,12 +285,12 @@ export function makeControlPlaneIdentityRepository(): IdentityRepository {
                     WHERE persona.persona_id=profile.persona_id
                       AND persona.account_id=$1
                       AND persona.is_first_persona`,
-            values: [userId, encodedAccount],
-            readonly: false,
-          });
-          yield* transaction.execute({
-            label: "identity.public-handles.redirect-previous",
-            text: `UPDATE public_handle_index
+              values: [userId, encodedAccount],
+              readonly: false,
+            });
+            yield* transaction.execute({
+              label: "identity.public-handles.redirect-previous",
+              text: `UPDATE public_handle_index
                       SET status = 'redirect',
                           redirect_target_handle_id = $2,
                           updated_at = now()
@@ -299,12 +300,12 @@ export function makeControlPlaneIdentityRepository(): IdentityRepository {
                     )
                       AND status IN ('active', 'redirect')
                       AND handle_id <> $2`,
-            values: [userId, document.global_handle.global_handle_id],
-            readonly: false,
-          });
-          const currentHandle = yield* transaction.execute({
-            label: "identity.public-handles.upsert-current",
-            text: `INSERT INTO public_handle_index (
+              values: [userId, document.global_handle.global_handle_id],
+              readonly: false,
+            });
+            const currentHandle = yield* transaction.execute({
+              label: "identity.public-handles.upsert-current",
+              text: `INSERT INTO public_handle_index (
                      handle_id, label_normalized, label_display, status,
                      owner_user_id, owner_persona_id, redirect_target_handle_id
                    ) SELECT $1, $2, $3, 'active', $4, persona.persona_id, NULL
@@ -322,17 +323,26 @@ export function makeControlPlaneIdentityRepository(): IdentityRepository {
                          updated_at = now()
                    WHERE public_handle_index.owner_user_id = EXCLUDED.owner_user_id
                      AND public_handle_index.owner_persona_id = EXCLUDED.owner_persona_id`,
-            values: [
-              document.global_handle.global_handle_id,
-              label.normalized,
-              label.display,
-              userId,
-            ],
-            readonly: false,
-          });
-          if (currentHandle.rowCount !== 1) return yield* Effect.fail(invalid());
-        }),
-      );
+              values: [
+                document.global_handle.global_handle_id,
+                label.normalized,
+                label.display,
+                userId,
+              ],
+              readonly: false,
+            });
+            if (currentHandle.rowCount !== 1) return yield* Effect.fail(invalid());
+          }),
+        )
+        .pipe(
+          Effect.mapError((error) =>
+            error._tag === "ControlPlaneStatementFailed" &&
+            error.sqlState === "23505" &&
+            error.constraint === "first_persona_handle_reservation_unique"
+              ? invalid()
+              : error,
+          ),
+        );
     });
 
   const registerCredential = Effect.fn("IdentityRepository.registerCredential")(function* (
@@ -469,7 +479,8 @@ export function makeControlPlaneIdentityRepository(): IdentityRepository {
       failure._tag === "ControlPlaneStatementFailed" &&
       failure.sqlState === "23505" &&
       (failure.constraint === "persona_pending_first_handles_handle_id_key" ||
-        failure.constraint === "persona_pending_first_handles_label_normalized_key")
+        failure.constraint === "persona_pending_first_handles_label_normalized_key" ||
+        failure.constraint === "first_persona_handle_reservation_unique")
     ) {
       return { kind: "candidate_collision", field: "handle" };
     }

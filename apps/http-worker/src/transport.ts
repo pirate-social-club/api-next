@@ -550,6 +550,15 @@ const CANONICAL_ONLY_ENDPOINTS = new Set([
   "ListHandleSaleNamespaceManagement",
   "ListCommunityHandleOfferingManagement",
 ]);
+const PRIVATE_NO_STORE_ENDPOINTS = new Set([
+  "RegisterIdentity",
+  "ListMyPersonas",
+  "CreatePersona",
+  "PreparePersonaEvmWallet",
+  "ConfirmPersonaEvmWallet",
+  "RetirePersona",
+]);
+const PRIVATE_NO_STORE_PATH = /^(?:\/auth\/register|\/personas(?:\/|$))/u;
 
 const json = (
   context: HttpContext,
@@ -846,6 +855,9 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
             request?.body !== undefined ||
             cookiesToSet !== undefined;
           const headers = new Headers(responseHeaders);
+          if (PRIVATE_NO_STORE_ENDPOINTS.has(binding.name)) {
+            headers.set("cache-control", "private, no-store");
+          }
           for (const cookie of cookiesToSet ?? []) headers.append("set-cookie", cookie);
           return json(context, decoded, status, noStore, headers);
         } catch (error) {
@@ -867,6 +879,9 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
     const serialized = toErrorBody(error, requestId(context));
     const response = json(context, serialized.body, serialized.status, true, serialized.headers);
     if (HANDLE_SALES_MANAGEMENT_PATH.test(new URL(context.req.raw.url).pathname)) {
+      response.headers.set("cache-control", "private, no-store");
+    }
+    if (PRIVATE_NO_STORE_PATH.test(new URL(context.req.raw.url).pathname)) {
       response.headers.set("cache-control", "private, no-store");
     }
     return response;

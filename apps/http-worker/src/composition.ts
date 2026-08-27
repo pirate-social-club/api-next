@@ -822,6 +822,7 @@ export async function createProductionHttpWorker(
       store: makeControlPlaneIdentityRegistrationStore(controlPlane),
     },
     tokenMinter,
+    productReadiness: makeControlPlaneSessionProductReadiness(controlPlane),
     rateLimiter: makeProductionIdentityRegistrationRateLimiter(bindings, config.API_NEXT_ENV),
   };
   const tokenVerifier = makeRs256SessionTokenVerifier(sessionCrypto, identityStore);

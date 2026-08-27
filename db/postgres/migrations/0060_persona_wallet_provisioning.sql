@@ -54,6 +54,48 @@ CREATE TABLE persona_pending_first_handles (
   created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
 );
 
+-- The pending signup label and the published handle index are one logical
+-- uniqueness domain. Deterministic advisory locks close the cross-table race
+-- between registration and rename without publishing the pending owner.
+CREATE FUNCTION guard_first_persona_handle_reservation() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+  handle_lock TEXT := 'handle-id:' || NEW.handle_id;
+  label_lock TEXT := 'handle-label:' || NEW.label_normalized;
+  collision_found BOOLEAN;
+BEGIN
+  PERFORM pg_advisory_xact_lock(hashtextextended(least(handle_lock, label_lock), 14000060));
+  PERFORM pg_advisory_xact_lock(hashtextextended(greatest(handle_lock, label_lock), 14000060));
+
+  IF TG_TABLE_NAME = 'persona_pending_first_handles' THEN
+    SELECT EXISTS (
+      SELECT 1 FROM public_handle_index AS published
+       WHERE published.handle_id=NEW.handle_id
+          OR published.label_normalized=NEW.label_normalized
+    ) INTO collision_found;
+  ELSE
+    SELECT EXISTS (
+      SELECT 1 FROM persona_pending_first_handles AS pending
+       WHERE (pending.handle_id=NEW.handle_id
+          OR pending.label_normalized=NEW.label_normalized)
+         AND pending.persona_id IS DISTINCT FROM NEW.owner_persona_id
+    ) INTO collision_found;
+  END IF;
+
+  IF collision_found THEN
+    RAISE EXCEPTION 'first persona handle is already reserved'
+      USING ERRCODE='23505', CONSTRAINT='first_persona_handle_reservation_unique';
+  END IF;
+  RETURN NEW;
+END
+$$;
+CREATE TRIGGER persona_pending_first_handles_cross_surface_guard
+BEFORE INSERT OR UPDATE OF handle_id,label_normalized ON persona_pending_first_handles
+FOR EACH ROW EXECUTE FUNCTION guard_first_persona_handle_reservation();
+CREATE TRIGGER public_handle_index_pending_first_guard
+BEFORE INSERT OR UPDATE OF handle_id,label_normalized ON public_handle_index
+FOR EACH ROW EXECUTE FUNCTION guard_first_persona_handle_reservation();
+
 CREATE TABLE persona_wallet_preparation_replays (
   account_id TEXT NOT NULL REFERENCES users (user_id),
   idempotency_key TEXT NOT NULL,

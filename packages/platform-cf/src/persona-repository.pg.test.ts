@@ -13,6 +13,7 @@ import {
   makeControlPlanePersonaRepository,
   makeControlPlanePersonaWalletRepository,
 } from "./persona-repository.ts";
+import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { applyPostgresMigrations } from "./postgres-migrations.ts";
 
@@ -27,7 +28,7 @@ const sentinelPath =
   "/tmp/api-next-control-plane-postgres-persona-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-persona-suite-complete\n";
 const migrations = await loadPostgresMigrations();
-const testCount = 5;
+const testCount = 6;
 let completedTestCount = 0;
 
 const schemaIdentifier = (): string =>
@@ -170,6 +171,23 @@ suite("Postgres 17 account persona and EVM wallet persistence", () => {
 
       for (let ordinal = 1; ordinal <= 6; ordinal += 1) {
         await run(connection, create("account-slot", ordinal, `2020-01-0${ordinal}T00:00:00.000Z`));
+        const reservationTime = await admin.query<{ readonly created_at: Date }>(
+          "SELECT created_at FROM persona_wallet_assignments WHERE persona_id=$1",
+          [`persona_account-slot_${ordinal}`],
+        );
+        expect(reservationTime.rows[0]?.created_at.getUTCFullYear()).toBeGreaterThan(2020);
+        await admin.query("SET session_replication_role = replica");
+        try {
+          await admin.query(
+            `UPDATE persona_wallet_assignments
+                SET created_at='2020-01-01T00:00:00.000Z',
+                    updated_at='2020-01-01T00:00:00.000Z'
+              WHERE persona_id=$1`,
+            [`persona_account-slot_${ordinal}`],
+          );
+        } finally {
+          await admin.query("SET session_replication_role = origin");
+        }
       }
       const current = new Date().toISOString();
       for (let ordinal = 7; ordinal <= 9; ordinal += 1) {
@@ -179,11 +197,77 @@ suite("Postgres 17 account persona and EVM wallet persistence", () => {
       expect(failureOf(slotExit)).toEqual(new PersonaStoreConflict({ reason: "slot-limit" }));
 
       for (let ordinal = 1; ordinal <= 3; ordinal += 1) {
-        await run(connection, create("account-rate", ordinal, current));
+        await run(connection, create("account-rate", ordinal, "2020-01-01T00:00:00.000Z"));
       }
-      const rateExit = await runExit(connection, create("account-rate", 4, current));
+      const rateExit = await runExit(
+        connection,
+        create("account-rate", 4, "2020-01-01T00:00:00.000Z"),
+      );
       expect(failureOf(rateExit)).toBeInstanceOf(PersonaStoreRateLimited);
       expect((failureOf(rateExit) as PersonaStoreRateLimited).retryAfterSeconds).toBeGreaterThan(0);
+    });
+    completedTestCount += 1;
+  });
+
+  test("reserves a pending first handle against rename and preserves it through activation", async () => {
+    await withSchema(async (admin, connection) => {
+      await admin.query(
+        `INSERT INTO users (user_id,status,account) VALUES
+          ('account-pending-label','active',
+           '{"profile":{"display_name":"Pending"},"global_handle":{"global_handle_id":"handle-pending-label","label_display":"reservedlabel.pirate"}}'::jsonb),
+          ('account-published-label','active',
+           '{"profile":{"display_name":"Published"},"global_handle":{"global_handle_id":"handle-published-label","label_display":"publishedlabel.pirate"}}'::jsonb)`,
+      );
+      const personas = await admin.query<{
+        readonly account_id: string;
+        readonly persona_id: string;
+      }>("SELECT account_id,persona_id FROM personas WHERE is_first_persona ORDER BY account_id");
+      const pendingPersona = personas.rows.find(
+        ({ account_id }) => account_id === "account-pending-label",
+      )?.persona_id;
+      const publishedPersona = personas.rows.find(
+        ({ account_id }) => account_id === "account-published-label",
+      )?.persona_id;
+      if (pendingPersona === undefined || publishedPersona === undefined) {
+        throw new Error("first persona missing");
+      }
+      await activatePendingPersonaFixtures(admin, [publishedPersona]);
+      await expect(
+        admin.query(
+          `INSERT INTO public_handle_index (
+             handle_id,label_normalized,label_display,status,
+             owner_user_id,owner_persona_id,redirect_target_handle_id
+           ) VALUES (
+             'handle-rename-collision','reservedlabel','reservedlabel.pirate','active',
+             'account-published-label',$1,NULL
+           )`,
+          [publishedPersona],
+        ),
+      ).rejects.toMatchObject({
+        code: "23505",
+        constraint: "first_persona_handle_reservation_unique",
+      });
+
+      const wallets = makeControlPlanePersonaWalletRepository();
+      await run(
+        connection,
+        wallets.confirmEvm({
+          accountId: "account-pending-label",
+          personaId: pendingPersona,
+          attestation: {
+            sourceUserId: "privy-pending-label",
+            privyWalletId: "wallet-pending-label",
+            hdWalletIndex: 0,
+            address: "0x5555555555555555555555555555555555555555",
+          },
+        }),
+      );
+      const published = await admin.query<{ readonly count: string }>(
+        `SELECT count(*)::text AS count FROM public_handle_index
+          WHERE owner_persona_id=$1 AND label_normalized='reservedlabel'`,
+        [pendingPersona],
+      );
+      expect(published.rows[0]?.count).toBe("1");
     });
     completedTestCount += 1;
   });
@@ -478,7 +562,7 @@ suite("Postgres 17 account persona and EVM wallet persistence", () => {
       ]) {
         await expect(admin.query(statement, [personaA])).rejects.toThrow();
       }
-      const retirement = await run(
+      const firstRetirement = await runExit(
         connection,
         wallets.retire({
           accountId: "account-fence-a",
@@ -486,14 +570,37 @@ suite("Postgres 17 account persona and EVM wallet persistence", () => {
           idempotencyKey: "retire-persona-a",
         }),
       );
-      expect(retirement).toMatchObject({ persona_id: personaA, status: "retired" });
+      expect(failureOf(firstRetirement)).toEqual(
+        new PersonaWalletStoreConflict({ reason: "first-persona-required" }),
+      );
+      const personas = makeControlPlanePersonaRepository();
+      const retirementPersona = "persona_retirement_fixture";
+      await run(
+        connection,
+        personas.create({
+          accountId: "account-fence-a",
+          idempotencyKey: "create-retirement-persona",
+          intent: { displayName: "Retirement fixture", bio: null, preferredLocale: null },
+          personaId: retirementPersona,
+          createdAt: "2026-08-24T12:00:00.000Z",
+        }),
+      );
+      const retirement = await run(
+        connection,
+        wallets.retire({
+          accountId: "account-fence-a",
+          personaId: retirementPersona,
+          idempotencyKey: "retire-persona-sibling",
+        }),
+      );
+      expect(retirement).toMatchObject({ persona_id: retirementPersona, status: "retired" });
       expect(
         await run(
           connection,
           wallets.retire({
             accountId: "account-fence-a",
-            personaId: personaA,
-            idempotencyKey: "retire-persona-a",
+            personaId: retirementPersona,
+            idempotencyKey: "retire-persona-sibling",
           }),
         ),
       ).toEqual(retirement);
@@ -502,12 +609,12 @@ suite("Postgres 17 account persona and EVM wallet persistence", () => {
           `UPDATE persona_wallet_assignments
               SET status='active', tombstoned_at=NULL, updated_at=clock_timestamp()
             WHERE persona_id=$1`,
-          [personaA],
+          [retirementPersona],
         ),
       ).rejects.toThrow();
       const projection = await admin.query<{ readonly projection: Record<string, unknown> }>(
         "SELECT public_persona_projection($1) AS projection",
-        [personaA],
+        [retirementPersona],
       );
       expect(projection.rows[0]?.projection).toBeNull();
       expect(JSON.stringify(projection.rows[0]?.projection)).not.toContain("account-fence-a");
