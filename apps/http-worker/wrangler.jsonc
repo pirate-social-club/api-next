@@ -209,7 +209,7 @@
         "PIRATE_APP_JWT_AUDIENCE": "api-next-browser-staging",
         "PIRATE_APP_JWT_SCOPE": "api-next-browser-session-staging",
         "PIRATE_APP_JWT_TTL_SECONDS": "3600",
-        "PIRATE_APP_JWT_PUBLIC_KEY": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAx03V3E/gbfe4WWMdKXDZ\ny7oFf/uofI2NnIZYBVbppPZWe0LdiYLDH8OAJCr0g4Zsk+um5BC3W5aV/UzkfyTF\nxgv7TK3fsKfLcf/iGDGWXouKXGPfZjI2OLBxeQiFxmXPoALoxXLJplgCo9blRdGZ\nw13Z/5B9U/bpXA5n6qOhbMXaSDFpdTIn5FV8HEo2XHd3LxA96pNoI5UioO9xgzcl\nb6FDCxtDLGgq10tJFPbpUSv6gfGtv6qeNfwP+eqdeh521U2nOw4NrI+dKotq4MTv\nqDf9+mxKFYsi2coWNnJwXp2+wX4n9f3Kqb0wkIDUaXfS9sdNzxnhVv27seGy2LKq\nAwIDAQAB\n-----END PUBLIC KEY-----",
+        "PIRATE_APP_JWT_PUBLIC_KEY": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAw4jLjp1TcJIhpEebzDSJ\nvBr1KB9x7YgTzAMTx3niENzPlj4jCSIgIt9+hM4/CZ1MhrfG8crqVatpJXPa60gF\nnKfExaddHttx8RqkdxC5sX7P5qe6bwSQHBnGU01qbtdMK5aIUf9OGiLSuel0tsOD\ntEqAMnjSk486g5KlfacQ3OAZP0JpuDuj6jUKdAj6qQtEgPV2u1U2PMI6oA975hLH\nfqYSSMGRkt8sa9QpiHGTj6exjvA7bO/2nu6ylvzgrw984cnEgt3p3HTc4bY4HLuQ\njbK5F9q8CNBqh+xSMTDMWbIhUFM8HrSbcQYGH34YaMLIj6CsApMtYnfYjk4BPqo9\n/QIDAQAB\n-----END PUBLIC KEY-----",
         "PRIVY_APP_ID": "cmsw5pis300b80cladbxx7bsr",
         "PRIVY_JWKS_URL": "https://auth.privy.io/api/v1/apps/cmsw5pis300b80cladbxx7bsr/jwks.json",
         "PRIVY_JWT_AUDIENCE": "cmsw5pis300b80cladbxx7bsr",
