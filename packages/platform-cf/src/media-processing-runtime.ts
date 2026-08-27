@@ -143,7 +143,15 @@ async function fetchResponse(
       signal: request.signal,
       redirect: "error",
     });
-  } catch {
+  } catch (error) {
+    const diagnostic =
+      error instanceof Error
+        ? {
+            name: error.name,
+            message: error.message.replaceAll(request.url, "[endpoint]").slice(0, 200),
+          }
+        : { name: "UnknownTransportError", message: "non-error transport rejection" };
+    console.error("media_processing_transport_failure", diagnostic);
     throw new MediaProcessingTransportFailure("network");
   }
 }
