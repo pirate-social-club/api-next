@@ -44,6 +44,19 @@ const ProfileRow = Schema.Struct({
 
 const GlobalHandleRow = Schema.Struct({
   global_handle_id: Schema.String,
+  platform_handle_id: Schema.optional(Schema.String),
+  owner_persona_id: Schema.optional(Schema.String),
+  generation: Schema.optional(
+    Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER })),
+  ),
+  state_hash: Schema.optional(
+    Schema.String.check(
+      Schema.makeFilter((value) =>
+        /^[0-9a-f]{64}$/u.test(value) ? undefined : "Expected a lowercase SHA-256 digest",
+      ),
+    ),
+  ),
+  cleanup_rename_available: Schema.optional(Schema.Boolean),
   label_display: Schema.String,
   status: Schema.Literals(["active", "redirect", "retired"]),
   tier: Schema.Literals(["generated", "standard", "premium"]),

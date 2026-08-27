@@ -28,6 +28,7 @@ import {
   PreparePersonaEvmWallet,
   RetirePersona,
 } from "./personas.ts";
+import { platformPirateHandleRegistry } from "./platform-pirate-handles.ts";
 import {
   GetCommunityActivityLeaderboard,
   GetSongActivityLeaderboard,
@@ -65,6 +66,7 @@ export const registry = {
   PreparePersonaEvmWallet,
   ConfirmPersonaEvmWallet,
   RetirePersona,
+  ...platformPirateHandleRegistry,
   ...v1Registry,
   ...verification,
   ...money,

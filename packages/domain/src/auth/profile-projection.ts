@@ -110,6 +110,11 @@ export type ProfileRowInput = {
 
 export type GlobalHandleRowInput = {
   readonly global_handle_id: string;
+  readonly platform_handle_id?: string;
+  readonly owner_persona_id?: string;
+  readonly generation?: number;
+  readonly state_hash?: string;
+  readonly cleanup_rename_available?: boolean;
   readonly label_display: string;
   readonly status: "active" | "redirect" | "retired";
   readonly tier: "generated" | "standard" | "premium";
@@ -144,6 +149,11 @@ export type WalletAttachmentRowInput = {
 export type GlobalHandleResponse = {
   readonly id: string;
   readonly object: "global_handle";
+  readonly platform_handle_id?: string;
+  readonly owner_persona_id?: string;
+  readonly generation?: number;
+  readonly state_hash?: string;
+  readonly cleanup_rename_available?: boolean;
   readonly label: string;
   readonly tier: "generated" | "standard" | "premium";
   readonly status: "active" | "redirect" | "retired";
@@ -490,6 +500,13 @@ export function serializeGlobalHandle(row: GlobalHandleRowInput): GlobalHandleRe
   return {
     id: `gh_${row.global_handle_id}`,
     object: "global_handle",
+    ...(row.platform_handle_id === undefined ? {} : { platform_handle_id: row.platform_handle_id }),
+    ...(row.owner_persona_id === undefined ? {} : { owner_persona_id: row.owner_persona_id }),
+    ...(row.generation === undefined ? {} : { generation: row.generation }),
+    ...(row.state_hash === undefined ? {} : { state_hash: row.state_hash }),
+    ...(row.cleanup_rename_available === undefined
+      ? {}
+      : { cleanup_rename_available: row.cleanup_rename_available }),
     label: row.label_display,
     tier: row.tier,
     status: row.status,

@@ -38,6 +38,11 @@ const accountDocument: IdentityAccountDocument = {
   },
   global_handle: {
     global_handle_id: "handle_captain",
+    platform_handle_id: "handle_captain",
+    owner_persona_id: "persona_captain",
+    generation: 1,
+    state_hash: "a".repeat(64),
+    cleanup_rename_available: true,
     label_display: "captain.pirate",
     status: "active",
     tier: "generated",
@@ -98,7 +103,14 @@ describe("identity account application boundary", () => {
         id: "usr_canonical",
         object: "profile",
         primary_wallet_address: "0x1234",
-        global_handle: { label: "captain.pirate" },
+        global_handle: {
+          label: "captain.pirate",
+          platform_handle_id: "handle_captain",
+          owner_persona_id: "persona_captain",
+          generation: 1,
+          state_hash: "a".repeat(64),
+          cleanup_rename_available: true,
+        },
       },
       wallet_attachments: [{ wallet_attachment: "wallet_primary", is_primary: true }],
     });

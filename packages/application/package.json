@@ -52,6 +52,7 @@
     "./use-cases/feed/home-feed": "./src/use-cases/feed/home-feed.ts",
     "./use-cases/feed/public-community-threads": "./src/use-cases/feed/public-community-threads.ts",
     "./use-cases/handles/sales": "./src/use-cases/handles/sales.ts",
+    "./use-cases/handles/platform-pirate-rename": "./src/use-cases/handles/platform-pirate-rename.ts",
     "./use-cases/profile": "./src/use-cases/profile.ts",
     "./use-cases/personas": "./src/use-cases/personas.ts",
     "./use-cases/public-profile": "./src/use-cases/public-profile.ts",
