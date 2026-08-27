@@ -244,7 +244,7 @@ describe("config system (000 §9)", () => {
       >;
     };
 
-    for (const environment of [config, config.env?.staging, config.env?.production]) {
+    for (const environment of [config, config.env?.staging]) {
       expect(environment?.vars?.HNS_COMMUNITY_APP_API_ENABLED).toBe("false");
       expect(environment?.vars?.HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN).toBe("");
       expect(environment?.vars?.HNS_COMMUNITY_APP_API_ACCESS_ISSUER).toBe("");
@@ -260,6 +260,31 @@ describe("config system (000 §9)", () => {
         class_name: "HnsForwarderReplayStoreDO",
       });
     }
+    const production = config.env?.production;
+    expect(production?.vars?.HNS_COMMUNITY_APP_API_ENABLED).toBe("false");
+    expect(production?.vars?.HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN).toBe(
+      "https://hns-community-api.pirate.sc",
+    );
+    expect(production?.vars?.HNS_COMMUNITY_APP_API_ACCESS_ISSUER).toBe(
+      "https://piratesocialclub.cloudflareaccess.com",
+    );
+    expect(production?.vars?.HNS_COMMUNITY_APP_API_ACCESS_JWKS_URL).toBe(
+      "https://piratesocialclub.cloudflareaccess.com/cdn-cgi/access/certs",
+    );
+    expect(production?.vars?.HNS_COMMUNITY_APP_API_ACCESS_AUDIENCE).toBe(
+      "0654e5ea35b95c368a012a9e014351840f743253f55a606976d5bb8e628383c9",
+    );
+    expect(production?.vars?.HNS_FORWARDER_V3_KEY_REGISTRY_REFERENCE).toBe(
+      "pirate:hns-forwarder-v3:production-community-app:v1",
+    );
+    expect(production?.vars?.HNS_FORWARDER_V3_KEY_REGISTRY_VERSION).toBe("2026-08-27-01");
+    expect(production?.vars?.HNS_FORWARDER_V3_FRESHNESS_WINDOW_SECONDS).toBe("300");
+    expect(production?.vars?.HNS_FORWARDER_V3_FUTURE_CLOCK_SKEW_SECONDS).toBe("5");
+    expect(production?.secrets?.required).toContain("HNS_FORWARDER_V3_HMAC_KEY_REGISTRY");
+    expect(production?.durable_objects?.bindings).toContainEqual({
+      name: "HNS_COMMUNITY_APP_API_REPLAY",
+      class_name: "HnsForwarderReplayStoreDO",
+    });
     expect(config.migrations).toContainEqual({
       tag: "v4",
       new_sqlite_classes: ["HnsForwarderReplayStoreDO"],
@@ -333,7 +358,10 @@ describe("config system (000 §9)", () => {
     };
     const production = config.env?.production;
     expect(production?.workers_dev).toBe(true);
-    expect(production?.routes).toEqual([{ pattern: "api-next.pirate.sc", custom_domain: true }]);
+    expect(production?.routes).toEqual([
+      { pattern: "api-next.pirate.sc", custom_domain: true },
+      { pattern: "hns-community-api.pirate.sc", custom_domain: true },
+    ]);
     expect(production?.hyperdrive).toEqual([
       {
         binding: "CONTROL_PLANE",
