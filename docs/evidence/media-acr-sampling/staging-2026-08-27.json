@@ -1,0 +1,44 @@
+{
+  "schema_version": "media-acr-sampling-live-evidence-v1",
+  "date": "2026-08-27",
+  "provider": "acrcloud",
+  "region": "eu-west-1",
+  "adapter_revision": "acrcloud-adapter-v1",
+  "sample_policy": {
+    "container": "mp3",
+    "target_duration_ms": 12000,
+    "complete_source_frames_only": true,
+    "normalization_performed": false,
+    "transform_provider_used_for_sample": false
+  },
+  "positive_match": {
+    "source_sha256": "99fd025d87ed5ecf2ff59829f513edbdb1de2e9a25731e41faa5bee97bc7aea0",
+    "variant": "primary",
+    "sample_bytes": 288391,
+    "offset_ms": 3004,
+    "represented_duration_ms": 12016,
+    "provider_status_code": 0,
+    "outcome": "retained_reference_match",
+    "match_kind": "custom",
+    "retention": "permanent_staging_regression_reference"
+  },
+  "publish_happy_path": {
+    "source_sha256": "ecf3ca1ccd9d533bc2cb495bed358ce6ea13c2f6d4d9cfd9e09c01f04fe41ba0",
+    "variant": "primary",
+    "sample_bytes": 288391,
+    "offset_ms": 3004,
+    "represented_duration_ms": 12016,
+    "provider_status_code": 1001,
+    "outcome": "no_match"
+  },
+  "safety": {
+    "provider_contacted": true,
+    "credentials_read": true,
+    "deployment_performed": false,
+    "project_owned_synthetic_audio_only": true,
+    "credentials_recorded": false,
+    "provider_resource_identifiers_recorded": false,
+    "urls_headers_bodies_recorded": false,
+    "provider_match_identifiers_recorded": false
+  }
+}
