@@ -171,8 +171,6 @@ describe("Infisical secret drift audit", () => {
         ...stagingWithoutProvisioning.secrets,
         "/services/api-next": [
           ...stagingWithoutProvisioning.secrets["/services/api-next"],
-          "TRANSLOADIT_AUTH_KEY",
-          "TRANSLOADIT_AUTH_SECRET",
           "ACRCLOUD_ACCESS_KEY",
           "ACRCLOUD_ACCESS_SECRET",
           "ELEVENLABS_API_KEY",
