@@ -141,6 +141,16 @@
           "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
         }
       ],
+      "r2_buckets": [
+        {
+          "binding": "MEDIA_INGRESS",
+          "bucket_name": "pirate-media-ingress-staging"
+        },
+        {
+          "binding": "MEDIA_IMMUTABLE_ORIGINALS",
+          "bucket_name": "pirate-media-immutable-staging"
+        }
+      ],
       "vars": {
         "API_NEXT_ENV": "staging",
         "MEGAPOT_REWARDS_ENABLED": "true",
@@ -148,8 +158,8 @@
         "MEGAPOT_ATTESTATION_ID": "megapot-base-sepolia-v2",
         "MEGAPOT_REQUIRED_CONFIRMATIONS": "3",
         "MEDIA_UPLOADS_ENABLED": "false",
-        "MEDIA_INGRESS_R2_ACCOUNT_ID": "",
-        "MEDIA_INGRESS_R2_BUCKET_NAME": "",
+        "MEDIA_INGRESS_R2_ACCOUNT_ID": "08a4c22cf52e2ecae883e36f80a33f4a",
+        "MEDIA_INGRESS_R2_BUCKET_NAME": "pirate-media-ingress-staging",
         "REGISTRATION_IP_LIMIT": "5",
         "REGISTRATION_IP_WINDOW_SECONDS": "900",
         "REGISTRATION_APPLICATION_LIMIT": "100",
@@ -218,7 +228,9 @@
           "ZKPASSPORT_VERIFIER_SHARED_SECRET",
           "ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_SECRET",
           "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
-          "MEGAPOT_V2_RPC_URL"
+          "MEGAPOT_V2_RPC_URL",
+          "MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID",
+          "MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY"
         ]
       }
     },
