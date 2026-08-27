@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { ControlPlaneDb } from "@pirate/application";
 import type { IdentityAccountDocument } from "@pirate/application/use-cases/identity-account";
+import { platformPirateHandleStateV1Hash } from "@pirate/domain";
 import { Effect, Layer } from "effect";
 import {
   IdentityRepositoryError,
@@ -65,7 +66,7 @@ function fakeDb() {
     statements.push({ label: statement.label, values: statement.values });
     return Effect.succeed({
       rows: [],
-      rowCount: statement.label === "identity.public-handles.upsert-current" ? 1 : 0,
+      rowCount: statement.label === "identity.public-handles.assert-current" ? 1 : 0,
     });
   };
   const db: ControlPlaneDb["Service"] = {
@@ -97,7 +98,56 @@ function registrationDb(
 }
 
 describe("identity public-handle maintenance", () => {
-  test("writes the account and current handle index in one transaction, redirecting a rename", async () => {
+  test("enriches the private account projection with the current stable rename state", async () => {
+    const document = account(
+      "usr_captain",
+      "platform_handle_captain",
+      "new-0123456789abcdefabcd.pirate",
+    );
+    const execute: ControlPlaneDb["Service"]["execute"] = <Row>() =>
+      Effect.succeed({
+        rows: [
+          {
+            user_id: "usr_captain",
+            account: document,
+            platform_handle_id: "platform_handle_captain",
+            owner_persona_id: "persona_captain",
+            generation: "1",
+            cleanup_rename_consumed: false,
+            label_normalized: "new-0123456789abcdefabcd",
+          },
+        ] as unknown as readonly Row[],
+        rowCount: 1,
+      });
+    const db: ControlPlaneDb["Service"] = {
+      execute,
+      withTransaction: (use) => use({ execute: () => Effect.die("unused") }),
+    };
+    const found = await Effect.runPromise(
+      makeControlPlaneIdentityRepository()
+        .findUser("usr_captain")
+        .pipe(Effect.provideService(ControlPlaneDb, db)),
+    );
+    expect(found).not.toBeNull();
+    const enriched = found?.account as IdentityAccountDocument;
+    expect(enriched.global_handle).toMatchObject({
+      platform_handle_id: "platform_handle_captain",
+      owner_persona_id: "persona_captain",
+      generation: 1,
+      cleanup_rename_available: true,
+      state_hash: platformPirateHandleStateV1Hash({
+        platform_handle_id: "platform_handle_captain",
+        owner_persona_id: "persona_captain",
+        generation: 1,
+        handle_label: "new-0123456789abcdefabcd",
+        state: "active",
+        cleanup_rename_consumed: false,
+        redirect_to_label: null,
+      }).sha256,
+    });
+  });
+
+  test("updates profile data without bypassing the stable handle authority", async () => {
     const fake = fakeDb();
     const repository = makeControlPlaneIdentityRepository();
     await Effect.runPromise(
@@ -111,16 +161,14 @@ describe("identity public-handle maintenance", () => {
     expect(fake.statements.map(({ label }) => label)).toEqual([
       "identity.users.upsert-account",
       "identity.personas.sync-first-profile",
-      "identity.public-handles.redirect-previous",
-      "identity.public-handles.upsert-current",
+      "identity.public-handles.assert-current",
     ]);
-    expect(fake.statements[3]?.values).toEqual([
+    expect(fake.statements[2]?.values).toEqual([
       "handle_new",
       "captainnew",
       "captainnew.pirate",
       "usr_captain",
     ]);
-    expect(fake.statements[2]?.values).toEqual(["usr_captain", "handle_new"]);
   });
 
   test("rejects malformed or non-canonical account documents before writing", async () => {

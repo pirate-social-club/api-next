@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.25.0",
+  "releaseType": "platform-pirate-cleanup-rename-v1",
+  "wireContract": "spec-012-section-5.2",
+  "sourceCommit": "73a1255",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.25.0.tgz",
+    "sha256": "1d10384bdea723b7a788c2d7af377fde9f067216e2a01b308a55ab3e7c99597c",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@dccaf3cf3dcfb46dfa3bffc3539cd870d10fdf59a5f570f75721fc24c4ccf6fa",
+    "openapiSha256": "dccaf3cf3dcfb46dfa3bffc3539cd870d10fdf59a5f570f75721fc24c4ccf6fa",
+    "clientSha256": "1368abc8e0461f03e54eb79996eb1847e29becfc3fbb6f5404eb1662aa5a0ed8"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "passed",
+      "baselineCommit": "ea402ea",
+      "reason": "The owner-ratified Spec 012 section 5.2 adds the one-time platform Pirate cleanup rename contract."
+    },
+    "focusedRuntimeTests": "20 passed, including browser-session and bearer-rejection fixtures",
+    "postgresFocusedSuites": "29 passed, including post-rename account decode and acceptance fences",
+    "postgresRequiredSuite": "258 passed, 3 skipped; all 27 sentinels passed",
+    "unitSuite": "1973 passed, 296 skipped",
+    "workerdSuites": "87 passed",
+    "packageVerifier": "passed",
+    "repositoryCheck": "passed"
+  }
+}

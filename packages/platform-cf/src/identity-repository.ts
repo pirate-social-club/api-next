@@ -9,6 +9,7 @@ import {
 } from "@pirate/application";
 import { IdentityAccountDocument } from "@pirate/application/use-cases/identity-account";
 import { PersonaEvmWalletPreparationV1 } from "@pirate/contracts";
+import { platformPirateHandleStateV1Hash } from "@pirate/domain";
 import { Data, Effect, type Layer, Result, Schema } from "effect";
 
 export class IdentityRepositoryError extends Data.TaggedError("IdentityRepositoryError")<{
@@ -85,6 +86,11 @@ type ExistingCredentialOutcome = Exclude<
 type UserRow = {
   readonly user_id: unknown;
   readonly account: unknown;
+  readonly platform_handle_id: unknown;
+  readonly owner_persona_id: unknown;
+  readonly generation: unknown;
+  readonly cleanup_rename_consumed: unknown;
+  readonly label_normalized: unknown;
 };
 
 type AliasRow = {
@@ -112,6 +118,51 @@ const invalid = (): IdentityRepositoryError => new IdentityRepositoryError({ rea
 
 const missing = (deleted = false): IdentityRepositoryError =>
   new IdentityRepositoryError({ reason: deleted ? "deleted" : "missing" });
+
+const enrichPlatformPirateHandle = (row: UserRow): unknown => {
+  if (
+    typeof row.platform_handle_id !== "string" ||
+    typeof row.owner_persona_id !== "string" ||
+    typeof row.label_normalized !== "string" ||
+    typeof row.cleanup_rename_consumed !== "boolean"
+  ) {
+    return row.account;
+  }
+  const generation = Number(row.generation);
+  if (!Number.isSafeInteger(generation) || generation < 1) return row.account;
+
+  try {
+    const document = Schema.decodeUnknownSync(IdentityAccountDocument)(row.account);
+    if (
+      document.global_handle.global_handle_id !== row.platform_handle_id ||
+      document.global_handle.label_display !== `${row.label_normalized}.pirate`
+    ) {
+      return row.account;
+    }
+    const stateHash = platformPirateHandleStateV1Hash({
+      platform_handle_id: row.platform_handle_id,
+      owner_persona_id: row.owner_persona_id,
+      generation,
+      handle_label: row.label_normalized,
+      state: "active",
+      cleanup_rename_consumed: row.cleanup_rename_consumed,
+      redirect_to_label: null,
+    }).sha256;
+    return {
+      ...document,
+      global_handle: {
+        ...document.global_handle,
+        platform_handle_id: row.platform_handle_id,
+        owner_persona_id: row.owner_persona_id,
+        generation,
+        state_hash: stateHash,
+        cleanup_rename_available: !row.cleanup_rename_consumed,
+      },
+    };
+  } catch {
+    return row.account;
+  }
+};
 
 const credentialOutcome = (
   row: CredentialRow | undefined,
@@ -171,13 +222,24 @@ export function makeControlPlaneIdentityRepository(): IdentityRepository {
       const db = yield* ControlPlaneDb;
       const result = yield* db.execute<UserRow>({
         label: "identity.users.find-active",
-        text: "SELECT user_id, account FROM users WHERE user_id = $1 AND status = 'active'",
+        text: `SELECT account.user_id,account.account,
+                      stable.platform_handle_id,stable.owner_persona_id,
+                      stable.generation,stable.cleanup_rename_consumed,
+                      active.label_normalized
+                 FROM users AS account
+                 LEFT JOIN platform_pirate_handles AS stable
+                   ON stable.actor_account_id=account.user_id
+                 LEFT JOIN public_handle_index AS active
+                   ON active.handle_id=stable.active_handle_id
+                  AND active.platform_handle_id=stable.platform_handle_id
+                  AND active.status='active'
+                WHERE account.user_id=$1 AND account.status='active'`,
         values: [userId],
         readonly: true,
       });
       const row = result.rows[0];
       if (row === undefined || typeof row.user_id !== "string") return null;
-      return { userId: row.user_id, account: row.account };
+      return { userId: row.user_id, account: enrichPlatformPirateHandle(row) };
     });
 
   const resolveCanonical: IdentityRepository["resolveCanonical"] = ({ sourceUserId }) =>
@@ -288,41 +350,23 @@ export function makeControlPlaneIdentityRepository(): IdentityRepository {
               values: [userId, encodedAccount],
               readonly: false,
             });
-            yield* transaction.execute({
-              label: "identity.public-handles.redirect-previous",
-              text: `UPDATE public_handle_index
-                      SET status = 'redirect',
-                          redirect_target_handle_id = $2,
-                          updated_at = now()
-                    WHERE owner_persona_id = (
-                      SELECT persona_id FROM personas
-                       WHERE account_id=$1 AND is_first_persona
-                    )
-                      AND status IN ('active', 'redirect')
-                      AND handle_id <> $2`,
-              values: [userId, document.global_handle.global_handle_id],
-              readonly: false,
-            });
             const currentHandle = yield* transaction.execute({
-              label: "identity.public-handles.upsert-current",
-              text: `INSERT INTO public_handle_index (
-                     handle_id, label_normalized, label_display, status,
-                     owner_user_id, owner_persona_id, redirect_target_handle_id
-                   ) SELECT $1, $2, $3, 'active', $4, persona.persona_id, NULL
-                       FROM personas AS persona
-                      WHERE persona.account_id = $4
-                        AND persona.status = 'active'
-                        AND persona.is_first_persona
-                   ON CONFLICT (handle_id) DO UPDATE
-                     SET label_normalized = EXCLUDED.label_normalized,
-                         label_display = EXCLUDED.label_display,
-                         status = 'active',
-                         owner_user_id = EXCLUDED.owner_user_id,
-                         owner_persona_id = EXCLUDED.owner_persona_id,
-                         redirect_target_handle_id = NULL,
-                         updated_at = now()
-                   WHERE public_handle_index.owner_user_id = EXCLUDED.owner_user_id
-                     AND public_handle_index.owner_persona_id = EXCLUDED.owner_persona_id`,
+              label: "identity.public-handles.assert-current",
+              text: `SELECT 1
+                       FROM platform_pirate_handles AS stable
+                       JOIN public_handle_index AS active
+                         ON active.handle_id=stable.active_handle_id
+                        AND active.platform_handle_id=stable.platform_handle_id
+                        AND active.status='active'
+                       JOIN personas AS persona
+                         ON persona.persona_id=stable.owner_persona_id
+                        AND persona.account_id=stable.actor_account_id
+                      WHERE stable.actor_account_id=$4
+                        AND stable.platform_handle_id=$1
+                        AND active.label_normalized=$2
+                        AND active.label_display=$3
+                        AND persona.status='active'
+                        AND persona.is_first_persona`,
               values: [
                 document.global_handle.global_handle_id,
                 label.normalized,

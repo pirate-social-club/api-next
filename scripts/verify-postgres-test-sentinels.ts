@@ -189,6 +189,13 @@ export const POSTGRES_TEST_SENTINELS: readonly PostgresSentinel[] = [
       "/tmp/api-next-control-plane-postgres-community-moderation-suite-complete",
     contents: "api-next-control-plane-postgres-community-moderation-suite-complete\n",
   },
+  {
+    name: "postgres platform Pirate cleanup rename",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_PLATFORM_PIRATE_RENAME_TEST_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-platform-pirate-rename-suite-complete",
+    contents: "api-next-control-plane-postgres-platform-pirate-rename-suite-complete\n",
+  },
 ];
 
 export async function verifyPostgresTestSentinels(

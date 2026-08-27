@@ -39,6 +39,7 @@ export * from "./use-cases/community/creation-requirement-projection.ts";
 export * from "./use-cases/community/get-canonical-community-route.ts";
 export { canonicalBodyHash } from "./use-cases/content/common.ts";
 export * from "./use-cases/content/text-post.ts";
+export * from "./use-cases/handles/platform-pirate-rename.ts";
 export * from "./use-cases/identity-registration.ts";
 export * from "./use-cases/identity-registration-handler.ts";
 export * from "./use-cases/personas.ts";

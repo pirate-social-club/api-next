@@ -238,6 +238,52 @@ export class CodedConflict extends Data.TaggedError("CodedConflict")<
   readonly retryable = false as const;
 }
 
+export class PlatformPirateInvalidLabel extends Data.TaggedError(
+  "PlatformPirateInvalidLabel",
+)<WireArgs> {
+  readonly status = 409 as const;
+  readonly code = "invalid_label" as const;
+  readonly retryable = false as const;
+}
+
+export class PlatformPirateHandleUnavailable extends Data.TaggedError(
+  "PlatformPirateHandleUnavailable",
+)<WireArgs> {
+  readonly status = 409 as const;
+  readonly code = "platform_handle_unavailable" as const;
+  readonly retryable = false as const;
+}
+
+export class PirateHandleUnavailable extends Data.TaggedError("PirateHandleUnavailable")<WireArgs> {
+  readonly status = 409 as const;
+  readonly code = "handle_unavailable" as const;
+  readonly retryable = false as const;
+}
+
+export class StalePlatformPirateHandle extends Data.TaggedError(
+  "StalePlatformPirateHandle",
+)<WireArgs> {
+  readonly status = 409 as const;
+  readonly code = "stale_platform_handle" as const;
+  readonly retryable = false as const;
+}
+
+export class CleanupPirateRenameUnavailable extends Data.TaggedError(
+  "CleanupPirateRenameUnavailable",
+)<WireArgs> {
+  readonly status = 409 as const;
+  readonly code = "cleanup_rename_unavailable" as const;
+  readonly retryable = false as const;
+}
+
+export class PlatformPirateRenameIdempotencyConflict extends Data.TaggedError(
+  "PlatformPirateRenameIdempotencyConflict",
+)<WireArgs> {
+  readonly status = 409 as const;
+  readonly code = "idempotency_conflict" as const;
+  readonly retryable = false as const;
+}
+
 export class TelegramStudyUnavailable extends Data.TaggedError(
   "TelegramStudyUnavailable",
 )<WireArgs> {
@@ -426,6 +472,12 @@ export type ApiError =
   | VerificationStartInProgress
   | VerificationStartNewIntentRequired
   | CodedConflict
+  | PlatformPirateInvalidLabel
+  | PlatformPirateHandleUnavailable
+  | PirateHandleUnavailable
+  | StalePlatformPirateHandle
+  | CleanupPirateRenameUnavailable
+  | PlatformPirateRenameIdempotencyConflict
   | TelegramStudyUnavailable
   | SongContentHashMismatch
   | AnalysisBlocked

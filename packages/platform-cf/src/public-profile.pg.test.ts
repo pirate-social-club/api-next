@@ -1,10 +1,12 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { getPublicProfileByHandle } from "@pirate/application/use-cases/public-profile";
+import { platformPirateHandleStateV1Hash, platformPirateLabelPolicyV1 } from "@pirate/domain";
 import { Effect } from "effect";
 import { Client } from "pg";
 import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 import { makeControlPlaneIdentityStore } from "./identity-repository.ts";
 import { createWalletBackedAccountFixture } from "./persona-wallet.pg-fixture.ts";
+import { makeControlPlanePlatformPirateHandleStore } from "./platform-pirate-handle-repository.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { makeControlPlanePublicProfileStore } from "./public-profile-repository.ts";
 
@@ -119,14 +121,38 @@ suite("Postgres 17 public profile by handle", () => {
 
       await createWalletBackedAccountFixture(admin, {
         userId: "usr_public",
-        account: account("usr_public", "handle_old", "oldcaptain.pirate"),
+        account: account("usr_public", "handle_old", "new-0123456789abcdefabcd.pirate"),
       });
-      await Effect.runPromise(
-        identityStore.upsertAccount?.({
-          userId: "usr_public",
-          account: account("usr_public", "handle_new", "captainpublic.pirate"),
-        }) ?? Effect.die("identity upsert is not installed"),
+      const owner = (
+        await admin.query<{ persona_id: string }>(
+          "SELECT persona_id FROM personas WHERE account_id='usr_public' AND is_first_persona",
+        )
+      ).rows[0]?.persona_id;
+      if (owner === undefined) throw new Error("missing first public-profile persona");
+      const renameStore = makeControlPlanePlatformPirateHandleStore(runtime);
+      const renamed = await Effect.runPromise(
+        renameStore.rename({
+          accountId: "usr_public",
+          personaId: owner,
+          platformHandleId: "handle_old",
+          expectedStateHash: platformPirateHandleStateV1Hash({
+            platform_handle_id: "handle_old",
+            owner_persona_id: owner,
+            generation: 1,
+            handle_label: "new-0123456789abcdefabcd",
+            state: "active",
+            cleanup_rename_consumed: false,
+            redirect_to_label: null,
+          }).sha256,
+          desiredLabel: "captainpublic",
+          confusabilityKey: "captainpublic",
+          desiredLabelValid: true,
+          policy: platformPirateLabelPolicyV1(),
+          idempotencyKey: "public-profile-cleanup",
+          requestHash: "a".repeat(64),
+        }),
       );
+      expect(renamed.kind).toBe("renamed");
       await admin.query(
         `INSERT INTO communities
            (community_id, display_name, created_by_user_id, created_at, updated_at)
@@ -144,53 +170,53 @@ suite("Postgres 17 public profile by handle", () => {
       expect(current.is_canonical).toBe(true);
       expect(current.requested_handle_label).toBe("captainpublic.pirate");
       expect(current.resolved_handle_label).toBe("captainpublic.pirate");
-      const ownerPersona = (
-        await admin.query<{ persona_id: string }>(
-          "SELECT persona_id FROM personas WHERE account_id='usr_public' AND is_first_persona",
-        )
-      ).rows[0]?.persona_id;
-      if (ownerPersona === undefined) throw new Error("missing first public-profile persona");
-      expect(current.profile.id).toBe(ownerPersona);
+      expect(current.profile.id).toBe(owner);
       expect(current.created_communities).toEqual([]);
 
       const redirected = await Effect.runPromise(
-        getPublicProfileByHandle({ handle: "oldcaptain" }, { publicProfileStore }),
+        getPublicProfileByHandle({ handle: "new-0123456789abcdefabcd" }, { publicProfileStore }),
       );
       expect(redirected.is_canonical).toBe(false);
       expect(redirected.profile).toEqual(current.profile);
       expect(redirected.resolved_handle_label).toBe("captainpublic.pirate");
 
-      await Effect.runPromise(
-        identityStore.upsertAccount?.({
-          userId: "usr_public",
-          account: account("usr_public", "handle_latest", "latestcaptain.pirate"),
-        }) ?? Effect.die("identity upsert is not installed"),
-      );
-      for (const requestedHandle of ["oldcaptain", "captainpublic"]) {
-        const historical = await Effect.runPromise(
-          getPublicProfileByHandle({ handle: requestedHandle }, { publicProfileStore }),
-        );
-        expect(historical.is_canonical).toBe(false);
-        expect(historical.resolved_handle_label).toBe("latestcaptain.pirate");
-        expect(historical.profile.id).toBe(current.profile.id);
-        expect(historical.profile.global_handle.id).toBe("gh_handle_latest");
-        expect(historical.profile.global_handle.label).toBe("latestcaptain.pirate");
-      }
-
-      const upsertAccount = identityStore.upsertAccount;
-      if (upsertAccount === undefined) throw new Error("identity upsert is not installed");
       await createWalletBackedAccountFixture(admin, {
         userId: "usr_collision",
-        account: account("usr_collision", "handle_collision_seed", "collisionseed.pirate"),
-      });
-      await expect(
-        Effect.runPromise(
-          upsertAccount({
-            userId: "usr_collision",
-            account: account("usr_collision", "handle_collision", "captainpublic.pirate"),
-          }),
+        account: account(
+          "usr_collision",
+          "handle_collision_seed",
+          "new-11111111111111111111.pirate",
         ),
-      ).rejects.toMatchObject({ _tag: "ControlPlaneStatementFailed" });
+      });
+      const collisionOwner = (
+        await admin.query<{ persona_id: string }>(
+          "SELECT persona_id FROM personas WHERE account_id='usr_collision' AND is_first_persona",
+        )
+      ).rows[0]?.persona_id;
+      if (collisionOwner === undefined) throw new Error("missing collision persona");
+      const collision = await Effect.runPromise(
+        renameStore.rename({
+          accountId: "usr_collision",
+          personaId: collisionOwner,
+          platformHandleId: "handle_collision_seed",
+          expectedStateHash: platformPirateHandleStateV1Hash({
+            platform_handle_id: "handle_collision_seed",
+            owner_persona_id: collisionOwner,
+            generation: 1,
+            handle_label: "new-11111111111111111111",
+            state: "active",
+            cleanup_rename_consumed: false,
+            redirect_to_label: null,
+          }).sha256,
+          desiredLabel: "captainpublic",
+          confusabilityKey: "captainpublic",
+          desiredLabelValid: true,
+          policy: platformPirateLabelPolicyV1(),
+          idempotencyKey: "public-profile-collision",
+          requestHash: "b".repeat(64),
+        }),
+      );
+      expect(collision).toEqual({ kind: "handle_unavailable" });
       const rolledBack = await admin.query<{ readonly count: string }>(
         `SELECT count(*)::text AS count FROM public_handle_index
           WHERE owner_user_id='usr_collision' AND label_normalized='captainpublic'`,
@@ -274,11 +300,27 @@ suite("Postgres 17 public profile by handle", () => {
         `INSERT INTO users (user_id, account) VALUES
           ('usr_foreign', '{}'::jsonb), ('usr_cycle', '{}'::jsonb)`,
       );
+      const ownerPersona = (
+        await admin.query<{ persona_id: string }>(
+          "SELECT persona_id FROM personas WHERE account_id='usr_owner' AND is_first_persona",
+        )
+      ).rows[0]?.persona_id;
+      if (ownerPersona === undefined) throw new Error("missing owner persona");
       await admin.query(
         `INSERT INTO public_handle_index
-          (handle_id, label_normalized, label_display, status, owner_user_id)
-         VALUES ('handle_foreign', 'foreigncaptain', 'foreigncaptain.pirate', 'active', 'usr_foreign'),
-                ('handle_retired', 'retiredcaptain', 'retiredcaptain.pirate', 'retired', 'usr_owner')`,
+          (handle_id, label_normalized, label_display, status, owner_user_id,owner_persona_id,
+           platform_handle_id,generation)
+         SELECT 'handle_foreign','foreigncaptain','foreigncaptain.pirate','active',
+                'usr_foreign',persona_id,'handle_foreign',1
+           FROM personas WHERE account_id='usr_foreign' AND is_first_persona`,
+      );
+      await admin.query(
+        `INSERT INTO public_handle_index
+          (handle_id, label_normalized, label_display, status, owner_user_id,owner_persona_id,
+           platform_handle_id,generation)
+         VALUES ('handle_retired', 'retiredcaptain', 'retiredcaptain.pirate', 'retired',
+                 'usr_owner',$1,'handle_owned',2)`,
+        [ownerPersona],
       );
 
       await expectDeferredFailure(
@@ -331,7 +373,7 @@ suite("Postgres 17 public profile by handle", () => {
           ('handle_cycle2_a', 'cycle2a', 'cycle2a.pirate', 'redirect', 'usr_cycle', 'handle_cycle2_b'),
           ('handle_cycle2_b', 'cycle2b', 'cycle2b.pirate', 'redirect', 'usr_cycle', 'handle_cycle2_a')`,
         [],
-        "23514",
+        "23503",
       );
       await expectDeferredFailure(
         admin,
@@ -342,7 +384,7 @@ suite("Postgres 17 public profile by handle", () => {
           ('handle_cycle3_b', 'cycle3b', 'cycle3b.pirate', 'redirect', 'usr_cycle', 'handle_cycle3_c'),
           ('handle_cycle3_c', 'cycle3c', 'cycle3c.pirate', 'redirect', 'usr_cycle', 'handle_cycle3_a')`,
         [],
-        "23514",
+        "23503",
       );
     });
     completedTestCount += 1;

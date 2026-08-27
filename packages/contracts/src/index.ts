@@ -15,6 +15,7 @@ export * from "./money.ts";
 export * from "./namespace-ownership.ts";
 export * from "./openapi-diff.ts";
 export * from "./personas.ts";
+export * from "./platform-pirate-handles.ts";
 export * from "./provider-presentation.ts";
 export * from "./registry.ts";
 export * from "./rewards-qualification.ts";

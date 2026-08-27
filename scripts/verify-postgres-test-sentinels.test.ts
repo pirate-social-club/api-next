@@ -252,6 +252,26 @@ describe("Postgres suite sentinel verification", () => {
     ).toHaveLength(2);
   });
 
+  test("keeps platform Pirate cleanup rename fail-closed in Postgres CI", async () => {
+    const workflow = await readFile(
+      new URL("../.github/workflows/ci.yml", import.meta.url),
+      "utf8",
+    );
+
+    expect(workflow).toContain(
+      "packages/platform-cf/src/platform-pirate-handle-repository.pg.test.ts",
+    );
+    expect(workflow).toContain(
+      "CONTROL_PLANE_POSTGRES_PLATFORM_PIRATE_RENAME_TEST_SENTINEL: " +
+        "/tmp/api-next-control-plane-postgres-platform-pirate-rename-suite-complete",
+    );
+    expect(
+      workflow.match(
+        /\/tmp\/api-next-control-plane-postgres-platform-pirate-rename-suite-complete/gu,
+      ),
+    ).toHaveLength(2);
+  });
+
   test("keeps media persistence fail-closed in Postgres CI", async () => {
     const workflow = await readFile(
       new URL("../.github/workflows/ci.yml", import.meta.url),

@@ -1,14 +1,13 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { ControlPlaneDb } from "@pirate/application";
 import type { IdentityAccountDocument } from "@pirate/application/use-cases/identity-account";
 import { Cause, Effect, Exit, Result } from "effect";
 import { Client } from "pg";
+import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 import {
   makeControlPlaneIdentityRepository,
   makeControlPlaneIdentityStore,
 } from "./identity-repository";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres";
-import { applyPostgresMigrations, type PostgresMigration } from "./postgres-migrations";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -21,55 +20,6 @@ const sentinelPath =
   "/tmp/api-next-control-plane-postgres-identity-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-identity-suite-complete\n";
 let completedTestCount = 0;
-
-const migrations: readonly PostgresMigration[] = [
-  {
-    version: "0001_v1_product_slice.sql",
-    checksum: "6592c575801a7964dc5f051a611ec823a44db966759622d82a12ef964df71e93",
-    sql: await Bun.file(
-      new URL("../../../db/postgres/migrations/0001_v1_product_slice.sql", import.meta.url),
-    ).text(),
-  },
-  {
-    version: "0002_identity.sql",
-    checksum: "c017a6681711f3edcb7e0cb247b60c96ed847bf94c766974cda2e74664f37112",
-    sql: await Bun.file(
-      new URL("../../../db/postgres/migrations/0002_identity.sql", import.meta.url),
-    ).text(),
-  },
-  ...(await Promise.all(
-    (
-      [
-        [
-          "0006_public_profile_handle_index.sql",
-          "200ca6edac5a8ba9a2a20c709a04652f90547baacae867743e0a15cef71fa522",
-        ],
-        [
-          "0007_public_profile_handle_invariants.sql",
-          "bd7f740d0003f3897cf8b508138fcdf470a8d0f102032af484244ac32466aeb1",
-        ],
-        [
-          "0015_identity_credentials.sql",
-          "c903d74fdc282b1ab3b0c0be3d46758ba1c50f30282c0d02976b52c43b92966f",
-        ],
-        [
-          "0016_identity_credential_invariants.sql",
-          "b9d94049c5e796b567f9d11e8b210d147561fd3b0e38abaea60a5c73fe436220",
-        ],
-        [
-          "0017_identity_credential_delete_guard.sql",
-          "c66ac7d2076b9db3f25f31a5a96fddf7569e1aaf4bfc6ba931e5d2400d5a8aaa",
-        ],
-      ] as const
-    ).map(async ([version, checksum]) => ({
-      version,
-      checksum,
-      sql: await Bun.file(
-        new URL(`../../../db/postgres/migrations/${version}`, import.meta.url),
-      ).text(),
-    })),
-  )),
-];
 
 const account = (userId: string, handleId: string, label: string): IdentityAccountDocument => ({
   user: {
@@ -152,14 +102,7 @@ async function withSchema<A>(use: (connection: string, admin: Client) => Promise
 }
 
 async function apply(connection: string): Promise<void> {
-  await Effect.runPromise(
-    Effect.scoped(
-      Effect.gen(function* () {
-        yield* ControlPlaneDb;
-        yield* applyPostgresMigrations(migrations);
-      }).pipe(Effect.provide(makeDirectPostgresControlPlaneLayer(connection))),
-    ),
-  );
+  await runPostgresMigrations({ connectionString: connection });
 }
 
 function failureOf<A, E>(exit: Exit.Exit<A, E>): E {

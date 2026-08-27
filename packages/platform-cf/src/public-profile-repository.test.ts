@@ -11,6 +11,7 @@ import { makeControlPlanePublicProfileRepository } from "./public-profile-reposi
 
 const active = (overrides: Record<string, unknown> = {}) => ({
   handle_id: "handle_new",
+  platform_handle_id: "platform_handle_new",
   label_normalized: "captainpublic",
   label_display: "captainpublic.pirate",
   status: "active",
@@ -98,7 +99,7 @@ describe("public profile handle index repository", () => {
     expect(value).toMatchObject({
       personaId: "persona_source",
       displayName: "Captain Public",
-      handleId: "handle_new",
+      handleId: "platform_handle_new",
       handleLabelNormalized: "captainpublic",
       handleStatus: "active",
     });

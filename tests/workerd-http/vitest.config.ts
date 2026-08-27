@@ -54,6 +54,10 @@ const alias = {
     "../../packages/application/src/use-cases/handles/sales.ts",
     import.meta.url,
   ).pathname,
+  "@pirate/application/use-cases/handles/platform-pirate-rename": new URL(
+    "../../packages/application/src/use-cases/handles/platform-pirate-rename.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/application/use-cases/community/get-canonical-community-route": new URL(
     "../../packages/application/src/use-cases/community/get-canonical-community-route.ts",
     import.meta.url,

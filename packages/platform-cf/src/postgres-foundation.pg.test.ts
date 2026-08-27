@@ -309,6 +309,12 @@ const openAiModerationDriverCutoverMigrationSql = await Bun.file(
     import.meta.url,
   ),
 ).text();
+const globalPirateHandleCleanupRenameMigrationSql = await Bun.file(
+  new URL(
+    "../../../db/postgres/migrations/0062_global_pirate_handle_cleanup_rename.sql",
+    import.meta.url,
+  ),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -621,6 +627,11 @@ const openAiModerationDriverCutoverMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0061_openai_moderation_driver_cutover.sql"] ?? "",
   sql: openAiModerationDriverCutoverMigrationSql,
 };
+const globalPirateHandleCleanupRenameMigration: PostgresMigration = {
+  version: "0062_global_pirate_handle_cleanup_rename.sql",
+  checksum: checksumManifest.migrations["0062_global_pirate_handle_cleanup_rename.sql"] ?? "",
+  sql: globalPirateHandleCleanupRenameMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -683,6 +694,7 @@ const migrations: readonly PostgresMigration[] = [
   communityModerationAuthorityPolicyMigration,
   personaWalletProvisioningMigration,
   openAiModerationDriverCutoverMigration,
+  globalPirateHandleCleanupRenameMigration,
 ];
 
 function checksum(value: string): string {
@@ -969,6 +981,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       expect(checksum(openAiModerationDriverCutoverMigrationSql)).toBe(
         openAiModerationDriverCutoverMigration.checksum,
       );
+      expect(checksum(globalPirateHandleCleanupRenameMigrationSql)).toBe(
+        globalPirateHandleCleanupRenameMigration.checksum,
+      );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
@@ -1194,6 +1209,10 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "persona_wallet_preparation_replays",
         "personas",
         "platform_operator_route_authority_grants",
+        "platform_pirate_handle_rate_submissions",
+        "platform_pirate_handle_rename_actions",
+        "platform_pirate_handles",
+        "platform_pirate_label_policy_revisions",
         "platform_referral_revenue_ledger",
         "platform_sponsorship_budget_entries",
         "platform_sponsorship_budgets",
