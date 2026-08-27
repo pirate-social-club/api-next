@@ -10,7 +10,8 @@ import { Effect } from "effect";
 const encoder = new TextEncoder();
 const accountIdPattern = /^[0-9a-f]{32}$/u;
 const bucketPattern = /^[a-z0-9](?:[a-z0-9.-]{1,61}[a-z0-9])?$/u;
-const keyPattern = /^media\/ingress\/[A-Za-z0-9._/-]{1,900}$/u;
+const keyPattern =
+  /^reservations\/media-reservation-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/source$/u;
 const mediaTypePattern = /^audio\/[a-z0-9][a-z0-9.+-]{0,126}$/u;
 
 export type MediaIngressPresignerOptions = Readonly<{

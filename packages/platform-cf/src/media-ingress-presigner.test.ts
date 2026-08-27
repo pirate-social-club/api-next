@@ -16,14 +16,17 @@ describe("R2 media ingress presigner", () => {
     const result = await Effect.runPromise(
       makeR2MediaIngressPresigner(options).presign(
         mediaIngressUploadPresignRequest({
-          serverOwnedObjectKey: "media/ingress/reservation-1/audio",
+          serverOwnedObjectKey:
+            "reservations/media-reservation-00000000-0000-4000-8000-000000000001/source",
           contentType: "audio/mpeg",
         }),
       ),
     );
     const url = new URL(result.url);
     expect(url.origin).toBe("https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com");
-    expect(url.pathname).toBe("/pirate-media-ingress-staging/media/ingress/reservation-1/audio");
+    expect(url.pathname).toBe(
+      "/pirate-media-ingress-staging/reservations/media-reservation-00000000-0000-4000-8000-000000000001/source",
+    );
     expect(url.searchParams.get("X-Amz-Algorithm")).toBe("AWS4-HMAC-SHA256");
     expect(url.searchParams.get("X-Amz-Date")).toBe("20260826T123456Z");
     expect(url.searchParams.get("X-Amz-Expires")).toBe("900");
@@ -49,7 +52,8 @@ describe("R2 media ingress presigner", () => {
       Effect.runPromise(
         makeR2MediaIngressPresigner({ ...options, secretAccessKey: "PENDING" }).presign(
           mediaIngressUploadPresignRequest({
-            serverOwnedObjectKey: "media/ingress/reservation-1/audio",
+            serverOwnedObjectKey:
+              "reservations/media-reservation-00000000-0000-4000-8000-000000000001/source",
             contentType: "audio/mpeg",
           }),
         ),
