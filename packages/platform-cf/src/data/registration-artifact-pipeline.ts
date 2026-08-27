@@ -258,8 +258,7 @@ export function makePostgresDataRegistrationArtifactAuthorityReader(
             canonicalSha256: nullableText(row, "canonical_sha256"),
             byteLength: row.byte_length === null ? null : positiveBigint(row.byte_length),
             evidenceRef: text(row, "evidence_ref"),
-            verifiedAt:
-              row.verified_at === null ? null : new Date(text(row, "verified_at")).toISOString(),
+            verifiedAt: row.verified_at === null ? null : instant(row, "verified_at"),
           }));
         }),
       ),
