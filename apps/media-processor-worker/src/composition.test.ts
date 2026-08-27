@@ -15,9 +15,6 @@ const disabledEnv = (): MediaProcessorRuntimeEnv => ({
     }),
     createBatch: async () => [],
   },
-  get TRANSLOADIT_AUTH_KEY(): string {
-    throw new Error("disabled composition read a provider secret");
-  },
   get ACRCLOUD_ACCESS_KEY(): string {
     throw new Error("disabled composition read a provider secret");
   },

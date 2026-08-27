@@ -12,13 +12,12 @@ import {
   makeR2EmbeddedMetadataPort,
   makeR2MediaProcessingArtifactReader,
   makeR2Mp3SampleMediaTransform,
-  makeTransloaditFetchTransport,
 } from "@pirate/platform-cf/media-processing-runtime";
 import { makeMediaProcessingStore } from "@pirate/platform-cf/media-processing-store";
 import { makeAcrCloudAdapter } from "@pirate/platform-cf/media-providers/acrcloud";
 import { ElevenLabsAlignmentAdapter } from "@pirate/platform-cf/media-providers/elevenlabs-alignment";
 import { makeOpenRouterClassifierAdapter } from "@pirate/platform-cf/media-providers/openrouter";
-import { makeTransloaditMediaTransform } from "@pirate/platform-cf/media-transform";
+import { disabledTransloaditMediaTransform } from "@pirate/platform-cf/media-transform";
 import { makeHyperdriveControlPlaneLayer } from "@pirate/platform-cf/postgres";
 import { Effect } from "effect";
 import type { MediaProcessorComposition, MediaProcessorWorkerEnv } from "./index.ts";
@@ -33,11 +32,6 @@ export type MediaProcessorRuntimeEnv = MediaProcessorWorkerEnv &
     readonly MEDIA_PROCESSING_WORKFLOW?: CloudflareMediaWorkflowBinding;
     readonly MEDIA_IMMUTABLE_ORIGINALS?: R2Bucket;
     readonly MEDIA_DERIVED_ARTIFACTS?: R2Bucket;
-    readonly TRANSLOADIT_AUTH_KEY?: string;
-    readonly TRANSLOADIT_AUTH_SECRET?: string;
-    readonly TRANSLOADIT_PROBE_TEMPLATE_ID?: string;
-    readonly TRANSLOADIT_SAMPLE_PRIMARY_TEMPLATE_ID?: string;
-    readonly TRANSLOADIT_SAMPLE_ALTERNATE_TEMPLATE_ID?: string;
     readonly ACRCLOUD_IDENTIFY_HOST?: string;
     readonly ACRCLOUD_ACCESS_KEY?: string;
     readonly ACRCLOUD_ACCESS_SECRET?: string;
@@ -102,34 +96,6 @@ function makeEnabledProviders(env: MediaProcessorRuntimeEnv): MediaProcessingPro
     "MEDIA_IMMUTABLE_ORIGINALS",
   );
   const derivedArtifacts = requiredBinding(env.MEDIA_DERIVED_ARTIFACTS, "MEDIA_DERIVED_ARTIFACTS");
-  const transloadit = makeTransloaditMediaTransform({
-    enabled: true,
-    adapterRevision: "transloadit-v1",
-    credentials: {
-      authKey: requiredText(env.TRANSLOADIT_AUTH_KEY, "TRANSLOADIT_AUTH_KEY"),
-      authSecret: requiredText(env.TRANSLOADIT_AUTH_SECRET, "TRANSLOADIT_AUTH_SECRET"),
-    },
-    templates: {
-      probe: requiredText(env.TRANSLOADIT_PROBE_TEMPLATE_ID, "TRANSLOADIT_PROBE_TEMPLATE_ID"),
-      samplePrimary: requiredText(
-        env.TRANSLOADIT_SAMPLE_PRIMARY_TEMPLATE_ID,
-        "TRANSLOADIT_SAMPLE_PRIMARY_TEMPLATE_ID",
-      ),
-      sampleAlternate: requiredText(
-        env.TRANSLOADIT_SAMPLE_ALTERNATE_TEMPLATE_ID,
-        "TRANSLOADIT_SAMPLE_ALTERNATE_TEMPLATE_ID",
-      ),
-    },
-    limits: {
-      maxRequestBytes: 131_072,
-      maxResponseBytes: 2_097_152,
-      maxSampleBytes: 5_000_000,
-      requestTimeoutMs: 120_000,
-      maxAssemblyRuntimeMs: 30 * 60 * 1_000,
-    },
-    clock: { nowMilliseconds: Date.now },
-    transport: makeTransloaditFetchTransport(),
-  });
   const acrHost = requiredText(env.ACRCLOUD_IDENTIFY_HOST, "ACRCLOUD_IDENTIFY_HOST");
   const identification = makeAcrCloudAdapter({
     host: acrHost,
@@ -162,7 +128,7 @@ function makeEnabledProviders(env: MediaProcessorRuntimeEnv): MediaProcessingPro
   });
 
   const transform = makeR2Mp3SampleMediaTransform({
-    providerTransform: transloadit,
+    providerTransform: disabledTransloaditMediaTransform,
     immutableOriginals,
     derivedArtifacts,
     maximumSampleBytes: 4_000_000,
@@ -223,7 +189,7 @@ export function makeMediaProcessorComposition(
         workerId,
         now: Date.now,
         policyRevision: "song-publication-decision-v1",
-        transformAdapterRevision: `transloadit-probe-${MEDIA_MP3_SAMPLE_ADAPTER_REVISION}`,
+        transformAdapterRevision: MEDIA_MP3_SAMPLE_ADAPTER_REVISION,
         metadataAdapterRevision: "id3v2-mp3-metadata-v1",
         classifierTimeoutMs: 30_000,
         transformRuntimeMs: 30 * 60 * 1_000,
