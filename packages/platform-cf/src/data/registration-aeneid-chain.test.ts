@@ -185,6 +185,19 @@ describe("Aeneid DATA registration chain", () => {
     expect(() => makeJsonRpcTransport("http://aeneid.invalid")).toThrow("must use HTTPS");
   });
 
+  test("uses Workers manual redirect mode and rejects redirect responses", async () => {
+    let redirect: string | undefined;
+    const rpc = makeJsonRpcTransport("https://aeneid.invalid", (async (_input, init) => {
+      redirect = init?.redirect;
+      return new Response(null, {
+        status: 302,
+        headers: { location: "https://elsewhere.invalid" },
+      });
+    }) as typeof fetch);
+    await expect(rpc("eth_blockNumber", [])).rejects.toThrow("Aeneid RPC unavailable");
+    expect(redirect).toBe("manual");
+  });
+
   test("keeps mined evidence schema-safe until final confirmations arrive", async () => {
     const tokenContract = "0x3333333333333333333333333333333333333333";
     const rpc = async (method: string): Promise<unknown> => {
