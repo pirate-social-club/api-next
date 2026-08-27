@@ -81,7 +81,7 @@
       ],
       "vars": {
         "API_NEXT_ENV": "staging",
-        "DATA_REGISTRATION_ENABLED": "false",
+        "DATA_REGISTRATION_ENABLED": "true",
         "DATA_REGISTRATION_CHAIN_ID": "1315",
         "DATA_REGISTRATION_RPC_URL": "https://aeneid.storyrpc.io",
         "DATA_REGISTRATION_SIGNER_ADDRESS": "0xE128f4da57540962FF788d5462aE76671499F05E",
