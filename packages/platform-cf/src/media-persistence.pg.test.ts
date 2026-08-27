@@ -623,6 +623,49 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         phase: "publish",
       });
       const postId = `media-post-${operation}`;
+      await admin.query(
+        "INSERT INTO posts (community_id,post_id,author_user_id,post_type,status,visibility,title,created_at,updated_at,idempotency_key,idempotency_body_hash,author_persona_id) VALUES ($1,$2,$3,'song','published','public','Fixture song',clock_timestamp(),clock_timestamp(),'foreign-feed-post',$4,$5)",
+        [community, postId, actor, requestHash, personaFor(connection)],
+      );
+      await admin.query(
+        "INSERT INTO home_feed_projection (community_id,feed_item_id,post_id,rank_score,projected_at) VALUES ($1,'foreign-feed-item',$2,0,clock_timestamp())",
+        [community, postId],
+      );
+      await expect(
+        run(
+          connection,
+          (store) =>
+            store.publish({
+              ...command(
+                connection,
+                "/media-post-submissions/:submissionId/publish",
+                "publish-key",
+              ),
+              expectedCreationRevision: 2,
+              expectedAudioRevision: 1,
+              expectedAnalysisRevision: 1,
+              expectedDecisionRevision: 1,
+              postId,
+            }),
+          1315n,
+        ),
+      ).rejects.toMatchObject({ reason: "post-ownership" });
+      expect(
+        (
+          await admin.query(
+            "SELECT status,(SELECT count(*)::text FROM media_publication_projections WHERE submission_id=$1) AS publications,(SELECT count(*)::text FROM data_registration_operations WHERE submission_id=$1) AS registrations FROM media_post_submissions WHERE submission_id=$1",
+            [submission],
+          )
+        ).rows[0],
+      ).toEqual({ status: "processing", publications: "0", registrations: "0" });
+      await admin.query("DELETE FROM home_feed_projection WHERE community_id=$1 AND post_id=$2", [
+        community,
+        postId,
+      ]);
+      await admin.query("DELETE FROM posts WHERE community_id=$1 AND post_id=$2", [
+        community,
+        postId,
+      ]);
       expect(
         await run(
           connection,
@@ -650,9 +693,11 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         hns: string;
         registrations: string;
         registration_outbox: string;
+        feeds: string;
+        feed_item_id: string;
       }>({
-        text: "SELECT (SELECT count(*)::text FROM media_submission_events WHERE submission_id=$1) AS events,(SELECT count(*)::text FROM media_submission_outbox WHERE submission_id=$1) AS effects,(SELECT count(*)::text FROM media_publication_projections WHERE submission_id=$1) AS publications,(SELECT alignment FROM media_publication_projections WHERE submission_id=$1) AS alignment,(SELECT count(*)::text FROM hns_control_observer_operations) AS hns,(SELECT count(*)::text FROM data_registration_operations WHERE submission_id=$1) AS registrations,(SELECT count(*)::text FROM data_registration_outbox WHERE registration_operation_id=(SELECT registration_operation_id FROM data_registration_operations WHERE submission_id=$1)) AS registration_outbox",
-        values: [submission],
+        text: "SELECT (SELECT count(*)::text FROM media_submission_events WHERE submission_id=$1) AS events,(SELECT count(*)::text FROM media_submission_outbox WHERE submission_id=$1) AS effects,(SELECT count(*)::text FROM media_publication_projections WHERE submission_id=$1) AS publications,(SELECT alignment FROM media_publication_projections WHERE submission_id=$1) AS alignment,(SELECT count(*)::text FROM hns_control_observer_operations) AS hns,(SELECT count(*)::text FROM data_registration_operations WHERE submission_id=$1) AS registrations,(SELECT count(*)::text FROM data_registration_outbox WHERE registration_operation_id=(SELECT registration_operation_id FROM data_registration_operations WHERE submission_id=$1)) AS registration_outbox,(SELECT count(*)::text FROM home_feed_projection WHERE community_id=$2 AND post_id=$3) AS feeds,(SELECT feed_item_id FROM home_feed_projection WHERE community_id=$2 AND post_id=$3) AS feed_item_id",
+        values: [submission, community, postId],
       });
       expect(counts.rows[0]).toEqual({
         events: "8",
@@ -662,6 +707,8 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         hns: "1",
         registrations: "1",
         registration_outbox: "1",
+        feeds: "1",
+        feed_item_id: `media-feed-${operation}`,
       });
       expect(
         await run(
@@ -683,16 +730,37 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         ),
       ).toMatchObject({ kind: "replay", submissionId: submission, operationId: operation });
       expect(
+        await run(
+          connection,
+          (store) =>
+            store.publish({
+              ...command(
+                connection,
+                "/media-post-submissions/:submissionId/publish",
+                "publish-key",
+              ),
+              requestHash: "b".repeat(64),
+              expectedCreationRevision: 2,
+              expectedAudioRevision: 1,
+              expectedAnalysisRevision: 1,
+              expectedDecisionRevision: 1,
+              postId,
+            }),
+          1315n,
+        ),
+      ).toEqual({ kind: "conflict", submissionId: submission });
+      expect(
         (
           await admin.query<{
             registrations: string;
             registration_outbox: string;
+            feeds: string;
           }>(
-            "SELECT (SELECT count(*)::text FROM data_registration_operations WHERE submission_id=$1) AS registrations,(SELECT count(*)::text FROM data_registration_outbox WHERE registration_operation_id=(SELECT registration_operation_id FROM data_registration_operations WHERE submission_id=$1)) AS registration_outbox",
-            [submission],
+            "SELECT (SELECT count(*)::text FROM data_registration_operations WHERE submission_id=$1) AS registrations,(SELECT count(*)::text FROM data_registration_outbox WHERE registration_operation_id=(SELECT registration_operation_id FROM data_registration_operations WHERE submission_id=$1)) AS registration_outbox,(SELECT count(*)::text FROM home_feed_projection WHERE community_id=$2 AND post_id=$3) AS feeds",
+            [submission, community, postId],
           )
         ).rows[0],
-      ).toEqual({ registrations: "1", registration_outbox: "1" });
+      ).toEqual({ registrations: "1", registration_outbox: "1", feeds: "1" });
       expect(
         (
           await admin.query(

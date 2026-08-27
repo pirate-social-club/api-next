@@ -2965,6 +2965,26 @@ export function makeControlPlaneMediaSubmissionRepository(
             return yield* Effect.fail(
               fail("publish", "post-ownership", { submissionId: current.submissionId }),
             );
+          const feedItemId = `media-feed-${current.operationId}`;
+          yield* tx.execute({
+            label: "media-publish.home-feed.insert",
+            text: "INSERT INTO home_feed_projection (community_id,feed_item_id,post_id,rank_score,projected_at) VALUES ($1,$2,$3,0,clock_timestamp()) ON CONFLICT (community_id,post_id) DO NOTHING",
+            values: [current.communityId, feedItemId, ownedPostId],
+            readonly: false,
+          });
+          const feedProjection = yield* tx.execute<Row>({
+            label: "media-publish.home-feed.lookup",
+            text: "SELECT feed_item_id FROM home_feed_projection WHERE community_id=$1 AND post_id=$2 FOR UPDATE",
+            values: [current.communityId, ownedPostId],
+            readonly: false,
+          });
+          if (
+            feedProjection.rows.length !== 1 ||
+            feedProjection.rows[0]?.feed_item_id !== feedItemId
+          )
+            return yield* Effect.fail(
+              fail("publish", "post-ownership", { submissionId: current.submissionId }),
+            );
           const updated = yield* tx.execute<Row>({
             label: "media-publish.project-state",
             text: "UPDATE media_post_submissions SET status='published',phase=NULL,post_id=$1,workflow_revision=$2,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$3 AND actor_user_id=$4 AND submission_id=$5 AND creation_revision=$6 AND audio_revision=$7 AND analysis_revision=$8 AND decision_revision=$9 RETURNING event_sequence",
