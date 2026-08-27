@@ -1,6 +1,6 @@
-# Disposable-root interactive community rehearsal plan
+# Disposable-root community and handle rehearsal plan
 
-Status: draft, non-executable
+Status: combined draft, non-executable
 
 Plan date: 2026-08-26
 
@@ -20,8 +20,173 @@ https://pirate.sc/c/<root>   canonical community route
 https://app.<root>           direct interactive HNS application origin
 ```
 
+The 2026-08-27 amendment below adds a third surface on the same disposable
+root:
+
+```text
+https://<handle-label>.<root> public hosted persona origin
+```
+
 The production `pirate` root, `app.pirate`, its certificate, its DNSSEC keys,
 and its gateway release are preservation targets, not rehearsal inputs.
+
+## Combined rehearsal amendment — 2026-08-27
+
+This amendment consolidates the third-party-root `hosted_persona_v1` pilot
+into the existing disposable-root rehearsal. The community application and
+handle-persona surfaces share the root-selection, NS/glue and DS delegation,
+authoritative zone, gateway release, source-closure, migration, custody,
+observability, suspension, recovery, and rollback ceremonies. They therefore
+must use one populated environment tuple and one mutation authorization rather
+than independent rehearsals competing for the same root.
+
+The provider, VPS, chain, and database observations later in this document are
+historical evidence at their stated cutoffs. They are not claims about current
+external state. No provider inventory was refreshed for this amendment. A
+separately authorized population addendum must re-read every external input
+and freeze the exact api-next and Solid commits before any execution.
+
+The current public api-next source contains PostgreSQL migrations through
+`0064_media_persona_recipient_trigger.sql`. The earlier `0049` through `0055`
+gap below remains a dated discovery finding, not a sufficient migration plan.
+The population addendum must compare the live ledger against
+`db/postgres/migrations/checksums.json` at the exact selected deployment
+commit and name every missing migration. Plan review does not authorize any
+migration, including the previously identified `0049`-onward production
+ceremony.
+
+### Owner decision register
+
+Document preparation may continue, but population and execution stop until
+the workspace owner records all four decisions together:
+
+1. one exact disposable Handshake root, its network, and access-controlled
+   custody proof;
+2. whether the public pilot is hosted by the staging or production-capable
+   application and database environment;
+3. a distinct root, network, gateway, database, protected-origin, credential,
+   replay, deployment, and evidence tuple from any production root tuple; and
+4. whether the required `0049`-onward production migration ceremony is
+   authorized before the pilot, if the production-capable environment is
+   selected.
+
+Staging containment is not permission to publish a root. A staging shadow may
+prove code paths and isolated transport, but it cannot prove public HNS,
+DNSSEC, DANE, browser-origin, or production identity behavior. Conversely,
+selecting a production-capable environment does not authorize its migration
+ceremony or any root mutation. The populated addendum must reject any attempt
+to split one root across staging and production or to reuse the platform's
+protected `pirate` root.
+
+### Frozen handle pilot profile
+
+The handle portion is the ratified free-only V1 profile. It uses family `hns`,
+fulfillment `hosted_persona_v1`, and a public host of
+`<handle-label>.<root>`. It never delegates a child zone and never grants DNS
+control. It must not introduce payment, auction, renewal, resale, transfer,
+wallet provisioning, Spaces, or delegated-zone behavior.
+
+The first public grant uses a broad `label_rule_v2` offering with grammar
+`hns_ascii_ldh_1_63_v1`, launch length band 8 through 32 characters,
+`first_come_v1`, `free_v1`, and the default cap of one active grant per
+account for the offering. The selected label must be canonical lowercase LDH,
+must not be reserved, and must be inside the 8–32 launch band. An exact-label
+direct grant may be rehearsed only as a separately named optional case using
+the recipient-generated, short-lived token flow; it is not required to prove
+the first free pilot.
+
+The buyer must already own one active public persona with its confirmed,
+indexed EVM wallet. Handle operations must neither create nor repair a persona
+or wallet. The transcript retains opaque ids, generations, hashes, outcome
+classes, and timestamps, but not account identifiers, wallet credentials,
+recipient-token bytes, cookies, or other authentication material.
+
+Before execution, the population addendum must replace these identifiers:
+
+```text
+sale_namespace_activation_id = __UNRESOLVED_SALE_NAMESPACE_ACTIVATION_ID__
+sale_namespace_activation_generation = __UNRESOLVED_SALE_NAMESPACE_ACTIVATION_GENERATION__
+offering_id = __UNRESOLVED_FREE_BROAD_OFFERING_ID__
+offering_revision = __UNRESOLVED_FREE_BROAD_OFFERING_REVISION__
+offering_v2_hash = __UNRESOLVED_FREE_BROAD_OFFERING_V2_HASH__
+buyer_persona_public_id = __UNRESOLVED_EXISTING_WALLET_BACKED_PERSONA_REFERENCE__
+handle_label = __UNRESOLVED_CANONICAL_8_TO_32_CHARACTER_LABEL__
+quote_id = __UNRESOLVED_HANDLE_QUOTE_ID__
+reservation_id = __UNRESOLVED_HANDLE_RESERVATION_ID__
+claim_id = __UNRESOLVED_HANDLE_CLAIM_ID__
+grant_id = __UNRESOLVED_HANDLE_GRANT_ID__
+grant_generation = __UNRESOLVED_HANDLE_GRANT_GENERATION__
+handle_host = __UNRESOLVED_HANDLE_LABEL__.__UNRESOLVED_ROOT__
+```
+
+### Handle lifecycle after separate authorization
+
+The handle lifecycle is appended to, and cannot bypass, the infrastructure
+sequence later in this plan:
+
+1. Complete source closure and the authorized migration, deployment, gateway,
+   root, NS/glue, DS, DNSSEC, DANE, custody, and observer gates. Prove the
+   selected root is purpose-dedicated and the platform `pirate` root is
+   excluded.
+2. Establish one sale-namespace activation only after the seller-management
+   authority, verified namespace authority, active DNS zone, current Pirate
+   NS/glue and DS selection, exact gateway, and literal whole-zone replacement
+   confirmation all agree. Record its id and generation.
+3. Create and activate one broad free offering with the frozen profile above.
+   Record the immutable revision and hash used by every downstream object.
+4. Select the already-active wallet-backed persona, request a quote for the
+   canonical label, reserve it once, and finalize one claim into one active
+   grant. Each step must pin the activation, offering revision and hash,
+   fulfillment, persona, handle identity, and prior-object hash required by
+   its contract.
+5. Resolve and request exact public `GET /` and `HEAD /` on
+   `<handle-label>.<root>`. The HNS gateway, Solid authority path, and api-next
+   authority path must agree on profile
+   `pirate-hns-community-handle-persona-public-gateway-v1`, the exact host,
+   current deployment, activation generation, namespace-authority generation,
+   grant generation, and public persona. Query strings, request bodies,
+   sessions, wallet authority, writes, redirects, hidden exchanges, and
+   retries are forbidden on this profile.
+6. Exercise the failure matrix one cause at a time: sale activation
+   suspension, namespace-authority loss, DNS-zone or NS/glue/DS drift, gateway
+   or deployment mismatch, grant-generation mismatch, non-public persona,
+   malformed host, and unavailable authority. Commerce and public serving
+   must fail closed while the grant remains retained.
+7. Restore only through fresh current authority and the generations required
+   by the governing contracts. The same retained grant becomes serviceable
+   again without release, reissue, or resale. Replayed envelopes and all stale
+   generations remain rejected.
+8. Suspend the offering and prove new quotes stop without invalidating the
+   active grant. Then retire or retain each reversible pilot resource exactly
+   as named in the accepted cleanup addendum. Never infer that a mined
+   Handshake UPDATE or an applied database migration is reversible.
+
+### Combined acceptance additions
+
+In addition to the community-application acceptance transcript later in this
+document, the combined transcript must prove:
+
+- the seller storefront contract is `/c/<community_id>/names`, while the
+  public handle host serves only the persona-public `GET /` and `HEAD /`
+  profile;
+- one 8–32-character broad label is granted for zero price to one pre-existing
+  wallet-backed persona, and the default one-active-grant cap rejects a second
+  concurrent grant for the same account and offering;
+- the quote, reservation, claim, grant, activation, offering revision,
+  namespace authority, DNS zone, gateway, forwarder, and deployment evidence
+  are mutually consistent and current;
+- exact host matching rejects unknown labels, sub-subdomains, alternate roots,
+  malformed names, and the protected `pirate` root;
+- the public response identifies the selected public persona without exposing
+  account, wallet, session, recipient-token, or private-persona authority;
+- loss of any current root, delegation, zone, gateway, activation, grant, or
+  persona predicate fails closed without deleting the grant; and
+- recovery uses fresh authority generations and the retained grant, while
+  stale and replayed evidence remains unusable.
+
+Passing the community application surface does not imply that the handle
+surface passed, and passing a staging shadow proves neither public surface.
+All three evidence classes must be reported separately.
 
 ## Decision summary and stop conditions
 
@@ -1012,9 +1177,15 @@ failed step stops the sequence; there is no repeated deploy, redirect follow,
 or retry-until-green policy.
 
 The three HNS ownership flags in HTTP Worker and the three in jobs Worker stay
-false. No `HNS_OWNER_VERIFIER` or `HNS_OBSERVER_DRIVER` binding is added. The
-operator-managed disposable route does not require the third-party ownership
-observer.
+false during the operator-managed community-route phases. That route does not
+require the third-party ownership observer, but it also cannot establish the
+verified namespace authority required by a handle sale activation. Before the
+handle phase, the populated addendum must name the exact source-defined owner
+verifier and observer composition for the selected environment, its bindings,
+and the separately authorized enablement sequence. If current verified
+namespace authority cannot be proved without weakening that contract, the
+handle phase stops. Direct operator-route authority must never be substituted
+for sale-namespace authority.
 
 ## Acceptance transcript
 

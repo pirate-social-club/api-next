@@ -1,9 +1,10 @@
-# Interactive community staging shadow preflight plan
+# Community and handle staging shadow preflight plan
 
 Status: refreshed populated discovery checkpoint, non-executable, 2026-08-27.
 
-This plan proves the interactive `app.<root>` transport on staging Pirate
-Workers and isolated loopback listeners before the public Handshake ceremony.
+This plan proves the interactive `app.<root>` transport and may prove the
+`hosted_persona_v1` handle-host transport on staging Pirate Workers and
+isolated loopback listeners before the public Handshake ceremony.
 It does not satisfy the production acceptance at `https://pirate.sc/c/<root>`.
 It authorizes no provider, database, deployment, VPS, DNS, key, certificate,
 Privy, Caddy, systemd, or Handshake mutation. Every marker beginning with
@@ -23,6 +24,50 @@ The preflight deliberately does not test public HNS resolution, DNSSEC, DANE,
 the browser-visible HNS origin, production identity continuity, production
 Privy, or the canonical `pirate.sc` route. Those remain in the production
 disposable-root plan.
+
+## Combined handle-shadow amendment — 2026-08-27
+
+This amendment is preparation only. It makes no claim that the dated provider,
+VPS, deployment, or database observations below remain current, and it
+authorizes no refresh of them. The selected source, external inventory, and
+migration ledger must be re-derived in a separately authorized population
+addendum.
+
+If the workspace owner selects the staging environment for the code-path
+preflight, the same isolated gateway may exercise a second exact synthetic
+host, `<handle-label>.<test_root>`, using profile
+`pirate-hns-community-handle-persona-public-gateway-v1`. The fixture must use
+an existing active wallet-backed public persona and the free-only
+`hosted_persona_v1` lifecycle. It must not provision a persona or wallet, use
+the protected `pirate` root, publish HNS or DNS records, attach the synthetic
+host to Caddy, or represent loopback evidence as a public-root pilot.
+
+The handle-shadow fixture and transcript must cover:
+
+1. one sale-namespace activation and one broad free offering using
+   `hns_ascii_ldh_1_63_v1`, the 8–32-character launch band,
+   `first_come_v1`, and the default one-active-grant cap;
+2. quote, reservation, claim, and grant creation for one existing
+   wallet-backed public persona, with every immutable id, generation, and
+   hash pinned through the sequence;
+3. exact public `GET /` and `HEAD /` behavior for the synthetic handle host,
+   with query, body, session, wallet, write, redirect, hidden-exchange, and
+   retry behavior rejected;
+4. fail-closed responses for activation suspension, namespace-authority loss,
+   DNS-zone or delegation drift, deployment or gateway mismatch, stale grant
+   generation, non-public persona, malformed host, and unavailable authority;
+5. retained-grant recovery through fresh current authority and required fresh
+   generations, with stale and replayed evidence still rejected; and
+6. offering suspension preventing a second quote while leaving the active
+   grant intact.
+
+The staging tuple must be isolated from every production tuple. A root,
+network, database, protected origin, gateway listener, credential, replay
+scope, deployment, or evidence namespace selected for production cannot be
+silently reused here. If the selected staging system cannot model a root and
+delegation predicate without weakening the production contract, the handle
+shadow is skipped and the reason is recorded; the public-root pilot is not
+weakened to make staging pass.
 
 ## Source closure
 
