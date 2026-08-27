@@ -679,7 +679,18 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
             }),
           1315n,
         ),
-      ).toMatchObject({ kind: "replay", postId });
+      ).toMatchObject({ kind: "replay", submissionId: submission, operationId: operation });
+      expect(
+        (
+          await admin.query<{
+            registrations: string;
+            registration_outbox: string;
+          }>(
+            "SELECT (SELECT count(*)::text FROM data_registration_operations WHERE submission_id=$1) AS registrations,(SELECT count(*)::text FROM data_registration_outbox WHERE registration_operation_id=(SELECT registration_operation_id FROM data_registration_operations WHERE submission_id=$1)) AS registration_outbox",
+            [submission],
+          )
+        ).rows[0],
+      ).toEqual({ registrations: "1", registration_outbox: "1" });
       expect(
         (
           await admin.query(
