@@ -85,7 +85,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           set -euo pipefail
-          bunx wrangler secret list --env production --config apps/http-worker/wrangler.jsonc --json > "$RUNNER_TEMP/api-secret-names.json"
+          bunx wrangler secret list --env production --config apps/http-worker/wrangler.jsonc --format json > "$RUNNER_TEMP/api-secret-names.json"
           node -e 'const rows=JSON.parse(await Bun.file(process.argv[1]).text()); const names=new Set(rows.map(row=>row.name)); if (!names.has("HNS_FORWARDER_V3_HMAC_KEY_REGISTRY")) throw new Error("forwarder registry is absent");' "$RUNNER_TEMP/api-secret-names.json"
       - name: Credential-safe production dry run
         env:
