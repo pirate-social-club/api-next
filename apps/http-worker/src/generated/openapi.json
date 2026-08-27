@@ -25729,6 +25729,937 @@
         ]
       }
     },
+    "/platform-pirate-handles/availability": {
+      "post": {
+        "operationId": "post_platformPirateHandlesAvailability",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "persona_id": {
+                    "type": "string"
+                  },
+                  "platform_handle_id": {
+                    "type": "string"
+                  },
+                  "desired_label": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "persona_id",
+                  "platform_handle_id",
+                  "desired_label"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "available"
+                          ]
+                        },
+                        "desired_label": {
+                          "type": "string"
+                        },
+                        "display_identifier": {
+                          "type": "string"
+                        },
+                        "policy": {
+                          "type": "object",
+                          "properties": {
+                            "label_policy_id": {
+                              "type": "string",
+                              "enum": [
+                                "pirate_ascii_ldh_3_32_v1"
+                              ]
+                            },
+                            "label_policy_revision": {
+                              "type": "number",
+                              "enum": [
+                                1
+                              ]
+                            },
+                            "label_policy_hash": {
+                              "type": "string"
+                            },
+                            "reserved_labels_id": {
+                              "type": "string",
+                              "enum": [
+                                "pirate_platform_reserved_labels_v1"
+                              ]
+                            },
+                            "reserved_labels_revision": {
+                              "type": "number",
+                              "enum": [
+                                1
+                              ]
+                            },
+                            "reserved_labels_hash": {
+                              "type": "string"
+                            },
+                            "confusability_policy_id": {
+                              "type": "string",
+                              "enum": [
+                                "pirate_ascii_skeleton_v1"
+                              ]
+                            },
+                            "confusability_policy_revision": {
+                              "type": "number",
+                              "enum": [
+                                1
+                              ]
+                            },
+                            "confusability_policy_hash": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "label_policy_id",
+                            "label_policy_revision",
+                            "label_policy_hash",
+                            "reserved_labels_id",
+                            "reserved_labels_revision",
+                            "reserved_labels_hash",
+                            "confusability_policy_id",
+                            "confusability_policy_revision",
+                            "confusability_policy_hash"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "desired_label",
+                        "display_identifier",
+                        "policy"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "unavailable"
+                          ]
+                        },
+                        "reason": {
+                          "type": "string",
+                          "enum": [
+                            "invalid_label",
+                            "current_label",
+                            "unavailable"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "reason"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "409": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "invalid_label",
+              "platform_handle_unavailable",
+              "handle_unavailable",
+              "stale_platform_handle",
+              "cleanup_rename_unavailable",
+              "idempotency_conflict"
+            ]
+          },
+          "429": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "rate_limited"
+            ]
+          },
+          "500": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "userOrAdmin"
+          }
+        },
+        "x-errors": [
+          "AuthError",
+          "BadRequest",
+          "PlatformPirateInvalidLabel",
+          "PlatformPirateHandleUnavailable",
+          "PirateHandleUnavailable",
+          "StalePlatformPirateHandle",
+          "CleanupPirateRenameUnavailable",
+          "PlatformPirateRenameIdempotencyConflict",
+          "RateLimited",
+          "InternalError"
+        ]
+      }
+    },
+    "/platform-pirate-handles/rename": {
+      "post": {
+        "operationId": "post_platformPirateHandlesRename",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "idempotency_key": {
+                    "type": "string"
+                  },
+                  "persona_id": {
+                    "type": "string"
+                  },
+                  "platform_handle_id": {
+                    "type": "string"
+                  },
+                  "expected_state_hash": {
+                    "type": "string"
+                  },
+                  "desired_label": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "idempotency_key",
+                  "persona_id",
+                  "platform_handle_id",
+                  "expected_state_hash",
+                  "desired_label"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "handle": {
+                      "type": "object",
+                      "properties": {
+                        "platform_handle_id": {
+                          "type": "string"
+                        },
+                        "owner_persona": {
+                          "type": "object",
+                          "properties": {
+                            "persona_id": {
+                              "type": "string"
+                            },
+                            "object": {
+                              "type": "string",
+                              "enum": [
+                                "persona"
+                              ]
+                            },
+                            "display_name": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "avatar_ref": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "primary_public_handle": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "persona_id",
+                            "object",
+                            "display_name",
+                            "avatar_ref",
+                            "primary_public_handle"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "handle_label": {
+                          "type": "string"
+                        },
+                        "display_identifier": {
+                          "type": "string"
+                        },
+                        "generation": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "active"
+                          ]
+                        },
+                        "state_hash": {
+                          "type": "string"
+                        },
+                        "cleanup_rename_available": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "platform_handle_id",
+                        "owner_persona",
+                        "handle_label",
+                        "display_identifier",
+                        "generation",
+                        "state",
+                        "state_hash",
+                        "cleanup_rename_available"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "previous": {
+                      "type": "object",
+                      "properties": {
+                        "platform_handle_id": {
+                          "type": "string"
+                        },
+                        "handle_label": {
+                          "type": "string"
+                        },
+                        "display_identifier": {
+                          "type": "string"
+                        },
+                        "generation": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "redirect"
+                          ]
+                        },
+                        "redirect_to_label": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "platform_handle_id",
+                        "handle_label",
+                        "display_identifier",
+                        "generation",
+                        "state",
+                        "redirect_to_label"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "replayed": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "handle",
+                    "previous",
+                    "replayed"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "409": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "invalid_label",
+              "platform_handle_unavailable",
+              "handle_unavailable",
+              "stale_platform_handle",
+              "cleanup_rename_unavailable",
+              "idempotency_conflict"
+            ]
+          },
+          "429": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "rate_limited"
+            ]
+          },
+          "500": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "userOrAdmin"
+          }
+        },
+        "x-errors": [
+          "AuthError",
+          "BadRequest",
+          "PlatformPirateInvalidLabel",
+          "PlatformPirateHandleUnavailable",
+          "PirateHandleUnavailable",
+          "StalePlatformPirateHandle",
+          "CleanupPirateRenameUnavailable",
+          "PlatformPirateRenameIdempotencyConflict",
+          "RateLimited",
+          "InternalError"
+        ]
+      }
+    },
     "/auth/session/exchange": {
       "post": {
         "operationId": "post_authSessionExchange",
@@ -26172,14 +27103,7 @@
                           ]
                         },
                         "is_bookable": {
-                          "anyOf": [
-                            {
-                              "type": "boolean"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
+                          "$ref": "#/$defs/Union_6"
                         },
                         "xmtp_inbox": {
                           "anyOf": [
@@ -26226,6 +27150,41 @@
                               "enum": [
                                 "global_handle"
                               ]
+                            },
+                            "platform_handle_id": {
+                              "$ref": "#/$defs/Union_5"
+                            },
+                            "owner_persona_id": {
+                              "$ref": "#/$defs/Union_5"
+                            },
+                            "generation": {
+                              "anyOf": [
+                                {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "state_hash": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "cleanup_rename_available": {
+                              "$ref": "#/$defs/Union_6"
                             },
                             "label": {
                               "type": "string"
@@ -26291,14 +27250,7 @@
                               ]
                             },
                             "free_rename_consumed": {
-                              "anyOf": [
-                                {
-                                  "type": "boolean"
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ]
+                              "$ref": "#/$defs/Union_6"
                             },
                             "issued_at": {
                               "$ref": "#/$defs/Union_"
@@ -26554,6 +27506,16 @@
                               "type": "null"
                             }
                           ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "Union_5": {
+                      "anyOf": [
+                        {
+                          "type": "string"
                         },
                         {
                           "type": "null"
@@ -27059,24 +28021,10 @@
                                         "type": "object",
                                         "properties": {
                                           "stamp_name": {
-                                            "anyOf": [
-                                              {
-                                                "type": "string"
-                                              },
-                                              {
-                                                "type": "null"
-                                              }
-                                            ]
+                                            "$ref": "#/$defs/Union_5"
                                           },
                                           "stamp_score_decimal": {
-                                            "anyOf": [
-                                              {
-                                                "type": "string"
-                                              },
-                                              {
-                                                "type": "null"
-                                              }
-                                            ]
+                                            "$ref": "#/$defs/Union_5"
                                           }
                                         },
                                         "additionalProperties": false
@@ -27158,6 +28106,16 @@
                         "verification_state"
                       ],
                       "additionalProperties": false
+                    },
+                    "Union_6": {
+                      "anyOf": [
+                        {
+                          "type": "boolean"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   }
                 }
@@ -27781,14 +28739,7 @@
                               ]
                             },
                             "is_bookable": {
-                              "anyOf": [
-                                {
-                                  "type": "boolean"
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ]
+                              "$ref": "#/$defs/Union_6"
                             },
                             "xmtp_inbox": {
                               "anyOf": [
@@ -27835,6 +28786,41 @@
                                   "enum": [
                                     "global_handle"
                                   ]
+                                },
+                                "platform_handle_id": {
+                                  "$ref": "#/$defs/Union_5"
+                                },
+                                "owner_persona_id": {
+                                  "$ref": "#/$defs/Union_5"
+                                },
+                                "generation": {
+                                  "anyOf": [
+                                    {
+                                      "type": "integer",
+                                      "allOf": [
+                                        {
+                                          "minimum": 1,
+                                          "maximum": 9007199254740991
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "state_hash": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "cleanup_rename_available": {
+                                  "$ref": "#/$defs/Union_6"
                                 },
                                 "label": {
                                   "type": "string"
@@ -27900,14 +28886,7 @@
                                   ]
                                 },
                                 "free_rename_consumed": {
-                                  "anyOf": [
-                                    {
-                                      "type": "boolean"
-                                    },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
+                                  "$ref": "#/$defs/Union_6"
                                 },
                                 "issued_at": {
                                   "$ref": "#/$defs/Union_"
@@ -28295,6 +29274,16 @@
                               "type": "null"
                             }
                           ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "Union_5": {
+                      "anyOf": [
+                        {
+                          "type": "string"
                         },
                         {
                           "type": "null"
@@ -28800,24 +29789,10 @@
                                         "type": "object",
                                         "properties": {
                                           "stamp_name": {
-                                            "anyOf": [
-                                              {
-                                                "type": "string"
-                                              },
-                                              {
-                                                "type": "null"
-                                              }
-                                            ]
+                                            "$ref": "#/$defs/Union_5"
                                           },
                                           "stamp_score_decimal": {
-                                            "anyOf": [
-                                              {
-                                                "type": "string"
-                                              },
-                                              {
-                                                "type": "null"
-                                              }
-                                            ]
+                                            "$ref": "#/$defs/Union_5"
                                           }
                                         },
                                         "additionalProperties": false
@@ -28899,6 +29874,16 @@
                         "verification_state"
                       ],
                       "additionalProperties": false
+                    },
+                    "Union_6": {
+                      "anyOf": [
+                        {
+                          "type": "boolean"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   }
                 }
@@ -30397,14 +31382,7 @@
                       ]
                     },
                     "is_bookable": {
-                      "anyOf": [
-                        {
-                          "type": "boolean"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
+                      "$ref": "#/$defs/Union_"
                     },
                     "xmtp_inbox": {
                       "anyOf": [
@@ -30506,7 +31484,7 @@
                                         {
                                           "anyOf": [
                                             {
-                                              "$ref": "#/$defs/Union_"
+                                              "$ref": "#/$defs/Union_1"
                                             },
                                             {
                                               "type": "null"
@@ -30528,10 +31506,10 @@
                                   "type": "object",
                                   "properties": {
                                     "state": {
-                                      "$ref": "#/$defs/Union_1"
+                                      "$ref": "#/$defs/Union_2"
                                     },
                                     "provider": {
-                                      "$ref": "#/$defs/Union_2"
+                                      "$ref": "#/$defs/Union_3"
                                     },
                                     "proof_type": {
                                       "anyOf": [
@@ -30554,10 +31532,10 @@
                                       ]
                                     },
                                     "mechanism": {
-                                      "$ref": "#/$defs/Union_3"
+                                      "$ref": "#/$defs/Union_4"
                                     },
                                     "verified_at": {
-                                      "$ref": "#/$defs/Union_4"
+                                      "$ref": "#/$defs/Union_5"
                                     }
                                   },
                                   "required": [
@@ -30569,10 +31547,10 @@
                                   "type": "object",
                                   "properties": {
                                     "state": {
-                                      "$ref": "#/$defs/Union_1"
+                                      "$ref": "#/$defs/Union_2"
                                     },
                                     "provider": {
-                                      "$ref": "#/$defs/Union_2"
+                                      "$ref": "#/$defs/Union_3"
                                     },
                                     "proof_type": {
                                       "anyOf": [
@@ -30595,17 +31573,17 @@
                                       ]
                                     },
                                     "mechanism": {
-                                      "$ref": "#/$defs/Union_3"
+                                      "$ref": "#/$defs/Union_4"
                                     },
                                     "verified_at": {
-                                      "$ref": "#/$defs/Union_4"
+                                      "$ref": "#/$defs/Union_5"
                                     },
                                     "value": {
                                       "anyOf": [
                                         {
                                           "anyOf": [
                                             {
-                                              "$ref": "#/$defs/Union_"
+                                              "$ref": "#/$defs/Union_1"
                                             },
                                             {
                                               "type": "null"
@@ -30627,10 +31605,10 @@
                                   "type": "object",
                                   "properties": {
                                     "state": {
-                                      "$ref": "#/$defs/Union_1"
+                                      "$ref": "#/$defs/Union_2"
                                     },
                                     "provider": {
-                                      "$ref": "#/$defs/Union_2"
+                                      "$ref": "#/$defs/Union_3"
                                     },
                                     "proof_type": {
                                       "anyOf": [
@@ -30653,10 +31631,10 @@
                                       ]
                                     },
                                     "mechanism": {
-                                      "$ref": "#/$defs/Union_3"
+                                      "$ref": "#/$defs/Union_4"
                                     },
                                     "verified_at": {
-                                      "$ref": "#/$defs/Union_4"
+                                      "$ref": "#/$defs/Union_5"
                                     },
                                     "value": {
                                       "anyOf": [
@@ -30685,10 +31663,10 @@
                                   "type": "object",
                                   "properties": {
                                     "state": {
-                                      "$ref": "#/$defs/Union_1"
+                                      "$ref": "#/$defs/Union_2"
                                     },
                                     "provider": {
-                                      "$ref": "#/$defs/Union_2"
+                                      "$ref": "#/$defs/Union_3"
                                     },
                                     "proof_type": {
                                       "anyOf": [
@@ -30711,10 +31689,10 @@
                                       ]
                                     },
                                     "mechanism": {
-                                      "$ref": "#/$defs/Union_3"
+                                      "$ref": "#/$defs/Union_4"
                                     },
                                     "verified_at": {
-                                      "$ref": "#/$defs/Union_4"
+                                      "$ref": "#/$defs/Union_5"
                                     },
                                     "value": {
                                       "anyOf": [
@@ -30819,7 +31797,7 @@
                                         {
                                           "anyOf": [
                                             {
-                                              "$ref": "#/$defs/Union_"
+                                              "$ref": "#/$defs/Union_1"
                                             },
                                             {
                                               "type": "null"
@@ -30887,7 +31865,7 @@
                                         {
                                           "anyOf": [
                                             {
-                                              "$ref": "#/$defs/Union_"
+                                              "$ref": "#/$defs/Union_1"
                                             },
                                             {
                                               "type": "null"
@@ -30904,7 +31882,7 @@
                                         {
                                           "anyOf": [
                                             {
-                                              "$ref": "#/$defs/Union_"
+                                              "$ref": "#/$defs/Union_1"
                                             },
                                             {
                                               "type": "null"
@@ -30926,24 +31904,10 @@
                                                 "type": "object",
                                                 "properties": {
                                                   "stamp_name": {
-                                                    "anyOf": [
-                                                      {
-                                                        "type": "string"
-                                                      },
-                                                      {
-                                                        "type": "null"
-                                                      }
-                                                    ]
+                                                    "$ref": "#/$defs/Union_6"
                                                   },
                                                   "stamp_score_decimal": {
-                                                    "anyOf": [
-                                                      {
-                                                        "type": "string"
-                                                      },
-                                                      {
-                                                        "type": "null"
-                                                      }
-                                                    ]
+                                                    "$ref": "#/$defs/Union_6"
                                                   }
                                                 },
                                                 "additionalProperties": false
@@ -30998,6 +31962,41 @@
                             "global_handle"
                           ]
                         },
+                        "platform_handle_id": {
+                          "$ref": "#/$defs/Union_6"
+                        },
+                        "owner_persona_id": {
+                          "$ref": "#/$defs/Union_6"
+                        },
+                        "generation": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "state_hash": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "cleanup_rename_available": {
+                          "$ref": "#/$defs/Union_"
+                        },
                         "label": {
                           "type": "string"
                         },
@@ -31049,7 +32048,7 @@
                             {
                               "anyOf": [
                                 {
-                                  "$ref": "#/$defs/Union_"
+                                  "$ref": "#/$defs/Union_1"
                                 },
                                 {
                                   "type": "null"
@@ -31062,24 +32061,17 @@
                           ]
                         },
                         "free_rename_consumed": {
-                          "anyOf": [
-                            {
-                              "type": "boolean"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
+                          "$ref": "#/$defs/Union_"
                         },
                         "issued_at": {
-                          "$ref": "#/$defs/Union_"
+                          "$ref": "#/$defs/Union_1"
                         },
                         "replaced_at": {
                           "anyOf": [
                             {
                               "anyOf": [
                                 {
-                                  "$ref": "#/$defs/Union_"
+                                  "$ref": "#/$defs/Union_1"
                                 },
                                 {
                                   "type": "null"
@@ -31104,7 +32096,7 @@
                       "additionalProperties": false
                     },
                     "created": {
-                      "$ref": "#/$defs/Union_"
+                      "$ref": "#/$defs/Union_1"
                     }
                   },
                   "required": [
@@ -31168,6 +32160,16 @@
                     "Union_": {
                       "anyOf": [
                         {
+                          "type": "boolean"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "Union_1": {
+                      "anyOf": [
+                        {
                           "type": "number"
                         },
                         {
@@ -31180,7 +32182,7 @@
                         }
                       ]
                     },
-                    "Union_1": {
+                    "Union_2": {
                       "type": "string",
                       "enum": [
                         "unverified",
@@ -31188,7 +32190,7 @@
                         "expired"
                       ]
                     },
-                    "Union_2": {
+                    "Union_3": {
                       "anyOf": [
                         {
                           "anyOf": [
@@ -31209,7 +32211,7 @@
                         }
                       ]
                     },
-                    "Union_3": {
+                    "Union_4": {
                       "anyOf": [
                         {
                           "anyOf": [
@@ -31226,17 +32228,27 @@
                         }
                       ]
                     },
-                    "Union_4": {
+                    "Union_5": {
                       "anyOf": [
                         {
                           "anyOf": [
                             {
-                              "$ref": "#/$defs/Union_"
+                              "$ref": "#/$defs/Union_1"
                             },
                             {
                               "type": "null"
                             }
                           ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "Union_6": {
+                      "anyOf": [
+                        {
+                          "type": "string"
                         },
                         {
                           "type": "null"

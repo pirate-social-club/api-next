@@ -81,6 +81,7 @@ import {
   makeControlPlanePersonaStore,
   makeControlPlanePersonaWalletStore,
 } from "@pirate/platform-cf/persona-repository";
+import { makeControlPlanePlatformPirateHandleStore } from "@pirate/platform-cf/platform-pirate-handle-repository";
 import {
   type HyperdriveConnection,
   makeHyperdriveControlPlaneLayer,
@@ -129,6 +130,7 @@ import { makeHnsOwnershipComposition } from "./hns-ownership-composition.ts";
 import { makeMediaUploadHandlers } from "./media-upload-handlers.ts";
 import { makeNamespaceOwnershipHandlers } from "./namespace-ownership-handlers.ts";
 import { makePersonaHandlers } from "./persona-handlers.ts";
+import { makePlatformPirateHandleHandlers } from "./platform-pirate-handle-handlers.ts";
 import { makeProductHandlers } from "./product-handlers.ts";
 import { makeSongRewardOfferHandlers } from "./rewards-song-offer-handlers.ts";
 import { createHttpWorker, type EndpointHandler, type Principal } from "./transport.ts";
@@ -819,6 +821,9 @@ export async function createProductionHttpWorker(
       envelopeKeys: Redacted.value(config.HANDLE_RECIPIENT_TOKEN_ENVELOPE_KEYS),
     }),
   });
+  const platformPirateHandleHandlers = makePlatformPirateHandleHandlers(
+    makeControlPlanePlatformPirateHandleStore(controlPlane),
+  );
   const songRewardOfferHandlers: Readonly<Record<string, EndpointHandler>> =
     config.MEGAPOT_REWARDS_ENABLED
       ? await (async () => {
@@ -913,6 +918,7 @@ export async function createProductionHttpWorker(
       ...personaHandlers,
       ...activityQualificationHandlers,
       ...handleSalesHandlers,
+      ...platformPirateHandleHandlers,
       ...songRewardOfferHandlers,
       ...mediaHandlers,
       GetJwks: () => sessionCrypto.jwks(),
