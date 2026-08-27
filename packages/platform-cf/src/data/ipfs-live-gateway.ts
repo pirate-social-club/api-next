@@ -24,7 +24,7 @@ export type IpfsIoGatewayVerifierOptions = Readonly<{
 
 const digestStream = (): DigestWritable => {
   const Constructor = (
-    globalThis as typeof globalThis & {
+    crypto as Crypto & {
       DigestStream: new (algorithm: "SHA-256") => DigestWritable;
     }
   ).DigestStream;

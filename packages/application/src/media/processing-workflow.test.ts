@@ -389,7 +389,7 @@ function providers(
           artifact: {
             version: "media-transform-sample-artifact-v1",
             objectKey: `sample/${input.variant}`,
-            contentType: "audio/wav",
+            contentType: "audio/mpeg",
             byteLength: 4,
             offsetMs: input.variant === "primary" ? 42_000 : 126_000,
             durationMs: 12_000,
@@ -736,6 +736,42 @@ describe("media processing workflow", () => {
     expect(store.publications).toBe(0);
   });
 
+  test("trusted probing rejects a non-MP3 before sampling or identification", async () => {
+    const store = new FakeStore();
+    const providerEvents: string[] = [];
+    const base = providers(providerEvents);
+    const provider: MediaProcessingProviders = {
+      ...base,
+      transform: {
+        ...base.transform,
+        probe: (input) =>
+          base.transform.probe(input).pipe(
+            Effect.map((outcome) =>
+              outcome.status === "completed"
+                ? {
+                    ...outcome,
+                    probe: {
+                      ...outcome.probe,
+                      container: "wav" as const,
+                      mimeType: "audio/wav",
+                      tracks: [{ ...outcome.probe.tracks[0], codec: "pcm" as const }] as const,
+                    },
+                  }
+                : outcome,
+            ),
+          ),
+      },
+    };
+    const result = await runMediaProcessingWorkflow(
+      workflowPayload(store),
+      "analysis_launch",
+      dependencies(store, provider),
+    );
+    expect(result).toEqual({ outcome: "processing_failed" });
+    expect(providerEvents).toEqual([`effect:probe:${hash}`]);
+    expect(store.publications).toBe(0);
+  });
+
   test("one alternate fingerprint attempt ends inconclusive in manual review", async () => {
     const store = new FakeStore();
     const providerEvents: string[] = [];
@@ -746,8 +782,8 @@ describe("media processing workflow", () => {
     );
     expect(result).toEqual({ outcome: "manual_review" });
     expect(providerEvents.filter((event) => event.startsWith("effect:acr"))).toEqual([
-      "effect:acr:primary.wav",
-      "effect:acr:alternate.wav",
+      "effect:acr:primary.mp3",
+      "effect:acr:alternate.mp3",
     ]);
     expect(store.publications).toBe(0);
   });

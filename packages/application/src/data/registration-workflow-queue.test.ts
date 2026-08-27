@@ -40,7 +40,6 @@ const outbox = (overrides: Partial<DataRegistrationOutbox> = {}): DataRegistrati
 
 function harness(create: "created" | "already_exists" | "throw" = "created") {
   let current = outbox();
-  let present = false;
   const calls: string[] = [];
   const store = {
     getOutbox: async () => current,
@@ -74,12 +73,11 @@ function harness(create: "created" | "already_exists" | "throw" = "created") {
   const workflow: DataRegistrationWorkflowLauncher = {
     get: async () => {
       calls.push("get");
-      return present ? "present" : "missing";
+      return "missing";
     },
     create: async () => {
       calls.push("create");
       if (create === "throw") throw new Error("unavailable");
-      present = true;
       return create;
     },
   };
@@ -95,7 +93,7 @@ describe("DATA registration Queue and recovery", () => {
         { store: state.store, workflow: state.workflow, workerId: "worker-1", leaseSeconds: 60 },
       ),
     ).toEqual({ disposition: "ack" });
-    expect(state.calls).toEqual(["claim", "get", "create", "complete"]);
+    expect(state.calls).toEqual(["claim", "create", "complete"]);
     expect(state.current().state).toBe("delivered");
 
     expect(

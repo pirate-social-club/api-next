@@ -5,7 +5,7 @@ import { makeIpfsIoGatewayVerifier } from "./ipfs-live-gateway";
 const CID = "bafkreie7mstupynzp4jr7k5wwrdss3e3n4badz47wpctk3tmo7ujw2uani";
 const BYTES = new TextEncoder().encode("test");
 const SHA256 = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
-const originalDigestStream = Object.getOwnPropertyDescriptor(globalThis, "DigestStream");
+const originalDigestStream = Object.getOwnPropertyDescriptor(crypto, "DigestStream");
 
 class TestDigestStream extends WritableStream<ArrayBuffer | ArrayBufferView> {
   readonly digest: Promise<ArrayBuffer>;
@@ -48,15 +48,15 @@ class TestDigestStream extends WritableStream<ArrayBuffer | ArrayBufferView> {
 }
 
 beforeAll(() => {
-  Object.defineProperty(globalThis, "DigestStream", {
+  Object.defineProperty(crypto, "DigestStream", {
     configurable: true,
     value: TestDigestStream,
   });
 });
 
 afterAll(() => {
-  if (originalDigestStream === undefined) Reflect.deleteProperty(globalThis, "DigestStream");
-  else Object.defineProperty(globalThis, "DigestStream", originalDigestStream);
+  if (originalDigestStream === undefined) Reflect.deleteProperty(crypto, "DigestStream");
+  else Object.defineProperty(crypto, "DigestStream", originalDigestStream);
 });
 
 const input = (overrides: Record<string, unknown> = {}) => ({

@@ -10,10 +10,12 @@ export interface CloudflareDataRegistrationWorkflowBinding {
   readonly get: (instanceId: string) => Promise<{
     readonly status: () => Promise<Readonly<{ status: string }>>;
   }>;
-  readonly create: (options: {
-    id: string;
-    params: DataRegistrationWorkflowPayload;
-  }) => Promise<unknown>;
+  readonly createBatch: (
+    options: readonly {
+      id: string;
+      params: DataRegistrationWorkflowPayload;
+    }[],
+  ) => Promise<readonly unknown[]>;
 }
 
 export interface CloudflareDataRegistrationQueueMessage {
@@ -42,13 +44,10 @@ export function makeCloudflareDataRegistrationWorkflowLauncher(
   return {
     get,
     create: async (instanceId, payload) => {
-      try {
-        await binding.create({ id: instanceId, params: payload });
-        return "created";
-      } catch (createError) {
-        if ((await get(instanceId)) === "present") return "already_exists";
-        throw createError;
-      }
+      const created = await binding.createBatch([{ id: instanceId, params: payload }]);
+      if (created.length === 1) return "created";
+      if (created.length === 0) return "already_exists";
+      throw new Error("Workflow createBatch returned an unexpected instance count");
     },
   };
 }

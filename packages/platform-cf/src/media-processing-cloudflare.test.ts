@@ -30,27 +30,37 @@ describe("Cloudflare media processing adapters", () => {
       },
     };
     const binding = {
-      create: async () => {
-        events.push("create");
-        throw new Error("instance already exists");
+      createBatch: async () => {
+        events.push("createBatch");
+        return [];
       },
       get: async () => {
         events.push("get");
         return instance;
       },
-      createBatch: async () => [],
       getBatch: async () => [],
     };
     const launcher = makeCloudflareMediaProcessingWorkflowLauncher(binding, isMissing);
 
     expect(await launcher.create(instance.id, payload)).toBe("already_exists");
     await launcher.notify(instance.id, "decision_wakeup", payload);
-    expect(events).toEqual(["create", "get", "get", "event:decision_wakeup"]);
+    expect(events).toEqual(["createBatch", "get", "event:decision_wakeup"]);
   });
 
-  test("propagates create failure when deterministic identity is still missing", async () => {
+  test("reports one newly created deterministic Workflow instance", async () => {
     const binding = {
-      create: async () => {
+      createBatch: async () => [{}],
+      get: async () => {
+        throw new Error("get must not be called");
+      },
+    };
+    const launcher = makeCloudflareMediaProcessingWorkflowLauncher(binding, isMissing);
+    expect(await launcher.create("media-operation-1-r1", payload)).toBe("created");
+  });
+
+  test("propagates createBatch transport failure without a get probe", async () => {
+    const binding = {
+      createBatch: async () => {
         throw new Error("transport unavailable");
       },
       get: async () => {
@@ -65,7 +75,7 @@ describe("Cloudflare media processing adapters", () => {
 
   test("uses Workflow status rather than handle construction as presence proof", async () => {
     const binding = {
-      create: async () => undefined,
+      createBatch: async () => [],
       get: async () => ({
         status: async () => ({ status: "unknown" }),
         sendEvent: async () => undefined,
@@ -78,7 +88,7 @@ describe("Cloudflare media processing adapters", () => {
 
   test("does not turn a transient get failure into retained-instance loss", async () => {
     const binding = {
-      create: async () => undefined,
+      createBatch: async () => [],
       get: async () => {
         throw new Error("control plane unavailable");
       },

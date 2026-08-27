@@ -114,8 +114,8 @@
       },
       "vars": {
         "API_NEXT_ENV": "staging",
-        "MEDIA_PROCESSING_ENABLED": "false",
-        "DATA_REGISTRATION_ENABLED": "false",
+        "MEDIA_PROCESSING_ENABLED": "true",
+        "DATA_REGISTRATION_ENABLED": "true",
         "HNS_OWNERSHIP_ENABLED": "false",
         "HNS_OWNERSHIP_CONFIGURATION_REFERENCE": "hns-owner-staging",
         "HNS_OWNERSHIP_CONFIGURATION_VERSION": "hns-owner-config-v1",

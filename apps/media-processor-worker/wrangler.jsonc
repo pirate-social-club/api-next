@@ -96,13 +96,13 @@
         }
       ],
       "vars": {
-        "MEDIA_PROCESSING_ENABLED": "false",
-        "DATA_REGISTRATION_ENABLED": "false",
+        "MEDIA_PROCESSING_ENABLED": "true",
+        "DATA_REGISTRATION_ENABLED": "true",
         "DATA_REGISTRATION_CHAIN_ID": "1315",
-        "TRANSLOADIT_PROBE_TEMPLATE_ID": "",
-        "TRANSLOADIT_SAMPLE_PRIMARY_TEMPLATE_ID": "",
-        "TRANSLOADIT_SAMPLE_ALTERNATE_TEMPLATE_ID": "",
-        "ACRCLOUD_IDENTIFY_HOST": ""
+        "TRANSLOADIT_PROBE_TEMPLATE_ID": "4df57ca6626344e783c2c54c15039a5d",
+        "TRANSLOADIT_SAMPLE_PRIMARY_TEMPLATE_ID": "3316badd4d4a4bb598e81d8a70fd2e17",
+        "TRANSLOADIT_SAMPLE_ALTERNATE_TEMPLATE_ID": "665dac5c00394ca39e9f6771378d3cf7",
+        "ACRCLOUD_IDENTIFY_HOST": "identify-eu-west-1.acrcloud.com"
       },
       "secrets": {
         "required": [

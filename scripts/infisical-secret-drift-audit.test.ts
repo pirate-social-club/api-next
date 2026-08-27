@@ -194,7 +194,7 @@ describe("Infisical secret drift audit", () => {
       "MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID",
       "MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY",
     ]) {
-      expect(httpWorkerConfig).not.toContain(name);
+      expect(httpWorkerConfig).toContain(name);
       expect(processorWorkerConfig).not.toContain(name);
     }
 

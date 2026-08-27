@@ -141,15 +141,25 @@
           "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
         }
       ],
+      "r2_buckets": [
+        {
+          "binding": "MEDIA_INGRESS",
+          "bucket_name": "pirate-media-ingress-staging"
+        },
+        {
+          "binding": "MEDIA_IMMUTABLE_ORIGINALS",
+          "bucket_name": "pirate-media-immutable-staging"
+        }
+      ],
       "vars": {
         "API_NEXT_ENV": "staging",
         "MEGAPOT_REWARDS_ENABLED": "true",
         "MEGAPOT_CHAIN_ID": "84532",
         "MEGAPOT_ATTESTATION_ID": "megapot-base-sepolia-v2",
         "MEGAPOT_REQUIRED_CONFIRMATIONS": "3",
-        "MEDIA_UPLOADS_ENABLED": "false",
-        "MEDIA_INGRESS_R2_ACCOUNT_ID": "",
-        "MEDIA_INGRESS_R2_BUCKET_NAME": "",
+        "MEDIA_UPLOADS_ENABLED": "true",
+        "MEDIA_INGRESS_R2_ACCOUNT_ID": "08a4c22cf52e2ecae883e36f80a33f4a",
+        "MEDIA_INGRESS_R2_BUCKET_NAME": "pirate-media-ingress-staging",
         "REGISTRATION_IP_LIMIT": "5",
         "REGISTRATION_IP_WINDOW_SECONDS": "900",
         "REGISTRATION_APPLICATION_LIMIT": "100",
@@ -199,7 +209,7 @@
         "PIRATE_APP_JWT_AUDIENCE": "api-next-browser-staging",
         "PIRATE_APP_JWT_SCOPE": "api-next-browser-session-staging",
         "PIRATE_APP_JWT_TTL_SECONDS": "3600",
-        "PIRATE_APP_JWT_PUBLIC_KEY": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAx03V3E/gbfe4WWMdKXDZ\ny7oFf/uofI2NnIZYBVbppPZWe0LdiYLDH8OAJCr0g4Zsk+um5BC3W5aV/UzkfyTF\nxgv7TK3fsKfLcf/iGDGWXouKXGPfZjI2OLBxeQiFxmXPoALoxXLJplgCo9blRdGZ\nw13Z/5B9U/bpXA5n6qOhbMXaSDFpdTIn5FV8HEo2XHd3LxA96pNoI5UioO9xgzcl\nb6FDCxtDLGgq10tJFPbpUSv6gfGtv6qeNfwP+eqdeh521U2nOw4NrI+dKotq4MTv\nqDf9+mxKFYsi2coWNnJwXp2+wX4n9f3Kqb0wkIDUaXfS9sdNzxnhVv27seGy2LKq\nAwIDAQAB\n-----END PUBLIC KEY-----",
+        "PIRATE_APP_JWT_PUBLIC_KEY": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAw4jLjp1TcJIhpEebzDSJ\nvBr1KB9x7YgTzAMTx3niENzPlj4jCSIgIt9+hM4/CZ1MhrfG8crqVatpJXPa60gF\nnKfExaddHttx8RqkdxC5sX7P5qe6bwSQHBnGU01qbtdMK5aIUf9OGiLSuel0tsOD\ntEqAMnjSk486g5KlfacQ3OAZP0JpuDuj6jUKdAj6qQtEgPV2u1U2PMI6oA975hLH\nfqYSSMGRkt8sa9QpiHGTj6exjvA7bO/2nu6ylvzgrw984cnEgt3p3HTc4bY4HLuQ\njbK5F9q8CNBqh+xSMTDMWbIhUFM8HrSbcQYGH34YaMLIj6CsApMtYnfYjk4BPqo9\n/QIDAQAB\n-----END PUBLIC KEY-----",
         "PRIVY_APP_ID": "cmsw5pis300b80cladbxx7bsr",
         "PRIVY_JWKS_URL": "https://auth.privy.io/api/v1/apps/cmsw5pis300b80cladbxx7bsr/jwks.json",
         "PRIVY_JWT_AUDIENCE": "cmsw5pis300b80cladbxx7bsr",
@@ -218,7 +228,9 @@
           "ZKPASSPORT_VERIFIER_SHARED_SECRET",
           "ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_SECRET",
           "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
-          "MEGAPOT_V2_RPC_URL"
+          "MEGAPOT_V2_RPC_URL",
+          "MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID",
+          "MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY"
         ]
       }
     },

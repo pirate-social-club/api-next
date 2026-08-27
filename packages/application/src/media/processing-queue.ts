@@ -110,14 +110,8 @@ export async function consumeMediaProcessingQueueMessage(
 
   const payload = workflowPayload(claimed);
   try {
-    const present = await dependencies.workflow.get(claimed.workflowInstanceId);
-    if (present === "missing") {
-      const created = await dependencies.workflow.create(claimed.workflowInstanceId, payload);
-      if (created === "already_exists") {
-        const converged = await dependencies.workflow.get(claimed.workflowInstanceId);
-        if (converged === "missing") throw new Error("workflow identity did not converge");
-      }
-    } else if (claimed.eventType !== "analysis_launch") {
+    const created = await dependencies.workflow.create(claimed.workflowInstanceId, payload);
+    if (created === "already_exists" && claimed.eventType !== "analysis_launch") {
       await dependencies.workflow.notify(claimed.workflowInstanceId, claimed.eventType, payload);
     }
     const completed = await dependencies.store.completeOutbox(claimed);

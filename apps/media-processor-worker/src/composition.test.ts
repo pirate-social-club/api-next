@@ -13,7 +13,7 @@ const disabledEnv = (): MediaProcessorRuntimeEnv => ({
       status: async () => ({ status: "unknown" }),
       sendEvent: async () => undefined,
     }),
-    create: async () => undefined,
+    createBatch: async () => [],
   },
   get TRANSLOADIT_AUTH_KEY(): string {
     throw new Error("disabled composition read a provider secret");
