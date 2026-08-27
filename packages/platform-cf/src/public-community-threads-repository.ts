@@ -98,6 +98,13 @@ const countValue = (value: unknown): number | null => {
   return null;
 };
 
+const ageLockedResource = () =>
+  ({
+    kind: "age_locked",
+    content_rating: "adult_18",
+    next_action: { kind: "verify_minimum_age", minimum_age: 18 },
+  }) as const;
+
 const timestampMillis = (value: unknown): number | null => {
   if (value instanceof Date) {
     const millis = value.getTime();
@@ -217,6 +224,7 @@ const listTextPostsStatement = (input: {
   readonly communityId: string;
   readonly snapshotMillis: number;
   readonly cursor: ThreadsCursor | null;
+  readonly viewerUserId?: string;
 }) => ({
   label: "public-community-threads.posts.list-text",
   text: `SELECT p.post_id,
@@ -224,6 +232,8 @@ const listTextPostsStatement = (input: {
                 public_persona_projection(p.author_persona_id) AS author_persona,
                 p.body,
                 p.title,
+                p.content_rating,
+                can_account_view_content_rating_v1($6, p.content_rating) AS rating_view_allowed,
                 p.created_at,
                 (SELECT COUNT(*)
                    FROM post_votes AS upvotes
@@ -261,6 +271,7 @@ const listTextPostsStatement = (input: {
     input.cursor?.created ?? null,
     input.cursor?.postId ?? null,
     PAGE_SIZE + 1,
+    input.viewerUserId ?? null,
   ],
   readonly: true,
 });
@@ -322,6 +333,8 @@ const localizedTextPostFromRow = (
   const upvoteCount = countValue(row.upvote_count);
   const downvoteCount = countValue(row.downvote_count);
   const commentCount = countValue(row.comment_count);
+  const contentRating = stringValue(row, "content_rating");
+  const ratingViewAllowed = row.rating_view_allowed;
   if (
     postId === null ||
     communityId === null ||
@@ -332,10 +345,13 @@ const localizedTextPostFromRow = (
     created === null ||
     upvoteCount === null ||
     downvoteCount === null ||
-    commentCount === null
+    commentCount === null ||
+    (contentRating !== "general" && contentRating !== "adult_18") ||
+    typeof ratingViewAllowed !== "boolean"
   ) {
     return null;
   }
+  if (contentRating === "adult_18" && !ratingViewAllowed) return ageLockedResource();
   return {
     post: {
       id: postId,
@@ -419,7 +435,12 @@ export function makeControlPlanePublicCommunityThreadsRepository(
         }
 
         const posts = yield* db.execute<Row>(
-          listTextPostsStatement({ communityId: preview.id, snapshotMillis, cursor }),
+          listTextPostsStatement({
+            communityId: preview.id,
+            snapshotMillis,
+            cursor,
+            ...(input.viewerUserId === undefined ? {} : { viewerUserId: input.viewerUserId }),
+          }),
         );
         const selected = posts.rows.slice(0, PAGE_SIZE);
         const items = selected.map((row) =>

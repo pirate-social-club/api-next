@@ -88,6 +88,13 @@ const epochSeconds = (value: unknown): number | null => {
 const booleanValue = (row: Row, key: string): boolean | null =>
   typeof row[key] === "boolean" ? row[key] : null;
 
+const ageLockedResource = () =>
+  ({
+    kind: "age_locked",
+    content_rating: "adult_18",
+    next_action: { kind: "verify_minimum_age", minimum_age: 18 },
+  }) as const;
+
 const sortFrom = (query: HomeFeedQuery): FeedSort => query.sort ?? "best";
 const timeRangeFrom = (query: HomeFeedQuery): FeedTimeRange => query.time_range ?? "all";
 
@@ -203,6 +210,8 @@ const feedItemFromRow = (
   const rank = finiteNumber(row.rank_score);
   const viewerVoteValue = row.viewer_vote === null ? null : finiteNumber(row.viewer_vote);
   const viewerVote = viewerVoteValue === 1 || viewerVoteValue === -1 ? viewerVoteValue : null;
+  const contentRating = stringValue(row, "content_rating");
+  const ratingViewAllowed = booleanValue(row, "rating_view_allowed");
   if (
     feedItemId === null ||
     postId === null ||
@@ -219,9 +228,15 @@ const feedItemFromRow = (
     downvoteCount === null ||
     commentCount === null ||
     rank === null ||
-    (row.viewer_vote !== null && viewerVote === null)
+    (row.viewer_vote !== null && viewerVote === null) ||
+    (contentRating !== "general" && contentRating !== "adult_18") ||
+    ratingViewAllowed === null
   ) {
     return null;
+  }
+
+  if (postType === "text" && contentRating === "adult_18" && !ratingViewAllowed) {
+    return ageLockedResource();
   }
 
   const authorPersona = publicPersonaFromSql(row.author_persona);
@@ -306,6 +321,9 @@ const homeFeedStatement = (input: {
                   p.visibility,
                   p.title,
                   p.body,
+                  p.content_rating,
+                  (p.post_type <> 'text'
+                    OR can_account_view_content_rating_v1($1, p.content_rating)) AS rating_view_allowed,
                   p.comments_locked,
                   p.created_at,
                   c.display_name,
@@ -411,6 +429,7 @@ export function makeControlPlaneFeedRepository(
         const topCommunities = new Map<string, HomeFeedDocument["top_communities"][number]>();
         for (const item of validItems) {
           if (topCommunities.size >= 8) break;
+          if (!("community" in item)) continue;
           topCommunities.set(item.community.id, item.community);
         }
 

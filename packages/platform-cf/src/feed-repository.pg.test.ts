@@ -132,8 +132,10 @@ suite("Postgres 17 home feed repository", () => {
       });
 
       const result = await Effect.runPromise(Effect.scoped(store.listHome({ query: {} })));
-      expect(result.items.map((item) => item.post.post.id)).toEqual(["post_public"]);
-      expect(result.items[0]?.post.post.created).toBe(1_786_960_800);
+      expect(result.items.map((item) => ("kind" in item ? item.kind : item.post.post.id))).toEqual([
+        "post_public",
+      ]);
+      expect(result.items[0]).toMatchObject({ post: { post: { created: 1_786_960_800 } } });
       expect(result.top_communities).toEqual([
         {
           id: "com_alpha",
@@ -165,9 +167,12 @@ suite("Postgres 17 home feed repository", () => {
       const other = await Effect.runPromise(
         Effect.scoped(store.listHome({ query: {}, viewerUserId: "usr_other" })),
       );
-      expect(member.items.map((item) => item.post.post.id)).toEqual(["post_members"]);
-      expect(member.items[0]?.post.viewer_vote).toBe(1);
-      expect(member.items[0]?.post.viewer_is_author).toBe(true);
+      expect(member.items.map((item) => ("kind" in item ? item.kind : item.post.post.id))).toEqual([
+        "post_members",
+      ]);
+      expect(member.items[0]).toMatchObject({
+        post: { viewer_vote: 1, viewer_is_author: true },
+      });
       expect(other.items).toEqual([]);
     });
     completedTestCount += 1;
@@ -203,7 +208,9 @@ suite("Postgres 17 home feed repository", () => {
           }),
         ),
       );
-      const ids = [...first.items, ...second.items].map((item) => item.post.post.id);
+      const ids = [...first.items, ...second.items].map((item) =>
+        "kind" in item ? item.kind : item.post.post.id,
+      );
       expect(first.items).toHaveLength(20);
       expect(second.items).toHaveLength(2);
       expect(new Set(ids).size).toBe(22);

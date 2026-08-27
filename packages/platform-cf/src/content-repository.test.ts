@@ -68,6 +68,8 @@ const validPost = {
   post_type: "text",
   status: "published",
   visibility: "public",
+  content_rating: "general",
+  rating_view_allowed: true,
   comments_locked: false,
   created_at: new Date("2026-01-01T00:00:00Z"),
 };
@@ -182,7 +184,9 @@ describe("M2 content repository row and lock defenses", () => {
       fake.db,
     );
     expect(Exit.isSuccess(result)).toBe(true);
-    if (Exit.isSuccess(result)) expect(result.value?.post.created).toBe(1_767_225_600);
+    if (Exit.isSuccess(result)) {
+      expect(result.value).toMatchObject({ post: { created: 1_767_225_600 } });
+    }
   });
 
   test("rejects orphan posts and comments as invalid rows", async () => {

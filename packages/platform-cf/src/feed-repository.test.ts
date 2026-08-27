@@ -27,6 +27,8 @@ const feedRow = (index = 0, overrides: Record<string, unknown> = {}) => ({
   visibility: "public",
   title: null,
   body: `post ${index}`,
+  content_rating: "general",
+  rating_view_allowed: true,
   comments_locked: false,
   created_at: new Date(1_760_000_000_000 - index * 1_000),
   display_name: "Alpha",
@@ -66,6 +68,43 @@ function failureOf<A, E>(exit: Exit.Exit<A, E>): E {
 }
 
 describe("home feed Postgres repository", () => {
+  test("replaces a locked text row with the metadata-free age placeholder", async () => {
+    const repository = makeControlPlaneFeedRepository();
+    const output = await Effect.runPromise(
+      repository.listHome({ query: {} }).pipe(
+        Effect.provideService(
+          ControlPlaneDb,
+          fakeDb(
+            () => [
+              feedRow(0, {
+                content_rating: "adult_18",
+                rating_view_allowed: false,
+                title: "must not leak",
+                body: "must not leak",
+                upvote_count: "99",
+              }),
+            ],
+            [],
+          ),
+        ),
+      ),
+    );
+
+    expect(output.items).toEqual([
+      {
+        kind: "age_locked",
+        content_rating: "adult_18",
+        next_action: { kind: "verify_minimum_age", minimum_age: 18 },
+      },
+    ]);
+    expect(output.top_communities).toEqual([]);
+    expect(Object.keys(output.items[0] ?? {}).sort()).toEqual([
+      "content_rating",
+      "kind",
+      "next_action",
+    ]);
+  });
+
   test("maps only published projection rows into the conservative wire shape", async () => {
     const calls: ControlPlaneStatement[] = [];
     const repository = makeControlPlaneFeedRepository({ now: () => 1_760_000_000_000 });
@@ -163,8 +202,9 @@ describe("home feed Postgres repository", () => {
       ),
     );
 
-    expect(output.items[0]?.post.viewer_vote).toBe(1);
-    expect(output.items[0]?.post.viewer_is_author).toBe(true);
+    expect(output.items[0]).toMatchObject({
+      post: { viewer_vote: 1, viewer_is_author: true },
+    });
     expect(calls[0]?.values[0]).toBe("usr_author");
     expect(calls[0]?.text).not.toContain("usr_author");
   });
@@ -180,7 +220,7 @@ describe("home feed Postgres repository", () => {
       ),
     );
 
-    expect(output.items[0]?.post.post.created).toBe(1_760_000_000);
+    expect(output.items[0]).toMatchObject({ post: { post: { created: 1_760_000_000 } } });
   });
 
   test("emits a query-bound keyset cursor and rejects reuse under another sort", async () => {

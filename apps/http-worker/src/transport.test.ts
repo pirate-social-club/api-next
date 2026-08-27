@@ -241,7 +241,14 @@ describe("contracts-generated HTTP worker", () => {
         "content-type": "application/json",
         "CF-Connecting-IP": "203.0.113.8",
       },
-      body: JSON.stringify({ privy_access_token: "privy-proof" }),
+      body: JSON.stringify({
+        privy_access_token: "privy-proof",
+        minimum_age_attestation: {
+          version: "minimum-age-attestation-v1",
+          minimum_age: 16,
+          affirmed: true,
+        },
+      }),
     });
     expect(response.status).toBe(201);
     expect(response.headers.get("cache-control")).toBe("private, no-store");
@@ -250,7 +257,14 @@ describe("contracts-generated HTTP worker", () => {
     const missingIp = await app.request("http://worker.test/auth/register", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ privy_access_token: "privy-proof" }),
+      body: JSON.stringify({
+        privy_access_token: "privy-proof",
+        minimum_age_attestation: {
+          version: "minimum-age-attestation-v1",
+          minimum_age: 16,
+          affirmed: true,
+        },
+      }),
     });
     expect(missingIp.status).toBe(400);
     expect(missingIp.headers.get("cache-control")).toBe("private, no-store");

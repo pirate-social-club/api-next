@@ -226,18 +226,33 @@ const permittedActions = (
   source: "automatic" | "member_report" | "mixed",
   status: TargetStatus,
   rating: "general" | "adult_18",
+  adultCapable = false,
 ): readonly Action[] => {
   if (status === "held")
-    return rating === "adult_18" ? ["reject"] : ["approve_as_general", "reject"];
+    return rating === "adult_18"
+      ? adultCapable
+        ? ["approve_as_adult_18", "reject"]
+        : ["reject"]
+      : ["approve_as_general", "approve_as_adult_18", "reject"];
   if (status === "published") {
-    if (rating === "adult_18") return ["hide"];
-    return source === "member_report" || source === "mixed" ? ["dismiss_report", "hide"] : ["hide"];
+    if (rating === "adult_18")
+      return source === "member_report" || source === "mixed"
+        ? adultCapable
+          ? ["dismiss_report", "hide"]
+          : ["hide"]
+        : ["hide"];
+    return source === "member_report" || source === "mixed"
+      ? ["dismiss_report", "hide", "raise_rating_to_adult_18"]
+      : ["hide", "raise_rating_to_adult_18"];
   }
-  if (status === "hidden") return rating === "adult_18" ? [] : ["restore"];
+  if (status === "hidden") return rating === "adult_18" && !adultCapable ? [] : ["restore"];
   return [];
 };
 
-const caseSummary = (row: Row): CommunityModerationCaseList["items"][number] | null => {
+const caseSummary = (
+  row: Row,
+  adultCapable = false,
+): CommunityModerationCaseList["items"][number] | null => {
   const caseRef = stringValue(row, "case_ref");
   const communityId = stringValue(row, "community_id");
   const targetType = stringValue(row, "target_type") as "text_post" | "comment" | "reply" | null;
@@ -275,7 +290,7 @@ const caseSummary = (row: Row): CommunityModerationCaseList["items"][number] | n
     target_status: targetStatus,
     resulting_content_rating: rating,
     case_revision: caseRevision,
-    permitted_actions: [...permittedActions(source, targetStatus, rating)],
+    permitted_actions: [...permittedActions(source, targetStatus, rating, adultCapable)],
     created_at: createdAt,
     updated_at: updatedAt,
   };
@@ -407,7 +422,16 @@ export function makeControlPlaneCommunityModerationRepository(): RepositoryServi
           values: [input.communityId, input.view],
           readonly: true,
         });
-        const items = result.rows.map((row) => caseSummary(row as Row));
+        const capability = yield* db.execute<Row>({
+          label: "community-moderation.list-age-capability",
+          text: "SELECT current_account_age_capability_v1($1) AS capability",
+          values: [input.actor.userId],
+          readonly: true,
+        });
+        const adultCapable =
+          capability.rows.length === 1 &&
+          stringValue(capability.rows[0] as Row, "capability") === "adult_18";
+        const items = result.rows.map((row) => caseSummary(row as Row, adultCapable));
         if (items.some((item) => item === null))
           return yield* Effect.fail(failure("list", "invalid-row"));
         return {
@@ -444,7 +468,16 @@ export function makeControlPlaneCommunityModerationRepository(): RepositoryServi
         });
         const row = result.rows.length === 1 ? (result.rows[0] as Row) : null;
         if (row === null) return yield* Effect.fail(failure("detail", "not-found"));
-        const summary = caseSummary(row);
+        const ageCapability = yield* db.execute<Row>({
+          label: "community-moderation.get-case-age-capability",
+          text: "SELECT current_account_age_capability_v1($1) AS capability",
+          values: [input.actor.userId],
+          readonly: true,
+        });
+        const canViewAdult =
+          ageCapability.rows.length === 1 &&
+          stringValue(ageCapability.rows[0] as Row, "capability") === "adult_18";
+        const summary = caseSummary(row, canViewAdult);
         if (summary === null) return yield* Effect.fail(failure("detail", "invalid-row"));
         const authorRating = stringValue(row, "author_declared_rating");
         const resultingRating = stringValue(row, "resulting_content_rating");
@@ -484,7 +517,7 @@ export function makeControlPlaneCommunityModerationRepository(): RepositoryServi
           object: "community_moderation_case" as const,
           case: summary,
           preview:
-            resultingRating === "adult_18"
+            resultingRating === "adult_18" && !canViewAdult
               ? ({ kind: "locked", reason: "adult_rating" } as const)
               : ({ kind: "text", title: bounded(title), body: bounded(body) } as const),
           evidence: {
@@ -978,6 +1011,10 @@ export function makeControlPlaneCommunityModerationRepository(): RepositoryServi
             const rating = (stringValue(row, "resulting_content_rating") ?? "adult_18") as
               | "general"
               | "adult_18";
+            const authorRating = stringValue(row, "author_declared_rating") as
+              | "general"
+              | "adult_18"
+              | null;
             const revision = integerValue(row, "case_revision");
             const updatedAt = isoValue(row, "updated_at");
             if (
@@ -989,7 +1026,8 @@ export function makeControlPlaneCommunityModerationRepository(): RepositoryServi
               beforeStatus === null ||
               revision === null ||
               updatedAt === null ||
-              (rating !== "general" && rating !== "adult_18")
+              (rating !== "general" && rating !== "adult_18") ||
+              (authorRating !== "general" && authorRating !== "adult_18")
             ) {
               return yield* Effect.fail(failure("action", "invalid-row"));
             }
@@ -1003,18 +1041,30 @@ export function makeControlPlaneCommunityModerationRepository(): RepositoryServi
             if (revision !== input.expectedCaseRevision) {
               return yield* Effect.fail(failure("action", "conflict", input.caseRef));
             }
-            if (
+            const ageCapability = yield* transaction.execute<Row>({
+              label: "community-moderation.action-age-capability",
+              text: "SELECT current_account_age_capability_v1($1) AS capability",
+              values: [input.actor.userId],
+              readonly: true,
+            });
+            const adultCapable =
+              ageCapability.rows.length === 1 &&
+              stringValue(ageCapability.rows[0] as Row, "capability") === "adult_18";
+            const requiresAdultCapability =
               input.action === "approve_as_adult_18" ||
-              input.action === "raise_rating_to_adult_18"
+              (rating === "adult_18" && ["dismiss_report", "restore"].includes(input.action));
+            if (requiresAdultCapability && !adultCapable) {
+              return yield* Effect.fail(failure("action", "conflict", input.caseRef));
+            }
+            if (
+              !permittedActions(source, beforeStatus, rating, adultCapable).includes(input.action)
             ) {
               return yield* Effect.fail(failure("action", "conflict", input.caseRef));
             }
-            if (rating === "adult_18" && input.action !== "hide" && input.action !== "reject") {
-              return yield* Effect.fail(failure("action", "conflict", input.caseRef));
-            }
-            if (!permittedActions(source, beforeStatus, rating).includes(input.action)) {
-              return yield* Effect.fail(failure("action", "conflict", input.caseRef));
-            }
+            const afterRating =
+              input.action === "approve_as_adult_18" || input.action === "raise_rating_to_adult_18"
+                ? "adult_18"
+                : rating;
             const transition: { readonly view: ViewState; readonly status: TargetStatus } =
               input.action === "hide"
                 ? { view: "hidden", status: "hidden" }
@@ -1069,7 +1119,7 @@ export function makeControlPlaneCommunityModerationRepository(): RepositoryServi
               return yield* Effect.fail(failure("action", "invalid-row"));
             }
 
-            if (input.action === "approve_as_general") {
+            if (input.action === "approve_as_general" || input.action === "approve_as_adult_18") {
               if (
                 submissionStatus !== "manual_review" ||
                 submissionActorId === null ||
@@ -1098,9 +1148,10 @@ export function makeControlPlaneCommunityModerationRepository(): RepositoryServi
                   text: `INSERT INTO posts (
                       community_id, post_id, author_user_id, author_persona_id,
                       post_type, status, visibility, title, body, created_at,
-                      updated_at, idempotency_key, idempotency_body_hash
+                      updated_at, idempotency_key, idempotency_body_hash,
+                      author_declared_rating, content_rating
                     ) VALUES ($1, $2, $3, $4, 'text', 'published', 'public',
-                      $5, $6, $7, $7, $8, $9)`,
+                      $5, $6, $7, $7, $8, $9, $10, $11)`,
                   values: [
                     communityId,
                     targetResourceId,
@@ -1111,6 +1162,8 @@ export function makeControlPlaneCommunityModerationRepository(): RepositoryServi
                     at,
                     submissionKey,
                     submissionHash,
+                    authorRating,
+                    afterRating,
                   ],
                   readonly: false,
                 });
@@ -1126,9 +1179,10 @@ export function makeControlPlaneCommunityModerationRepository(): RepositoryServi
                   label: "community-moderation.approve-post-submission",
                   text: `UPDATE text_content_submissions
                             SET status = 'published', public_reason_code = NULL,
-                                published_post_id = $3, review_ref = NULL, updated_at = $4
+                                published_post_id = $3, review_ref = NULL, updated_at = $4,
+                                resulting_content_rating = $5
                           WHERE community_id = $1 AND submission_id = $2`,
-                  values: [communityId, submissionId, targetResourceId, at],
+                  values: [communityId, submissionId, targetResourceId, at, afterRating],
                   readonly: false,
                 });
               } else {
@@ -1172,7 +1226,9 @@ export function makeControlPlaneCommunityModerationRepository(): RepositoryServi
                       community_id, comment_id, post_id, parent_comment_id,
                       author_user_id, author_persona_id, status, body, created_at,
                       updated_at, idempotency_key, idempotency_body_hash, depth, reply_count
-                    ) VALUES ($1, $2, $3, $4, $5, $6, 'published', $7, $8, $8, $9, $10, $11, 0)`,
+                      , author_declared_rating, content_rating
+                    ) VALUES ($1, $2, $3, $4, $5, $6, 'published', $7, $8, $8, $9, $10, $11, 0,
+                      $12, $13)`,
                   values: [
                     communityId,
                     targetResourceId,
@@ -1185,6 +1241,8 @@ export function makeControlPlaneCommunityModerationRepository(): RepositoryServi
                     submissionKey,
                     submissionHash,
                     depth,
+                    authorRating,
+                    afterRating,
                   ],
                   readonly: false,
                 });
@@ -1193,8 +1251,8 @@ export function makeControlPlaneCommunityModerationRepository(): RepositoryServi
                   text: `INSERT INTO comment_publication_projection (
                       community_id, comment_id, post_id, parent_comment_id,
                       author_user_id, author_persona_id, body, depth, status,
-                      projected_at, updated_at
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'published', $9, $9)`,
+                      projected_at, updated_at, content_rating
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'published', $9, $9, $10)`,
                   values: [
                     communityId,
                     targetResourceId,
@@ -1205,6 +1263,7 @@ export function makeControlPlaneCommunityModerationRepository(): RepositoryServi
                     heldBody,
                     depth,
                     at,
+                    afterRating,
                   ],
                   readonly: false,
                 });
@@ -1226,11 +1285,28 @@ export function makeControlPlaneCommunityModerationRepository(): RepositoryServi
                   label: "community-moderation.approve-comment-submission",
                   text: `UPDATE text_content_submissions
                             SET status = 'published', public_reason_code = NULL,
-                                published_comment_id = $3, review_ref = NULL, updated_at = $4
+                                published_comment_id = $3, review_ref = NULL, updated_at = $4,
+                                resulting_content_rating = $5
                           WHERE community_id = $1 AND submission_id = $2`,
-                  values: [communityId, submissionId, targetResourceId, at],
+                  values: [communityId, submissionId, targetResourceId, at, afterRating],
                   readonly: false,
                 });
+              }
+            } else if (input.action === "raise_rating_to_adult_18") {
+              if (targetResourceId === null) {
+                return yield* Effect.fail(failure("action", "conflict"));
+              }
+              const raised = yield* transaction.execute<Row>({
+                label: "community-moderation.raise-rating",
+                text: `SELECT raise_text_rating_with_descendants_v1($1, $2, $3, $4) AS changed`,
+                values: [communityId, targetType, targetResourceId, at],
+                readonly: false,
+              });
+              if (
+                raised.rows.length !== 1 ||
+                integerValue(raised.rows[0] as Row, "changed") === null
+              ) {
+                return yield* Effect.fail(failure("action", "conflict"));
               }
             } else if (input.action === "reject") {
               yield* transaction.execute({
@@ -1339,8 +1415,8 @@ export function makeControlPlaneCommunityModerationRepository(): RepositoryServi
                   response_snapshot_bytes,
                   response_snapshot_sha256, created_at
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                  $13, $14, $15, $15, $16, $17, $18, $19, $20,
-                  'unavailable_owner_only_mvp', $21, encode(sha256($21), 'hex'), $22)`,
+                  $13, $14, $15, $16, $17, $18, $19, $20, $21,
+                  $22, $23, encode(sha256($23), 'hex'), $24)`,
               values: [
                 actionId,
                 communityId,
@@ -1357,16 +1433,28 @@ export function makeControlPlaneCommunityModerationRepository(): RepositoryServi
                 beforeStatus,
                 transition.status,
                 rating,
+                afterRating,
                 platformPolicyRevisionId,
                 platformPolicyHash,
                 communityPolicyRevisionId,
                 communityPolicyHash,
                 evidenceRef,
+                adultCapable ? "adult_18" : "general",
                 responseBytes,
                 at,
               ],
               readonly: false,
             });
+            if (input.action === "raise_rating_to_adult_18") {
+              yield* transaction.execute({
+                label: "community-moderation.raise-submission-rating",
+                text: `UPDATE text_content_submissions
+                          SET resulting_content_rating = 'adult_18', updated_at = $3
+                        WHERE community_id = $1 AND submission_id = $2`,
+                values: [communityId, submissionId, at],
+                readonly: false,
+              });
+            }
             yield* transaction.execute({
               label: "community-moderation.action-update-case",
               text: `UPDATE community_moderation_cases_v2

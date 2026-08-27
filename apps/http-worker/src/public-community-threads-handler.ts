@@ -22,6 +22,7 @@ export const makePublicCommunityThreadsHandler = (
         {
           communityRef,
           query: request.query as Parameters<typeof getPublicCommunityThreads>[0]["query"],
+          ...(request.principal === null ? {} : { viewerUserId: request.principal.subject }),
         },
         services,
       ),

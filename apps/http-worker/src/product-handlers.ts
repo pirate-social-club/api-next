@@ -61,10 +61,13 @@ export interface ProductHandlerServices {
   readonly feedStore: FeedStoreService;
   readonly identityStore?: CurrentUserServices["identityStore"];
   readonly moderationStore?: CommunityModerationStoreService;
+  readonly ageAccessStore?: AgeAccessStoreService;
 }
 
 export type ProductHandlers = Readonly<{
   readonly GetCurrentUser: EndpointHandler;
+  readonly GetMyAgeCapability: EndpointHandler;
+  readonly PutMyMinimumAgeAttestation: EndpointHandler;
   readonly GetCommunityPreview: EndpointHandler;
   readonly GetJoinEligibility: EndpointHandler;
   readonly JoinCommunity: EndpointHandler;
@@ -340,6 +343,30 @@ const moderationStoreFrom = (services: ProductHandlerServices): CommunityModerat
   return services.moderationStore;
 };
 
+const ageAccessStoreFrom = (services: ProductHandlerServices): AgeAccessStoreService => {
+  if (services.ageAccessStore === undefined) throw new AuthError({ message: "Unauthorized" });
+  return services.ageAccessStore;
+};
+
+const ageCapabilityHandler = async (request: DecodedRequest, services: ProductHandlerServices) =>
+  Effect.runPromise(
+    getMyAgeCapability(
+      { actor: communityActor(request.principal) },
+      { ageAccessStore: ageAccessStoreFrom(services) },
+    ),
+  );
+
+const ageAttestationHandler = async (request: DecodedRequest, services: ProductHandlerServices) =>
+  Effect.runPromise(
+    attestMyMinimumAge(
+      {
+        actor: communityActor(request.principal),
+        attestation: request.body as Parameters<typeof attestMyMinimumAge>[0]["attestation"],
+      },
+      { ageAccessStore: ageAccessStoreFrom(services) },
+    ),
+  );
+
 const reportHandler = async (
   request: DecodedRequest,
   services: ProductHandlerServices,
@@ -502,6 +529,8 @@ const homeFeed = async (request: DecodedRequest, services: ProductHandlerService
 
 export const makeProductHandlers = (services: ProductHandlerServices): ProductHandlers => ({
   GetCurrentUser: (request) => currentUser(request, services),
+  GetMyAgeCapability: (request) => ageCapabilityHandler(request, services),
+  PutMyMinimumAgeAttestation: (request) => ageAttestationHandler(request, services),
   GetCommunityPreview: (request) => communityPreview(request, services),
   GetJoinEligibility: (request) => eligibility(request, services),
   JoinCommunity: (request) => join(request, services),
@@ -526,6 +555,11 @@ export const makeProductHandlers = (services: ProductHandlerServices): ProductHa
   GetHomeFeed: (request) => homeFeed(request, services),
 });
 
+import {
+  type AgeAccessStoreService,
+  attestMyMinimumAge,
+  getMyAgeCapability,
+} from "@pirate/application/use-cases/age-access";
 import {
   type CommunityModerationStoreService,
   canonicalBodyHash,

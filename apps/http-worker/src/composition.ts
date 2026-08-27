@@ -20,6 +20,7 @@ import type { VerificationIntentResolver } from "@pirate/application/verificatio
 import { AuthError } from "@pirate/contracts";
 import { makeControlPlaneAcceptedLyricsStudyItemSource } from "@pirate/platform-cf/accepted-lyrics-study-item-source";
 import { makeControlPlaneActivityQualificationStore } from "@pirate/platform-cf/activity-qualification-repository";
+import { makeControlPlaneAgeAccessStore } from "@pirate/platform-cf/age-access-repository";
 import { makeControlPlaneCommunityCreationIntentResolver } from "@pirate/platform-cf/community-creation-intent-resolver";
 import { makeControlPlaneCommunityCreationStore } from "@pirate/platform-cf/community-creation-repository";
 import { makeControlPlaneCommunityJoinIntentResolver } from "@pirate/platform-cf/community-join-intent-resolver";
@@ -595,6 +596,7 @@ export async function createProductionHttpWorker(
   const contentStore = makeControlPlaneContentStore(controlPlane);
   const textPostStore = makeControlPlaneTextSubmissionStore(controlPlane);
   const moderationStore = makeControlPlaneCommunityModerationStore(controlPlane);
+  const ageAccessStore = makeControlPlaneAgeAccessStore(controlPlane);
   // The runtime is installed even when no provider credentials are enabled.
   // Unavailability is a durable manual-review result, never an allow fallback.
   const textModeration: TextModeration["Service"] = {
@@ -755,6 +757,7 @@ export async function createProductionHttpWorker(
     feedStore,
     identityStore,
     moderationStore,
+    ageAccessStore,
   });
   const communityCreationHandlers = makeCommunityCreationHandlers({
     communityCreationStore,
@@ -957,6 +960,17 @@ export async function createProductionHttpWorker(
                 endpoint.path === "/personas/:personaId/wallets/evm/confirm" ||
                 endpoint.path === "/personas/:personaId/retire");
             if (!setupPath) return yield* new AuthError({ message: "Authorization failed" });
+          }
+          const ageAttestationExempt =
+            endpoint.path === "/me/minimum-age-attestation" ||
+            endpoint.path === "/auth/session/logout";
+          if (!ageAttestationExempt) {
+            const attested = yield* ageAccessStore.hasMinimumAgeAttestation({
+              accountId: input.principal?.subject ?? "",
+            });
+            if (!attested) {
+              return yield* new AuthError({ message: "Minimum age attestation required" });
+            }
           }
         }),
       ),

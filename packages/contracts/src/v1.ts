@@ -1,5 +1,12 @@
 import { Effect, Schema } from "effect";
+import {
+  AgeLockedResourceV1,
+  GetMyAgeCapability,
+  MinimumAgeAttestationV1,
+  PutMyMinimumAgeAttestation,
+} from "./age-access.ts";
 import { Auth } from "./auth.ts";
+import { ContentRatingV1 } from "./community-moderation-policy.ts";
 import {
   GetCommunityModerationCapabilities,
   GetCommunityModerationCase,
@@ -660,15 +667,18 @@ const HomeFeedItem = Schema.Struct({
   booking: Schema.optional(FeedBooking),
 });
 
+const HomeFeedProjectionItem = Schema.Union([HomeFeedItem, AgeLockedResourceV1]);
+const TextPostProjection = Schema.Union([LocalizedPost, AgeLockedResourceV1]);
+
 const HomeFeedResponse = Schema.Struct({
-  items: Schema.Array(HomeFeedItem),
+  items: Schema.Array(HomeFeedProjectionItem),
   top_communities: Schema.Array(HomeFeedCommunitySummary),
   next_cursor: Schema.optional(Schema.NullOr(Schema.String)),
 });
 
 const PublicCommunityThreadsResponse = Schema.Struct({
   community: CommunityPreview,
-  items: Schema.Array(LocalizedPost),
+  items: Schema.Array(TextPostProjection),
   next_cursor: Schema.NullOr(Schema.String),
 });
 
@@ -680,6 +690,7 @@ const CreatePostCommon = {
   body: Schema.optional(Schema.NullOr(Schema.String)),
   visibility: Schema.optional(Schema.Literals(["public", "members_only"])),
   title: Schema.optional(Schema.NullOr(Schema.String)),
+  author_declared_rating: Schema.optional(ContentRatingV1),
 };
 
 const CreatePostRequest = Schema.Struct({ ...CreatePostCommon, post_type: Schema.Literal("text") });
@@ -1158,6 +1169,7 @@ const TextCommentReplyRequestV1 = Schema.Struct({
   idempotency_key: Schema.String,
   persona_id: PersonaIdV1,
   body: Schema.String,
+  author_declared_rating: Schema.optional(ContentRatingV1),
 });
 
 const Jwk = Schema.Struct({
@@ -1189,7 +1201,12 @@ export const RegisterIdentity = endpoint({
   method: "POST",
   path: "/auth/register",
   auth: Auth.public(),
-  request: { body: Schema.Struct({ privy_access_token: Schema.String }) },
+  request: {
+    body: Schema.Struct({
+      privy_access_token: Schema.String,
+      minimum_age_attestation: MinimumAgeAttestationV1,
+    }),
+  },
   response: Schema.Union([
     SessionExchangeResponse,
     Schema.Struct({
@@ -1554,7 +1571,7 @@ export const GetPost = endpoint({
   path: "/posts/:postId",
   auth: Auth.userOrAdmin(),
   request: { path: PathPost, query: LocaleQuery },
-  response: LocalizedPost,
+  response: TextPostProjection,
   successStatus: 200,
   errors: [AuthError, BadRequest, NotFound],
 });
@@ -1699,6 +1716,8 @@ export const v1Registry = {
   SessionExchange,
   RegisterIdentity,
   SessionLogout,
+  GetMyAgeCapability,
+  PutMyMinimumAgeAttestation,
   GetCurrentUser,
   GetMyProfile,
   GetPublicProfileByHandle,

@@ -915,6 +915,7 @@ export interface PublicCommunityThreadsStoreService {
     /** One exact legacy slug candidate, or null when only exact-ID lookup is safe. */
     readonly slugCandidate: string | null;
     readonly query: PublicCommunityThreadsQuery;
+    readonly viewerUserId?: string;
   }) => Effect.Effect<
     PublicCommunityThreadsDocument | null,
     PublicCommunityThreadsRepositoryFailure

@@ -15,6 +15,7 @@ import {
 export type PublicCommunityThreadsInput = Readonly<{
   readonly communityRef: string;
   readonly query: PublicCommunityThreadsQuery;
+  readonly viewerUserId?: string;
 }>;
 
 export type PublicCommunityThreadsServices = Readonly<{
@@ -96,6 +97,7 @@ export const getPublicCommunityThreads = Effect.fn("getPublicCommunityThreads")(
     input.query.surface !== "threads" ||
     input.query.sort !== "new" ||
     unsupportedQueryMember ||
+    !validBoundedText(input.viewerUserId, 256) ||
     !validBoundedText(input.query.cursor, MAX_CURSOR_LENGTH) ||
     !validBoundedText(input.query.locale, MAX_LOCALE_LENGTH)
   ) {
@@ -109,6 +111,7 @@ export const getPublicCommunityThreads = Effect.fn("getPublicCommunityThreads")(
       communityRef: input.communityRef,
       slugCandidate,
       query: input.query,
+      ...(input.viewerUserId === undefined ? {} : { viewerUserId: input.viewerUserId }),
     })
     .pipe(Effect.mapError(mapFailure));
 

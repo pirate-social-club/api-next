@@ -261,6 +261,7 @@ export const createTextPost = Effect.fn("createTextPost")(function* (
         inputSha256: text.inputSha256,
         store: services.textPostStoreV2,
         provider: moderationProvider,
+        authorDeclaredRating: body.author_declared_rating ?? "general",
       }).pipe(Effect.mapError(mapStoreFailure));
       evaluation = evaluated.evaluation;
       restrictedEvidence = evaluated.restrictedEvidence;

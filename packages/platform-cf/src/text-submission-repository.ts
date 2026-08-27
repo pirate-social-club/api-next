@@ -903,7 +903,16 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
           if (postId !== null) {
             yield* transaction.execute({
               label: "text-post.commit.post",
-              text: `INSERT INTO posts
+              text:
+                evaluation.version === "text-moderation-v2"
+                  ? `INSERT INTO posts
+                (community_id, post_id, author_user_id, author_persona_id,
+                 post_type, status, visibility,
+                 title, body, created_at, updated_at, idempotency_key, idempotency_body_hash,
+                 author_declared_rating, content_rating)
+               VALUES ($1, $2, $3, $4, 'text', 'published', 'public', $5, $6, $7, $7, $8, $9,
+                 $10, $11)`
+                  : `INSERT INTO posts
                 (community_id, post_id, author_user_id, author_persona_id,
                  post_type, status, visibility,
                  title, body, created_at, updated_at, idempotency_key, idempotency_body_hash)
@@ -918,6 +927,9 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
                 at,
                 input.idempotencyKey,
                 input.requestHash,
+                ...(evaluation.version === "text-moderation-v2"
+                  ? [evaluation.author_declared_rating, evaluation.resulting_content_rating]
+                  : []),
               ],
               readonly: false,
             });
@@ -930,7 +942,16 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
             const depth = surface === "comment" ? 0 : targetState.parentDepth + 1;
             yield* transaction.execute({
               label: "text-submission.commit.comment",
-              text: `INSERT INTO comments (
+              text:
+                evaluation.version === "text-moderation-v2"
+                  ? `INSERT INTO comments (
+                  community_id, comment_id, post_id, parent_comment_id,
+                  author_user_id, author_persona_id,
+                  status, body, created_at, updated_at, idempotency_key, idempotency_body_hash,
+                  depth, reply_count, author_declared_rating, content_rating
+                ) VALUES ($1, $2, $3, $4, $5, $6, 'published', $7, $8, $8, $9, $10, $11, 0,
+                  $12, $13)`
+                  : `INSERT INTO comments (
                   community_id, comment_id, post_id, parent_comment_id,
                   author_user_id, author_persona_id,
                   status, body, created_at, updated_at, idempotency_key, idempotency_body_hash,
@@ -948,6 +969,9 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
                 input.idempotencyKey,
                 input.requestHash,
                 depth,
+                ...(evaluation.version === "text-moderation-v2"
+                  ? [evaluation.author_declared_rating, evaluation.resulting_content_rating]
+                  : []),
               ],
               readonly: false,
             });
@@ -971,7 +995,14 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
             }
             yield* transaction.execute({
               label: "text-submission.commit.comment-projection",
-              text: `INSERT INTO comment_publication_projection (
+              text:
+                evaluation.version === "text-moderation-v2"
+                  ? `INSERT INTO comment_publication_projection (
+                  community_id, comment_id, post_id, parent_comment_id,
+                  author_user_id, author_persona_id,
+                  body, depth, status, projected_at, updated_at, content_rating
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'published', $9, $9, $10)`
+                  : `INSERT INTO comment_publication_projection (
                   community_id, comment_id, post_id, parent_comment_id,
                   author_user_id, author_persona_id,
                   body, depth, status, projected_at, updated_at
@@ -986,6 +1017,9 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
                 input.moderationInput.body,
                 depth,
                 at,
+                ...(evaluation.version === "text-moderation-v2"
+                  ? [evaluation.resulting_content_rating]
+                  : []),
               ],
               readonly: false,
             });

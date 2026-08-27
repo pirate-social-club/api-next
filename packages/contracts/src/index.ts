@@ -1,3 +1,4 @@
+export * from "./age-access.ts";
 export * from "./auth.ts";
 export * from "./codegen.ts";
 export * from "./community-creation.ts";

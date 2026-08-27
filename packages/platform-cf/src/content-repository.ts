@@ -921,9 +921,12 @@ export function makeControlPlaneContentRepository(): ContentRepository {
             text: `SELECT community_id,post_id,author_user_id,
                           public_persona_projection(author_persona_id) AS author_persona,
                           post_type,status,visibility,title,body,
+                          content_rating,
+                          can_account_view_content_rating_v1($3, content_rating) AS rating_view_allowed,
                           comments_locked, created_at
-                   FROM posts WHERE community_id = $1 AND post_id = $2`,
-            values: [communityId, postId],
+                   FROM posts
+                  WHERE community_id = $1 AND post_id = $2`,
+            values: [communityId, postId, viewerUserId],
             readonly: true,
           });
           const row = yield* oneRow(result.rows, "get-post");
@@ -957,6 +960,21 @@ export function makeControlPlaneContentRepository(): ContentRepository {
             } else {
               return null;
             }
+          }
+          const contentRating = stringValue(row, "content_rating");
+          const ratingViewAllowed = row.rating_view_allowed;
+          if (
+            (contentRating !== "general" && contentRating !== "adult_18") ||
+            typeof ratingViewAllowed !== "boolean"
+          ) {
+            return yield* invalid("get-post");
+          }
+          if (post.post_type === "text" && contentRating === "adult_18" && !ratingViewAllowed) {
+            return {
+              kind: "age_locked",
+              content_rating: "adult_18",
+              next_action: { kind: "verify_minimum_age", minimum_age: 18 },
+            } as const;
           }
           const counts = yield* transaction.execute<Row>({
             label: "content.posts.counts",

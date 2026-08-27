@@ -36,6 +36,7 @@ export * from "./rewards/song-reward-offers.ts";
 export * from "./route-revalidation/index.ts";
 export * from "./study-item-source.ts";
 export * from "./text-moderation-runtime.ts";
+export * from "./use-cases/age-access.ts";
 export * from "./use-cases/community/creation-requirement-projection.ts";
 export * from "./use-cases/community/get-canonical-community-route.ts";
 export { canonicalBodyHash } from "./use-cases/content/common.ts";
