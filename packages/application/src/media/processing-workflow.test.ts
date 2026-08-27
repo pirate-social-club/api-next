@@ -355,6 +355,8 @@ type ProviderControls = {
   acr: ("no_match" | "fingerprint" | "match" | "failure")[];
   explicitness: "not_explicit" | "explicit" | "uncertain";
   matchedCategories: readonly (typeof MODERATION_POLICY_CATEGORIES_V1)[number][];
+  imageMatchedCategories: readonly (typeof MODERATION_POLICY_CATEGORIES_V1)[number][];
+  imageUnavailable: boolean;
   cover: MediaProcessingAnalysis["embeddedMetadata"]["cover"];
   onClassifierInput?: (input: MediaExplicitnessClassifierInput) => void;
 };
@@ -368,10 +370,31 @@ function providers(
     acr: ["no_match", "no_match"],
     explicitness: "not_explicit",
     matchedCategories: [],
+    imageMatchedCategories: [],
+    imageUnavailable: false,
     cover: { status: "absent", reasonCode: "not_embedded" },
     ...overrides,
   };
   let acrIndex = 0;
+  const categoryBooleans = Object.fromEntries(
+    MODERATION_POLICY_CATEGORIES_V1.map((category) => [
+      category,
+      controls.imageMatchedCategories.includes(category),
+    ]),
+  ) as Record<(typeof MODERATION_POLICY_CATEGORIES_V1)[number], boolean>;
+  const categoryScores = Object.fromEntries(
+    MODERATION_POLICY_CATEGORIES_V1.map((category) => [
+      category,
+      categoryBooleans[category] ? 1 : 0,
+    ]),
+  ) as Record<(typeof MODERATION_POLICY_CATEGORIES_V1)[number], number>;
+  const categoryInputTypes = {} as Record<
+    (typeof MODERATION_POLICY_CATEGORIES_V1)[number],
+    readonly ("image" | "text")[]
+  >;
+  for (const category of MODERATION_POLICY_CATEGORIES_V1) {
+    categoryInputTypes[category] = categoryBooleans[category] ? ["image"] : [];
+  }
   return {
     textModeration: {
       evaluate: (input) => {
@@ -386,6 +409,24 @@ function providers(
           inputs: [],
         });
       },
+    },
+    imageModeration: {
+      evaluateImage: (input) =>
+        controls.imageUnavailable
+          ? Effect.die(new Error("image moderation unavailable"))
+          : Effect.succeed({
+              provider_id: "openai",
+              requested_model: "omni-moderation-2024-09-26",
+              returned_model: "omni-moderation-2024-09-26",
+              input_sha256: input.sha256,
+              matched_categories: controls.imageMatchedCategories,
+              evidence: {
+                input_sha256: input.sha256,
+                categories: categoryBooleans,
+                scores: categoryScores,
+                applied_input_types: categoryInputTypes,
+              },
+            }),
     },
     transform: {
       probe: (input: MediaTransformProbeInput) => {
@@ -460,6 +501,10 @@ function providers(
       readAudioSample: async (objectKey) => {
         events.push(`effect:read:${objectKey}`);
         return new Uint8Array([1, 2, 3, 4]);
+      },
+      readCoverArtifact: async (artifact) => {
+        events.push(`effect:read-cover:${artifact.artifactRef}`);
+        return new Uint8Array([5, 6, 7, 8]);
       },
     },
     identification: {
@@ -569,7 +614,7 @@ test("song moderation raises the durable rating for an adult category", async ()
   expect(store.current.decision?.contentRating).toBe("adult_18");
 });
 
-test("publishes a song without exposing artwork while the visual provider is unavailable", async () => {
+test("publishes a song with OpenAI-cleared general-audience artwork", async () => {
   const store = new FakeStore(authority({ lyrics: null }));
   const result = await runMediaProcessingWorkflow(
     workflowPayload(store),
@@ -592,7 +637,78 @@ test("publishes a song without exposing artwork while the visual provider is una
   );
 
   expect(result).toEqual({ outcome: "published_without_alignment" });
-  expect(store.current.analysis?.mediaSafety).toBe("visual_provider_unavailable");
+  expect(store.current.analysis?.mediaSafety).toBe("allow");
+  expect(store.current.analysis?.coverModeration).toMatchObject({
+    decision: "allow",
+    reason: "clean",
+    providerId: "openai",
+  });
+  expect(store.current.decision?.outcome).toBe("allow");
+});
+
+test("withholds flagged artwork without blocking the song", async () => {
+  const store = new FakeStore(authority({ lyrics: null }));
+  const result = await runMediaProcessingWorkflow(
+    workflowPayload(store),
+    "analysis_launch",
+    dependencies(
+      store,
+      providers([], {
+        imageMatchedCategories: ["sexual"],
+        cover: {
+          status: "ready",
+          artifactRef: "restricted-cover-2",
+          artifactSha256: "c".repeat(64),
+          mediaType: "image/webp",
+          width: 1200,
+          height: 1200,
+          normalizationRevision: "cover-normalization-v1",
+          safetyPolicyRevision: "openai-cover-general-audience-v1",
+        },
+      }),
+    ),
+  );
+
+  expect(result).toEqual({ outcome: "published_without_alignment" });
+  expect(store.current.analysis?.mediaSafety).toBe("cover_withheld");
+  expect(store.current.analysis?.coverModeration).toMatchObject({
+    decision: "withheld",
+    reason: "matched_category",
+    matchedCategories: ["sexual"],
+  });
+  expect(store.current.decision?.outcome).toBe("allow");
+});
+
+test("withholds artwork on provider failure without blocking the song", async () => {
+  const store = new FakeStore(authority({ lyrics: null }));
+  const result = await runMediaProcessingWorkflow(
+    workflowPayload(store),
+    "analysis_launch",
+    dependencies(
+      store,
+      providers([], {
+        imageUnavailable: true,
+        cover: {
+          status: "ready",
+          artifactRef: "restricted-cover-3",
+          artifactSha256: "d".repeat(64),
+          mediaType: "image/webp",
+          width: 1200,
+          height: 1200,
+          normalizationRevision: "cover-normalization-v1",
+          safetyPolicyRevision: "openai-cover-general-audience-v1",
+        },
+      }),
+    ),
+  );
+
+  expect(result).toEqual({ outcome: "published_without_alignment" });
+  expect(store.current.analysis?.mediaSafety).toBe("cover_withheld");
+  expect(store.current.analysis?.coverModeration).toMatchObject({
+    decision: "withheld",
+    reason: "provider_unavailable",
+    matchedCategories: [],
+  });
   expect(store.current.decision?.outcome).toBe("allow");
 });
 

@@ -39,6 +39,9 @@
       "bucket_name": "pirate-media-derived-development"
     }
   ],
+  "images": {
+    "binding": "IMAGE_TRANSFORMATIONS"
+  },
   "vars": {
     "MEDIA_PROCESSING_ENABLED": "false",
     "DATA_REGISTRATION_ENABLED": "false",
@@ -91,6 +94,9 @@
           "bucket_name": "pirate-media-derived-staging"
         }
       ],
+      "images": {
+        "binding": "IMAGE_TRANSFORMATIONS"
+      },
       "vars": {
         "MEDIA_PROCESSING_ENABLED": "true",
         "DATA_REGISTRATION_ENABLED": "true",
@@ -144,6 +150,9 @@
           "bucket_name": "pirate-media-derived-production"
         }
       ],
+      "images": {
+        "binding": "IMAGE_TRANSFORMATIONS"
+      },
       "vars": {
         "MEDIA_PROCESSING_ENABLED": "false",
         "DATA_REGISTRATION_ENABLED": "false",

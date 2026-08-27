@@ -580,6 +580,103 @@ async function moderateSongText(
   }
 }
 
+async function moderateCover(
+  metadata: MediaProcessingAnalysis["embeddedMetadata"],
+  providers: MediaProcessingProviders,
+): Promise<MediaProcessingAnalysis["coverModeration"]> {
+  const cover = metadata.cover;
+  if (cover.status === "absent") {
+    return {
+      decision: "not_applicable",
+      reason: "not_embedded",
+      providerId: null,
+      requestedModel: null,
+      returnedModel: null,
+      inputSha256: null,
+      matchedCategories: [],
+      evidenceRef: null,
+      evidence: null,
+    };
+  }
+  if (cover.status === "rejected") {
+    return {
+      decision: "withheld",
+      reason: cover.reasonCode === "limits_exceeded" ? "limits_exceeded" : "invalid_image",
+      providerId: null,
+      requestedModel: null,
+      returnedModel: null,
+      inputSha256: null,
+      matchedCategories: [],
+      evidenceRef: metadata.evidenceRef,
+      evidence: null,
+    };
+  }
+  let bytes: Uint8Array;
+  try {
+    bytes = await providers.artifactReader.readCoverArtifact(
+      cover,
+      700_000,
+      new AbortController().signal,
+    );
+  } catch {
+    return {
+      decision: "withheld",
+      reason: "invalid_image",
+      providerId: null,
+      requestedModel: null,
+      returnedModel: null,
+      inputSha256: cover.artifactSha256,
+      matchedCategories: [],
+      evidenceRef: metadata.evidenceRef,
+      evidence: null,
+    };
+  }
+  try {
+    const result = await Effect.runPromise(
+      providers.imageModeration.evaluateImage({
+        bytes,
+        mediaType: cover.mediaType,
+        sha256: cover.artifactSha256,
+      }),
+    );
+    const preimage = JSON.stringify([
+      "song-cover-moderation-evidence-v1",
+      result.provider_id,
+      result.requested_model,
+      result.returned_model,
+      result.input_sha256,
+      result.evidence,
+    ]);
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(preimage));
+    const evidenceHash = Array.from(new Uint8Array(digest), (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("");
+    return {
+      decision: result.matched_categories.length === 0 ? "allow" : "withheld",
+      reason: result.matched_categories.length === 0 ? "clean" : "matched_category",
+      providerId: result.provider_id,
+      requestedModel: result.requested_model,
+      returnedModel: result.returned_model,
+      inputSha256: result.input_sha256,
+      matchedCategories: result.matched_categories,
+      evidenceRef: `evidence_${evidenceHash}`,
+      evidence: result.evidence,
+    };
+  } catch {
+    return {
+      decision: "withheld",
+      reason: "provider_unavailable",
+      providerId: "openai",
+      requestedModel: "omni-moderation-2024-09-26",
+      returnedModel: null,
+      inputSha256: cover.artifactSha256,
+      matchedCategories: [],
+      evidenceRef: metadata.evidenceRef,
+      evidence: null,
+    };
+  }
+}
+
 async function buildAnalysis(
   firstAuthority: MediaProcessingAuthority,
   providers: MediaProcessingProviders,
@@ -653,15 +750,14 @@ async function buildAnalysis(
   authority = await authoritativeReload(authority, dependencies);
   const metadata = await runMetadata(authority, providers, dependencies);
   const contentModeration = await moderateSongText(authority, providers, dependencies);
+  const coverModeration = await moderateCover(metadata, providers);
   authority = await authoritativeReload(authority, dependencies);
   const mediaSafety: MediaProcessingAnalysis["mediaSafety"] =
-    metadata.cover.status === "absent"
+    coverModeration.decision === "not_applicable"
       ? "not_applicable"
-      : metadata.cover.status === "ready"
-        ? "visual_provider_unavailable"
-        : metadata.cover.reasonCode === "unsafe"
-          ? "blocked"
-          : "review_required";
+      : coverModeration.decision === "allow"
+        ? "allow"
+        : "cover_withheld";
   if (authority.audio?.canonicalSha256 !== sealedHash) return "processing_failed";
 
   let lyricsAnalysis: MediaProcessingAnalysis["lyricsAnalysis"];
@@ -710,6 +806,7 @@ async function buildAnalysis(
     acr: acrDecision(authority, acrOutcome),
     lyricsSafety,
     mediaSafety,
+    coverModeration,
     contentModeration,
   };
 }

@@ -1,3 +1,5 @@
+import type { ModerationPolicyCategoryV1 } from "@pirate/contracts";
+import type { Effect } from "effect";
 import type {
   MediaTransformAudioSampleOutcome,
   MediaTransformProbeOutcome,
@@ -12,7 +14,9 @@ import type {
   MediaExplicitnessClassifierAdapter,
   MediaExplicitnessClassifierResult,
 } from "../media-provider-contracts.ts";
+import type { TextModerationProviderError } from "../ports.ts";
 import type {
+  NormalizedModerationInputEvidenceV1,
   TextModerationPolicySnapshotV2,
   TextModerationProviderServiceV1,
 } from "../text-moderation-runtime.ts";
@@ -202,10 +206,28 @@ export type MediaProcessingAnalysis = Readonly<{
   readonly mediaSafety:
     | "not_applicable"
     | "allow"
+    | "cover_withheld"
     | "visual_provider_unavailable"
     | "draft"
     | "review_required"
     | "blocked";
+  readonly coverModeration: Readonly<{
+    readonly decision: "not_applicable" | "allow" | "withheld";
+    readonly reason:
+      | "not_embedded"
+      | "clean"
+      | "matched_category"
+      | "provider_unavailable"
+      | "invalid_image"
+      | "limits_exceeded";
+    readonly providerId: "openai" | null;
+    readonly requestedModel: string | null;
+    readonly returnedModel: string | null;
+    readonly inputSha256: string | null;
+    readonly matchedCategories: readonly ModerationPolicyCategoryV1[];
+    readonly evidenceRef: string | null;
+    readonly evidence: NormalizedModerationInputEvidenceV1 | null;
+  }>;
   readonly contentModeration: Readonly<{
     readonly decision: "allow" | "manual_review" | "blocked";
     readonly resultingContentRating: "general" | "adult_18";
@@ -372,6 +394,35 @@ export interface MediaProcessingArtifactReader {
     maximumBytes: number,
     signal: AbortSignal,
   ) => Promise<Uint8Array>;
+  readonly readCoverArtifact: (
+    artifact: Readonly<{
+      readonly artifactRef: string;
+      readonly artifactSha256: string;
+      readonly mediaType: "image/jpeg" | "image/png" | "image/webp";
+    }>,
+    maximumBytes: number,
+    signal: AbortSignal,
+  ) => Promise<Uint8Array>;
+}
+
+export interface ImageModerationProviderServiceV1 {
+  readonly evaluateImage: (
+    input: Readonly<{
+      readonly bytes: Uint8Array;
+      readonly mediaType: "image/jpeg" | "image/png" | "image/webp";
+      readonly sha256: string;
+    }>,
+  ) => Effect.Effect<
+    Readonly<{
+      readonly provider_id: "openai";
+      readonly requested_model: string;
+      readonly returned_model: string;
+      readonly input_sha256: string;
+      readonly matched_categories: readonly ModerationPolicyCategoryV1[];
+      readonly evidence: NormalizedModerationInputEvidenceV1;
+    }>,
+    TextModerationProviderError
+  >;
 }
 
 export interface MediaProcessingMetadataPort {
@@ -425,6 +476,7 @@ export type MediaProcessingProviders = Readonly<{
   readonly metadata: MediaProcessingMetadataPort;
   readonly alignment: MediaProcessingAlignmentPort;
   readonly textModeration: TextModerationProviderServiceV1;
+  readonly imageModeration: ImageModerationProviderServiceV1;
 }>;
 
 export interface MediaProcessingWorkflowLauncher {

@@ -56,10 +56,12 @@ describe("media processor composition", () => {
         },
         MEDIA_IMMUTABLE_ORIGINALS: {} as R2Bucket,
         MEDIA_DERIVED_ARTIFACTS: {} as R2Bucket,
+        IMAGE_TRANSFORMATIONS: {} as ImagesBinding,
         ACRCLOUD_IDENTIFY_HOST: "identify-eu-west-1.acrcloud.com",
         ACRCLOUD_ACCESS_KEY: "fixture-access-key",
         ACRCLOUD_ACCESS_SECRET: "fixture-access-secret",
         ELEVENLABS_API_KEY: "fixture-elevenlabs-key",
+        OPENAI_API_KEY: "fixture-openai-key",
         MEDIA_CLASSIFIER_API_KEY: "PENDING",
       }),
     ).toThrow("MEDIA_CLASSIFIER_API_KEY is pending provisioning");

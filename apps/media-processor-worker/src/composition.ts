@@ -34,6 +34,7 @@ export type MediaProcessorRuntimeEnv = MediaProcessorWorkerEnv &
     readonly MEDIA_PROCESSING_WORKFLOW?: CloudflareMediaWorkflowBinding;
     readonly MEDIA_IMMUTABLE_ORIGINALS?: R2Bucket;
     readonly MEDIA_DERIVED_ARTIFACTS?: R2Bucket;
+    readonly IMAGE_TRANSFORMATIONS?: ImagesBinding;
     readonly ACRCLOUD_IDENTIFY_HOST?: string;
     readonly ACRCLOUD_ACCESS_KEY?: string;
     readonly ACRCLOUD_ACCESS_SECRET?: string;
@@ -106,6 +107,7 @@ function makeEnabledProviders(env: MediaProcessorRuntimeEnv): MediaProcessingPro
     "MEDIA_IMMUTABLE_ORIGINALS",
   );
   const derivedArtifacts = requiredBinding(env.MEDIA_DERIVED_ARTIFACTS, "MEDIA_DERIVED_ARTIFACTS");
+  const imageTransformations = requiredBinding(env.IMAGE_TRANSFORMATIONS, "IMAGE_TRANSFORMATIONS");
   const acrHost = requiredText(env.ACRCLOUD_IDENTIFY_HOST, "ACRCLOUD_IDENTIFY_HOST");
   const identification = makeAcrCloudAdapter({
     host: acrHost,
@@ -143,6 +145,9 @@ function makeEnabledProviders(env: MediaProcessorRuntimeEnv): MediaProcessingPro
     derivedArtifacts,
     maximumSampleBytes: 4_000_000,
   });
+  const openAiModeration = makeOpenAiTextModerationProvider({
+    apiKey: requiredText(env.OPENAI_API_KEY, "OPENAI_API_KEY"),
+  });
 
   return {
     transform: bindPhysicalR2Keys(transform),
@@ -169,15 +174,18 @@ function makeEnabledProviders(env: MediaProcessorRuntimeEnv): MediaProcessingPro
       transport: makeOpenRouterFetchTransport(),
     }),
     artifactReader: makeR2MediaProcessingArtifactReader(derivedArtifacts),
-    metadata: makeR2EmbeddedMetadataPort(immutableOriginals),
+    metadata: makeR2EmbeddedMetadataPort(
+      immutableOriginals,
+      derivedArtifacts,
+      imageTransformations,
+    ),
     alignment: makeElevenLabsProcessingAlignmentPort(
       immutableOriginals,
       alignmentAdapter,
       MAXIMUM_AUDIO_BYTES,
     ),
-    textModeration: makeOpenAiTextModerationProvider({
-      apiKey: requiredText(env.OPENAI_API_KEY, "OPENAI_API_KEY"),
-    }),
+    textModeration: openAiModeration,
+    imageModeration: openAiModeration,
   };
 }
 

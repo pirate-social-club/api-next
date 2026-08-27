@@ -333,6 +333,9 @@ const textRatingsAgeAccessMigrationSql = await Bun.file(
 const songRatingsAgeAccessMigrationSql = await Bun.file(
   new URL("../../../db/postgres/migrations/0066_song_ratings_age_access.sql", import.meta.url),
 ).text();
+const generalAudienceSongCoversMigrationSql = await Bun.file(
+  new URL("../../../db/postgres/migrations/0068_general_audience_song_covers.sql", import.meta.url),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -670,6 +673,11 @@ const songRatingsAgeAccessMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0066_song_ratings_age_access.sql"] ?? "",
   sql: songRatingsAgeAccessMigrationSql,
 };
+const generalAudienceSongCoversMigration: PostgresMigration = {
+  version: "0068_general_audience_song_covers.sql",
+  checksum: checksumManifest.migrations["0068_general_audience_song_covers.sql"] ?? "",
+  sql: generalAudienceSongCoversMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -737,6 +745,7 @@ const migrations: readonly PostgresMigration[] = [
   mediaPersonaRecipientTriggerMigration,
   textRatingsAgeAccessMigration,
   songRatingsAgeAccessMigration,
+  generalAudienceSongCoversMigration,
 ];
 
 function checksum(value: string): string {

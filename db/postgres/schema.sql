@@ -4611,7 +4611,7 @@ BEGIN
   IF (NEW.status = 'processing' AND NEW.phase = 'publish') OR NEW.status = 'published' THEN
     SELECT * INTO analysis_record FROM media_analysis_evidence WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id = NEW.submission_id AND operation_id=NEW.operation_id AND analysis_revision = NEW.analysis_revision FOR SHARE;
     SELECT * INTO decision_record FROM media_publication_decisions WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id = NEW.submission_id AND operation_id=NEW.operation_id AND decision_revision = NEW.decision_revision FOR SHARE;
-    IF analysis_record.submission_id IS NULL OR decision_record.submission_id IS NULL OR decision_record.outcome <> 'allow' OR decision_record.creation_revision <> NEW.creation_revision OR decision_record.audio_revision <> NEW.audio_revision OR decision_record.analysis_revision <> NEW.analysis_revision OR decision_record.canonical_audio_sha256 <> analysis_record.canonical_audio_sha256 OR analysis_record.media_safety NOT IN ('allow', 'not_applicable', 'visual_provider_unavailable') OR analysis_record.lyrics_safety NOT IN ('not_applicable', 'allow') OR analysis_record.speech_status = 'unavailable' OR COALESCE(analysis_record.explicitness, 'not_applicable') NOT IN ('not_explicit', 'explicit', 'not_applicable') OR (analysis_record.acr_decision = 'inconclusive' AND NOT EXISTS (SELECT 1 FROM media_moderation_actions m WHERE m.community_id=NEW.community_id AND m.actor_user_id=NEW.actor_user_id AND m.submission_id=NEW.submission_id AND m.operation_id=NEW.operation_id AND m.action_id=NEW.moderator_action_id AND m.approval_kind='acr_override' AND m.reason_code IN ('acr_inconclusive','acr_exhausted'))) OR (analysis_record.acr_decision = 'skipped' AND NOT EXISTS (SELECT 1 FROM media_moderation_actions m WHERE m.community_id=NEW.community_id AND m.actor_user_id=NEW.actor_user_id AND m.submission_id=NEW.submission_id AND m.operation_id=NEW.operation_id AND m.action_id=NEW.moderator_action_id AND m.approval_kind='acr_override' AND m.reason_code='acr_skipped')) OR (analysis_record.acr_decision = 'requires_reference' AND NEW.bound_reference_asset_id IS NULL) OR NOT EXISTS (SELECT 1 FROM media_submission_terms WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id = NEW.submission_id AND operation_id=NEW.operation_id AND creation_revision = NEW.creation_revision) THEN RAISE EXCEPTION 'media publication evidence is not ratified'; END IF;
+    IF analysis_record.submission_id IS NULL OR decision_record.submission_id IS NULL OR decision_record.outcome <> 'allow' OR decision_record.creation_revision <> NEW.creation_revision OR decision_record.audio_revision <> NEW.audio_revision OR decision_record.analysis_revision <> NEW.analysis_revision OR decision_record.canonical_audio_sha256 <> analysis_record.canonical_audio_sha256 OR analysis_record.media_safety NOT IN ('allow', 'not_applicable', 'cover_withheld', 'visual_provider_unavailable') OR analysis_record.lyrics_safety NOT IN ('not_applicable', 'allow') OR analysis_record.speech_status = 'unavailable' OR COALESCE(analysis_record.explicitness, 'not_applicable') NOT IN ('not_explicit', 'explicit', 'not_applicable') OR (analysis_record.acr_decision = 'inconclusive' AND NOT EXISTS (SELECT 1 FROM media_moderation_actions m WHERE m.community_id=NEW.community_id AND m.actor_user_id=NEW.actor_user_id AND m.submission_id=NEW.submission_id AND m.operation_id=NEW.operation_id AND m.action_id=NEW.moderator_action_id AND m.approval_kind='acr_override' AND m.reason_code IN ('acr_inconclusive','acr_exhausted'))) OR (analysis_record.acr_decision = 'skipped' AND NOT EXISTS (SELECT 1 FROM media_moderation_actions m WHERE m.community_id=NEW.community_id AND m.actor_user_id=NEW.actor_user_id AND m.submission_id=NEW.submission_id AND m.operation_id=NEW.operation_id AND m.action_id=NEW.moderator_action_id AND m.approval_kind='acr_override' AND m.reason_code='acr_skipped')) OR (analysis_record.acr_decision = 'requires_reference' AND NEW.bound_reference_asset_id IS NULL) OR NOT EXISTS (SELECT 1 FROM media_submission_terms WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id = NEW.submission_id AND operation_id=NEW.operation_id AND creation_revision = NEW.creation_revision) THEN RAISE EXCEPTION 'media publication evidence is not ratified'; END IF;
   END IF;
   IF NEW.status = 'published' THEN
     SELECT * INTO post_record FROM posts WHERE community_id = NEW.community_id AND post_id = NEW.post_id FOR SHARE;
@@ -10694,7 +10694,7 @@ DECLARE lyrics_analysis JSONB; expected_keys TEXT[];
 BEGIN
   IF (SELECT array_agg(key ORDER BY key) FROM jsonb_object_keys(NEW.analysis_snapshot) AS key)
        IS DISTINCT FROM ARRAY['acr','analysisRevision','audioRevision','boundReference',
-         'canonicalAudioSha256','embeddedMetadata','finalizedAudioRef','lyricsAnalysis',
+         'canonicalAudioSha256','coverModeration','embeddedMetadata','finalizedAudioRef','lyricsAnalysis',
          'lyricsSafety','mediaSafety','operationId','probeEvidenceRef','version']::TEXT[] THEN
     RAISE EXCEPTION 'analysis snapshot keys are not exact';
   END IF;
@@ -10727,6 +10727,15 @@ BEGIN
      OR lyrics_analysis->>'evidenceRef' IS DISTINCT FROM NEW.speech_evidence_ref
      OR lyrics_analysis->>'policyRevision' IS DISTINCT FROM NEW.speech_policy_revision
      OR lyrics_analysis->>'adapterRevision' IS DISTINCT FROM NEW.speech_adapter_revision
+     OR NEW.analysis_snapshot->'coverModeration'->>'decision' IS DISTINCT FROM NEW.cover_moderation_decision
+     OR NEW.analysis_snapshot->'coverModeration'->>'reason' IS DISTINCT FROM NEW.cover_moderation_reason
+     OR NEW.analysis_snapshot->'coverModeration'->>'providerId' IS DISTINCT FROM NEW.cover_moderation_provider_id
+     OR NEW.analysis_snapshot->'coverModeration'->>'requestedModel' IS DISTINCT FROM NEW.cover_moderation_requested_model
+     OR NEW.analysis_snapshot->'coverModeration'->>'returnedModel' IS DISTINCT FROM NEW.cover_moderation_returned_model
+     OR NEW.analysis_snapshot->'coverModeration'->>'inputSha256' IS DISTINCT FROM NEW.cover_moderation_input_sha256
+     OR NEW.analysis_snapshot->'coverModeration'->'matchedCategories' IS DISTINCT FROM NEW.cover_moderation_matched_categories
+     OR NEW.analysis_snapshot->'coverModeration'->>'evidenceRef' IS DISTINCT FROM NEW.cover_moderation_evidence_ref
+     OR NEW.analysis_snapshot->'coverModeration'->'evidence' IS DISTINCT FROM COALESCE(NEW.cover_moderation_evidence, 'null'::jsonb)
      OR NEW.analysis_snapshot->'embeddedMetadata'->>'evidenceRef'
           IS DISTINCT FROM NEW.embedded_metadata_evidence_ref
      OR NEW.analysis_snapshot->'embeddedMetadata'->>'adapterRevision'
@@ -11352,7 +11361,7 @@ BEGIN
      OR NEW.canonical_audio_sha256 IS DISTINCT FROM audio_record.canonical_sha256
      OR NEW.audio_asset_ref IS DISTINCT FROM audio_record.immutable_ref
      OR NEW.cover_artifact_ref IS DISTINCT FROM
-        (CASE WHEN analysis_record.cover_status='ready' AND analysis_record.media_safety='allow' THEN analysis_record.cover_artifact_ref ELSE NULL END)
+        (CASE WHEN analysis_record.cover_status='ready' AND analysis_record.media_safety='allow' AND analysis_record.cover_moderation_decision='allow' THEN analysis_record.cover_artifact_ref ELSE NULL END)
      OR NEW.language_status IS DISTINCT FROM analysis_record.speech_status
      OR NEW.primary_language_bcp47 IS DISTINCT FROM analysis_record.primary_language_bcp47
      OR NEW.secondary_language_bcp47 IS DISTINCT FROM analysis_record.secondary_language_bcp47
@@ -11514,7 +11523,7 @@ BEGIN
       RAISE EXCEPTION 'decision snapshot scalars do not match columns';
     END IF;
   ELSIF TG_TABLE_NAME = 'media_analysis_evidence' THEN
-    IF (SELECT array_agg(key ORDER BY key) FROM jsonb_object_keys(NEW.analysis_snapshot) AS key) IS DISTINCT FROM ARRAY['acr','analysisRevision','audioRevision','boundReference','canonicalAudioSha256','embeddedMetadata','finalizedAudioRef','lyricsSafety','mediaSafety','operationId','probeEvidenceRef','speechLyrics','version']::TEXT[] THEN
+    IF (SELECT array_agg(key ORDER BY key) FROM jsonb_object_keys(NEW.analysis_snapshot) AS key) IS DISTINCT FROM ARRAY['acr','analysisRevision','audioRevision','boundReference','canonicalAudioSha256','coverModeration','embeddedMetadata','finalizedAudioRef','lyricsSafety','mediaSafety','operationId','probeEvidenceRef','speechLyrics','version']::TEXT[] THEN
       RAISE EXCEPTION 'analysis snapshot keys are not exact';
     END IF;
     IF jsonb_typeof(NEW.analysis_snapshot->'version') IS DISTINCT FROM 'string'
@@ -11524,6 +11533,7 @@ BEGIN
        OR jsonb_typeof(NEW.analysis_snapshot->'probeEvidenceRef') IS DISTINCT FROM 'string'
        OR jsonb_typeof(NEW.analysis_snapshot->'lyricsSafety') IS DISTINCT FROM 'string'
        OR jsonb_typeof(NEW.analysis_snapshot->'mediaSafety') IS DISTINCT FROM 'string'
+       OR jsonb_typeof(NEW.analysis_snapshot->'coverModeration') IS DISTINCT FROM 'object'
        OR jsonb_typeof(NEW.analysis_snapshot->'embeddedMetadata') IS DISTINCT FROM 'object'
        OR jsonb_typeof(NEW.analysis_snapshot->'speechLyrics') IS DISTINCT FROM 'object'
        OR jsonb_typeof(NEW.analysis_snapshot->'acr') IS DISTINCT FROM 'object' THEN
@@ -11622,7 +11632,16 @@ BEGIN
        OR NEW.analysis_snapshot->'acr'->>'policyRevision' IS DISTINCT FROM NEW.acr_policy_revision
        OR NEW.analysis_snapshot->'acr'->>'adapterRevision' IS DISTINCT FROM NEW.acr_adapter_revision
        OR NEW.analysis_snapshot->>'lyricsSafety' IS DISTINCT FROM NEW.lyrics_safety
-       OR NEW.analysis_snapshot->>'mediaSafety' IS DISTINCT FROM NEW.media_safety THEN
+       OR NEW.analysis_snapshot->>'mediaSafety' IS DISTINCT FROM NEW.media_safety
+       OR NEW.analysis_snapshot->'coverModeration'->>'decision' IS DISTINCT FROM NEW.cover_moderation_decision
+       OR NEW.analysis_snapshot->'coverModeration'->>'reason' IS DISTINCT FROM NEW.cover_moderation_reason
+       OR NEW.analysis_snapshot->'coverModeration'->>'providerId' IS DISTINCT FROM NEW.cover_moderation_provider_id
+       OR NEW.analysis_snapshot->'coverModeration'->>'requestedModel' IS DISTINCT FROM NEW.cover_moderation_requested_model
+       OR NEW.analysis_snapshot->'coverModeration'->>'returnedModel' IS DISTINCT FROM NEW.cover_moderation_returned_model
+       OR NEW.analysis_snapshot->'coverModeration'->>'inputSha256' IS DISTINCT FROM NEW.cover_moderation_input_sha256
+       OR NEW.analysis_snapshot->'coverModeration'->'matchedCategories' IS DISTINCT FROM NEW.cover_moderation_matched_categories
+       OR NEW.analysis_snapshot->'coverModeration'->>'evidenceRef' IS DISTINCT FROM NEW.cover_moderation_evidence_ref
+       OR NEW.analysis_snapshot->'coverModeration'->'evidence' IS DISTINCT FROM COALESCE(NEW.cover_moderation_evidence, 'null'::jsonb) THEN
       RAISE EXCEPTION 'analysis snapshot scalars do not match columns';
     END IF;
     IF NEW.bound_reference_asset_id IS NULL THEN
@@ -16199,6 +16218,23 @@ CREATE TABLE media_analysis_evidence (
     transcript_revision bigint,
     lyrics_revision bigint,
     material_disagreement boolean DEFAULT false NOT NULL,
+    cover_moderation_decision text NOT NULL,
+    cover_moderation_reason text NOT NULL,
+    cover_moderation_provider_id text,
+    cover_moderation_requested_model text,
+    cover_moderation_returned_model text,
+    cover_moderation_input_sha256 text,
+    cover_moderation_matched_categories jsonb NOT NULL,
+    cover_moderation_evidence_ref text,
+    cover_moderation_evidence jsonb,
+    CONSTRAINT media_analysis_cover_moderation_categories_check CHECK ((jsonb_typeof(cover_moderation_matched_categories) = 'array'::text)),
+    CONSTRAINT media_analysis_cover_moderation_decision_check CHECK ((cover_moderation_decision = ANY (ARRAY['not_applicable'::text, 'allow'::text, 'withheld'::text]))),
+    CONSTRAINT media_analysis_cover_moderation_evidence_check CHECK (((cover_moderation_evidence IS NULL) OR (jsonb_typeof(cover_moderation_evidence) = 'object'::text))),
+    CONSTRAINT media_analysis_cover_moderation_hash_check CHECK (((cover_moderation_input_sha256 IS NULL) OR (cover_moderation_input_sha256 ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT media_analysis_cover_moderation_model_check CHECK ((((cover_moderation_provider_id IS NULL) AND (cover_moderation_requested_model IS NULL) AND (cover_moderation_returned_model IS NULL)) OR ((cover_moderation_provider_id = 'openai'::text) AND (cover_moderation_requested_model = 'omni-moderation-2024-09-26'::text) AND ((cover_moderation_returned_model IS NULL) OR (cover_moderation_returned_model = cover_moderation_requested_model))))),
+    CONSTRAINT media_analysis_cover_moderation_provider_check CHECK (((cover_moderation_provider_id IS NULL) OR (cover_moderation_provider_id = 'openai'::text))),
+    CONSTRAINT media_analysis_cover_moderation_reason_check CHECK ((cover_moderation_reason = ANY (ARRAY['not_embedded'::text, 'clean'::text, 'matched_category'::text, 'provider_unavailable'::text, 'invalid_image'::text, 'limits_exceeded'::text]))),
+    CONSTRAINT media_analysis_cover_moderation_shape CHECK ((((cover_moderation_decision = 'not_applicable'::text) AND (cover_moderation_reason = 'not_embedded'::text) AND (cover_status = 'absent'::text)) OR ((cover_moderation_decision = 'allow'::text) AND (cover_moderation_reason = 'clean'::text) AND (cover_status = 'ready'::text) AND (media_safety = 'allow'::text) AND (cover_moderation_provider_id = 'openai'::text) AND (cover_moderation_returned_model = cover_moderation_requested_model) AND (cover_moderation_input_sha256 = cover_artifact_sha256) AND (cover_moderation_matched_categories = '[]'::jsonb) AND (cover_moderation_evidence_ref IS NOT NULL) AND (cover_moderation_evidence IS NOT NULL)) OR ((cover_moderation_decision = 'withheld'::text) AND (cover_status <> 'absent'::text)))),
     CONSTRAINT media_analysis_cover_shape CHECK ((((cover_status = 'ready'::text) AND (cover_artifact_ref IS NOT NULL) AND (cover_artifact_sha256 IS NOT NULL) AND (cover_media_type = ANY (ARRAY['image/jpeg'::text, 'image/png'::text, 'image/webp'::text])) AND (cover_width IS NOT NULL) AND (cover_height IS NOT NULL) AND (cover_width > 0) AND (cover_height > 0) AND (btrim(cover_normalization_revision) <> ''::text) AND (btrim(cover_safety_policy_revision) <> ''::text) AND (NOT (cover_facts ? 'reasonCode'::text))) OR ((cover_status = 'absent'::text) AND ((cover_facts ->> 'reasonCode'::text) IS NOT NULL) AND ((cover_facts ->> 'reasonCode'::text) = 'not_embedded'::text) AND (cover_artifact_ref IS NULL) AND (cover_artifact_sha256 IS NULL) AND (cover_media_type IS NULL) AND (cover_width IS NULL) AND (cover_height IS NULL) AND (cover_normalization_revision IS NULL) AND (cover_safety_policy_revision IS NULL)) OR ((cover_status = 'rejected'::text) AND ((cover_facts ->> 'reasonCode'::text) IS NOT NULL) AND ((cover_facts ->> 'reasonCode'::text) = ANY (ARRAY['invalid'::text, 'unsafe'::text, 'limits_exceeded'::text])) AND (cover_artifact_ref IS NULL) AND (cover_artifact_sha256 IS NULL) AND (cover_media_type IS NULL) AND (cover_width IS NULL) AND (cover_height IS NULL) AND (cover_normalization_revision IS NULL) AND (cover_safety_policy_revision IS NULL)))),
     CONSTRAINT media_analysis_evidence_acr_adapter_revision_check CHECK ((btrim(acr_adapter_revision) <> ''::text)),
     CONSTRAINT media_analysis_evidence_acr_decision_check CHECK ((acr_decision = ANY (ARRAY['allow'::text, 'requires_reference'::text, 'inconclusive'::text, 'skipped'::text]))),
@@ -16217,7 +16253,7 @@ CREATE TABLE media_analysis_evidence (
     CONSTRAINT media_analysis_evidence_embedded_title_provenance_check CHECK ((embedded_title_provenance = ANY (ARRAY['embedded'::text, 'absent'::text]))),
     CONSTRAINT media_analysis_evidence_explicitness_check CHECK (((explicitness IS NULL) OR (explicitness = ANY (ARRAY['not_explicit'::text, 'explicit'::text, 'uncertain'::text])))),
     CONSTRAINT media_analysis_evidence_lyrics_safety_check CHECK ((lyrics_safety = ANY (ARRAY['not_applicable'::text, 'allow'::text, 'review_required'::text, 'blocked'::text]))),
-    CONSTRAINT media_analysis_evidence_media_safety_check CHECK ((media_safety = ANY (ARRAY['not_applicable'::text, 'allow'::text, 'visual_provider_unavailable'::text, 'draft'::text, 'review_required'::text, 'blocked'::text]))),
+    CONSTRAINT media_analysis_evidence_media_safety_check CHECK ((media_safety = ANY (ARRAY['not_applicable'::text, 'allow'::text, 'cover_withheld'::text, 'visual_provider_unavailable'::text, 'draft'::text, 'review_required'::text, 'blocked'::text]))),
     CONSTRAINT media_analysis_evidence_probe_evidence_ref_check CHECK ((btrim(probe_evidence_ref) <> ''::text)),
     CONSTRAINT media_analysis_evidence_speech_adapter_revision_check CHECK ((btrim(speech_adapter_revision) <> ''::text)),
     CONSTRAINT media_analysis_evidence_speech_evidence_ref_check CHECK ((btrim(speech_evidence_ref) <> ''::text)),
