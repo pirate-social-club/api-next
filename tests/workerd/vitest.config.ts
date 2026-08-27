@@ -8,6 +8,18 @@ const alias = {
     "../../packages/application/src/route-revalidation/index.ts",
     import.meta.url,
   ).pathname,
+  "@pirate/application/data/registration-workflow-queue": new URL(
+    "../../packages/application/src/data/registration-workflow-queue.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/application/data/registration-workflow": new URL(
+    "../../packages/application/src/data/registration-workflow.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/application/data/registration-persistence": new URL(
+    "../../packages/application/src/data/registration-persistence.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/application/verification": new URL(
     "../../packages/application/src/verification/index.ts",
     import.meta.url,
@@ -44,6 +56,14 @@ const alias = {
     "../../packages/platform-cf/src/media-workflow-entrypoint.ts",
     import.meta.url,
   ).pathname,
+  "@pirate/platform-cf/data/registration-workflow-cloudflare": new URL(
+    "../../packages/platform-cf/src/data/registration-workflow-cloudflare.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/data-registration-repository": new URL(
+    "../../packages/platform-cf/src/data-registration-repository.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/platform-cf": new URL("../../packages/platform-cf/src/index.ts", import.meta.url)
     .pathname,
   "@pirate/verifier-response-contract": new URL(
@@ -67,6 +87,17 @@ export default defineConfig({
             script: `
               import { WorkflowEntrypoint } from "cloudflare:workers";
               export class MediaProcessingWorkflow extends WorkflowEntrypoint {
+                async run() { return { outcome: "inert" }; }
+              }
+            `,
+          },
+          {
+            name: "pirate-data-registration-worker",
+            modules: true,
+            compatibilityDate: "2026-08-01",
+            script: `
+              import { WorkflowEntrypoint } from "cloudflare:workers";
+              export class DataRegistrationWorkflow extends WorkflowEntrypoint {
                 async run() { return { outcome: "inert" }; }
               }
             `,

@@ -32,6 +32,8 @@
     "./media/submission-service": "./src/media/submission-service.ts",
     "./media/submission-sealing": "./src/media/submission-sealing.ts",
     "./data/registration-persistence": "./src/data/registration-persistence.ts",
+    "./data/registration-workflow": "./src/data/registration-workflow.ts",
+    "./data/registration-workflow-queue": "./src/data/registration-workflow-queue.ts",
     "./rewards/song-reward-offers": "./src/rewards/song-reward-offers.ts",
     "./rewards/reward-projections": "./src/rewards/reward-projections.ts",
     "./verification": "./src/verification/index.ts",
