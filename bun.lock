@@ -21,6 +21,10 @@
         "wrangler": "^4.123.0",
       },
     },
+    "apps/data-registration-worker": {
+      "name": "@pirate/data-registration-worker",
+      "version": "0.0.0",
+    },
     "apps/hns-observer-driver": {
       "name": "@pirate/hns-observer-driver",
       "version": "0.0.0",
@@ -57,7 +61,7 @@
     },
     "packages/api-client": {
       "name": "@pirate/api-client",
-      "version": "0.22.0",
+      "version": "0.23.0",
     },
     "packages/application": {
       "name": "@pirate/application",
@@ -514,6 +518,8 @@
     "@pirate/application": ["@pirate/application@workspace:packages/application"],
 
     "@pirate/contracts": ["@pirate/contracts@workspace:packages/contracts"],
+
+    "@pirate/data-registration-worker": ["@pirate/data-registration-worker@workspace:apps/data-registration-worker"],
 
     "@pirate/domain": ["@pirate/domain@workspace:packages/domain"],
 
