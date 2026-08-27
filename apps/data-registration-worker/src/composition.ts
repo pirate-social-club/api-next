@@ -84,7 +84,9 @@ function makeFilebaseFetchTransport(): FilebaseIpfsTransport {
       method: request.method,
       headers: request.headers,
       body,
-      redirect: request.redirect,
+      // Workers rejects `error` at runtime. `manual` preserves the adapter's
+      // credential-bearing no-follow boundary and exposes 3xx for classification.
+      redirect: "manual",
       signal: request.signal,
     });
     const responseBody = response.body;
