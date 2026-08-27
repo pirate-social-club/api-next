@@ -3006,7 +3006,9 @@ export function makeControlPlaneMediaSubmissionRepository(
               current.audio.canonicalSha256,
               current.title,
               current.audio.immutableRef,
-              cover.status === "ready" ? cover.artifactRef : null,
+              cover.status === "ready" && current.analysis.mediaSafety === "allow"
+                ? cover.artifactRef
+                : null,
               lyricsAnalysis.status,
               lyricsAnalysis.status === "ready" ? lyricsAnalysis.primaryLanguageBcp47 : null,
               lyricsAnalysis.status === "ready" ? lyricsAnalysis.secondaryLanguageBcp47 : null,

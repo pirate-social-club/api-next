@@ -1075,7 +1075,14 @@ const SongTrustedAnalysisCommon = {
     policy_revision: RevisionIdentifier,
     adapter_revision: RevisionIdentifier,
   }),
-  media_safety: Schema.Literals(["not_applicable", "allow", "draft", "review_required", "blocked"]),
+  media_safety: Schema.Literals([
+    "not_applicable",
+    "allow",
+    "visual_provider_unavailable",
+    "draft",
+    "review_required",
+    "blocked",
+  ]),
   bound_reference: Schema.NullOr(
     Schema.Struct({
       asset_id: SongAuthorString,

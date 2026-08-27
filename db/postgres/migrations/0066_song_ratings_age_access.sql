@@ -41,7 +41,8 @@ ALTER TABLE media_post_submissions
     CHECK (resulting_content_rating IN ('general', 'adult_18'));
 
 ALTER TABLE media_publication_projections
-  ADD COLUMN visibility TEXT NOT NULL DEFAULT 'public' CHECK (visibility = 'public'),
+  ADD COLUMN visibility TEXT NOT NULL DEFAULT 'public'
+    CHECK (visibility IN ('public', 'members_only')),
   ADD COLUMN content_rating TEXT NOT NULL DEFAULT 'general'
     CHECK (content_rating IN ('general', 'adult_18'));
 
@@ -113,3 +114,48 @@ $$;
 CREATE TRIGGER media_post_submission_rating_guard_v1
 BEFORE UPDATE ON media_post_submissions
 FOR EACH ROW EXECUTE FUNCTION guard_song_rating_lowering_v1();
+
+-- Until a visual safety provider is ratified, a successfully extracted cover is
+-- retained as restricted analysis evidence but omitted from publication. The
+-- song itself may publish; an unsafe cover still blocks the whole submission.
+ALTER TABLE media_analysis_evidence
+  DROP CONSTRAINT media_analysis_evidence_media_safety_check,
+  ADD CONSTRAINT media_analysis_evidence_media_safety_check CHECK (
+    media_safety IN (
+      'not_applicable',
+      'allow',
+      'visual_provider_unavailable',
+      'draft',
+      'review_required',
+      'blocked'
+    )
+  );
+
+DO $migration$
+DECLARE definition TEXT; patched TEXT;
+BEGIN
+  SELECT pg_get_functiondef('guard_media_submission_update()'::regprocedure) INTO definition;
+  patched := replace(
+    definition,
+    'analysis_record.media_safety NOT IN (''allow'', ''not_applicable'')',
+    'analysis_record.media_safety NOT IN (''allow'', ''not_applicable'', ''visual_provider_unavailable'')'
+  );
+  IF patched = definition THEN
+    RAISE EXCEPTION 'guard_media_submission_update media-safety predicate was not found';
+  END IF;
+  EXECUTE patched;
+
+  SELECT pg_get_functiondef(
+    'validate_media_publication_projection_insert_v2()'::regprocedure
+  ) INTO definition;
+  patched := replace(
+    definition,
+    '(CASE WHEN analysis_record.cover_status=''ready'' THEN analysis_record.cover_artifact_ref ELSE NULL END)',
+    '(CASE WHEN analysis_record.cover_status=''ready'' AND analysis_record.media_safety=''allow'' THEN analysis_record.cover_artifact_ref ELSE NULL END)'
+  );
+  IF patched = definition THEN
+    RAISE EXCEPTION 'publication projection cover predicate was not found';
+  END IF;
+  EXECUTE patched;
+END;
+$migration$;

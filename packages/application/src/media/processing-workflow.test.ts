@@ -355,6 +355,7 @@ type ProviderControls = {
   acr: ("no_match" | "fingerprint" | "match" | "failure")[];
   explicitness: "not_explicit" | "explicit" | "uncertain";
   matchedCategories: readonly (typeof MODERATION_POLICY_CATEGORIES_V1)[number][];
+  cover: MediaProcessingAnalysis["embeddedMetadata"]["cover"];
   onClassifierInput?: (input: MediaExplicitnessClassifierInput) => void;
 };
 
@@ -367,6 +368,7 @@ function providers(
     acr: ["no_match", "no_match"],
     explicitness: "not_explicit",
     matchedCategories: [],
+    cover: { status: "absent", reasonCode: "not_embedded" },
     ...overrides,
   };
   let acrIndex = 0;
@@ -503,7 +505,7 @@ function providers(
           evidenceRef: "metadata-evidence-1",
           adapterRevision: "metadata-v1",
           trackTitle: "embedded title",
-          cover: { status: "absent", reasonCode: "not_embedded" },
+          cover: controls.cover,
         };
       },
     },
@@ -565,6 +567,33 @@ test("song moderation raises the durable rating for an adult category", async ()
     matchedCategories: ["sexual"],
   });
   expect(store.current.decision?.contentRating).toBe("adult_18");
+});
+
+test("publishes a song without exposing artwork while the visual provider is unavailable", async () => {
+  const store = new FakeStore(authority({ lyrics: null }));
+  const result = await runMediaProcessingWorkflow(
+    workflowPayload(store),
+    "analysis_launch",
+    dependencies(
+      store,
+      providers([], {
+        cover: {
+          status: "ready",
+          artifactRef: "restricted-cover-1",
+          artifactSha256: "b".repeat(64),
+          mediaType: "image/jpeg",
+          width: 1200,
+          height: 1200,
+          normalizationRevision: "cover-normalization-v1",
+          safetyPolicyRevision: "visual-provider-pending-v1",
+        },
+      }),
+    ),
+  );
+
+  expect(result).toEqual({ outcome: "published_without_alignment" });
+  expect(store.current.analysis?.mediaSafety).toBe("visual_provider_unavailable");
+  expect(store.current.decision?.outcome).toBe("allow");
 });
 
 function dependencies(store: FakeStore, provider: MediaProcessingProviders | null) {

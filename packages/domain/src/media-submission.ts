@@ -112,7 +112,13 @@ export type TrustedSongAnalysis = Readonly<{
     adapterRevision: string;
   }>;
   lyricsSafety: "not_applicable" | "allow" | "review_required" | "blocked";
-  mediaSafety: "not_applicable" | "allow" | "draft" | "review_required" | "blocked";
+  mediaSafety:
+    | "not_applicable"
+    | "allow"
+    | "visual_provider_unavailable"
+    | "draft"
+    | "review_required"
+    | "blocked";
   contentModeration?: Readonly<{
     decision: "allow" | "manual_review" | "blocked";
     resultingContentRating: "general" | "adult_18";
@@ -1110,7 +1116,9 @@ export function transitionMediaSubmission(
         current.analysis.acr.decision === "skipped" ||
         (current.analysis.acr.decision === "requires_reference" &&
           current.boundReference === null) ||
-        !["not_applicable", "allow"].includes(current.analysis.mediaSafety) ||
+        !["not_applicable", "allow", "visual_provider_unavailable"].includes(
+          current.analysis.mediaSafety,
+        ) ||
         !["not_applicable", "allow"].includes(current.analysis.lyricsSafety) ||
         (current.analysis.contentModeration !== undefined &&
           (current.analysis.contentModeration.decision !== "allow" ||
@@ -1253,7 +1261,9 @@ export function transitionMediaSubmission(
         command.decision.lyricsRevision !== (current.lyrics?.lyricsRevision ?? null) ||
         command.decision.canonicalAudioSha256 !== current.audio.canonicalSha256 ||
         command.decision.decisionRevision !== current.decisionRevision + 1 ||
-        !["not_applicable", "allow"].includes(current.analysis.mediaSafety) ||
+        !["not_applicable", "allow", "visual_provider_unavailable"].includes(
+          current.analysis.mediaSafety,
+        ) ||
         !["not_applicable", "allow"].includes(current.analysis.lyricsSafety) ||
         current.analysis.lyricsAnalysis.status === "unavailable" ||
         (current.analysis.lyricsAnalysis.status === "ready" &&

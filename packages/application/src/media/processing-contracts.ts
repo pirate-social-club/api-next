@@ -199,7 +199,13 @@ export type MediaProcessingAnalysis = Readonly<{
     readonly adapterRevision: string;
   }>;
   readonly lyricsSafety: "not_applicable" | "allow" | "review_required" | "blocked";
-  readonly mediaSafety: "not_applicable" | "allow" | "draft" | "review_required" | "blocked";
+  readonly mediaSafety:
+    | "not_applicable"
+    | "allow"
+    | "visual_provider_unavailable"
+    | "draft"
+    | "review_required"
+    | "blocked";
   readonly contentModeration: Readonly<{
     readonly decision: "allow" | "manual_review" | "blocked";
     readonly resultingContentRating: "general" | "adult_18";

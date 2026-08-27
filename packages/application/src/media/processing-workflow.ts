@@ -657,10 +657,11 @@ async function buildAnalysis(
   const mediaSafety: MediaProcessingAnalysis["mediaSafety"] =
     metadata.cover.status === "absent"
       ? "not_applicable"
-      : metadata.cover.status === "ready" ||
-          (metadata.cover.status === "rejected" && metadata.cover.reasonCode === "unsafe")
-        ? "blocked"
-        : "review_required";
+      : metadata.cover.status === "ready"
+        ? "visual_provider_unavailable"
+        : metadata.cover.reasonCode === "unsafe"
+          ? "blocked"
+          : "review_required";
   if (authority.audio?.canonicalSha256 !== sealedHash) return "processing_failed";
 
   let lyricsAnalysis: MediaProcessingAnalysis["lyricsAnalysis"];
