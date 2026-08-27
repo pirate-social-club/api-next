@@ -215,6 +215,7 @@ export interface MediaUploadStore {
       readonly requestHash: string;
       readonly title: string;
       readonly songType: "original" | "remix";
+      readonly authorDeclaredRating: "general" | "adult_18";
       readonly reservationId: string;
       readonly submissionId: string;
       readonly operationId: string;
@@ -860,6 +861,7 @@ export async function createMediaSubmission(
       requestHash: digest,
       title: body.title,
       songType: body.song_type,
+      authorDeclaredRating: body.author_declared_rating ?? "general",
       reservationId: body.audio_reservation_id,
       submissionId,
       operationId,
@@ -1707,6 +1709,7 @@ export async function moderateMediaSubmission(
       canonicalAudioSha256: current.audio.canonicalSha256,
       policyRevision: current.decision?.policyRevision ?? "song-publication-decision-v1",
       evidenceRef,
+      contentRating: current.analysis.contentModeration?.resultingContentRating ?? "general",
     };
     state = applyMediaTransition(current, {
       event: "moderator_approved",

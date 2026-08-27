@@ -1,3 +1,4 @@
+import { canonicalTextModerationInput, resolveCommunityModerationPolicy } from "@pirate/domain";
 import { Effect } from "effect";
 import {
   MEDIA_TRANSFORM_MAX_AUDIO_DURATION_MS,
@@ -489,6 +490,96 @@ function acrDecision(
   };
 }
 
+async function moderateSongText(
+  authority: MediaProcessingAuthority,
+  providers: MediaProcessingProviders,
+  dependencies: MediaProcessingWorkflowDependencies,
+): Promise<MediaProcessingAnalysis["contentModeration"]> {
+  const moderationInput = {
+    version: "text-moderation-input-v1" as const,
+    surface: "text_post" as const,
+    community_id: authority.communityId,
+    title: authority.title,
+    body: authority.lyrics?.text ?? null,
+  };
+  const canonical = canonicalTextModerationInput(moderationInput);
+  const policy = await dependencies.store.readModerationPolicy(authority.communityId);
+  if (canonical.kind !== "accepted") {
+    return {
+      decision: "manual_review",
+      resultingContentRating: authority.authorDeclaredRating,
+      inputSha256: "invalid",
+      matchedCategories: [],
+      policyRevision: policy.policy_revision,
+      platformPolicyRevision: policy.platform_policy_revision,
+      communityPolicyRevision: policy.community_policy_revision,
+      evidenceRef: null,
+      providerEvidence: null,
+    };
+  }
+  try {
+    const provider = await Effect.runPromise(providers.textModeration.evaluate(moderationInput));
+    if (provider.input_sha256 !== canonical.sha256)
+      throw new TypeError("moderation input mismatch");
+    const resolution = resolveCommunityModerationPolicy({
+      platform_floor: policy.platform_policy,
+      community_policy: policy.community_policy,
+      matched_categories: provider.matched_categories,
+      author_declared_rating: authority.authorDeclaredRating,
+    });
+    const evidencePreimage = JSON.stringify([
+      "song-text-moderation-evidence-v1",
+      authority.communityId,
+      authority.submissionId,
+      canonical.sha256,
+      policy.policy_revision,
+      policy.platform_policy_revision,
+      policy.community_policy_revision,
+      provider.inputs,
+    ]);
+    const digest = await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(evidencePreimage),
+    );
+    const evidenceHash = Array.from(new Uint8Array(digest), (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("");
+    return {
+      decision:
+        resolution.effective_policy_decision === "permit"
+          ? "allow"
+          : resolution.effective_policy_decision === "review"
+            ? "manual_review"
+            : "blocked",
+      resultingContentRating: resolution.resulting_content_rating,
+      inputSha256: canonical.sha256,
+      matchedCategories: resolution.matched_categories,
+      policyRevision: policy.policy_revision,
+      platformPolicyRevision: policy.platform_policy_revision,
+      communityPolicyRevision: policy.community_policy_revision,
+      evidenceRef: `evidence_${evidenceHash}`,
+      providerEvidence: {
+        providerId: provider.provider_id,
+        requestedModel: provider.requested_model,
+        returnedModel: provider.returned_model,
+        inputs: provider.inputs,
+      },
+    };
+  } catch {
+    return {
+      decision: "manual_review",
+      resultingContentRating: authority.authorDeclaredRating,
+      inputSha256: canonical.sha256,
+      matchedCategories: [],
+      policyRevision: policy.policy_revision,
+      platformPolicyRevision: policy.platform_policy_revision,
+      communityPolicyRevision: policy.community_policy_revision,
+      evidenceRef: null,
+      providerEvidence: null,
+    };
+  }
+}
+
 async function buildAnalysis(
   firstAuthority: MediaProcessingAuthority,
   providers: MediaProcessingProviders,
@@ -561,11 +652,13 @@ async function buildAnalysis(
 
   authority = await authoritativeReload(authority, dependencies);
   const metadata = await runMetadata(authority, providers, dependencies);
+  const contentModeration = await moderateSongText(authority, providers, dependencies);
   authority = await authoritativeReload(authority, dependencies);
   const mediaSafety: MediaProcessingAnalysis["mediaSafety"] =
     metadata.cover.status === "absent"
       ? "not_applicable"
-      : metadata.cover.status === "rejected" && metadata.cover.reasonCode === "unsafe"
+      : metadata.cover.status === "ready" ||
+          (metadata.cover.status === "rejected" && metadata.cover.reasonCode === "unsafe")
         ? "blocked"
         : "review_required";
   if (authority.audio?.canonicalSha256 !== sealedHash) return "processing_failed";
@@ -616,6 +709,7 @@ async function buildAnalysis(
     acr: acrDecision(authority, acrOutcome),
     lyricsSafety,
     mediaSafety,
+    contentModeration,
   };
 }
 
@@ -627,7 +721,9 @@ export function decideMediaPublication(
   }
   const analysis = authority.analysis;
   const outcome =
-    analysis.mediaSafety === "blocked" || analysis.lyricsSafety === "blocked"
+    analysis.mediaSafety === "blocked" ||
+    analysis.lyricsSafety === "blocked" ||
+    analysis.contentModeration.decision === "blocked"
       ? "block"
       : analysis.acr.decision === "requires_reference" && authority.boundReferenceAssetId === null
         ? "reference_required"
@@ -636,6 +732,7 @@ export function decideMediaPublication(
             analysis.mediaSafety === "draft" ||
             analysis.mediaSafety === "review_required" ||
             analysis.lyricsSafety === "review_required" ||
+            analysis.contentModeration.decision === "manual_review" ||
             analysis.lyricsAnalysis.status === "unavailable" ||
             (analysis.lyricsAnalysis.status === "ready" &&
               analysis.lyricsAnalysis.explicitness === "uncertain")
@@ -651,6 +748,7 @@ export function decideMediaPublication(
     outcome,
     evidenceRef: `decision-evidence-${authority.operationId}-c${authority.creationRevision}`,
     policyRevision: "song-publication-decision-v1",
+    contentRating: analysis.contentModeration.resultingContentRating,
   };
 }
 
@@ -693,7 +791,8 @@ async function refreshLyricsClassification(
     classified.status !== "classified" || classified.explicitness === "uncertain"
       ? "review_required"
       : "allow";
-  return { ...analysis, lyricsAnalysis, lyricsSafety };
+  const contentModeration = await moderateSongText(authority, providers, dependencies);
+  return { ...analysis, lyricsAnalysis, lyricsSafety, contentModeration };
 }
 
 async function publish(

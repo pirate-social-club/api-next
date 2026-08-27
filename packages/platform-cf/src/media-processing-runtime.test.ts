@@ -152,6 +152,8 @@ const authority = (sizeBytes: number) => ({
   submissionId: "submission",
   operationId: "operation",
   songType: "original" as const,
+  title: "Song title",
+  authorDeclaredRating: "general" as const,
   creationRevision: 2,
   audioRevision: 1,
   analysisRevision: 1,

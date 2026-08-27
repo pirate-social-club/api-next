@@ -50,6 +50,7 @@
       "ACRCLOUD_ACCESS_KEY",
       "ACRCLOUD_ACCESS_SECRET",
       "ELEVENLABS_API_KEY"
+      ,"OPENAI_API_KEY"
     ]
   },
   "env": {
@@ -101,6 +102,7 @@
           "ACRCLOUD_ACCESS_KEY",
           "ACRCLOUD_ACCESS_SECRET",
           "ELEVENLABS_API_KEY"
+          ,"OPENAI_API_KEY"
         ]
       }
     },
@@ -152,6 +154,7 @@
           "ACRCLOUD_ACCESS_KEY",
           "ACRCLOUD_ACCESS_SECRET",
           "ELEVENLABS_API_KEY"
+          ,"OPENAI_API_KEY"
         ]
       }
     }

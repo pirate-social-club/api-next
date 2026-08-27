@@ -18,6 +18,7 @@ import { makeAcrCloudAdapter } from "@pirate/platform-cf/media-providers/acrclou
 import { ElevenLabsAlignmentAdapter } from "@pirate/platform-cf/media-providers/elevenlabs-alignment";
 import { makeOpenRouterClassifierAdapter } from "@pirate/platform-cf/media-providers/openrouter";
 import { disabledTransloaditMediaTransform } from "@pirate/platform-cf/media-transform";
+import { makeOpenAiTextModerationProvider } from "@pirate/platform-cf/openai-text-moderation";
 import { makeHyperdriveControlPlaneLayer } from "@pirate/platform-cf/postgres";
 import { Effect } from "effect";
 import type { MediaProcessorComposition, MediaProcessorWorkerEnv } from "./index.ts";
@@ -36,6 +37,7 @@ export type MediaProcessorRuntimeEnv = MediaProcessorWorkerEnv &
     readonly ACRCLOUD_ACCESS_KEY?: string;
     readonly ACRCLOUD_ACCESS_SECRET?: string;
     readonly ELEVENLABS_API_KEY?: string;
+    readonly OPENAI_API_KEY?: string;
     readonly DATA_REGISTRATION_ENABLED?: string;
     readonly DATA_REGISTRATION_CHAIN_ID?: string;
   }>;
@@ -148,6 +150,9 @@ function makeEnabledProviders(env: MediaProcessorRuntimeEnv): MediaProcessingPro
       alignmentAdapter,
       MAXIMUM_AUDIO_BYTES,
     ),
+    textModeration: makeOpenAiTextModerationProvider({
+      apiKey: requiredText(env.OPENAI_API_KEY, "OPENAI_API_KEY"),
+    }),
   };
 }
 

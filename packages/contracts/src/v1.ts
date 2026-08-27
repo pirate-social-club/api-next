@@ -802,6 +802,7 @@ export const CreateSongSubmissionV1 = Schema.Struct({
   audio_reservation_id: SongAuthorString,
   song_type: Schema.Literals(["original", "remix"]),
   idempotency_key: SongAuthorString,
+  author_declared_rating: Schema.optional(ContentRatingV1),
 });
 export type CreateSongSubmissionV1 = Schema.Schema.Type<typeof CreateSongSubmissionV1>;
 
@@ -1164,6 +1165,14 @@ export const SongPublishedProjectionV1 = Schema.Struct({
   locked_delivery: Schema.Literals(["not_required", "preparing", "ready", "failed"]),
 });
 export type SongPublishedProjectionV1 = Schema.Schema.Type<typeof SongPublishedProjectionV1>;
+
+export const SongPublishedProjectionV2 = Schema.Struct({
+  ...SongPublishedProjectionV1.fields,
+  version: Schema.Literal("song-published-projection-v2"),
+  visibility: Schema.Literal("public"),
+  content_rating: ContentRatingV1,
+});
+export type SongPublishedProjectionV2 = Schema.Schema.Type<typeof SongPublishedProjectionV2>;
 
 const TextCommentReplyRequestV1 = Schema.Struct({
   idempotency_key: Schema.String,

@@ -159,6 +159,7 @@ const MEDIA_BINDING_KINDS = {
   ACRCLOUD_ACCESS_KEY: "secret",
   ACRCLOUD_ACCESS_SECRET: "secret",
   ELEVENLABS_API_KEY: "secret",
+  OPENAI_API_KEY: "secret",
   DATA_REGISTRATION_ENABLED: "var",
   DATA_REGISTRATION_CHAIN_ID: "var",
 } as const satisfies BindingManifest<MediaProcessorRuntimeEnv>;
@@ -403,6 +404,7 @@ const MEDIA_ENABLED_REQUIRED = [
   "ACRCLOUD_ACCESS_KEY",
   "ACRCLOUD_ACCESS_SECRET",
   "ELEVENLABS_API_KEY",
+  "OPENAI_API_KEY",
 ] as const;
 
 const DATA_ENABLED_REQUIRED = [
