@@ -193,9 +193,22 @@ export function makeAcrCloudFetchTransport(
       if (!validFetchRequest(request, "POST", endpoint)) {
         throw new MediaProcessingTransportFailure("invalid_request");
       }
+      const contentType = request.headers["content-type"];
+      if (!contentType?.startsWith("multipart/form-data; boundary=")) {
+        throw new MediaProcessingTransportFailure("invalid_request");
+      }
+      let body: BodyInit;
+      try {
+        body = (await new Response(request.body, {
+          headers: { "content-type": contentType },
+        }).formData()) as unknown as BodyInit;
+      } catch {
+        throw new MediaProcessingTransportFailure("invalid_request");
+      }
       const response = await fetchResponse(fetcher, {
         ...request,
-        body: request.body,
+        headers: {},
+        body,
       });
       return { status: response.status, headers: response.headers, body: responseStream(response) };
     },

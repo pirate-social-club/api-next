@@ -12,6 +12,7 @@ import {
   makeR2MediaProcessingArtifactReader,
   makeTransloaditFetchTransport,
 } from "./media-processing-runtime.ts";
+import { encodeAcrCloudMultipart } from "./media-providers/acrcloud-protocol.ts";
 import type { ElevenLabsAlignmentInput } from "./media-providers/elevenlabs-alignment-types.ts";
 
 const originalDigestStream = Object.getOwnPropertyDescriptor(crypto, "DigestStream");
@@ -204,12 +205,20 @@ describe("media processor runtime boundary", () => {
       signal,
       redirect: "error",
     });
+    const acrMultipart = encodeAcrCloudMultipart({
+      accessKey: "access-key",
+      timestamp: "1700000000",
+      signature: "signature",
+      filename: "sample.mp3",
+      contentType: "audio/mpeg",
+      sampleBytes: new Uint8Array([1]),
+    });
     await makeAcrCloudFetchTransport("identify-ap-southeast-1.acrcloud.com", fetcher).request({
       requestId: "request",
       method: "POST",
       url: "https://identify-ap-southeast-1.acrcloud.com/v1/identify",
-      headers: {},
-      body: new Uint8Array([1]),
+      headers: { "content-type": acrMultipart.contentType },
+      body: acrMultipart.body,
       signal,
       redirect: "error",
     });
@@ -229,8 +238,13 @@ describe("media processor runtime boundary", () => {
     expect(requests).toHaveLength(3);
     expect(requests.every(({ init }) => init?.redirect === "error")).toBe(true);
     const acrBody = requests[1]?.init?.body;
-    expect(acrBody).toBeInstanceOf(Uint8Array);
-    expect(acrBody).toEqual(new Uint8Array([1]));
+    expect(acrBody).toBeInstanceOf(FormData);
+    if (!(acrBody instanceof FormData)) throw new TypeError("expected native multipart body");
+    expect(acrBody.get("sample_bytes")).toBe("1");
+    const sample = acrBody.get("sample");
+    expect(sample).toBeInstanceOf(File);
+    if (!(sample instanceof File)) throw new TypeError("expected multipart sample file");
+    expect(new Uint8Array(await sample.arrayBuffer())).toEqual(new Uint8Array([1]));
 
     const invalid = makeTransloaditFetchTransport(fetcher).request({
       requestId: "request",
