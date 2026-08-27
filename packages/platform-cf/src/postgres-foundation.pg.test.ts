@@ -330,6 +330,9 @@ const mediaPersonaRecipientTriggerMigrationSql = await Bun.file(
 const textRatingsAgeAccessMigrationSql = await Bun.file(
   new URL("../../../db/postgres/migrations/0065_text_ratings_age_access.sql", import.meta.url),
 ).text();
+const songRatingsAgeAccessMigrationSql = await Bun.file(
+  new URL("../../../db/postgres/migrations/0066_song_ratings_age_access.sql", import.meta.url),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -662,6 +665,11 @@ const textRatingsAgeAccessMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0065_text_ratings_age_access.sql"] ?? "",
   sql: textRatingsAgeAccessMigrationSql,
 };
+const songRatingsAgeAccessMigration: PostgresMigration = {
+  version: "0066_song_ratings_age_access.sql",
+  checksum: checksumManifest.migrations["0066_song_ratings_age_access.sql"] ?? "",
+  sql: songRatingsAgeAccessMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -728,6 +736,7 @@ const migrations: readonly PostgresMigration[] = [
   communityModerationOwnerRuntimeMigration,
   mediaPersonaRecipientTriggerMigration,
   textRatingsAgeAccessMigration,
+  songRatingsAgeAccessMigration,
 ];
 
 function checksum(value: string): string {
@@ -1022,6 +1031,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       );
       expect(checksum(textRatingsAgeAccessMigrationSql)).toBe(
         textRatingsAgeAccessMigration.checksum,
+      );
+      expect(checksum(songRatingsAgeAccessMigrationSql)).toBe(
+        songRatingsAgeAccessMigration.checksum,
       );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);

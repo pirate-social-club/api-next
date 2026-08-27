@@ -235,7 +235,11 @@ const feedItemFromRow = (
     return null;
   }
 
-  if (postType === "text" && contentRating === "adult_18" && !ratingViewAllowed) {
+  if (
+    (postType === "text" || postType === "song") &&
+    contentRating === "adult_18" &&
+    !ratingViewAllowed
+  ) {
     return ageLockedResource();
   }
 
@@ -322,7 +326,7 @@ const homeFeedStatement = (input: {
                   p.title,
                   p.body,
                   p.content_rating,
-                  (p.post_type <> 'text'
+                  (p.post_type NOT IN ('text', 'song')
                     OR can_account_view_content_rating_v1($1, p.content_rating)) AS rating_view_allowed,
                   p.comments_locked,
                   p.created_at,

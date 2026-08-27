@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { MODERATION_POLICY_CATEGORIES_V1 } from "@pirate/contracts";
+import { canonicalTextModerationInput } from "@pirate/domain";
 import { Effect } from "effect";
 import { hostileCorrectedLyrics } from "../../../../tests/fixtures/media-processing/hostile-classifier-inputs.ts";
 import type {
@@ -29,6 +31,8 @@ function authority(overrides: Partial<MediaProcessingAuthority> = {}): MediaProc
     submissionId: "submission-1",
     operationId: "operation-1",
     songType: "original",
+    title: "Song title",
+    authorDeclaredRating: "general",
     creationRevision: 2,
     audioRevision: 1,
     analysisRevision: 1,
@@ -80,6 +84,7 @@ class FakeStore implements MediaProcessingStore {
     { readonly kind: "alignment" }
   >[] = [];
   providerReviews = 0;
+  readonly communityDecisions = new Map<string, "permit" | "review" | "block">();
 
   constructor(
     current = authority(),
@@ -310,12 +315,47 @@ class FakeStore implements MediaProcessingStore {
   };
 
   listWorkflowCandidates = async () => [this.current];
+
+  readModerationPolicy = async () => ({
+    policy_revision: "provider-policy-v1",
+    policy_hash: hash,
+    platform_policy_revision: "platform-floor-v1",
+    platform_policy_hash: hash,
+    platform_policy: Object.fromEntries(
+      MODERATION_POLICY_CATEGORIES_V1.map((category) => [
+        category,
+        category === "sexual/minors"
+          ? "block"
+          : [
+                "harassment",
+                "illicit",
+                "self-harm",
+                "sexual",
+                "violence",
+                "violence/graphic",
+              ].includes(category)
+            ? "permit"
+            : "review",
+      ]),
+    ) as never,
+    community_policy_revision: "community-policy-v1",
+    community_policy_hash: hash,
+    community_policy: Object.fromEntries(
+      MODERATION_POLICY_CATEGORIES_V1.map((category) => [
+        category,
+        this.communityDecisions.get(category) ??
+          (category === "sexual/minors" ? "block" : "review"),
+      ]),
+    ) as never,
+  });
 }
 
 type ProviderControls = {
   durationMs: number;
   acr: ("no_match" | "fingerprint" | "match" | "failure")[];
   explicitness: "not_explicit" | "explicit" | "uncertain";
+  matchedCategories: readonly (typeof MODERATION_POLICY_CATEGORIES_V1)[number][];
+  cover: MediaProcessingAnalysis["embeddedMetadata"]["cover"];
   onClassifierInput?: (input: MediaExplicitnessClassifierInput) => void;
 };
 
@@ -327,10 +367,26 @@ function providers(
     durationMs: 180_000,
     acr: ["no_match", "no_match"],
     explicitness: "not_explicit",
+    matchedCategories: [],
+    cover: { status: "absent", reasonCode: "not_embedded" },
     ...overrides,
   };
   let acrIndex = 0;
   return {
+    textModeration: {
+      evaluate: (input) => {
+        const canonical = canonicalTextModerationInput(input);
+        if (canonical.kind !== "accepted") throw new TypeError("invalid moderation fixture");
+        return Effect.succeed({
+          provider_id: "openai",
+          requested_model: "omni-moderation-2024-09-26",
+          returned_model: "omni-moderation-2024-09-26",
+          input_sha256: canonical.sha256,
+          matched_categories: controls.matchedCategories,
+          inputs: [],
+        });
+      },
+    },
     transform: {
       probe: (input: MediaTransformProbeInput) => {
         events.push(`effect:probe:${input.binding.canonicalAudioSha256}`);
@@ -449,7 +505,7 @@ function providers(
           evidenceRef: "metadata-evidence-1",
           adapterRevision: "metadata-v1",
           trackTitle: "embedded title",
-          cover: { status: "absent", reasonCode: "not_embedded" },
+          cover: controls.cover,
         };
       },
     },
@@ -495,6 +551,50 @@ function providers(
     },
   };
 }
+
+test("song moderation raises the durable rating for an adult category", async () => {
+  const store = new FakeStore(authority({ lyrics: null }));
+  store.communityDecisions.set("sexual", "permit");
+  const result = await runMediaProcessingWorkflow(
+    workflowPayload(store),
+    "analysis_launch",
+    dependencies(store, providers([], { matchedCategories: ["sexual"] })),
+  );
+  expect(result).toEqual({ outcome: "published_without_alignment" });
+  expect(store.current.analysis?.contentModeration).toMatchObject({
+    decision: "allow",
+    resultingContentRating: "adult_18",
+    matchedCategories: ["sexual"],
+  });
+  expect(store.current.decision?.contentRating).toBe("adult_18");
+});
+
+test("publishes a song without exposing artwork while the visual provider is unavailable", async () => {
+  const store = new FakeStore(authority({ lyrics: null }));
+  const result = await runMediaProcessingWorkflow(
+    workflowPayload(store),
+    "analysis_launch",
+    dependencies(
+      store,
+      providers([], {
+        cover: {
+          status: "ready",
+          artifactRef: "restricted-cover-1",
+          artifactSha256: "b".repeat(64),
+          mediaType: "image/jpeg",
+          width: 1200,
+          height: 1200,
+          normalizationRevision: "cover-normalization-v1",
+          safetyPolicyRevision: "visual-provider-pending-v1",
+        },
+      }),
+    ),
+  );
+
+  expect(result).toEqual({ outcome: "published_without_alignment" });
+  expect(store.current.analysis?.mediaSafety).toBe("visual_provider_unavailable");
+  expect(store.current.decision?.outcome).toBe("allow");
+});
 
 function dependencies(store: FakeStore, provider: MediaProcessingProviders | null) {
   return {

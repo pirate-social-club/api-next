@@ -60,6 +60,8 @@ function queueHarness(options: { create?: "created" | "already_exists" | "throw"
       submissionId: "submission-1",
       operationId: "operation-1",
       songType: "original",
+      title: "Song title",
+      authorDeclaredRating: "general",
       creationRevision: 2,
       audioRevision: 1,
       analysisRevision: 1,

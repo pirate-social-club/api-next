@@ -14,6 +14,8 @@ const candidate = (
   submissionId: "submission-1",
   operationId: "operation-1",
   songType: "original",
+  title: "Song title",
+  authorDeclaredRating: "general",
   creationRevision: 3,
   audioRevision: 1,
   analysisRevision: 1,

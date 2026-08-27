@@ -10,6 +10,12 @@ import type {
   MediaProcessingOutboxRecord,
   MediaProcessingStore,
 } from "@pirate/application/media/processing-contracts";
+import type { TextModerationPolicySnapshotV2 } from "@pirate/application/text-moderation-runtime";
+import {
+  MODERATION_POLICY_CATEGORIES_V1,
+  type ModerationPolicyDecisionV1,
+  type ModerationPolicyTableV1,
+} from "@pirate/contracts";
 import { canonicalJson } from "@pirate/domain";
 import { Data, Effect, type Layer, Option, Schema } from "effect";
 import type {
@@ -36,6 +42,8 @@ type AuthorityLocation = Readonly<{
   termsRevision: number | null;
   replacementSequence: number;
   publishedLyricsRevision: number | null;
+  title: string;
+  authorDeclaredRating: "general" | "adult_18";
 }>;
 
 const AttemptResultEnvelope = Schema.Union([
@@ -95,6 +103,28 @@ const integer = (value: unknown): number | null => {
   if (typeof value !== "string" || !/^[0-9]+$/u.test(value)) return null;
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) ? parsed : null;
+};
+
+const policyTable = (rows: readonly Row[]): ModerationPolicyTableV1 | null => {
+  if (rows.length !== MODERATION_POLICY_CATEGORIES_V1.length) return null;
+  const table: Partial<
+    Record<(typeof MODERATION_POLICY_CATEGORIES_V1)[number], ModerationPolicyDecisionV1>
+  > = {};
+  for (const row of rows) {
+    const category = typeof row.category === "string" ? row.category : null;
+    const decision = typeof row.decision === "string" ? row.decision : null;
+    if (
+      category === null ||
+      !MODERATION_POLICY_CATEGORIES_V1.includes(
+        category as (typeof MODERATION_POLICY_CATEGORIES_V1)[number],
+      ) ||
+      (decision !== "permit" && decision !== "review" && decision !== "block") ||
+      category in table
+    )
+      return null;
+    table[category as (typeof MODERATION_POLICY_CATEGORIES_V1)[number]] = decision;
+  }
+  return table as ModerationPolicyTableV1;
 };
 
 const sha256 = async (bytes: Uint8Array): Promise<string> =>
@@ -163,11 +193,23 @@ const processingAnalysis = (
         acr: analysis.acr,
         lyricsSafety: analysis.lyricsSafety,
         mediaSafety: analysis.mediaSafety,
+        contentModeration: analysis.contentModeration ?? {
+          decision: "manual_review",
+          resultingContentRating: "general",
+          inputSha256: "legacy-unmoderated",
+          matchedCategories: [],
+          policyRevision: "legacy-unmoderated",
+          platformPolicyRevision: "legacy-unmoderated",
+          communityPolicyRevision: "legacy-unmoderated",
+          evidenceRef: null,
+          providerEvidence: null,
+        },
       };
 
 const processingDecision = (
   decision: PublicationDecision | null,
-): MediaProcessingDecision | null => (decision === null ? null : { ...decision });
+): MediaProcessingDecision | null =>
+  decision === null ? null : { ...decision, contentRating: decision.contentRating ?? "general" };
 
 const decodeAttemptResult = (value: unknown): MediaProcessingAttemptResult => {
   const decoded = Schema.decodeUnknownOption(AttemptResultEnvelope, {
@@ -220,7 +262,7 @@ export function makeMediaProcessingStore(
       const db = yield* ControlPlaneDb;
       const result = yield* db.execute<Row>({
         label: "media-processing.authority-locator",
-        text: "SELECT s.community_id,s.actor_account_id,s.actor_user_id,s.author_persona_id,s.current_terms_revision,s.workflow_replacement_sequence,p.lyrics_revision AS published_lyrics_revision FROM media_post_submissions s LEFT JOIN media_publication_projections p ON p.submission_id=s.submission_id AND p.operation_id=s.operation_id WHERE s.submission_id=$1 AND s.operation_id=$2",
+        text: "SELECT s.community_id,s.actor_account_id,s.actor_user_id,s.author_persona_id,s.current_terms_revision,s.workflow_replacement_sequence,s.title,s.author_declared_rating,p.lyrics_revision AS published_lyrics_revision FROM media_post_submissions s LEFT JOIN media_publication_projections p ON p.submission_id=s.submission_id AND p.operation_id=s.operation_id WHERE s.submission_id=$1 AND s.operation_id=$2",
         values: [submissionId, operationId],
         readonly: true,
       });
@@ -232,7 +274,9 @@ export function makeMediaProcessingStore(
         !validId(row.community_id) ||
         !validId(row.actor_account_id) ||
         !validId(row.actor_user_id) ||
-        !validId(row.author_persona_id)
+        !validId(row.author_persona_id) ||
+        !validId(row.title) ||
+        (row.author_declared_rating !== "general" && row.author_declared_rating !== "adult_18")
       ) {
         return yield* Effect.fail(
           new MediaProcessingStoreError({ operation: "authority", reason: "invalid-row" }),
@@ -260,6 +304,8 @@ export function makeMediaProcessingStore(
         termsRevision,
         replacementSequence,
         publishedLyricsRevision,
+        title: row.title,
+        authorDeclaredRating: row.author_declared_rating,
       };
     });
 
@@ -313,6 +359,8 @@ export function makeMediaProcessingStore(
       submissionId: state.submissionId,
       operationId: state.operationId,
       songType: state.songType,
+      title: location.title,
+      authorDeclaredRating: location.authorDeclaredRating,
       creationRevision: state.creationRevision,
       audioRevision: state.audioRevision,
       analysisRevision:
@@ -569,6 +617,7 @@ export function makeMediaProcessingStore(
       acr: analysis.acr,
       lyricsSafety: analysis.lyricsSafety,
       mediaSafety: analysis.mediaSafety,
+      contentModeration: analysis.contentModeration,
       boundReference: state.boundReference,
     };
     return committed(
@@ -803,6 +852,61 @@ export function makeMediaProcessingStore(
     return candidates;
   };
 
+  const readModerationPolicy: MediaProcessingStore["readModerationPolicy"] = async (communityId) =>
+    run(
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        const provider = yield* db.execute<Row>({
+          label: "media-processing.moderation-policy.provider",
+          text: "SELECT pointer.policy_revision_id,revision.policy_hash FROM text_moderation_policy_current pointer JOIN text_moderation_policy_revisions revision ON revision.policy_revision_id=pointer.policy_revision_id WHERE pointer.singleton=TRUE",
+          values: [],
+          readonly: true,
+        });
+        const floor = yield* db.execute<Row>({
+          label: "media-processing.moderation-policy.floor",
+          text: "SELECT pointer.policy_revision_id,pointer.policy_hash,category.category,category.decision FROM moderation_platform_floor_current pointer JOIN moderation_platform_floor_category_decisions category ON category.policy_revision_id=pointer.policy_revision_id WHERE pointer.singleton=TRUE ORDER BY moderation_policy_category_ordinal_v1(category.category)",
+          values: [],
+          readonly: true,
+        });
+        const community = yield* db.execute<Row>({
+          label: "media-processing.moderation-policy.community",
+          text: "SELECT pointer.policy_revision_id,pointer.policy_hash,category.category,category.decision FROM community_moderation_policy_current pointer JOIN community_moderation_policy_category_decisions category ON category.community_id=pointer.community_id AND category.policy_revision_id=pointer.policy_revision_id WHERE pointer.community_id=$1 ORDER BY moderation_policy_category_ordinal_v1(category.category)",
+          values: [communityId],
+          readonly: true,
+        });
+        const providerRow = provider.rows[0];
+        const floorRow = floor.rows[0];
+        const communityRow = community.rows[0];
+        const platformPolicy = policyTable(floor.rows);
+        const communityPolicy = policyTable(community.rows);
+        if (
+          provider.rows.length !== 1 ||
+          providerRow === undefined ||
+          !validId(providerRow.policy_revision_id) ||
+          typeof providerRow.policy_hash !== "string" ||
+          floorRow === undefined ||
+          !validId(floorRow.policy_revision_id) ||
+          typeof floorRow.policy_hash !== "string" ||
+          communityRow === undefined ||
+          !validId(communityRow.policy_revision_id) ||
+          typeof communityRow.policy_hash !== "string" ||
+          platformPolicy === null ||
+          communityPolicy === null
+        )
+          throw new MediaProcessingStoreError({ operation: "authority", reason: "invalid-row" });
+        return {
+          policy_revision: providerRow.policy_revision_id,
+          policy_hash: providerRow.policy_hash,
+          platform_policy_revision: floorRow.policy_revision_id,
+          platform_policy_hash: floorRow.policy_hash,
+          platform_policy: platformPolicy,
+          community_policy_revision: communityRow.policy_revision_id,
+          community_policy_hash: communityRow.policy_hash,
+          community_policy: communityPolicy,
+        } satisfies TextModerationPolicySnapshotV2;
+      }),
+    );
+
   return {
     getOutbox,
     claimOutbox,
@@ -821,5 +925,6 @@ export function makeMediaProcessingStore(
     commitProviderUnavailableReview,
     replaceMissingWorkflow,
     listWorkflowCandidates,
+    readModerationPolicy,
   };
 }

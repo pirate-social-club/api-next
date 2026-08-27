@@ -12,6 +12,10 @@ import type {
   MediaExplicitnessClassifierAdapter,
   MediaExplicitnessClassifierResult,
 } from "../media-provider-contracts.ts";
+import type {
+  TextModerationPolicySnapshotV2,
+  TextModerationProviderServiceV1,
+} from "../text-moderation-runtime.ts";
 
 const identifierPattern = /^\S(?:.*\S)?$/u;
 
@@ -107,6 +111,8 @@ export type MediaProcessingAuthority = Readonly<{
   readonly submissionId: string;
   readonly operationId: string;
   readonly songType: "original" | "remix";
+  readonly title: string;
+  readonly authorDeclaredRating: "general" | "adult_18";
   readonly creationRevision: number;
   readonly audioRevision: number;
   readonly analysisRevision: number;
@@ -193,7 +199,29 @@ export type MediaProcessingAnalysis = Readonly<{
     readonly adapterRevision: string;
   }>;
   readonly lyricsSafety: "not_applicable" | "allow" | "review_required" | "blocked";
-  readonly mediaSafety: "not_applicable" | "allow" | "draft" | "review_required" | "blocked";
+  readonly mediaSafety:
+    | "not_applicable"
+    | "allow"
+    | "visual_provider_unavailable"
+    | "draft"
+    | "review_required"
+    | "blocked";
+  readonly contentModeration: Readonly<{
+    readonly decision: "allow" | "manual_review" | "blocked";
+    readonly resultingContentRating: "general" | "adult_18";
+    readonly inputSha256: string;
+    readonly matchedCategories: readonly string[];
+    readonly policyRevision: string;
+    readonly platformPolicyRevision: string;
+    readonly communityPolicyRevision: string;
+    readonly evidenceRef: string | null;
+    readonly providerEvidence: Readonly<{
+      readonly providerId: "openai";
+      readonly requestedModel: string;
+      readonly returnedModel: string;
+      readonly inputs: readonly unknown[];
+    }> | null;
+  }>;
 }>;
 
 export type MediaProcessingDecision = Readonly<{
@@ -206,6 +234,7 @@ export type MediaProcessingDecision = Readonly<{
   readonly outcome: "allow" | "manual_review" | "block" | "reference_required";
   readonly evidenceRef: string;
   readonly policyRevision: string;
+  readonly contentRating: "general" | "adult_18";
 }>;
 
 export type MediaProcessingAttemptStage =
@@ -334,6 +363,7 @@ export interface MediaProcessingStore {
     authority: MediaProcessingAuthority,
   ) => Promise<MediaProcessingCommit>;
   readonly listWorkflowCandidates: () => Promise<readonly MediaProcessingAuthority[]>;
+  readonly readModerationPolicy: (communityId: string) => Promise<TextModerationPolicySnapshotV2>;
 }
 
 export interface MediaProcessingArtifactReader {
@@ -394,6 +424,7 @@ export type MediaProcessingProviders = Readonly<{
   readonly artifactReader: MediaProcessingArtifactReader;
   readonly metadata: MediaProcessingMetadataPort;
   readonly alignment: MediaProcessingAlignmentPort;
+  readonly textModeration: TextModerationProviderServiceV1;
 }>;
 
 export interface MediaProcessingWorkflowLauncher {

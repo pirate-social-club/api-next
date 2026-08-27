@@ -963,11 +963,11 @@ CREATE FUNCTION default_text_post_rating_v1() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
-  IF NEW.post_type = 'text' THEN
+  IF NEW.post_type IN ('text', 'song') THEN
     NEW.author_declared_rating := COALESCE(NEW.author_declared_rating, 'general');
     NEW.content_rating := COALESCE(NEW.content_rating, 'general');
   ELSIF NEW.author_declared_rating IS NOT NULL OR NEW.content_rating IS NOT NULL THEN
-    RAISE EXCEPTION 'non-text post cannot carry a text content rating';
+    RAISE EXCEPTION 'unrated post type cannot carry a content rating';
   END IF;
   RETURN NEW;
 END;
@@ -1197,6 +1197,41 @@ CREATE FUNCTION effective_route_authority_v2(expected_community_id text, databas
      AND binding.route_lifecycle_status = 'active'
      AND binding.ownership_status <> 'verified'
      AND binding.verified_evidence_ref IS NULL
+$$;
+
+CREATE FUNCTION enforce_song_rating_projection_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  post_rating TEXT;
+  declared_rating TEXT;
+BEGIN
+  SELECT post.content_rating, post.author_declared_rating
+    INTO post_rating, declared_rating
+    FROM posts AS post
+   WHERE post.community_id = NEW.community_id
+     AND post.post_id = NEW.post_id
+     AND post.post_type = 'song';
+  IF post_rating IS NULL
+     OR NEW.content_rating <> post_rating
+     OR NEW.content_rating <> (
+       SELECT submission.resulting_content_rating
+         FROM media_post_submissions AS submission
+        WHERE submission.community_id = NEW.community_id
+          AND submission.submission_id = NEW.submission_id
+          AND submission.operation_id = NEW.operation_id
+     )
+     OR declared_rating <> (
+       SELECT submission.author_declared_rating
+         FROM media_post_submissions AS submission
+        WHERE submission.community_id = NEW.community_id
+          AND submission.submission_id = NEW.submission_id
+          AND submission.operation_id = NEW.operation_id
+     ) THEN
+    RAISE EXCEPTION 'song rating projection disagrees with durable authority';
+  END IF;
+  RETURN NEW;
+END;
 $$;
 
 CREATE FUNCTION enforce_text_rating_ancestry_v1() RETURNS trigger
@@ -4576,7 +4611,7 @@ BEGIN
   IF (NEW.status = 'processing' AND NEW.phase = 'publish') OR NEW.status = 'published' THEN
     SELECT * INTO analysis_record FROM media_analysis_evidence WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id = NEW.submission_id AND operation_id=NEW.operation_id AND analysis_revision = NEW.analysis_revision FOR SHARE;
     SELECT * INTO decision_record FROM media_publication_decisions WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id = NEW.submission_id AND operation_id=NEW.operation_id AND decision_revision = NEW.decision_revision FOR SHARE;
-    IF analysis_record.submission_id IS NULL OR decision_record.submission_id IS NULL OR decision_record.outcome <> 'allow' OR decision_record.creation_revision <> NEW.creation_revision OR decision_record.audio_revision <> NEW.audio_revision OR decision_record.analysis_revision <> NEW.analysis_revision OR decision_record.canonical_audio_sha256 <> analysis_record.canonical_audio_sha256 OR analysis_record.media_safety NOT IN ('allow', 'not_applicable') OR analysis_record.lyrics_safety NOT IN ('not_applicable', 'allow') OR analysis_record.speech_status = 'unavailable' OR COALESCE(analysis_record.explicitness, 'not_applicable') NOT IN ('not_explicit', 'explicit', 'not_applicable') OR (analysis_record.acr_decision = 'inconclusive' AND NOT EXISTS (SELECT 1 FROM media_moderation_actions m WHERE m.community_id=NEW.community_id AND m.actor_user_id=NEW.actor_user_id AND m.submission_id=NEW.submission_id AND m.operation_id=NEW.operation_id AND m.action_id=NEW.moderator_action_id AND m.approval_kind='acr_override' AND m.reason_code IN ('acr_inconclusive','acr_exhausted'))) OR (analysis_record.acr_decision = 'skipped' AND NOT EXISTS (SELECT 1 FROM media_moderation_actions m WHERE m.community_id=NEW.community_id AND m.actor_user_id=NEW.actor_user_id AND m.submission_id=NEW.submission_id AND m.operation_id=NEW.operation_id AND m.action_id=NEW.moderator_action_id AND m.approval_kind='acr_override' AND m.reason_code='acr_skipped')) OR (analysis_record.acr_decision = 'requires_reference' AND NEW.bound_reference_asset_id IS NULL) OR NOT EXISTS (SELECT 1 FROM media_submission_terms WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id = NEW.submission_id AND operation_id=NEW.operation_id AND creation_revision = NEW.creation_revision) THEN RAISE EXCEPTION 'media publication evidence is not ratified'; END IF;
+    IF analysis_record.submission_id IS NULL OR decision_record.submission_id IS NULL OR decision_record.outcome <> 'allow' OR decision_record.creation_revision <> NEW.creation_revision OR decision_record.audio_revision <> NEW.audio_revision OR decision_record.analysis_revision <> NEW.analysis_revision OR decision_record.canonical_audio_sha256 <> analysis_record.canonical_audio_sha256 OR analysis_record.media_safety NOT IN ('allow', 'not_applicable', 'visual_provider_unavailable') OR analysis_record.lyrics_safety NOT IN ('not_applicable', 'allow') OR analysis_record.speech_status = 'unavailable' OR COALESCE(analysis_record.explicitness, 'not_applicable') NOT IN ('not_explicit', 'explicit', 'not_applicable') OR (analysis_record.acr_decision = 'inconclusive' AND NOT EXISTS (SELECT 1 FROM media_moderation_actions m WHERE m.community_id=NEW.community_id AND m.actor_user_id=NEW.actor_user_id AND m.submission_id=NEW.submission_id AND m.operation_id=NEW.operation_id AND m.action_id=NEW.moderator_action_id AND m.approval_kind='acr_override' AND m.reason_code IN ('acr_inconclusive','acr_exhausted'))) OR (analysis_record.acr_decision = 'skipped' AND NOT EXISTS (SELECT 1 FROM media_moderation_actions m WHERE m.community_id=NEW.community_id AND m.actor_user_id=NEW.actor_user_id AND m.submission_id=NEW.submission_id AND m.operation_id=NEW.operation_id AND m.action_id=NEW.moderator_action_id AND m.approval_kind='acr_override' AND m.reason_code='acr_skipped')) OR (analysis_record.acr_decision = 'requires_reference' AND NEW.bound_reference_asset_id IS NULL) OR NOT EXISTS (SELECT 1 FROM media_submission_terms WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id = NEW.submission_id AND operation_id=NEW.operation_id AND creation_revision = NEW.creation_revision) THEN RAISE EXCEPTION 'media publication evidence is not ratified'; END IF;
   END IF;
   IF NEW.status = 'published' THEN
     SELECT * INTO post_record FROM posts WHERE community_id = NEW.community_id AND post_id = NEW.post_id FOR SHARE;
@@ -6101,6 +6136,22 @@ BEGIN
   END IF;
   RETURN NEW;
 END
+$$;
+
+CREATE FUNCTION guard_song_rating_lowering_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF OLD.resulting_content_rating = 'adult_18'
+     AND NEW.resulting_content_rating IS DISTINCT FROM 'adult_18' THEN
+    RAISE EXCEPTION 'song content rating cannot be lowered';
+  END IF;
+  IF NEW.author_declared_rating = 'adult_18'
+     AND NEW.resulting_content_rating IS DISTINCT FROM 'adult_18' THEN
+    RAISE EXCEPTION 'adult author declaration cannot resolve as general';
+  END IF;
+  RETURN NEW;
+END;
 $$;
 
 CREATE FUNCTION guard_song_reward_funding_effect() RETURNS trigger
@@ -11301,7 +11352,7 @@ BEGIN
      OR NEW.canonical_audio_sha256 IS DISTINCT FROM audio_record.canonical_sha256
      OR NEW.audio_asset_ref IS DISTINCT FROM audio_record.immutable_ref
      OR NEW.cover_artifact_ref IS DISTINCT FROM
-        (CASE WHEN analysis_record.cover_status='ready' THEN analysis_record.cover_artifact_ref ELSE NULL END)
+        (CASE WHEN analysis_record.cover_status='ready' AND analysis_record.media_safety='allow' THEN analysis_record.cover_artifact_ref ELSE NULL END)
      OR NEW.language_status IS DISTINCT FROM analysis_record.speech_status
      OR NEW.primary_language_bcp47 IS DISTINCT FROM analysis_record.primary_language_bcp47
      OR NEW.secondary_language_bcp47 IS DISTINCT FROM analysis_record.secondary_language_bcp47
@@ -11431,13 +11482,14 @@ BEGIN
       RAISE EXCEPTION 'royalty allocations do not form an exact author-inclusive 10000 bps split';
     END IF;
   ELSIF TG_TABLE_NAME = 'media_publication_decisions' THEN
-    IF (SELECT array_agg(key ORDER BY key) FROM jsonb_object_keys(NEW.decision_snapshot) AS key) IS DISTINCT FROM ARRAY['analysisRevision','audioRevision','canonicalAudioSha256','creationRevision','decisionRevision','evidenceRef','outcome','policyRevision']::TEXT[] THEN
+    IF (SELECT array_agg(key ORDER BY key) FROM jsonb_object_keys(NEW.decision_snapshot) AS key) IS DISTINCT FROM ARRAY['analysisRevision','audioRevision','canonicalAudioSha256','contentRating','creationRevision','decisionRevision','evidenceRef','outcome','policyRevision']::TEXT[] THEN
       RAISE EXCEPTION 'decision snapshot keys are not exact';
     END IF;
     IF jsonb_typeof(NEW.decision_snapshot->'canonicalAudioSha256') IS DISTINCT FROM 'string'
        OR jsonb_typeof(NEW.decision_snapshot->'outcome') IS DISTINCT FROM 'string'
        OR jsonb_typeof(NEW.decision_snapshot->'policyRevision') IS DISTINCT FROM 'string'
-       OR jsonb_typeof(NEW.decision_snapshot->'evidenceRef') IS DISTINCT FROM 'string' THEN
+       OR jsonb_typeof(NEW.decision_snapshot->'evidenceRef') IS DISTINCT FROM 'string'
+       OR NEW.decision_snapshot->>'contentRating' NOT IN ('general', 'adult_18') THEN
       RAISE EXCEPTION 'decision snapshot scalar types are not exact';
     END IF;
     IF jsonb_typeof(NEW.decision_snapshot->'decisionRevision') IS DISTINCT FROM 'number'
@@ -16165,7 +16217,7 @@ CREATE TABLE media_analysis_evidence (
     CONSTRAINT media_analysis_evidence_embedded_title_provenance_check CHECK ((embedded_title_provenance = ANY (ARRAY['embedded'::text, 'absent'::text]))),
     CONSTRAINT media_analysis_evidence_explicitness_check CHECK (((explicitness IS NULL) OR (explicitness = ANY (ARRAY['not_explicit'::text, 'explicit'::text, 'uncertain'::text])))),
     CONSTRAINT media_analysis_evidence_lyrics_safety_check CHECK ((lyrics_safety = ANY (ARRAY['not_applicable'::text, 'allow'::text, 'review_required'::text, 'blocked'::text]))),
-    CONSTRAINT media_analysis_evidence_media_safety_check CHECK ((media_safety = ANY (ARRAY['not_applicable'::text, 'allow'::text, 'draft'::text, 'review_required'::text, 'blocked'::text]))),
+    CONSTRAINT media_analysis_evidence_media_safety_check CHECK ((media_safety = ANY (ARRAY['not_applicable'::text, 'allow'::text, 'visual_provider_unavailable'::text, 'draft'::text, 'review_required'::text, 'blocked'::text]))),
     CONSTRAINT media_analysis_evidence_probe_evidence_ref_check CHECK ((btrim(probe_evidence_ref) <> ''::text)),
     CONSTRAINT media_analysis_evidence_speech_adapter_revision_check CHECK ((btrim(speech_adapter_revision) <> ''::text)),
     CONSTRAINT media_analysis_evidence_speech_evidence_ref_check CHECK ((btrim(speech_evidence_ref) <> ''::text)),
@@ -16330,10 +16382,13 @@ CREATE TABLE media_post_submissions (
     lyrics_revision bigint DEFAULT 0 NOT NULL,
     current_lyrics_revision bigint,
     workflow_replacement_sequence bigint DEFAULT 0 NOT NULL,
+    author_declared_rating text DEFAULT 'general'::text NOT NULL,
+    resulting_content_rating text DEFAULT 'general'::text NOT NULL,
     CONSTRAINT media_post_submissions_abandonment_reason_check CHECK (((abandonment_reason IS NULL) OR (abandonment_reason = ANY (ARRAY['author_cancelled'::text, 'reservation_expired'::text, 'action_deadline_elapsed'::text, 'upload_expectation_mismatch'::text, 'upload_source_changed_before_finalize'::text])))),
     CONSTRAINT media_post_submissions_action_kind_check CHECK (((action_kind IS NULL) OR (action_kind = 'reference_required'::text))),
     CONSTRAINT media_post_submissions_analysis_revision_check CHECK ((analysis_revision >= 0)),
     CONSTRAINT media_post_submissions_audio_revision_check CHECK ((audio_revision >= 0)),
+    CONSTRAINT media_post_submissions_author_declared_rating_check CHECK ((author_declared_rating = ANY (ARRAY['general'::text, 'adult_18'::text]))),
     CONSTRAINT media_post_submissions_creation_revision_check CHECK ((creation_revision > 0)),
     CONSTRAINT media_post_submissions_decision_revision_check CHECK ((decision_revision >= 0)),
     CONSTRAINT media_post_submissions_endpoint_template_check CHECK ((endpoint_template = '/communities/:communityId/media-post-submissions'::text)),
@@ -16352,6 +16407,7 @@ CREATE TABLE media_post_submissions (
     CONSTRAINT media_post_submissions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT media_post_submissions_response_hash CHECK (((octet_length(response_snapshot_bytes) > 0) AND (encode(sha256(response_snapshot_bytes), 'hex'::text) = response_snapshot_sha256))),
     CONSTRAINT media_post_submissions_response_snapshot_sha256_check CHECK ((response_snapshot_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT media_post_submissions_resulting_content_rating_check CHECK ((resulting_content_rating = ANY (ARRAY['general'::text, 'adult_18'::text]))),
     CONSTRAINT media_post_submissions_retention_disposition_check CHECK (((retention_disposition IS NULL) OR (retention_disposition = ANY (ARRAY['no_object'::text, 'retain_for_reconciliation'::text, 'retain_until_expiry'::text])))),
     CONSTRAINT media_post_submissions_retry_count_check CHECK (((retry_count >= 0) AND (retry_count <= 3))),
     CONSTRAINT media_post_submissions_review_exhaustion_code_check CHECK (((review_exhaustion_code IS NULL) OR (review_exhaustion_code = 'acr_exhausted'::text))),
@@ -16471,17 +16527,21 @@ CREATE TABLE media_publication_projections (
     lyrics_status text DEFAULT 'no_lyrics'::text NOT NULL,
     lyrics_revision bigint,
     lyrics_text text,
+    visibility text DEFAULT 'public'::text NOT NULL,
+    content_rating text DEFAULT 'general'::text NOT NULL,
     CONSTRAINT media_publication_lyrics_shape CHECK ((((lyrics_status = 'ready'::text) AND (lyrics_revision > 0) AND (lyrics_text IS NOT NULL)) OR ((lyrics_status = 'no_lyrics'::text) AND (lyrics_revision IS NULL) AND (lyrics_text IS NULL)))),
     CONSTRAINT media_publication_projections_alignment_check CHECK ((alignment = ANY (ARRAY['not_applicable'::text, 'pending'::text, 'ready'::text, 'unavailable'::text]))),
     CONSTRAINT media_publication_projections_analysis_badges_check CHECK ((analysis_badges = ANY (ARRAY['[]'::jsonb, '["reference_bound"]'::jsonb]))),
     CONSTRAINT media_publication_projections_audio_asset_ref_check CHECK ((btrim(audio_asset_ref) <> ''::text)),
     CONSTRAINT media_publication_projections_canonical_audio_sha256_check CHECK ((canonical_audio_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT media_publication_projections_content_rating_check CHECK ((content_rating = ANY (ARRAY['general'::text, 'adult_18'::text]))),
     CONSTRAINT media_publication_projections_data_registration_check CHECK ((data_registration = ANY (ARRAY['pending'::text, 'registered'::text, 'failed'::text]))),
     CONSTRAINT media_publication_projections_language_status_check CHECK ((language_status = ANY (ARRAY['ready'::text, 'not_applicable'::text, 'unavailable'::text]))),
     CONSTRAINT media_publication_projections_locked_delivery_check CHECK ((locked_delivery = ANY (ARRAY['not_required'::text, 'preparing'::text, 'ready'::text, 'failed'::text]))),
     CONSTRAINT media_publication_projections_lyrics_explicitness_check CHECK ((lyrics_explicitness = ANY (ARRAY['not_explicit'::text, 'explicit'::text, 'not_applicable'::text, 'uncertain'::text, 'unavailable'::text]))),
     CONSTRAINT media_publication_projections_lyrics_status_check CHECK ((lyrics_status = ANY (ARRAY['ready'::text, 'no_lyrics'::text]))),
-    CONSTRAINT media_publication_projections_title_check CHECK ((btrim(title) <> ''::text))
+    CONSTRAINT media_publication_projections_title_check CHECK ((btrim(title) <> ''::text)),
+    CONSTRAINT media_publication_projections_visibility_check CHECK ((visibility = ANY (ARRAY['public'::text, 'members_only'::text])))
 );
 
 CREATE TABLE media_reference_evidence (
@@ -17990,8 +18050,8 @@ CREATE TABLE posts (
     CONSTRAINT posts_comment_count_nonnegative CHECK ((comment_count >= 0)),
     CONSTRAINT posts_downvote_count_nonnegative CHECK ((downvote_count >= 0)),
     CONSTRAINT posts_post_type_check CHECK ((post_type = ANY (ARRAY['text'::text, 'image'::text, 'video'::text, 'link'::text, 'song'::text, 'crosspost'::text, 'file'::text]))),
+    CONSTRAINT posts_rated_content_shape CHECK ((((post_type = ANY (ARRAY['text'::text, 'song'::text])) AND (author_declared_rating = ANY (ARRAY['general'::text, 'adult_18'::text])) AND (content_rating = ANY (ARRAY['general'::text, 'adult_18'::text])) AND ((content_rating = 'adult_18'::text) OR (author_declared_rating = 'general'::text))) OR ((post_type <> ALL (ARRAY['text'::text, 'song'::text])) AND (author_declared_rating IS NULL) AND (content_rating IS NULL)))),
     CONSTRAINT posts_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'processing'::text, 'published'::text, 'failed'::text, 'hidden'::text, 'removed'::text, 'deleted'::text]))),
-    CONSTRAINT posts_text_rating_shape CHECK ((((post_type = 'text'::text) AND (author_declared_rating = ANY (ARRAY['general'::text, 'adult_18'::text])) AND (content_rating = ANY (ARRAY['general'::text, 'adult_18'::text])) AND ((content_rating = 'adult_18'::text) OR (author_declared_rating = 'general'::text))) OR ((post_type <> 'text'::text) AND (author_declared_rating IS NULL) AND (content_rating IS NULL)))),
     CONSTRAINT posts_upvote_count_nonnegative CHECK ((upvote_count >= 0)),
     CONSTRAINT posts_visibility_check CHECK ((visibility = ANY (ARRAY['public'::text, 'members_only'::text])))
 );
@@ -21339,6 +21399,8 @@ CREATE TRIGGER media_persona_lineage_fill BEFORE INSERT ON media_timed_lyrics_ar
 
 CREATE TRIGGER media_persona_lineage_fill BEFORE INSERT ON media_transcript_artifacts FOR EACH ROW EXECUTE FUNCTION populate_media_persona_lineage();
 
+CREATE TRIGGER media_post_submission_rating_guard_v1 BEFORE UPDATE ON media_post_submissions FOR EACH ROW EXECUTE FUNCTION guard_song_rating_lowering_v1();
+
 CREATE TRIGGER media_post_submissions_active_persona BEFORE INSERT ON media_post_submissions FOR EACH ROW EXECUTE FUNCTION require_active_author_persona();
 
 CREATE TRIGGER media_processing_attempt_update_guard BEFORE UPDATE ON media_processing_attempts FOR EACH ROW EXECUTE FUNCTION guard_media_processing_attempt_update();
@@ -21350,6 +21412,8 @@ CREATE TRIGGER media_publication_lyrics_lineage_guard BEFORE INSERT OR UPDATE ON
 CREATE CONSTRAINT TRIGGER media_publication_lyrics_pair AFTER UPDATE ON media_post_submissions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (((old.status = 'processing'::text) AND (old.phase = 'publish'::text) AND (new.status = 'published'::text))) EXECUTE FUNCTION validate_media_publication_lyrics_pair();
 
 CREATE TRIGGER media_publication_projection_insert_guard BEFORE INSERT ON media_publication_projections FOR EACH ROW EXECUTE FUNCTION validate_media_publication_projection_insert_v2();
+
+CREATE CONSTRAINT TRIGGER media_publication_projection_rating_guard_v1 AFTER INSERT OR UPDATE ON media_publication_projections DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION enforce_song_rating_projection_v1();
 
 CREATE TRIGGER media_publication_projection_update_guard BEFORE UPDATE ON media_publication_projections FOR EACH ROW EXECUTE FUNCTION guard_media_publication_projection_update();
 

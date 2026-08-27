@@ -38262,6 +38262,20 @@
                         "minLength": 1
                       }
                     ]
+                  },
+                  "author_declared_rating": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "enum": [
+                          "general",
+                          "adult_18"
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   }
                 },
                 "required": [

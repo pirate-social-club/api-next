@@ -112,7 +112,29 @@ export type TrustedSongAnalysis = Readonly<{
     adapterRevision: string;
   }>;
   lyricsSafety: "not_applicable" | "allow" | "review_required" | "blocked";
-  mediaSafety: "not_applicable" | "allow" | "draft" | "review_required" | "blocked";
+  mediaSafety:
+    | "not_applicable"
+    | "allow"
+    | "visual_provider_unavailable"
+    | "draft"
+    | "review_required"
+    | "blocked";
+  contentModeration?: Readonly<{
+    decision: "allow" | "manual_review" | "blocked";
+    resultingContentRating: "general" | "adult_18";
+    inputSha256: string;
+    matchedCategories: readonly string[];
+    policyRevision: string;
+    platformPolicyRevision: string;
+    communityPolicyRevision: string;
+    evidenceRef: string | null;
+    providerEvidence: Readonly<{
+      providerId: "openai";
+      requestedModel: string;
+      returnedModel: string;
+      inputs: readonly unknown[];
+    }> | null;
+  }>;
   boundReference: BoundReference | null;
 }>;
 export type PublicationDecision = Readonly<{
@@ -125,6 +147,7 @@ export type PublicationDecision = Readonly<{
   canonicalAudioSha256: string;
   policyRevision: string;
   evidenceRef: string;
+  contentRating?: "general" | "adult_18";
 }>;
 export type ProcessingFailureCode =
   | "invalid_media"
@@ -605,6 +628,21 @@ function validAnalysis(analysis: TrustedSongAnalysis, state: MediaSubmissionStat
     !validId(analysis.acr.adapterRevision)
   )
     return false;
+  if (
+    analysis.contentModeration !== undefined &&
+    (!["allow", "manual_review", "blocked"].includes(analysis.contentModeration.decision) ||
+      !["general", "adult_18"].includes(analysis.contentModeration.resultingContentRating) ||
+      !validId(analysis.contentModeration.inputSha256) ||
+      !validId(analysis.contentModeration.policyRevision) ||
+      !validId(analysis.contentModeration.platformPolicyRevision) ||
+      !validId(analysis.contentModeration.communityPolicyRevision) ||
+      (analysis.contentModeration.providerEvidence !== null &&
+        (analysis.contentModeration.providerEvidence.providerId !== "openai" ||
+          !validId(analysis.contentModeration.providerEvidence.requestedModel) ||
+          !validId(analysis.contentModeration.providerEvidence.returnedModel) ||
+          !Array.isArray(analysis.contentModeration.providerEvidence.inputs))))
+  )
+    return false;
   return (
     sameReference(analysis.boundReference, state.boundReference) &&
     (analysis.boundReference === null || validReference(analysis.boundReference, state))
@@ -1078,8 +1116,14 @@ export function transitionMediaSubmission(
         current.analysis.acr.decision === "skipped" ||
         (current.analysis.acr.decision === "requires_reference" &&
           current.boundReference === null) ||
-        !["not_applicable", "allow"].includes(current.analysis.mediaSafety) ||
+        !["not_applicable", "allow", "visual_provider_unavailable"].includes(
+          current.analysis.mediaSafety,
+        ) ||
         !["not_applicable", "allow"].includes(current.analysis.lyricsSafety) ||
+        (current.analysis.contentModeration !== undefined &&
+          (current.analysis.contentModeration.decision !== "allow" ||
+            command.decision.contentRating !==
+              current.analysis.contentModeration.resultingContentRating)) ||
         current.analysis.lyricsAnalysis.status === "unavailable" ||
         (current.analysis.lyricsAnalysis.status === "ready" &&
           !["not_explicit", "explicit"].includes(current.analysis.lyricsAnalysis.explicitness)) ||
@@ -1217,7 +1261,9 @@ export function transitionMediaSubmission(
         command.decision.lyricsRevision !== (current.lyrics?.lyricsRevision ?? null) ||
         command.decision.canonicalAudioSha256 !== current.audio.canonicalSha256 ||
         command.decision.decisionRevision !== current.decisionRevision + 1 ||
-        !["not_applicable", "allow"].includes(current.analysis.mediaSafety) ||
+        !["not_applicable", "allow", "visual_provider_unavailable"].includes(
+          current.analysis.mediaSafety,
+        ) ||
         !["not_applicable", "allow"].includes(current.analysis.lyricsSafety) ||
         current.analysis.lyricsAnalysis.status === "unavailable" ||
         (current.analysis.lyricsAnalysis.status === "ready" &&

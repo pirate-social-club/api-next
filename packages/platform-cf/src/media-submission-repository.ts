@@ -69,7 +69,7 @@ const trustedAnalysisSnapshot = (analysis: TrustedSongAnalysis): unknown => ({
 });
 const publicationDecisionSnapshot = (decision: PublicationDecision): unknown => {
   const { lyricsRevision: _, ...snapshot } = decision;
-  return snapshot;
+  return { ...snapshot, contentRating: snapshot.contentRating ?? "general" };
 };
 export const RESERVATION_ENDPOINT = "/communities/:communityId/media-upload-reservations";
 export const SUBMISSION_ENDPOINT = "/communities/:communityId/media-post-submissions";
@@ -170,6 +170,7 @@ export type SubmissionInput = Readonly<{
   requestHash: string;
   title: string;
   songType: SongType;
+  authorDeclaredRating?: "general" | "adult_18";
   reservationId: string;
   submissionId?: string;
   operationId?: string;
@@ -1362,7 +1363,7 @@ export function makeControlPlaneMediaSubmissionRepository(
           } satisfies MediaSubmissionState;
           const inserted = yield* tx.execute({
             label: "media-submission.create",
-            text: "INSERT INTO media_post_submissions (submission_id,community_id,actor_user_id,author_persona_id,operation_id,idempotency_key,request_hash,title,song_type,phase,start_input,audio_reservation_id,response_snapshot_bytes,response_snapshot_sha256) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'reserve',$10::jsonb,$11,$12,$13)",
+            text: "INSERT INTO media_post_submissions (submission_id,community_id,actor_user_id,author_persona_id,operation_id,idempotency_key,request_hash,title,song_type,author_declared_rating,resulting_content_rating,phase,start_input,audio_reservation_id,response_snapshot_bytes,response_snapshot_sha256) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10,'reserve',$11::jsonb,$12,$13,$14)",
             values: [
               submissionId,
               input.communityId,
@@ -1373,12 +1374,14 @@ export function makeControlPlaneMediaSubmissionRepository(
               input.requestHash,
               input.title,
               input.songType,
+              input.authorDeclaredRating ?? "general",
               json({
                 version: "song-start-input-v1",
                 title: input.title,
                 audio_reservation_id: input.reservationId,
                 song_type: input.songType,
                 persona_id: personaId,
+                author_declared_rating: input.authorDeclaredRating ?? "general",
               }),
               input.reservationId,
               ...snapshot(input),
@@ -2197,12 +2200,13 @@ export function makeControlPlaneMediaSubmissionRepository(
               : [null, null, null];
           const updated = yield* tx.execute<Row>({
             label: "media-decision.project",
-            text: "UPDATE media_post_submissions SET decision_revision=$1,current_decision_revision=$1,status=$2,phase=$3,review_ref=$4,held_revision=$5,review_reason_code=$6,review_exhaustion_code=NULL,review_exhaustion_attempt_id=NULL,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$7 AND actor_user_id=$8 AND submission_id=$9 AND creation_revision=$10 AND audio_revision=$11 AND analysis_revision=$12 RETURNING event_sequence",
+            text: "UPDATE media_post_submissions SET decision_revision=$1,current_decision_revision=$1,status=$2,phase=$3,review_ref=$4,held_revision=$5,review_reason_code=$6,review_exhaustion_code=NULL,review_exhaustion_attempt_id=NULL,resulting_content_rating=$7,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$8 AND actor_user_id=$9 AND submission_id=$10 AND creation_revision=$11 AND audio_revision=$12 AND analysis_revision=$13 RETURNING event_sequence",
             values: [
               next.decisionRevision,
               next.status,
               next.phase,
               ...reviewValues,
+              input.decision.contentRating ?? "general",
               current.communityId,
               current.actorId,
               current.submissionId,
@@ -2936,7 +2940,7 @@ export function makeControlPlaneMediaSubmissionRepository(
           if (existing.rows.length === 0) {
             yield* tx.execute({
               label: "media-publish.post.insert",
-              text: "INSERT INTO posts (community_id,post_id,author_user_id,post_type,status,visibility,title,created_at,updated_at,idempotency_key,idempotency_body_hash,author_persona_id) VALUES ($1,$2,$3,'song','published','public',$4,clock_timestamp(),clock_timestamp(),$5,$6,$7)",
+              text: "INSERT INTO posts (community_id,post_id,author_user_id,post_type,status,visibility,title,created_at,updated_at,idempotency_key,idempotency_body_hash,author_persona_id,author_declared_rating,content_rating) VALUES ($1,$2,$3,'song','published','public',$4,clock_timestamp(),clock_timestamp(),$5,$6,$7,(SELECT author_declared_rating FROM media_post_submissions WHERE submission_id=$8),$9)",
               values: [
                 current.communityId,
                 ownedPostId,
@@ -2945,6 +2949,8 @@ export function makeControlPlaneMediaSubmissionRepository(
                 input.idempotencyKey,
                 input.requestHash,
                 current.personaId,
+                current.submissionId,
+                current.decision?.contentRating ?? "general",
               ],
               readonly: false,
             });
@@ -2986,7 +2992,7 @@ export function makeControlPlaneMediaSubmissionRepository(
           const cover = current.analysis.embeddedMetadata.cover;
           yield* tx.execute({
             label: "media-publish.projection",
-            text: "INSERT INTO media_publication_projections (submission_id,community_id,actor_user_id,operation_id,post_id,creation_revision,audio_revision,analysis_revision,decision_revision,canonical_audio_sha256,title,audio_asset_ref,cover_artifact_ref,language_status,primary_language_bcp47,secondary_language_bcp47,lyrics_explicitness,analysis_badges,author_persona_id,lyrics_status,lyrics_revision,lyrics_text,alignment) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb,$19,$20,$21,$22,$23)",
+            text: "INSERT INTO media_publication_projections (submission_id,community_id,actor_user_id,operation_id,post_id,creation_revision,audio_revision,analysis_revision,decision_revision,canonical_audio_sha256,title,audio_asset_ref,cover_artifact_ref,language_status,primary_language_bcp47,secondary_language_bcp47,lyrics_explicitness,analysis_badges,author_persona_id,lyrics_status,lyrics_revision,lyrics_text,alignment,content_rating) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb,$19,$20,$21,$22,$23,$24)",
             values: [
               current.submissionId,
               current.communityId,
@@ -3000,7 +3006,9 @@ export function makeControlPlaneMediaSubmissionRepository(
               current.audio.canonicalSha256,
               current.title,
               current.audio.immutableRef,
-              cover.status === "ready" ? cover.artifactRef : null,
+              cover.status === "ready" && current.analysis.mediaSafety === "allow"
+                ? cover.artifactRef
+                : null,
               lyricsAnalysis.status,
               lyricsAnalysis.status === "ready" ? lyricsAnalysis.primaryLanguageBcp47 : null,
               lyricsAnalysis.status === "ready" ? lyricsAnalysis.secondaryLanguageBcp47 : null,
@@ -3013,6 +3021,7 @@ export function makeControlPlaneMediaSubmissionRepository(
               current.lyrics?.lyricsRevision ?? null,
               current.lyrics?.text ?? null,
               current.lyrics === null ? "not_applicable" : "pending",
+              current.decision?.contentRating ?? "general",
             ],
             readonly: false,
           });

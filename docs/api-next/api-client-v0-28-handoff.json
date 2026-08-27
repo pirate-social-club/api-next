@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.28.0",
+  "releaseType": "song-ratings-and-age-access-v1",
+  "wireContract": "spec-010-section-4-spec-013-section-7-media-track",
+  "sourceCommit": "pending-review",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.28.0.tgz",
+    "sha256": "79fc214f9badfc828acdc8858d6b16fb6c9955f8deb39c078a4671b425644702",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@dd75916e11c0180c7cce59cafdb4f457d8e30fd2ec095d5566ca9d7fb8885ec9",
+    "openapiSha256": "dd75916e11c0180c7cce59cafdb4f457d8e30fd2ec095d5566ca9d7fb8885ec9",
+    "clientSha256": "8185c1536a88e472eebc348252887387b35b573cbb927aecb4d54e83f05c256a"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "authorized",
+      "baselineCommit": "c0af8c8",
+      "reason": "Ratified specs 010 and 013 require author-declared song ratings and viewer-scoped song access."
+    },
+    "focusedPostgresSuites": "Postgres 17 generated baseline applied successfully; full repository suite pending CI",
+    "fullUnitSuite": "1993 passed, 297 database-gated tests skipped, 0 failed",
+    "fullWorkerdSuite": "90 passed, 0 failed",
+    "packageVerifier": "passed",
+    "repositoryCheck": "passed"
+  }
+}

@@ -65,6 +65,7 @@
     "0062_global_pirate_handle_cleanup_rename.sql": "c1ff78018c39632d8f36637a3b5b46d9a788b1d120f5777d4b129168314f1ea5",
     "0063_community_moderation_owner_runtime.sql": "5bfb22c32a6bc7d7fcaa92bd4297cbb919a48c41d6ea7699f4b4edbd21da7abe",
     "0064_media_persona_recipient_trigger.sql": "6fff6043e2236061e77f3b87ee312ec6cca98a5dc9e2228660f38b6cedbae015",
-    "0065_text_ratings_age_access.sql": "29cc1bad5973a01647fd74000d4feaf10dcd0a1077ebe7af4dc50cc805e9e065"
+    "0065_text_ratings_age_access.sql": "29cc1bad5973a01647fd74000d4feaf10dcd0a1077ebe7af4dc50cc805e9e065",
+    "0066_song_ratings_age_access.sql": "2a62aed69cabd1f7786aa3d6f5baf8cd3b555320c67bf850b199211d4c0fe09f"
   }
 }
