@@ -326,7 +326,16 @@ export const deterministicDataRegistrationOperationId = (
 export const deterministicDataRegistrationWorkflowId = (
   operationId: string,
   workflowRevision: bigint,
-): string => `data-registration-workflow:${operationId}:r${workflowRevision}`;
+): string => {
+  const operationIdentity = operationId.startsWith("data-registration:")
+    ? operationId.slice("data-registration:".length)
+    : operationId;
+  const workflowId = `drw-${operationIdentity.replaceAll(":", "-")}-r${workflowRevision}`;
+  if (workflowId.length > 100 || !/^[a-zA-Z0-9_][a-zA-Z0-9-_]*$/u.test(workflowId)) {
+    throw new TypeError("DATA registration Workflow identity exceeds the provider boundary");
+  }
+  return workflowId;
+};
 
 export const deterministicDataRegistrationOutboxId = (
   operationId: string,
