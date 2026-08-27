@@ -6593,6 +6593,24 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION initialize_platform_pirate_identity_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $_$
+BEGIN
+  IF NEW.status = 'active' THEN
+    INSERT INTO platform_pirate_handles (
+      platform_handle_id,actor_account_id,owner_persona_id,generation,
+      active_handle_id,cleanup_rename_consumed,created_at,updated_at
+    ) VALUES (
+      NEW.platform_handle_id,NEW.owner_user_id,NEW.owner_persona_id,NEW.generation,
+      NEW.handle_id,NEW.label_normalized !~ '^new-[0-9a-f]{20}$',NEW.created_at,NEW.updated_at
+    )
+    ON CONFLICT (platform_handle_id) DO NOTHING;
+  END IF;
+  RETURN NEW;
+END;
+$_$;
+
 CREATE FUNCTION is_hns_host_persistence_identity(input_value text, maximum_bytes integer) RETURNS boolean
     LANGUAGE sql IMMUTABLE
     AS $$
@@ -6802,6 +6820,33 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION prepare_platform_pirate_label_insert_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  target public_handle_index%ROWTYPE;
+BEGIN
+  IF NEW.platform_handle_id IS NULL THEN
+    IF NEW.status = 'redirect' THEN
+      SELECT * INTO target
+        FROM public_handle_index
+       WHERE handle_id=NEW.redirect_target_handle_id;
+      IF target.handle_id IS NULL THEN
+        NEW.platform_handle_id := NEW.handle_id;
+        NEW.generation := 1;
+        RETURN NEW;
+      END IF;
+      NEW.platform_handle_id := target.platform_handle_id;
+      NEW.generation := GREATEST(1, target.generation - 1);
+    ELSE
+      NEW.platform_handle_id := NEW.handle_id;
+      NEW.generation := 1;
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION prevent_persona_create_action_change() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -6835,6 +6880,53 @@ CREATE FUNCTION prevent_persona_profile_delete() RETURNS trigger
 BEGIN
   RAISE EXCEPTION 'persona profile cannot be deleted';
 END
+$$;
+
+CREATE FUNCTION prevent_platform_pirate_identity_rewrite_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'platform Pirate identity cannot be deleted';
+  END IF;
+  IF NEW.platform_handle_id IS DISTINCT FROM OLD.platform_handle_id
+     OR NEW.actor_account_id IS DISTINCT FROM OLD.actor_account_id
+     OR NEW.owner_persona_id IS DISTINCT FROM OLD.owner_persona_id
+     OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+    RAISE EXCEPTION 'platform Pirate identity ownership is immutable';
+  END IF;
+  IF NEW.generation < OLD.generation
+     OR (OLD.cleanup_rename_consumed AND NOT NEW.cleanup_rename_consumed) THEN
+    RAISE EXCEPTION 'platform Pirate identity state is append-only';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION prevent_platform_pirate_label_rewrite_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'platform Pirate label history cannot be deleted';
+  END IF;
+  IF NEW.handle_id IS DISTINCT FROM OLD.handle_id
+     OR NEW.platform_handle_id IS DISTINCT FROM OLD.platform_handle_id
+     OR NEW.owner_user_id IS DISTINCT FROM OLD.owner_user_id
+     OR NEW.owner_persona_id IS DISTINCT FROM OLD.owner_persona_id
+     OR NEW.label_normalized IS DISTINCT FROM OLD.label_normalized
+     OR NEW.label_display IS DISTINCT FROM OLD.label_display
+     OR NEW.generation IS DISTINCT FROM OLD.generation
+     OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+    RAISE EXCEPTION 'platform Pirate label identity is immutable';
+  END IF;
+  IF OLD.status <> 'active'
+     AND current_setting('pirate.platform_handle_rename', true) IS DISTINCT FROM 'on'
+     AND NEW IS DISTINCT FROM OLD THEN
+    RAISE EXCEPTION 'historical platform Pirate label is immutable';
+  END IF;
+  RETURN NEW;
+END;
 $$;
 
 CREATE FUNCTION project_megapot_pool_share_from_qualification() RETURNS trigger
@@ -7208,31 +7300,26 @@ BEGIN
       FROM public_handle_index AS target
      WHERE target.handle_id = NEW.redirect_target_handle_id
        AND target.status = 'active'
+       AND target.owner_user_id = NEW.owner_user_id
        AND target.owner_persona_id = NEW.owner_persona_id
-       AND target.handle_id <> NEW.handle_id
+       AND target.platform_handle_id = NEW.platform_handle_id
   ) THEN
-    RAISE EXCEPTION 'public handle redirect target is not an active handle owned by the same persona'
+    RAISE EXCEPTION 'redirect target must be the direct active label for the same stable identity'
       USING ERRCODE = '23514', CONSTRAINT = 'public_handle_index_redirect_integrity';
   END IF;
-
-  IF EXISTS (
+  IF NEW.status = 'active' AND EXISTS (
     SELECT 1
       FROM public_handle_index AS source
-     WHERE source.status = 'redirect'
-       AND source.redirect_target_handle_id = NEW.handle_id
-       AND NOT EXISTS (
-         SELECT 1
-           FROM public_handle_index AS target
-          WHERE target.handle_id = source.redirect_target_handle_id
-            AND target.status = 'active'
-            AND target.owner_persona_id = source.owner_persona_id
-            AND target.handle_id <> source.handle_id
+     WHERE source.redirect_target_handle_id = NEW.handle_id
+       AND (
+         source.owner_user_id <> NEW.owner_user_id
+         OR source.owner_persona_id <> NEW.owner_persona_id
+         OR source.platform_handle_id <> NEW.platform_handle_id
        )
   ) THEN
-    RAISE EXCEPTION 'public handle redirect source points at an invalid target'
+    RAISE EXCEPTION 'active target has a cross-identity redirect'
       USING ERRCODE = '23514', CONSTRAINT = 'public_handle_index_redirect_integrity';
   END IF;
-
   RETURN NEW;
 END;
 $$;
@@ -7975,17 +8062,14 @@ CREATE FUNCTION track_handle_platform_label_footprint_v1() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
+  IF current_setting('pirate.platform_handle_rename', true) = 'on' THEN
+    RETURN NEW;
+  END IF;
   IF TG_OP = 'INSERT' THEN
-    PERFORM advance_handle_persona_public_linkage_v1(
-      NEW.owner_persona_id,
-      NEW.updated_at
-    );
+    PERFORM ensure_handle_persona_public_footprint_v1(NEW.owner_persona_id, NEW.updated_at);
   ELSIF ROW(NEW.label_normalized, NEW.status, NEW.redirect_target_handle_id)
       IS DISTINCT FROM ROW(OLD.label_normalized, OLD.status, OLD.redirect_target_handle_id) THEN
-    PERFORM advance_handle_persona_public_linkage_v1(
-      NEW.owner_persona_id,
-      NEW.updated_at
-    );
+    PERFORM advance_handle_persona_public_linkage_v1(NEW.owner_persona_id, NEW.updated_at);
   END IF;
   RETURN NEW;
 END;
@@ -16962,6 +17046,76 @@ CREATE TABLE platform_operator_route_authority_grants (
     CONSTRAINT platform_operator_route_authority_grants_status_shape CHECK ((((status = 'active'::text) AND (revoked_at IS NULL) AND (revoked_by_operator_principal_id IS NULL)) OR ((status = 'revoked'::text) AND (revoked_at IS NOT NULL) AND (btrim(revoked_by_operator_principal_id) <> ''::text))))
 );
 
+CREATE TABLE platform_pirate_handle_rate_submissions (
+    submission_id bigint NOT NULL,
+    actor_account_id text NOT NULL,
+    operation text NOT NULL,
+    submitted_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT platform_pirate_handle_rate_submissions_operation_check CHECK ((operation = ANY (ARRAY['availability'::text, 'rename'::text])))
+);
+
+ALTER TABLE platform_pirate_handle_rate_submissions ALTER COLUMN submission_id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME platform_pirate_handle_rate_submissions_submission_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+CREATE TABLE platform_pirate_handle_rename_actions (
+    actor_account_id text NOT NULL,
+    endpoint_template text DEFAULT '/platform-pirate-handles/rename'::text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    platform_handle_id text NOT NULL,
+    owner_persona_id text NOT NULL,
+    response_json jsonb NOT NULL,
+    transition_hash text NOT NULL,
+    committed_at timestamp with time zone NOT NULL,
+    CONSTRAINT platform_pirate_handle_rename_actions_endpoint_template_check CHECK ((endpoint_template = '/platform-pirate-handles/rename'::text)),
+    CONSTRAINT platform_pirate_handle_rename_actions_idempotency_key_check CHECK (((btrim(idempotency_key) <> ''::text) AND (idempotency_key = btrim(idempotency_key)) AND (octet_length(idempotency_key) <= 128))),
+    CONSTRAINT platform_pirate_handle_rename_actions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT platform_pirate_handle_rename_actions_transition_hash_check CHECK ((transition_hash ~ '^[0-9a-f]{64}$'::text))
+);
+
+CREATE TABLE platform_pirate_handles (
+    platform_handle_id text NOT NULL,
+    actor_account_id text NOT NULL,
+    owner_persona_id text NOT NULL,
+    generation bigint NOT NULL,
+    active_handle_id text NOT NULL,
+    cleanup_rename_consumed boolean NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    updated_at timestamp with time zone NOT NULL,
+    CONSTRAINT platform_pirate_handle_time_order CHECK ((updated_at >= created_at)),
+    CONSTRAINT platform_pirate_handles_generation_check CHECK (((generation >= 1) AND (generation <= '9007199254740991'::bigint)))
+);
+
+CREATE TABLE platform_pirate_label_policy_revisions (
+    label_policy_revision bigint NOT NULL,
+    label_policy_id text NOT NULL,
+    label_policy_hash text NOT NULL,
+    reserved_labels_id text NOT NULL,
+    reserved_labels_revision bigint NOT NULL,
+    reserved_labels_hash text NOT NULL,
+    confusability_policy_id text NOT NULL,
+    confusability_policy_revision bigint NOT NULL,
+    confusability_policy_hash text NOT NULL,
+    exact_labels text[] NOT NULL,
+    reserved_prefixes text[] NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT platform_pirate_label_policy_confusability_policy_revisio_check CHECK ((confusability_policy_revision > 0)),
+    CONSTRAINT platform_pirate_label_policy_re_confusability_policy_hash_check CHECK ((confusability_policy_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT platform_pirate_label_policy_rev_reserved_labels_revision_check CHECK ((reserved_labels_revision > 0)),
+    CONSTRAINT platform_pirate_label_policy_revi_confusability_policy_id_check CHECK ((confusability_policy_id = 'pirate_ascii_skeleton_v1'::text)),
+    CONSTRAINT platform_pirate_label_policy_revisi_label_policy_revision_check CHECK ((label_policy_revision > 0)),
+    CONSTRAINT platform_pirate_label_policy_revisio_reserved_labels_hash_check CHECK ((reserved_labels_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT platform_pirate_label_policy_revisions_label_policy_hash_check CHECK ((label_policy_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT platform_pirate_label_policy_revisions_label_policy_id_check CHECK ((label_policy_id = 'pirate_ascii_ldh_3_32_v1'::text)),
+    CONSTRAINT platform_pirate_label_policy_revisions_reserved_labels_id_check CHECK ((reserved_labels_id = 'pirate_platform_reserved_labels_v1'::text))
+);
+
 CREATE TABLE platform_referral_revenue_ledger (
     revenue_entry_id text NOT NULL,
     attestation_id text NOT NULL,
@@ -17174,12 +17328,19 @@ CREATE TABLE public_handle_index (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     owner_persona_id text NOT NULL,
+    platform_handle_id text NOT NULL,
+    generation bigint NOT NULL,
+    confusability_key text GENERATED ALWAYS AS (translate(replace(label_normalized, '-'::text, ''::text), '013457'::text, 'oleast'::text)) STORED,
+    rename_transition_hash text,
     CONSTRAINT public_handle_index_display_not_blank CHECK ((btrim(label_display) <> ''::text)),
+    CONSTRAINT public_handle_index_generation_positive CHECK (((generation >= 1) AND (generation <= '9007199254740991'::bigint))),
     CONSTRAINT public_handle_index_label_format_check CHECK (((label_normalized ~ '^[a-z0-9]+(-[a-z0-9]+)*$'::text) AND (label_display = (label_normalized || '.pirate'::text)))),
     CONSTRAINT public_handle_index_label_not_blank CHECK ((btrim(label_normalized) <> ''::text)),
     CONSTRAINT public_handle_index_not_self_redirect CHECK (((redirect_target_handle_id IS NULL) OR (redirect_target_handle_id <> handle_id))),
+    CONSTRAINT public_handle_index_platform_id_shape CHECK (((btrim(platform_handle_id) <> ''::text) AND (platform_handle_id = btrim(platform_handle_id)) AND (octet_length(platform_handle_id) <= 256))),
     CONSTRAINT public_handle_index_status_check CHECK ((status = ANY (ARRAY['active'::text, 'redirect'::text, 'retired'::text]))),
-    CONSTRAINT public_handle_index_status_target_check CHECK ((((status = 'active'::text) AND (redirect_target_handle_id IS NULL)) OR ((status = 'redirect'::text) AND (redirect_target_handle_id IS NOT NULL)) OR ((status = 'retired'::text) AND (redirect_target_handle_id IS NULL))))
+    CONSTRAINT public_handle_index_status_target_check CHECK ((((status = 'active'::text) AND (redirect_target_handle_id IS NULL)) OR ((status = 'redirect'::text) AND (redirect_target_handle_id IS NOT NULL)) OR ((status = 'retired'::text) AND (redirect_target_handle_id IS NULL)))),
+    CONSTRAINT public_handle_index_transition_hash_shape CHECK (((rename_transition_hash IS NULL) OR (rename_transition_hash ~ '^[0-9a-f]{64}$'::text)))
 );
 
 CREATE TABLE qualification_policy_versions (
@@ -19298,6 +19459,36 @@ ALTER TABLE ONLY personas
 ALTER TABLE ONLY platform_operator_route_authority_grants
     ADD CONSTRAINT platform_operator_route_authority_grants_pkey PRIMARY KEY (grant_id);
 
+ALTER TABLE ONLY platform_pirate_handle_rate_submissions
+    ADD CONSTRAINT platform_pirate_handle_rate_submissions_pkey PRIMARY KEY (submission_id);
+
+ALTER TABLE ONLY platform_pirate_handle_rename_actions
+    ADD CONSTRAINT platform_pirate_handle_rename_actions_pkey PRIMARY KEY (actor_account_id, endpoint_template, idempotency_key);
+
+ALTER TABLE ONLY platform_pirate_handles
+    ADD CONSTRAINT platform_pirate_handles_active_handle_id_key UNIQUE (active_handle_id);
+
+ALTER TABLE ONLY platform_pirate_handles
+    ADD CONSTRAINT platform_pirate_handles_actor_account_id_key UNIQUE (actor_account_id);
+
+ALTER TABLE ONLY platform_pirate_handles
+    ADD CONSTRAINT platform_pirate_handles_owner_persona_id_key UNIQUE (owner_persona_id);
+
+ALTER TABLE ONLY platform_pirate_handles
+    ADD CONSTRAINT platform_pirate_handles_pkey PRIMARY KEY (platform_handle_id);
+
+ALTER TABLE ONLY platform_pirate_label_policy_revisions
+    ADD CONSTRAINT platform_pirate_label_policy__confusability_policy_id_confu_key UNIQUE (confusability_policy_id, confusability_policy_revision);
+
+ALTER TABLE ONLY platform_pirate_label_policy_revisions
+    ADD CONSTRAINT platform_pirate_label_policy__reserved_labels_id_reserved_l_key UNIQUE (reserved_labels_id, reserved_labels_revision);
+
+ALTER TABLE ONLY platform_pirate_label_policy_revisions
+    ADD CONSTRAINT platform_pirate_label_policy_revisions_label_policy_hash_key UNIQUE (label_policy_hash);
+
+ALTER TABLE ONLY platform_pirate_label_policy_revisions
+    ADD CONSTRAINT platform_pirate_label_policy_revisions_pkey PRIMARY KEY (label_policy_revision);
+
 ALTER TABLE ONLY platform_referral_revenue_ledger
     ADD CONSTRAINT platform_referral_revenue_led_attestation_id_ticket_id_reve_key UNIQUE (attestation_id, ticket_id, revenue_kind);
 
@@ -19814,6 +20005,8 @@ CREATE UNIQUE INDEX personas_one_first_per_account_uidx ON personas USING btree 
 
 CREATE UNIQUE INDEX platform_operator_route_authority_grants_active_uidx ON platform_operator_route_authority_grants USING btree (operator_principal_id, authority) WHERE (status = 'active'::text);
 
+CREATE INDEX platform_pirate_handle_rate_account_operation_idx ON platform_pirate_handle_rate_submissions USING btree (actor_account_id, operation, submitted_at DESC);
+
 CREATE INDEX post_vote_actions_target_time_idx ON post_vote_actions USING btree (community_id, post_id, created_at, action_id);
 
 CREATE INDEX post_votes_post_idx ON post_votes USING btree (community_id, post_id, updated_at DESC, post_vote_id);
@@ -19832,11 +20025,19 @@ CREATE INDEX proof_sessions_actor_status_idx ON proof_sessions USING btree (acto
 
 CREATE UNIQUE INDEX proof_sessions_provider_ref_uidx ON proof_sessions USING btree (provider_id, upstream_session_ref) WHERE (upstream_session_ref IS NOT NULL);
 
+CREATE UNIQUE INDEX public_handle_index_confusability_key_uidx ON public_handle_index USING btree (confusability_key COLLATE "C");
+
 CREATE UNIQUE INDEX public_handle_index_label_normalized_uidx ON public_handle_index USING btree (label_normalized);
+
+CREATE UNIQUE INDEX public_handle_index_one_active_platform_uidx ON public_handle_index USING btree (platform_handle_id) WHERE (status = 'active'::text);
 
 CREATE INDEX public_handle_index_owner_status_idx ON public_handle_index USING btree (owner_user_id, status, updated_at DESC);
 
 CREATE INDEX public_handle_index_persona_status_idx ON public_handle_index USING btree (owner_persona_id, status, updated_at DESC);
+
+CREATE INDEX public_handle_index_platform_generation_idx ON public_handle_index USING btree (platform_handle_id, generation);
+
+CREATE INDEX public_handle_index_platform_status_idx ON public_handle_index USING btree (platform_handle_id, status, generation DESC);
 
 CREATE INDEX public_handle_index_redirect_target_idx ON public_handle_index USING btree (redirect_target_handle_id) WHERE (status = 'redirect'::text);
 
@@ -20525,6 +20726,14 @@ CREATE TRIGGER personas_identity_immutable BEFORE DELETE OR UPDATE ON personas F
 CREATE CONSTRAINT TRIGGER personas_wallet_activation_invariant AFTER INSERT OR UPDATE OF status ON personas DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_persona_wallet_activation();
 
 CREATE TRIGGER platform_operator_route_authority_grants_change_guard BEFORE UPDATE ON platform_operator_route_authority_grants FOR EACH ROW EXECUTE FUNCTION guard_platform_operator_route_authority_grant_change();
+
+CREATE TRIGGER platform_pirate_identity_immutable BEFORE DELETE OR UPDATE ON platform_pirate_handles FOR EACH ROW EXECUTE FUNCTION prevent_platform_pirate_identity_rewrite_v1();
+
+CREATE TRIGGER platform_pirate_identity_initialize AFTER INSERT ON public_handle_index FOR EACH ROW EXECUTE FUNCTION initialize_platform_pirate_identity_v1();
+
+CREATE TRIGGER platform_pirate_label_immutable BEFORE DELETE OR UPDATE ON public_handle_index FOR EACH ROW EXECUTE FUNCTION prevent_platform_pirate_label_rewrite_v1();
+
+CREATE TRIGGER platform_pirate_label_insert_defaults BEFORE INSERT ON public_handle_index FOR EACH ROW EXECUTE FUNCTION prepare_platform_pirate_label_insert_v1();
 
 CREATE TRIGGER platform_referral_revenue_append_only BEFORE DELETE OR UPDATE ON platform_referral_revenue_ledger FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
 
@@ -22082,6 +22291,27 @@ ALTER TABLE ONLY persona_wallet_preparation_replays
 ALTER TABLE ONLY personas
     ADD CONSTRAINT personas_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
 
+ALTER TABLE ONLY platform_pirate_handle_rate_submissions
+    ADD CONSTRAINT platform_pirate_handle_rate_submissions_actor_account_id_fkey FOREIGN KEY (actor_account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY platform_pirate_handle_rename_actions
+    ADD CONSTRAINT platform_pirate_handle_rename_actions_actor_account_id_fkey FOREIGN KEY (actor_account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY platform_pirate_handle_rename_actions
+    ADD CONSTRAINT platform_pirate_handle_rename_actions_platform_handle_id_fkey FOREIGN KEY (platform_handle_id) REFERENCES platform_pirate_handles(platform_handle_id);
+
+ALTER TABLE ONLY platform_pirate_handle_rename_actions
+    ADD CONSTRAINT platform_pirate_handle_rename_actor_account_id_owner_perso_fkey FOREIGN KEY (actor_account_id, owner_persona_id) REFERENCES personas(account_id, persona_id);
+
+ALTER TABLE ONLY platform_pirate_handles
+    ADD CONSTRAINT platform_pirate_handles_active_handle_id_fkey FOREIGN KEY (active_handle_id) REFERENCES public_handle_index(handle_id) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY platform_pirate_handles
+    ADD CONSTRAINT platform_pirate_handles_actor_account_id_fkey FOREIGN KEY (actor_account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY platform_pirate_handles
+    ADD CONSTRAINT platform_pirate_handles_actor_account_id_owner_persona_id_fkey FOREIGN KEY (actor_account_id, owner_persona_id) REFERENCES personas(account_id, persona_id);
+
 ALTER TABLE ONLY platform_referral_revenue_ledger
     ADD CONSTRAINT platform_referral_revenue_ledger_attestation_id_fkey FOREIGN KEY (attestation_id) REFERENCES megapot_deployment_attestations(attestation_id);
 
@@ -22144,6 +22374,9 @@ ALTER TABLE ONLY public_handle_index
 
 ALTER TABLE ONLY public_handle_index
     ADD CONSTRAINT public_handle_index_owner_persona_fk FOREIGN KEY (owner_user_id, owner_persona_id) REFERENCES personas(account_id, persona_id);
+
+ALTER TABLE ONLY public_handle_index
+    ADD CONSTRAINT public_handle_index_platform_identity_fk FOREIGN KEY (platform_handle_id) REFERENCES platform_pirate_handles(platform_handle_id) DEFERRABLE INITIALLY DEFERRED;
 
 ALTER TABLE ONLY public_handle_index
     ADD CONSTRAINT public_handle_index_redirect_fk FOREIGN KEY (redirect_target_handle_id) REFERENCES public_handle_index(handle_id) DEFERRABLE INITIALLY DEFERRED;

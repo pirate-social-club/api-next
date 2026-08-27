@@ -11,6 +11,7 @@ import { Effect, type Layer } from "effect";
 
 type HandleRow = Readonly<{
   handle_id: unknown;
+  platform_handle_id: unknown;
   label_normalized: unknown;
   label_display: unknown;
   status: unknown;
@@ -30,7 +31,8 @@ type PersonaProfileRow = Readonly<{
 }>;
 
 type ParsedHandle = Readonly<{
-  handleId: string;
+  physicalHandleId: string;
+  platformHandleId: string;
   labelNormalized: string;
   labelDisplay: string;
   status: "active" | "redirect";
@@ -47,6 +49,7 @@ const validId = (value: unknown): value is string =>
 const parseHandle = (row: HandleRow): ParsedHandle | null => {
   if (
     !validId(row.handle_id) ||
+    !validId(row.platform_handle_id) ||
     !validId(row.label_normalized) ||
     !validId(row.label_display) ||
     !validId(row.owner_persona_id) ||
@@ -66,7 +69,8 @@ const parseHandle = (row: HandleRow): ParsedHandle | null => {
   if (row.status === "redirect" && !validId(target)) return null;
   const targetId = target === null ? null : validId(target) ? target : null;
   return {
-    handleId: row.handle_id,
+    physicalHandleId: row.handle_id,
+    platformHandleId: row.platform_handle_id,
     labelNormalized: row.label_normalized,
     labelDisplay: row.label_display,
     status: row.status,
@@ -92,7 +96,7 @@ export function makeControlPlanePublicProfileRepository(
       const db = yield* ControlPlaneDb;
       const handleResult = yield* db.execute<HandleRow>({
         label: "public-profiles.handles.lookup",
-        text: `SELECT handle_id, label_normalized, label_display, status,
+        text: `SELECT handle_id, platform_handle_id, label_normalized, label_display, status,
                       owner_user_id, owner_persona_id, redirect_target_handle_id
                  FROM public_handle_index
                 WHERE label_normalized = $1
@@ -110,7 +114,7 @@ export function makeControlPlanePublicProfileRepository(
       if (requestedHandle.status === "redirect") {
         const targetResult = yield* db.execute<HandleRow>({
           label: "public-profiles.handles.redirect-target",
-          text: `SELECT handle_id, label_normalized, label_display, status,
+          text: `SELECT handle_id, platform_handle_id, label_normalized, label_display, status,
                         owner_user_id, owner_persona_id, redirect_target_handle_id
                    FROM public_handle_index
                   WHERE handle_id = $1
@@ -127,8 +131,9 @@ export function makeControlPlanePublicProfileRepository(
           target === null ||
           target.status !== "active" ||
           target.redirectTargetHandleId !== null ||
-          target.handleId === requestedHandle.handleId ||
-          target.ownerPersonaId !== requestedHandle.ownerPersonaId
+          target.physicalHandleId === requestedHandle.physicalHandleId ||
+          target.ownerPersonaId !== requestedHandle.ownerPersonaId ||
+          target.platformHandleId !== requestedHandle.platformHandleId
         ) {
           return null;
         }
@@ -186,7 +191,7 @@ export function makeControlPlanePublicProfileRepository(
         bio,
         preferredLocale,
         createdAt,
-        handleId: resolvedHandle.handleId,
+        handleId: resolvedHandle.platformHandleId,
         resolvedHandleLabelDisplay: resolvedHandle.labelDisplay,
         handleLabelNormalized: resolvedHandle.labelNormalized,
         handleLabelDisplay: requestedHandle.labelNormalized.endsWith(".pirate")

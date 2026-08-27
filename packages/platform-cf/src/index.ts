@@ -201,6 +201,10 @@ export {
   makeControlPlanePersonaWalletStore,
 } from "./persona-repository";
 export {
+  makeControlPlanePlatformPirateHandleRepository,
+  makeControlPlanePlatformPirateHandleStore,
+} from "./platform-pirate-handle-repository.ts";
+export {
   CONTROL_PLANE_CONNECT_TIMEOUT_MS,
   CONTROL_PLANE_IDLE_TRANSACTION_TIMEOUT_MS,
   CONTROL_PLANE_SLOW_STATEMENT_MS,
