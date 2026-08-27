@@ -30,6 +30,15 @@ export const AccountAgeCapabilityV1 = Schema.Struct({
   ]),
 });
 
+export const AgeLockedResourceV1 = Schema.Struct({
+  kind: Schema.Literal("age_locked"),
+  content_rating: Schema.Literal("adult_18"),
+  next_action: Schema.Struct({
+    kind: Schema.Literal("verify_minimum_age"),
+    minimum_age: Schema.Literal(18),
+  }),
+});
+
 export const GetMyAgeCapability = endpoint({
   method: "GET",
   path: "/me/age-capability",

@@ -404,9 +404,11 @@ suite("Postgres 17 content repository", () => {
           }),
         ),
       );
-      expect(afterReplace?.upvote_count).toBe(0);
-      expect(afterReplace?.downvote_count).toBe(1);
-      expect(afterReplace?.viewer_vote).toBe(-1);
+      expect(afterReplace).toMatchObject({
+        upvote_count: 0,
+        downvote_count: 1,
+        viewer_vote: -1,
+      });
       await Effect.runPromise(
         Effect.scoped(
           store.clearPostVote({
@@ -427,8 +429,7 @@ suite("Postgres 17 content repository", () => {
           }),
         ),
       );
-      expect(afterClear?.downvote_count).toBe(0);
-      expect(afterClear?.viewer_vote).toBeNull();
+      expect(afterClear).toMatchObject({ downvote_count: 0, viewer_vote: null });
       const rows = await admin.query<{ count: string }>(
         "SELECT COUNT(*) AS count FROM post_votes WHERE post_id = 'post_parent'",
       );
@@ -778,6 +779,28 @@ suite("Postgres 17 content repository", () => {
           ),
         ),
       ).resolves.toBeNull();
+
+      await admin.query(
+        "UPDATE posts SET visibility = 'public', content_rating = 'adult_18' WHERE post_id = 'post_parent'",
+      );
+      await expect(
+        Effect.runPromise(
+          Effect.scoped(
+            store.getPost({
+              communityId: "community_1",
+              postId: "post_parent",
+              viewerUserId: actor.userId,
+            }),
+          ),
+        ),
+      ).resolves.toEqual({
+        kind: "age_locked",
+        content_rating: "adult_18",
+        next_action: { kind: "verify_minimum_age", minimum_age: 18 },
+      });
+      await admin.query(
+        "UPDATE posts SET content_rating = 'general' WHERE post_id = 'post_parent'",
+      );
 
       for (const status of ["hidden", "removed", "deleted"] as const) {
         await admin.query("UPDATE posts SET status = $1 WHERE post_id = 'post_parent'", [status]);

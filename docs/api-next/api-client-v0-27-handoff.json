@@ -8,7 +8,7 @@
   "sourceCommit": "5114769",
   "artifact": {
     "path": "artifacts/api-client/pirate-api-client-0.27.0.tgz",
-    "sha256": "bacef8360960a5f1b7d86e5b8fa8a1763e188c09d6785bafe026bc926e0e6bb9",
+    "sha256": "875f495bf16171cf716aba92c4664f3440090c647c97814750f95871e84ef11d",
     "contents": [
       "package/package.json",
       "package/src/generated/client.ts",
@@ -17,9 +17,9 @@
     ]
   },
   "provenance": {
-    "sourceIdentifier": "api-next-contracts@db545a06bed08229307e12f2640ee0e7b7c9ff63099a012678d11b65c2f27485",
-    "openapiSha256": "db545a06bed08229307e12f2640ee0e7b7c9ff63099a012678d11b65c2f27485",
-    "clientSha256": "c7334fb61137f7eed6c8dd21b6ea73506b328b248e57611976ebec2ed0d6dd35"
+    "sourceIdentifier": "api-next-contracts@db1b744e7666feecb0a3971317e0593d1d190a8ce01e05f9e824d3e6680019ac",
+    "openapiSha256": "db1b744e7666feecb0a3971317e0593d1d190a8ce01e05f9e824d3e6680019ac",
+    "clientSha256": "9a52e92e6456c196b541a4799a4888697f4a3a1798b5934392df79f5bb53c655"
   },
   "verification": {
     "checkFresh": "passed",

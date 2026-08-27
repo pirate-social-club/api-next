@@ -126,6 +126,7 @@ suite("Postgres 17 public community threads repository", () => {
       const repository = makeControlPlanePublicCommunityThreadsRepository({
         now: () => base.getTime(),
       });
+      await admin.query("UPDATE posts SET content_rating = 'adult_18' WHERE post_id = 'post_00'");
       const exact = requireDocument(
         await Effect.runPromise(
           Effect.scoped(
@@ -138,10 +139,20 @@ suite("Postgres 17 public community threads repository", () => {
       expect(exact.community.id).toBe("collision");
       expect(exact.community.route_slug).toBe("exact-community");
       expect(exact.items).toHaveLength(20);
-      expect(exact.items.every((item) => item.post.post_type === "text")).toBe(true);
-      expect(exact.items.some((item) => item.post.id === "post_members")).toBe(false);
-      expect(exact.items.some((item) => item.post.id === "post_processing")).toBe(false);
-      expect(exact.items[0]?.post.id).toBe("post_00");
+      expect(exact.items[0]).toEqual({
+        kind: "age_locked",
+        content_rating: "adult_18",
+        next_action: { kind: "verify_minimum_age", minimum_age: 18 },
+      });
+      expect(exact.items.every((item) => "kind" in item || item.post.post_type === "text")).toBe(
+        true,
+      );
+      expect(exact.items.some((item) => !("kind" in item) && item.post.id === "post_members")).toBe(
+        false,
+      );
+      expect(
+        exact.items.some((item) => !("kind" in item) && item.post.id === "post_processing"),
+      ).toBe(false);
 
       const underscoreId = requireDocument(
         await Effect.runPromise(
@@ -165,8 +176,13 @@ suite("Postgres 17 public community threads repository", () => {
           ),
         ),
       );
-      const ids = [...exact.items, ...second.items].map((item) => item.post.id);
-      expect(second.items.map((item) => item.post.id)).toEqual(["post_20", "post_21"]);
+      const ids = [...exact.items, ...second.items].map((item) =>
+        "kind" in item ? "post_00" : item.post.id,
+      );
+      expect(second.items.map((item) => ("kind" in item ? item.kind : item.post.id))).toEqual([
+        "post_20",
+        "post_21",
+      ]);
       expect(new Set(ids).size).toBe(ids.length);
       expect(second.next_cursor).toBeNull();
 
@@ -280,7 +296,9 @@ suite("Postgres 17 public community threads repository", () => {
           ),
         ),
       );
-      expect(beta.items.map((item) => item.post.id)).toEqual(["post_b"]);
+      expect(beta.items.map((item) => ("kind" in item ? item.kind : item.post.id))).toEqual([
+        "post_b",
+      ]);
     });
     completedTestCount += 1;
   });

@@ -35,6 +35,8 @@ const post = (index: number, overrides: Row = {}): Row => ({
   },
   body: `post ${index}`,
   title: null,
+  content_rating: "general",
+  rating_view_allowed: true,
   created_at: new Date(1_787_000_000_000 - index * 1_000),
   upvote_count: "2",
   downvote_count: "1",
@@ -137,7 +139,7 @@ describe("public community threads Postgres repository", () => {
     expect(Exit.isSuccess(result)).toBe(true);
     if (Exit.isSuccess(result)) {
       expect(result.value?.community.id).toBe("community-a");
-      expect(result.value?.items[0]?.resolved_locale).toBe("ka");
+      expect(result.value?.items[0]).toMatchObject({ resolved_locale: "ka" });
     }
     expect(calls[1]?.values).toEqual(["alpha-community"]);
   });
@@ -168,9 +170,13 @@ describe("public community threads Postgres repository", () => {
     );
     expect(Exit.isSuccess(result)).toBe(true);
     if (Exit.isSuccess(result)) {
-      expect(result.value?.items.map((item) => item.post.id)).toEqual(["post_00", "post_01"]);
-      expect(result.value?.items[0]?.viewer_vote).toBeNull();
-      expect(result.value?.items[0]?.viewer_reaction_kinds).toEqual([]);
+      expect(
+        result.value?.items.map((item) => ("kind" in item ? item.kind : item.post.id)),
+      ).toEqual(["post_00", "post_01"]);
+      expect(result.value?.items[0]).toMatchObject({
+        viewer_vote: null,
+        viewer_reaction_kinds: [],
+      });
       expect(result.value?.community.viewer_following).toBeUndefined();
     }
     expect(calls[1]?.text).toContain("p.post_type = 'text'");
@@ -254,7 +260,9 @@ describe("public community threads Postgres repository", () => {
     );
     expect(Exit.isSuccess(second)).toBe(true);
     if (Exit.isSuccess(second))
-      expect(second.value?.items.map((item) => item.post.id)).toEqual(["post_20"]);
+      expect(
+        second.value?.items.map((item) => ("kind" in item ? item.kind : item.post.id)),
+      ).toEqual(["post_20"]);
     expect(secondCalls[1]?.values[2]).toBe(1_787_000_000_000 - 19_000);
     expect(secondCalls[1]?.values[3]).toBe("post_19");
   });

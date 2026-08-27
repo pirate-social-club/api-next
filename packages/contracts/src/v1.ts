@@ -1,5 +1,6 @@
 import { Effect, Schema } from "effect";
 import {
+  AgeLockedResourceV1,
   GetMyAgeCapability,
   MinimumAgeAttestationV1,
   PutMyMinimumAgeAttestation,
@@ -666,15 +667,18 @@ const HomeFeedItem = Schema.Struct({
   booking: Schema.optional(FeedBooking),
 });
 
+const HomeFeedProjectionItem = Schema.Union([HomeFeedItem, AgeLockedResourceV1]);
+const TextPostProjection = Schema.Union([LocalizedPost, AgeLockedResourceV1]);
+
 const HomeFeedResponse = Schema.Struct({
-  items: Schema.Array(HomeFeedItem),
+  items: Schema.Array(HomeFeedProjectionItem),
   top_communities: Schema.Array(HomeFeedCommunitySummary),
   next_cursor: Schema.optional(Schema.NullOr(Schema.String)),
 });
 
 const PublicCommunityThreadsResponse = Schema.Struct({
   community: CommunityPreview,
-  items: Schema.Array(LocalizedPost),
+  items: Schema.Array(TextPostProjection),
   next_cursor: Schema.NullOr(Schema.String),
 });
 
@@ -1567,7 +1571,7 @@ export const GetPost = endpoint({
   path: "/posts/:postId",
   auth: Auth.userOrAdmin(),
   request: { path: PathPost, query: LocaleQuery },
-  response: LocalizedPost,
+  response: TextPostProjection,
   successStatus: 200,
   errors: [AuthError, BadRequest, NotFound],
 });
