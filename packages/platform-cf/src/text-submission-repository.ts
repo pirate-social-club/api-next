@@ -1003,70 +1003,103 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
           }
           yield* transaction.execute({
             label: "text-post.commit.submission",
-            text: `INSERT INTO text_content_submissions (
-                community_id, submission_id, operation_id, actor_user_id, surface, idempotency_key,
-                request_hash, status, moderation_decision, public_reason_code,
-                policy_revision_id, policy_hash,
-                platform_policy_revision_id, platform_policy_hash,
-                community_policy_revision_id, community_policy_hash,
-                input_sha256, internal_reason_codes,
-                evidence_ref, published_post_id, published_comment_id, review_ref,
-                target_post_id, target_parent_comment_id,
-                created_at, updated_at, response_snapshot_bytes, response_snapshot_sha256,
-                author_persona_id, author_declared_rating, resulting_content_rating,
-                matched_categories, category_decisions, effective_policy_decision
-              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                $13, $14, $15, $16, $17, $18::jsonb, $19, $20, $21, $22, $23, $24,
-                $25, $25, $26, encode(sha256($26), 'hex'), $27, $28, $29,
-                $30::jsonb, $31::jsonb, $32)`,
-            values: [
-              input.communityId,
-              submissionId,
-              input.operationId,
-              input.actor.userId,
-              surface,
-              input.idempotencyKey,
-              input.requestHash,
-              status,
-              evaluation.decision,
-              publicResult.reason_code,
-              current.policy_revision,
-              current.policy_hash,
+            text:
               evaluation.version === "text-moderation-v2"
-                ? evaluation.platform_policy_revision
-                : null,
-              evaluation.version === "text-moderation-v2" ? evaluation.platform_policy_hash : null,
+                ? `INSERT INTO text_content_submissions (
+                    community_id, submission_id, operation_id, actor_user_id, surface, idempotency_key,
+                    request_hash, status, moderation_decision, public_reason_code,
+                    policy_revision_id, policy_hash,
+                    platform_policy_revision_id, platform_policy_hash,
+                    community_policy_revision_id, community_policy_hash,
+                    input_sha256, internal_reason_codes,
+                    evidence_ref, published_post_id, published_comment_id, review_ref,
+                    target_post_id, target_parent_comment_id,
+                    created_at, updated_at, response_snapshot_bytes, response_snapshot_sha256,
+                    author_persona_id, author_declared_rating, resulting_content_rating,
+                    matched_categories, category_decisions, effective_policy_decision
+                  ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                    $13, $14, $15, $16, $17, $18::jsonb, $19, $20, $21, $22, $23, $24,
+                    $25, $25, $26, encode(sha256($26), 'hex'), $27, $28, $29,
+                    $30::jsonb, $31::jsonb, $32)`
+                : `INSERT INTO text_content_submissions (
+                    community_id, submission_id, operation_id, actor_user_id, surface, idempotency_key,
+                    request_hash, status, moderation_decision, public_reason_code,
+                    policy_revision_id, policy_hash,
+                    platform_policy_revision_id, platform_policy_hash,
+                    community_policy_revision_id, community_policy_hash,
+                    input_sha256, internal_reason_codes,
+                    evidence_ref, published_post_id, published_comment_id, review_ref,
+                    target_post_id, target_parent_comment_id,
+                    created_at, updated_at, response_snapshot_bytes, response_snapshot_sha256,
+                    author_persona_id
+                  ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                    $13, $14, $15, $16, $17, $18::jsonb, $19, $20, $21, $22, $23, $24,
+                    $25, $25, $26, encode(sha256($26), 'hex'), $27)`,
+            values:
               evaluation.version === "text-moderation-v2"
-                ? evaluation.community_policy_revision
-                : null,
-              evaluation.version === "text-moderation-v2" ? evaluation.community_policy_hash : null,
-              canonical.sha256,
-              JSON.stringify(evaluation.reason_codes),
-              evaluation.evidence_ref,
-              postId,
-              commentId,
-              reviewRef,
-              targetPostId,
-              targetParentCommentId,
-              at,
-              bytes,
-              input.personaId,
-              evaluation.version === "text-moderation-v2"
-                ? evaluation.author_declared_rating
-                : null,
-              evaluation.version === "text-moderation-v2"
-                ? evaluation.resulting_content_rating
-                : null,
-              evaluation.version === "text-moderation-v2"
-                ? JSON.stringify(evaluation.matched_categories)
-                : null,
-              evaluation.version === "text-moderation-v2"
-                ? JSON.stringify(evaluation.category_decisions)
-                : null,
-              evaluation.version === "text-moderation-v2"
-                ? evaluation.effective_policy_decision
-                : null,
-            ],
+                ? [
+                    input.communityId,
+                    submissionId,
+                    input.operationId,
+                    input.actor.userId,
+                    surface,
+                    input.idempotencyKey,
+                    input.requestHash,
+                    status,
+                    evaluation.decision,
+                    publicResult.reason_code,
+                    current.policy_revision,
+                    current.policy_hash,
+                    evaluation.platform_policy_revision,
+                    evaluation.platform_policy_hash,
+                    evaluation.community_policy_revision,
+                    evaluation.community_policy_hash,
+                    canonical.sha256,
+                    JSON.stringify(evaluation.reason_codes),
+                    evaluation.evidence_ref,
+                    postId,
+                    commentId,
+                    reviewRef,
+                    targetPostId,
+                    targetParentCommentId,
+                    at,
+                    bytes,
+                    input.personaId,
+                    evaluation.author_declared_rating,
+                    evaluation.resulting_content_rating,
+                    JSON.stringify(evaluation.matched_categories),
+                    JSON.stringify(evaluation.category_decisions),
+                    evaluation.effective_policy_decision,
+                  ]
+                : [
+                    input.communityId,
+                    submissionId,
+                    input.operationId,
+                    input.actor.userId,
+                    surface,
+                    input.idempotencyKey,
+                    input.requestHash,
+                    status,
+                    evaluation.decision,
+                    publicResult.reason_code,
+                    current.policy_revision,
+                    current.policy_hash,
+                    null,
+                    null,
+                    null,
+                    null,
+                    canonical.sha256,
+                    JSON.stringify(evaluation.reason_codes),
+                    evaluation.evidence_ref,
+                    postId,
+                    commentId,
+                    reviewRef,
+                    targetPostId,
+                    targetParentCommentId,
+                    at,
+                    bytes,
+                    input.personaId,
+                  ],
             readonly: false,
           });
           if (commentId !== null) {
@@ -1174,19 +1207,25 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
                 readonly: false,
               });
             }
-            yield* transaction.execute({
-              label: "text-post.commit.owner-moderation-case-v2",
-              text: `INSERT INTO community_moderation_cases_v2 (
-                  case_ref, community_id, submission_id, target_type,
-                  target_resource_id, source, visibility, view_state,
-                  target_status, case_revision, created_at, updated_at
-                ) VALUES ($1, $2, $3, $4, NULL, 'automatic', 'owner',
-                  'open', 'held', 1, $5, $5)`,
-              values: [reviewRef, input.communityId, submissionId, surface, at],
-              readonly: false,
-            });
+            if (evaluation.version === "text-moderation-v2") {
+              yield* transaction.execute({
+                label: "text-post.commit.owner-moderation-case-v2",
+                text: `INSERT INTO community_moderation_cases_v2 (
+                    case_ref, community_id, submission_id, target_type,
+                    target_resource_id, source, visibility, view_state,
+                    target_status, case_revision, created_at, updated_at
+                  ) VALUES ($1, $2, $3, $4, NULL, 'automatic', 'owner',
+                    'open', 'held', 1, $5, $5)`,
+                values: [reviewRef, input.communityId, submissionId, surface, at],
+                readonly: false,
+              });
+            }
           }
-          if (status === "blocked" && evaluation.reason_codes.includes("sexual_minors")) {
+          if (
+            evaluation.version === "text-moderation-v2" &&
+            status === "blocked" &&
+            evaluation.reason_codes.includes("sexual_minors")
+          ) {
             yield* transaction.execute({
               label: "text-post.commit.platform-hold-v2",
               text: `INSERT INTO community_moderation_cases_v2 (

@@ -155,7 +155,7 @@ async function withSchema<A>(
       await admin.query("INSERT INTO users (user_id) VALUES ($1)", [moderator]);
       await admin.query(
         "INSERT INTO communities (community_id,display_name,status,created_by_user_id,created_at,updated_at) VALUES ($1,'Media fixture','active',$2,now(),now())",
-        [community, actor],
+        [community, moderator],
       );
       await admin.query(
         "INSERT INTO community_memberships (community_id,membership_id,user_id,status,joined_at,created_at,updated_at) VALUES ($1,'media_pg_membership',$2,'member',now(),now(),now())",

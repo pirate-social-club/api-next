@@ -315,6 +315,12 @@ const globalPirateHandleCleanupRenameMigrationSql = await Bun.file(
     import.meta.url,
   ),
 ).text();
+const communityModerationOwnerRuntimeMigrationSql = await Bun.file(
+  new URL(
+    "../../../db/postgres/migrations/0063_community_moderation_owner_runtime.sql",
+    import.meta.url,
+  ),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -632,6 +638,11 @@ const globalPirateHandleCleanupRenameMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0062_global_pirate_handle_cleanup_rename.sql"] ?? "",
   sql: globalPirateHandleCleanupRenameMigrationSql,
 };
+const communityModerationOwnerRuntimeMigration: PostgresMigration = {
+  version: "0063_community_moderation_owner_runtime.sql",
+  checksum: checksumManifest.migrations["0063_community_moderation_owner_runtime.sql"] ?? "",
+  sql: communityModerationOwnerRuntimeMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -695,6 +706,7 @@ const migrations: readonly PostgresMigration[] = [
   personaWalletProvisioningMigration,
   openAiModerationDriverCutoverMigration,
   globalPirateHandleCleanupRenameMigration,
+  communityModerationOwnerRuntimeMigration,
 ];
 
 function checksum(value: string): string {
@@ -984,6 +996,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       expect(checksum(globalPirateHandleCleanupRenameMigrationSql)).toBe(
         globalPirateHandleCleanupRenameMigration.checksum,
       );
+      expect(checksum(communityModerationOwnerRuntimeMigrationSql)).toBe(
+        communityModerationOwnerRuntimeMigration.checksum,
+      );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
@@ -1033,6 +1048,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "community_commerce_policy_revisions",
         "community_commerce_pricing_policy_versions",
         "community_commerce_settlement_policy_versions",
+        "community_content_reports_v2",
         "community_creation_ceremony_attempts",
         "community_creation_ceremony_results",
         "community_creation_intent_revisions",
@@ -1050,9 +1066,12 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "community_handle_sale_namespace_activation_revisions",
         "community_handle_sales_authority_grants",
         "community_memberships",
+        "community_moderation_actions_v2",
+        "community_moderation_cases_v2",
         "community_moderation_policy_category_decisions",
         "community_moderation_policy_current",
         "community_moderation_policy_revisions",
+        "community_moderation_system_actions_v1",
         "community_policy_current",
         "community_policy_provider_bindings",
         "community_purchase_allocation_snapshots",

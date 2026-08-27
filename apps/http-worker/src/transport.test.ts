@@ -1026,7 +1026,15 @@ describe("contracts-generated HTTP worker", () => {
         { persona_id: "persona_1", idempotency_key: "reply-key", body: "reply" },
       ],
       ["/comments/comment_1/reports", { idempotency_key: "report-key", reason_code: "spam" }],
-      ["/moderation/cases/case_1/actions", { idempotency_key: "action-key", action: "approve" }],
+      [
+        "/moderation/cases/case_1/actions",
+        {
+          version: "moderation-case-action-v2",
+          idempotency_key: "action-key",
+          expected_case_revision: 1,
+          action: "approve_as_general",
+        },
+      ],
     ] as const;
     for (const [path, body] of requests) {
       const response = await app.request(`http://worker.test${path}`, {
