@@ -80,6 +80,7 @@ export type MediaProcessingStoreOptions = Readonly<{
   readonly referenceTtlMs?: number;
   readonly workflowCandidateLimit?: number;
   readonly now?: () => number;
+  readonly dataRegistrationChainId?: bigint;
 }>;
 
 const validId = (value: unknown): value is string =>
@@ -191,7 +192,11 @@ export function makeMediaProcessingStore(
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
   options: MediaProcessingStoreOptions = {},
 ): MediaProcessingStore {
-  const submissions = makeControlPlaneMediaSubmissionRepository();
+  const submissions = makeControlPlaneMediaSubmissionRepository({
+    ...(options.dataRegistrationChainId === undefined
+      ? {}
+      : { dataRegistrationChainId: options.dataRegistrationChainId }),
+  });
   const outbox = makeControlPlaneMediaOutboxRepository();
   const attemptLeaseSeconds = options.attemptLeaseSeconds ?? 300;
   const outboxLeaseSeconds = options.outboxLeaseSeconds ?? 60;

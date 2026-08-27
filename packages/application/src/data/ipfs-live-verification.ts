@@ -40,6 +40,7 @@ export type IpfsLiveVerificationResult =
   | Readonly<{ status: "pin_failed"; pin: Exclude<IpfsPinningResult, { status: "pinned" }> }>
   | Readonly<{
       status: "gateway_failed";
+      pin: Extract<IpfsPinningResult, { status: "pinned" }>;
       gateway: Exclude<IpfsGatewayVerificationResult, { status: "verified" }>;
     }>;
 
@@ -60,7 +61,7 @@ export const pinAndVerifyIpfsArtifact = (
       ...(input.signal === undefined ? {} : { signal: input.signal }),
     });
     if (verification.status !== "verified") {
-      return { status: "gateway_failed", gateway: verification } as const;
+      return { status: "gateway_failed", pin, gateway: verification } as const;
     }
     if (
       verification.cid !== pin.cid ||
@@ -70,6 +71,7 @@ export const pinAndVerifyIpfsArtifact = (
     ) {
       return {
         status: "gateway_failed",
+        pin,
         gateway: {
           status: "rejected",
           reason:

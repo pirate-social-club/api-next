@@ -177,6 +177,7 @@ describe("Infisical secret drift audit", () => {
           "ACRCLOUD_ACCESS_SECRET",
           "ELEVENLABS_API_KEY",
           "FILEBASE_IPFS_TOKEN",
+          "DATA_REGISTRATION_STAGING_PRIVATE_KEY",
           "MEDIA_CLASSIFIER_API_KEY",
           "MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID",
           "MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY",

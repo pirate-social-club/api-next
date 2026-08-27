@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import * as BunRuntime from "bun";
+import type { DataRegistrationRuntimeEnv } from "../apps/data-registration-worker/src/composition.ts";
 import type { HttpWorkerBindings } from "../apps/http-worker/src/composition.ts";
 import type { JobsWorkerEnv } from "../apps/jobs-worker/src/index.ts";
 import type { MediaProcessorRuntimeEnv } from "../apps/media-processor-worker/src/composition.ts";
@@ -143,6 +144,9 @@ const JOBS_BINDING_KINDS = {
   MEDIA_PROCESSING_ENABLED: "var",
   MEDIA_PROCESSING_QUEUE: "platform",
   MEDIA_PROCESSING_WORKFLOW: "platform",
+  DATA_REGISTRATION_ENABLED: "var",
+  DATA_REGISTRATION_QUEUE: "platform",
+  DATA_REGISTRATION_WORKFLOW: "platform",
 } as const satisfies BindingManifest<JobsWorkerEnv>;
 
 const MEDIA_BINDING_KINDS = {
@@ -160,7 +164,25 @@ const MEDIA_BINDING_KINDS = {
   ACRCLOUD_ACCESS_KEY: "secret",
   ACRCLOUD_ACCESS_SECRET: "secret",
   ELEVENLABS_API_KEY: "secret",
+  DATA_REGISTRATION_ENABLED: "var",
+  DATA_REGISTRATION_CHAIN_ID: "var",
 } as const satisfies BindingManifest<MediaProcessorRuntimeEnv>;
+
+const DATA_REGISTRATION_BINDING_KINDS = {
+  CONTROL_PLANE: "platform",
+  API_NEXT_ENV: "var",
+  DATA_REGISTRATION_ENABLED: "var",
+  DATA_REGISTRATION_WORKFLOW: "platform",
+  MEDIA_IMMUTABLE_ORIGINALS: "platform",
+  DATA_REGISTRATION_CHAIN_ID: "var",
+  DATA_REGISTRATION_RPC_URL: "var",
+  DATA_REGISTRATION_SIGNER_ADDRESS: "var",
+  DATA_REGISTRATION_SPG_NFT_CONTRACT: "var",
+  DATA_REGISTRATION_STAGING_PRIVATE_KEY: "secret",
+  DATA_REGISTRATION_REQUIRED_CONFIRMATIONS: "var",
+  DATA_REGISTRATION_PUBLIC_ORIGIN: "var",
+  FILEBASE_IPFS_TOKEN: "secret",
+} as const satisfies BindingManifest<DataRegistrationRuntimeEnv>;
 
 const REGISTRATION_BINDING_KINDS = {
   REGISTRATION_IP_LIMIT: "var",
@@ -174,7 +196,7 @@ const HTTP_CONFIG_BINDING_KINDS = {
   ...REGISTRATION_BINDING_KINDS,
 } as const;
 
-type WorkerName = "http" | "jobs" | "media";
+type WorkerName = "data" | "http" | "jobs" | "media";
 type EnvironmentName = "development" | "staging" | "production";
 
 const ENVIRONMENTS: readonly EnvironmentName[] = ["development", "staging", "production"];
@@ -182,6 +204,10 @@ const ENVIRONMENTS: readonly EnvironmentName[] = ["development", "staging", "pro
 const HTTP_CONFIG_PATH = new URL("../apps/http-worker/wrangler.jsonc", import.meta.url);
 const JOBS_CONFIG_PATH = new URL("../apps/jobs-worker/wrangler.jsonc", import.meta.url);
 const MEDIA_CONFIG_PATH = new URL("../apps/media-processor-worker/wrangler.jsonc", import.meta.url);
+const DATA_CONFIG_PATH = new URL(
+  "../apps/data-registration-worker/wrangler.jsonc",
+  import.meta.url,
+);
 
 interface RawWranglerEnvironment {
   readonly vars?: Record<string, unknown>;
@@ -201,17 +227,20 @@ const parseWranglerConfig = async (path: URL): Promise<RawWranglerConfig> =>
   BunRuntime.JSONC.parse(await BunRuntime.file(path).text()) as RawWranglerConfig;
 
 const configs: Readonly<Record<WorkerName, RawWranglerConfig>> = {
+  data: await parseWranglerConfig(DATA_CONFIG_PATH),
   http: await parseWranglerConfig(HTTP_CONFIG_PATH),
   jobs: await parseWranglerConfig(JOBS_CONFIG_PATH),
   media: await parseWranglerConfig(MEDIA_CONFIG_PATH),
 };
 
 const manifestFor = (worker: WorkerName): Readonly<Record<string, BindingKind>> =>
-  worker === "http"
-    ? HTTP_CONFIG_BINDING_KINDS
-    : worker === "jobs"
-      ? JOBS_BINDING_KINDS
-      : MEDIA_BINDING_KINDS;
+  worker === "data"
+    ? DATA_REGISTRATION_BINDING_KINDS
+    : worker === "http"
+      ? HTTP_CONFIG_BINDING_KINDS
+      : worker === "jobs"
+        ? JOBS_BINDING_KINDS
+        : MEDIA_BINDING_KINDS;
 
 const declaredEnvironment = (
   config: RawWranglerConfig,
@@ -385,6 +414,17 @@ const MEDIA_ENABLED_REQUIRED = [
   "ELEVENLABS_API_KEY",
 ] as const;
 
+const DATA_ENABLED_REQUIRED = [
+  "DATA_REGISTRATION_CHAIN_ID",
+  "DATA_REGISTRATION_RPC_URL",
+  "DATA_REGISTRATION_SIGNER_ADDRESS",
+  "DATA_REGISTRATION_SPG_NFT_CONTRACT",
+  "DATA_REGISTRATION_STAGING_PRIVATE_KEY",
+  "DATA_REGISTRATION_REQUIRED_CONFIRMATIONS",
+  "DATA_REGISTRATION_PUBLIC_ORIGIN",
+  "FILEBASE_IPFS_TOKEN",
+] as const;
+
 const LEGACY_JUNK_NAMES = [
   "AUTH_UPSTREAM_JWT_AUDIENCE",
   "AUTH_UPSTREAM_JWT_ISSUER",
@@ -405,6 +445,11 @@ const requiredNamesFor = (
   worker: WorkerName,
   environment: DeclaredEnvironment,
 ): readonly string[] => {
+  if (worker === "data") {
+    return environment.vars.DATA_REGISTRATION_ENABLED === "true"
+      ? ["DATA_REGISTRATION_ENABLED", ...DATA_ENABLED_REQUIRED]
+      : ["DATA_REGISTRATION_ENABLED"];
+  }
   if (worker === "media") {
     return environment.vars.MEDIA_PROCESSING_ENABLED === "true"
       ? ["MEDIA_PROCESSING_ENABLED", ...MEDIA_ENABLED_REQUIRED]
@@ -446,7 +491,7 @@ const requiredNamesFor = (
 const auditDeclaredBindings = (): readonly string[] => {
   const violations: string[] = [];
 
-  for (const worker of ["http", "jobs", "media"] as const) {
+  for (const worker of ["data", "http", "jobs", "media"] as const) {
     const manifest = manifestFor(worker);
     for (const environmentName of ENVIRONMENTS) {
       const environment = declaredEnvironment(configs[worker], environmentName);
@@ -486,7 +531,7 @@ const auditDeclaredBindings = (): readonly string[] => {
 const auditRequiredBindings = (): readonly string[] => {
   const violations: string[] = [];
 
-  for (const worker of ["http", "jobs", "media"] as const) {
+  for (const worker of ["data", "http", "jobs", "media"] as const) {
     const manifest = manifestFor(worker);
     for (const environmentName of ENVIRONMENTS) {
       const environment = declaredEnvironment(configs[worker], environmentName);
@@ -537,6 +582,7 @@ describe("source-to-Wrangler binding contract", () => {
     expect(Object.keys(HTTP_BINDING_KINDS).length).toBeGreaterThan(0);
     expect(Object.keys(JOBS_BINDING_KINDS).length).toBeGreaterThan(0);
     expect(Object.keys(MEDIA_BINDING_KINDS).length).toBeGreaterThan(0);
+    expect(Object.keys(DATA_REGISTRATION_BINDING_KINDS).length).toBeGreaterThan(0);
     expect(Object.keys(ALERT_BINDING_KINDS).length).toBeGreaterThan(0);
     expect(Object.keys(REGISTRATION_BINDING_KINDS).length).toBeGreaterThan(0);
   });

@@ -5,6 +5,11 @@ import {
   type ControlPlaneTransaction,
   type M2Actor,
 } from "@pirate/application";
+import {
+  deterministicDataRegistrationOperationId,
+  deterministicDataRegistrationOutboxId,
+  deterministicDataRegistrationWorkflowId,
+} from "@pirate/application/data/registration-persistence";
 import { SONG_LYRICS_TEXT_MAX_LENGTH } from "@pirate/contracts";
 import { Data, Effect } from "effect";
 import {
@@ -1180,7 +1185,17 @@ const validAccountCommand = (input: Omit<CommandInput, "personaId">): boolean =>
   validHash(input.requestHash) &&
   validSnapshot(input);
 
-export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStore {
+export type MediaSubmissionRepositoryOptions = Readonly<{
+  /** When present, publication atomically creates the DATA operation and outbox. */
+  dataRegistrationChainId?: bigint;
+}>;
+
+export function makeControlPlaneMediaSubmissionRepository(
+  options: MediaSubmissionRepositoryOptions = {},
+): MediaSubmissionStore {
+  if (options.dataRegistrationChainId !== undefined && options.dataRegistrationChainId < 1n) {
+    throw new TypeError("invalid DATA registration chain id");
+  }
   const replay: MediaSubmissionStore["replay"] = (input) =>
     Effect.gen(function* () {
       if (
@@ -2997,6 +3012,58 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
             ],
             readonly: false,
           });
+          if (options.dataRegistrationChainId !== undefined) {
+            const registrationRevision = 1n;
+            const workflowRevision = 1n;
+            const registrationOperationId = deterministicDataRegistrationOperationId(
+              options.dataRegistrationChainId,
+              ownedPostId,
+              registrationRevision,
+            );
+            const workflowInstanceId = deterministicDataRegistrationWorkflowId(
+              registrationOperationId,
+              workflowRevision,
+            );
+            const outboxId = deterministicDataRegistrationOutboxId(
+              registrationOperationId,
+              workflowRevision,
+            );
+            yield* tx.execute({
+              label: "media-publish.data-registration-operation",
+              text: "INSERT INTO data_registration_operations (registration_operation_id,community_id,actor_user_id,submission_id,media_operation_id,post_id,asset_id,chain_id,registration_revision,publication_creation_revision,publication_audio_revision,publication_analysis_revision,publication_decision_revision,canonical_audio_sha256,workflow_revision,workflow_instance_id) VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)",
+              values: [
+                registrationOperationId,
+                current.communityId,
+                current.actorId,
+                current.submissionId,
+                current.operationId,
+                ownedPostId,
+                options.dataRegistrationChainId.toString(),
+                registrationRevision.toString(),
+                current.creationRevision,
+                current.audioRevision,
+                current.analysisRevision,
+                current.decisionRevision,
+                current.audio.canonicalSha256,
+                workflowRevision.toString(),
+                workflowInstanceId,
+              ],
+              readonly: false,
+            });
+            yield* tx.execute({
+              label: "media-publish.data-registration-outbox",
+              text: "INSERT INTO data_registration_outbox (outbox_id,registration_operation_id,workflow_revision,workflow_instance_id,event_type,effect_identity,payload) VALUES ($1,$2,$3,$4,'registration_launch',$5,$6::jsonb)",
+              values: [
+                outboxId,
+                registrationOperationId,
+                workflowRevision.toString(),
+                workflowInstanceId,
+                `data-registration-launch:${registrationOperationId}:r${workflowRevision}`,
+                json({ operation_id: registrationOperationId, outbox_id: outboxId }),
+              ],
+              readonly: false,
+            });
+          }
           if (current.lyrics !== null && alignmentOutbox !== undefined) {
             yield* tx.execute({
               label: "media-alignment.pending",

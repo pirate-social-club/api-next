@@ -58,6 +58,10 @@ export function makeDataRegistrationQueueWorker<Env extends DataRegistrationWork
       batch: Parameters<typeof handleDataRegistrationQueueBatch>[0],
       env: Env,
     ): Promise<void> => {
+      if (!isDataRegistrationEnabled(env.DATA_REGISTRATION_ENABLED)) {
+        for (const message of batch.messages) message.retry({ delaySeconds: 900 });
+        return;
+      }
       await handleDataRegistrationQueueBatch(batch, withPosture(env, resolve(env)).queue);
     },
   };

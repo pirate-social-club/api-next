@@ -1,5 +1,8 @@
 import { ControlPlaneDb, type ControlPlaneError } from "@pirate/application";
-import type { DataRegistrationPinVerification } from "@pirate/application/data/registration-persistence";
+import type {
+  DataRegistrationPinVerification,
+  DataRegistrationReceiptInput,
+} from "@pirate/application/data/registration-persistence";
 import type {
   DataRegistrationWorkflowPinReader,
   DataRegistrationWorkflowSigningReader,
@@ -24,6 +27,12 @@ const id = (value: unknown): string => {
 const integer = (value: unknown): number => {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < 1) throw new Error("invalid DATA pin row");
+  return parsed;
+};
+
+const nonnegativeInteger = (value: unknown): number => {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) throw new Error("invalid DATA receipt row");
   return parsed;
 };
 
@@ -79,6 +88,11 @@ export function makeDataRegistrationWorkflowReaders(
 ): Readonly<{
   pinReader: DataRegistrationWorkflowPinReader;
   signingReader: DataRegistrationWorkflowSigningReader;
+  receiptReader: Readonly<{
+    getLatestMinedReceipt: (
+      submissionAttemptId: string,
+    ) => Promise<DataRegistrationReceiptInput | null>;
+  }>;
 }> {
   const run = <A, E>(effect: Effect.Effect<A, E, ControlPlaneDb>): Promise<A> =>
     Effect.runPromise(Effect.provide(runtime)(effect));
@@ -108,6 +122,57 @@ export function makeDataRegistrationWorkflowReaders(
               readonly: true,
             });
             return result.rows.map(pinFromRow);
+          }),
+        );
+      },
+    },
+    receiptReader: {
+      getLatestMinedReceipt: (submissionAttemptId) => {
+        if (id(submissionAttemptId) !== submissionAttemptId) {
+          return Promise.reject(new Error("invalid DATA attempt id"));
+        }
+        return run(
+          Effect.gen(function* () {
+            const db = yield* ControlPlaneDb;
+            const result = yield* db.execute<Row>({
+              label: "data-registration.workflow.receipt.read",
+              text: `SELECT receipt_observation_id,registration_operation_id,
+                            submission_attempt_id,observation_sequence,transaction_hash,outcome,
+                            block_number,block_hash,log_index,confirmations,registered_ip_id,
+                            ip_metadata_uri,ip_metadata_hash,nft_metadata_uri,nft_metadata_hash,
+                            evidence_ref,observed_at
+                       FROM data_registration_receipt_observations
+                      WHERE submission_attempt_id=$1 AND outcome='mined'
+                      ORDER BY observation_sequence DESC LIMIT 1`,
+              values: [submissionAttemptId],
+              readonly: true,
+            });
+            if (result.rows.length === 0) return null;
+            const row = result.rows[0];
+            if (row === undefined) throw new Error("invalid DATA receipt row");
+            const observedAtValue = row.observed_at;
+            const observedAt = new Date(
+              observedAtValue instanceof Date ? observedAtValue.getTime() : String(observedAtValue),
+            ).toISOString();
+            return {
+              receiptObservationId: id(row.receipt_observation_id),
+              registrationOperationId: id(row.registration_operation_id),
+              submissionAttemptId: id(row.submission_attempt_id),
+              observationSequence: bigint(row.observation_sequence),
+              transactionHash: id(row.transaction_hash),
+              outcome: "mined" as const,
+              blockNumber: bigint(row.block_number),
+              blockHash: id(row.block_hash),
+              logIndex: row.log_index === null ? null : nonnegativeInteger(row.log_index),
+              confirmations: nonnegativeInteger(row.confirmations),
+              registeredIpId: nullable(row.registered_ip_id),
+              ipMetadataUri: nullable(row.ip_metadata_uri),
+              ipMetadataHash: nullable(row.ip_metadata_hash),
+              nftMetadataUri: nullable(row.nft_metadata_uri),
+              nftMetadataHash: nullable(row.nft_metadata_hash),
+              evidenceRef: id(row.evidence_ref),
+              observedAt,
+            };
           }),
         );
       },

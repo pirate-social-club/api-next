@@ -51,6 +51,16 @@ export type DataRegistrationPinResult =
       gatewayEvidenceRef: string;
       verifiedAt: string;
     }>
+  | Readonly<{
+      status: "primary_verified";
+      cid: string;
+      byteLength: bigint;
+      canonicalSha256: string;
+      primaryEvidenceRef: string;
+      gatewayEvidenceRef: string;
+      verifiedAt: string;
+      gatewayRetryable: boolean;
+    }>
   | Readonly<{ status: "retryable" }>
   | Readonly<{ status: "failed"; evidenceRef: string }>;
 
@@ -147,11 +157,14 @@ const validPayload = (payload: DataRegistrationWorkflowPayload): boolean =>
   payload.registrationOperationId === payload.registrationOperationId.trim() &&
   payload.workflowRevision > 0n;
 
-const artifactsAreComplete = (artifacts: readonly DataRegistrationPreparedArtifact[]): boolean => {
+const artifactsAreValidStage = (
+  artifacts: readonly DataRegistrationPreparedArtifact[],
+): boolean => {
   const kinds = new Set(artifacts.map(({ artifact }) => artifact.artifactKind));
   return (
     artifacts.length === kinds.size &&
-    [...REQUIRED_ARTIFACTS].every((kind) => kinds.has(kind)) &&
+    kinds.has("canonical_audio") &&
+    ([...REQUIRED_ARTIFACTS].every((kind) => kinds.has(kind)) || kinds.size === 1) &&
     artifacts.every(
       ({ artifact }) =>
         artifact.byteLength > 0n &&
@@ -220,7 +233,7 @@ const recordPins = async (
   dependencies: DataRegistrationWorkflowDependencies,
   operation: DataRegistrationOperation,
   prepared: DataRegistrationPreparedArtifact,
-  result: Extract<DataRegistrationPinResult, { status: "verified" }>,
+  result: Extract<DataRegistrationPinResult, { status: "verified" | "primary_verified" }>,
   existing: readonly DataRegistrationPinVerification[],
 ): Promise<void> => {
   const common = {
@@ -272,7 +285,18 @@ const recordPins = async (
   if (gateway === undefined) {
     const attemptNumber = nextAttempt("independent_gateway", "ipfs.io");
     await dependencies.store.recordPinVerification({
-      ...common,
+      ...(result.status === "verified"
+        ? common
+        : {
+            registrationOperationId: operation.registrationOperationId,
+            artifactId: prepared.artifact.artifactId,
+            artifactKind: prepared.artifact.artifactKind,
+            outcome: "failed" as const,
+            cid: null,
+            canonicalSha256: null,
+            byteLength: null,
+            verifiedAt: null,
+          }),
       pinVerificationId: `${prepared.artifact.artifactId}:gateway:ipfs.io:${attemptNumber}`,
       role: "independent_gateway",
       providerId: "ipfs.io",
@@ -317,7 +341,7 @@ export async function advanceDataRegistrationWorkflow(
     const persistedPins = await dependencies.pinReader.listPinVerifications(
       operation.registrationOperationId,
     );
-    if (!artifactsAreComplete(artifacts)) {
+    if (!artifactsAreValidStage(artifacts)) {
       return failOperation(
         dependencies,
         operation,
@@ -388,17 +412,35 @@ export async function advanceDataRegistrationWorkflow(
           "data-registration://persisted-pin-mismatch",
         );
       }
-    }
-    return (await dependencies.store.pinsReady(operation.registrationOperationId))
-      ? { outcome: "progress" }
-      : failOperation(
+      if (pinned.status === "primary_verified") {
+        if (pinned.gatewayRetryable) return { outcome: "waiting" };
+        return failOperation(
           dependencies,
           operation,
           null,
           "failed",
           "pin_verification_failed",
-          "data-registration://pin-fence-not-ready",
+          pinned.gatewayEvidenceRef,
         );
+      }
+    }
+    if (await dependencies.store.pinsReady(operation.registrationOperationId)) {
+      return { outcome: "progress" };
+    }
+    // The first durable pass intentionally contains only canonical audio. Its
+    // verified CID is an input to both canonical metadata documents, which are
+    // prepared and pinned by the next Workflow step.
+    if (artifacts.length === 1 && artifacts[0]?.artifact.artifactKind === "canonical_audio") {
+      return { outcome: "progress" };
+    }
+    return failOperation(
+      dependencies,
+      operation,
+      null,
+      "failed",
+      "pin_verification_failed",
+      "data-registration://pin-fence-not-ready",
+    );
   }
 
   const attempt =
