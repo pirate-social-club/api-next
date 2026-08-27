@@ -53,12 +53,12 @@ function personaFor(connection: string, accountId = actor): string {
   if (personaId === undefined) throw new Error(`missing test persona for ${accountId}`);
   return personaId;
 }
-const terms: SongTerms = {
+const termsFor = (recipientId: string): SongTerms => ({
   licensePreset: "non-commercial",
   commercialRemixShareBps: 0,
-  royaltyAllocations: [{ recipientId: actor, shareBps: 10_000 }],
+  royaltyAllocations: [{ recipientId, shareBps: 10_000 }],
   accessMode: "public",
-};
+});
 const analysis: TrustedSongAnalysis = {
   version: "song-trusted-analysis-v1",
   operationId: operation,
@@ -307,7 +307,7 @@ async function createThroughDecision(
       store.bindTerms({
         ...command(connection, "/media-post-submissions/:submissionId/terms", "terms-key"),
         expectedCreationRevision: 1,
-        terms,
+        terms: termsFor(personaFor(connection)),
       }),
     ),
   ).toEqual({ kind: "committed", submissionId: submission });
@@ -1073,12 +1073,47 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           }),
         ),
       ).rejects.toMatchObject({ reason: "identity-conflict" });
+      await expect(
+        run(connection, (store) =>
+          store.bindTerms({
+            ...command(
+              connection,
+              "/media-post-submissions/:submissionId/terms",
+              "account-recipient-terms-key",
+            ),
+            expectedCreationRevision: 2,
+            terms: termsFor(actor),
+            outbox: {
+              outboxEventId: "media_pg_account_recipient_terms_outbox",
+              effectIdentity: "media_pg_account_recipient_terms_effect",
+              payload: {
+                kind: "decision_wakeup",
+                submission_id: submission,
+                operation_id: operation,
+                creation_revision: 3,
+                lyrics_revision: 1,
+                trigger: "terms",
+                workflow_revision: 1,
+                workflow_instance_id: `media-${operation}-r1`,
+              },
+            },
+          }),
+        ),
+      ).rejects.toBeDefined();
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::text AS count FROM media_submission_terms WHERE submission_id=$1",
+            [submission],
+          )
+        ).rows[0]?.count,
+      ).toBe("0");
       expect(
         await run(connection, (store) =>
           store.bindTerms({
             ...command(connection, "/media-post-submissions/:submissionId/terms", "terms-key"),
             expectedCreationRevision: 2,
-            terms,
+            terms: termsFor(personaFor(connection)),
             outbox: {
               outboxEventId: "media_pg_terms_outbox",
               effectIdentity: "media_pg_terms_effect",
@@ -1244,7 +1279,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           store.bindTerms({
             ...command(connection, "/media-post-submissions/:submissionId/terms", "terms-refresh"),
             expectedCreationRevision: 2,
-            terms,
+            terms: termsFor(personaFor(connection)),
             outbox: {
               outboxEventId: "media_pg_terms_wakeup_outbox",
               effectIdentity: "media_pg_terms_wakeup_effect",
@@ -2473,8 +2508,8 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           community,
           actor,
           operation,
-          JSON.stringify(terms.royaltyAllocations),
-          JSON.stringify(terms),
+          JSON.stringify(termsFor(personaFor(connection)).royaltyAllocations),
+          JSON.stringify(termsFor(personaFor(connection))),
         ],
       );
       await admin.query(
@@ -2523,8 +2558,11 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
             community,
             actor,
             operation,
-            JSON.stringify(terms.royaltyAllocations),
-            JSON.stringify({ ...terms, licensePreset: "commercial-use" }),
+            JSON.stringify(termsFor(personaFor(connection)).royaltyAllocations),
+            JSON.stringify({
+              ...termsFor(personaFor(connection)),
+              licensePreset: "commercial-use",
+            }),
           ],
         ),
       ).rejects.toThrow();

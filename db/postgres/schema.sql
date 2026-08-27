@@ -11189,7 +11189,7 @@ BEGIN
     SELECT count(DISTINCT value->>'recipientId') INTO distinct_recipient_count
       FROM jsonb_array_elements(NEW.royalty_allocations);
     IF distinct_recipient_count <> allocation_count OR allocation_total <> 10000
-       OR NOT EXISTS (SELECT 1 FROM jsonb_array_elements(NEW.royalty_allocations) value WHERE value->>'recipientId' = NEW.actor_user_id) THEN
+       OR NOT EXISTS (SELECT 1 FROM jsonb_array_elements(NEW.royalty_allocations) value WHERE value->>'recipientId' = NEW.author_persona_id) THEN
       RAISE EXCEPTION 'royalty allocations do not form an exact author-inclusive 10000 bps split';
     END IF;
   ELSIF TG_TABLE_NAME = 'media_publication_decisions' THEN
