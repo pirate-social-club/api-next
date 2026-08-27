@@ -535,9 +535,9 @@ export function makeDataRegistrationAeneidChain(
             confirmations,
             logIndex: registeredLogIndex ?? 0,
             ipMetadataUri: `ipfs://${ipCid}`,
-            ipMetadataHash: ipHash,
+            ipMetadataHash: `0x${ipHash}`,
             nftMetadataUri: `ipfs://${nftCid}`,
-            nftMetadataHash: nftHash,
+            nftMetadataHash: `0x${nftHash}`,
           },
         };
       }

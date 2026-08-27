@@ -200,8 +200,9 @@ describe("Aeneid DATA registration chain", () => {
 
   test("keeps mined evidence schema-safe until final confirmations arrive", async () => {
     const tokenContract = "0x3333333333333333333333333333333333333333";
+    let head = "0xa";
     const rpc = async (method: string): Promise<unknown> => {
-      if (method === "eth_blockNumber") return "0xa";
+      if (method === "eth_blockNumber") return head;
       if (method === "eth_getTransactionReceipt") {
         return {
           transactionHash,
@@ -235,6 +236,17 @@ describe("Aeneid DATA registration chain", () => {
         registeredIpId: null,
         ipMetadataUri: null,
         nftMetadataUri: null,
+      },
+    });
+    head = "0xc";
+    const confirmed = await chain(baseAuthority, rpc).observeReceipt(operation, attempt);
+    expect(confirmed).toMatchObject({
+      status: "confirmed",
+      observation: {
+        outcome: "confirmed",
+        confirmations: 3,
+        ipMetadataHash: `0x${"b".repeat(64)}`,
+        nftMetadataHash: `0x${"c".repeat(64)}`,
       },
     });
   });
