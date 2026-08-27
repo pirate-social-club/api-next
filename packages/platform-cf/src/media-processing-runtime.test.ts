@@ -8,12 +8,14 @@ import {
   makeElevenLabsAlignmentFetchTransport,
   makeElevenLabsProcessingAlignmentPort,
   makeMediaProcessingRuntime,
+  makeOpenRouterFetchTransport,
   makeR2EmbeddedMetadataPort,
   makeR2MediaProcessingArtifactReader,
   makeTransloaditFetchTransport,
 } from "./media-processing-runtime.ts";
 import { encodeAcrCloudMultipart } from "./media-providers/acrcloud-protocol.ts";
 import type { ElevenLabsAlignmentInput } from "./media-providers/elevenlabs-alignment-types.ts";
+import { OPENROUTER_CLASSIFIER_ENDPOINT } from "./media-providers/openrouter.ts";
 
 const originalDigestStream = Object.getOwnPropertyDescriptor(crypto, "DigestStream");
 
@@ -237,8 +239,20 @@ describe("media processor runtime boundary", () => {
       },
       signal,
     });
-    expect(requests).toHaveLength(3);
+    await makeOpenRouterFetchTransport(fetcher)({
+      method: "POST",
+      url: OPENROUTER_CLASSIFIER_ENDPOINT,
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+      },
+      body: new TextEncoder().encode('{"lyrics":"fixture"}'),
+      signal,
+      redirect: "error",
+    });
+    expect(requests).toHaveLength(4);
     expect(requests.every(({ init }) => init?.redirect === "manual")).toBe(true);
+    expect(requests[3]?.url).toBe("https://eu.openrouter.ai/api/v1/chat/completions");
     const acrBody = requests[1]?.init?.body;
     expect(acrBody).toBeInstanceOf(FormData);
     if (!(acrBody instanceof FormData)) throw new TypeError("expected native multipart body");

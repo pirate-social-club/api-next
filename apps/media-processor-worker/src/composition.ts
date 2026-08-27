@@ -9,6 +9,7 @@ import {
   makeAcrCloudFetchTransport,
   makeElevenLabsAlignmentFetchTransport,
   makeElevenLabsProcessingAlignmentPort,
+  makeOpenRouterFetchTransport,
   makeR2EmbeddedMetadataPort,
   makeR2MediaProcessingArtifactReader,
   makeR2Mp3SampleMediaTransform,
@@ -38,6 +39,7 @@ export type MediaProcessorRuntimeEnv = MediaProcessorWorkerEnv &
     readonly ACRCLOUD_ACCESS_SECRET?: string;
     readonly ELEVENLABS_API_KEY?: string;
     readonly OPENAI_API_KEY?: string;
+    readonly MEDIA_CLASSIFIER_API_KEY?: string;
     readonly DATA_REGISTRATION_ENABLED?: string;
     readonly DATA_REGISTRATION_CHAIN_ID?: string;
   }>;
@@ -47,6 +49,12 @@ function requiredText(value: string | undefined, name: string): string {
     throw new Error(`${name} is required when media processing is enabled`);
   }
   return value;
+}
+
+function requiredOperationalSecret(value: string | undefined, name: string): string {
+  const secret = requiredText(value, name);
+  if (secret === "PENDING") throw new Error(`${name} is pending provisioning`);
+  return secret;
 }
 
 function requiredBinding<T>(value: T | undefined, name: string): T {
@@ -139,10 +147,27 @@ function makeEnabledProviders(env: MediaProcessorRuntimeEnv): MediaProcessingPro
   return {
     transform: bindPhysicalR2Keys(transform),
     identification,
-    // The accepted scaffold is deliberately disabled until its provider route
-    // is ratified. Lyrics therefore fail closed into the persisted exhaustion
-    // path without a classifier request; lyrics-free songs do not call it.
-    classifier: makeOpenRouterClassifierAdapter(),
+    classifier: makeOpenRouterClassifierAdapter({
+      enabled: true,
+      api_key: requiredOperationalSecret(env.MEDIA_CLASSIFIER_API_KEY, "MEDIA_CLASSIFIER_API_KEY"),
+      model: "google/gemini-3.1-flash-lite",
+      prompt_revision: "lyrics-explicitness-language-prompt-v1",
+      policy_revision: "lyrics-explicitness-language-policy-v1",
+      classifier_revision: "lyrics-explicitness-language-classifier-v1",
+      adapter_revision: "openrouter-classifier-adapter-v2-eu",
+      provider_policy: {
+        require_parameters: true,
+        data_collection: "deny",
+        zdr: true,
+        allow_fallbacks: false,
+        sort: "price",
+        order: ["google-vertex"],
+        only: ["google-vertex"],
+        ignore: [],
+      },
+      account_plugins_disabled: true,
+      transport: makeOpenRouterFetchTransport(),
+    }),
     artifactReader: makeR2MediaProcessingArtifactReader(derivedArtifacts),
     metadata: makeR2EmbeddedMetadataPort(immutableOriginals),
     alignment: makeElevenLabsProcessingAlignmentPort(
