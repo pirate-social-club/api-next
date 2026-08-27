@@ -161,19 +161,29 @@ export function makePostgresDataRegistrationArtifactAuthorityReader(
           const allocations = parseAllocations(row.royalty_allocations);
           const recipients = yield* db.execute<Row>({
             label: "data-registration.artifacts.recipients",
-            text: `SELECT persona.account_id,wallet.address
-                     FROM personas persona
+            text: `SELECT requested.recipient_id,wallet.address
+                     FROM unnest($1::text[]) requested(recipient_id)
+                     JOIN LATERAL (
+                       SELECT candidate.persona_id
+                         FROM personas candidate
+                        WHERE candidate.persona_id=requested.recipient_id
+                           OR (candidate.is_first_persona=true
+                               AND candidate.account_id=requested.recipient_id)
+                        ORDER BY CASE
+                          WHEN candidate.persona_id=requested.recipient_id THEN 0 ELSE 1
+                        END
+                        LIMIT 1
+                     ) persona ON true
                      JOIN persona_wallet_assignments wallet
                        ON wallet.persona_id=persona.persona_id
                       AND wallet.chain_account_kind='evm' AND wallet.status='active'
-                    WHERE persona.is_first_persona=true AND persona.account_id = ANY($1::text[])
-                    ORDER BY persona.account_id`,
+                    ORDER BY requested.recipient_id`,
             values: [allocations.map(({ recipientId }) => recipientId)],
             readonly: true,
           });
           const addresses = new Map(
             recipients.rows.map((recipient) => [
-              text(recipient, "account_id"),
+              text(recipient, "recipient_id"),
               text(recipient, "address").toLowerCase(),
             ]),
           );
@@ -248,8 +258,7 @@ export function makePostgresDataRegistrationArtifactAuthorityReader(
             canonicalSha256: nullableText(row, "canonical_sha256"),
             byteLength: row.byte_length === null ? null : positiveBigint(row.byte_length),
             evidenceRef: text(row, "evidence_ref"),
-            verifiedAt:
-              row.verified_at === null ? null : new Date(text(row, "verified_at")).toISOString(),
+            verifiedAt: row.verified_at === null ? null : instant(row, "verified_at"),
           }));
         }),
       ),

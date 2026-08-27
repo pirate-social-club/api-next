@@ -535,9 +535,9 @@ export function makeDataRegistrationAeneidChain(
             confirmations,
             logIndex: registeredLogIndex ?? 0,
             ipMetadataUri: `ipfs://${ipCid}`,
-            ipMetadataHash: ipHash,
+            ipMetadataHash: `0x${ipHash}`,
             nftMetadataUri: `ipfs://${nftCid}`,
-            nftMetadataHash: nftHash,
+            nftMetadataHash: `0x${nftHash}`,
           },
         };
       }
@@ -574,7 +574,9 @@ export function makeJsonRpcTransport(
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ jsonrpc: "2.0", id: sequence, method, params }),
-      redirect: "error",
+      // Workers does not implement `error`; `manual` exposes redirects so the
+      // explicit non-2xx check below preserves the RPC no-follow boundary.
+      redirect: "manual",
       signal: AbortSignal.timeout(15_000),
     });
     if (!response.ok) throw new Error("Aeneid RPC unavailable");

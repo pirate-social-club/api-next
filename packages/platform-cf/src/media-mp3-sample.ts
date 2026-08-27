@@ -4,6 +4,9 @@ import {
   type MediaTransformAttemptContext,
   type MediaTransformAudioSampleInput,
   type MediaTransformAudioSampleOutcome,
+  type MediaTransformProbe,
+  type MediaTransformProbeInput,
+  type MediaTransformProbeOutcome,
   MediaTransformRequestInvalid,
   type MediaTransformService,
   mediaTransformSampleWindow,
@@ -18,6 +21,7 @@ const SHA256 = /^[0-9a-f]{64}$/u;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u;
 
 type Mp3Frame = Readonly<{
+  readonly bitrateBps: number;
   readonly byteLength: number;
   readonly channels: 1 | 2;
   readonly durationMs: number;
@@ -35,6 +39,7 @@ class Mp3WindowFailure extends Error {
   constructor(
     readonly reason:
       | "aborted"
+      | "duration_exceeded"
       | "inconsistent_media_facts"
       | "output_too_large"
       | "stream_failed"
@@ -154,11 +159,106 @@ function parseMp3Frame(bytes: Uint8Array): Mp3Frame | null {
   if (byteLength < 4) return null;
   const samples = version === 1 ? 1_152 : 576;
   return {
+    bitrateBps: bitrateKbps * 1_000,
     byteLength,
     channels: ((fourth >> 6) & 0x03) === 3 ? 1 : 2,
     durationMs: (samples * 1_000) / sampleRateHz,
     sampleRateHz,
     version,
+  };
+}
+
+/** Probe one sealed MP3 by walking every complete frame. */
+export async function readMp3Probe(
+  stream: ReadableStream<Uint8Array>,
+  maximumDurationMs: number,
+  signal: AbortSignal,
+): Promise<MediaTransformProbe> {
+  const reader = new StreamBytes(stream, signal);
+  let durationMs = 0;
+  let audioBytes = 0;
+  let frames = 0;
+  let first: Mp3Frame | null = null;
+  let variableBitrate = false;
+  try {
+    await discardId3(reader);
+    let scanned = 0;
+    while (true) {
+      if (!(await reader.ensure(4))) throw new Mp3WindowFailure("unsupported_codec");
+      if (parseMp3Frame(reader.view(4)) !== null) break;
+      reader.discard(1);
+      scanned += 1;
+      if (scanned > MAXIMUM_INITIAL_SCAN_BYTES) {
+        throw new Mp3WindowFailure("unsupported_codec");
+      }
+    }
+
+    while (true) {
+      if (!(await reader.ensure(4))) {
+        if (reader.available === 0 && frames > 0) break;
+        throw new Mp3WindowFailure("inconsistent_media_facts");
+      }
+      const header = reader.view(4);
+      const frame = parseMp3Frame(header);
+      if (frame === null) {
+        if (header[0] === 0x54 && header[1] === 0x41 && header[2] === 0x47) {
+          if (!(await reader.ensure(128))) {
+            throw new Mp3WindowFailure("inconsistent_media_facts");
+          }
+          reader.discard(128);
+          if ((await reader.ensure(1)) || reader.available !== 0) {
+            throw new Mp3WindowFailure("inconsistent_media_facts");
+          }
+          break;
+        }
+        throw new Mp3WindowFailure("inconsistent_media_facts");
+      }
+      if (
+        first !== null &&
+        (frame.version !== first.version ||
+          frame.sampleRateHz !== first.sampleRateHz ||
+          frame.channels !== first.channels)
+      ) {
+        throw new Mp3WindowFailure("inconsistent_media_facts");
+      }
+      first ??= frame;
+      variableBitrate ||= frame.bitrateBps !== first.bitrateBps;
+      if (!(await reader.ensure(frame.byteLength))) {
+        throw new Mp3WindowFailure("inconsistent_media_facts");
+      }
+      reader.discard(frame.byteLength);
+      frames += 1;
+      audioBytes += frame.byteLength;
+      durationMs += frame.durationMs;
+      if (durationMs > maximumDurationMs) {
+        throw new Mp3WindowFailure("duration_exceeded");
+      }
+    }
+  } finally {
+    await reader.cancel("probe_complete");
+    reader.release();
+  }
+
+  if (first === null || frames === 0 || durationMs <= 0) {
+    throw new Mp3WindowFailure("unsupported_codec");
+  }
+  return {
+    version: "media-transform-probe-v1",
+    durationMs: Math.round(durationMs),
+    container: "mp3",
+    mimeType: AUDIO_MPEG,
+    tracks: [
+      {
+        kind: "audio",
+        codec: "mp3",
+        channels: first.channels,
+        sampleRateHz: first.sampleRateHz,
+        bitrateBps: variableBitrate
+          ? Math.round((audioBytes * 8 * 1_000) / durationMs)
+          : first.bitrateBps,
+        bitrateMode: variableBitrate ? "variable" : "constant",
+      },
+    ],
   };
 }
 
@@ -265,15 +365,20 @@ function bytesToHex(value: ArrayBuffer): string {
   return Array.from(new Uint8Array(value), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-function acceptedAttempt(input: MediaTransformAudioSampleInput): MediaTransformAcceptedAttempt {
+type Mp3TransformInput = MediaTransformProbeInput | MediaTransformAudioSampleInput;
+
+function acceptedAttempt(
+  input: Mp3TransformInput,
+  kind: "probe" | "sample",
+): MediaTransformAcceptedAttempt {
   return {
     version: "media-transform-attempt-v1",
     runtimeFence: input.attempt.runtimeFence,
-    providerJobId: `r2-mp3-${input.binding.requestId}`,
+    providerJobId: `r2-mp3-${kind}-${input.binding.requestId}`,
   };
 }
 
-function context(input: MediaTransformAudioSampleInput): MediaTransformAttemptContext {
+function context(input: Mp3TransformInput): MediaTransformAttemptContext {
   return {
     version: "media-transform-attempt-context-v1",
     operationId: input.binding.operationId,
@@ -283,6 +388,46 @@ function context(input: MediaTransformAudioSampleInput): MediaTransformAttemptCo
     requestId: input.binding.requestId,
     adapterRevision: ADAPTER_REVISION,
   };
+}
+
+function invalidProbeInput(input: MediaTransformProbeInput): MediaTransformRequestInvalid | null {
+  const { binding, attempt } = input;
+  if (input.version !== "media-transform-probe-input-v1") {
+    return new MediaTransformRequestInvalid({ reason: "invalid_input_version" });
+  }
+  if (
+    !SAFE_ID.test(binding.operationId) ||
+    !SAFE_ID.test(binding.requestId) ||
+    !Number.isSafeInteger(binding.audioRevision) ||
+    binding.audioRevision < 1 ||
+    !Number.isSafeInteger(binding.analysisRevision) ||
+    binding.analysisRevision < 0 ||
+    !SHA256.test(binding.canonicalAudioSha256)
+  ) {
+    return new MediaTransformRequestInvalid({ reason: "invalid_binding" });
+  }
+  if (
+    input.source.objectKey.length < 1 ||
+    input.source.objectKey.length > 1_024 ||
+    input.source.objectKey.startsWith("/") ||
+    input.source.objectKey.includes("\\") ||
+    input.source.objectKey.split("/").includes("..")
+  ) {
+    return new MediaTransformRequestInvalid({ reason: "invalid_source" });
+  }
+  if (
+    attempt.version !== "media-transform-attempt-v1" ||
+    !Number.isSafeInteger(attempt.runtimeFence.submittedAtMs) ||
+    !Number.isSafeInteger(attempt.runtimeFence.runtimeDeadlineMs) ||
+    attempt.runtimeFence.runtimeDeadlineMs <= attempt.runtimeFence.submittedAtMs
+  ) {
+    return new MediaTransformRequestInvalid({ reason: "invalid_runtime_fence" });
+  }
+  const expectedJobId = `r2-mp3-probe-${binding.requestId}`;
+  if (attempt.providerJobId !== undefined && attempt.providerJobId !== expectedJobId) {
+    return new MediaTransformRequestInvalid({ reason: "invalid_job_id" });
+  }
+  return null;
 }
 
 function invalidInput(input: MediaTransformAudioSampleInput): MediaTransformRequestInvalid | null {
@@ -328,7 +473,7 @@ function invalidInput(input: MediaTransformAudioSampleInput): MediaTransformRequ
   ) {
     return new MediaTransformRequestInvalid({ reason: "invalid_runtime_fence" });
   }
-  const expectedJobId = `r2-mp3-${binding.requestId}`;
+  const expectedJobId = `r2-mp3-sample-${binding.requestId}`;
   if (attempt.providerJobId !== undefined && attempt.providerJobId !== expectedJobId) {
     return new MediaTransformRequestInvalid({ reason: "invalid_job_id" });
   }
@@ -381,13 +526,78 @@ function retainedObjectMatches(
   );
 }
 
+async function probeFromR2(
+  input: MediaTransformProbeInput,
+  originals: R2Bucket,
+): Promise<MediaTransformProbeOutcome> {
+  const base = { attempt: acceptedAttempt(input, "probe"), context: context(input) } as const;
+  let source: R2Object | null;
+  try {
+    source = await originals.head(input.source.objectKey);
+  } catch {
+    return { ...base, status: "retryable_failure", reason: "transport" };
+  }
+  if (
+    source === null ||
+    source.size < 1 ||
+    source.size > MAXIMUM_SOURCE_BYTES ||
+    source.httpMetadata?.contentType !== AUDIO_MPEG
+  ) {
+    return { ...base, status: "rejected", reason: "inconsistent_media_facts" };
+  }
+  const storedSha256 = source.checksums.sha256;
+  if (
+    storedSha256 !== undefined &&
+    bytesToHex(storedSha256) !== input.binding.canonicalAudioSha256
+  ) {
+    return { ...base, status: "rejected", reason: "inconsistent_media_facts" };
+  }
+  let selected: R2Object | R2ObjectBody | null;
+  try {
+    selected = await originals.get(input.source.objectKey, {
+      onlyIf: { etagMatches: source.etag },
+    });
+  } catch {
+    return { ...base, status: "retryable_failure", reason: "transport" };
+  }
+  if (selected === null || !hasBody(selected) || !sameObject(source, selected)) {
+    if (selected !== null && hasBody(selected)) void selected.body.cancel("object_changed");
+    return { ...base, status: "retryable_failure", reason: "transport" };
+  }
+  try {
+    return {
+      ...base,
+      status: "completed",
+      probe: await readMp3Probe(
+        selected.body,
+        MEDIA_TRANSFORM_MAX_AUDIO_DURATION_MS,
+        input.signal ?? new AbortController().signal,
+      ),
+    };
+  } catch (error) {
+    if (!(error instanceof Mp3WindowFailure)) {
+      return { ...base, status: "retryable_failure", reason: "transport" };
+    }
+    if (error.reason === "duration_exceeded") {
+      return { ...base, status: "rejected", reason: "duration_exceeded" };
+    }
+    if (error.reason === "unsupported_codec") {
+      return { ...base, status: "rejected", reason: "unsupported_codec" };
+    }
+    if (error.reason === "inconsistent_media_facts") {
+      return { ...base, status: "rejected", reason: "inconsistent_media_facts" };
+    }
+    return { ...base, status: "retryable_failure", reason: "transport" };
+  }
+}
+
 async function sampleFromR2(
   input: MediaTransformAudioSampleInput,
   originals: R2Bucket,
   derived: R2Bucket,
   maximumSampleBytes: number,
 ): Promise<MediaTransformAudioSampleOutcome> {
-  const base = { attempt: acceptedAttempt(input), context: context(input) } as const;
+  const base = { attempt: acceptedAttempt(input, "sample"), context: context(input) } as const;
   let source: R2Object | null;
   try {
     source = await originals.head(input.source.objectKey);
@@ -514,7 +724,12 @@ export function makeR2Mp3SampleMediaTransform(
     throw new MediaTransformRequestInvalid({ reason: "invalid_limits" });
   }
   return {
-    probe: input.providerTransform.probe,
+    probe: (request) =>
+      Effect.suspend(() => {
+        const invalid = invalidProbeInput(request);
+        if (invalid !== null) return Effect.fail(invalid);
+        return Effect.promise(() => probeFromR2(request, input.immutableOriginals));
+      }),
     extractAudioSample: (request) =>
       Effect.suspend(() => {
         const invalid = invalidInput(request);

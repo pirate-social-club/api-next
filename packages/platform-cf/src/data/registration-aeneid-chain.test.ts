@@ -185,10 +185,24 @@ describe("Aeneid DATA registration chain", () => {
     expect(() => makeJsonRpcTransport("http://aeneid.invalid")).toThrow("must use HTTPS");
   });
 
+  test("uses Workers manual redirect mode and rejects redirect responses", async () => {
+    let redirect: string | undefined;
+    const rpc = makeJsonRpcTransport("https://aeneid.invalid", (async (_input, init) => {
+      redirect = init?.redirect;
+      return new Response(null, {
+        status: 302,
+        headers: { location: "https://elsewhere.invalid" },
+      });
+    }) as typeof fetch);
+    await expect(rpc("eth_blockNumber", [])).rejects.toThrow("Aeneid RPC unavailable");
+    expect(redirect).toBe("manual");
+  });
+
   test("keeps mined evidence schema-safe until final confirmations arrive", async () => {
     const tokenContract = "0x3333333333333333333333333333333333333333";
+    let head = "0xa";
     const rpc = async (method: string): Promise<unknown> => {
-      if (method === "eth_blockNumber") return "0xa";
+      if (method === "eth_blockNumber") return head;
       if (method === "eth_getTransactionReceipt") {
         return {
           transactionHash,
@@ -222,6 +236,17 @@ describe("Aeneid DATA registration chain", () => {
         registeredIpId: null,
         ipMetadataUri: null,
         nftMetadataUri: null,
+      },
+    });
+    head = "0xc";
+    const confirmed = await chain(baseAuthority, rpc).observeReceipt(operation, attempt);
+    expect(confirmed).toMatchObject({
+      status: "confirmed",
+      observation: {
+        outcome: "confirmed",
+        confirmations: 3,
+        ipMetadataHash: `0x${"b".repeat(64)}`,
+        nftMetadataHash: `0x${"c".repeat(64)}`,
       },
     });
   });

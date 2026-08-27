@@ -26,7 +26,10 @@ import {
 
 export type MediaProcessingWorkflowResult =
   | Readonly<{ readonly outcome: "waiting_for_terms" }>
-  | Readonly<{ readonly outcome: "waiting_for_provider" }>
+  | Readonly<{
+      readonly outcome: "waiting_for_provider";
+      readonly reason?: "acr_transport" | "acr_provider" | "acr_throttled" | "acr_preflight";
+    }>
   | Readonly<{
       readonly outcome:
         | "published"
@@ -59,7 +62,17 @@ export type MediaProcessingWorkflowDependencies = Readonly<{
 }>;
 
 class DeferredAttempt extends Error {
-  constructor(readonly reason: "busy" | "exhausted" | "provider_progress" | "stale_fence") {
+  constructor(
+    readonly reason:
+      | "busy"
+      | "exhausted"
+      | "provider_progress"
+      | "stale_fence"
+      | "acr_transport"
+      | "acr_provider"
+      | "acr_throttled"
+      | "acr_preflight",
+  ) {
     super(reason);
     this.name = "DeferredAttempt";
   }
@@ -352,7 +365,13 @@ async function runAcr(
     );
     if (value.outcome === "retryable_failure") {
       await failAttempt(authority, started.lease, dependencies);
-      throw new DeferredAttempt("provider_progress");
+      throw new DeferredAttempt(
+        value.reason === "transport"
+          ? "acr_transport"
+          : value.reason === "throttled"
+            ? "acr_throttled"
+            : "acr_provider",
+      );
     }
     await completeAttempt(authority, started.lease, { kind: "acr", value }, dependencies);
     return value;
@@ -360,7 +379,7 @@ async function runAcr(
     if (error instanceof DeferredAttempt) throw error;
     abort.abort();
     await failAttempt(authority, started.lease, dependencies);
-    throw error;
+    throw new DeferredAttempt("acr_preflight");
   }
 }
 
@@ -922,6 +941,13 @@ export async function runMediaProcessingWorkflow(
       }
       return { outcome: "manual_review" };
     }
-    return { outcome: "waiting_for_provider" };
+    return error.reason.startsWith("acr_")
+      ? {
+          outcome: "waiting_for_provider",
+          reason: error.reason as NonNullable<
+            Extract<MediaProcessingWorkflowResult, { outcome: "waiting_for_provider" }>["reason"]
+          >,
+        }
+      : { outcome: "waiting_for_provider" };
   }
 }

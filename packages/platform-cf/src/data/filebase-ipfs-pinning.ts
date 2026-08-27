@@ -1056,7 +1056,7 @@ export function makeFilebaseIpfsPinningAdapter(
             await cancelResponse(cat, "http_status");
             return catStatus;
           }
-          if (!responseHeaders(cat, ["application/octet-stream"])) {
+          if (!responseHeaders(cat, ["application/octet-stream", "text/plain"])) {
             await cancelResponse(cat, "wrong_content_type");
             return { status: "malformed", outcome: "malformed", reason: "wrong_content_type" };
           }

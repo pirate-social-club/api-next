@@ -208,12 +208,14 @@ describe("ACRCloud signing and multipart", () => {
 
   test("never places the injected secret in multipart bytes", async () => {
     let body: Uint8Array | undefined;
+    let headers: Readonly<Record<string, string>> | undefined;
     let requestId: string | undefined;
     let redirect: string | undefined;
     let url: string | undefined;
     const provider = adapter(null, {
       request: (request) => {
         body = request.body;
+        headers = request.headers;
         requestId = request.requestId;
         redirect = request.redirect;
         url = request.url;
@@ -223,6 +225,7 @@ describe("ACRCloud signing and multipart", () => {
     const result = await Effect.runPromise(provider.identify(input));
     expectContext(result);
     expect(new TextDecoder().decode(body ?? new Uint8Array())).not.toContain("fixture-secret");
+    expect(headers?.["content-length"]).toBeUndefined();
     expect(requestId).toBe("attempt-1");
     expect(redirect).toBe("error");
     expect(url).toBe("https://identify-eu-west-1.acrcloud.com/v1/identify");

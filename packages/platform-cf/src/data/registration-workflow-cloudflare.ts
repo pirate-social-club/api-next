@@ -28,13 +28,23 @@ export interface CloudflareDataRegistrationQueueBatch {
   readonly messages: readonly CloudflareDataRegistrationQueueMessage[];
 }
 
+export async function cloudflareDataRegistrationWorkflowId(logicalId: string): Promise<string> {
+  if (logicalId.length === 0 || logicalId.length > 512 || logicalId !== logicalId.trim()) {
+    throw new TypeError("invalid logical DATA registration Workflow identity");
+  }
+  const digest = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(logicalId)),
+  );
+  return `drw-${Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+}
+
 export function makeCloudflareDataRegistrationWorkflowLauncher(
   binding: CloudflareDataRegistrationWorkflowBinding,
   isMissing: (error: unknown) => boolean,
 ): DataRegistrationWorkflowLauncher {
   const get: DataRegistrationWorkflowLauncher["get"] = async (instanceId) => {
     try {
-      const instance = await binding.get(instanceId);
+      const instance = await binding.get(await cloudflareDataRegistrationWorkflowId(instanceId));
       return (await instance.status()).status === "unknown" ? "missing" : "present";
     } catch (error) {
       if (isMissing(error)) return "missing";
@@ -44,7 +54,8 @@ export function makeCloudflareDataRegistrationWorkflowLauncher(
   return {
     get,
     create: async (instanceId, payload) => {
-      const created = await binding.createBatch([{ id: instanceId, params: payload }]);
+      const providerInstanceId = await cloudflareDataRegistrationWorkflowId(instanceId);
+      const created = await binding.createBatch([{ id: providerInstanceId, params: payload }]);
       if (created.length === 1) return "created";
       if (created.length === 0) return "already_exists";
       throw new Error("Workflow createBatch returned an unexpected instance count");

@@ -141,9 +141,19 @@ async function fetchResponse(
       headers: request.headers,
       ...(request.body === undefined ? {} : { body: request.body }),
       signal: request.signal,
-      redirect: "error",
+      // Workers rejects `error` at runtime. `manual` preserves the no-follow
+      // credential boundary while allowing the adapter to classify 3xx.
+      redirect: "manual",
     });
-  } catch {
+  } catch (error) {
+    const diagnostic =
+      error instanceof Error
+        ? {
+            name: error.name,
+            message: error.message.replaceAll(request.url, "[endpoint]").slice(0, 200),
+          }
+        : { name: "UnknownTransportError", message: "non-error transport rejection" };
+    console.error("media_processing_transport_failure", diagnostic);
     throw new MediaProcessingTransportFailure("network");
   }
 }
@@ -185,7 +195,23 @@ export function makeAcrCloudFetchTransport(
       if (!validFetchRequest(request, "POST", endpoint)) {
         throw new MediaProcessingTransportFailure("invalid_request");
       }
-      const response = await fetchResponse(fetcher, { ...request, body: request.body });
+      const contentType = request.headers["content-type"];
+      if (!contentType?.startsWith("multipart/form-data; boundary=")) {
+        throw new MediaProcessingTransportFailure("invalid_request");
+      }
+      let body: BodyInit;
+      try {
+        body = (await new Response(request.body, {
+          headers: { "content-type": contentType },
+        }).formData()) as unknown as BodyInit;
+      } catch {
+        throw new MediaProcessingTransportFailure("invalid_request");
+      }
+      const response = await fetchResponse(fetcher, {
+        ...request,
+        headers: {},
+        body,
+      });
       return { status: response.status, headers: response.headers, body: responseStream(response) };
     },
   };

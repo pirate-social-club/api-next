@@ -119,6 +119,7 @@ function transportFor(
   options: {
     readonly converge?: boolean;
     readonly contentType?: string;
+    readonly catContentType?: string;
     readonly catBytes?: Uint8Array;
     readonly catOnCancel?: () => void;
     readonly duplicate?: boolean;
@@ -181,7 +182,7 @@ function transportFor(
     }
     return {
       status: 200,
-      headers: { "content-type": "application/octet-stream" },
+      headers: { "content-type": options.catContentType ?? "application/octet-stream" },
       body: body(options.catBytes ?? BYTES, options.catOnCancel),
     };
   };
@@ -239,6 +240,19 @@ describe("Filebase IPFS pinning adapter", () => {
     expect(fake.requests[3]?.body.content_type).toBe("application/octet-stream");
     expect(fake.requests.every((request) => request.redirect === "error")).toBe(true);
     expect(fake.requests[0]?.headers.authorization).toBe(`Bearer ${TOKEN}`);
+  });
+
+  test("accepts Filebase text/plain cat responses only after exact digest verification", async () => {
+    const fake = transportFor({ catContentType: "text/plain" });
+    const result = await Effect.runPromise(adapter(fake.transport).pin(input()));
+    expect(result).toEqual({
+      status: "pinned",
+      outcome: "pinned",
+      cid: CID,
+      byte_length: 4,
+      sha256: SHA256,
+      recursive: true,
+    });
   });
 
   test("rejects a true multipart boundary collision before pinning", async () => {

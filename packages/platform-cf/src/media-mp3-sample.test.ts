@@ -1,10 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import type {
   MediaTransformAudioSampleInput,
+  MediaTransformProbeInput,
   MediaTransformService,
 } from "@pirate/application/media/transform";
 import { Effect } from "effect";
-import { makeR2Mp3SampleMediaTransform, readMp3FrameWindow } from "./media-mp3-sample.ts";
+import {
+  makeR2Mp3SampleMediaTransform,
+  readMp3FrameWindow,
+  readMp3Probe,
+} from "./media-mp3-sample.ts";
 
 const BITRATES = [32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320];
 const FRAME_DURATION_MS = (1_152 * 1_000) / 44_100;
@@ -148,6 +153,73 @@ function providerTransform(): MediaTransformService {
 }
 
 describe("raw MP3 sample extraction", () => {
+  test("probes CBR MP3 duration and track facts without a provider", async () => {
+    const source = mp3({ frames: 1_000, mono: true });
+    const result = await readMp3Probe(
+      chunked(source, 211),
+      60 * 60 * 1_000,
+      new AbortController().signal,
+    );
+    expect(result).toEqual({
+      version: "media-transform-probe-v1",
+      durationMs: Math.round(1_000 * FRAME_DURATION_MS),
+      container: "mp3",
+      mimeType: "audio/mpeg",
+      tracks: [
+        {
+          kind: "audio",
+          codec: "mp3",
+          channels: 1,
+          sampleRateHz: 44_100,
+          bitrateBps: 192_000,
+          bitrateMode: "constant",
+        },
+      ],
+    });
+  });
+
+  test("probes the sealed R2 object and rejects a truncated MP3", async () => {
+    const source = mp3({ frames: 120, mono: false, vbr: true });
+    const buckets = await sampleBuckets(source);
+    const canonicalAudioSha256 = Array.from(
+      new Uint8Array(await crypto.subtle.digest("SHA-256", source)),
+      (byte) => byte.toString(16).padStart(2, "0"),
+    ).join("");
+    const transform = makeR2Mp3SampleMediaTransform({
+      providerTransform: providerTransform(),
+      immutableOriginals: buckets.originals,
+      derivedArtifacts: buckets.derived,
+      maximumSampleBytes: 1_000_000,
+    });
+    const request: MediaTransformProbeInput = {
+      version: "media-transform-probe-input-v1",
+      binding: {
+        operationId: "operation",
+        audioRevision: 1,
+        analysisRevision: 1,
+        canonicalAudioSha256,
+        requestId: "probe",
+      },
+      source: { objectKey: "immutable/operation/audio/1" },
+      attempt: {
+        version: "media-transform-attempt-v1",
+        runtimeFence: { submittedAtMs: 1_000, runtimeDeadlineMs: 61_000 },
+      },
+    };
+    await expect(Effect.runPromise(transform.probe(request))).resolves.toMatchObject({
+      status: "completed",
+      probe: {
+        container: "mp3",
+        tracks: [{ codec: "mp3", channels: 2, bitrateMode: "variable" }],
+      },
+    });
+
+    const truncated = source.subarray(0, source.byteLength - 100);
+    await expect(
+      readMp3Probe(chunked(truncated, 173), 60 * 60 * 1_000, new AbortController().signal),
+    ).rejects.toThrow("inconsistent_media_facts");
+  });
+
   test("selects a bounded primary CBR mono window across stream boundaries", async () => {
     const source = mp3({ frames: 1_000, mono: true });
     const sourceDurationMs = Math.round(1_000 * FRAME_DURATION_MS);

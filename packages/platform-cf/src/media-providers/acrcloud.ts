@@ -199,7 +199,6 @@ export function makeAcrCloudAdapter(
             url: endpointForAcrCloud(config.host),
             headers: {
               "content-type": multipart.contentType,
-              "content-length": String(multipart.body.byteLength),
             },
             body: multipart.body,
             signal: controller.signal,
