@@ -25,6 +25,7 @@ const dependencyRoots = [
   "apps/http-worker",
   "apps/jobs-worker",
   "apps/media-processor-worker",
+  "apps/data-registration-worker",
   "apps/hns-owner-verifier",
   "apps/hns-observer-driver",
   "apps/hns-platform-gateway",
@@ -115,6 +116,7 @@ describe("provider dependency boundary", () => {
     );
     expect(result.checkedFiles).toContain("packages/domain/src/gates-v2/index.ts");
     expect(result.checkedFiles).toContain("apps/media-processor-worker/src/index.ts");
+    expect(result.checkedFiles).toContain("apps/data-registration-worker/src/index.ts");
   });
 
   test("keeps the media processor Worker on application and platform seams", async () => {
@@ -135,6 +137,27 @@ describe("provider dependency boundary", () => {
       lintDependencies(forbiddenRoot, { checkVerificationExportSurface: false }).violations,
     ).toContain(
       "apps/media-processor-worker/src/index.ts: @pirate/media-processor-worker may not import @pirate/domain",
+    );
+  });
+
+  test("keeps the DATA registration Worker on application and platform seams", async () => {
+    const allowedRoot = await fixtureRoot({
+      "apps/data-registration-worker/src/index.ts":
+        'import "@pirate/application"; import "@pirate/platform-cf";',
+      "packages/platform-cf/src/verification/providers/contract-fixture.ts": "",
+    });
+    expect(
+      lintDependencies(allowedRoot, { checkVerificationExportSurface: false }).violations,
+    ).toEqual([]);
+
+    const forbiddenRoot = await fixtureRoot({
+      "apps/data-registration-worker/src/index.ts": 'import "@pirate/domain";',
+      "packages/platform-cf/src/verification/providers/contract-fixture.ts": "",
+    });
+    expect(
+      lintDependencies(forbiddenRoot, { checkVerificationExportSurface: false }).violations,
+    ).toContain(
+      "apps/data-registration-worker/src/index.ts: @pirate/data-registration-worker may not import @pirate/domain",
     );
   });
 
