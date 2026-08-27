@@ -327,6 +327,9 @@ const mediaPersonaRecipientTriggerMigrationSql = await Bun.file(
     import.meta.url,
   ),
 ).text();
+const textRatingsAgeAccessMigrationSql = await Bun.file(
+  new URL("../../../db/postgres/migrations/0065_text_ratings_age_access.sql", import.meta.url),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -654,6 +657,11 @@ const mediaPersonaRecipientTriggerMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0064_media_persona_recipient_trigger.sql"] ?? "",
   sql: mediaPersonaRecipientTriggerMigrationSql,
 };
+const textRatingsAgeAccessMigration: PostgresMigration = {
+  version: "0065_text_ratings_age_access.sql",
+  checksum: checksumManifest.migrations["0065_text_ratings_age_access.sql"] ?? "",
+  sql: textRatingsAgeAccessMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -719,6 +727,7 @@ const migrations: readonly PostgresMigration[] = [
   globalPirateHandleCleanupRenameMigration,
   communityModerationOwnerRuntimeMigration,
   mediaPersonaRecipientTriggerMigration,
+  textRatingsAgeAccessMigration,
 ];
 
 function checksum(value: string): string {
@@ -1011,6 +1020,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       expect(checksum(communityModerationOwnerRuntimeMigrationSql)).toBe(
         communityModerationOwnerRuntimeMigration.checksum,
       );
+      expect(checksum(textRatingsAgeAccessMigrationSql)).toBe(
+        textRatingsAgeAccessMigration.checksum,
+      );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
@@ -1032,6 +1044,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       );
       expect(tables.rows.map((row) => row.table_name).sort()).toEqual([
         "account_aliases",
+        "account_minimum_age_attestations",
         "account_streak_clocks",
         "account_streak_timezone_actions",
         "action_challenges",
