@@ -108,15 +108,6 @@ function responseStream(response: Response): ReadableStream<Uint8Array> {
   );
 }
 
-function requestByteStream(bytes: Uint8Array): ReadableStream<Uint8Array> {
-  return new ReadableStream({
-    start(controller) {
-      controller.enqueue(bytes);
-      controller.close();
-    },
-  });
-}
-
 function validFetchRequest(
   request: Readonly<{
     method: string;
@@ -196,7 +187,7 @@ export function makeAcrCloudFetchTransport(
       }
       const response = await fetchResponse(fetcher, {
         ...request,
-        body: requestByteStream(request.body),
+        body: request.body,
       });
       return { status: response.status, headers: response.headers, body: responseStream(response) };
     },
