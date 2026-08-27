@@ -28,6 +28,7 @@ const cutoverMigrationIndex = migrations.findIndex(
   (migration) => migration.version === cutoverMigrationVersion,
 );
 const foundationMigrations = migrations.slice(0, foundationMigrationIndex + 1);
+const cutoverMigrations = migrations.slice(0, cutoverMigrationIndex + 1);
 
 function schemaName(): string {
   return `api_next_community_moderation_${crypto.randomUUID().replaceAll("-", "")}`;
@@ -437,8 +438,8 @@ suite("community moderation authority and policy migration", () => {
   }, 120_000);
 
   test("cuts over to the pinned provider and fences new writes to complete V2 evidence", async () => {
-    if (cutoverMigrationIndex !== migrations.length - 1) {
-      throw new Error(`${cutoverMigrationVersion} must be the latest migration in this lane`);
+    if (cutoverMigrationIndex <= foundationMigrationIndex) {
+      throw new Error(`${cutoverMigrationVersion} must follow the moderation foundation`);
     }
     await withSchema(async (connection, admin) => {
       await applyMigrationPrefix(connection);
@@ -450,8 +451,11 @@ suite("community moderation authority and policy migration", () => {
         migrations: foundationMigrations,
       });
 
-      await runPostgresMigrations({ connectionString: connection, migrations });
-      const replay = await runPostgresMigrations({ connectionString: connection, migrations });
+      await runPostgresMigrations({ connectionString: connection, migrations: cutoverMigrations });
+      const replay = await runPostgresMigrations({
+        connectionString: connection,
+        migrations: cutoverMigrations,
+      });
       expect(replay).toEqual({
         dryRun: false,
         result: { applied: [], currentVersion: cutoverMigrationVersion },
