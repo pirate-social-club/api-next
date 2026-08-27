@@ -195,6 +195,46 @@ describe("media submission service upload orchestration", () => {
     expect(lookupActor).toEqual(actor);
   });
 
+  test("rejects a non-MP3 reservation before presigning or persistence", async () => {
+    let presigns = 0;
+    let writes = 0;
+    const services = servicesWith({
+      store: storeWith({
+        replayReservation: async () => ({ kind: "none" }),
+        reserve: async () => {
+          writes += 1;
+          throw new Error("must not persist a non-MP3 reservation");
+        },
+      }),
+      presigner: {
+        presign: () => {
+          presigns += 1;
+          return Effect.die(new Error("must not presign a non-MP3 reservation"));
+        },
+      },
+    });
+
+    await expect(
+      reserveMediaUpload(
+        {
+          communityId: "media_community",
+          actor,
+          body: {
+            persona_id: persona.persona_id,
+            idempotency_key: "reserve-non-mp3-key",
+            track: "song",
+            slot: "primary_audio",
+            expected_content_type: "audio/wav",
+            expected_size_bytes: 4,
+          },
+        },
+        services,
+      ),
+    ).rejects.toThrow("Public-song v1 accepts MP3 audio only");
+    expect(presigns).toBe(0);
+    expect(writes).toBe(0);
+  });
+
   test("replays a reservation before invoking the presigner", async () => {
     const document = {
       reservation_id: "media_reservation_replay",

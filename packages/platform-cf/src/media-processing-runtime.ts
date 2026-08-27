@@ -30,6 +30,12 @@ import {
   type TransloaditTransportResponse,
 } from "./media-transform-protocol.ts";
 
+export {
+  MEDIA_MP3_SAMPLE_ADAPTER_REVISION,
+  makeR2Mp3SampleMediaTransform,
+  readMp3FrameWindow,
+} from "./media-mp3-sample.ts";
+
 const IMMUTABLE_REF_PREFIX = "media://immutable/";
 const SHA256 = /^[0-9a-f]{64}$/u;
 const TRANSLOADIT_JOB_URL = new RegExp(
@@ -338,7 +344,7 @@ export function makeR2MediaProcessingArtifactReader(
     ) => {
       if (
         artifact.retainedObjectVerification !== "required" ||
-        artifact.contentType !== "audio/wav" ||
+        (artifact.contentType !== "audio/mpeg" && artifact.contentType !== "audio/wav") ||
         !Number.isSafeInteger(artifact.byteLength) ||
         artifact.byteLength < 1 ||
         artifact.byteLength > maximumBytes

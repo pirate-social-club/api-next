@@ -247,8 +247,8 @@ describe("media processor runtime boundary", () => {
     const calls: string[] = [];
     const artifact: MediaTransformSampleArtifact = {
       version: "media-transform-sample-artifact-v1",
-      objectKey: "media-transform/operation/primary.wav",
-      contentType: "audio/wav",
+      objectKey: "media-transform/operation/primary.mp3",
+      contentType: "audio/mpeg",
       byteLength: bytes.byteLength,
       offsetMs: 0,
       durationMs: 12_000,
@@ -256,7 +256,7 @@ describe("media processor runtime boundary", () => {
       retainedObjectVerification: "required",
     };
     const reader = makeR2MediaProcessingArtifactReader(
-      r2Bucket(artifact.objectKey, bytes, "audio/wav", calls),
+      r2Bucket(artifact.objectKey, bytes, "audio/mpeg", calls),
     );
     await expect(
       reader.readAudioSample(artifact, 4, new AbortController().signal),

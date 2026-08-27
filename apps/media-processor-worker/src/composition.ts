@@ -5,11 +5,13 @@ import {
   makeCloudflareMediaProcessingWorkflowLauncher,
 } from "@pirate/platform-cf/media-processing-cloudflare";
 import {
+  MEDIA_MP3_SAMPLE_ADAPTER_REVISION,
   makeAcrCloudFetchTransport,
   makeElevenLabsAlignmentFetchTransport,
   makeElevenLabsProcessingAlignmentPort,
   makeR2EmbeddedMetadataPort,
   makeR2MediaProcessingArtifactReader,
+  makeR2Mp3SampleMediaTransform,
   makeTransloaditFetchTransport,
 } from "@pirate/platform-cf/media-processing-runtime";
 import { makeMediaProcessingStore } from "@pirate/platform-cf/media-processing-store";
@@ -159,8 +161,15 @@ function makeEnabledProviders(env: MediaProcessorRuntimeEnv): MediaProcessingPro
     },
   });
 
+  const transform = makeR2Mp3SampleMediaTransform({
+    providerTransform: transloadit,
+    immutableOriginals,
+    derivedArtifacts,
+    maximumSampleBytes: 4_000_000,
+  });
+
   return {
-    transform: bindPhysicalR2Keys(transloadit),
+    transform: bindPhysicalR2Keys(transform),
     identification,
     // The accepted scaffold is deliberately disabled until its provider route
     // is ratified. Lyrics therefore fail closed into the persisted exhaustion
@@ -214,7 +223,7 @@ export function makeMediaProcessorComposition(
         workerId,
         now: Date.now,
         policyRevision: "song-publication-decision-v1",
-        transformAdapterRevision: "transloadit-v1",
+        transformAdapterRevision: `transloadit-probe-${MEDIA_MP3_SAMPLE_ADAPTER_REVISION}`,
         metadataAdapterRevision: "id3v2-mp3-metadata-v1",
         classifierTimeoutMs: 30_000,
         transformRuntimeMs: 30 * 60 * 1_000,

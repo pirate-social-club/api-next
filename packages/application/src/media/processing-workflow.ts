@@ -345,8 +345,8 @@ async function runAcr(
         signal: abort.signal,
         sample: {
           bytes,
-          filename: `${variant}.wav`,
-          contentType: "audio/wav",
+          filename: `${variant}.${artifact.contentType === "audio/mpeg" ? "mp3" : "wav"}`,
+          contentType: artifact.contentType,
         },
       }),
     );
@@ -485,6 +485,14 @@ async function buildAnalysis(
     return "processing_failed";
   }
   if (probeOutcome.probe.durationMs > MEDIA_TRANSFORM_MAX_AUDIO_DURATION_MS) {
+    await dependencies.store.commitProcessingFailure(authority, "invalid_media");
+    return "processing_failed";
+  }
+  if (
+    probeOutcome.probe.container !== "mp3" ||
+    probeOutcome.probe.mimeType !== "audio/mpeg" ||
+    probeOutcome.probe.tracks[0].codec !== "mp3"
+  ) {
     await dependencies.store.commitProcessingFailure(authority, "invalid_media");
     return "processing_failed";
   }

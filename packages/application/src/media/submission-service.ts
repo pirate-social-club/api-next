@@ -739,6 +739,9 @@ export async function reserveMediaUpload(
   requireMediaHumanActor(input.actor);
   const body = decodeBody(ReserveSongAudioV1, input.body);
   await requireMediaPersona(input.actor, body.persona_id, services);
+  if (body.expected_content_type !== "audio/mpeg") {
+    throw new BadRequest({ message: "Public-song v1 accepts MP3 audio only" });
+  }
   if (body.expected_size_bytes > MEDIA_AUDIO_MAX_SIZE_BYTES) {
     throw new BadRequest({ message: "Audio upload exceeds the maximum size" });
   }

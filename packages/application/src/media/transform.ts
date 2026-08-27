@@ -101,7 +101,7 @@ export type MediaTransformProbe = Readonly<{
 export type MediaTransformSampleArtifact = Readonly<{
   readonly version: "media-transform-sample-artifact-v1";
   readonly objectKey: string;
-  readonly contentType: "audio/wav";
+  readonly contentType: "audio/mpeg" | "audio/wav";
   readonly byteLength: number;
   readonly offsetMs: number;
   readonly durationMs: number;
