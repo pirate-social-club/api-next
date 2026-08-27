@@ -47,6 +47,44 @@ const failureReason = async (
 };
 
 describe("OpenAI text moderation provider", () => {
+  test("sends a bounded private image as one data-url input", async () => {
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+    const sha256 = Array.from(
+      new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)),
+      (value) => value.toString(16).padStart(2, "0"),
+    ).join("");
+    const provider = makeOpenAiTextModerationProvider({
+      apiKey: "test-key",
+      transport: async (request) => {
+        const body = (await request.json()) as {
+          model: string;
+          input: readonly [{ type: string; image_url: { url: string } }];
+        };
+        expect(body.model).toBe(OPENAI_MODERATION_MODEL);
+        expect(body.input).toHaveLength(1);
+        expect(body.input[0]?.type).toBe("image_url");
+        expect(body.input[0]?.image_url.url).toBe("data:image/webp;base64,AQIDBA==");
+        return response([
+          result({
+            flagged: true,
+            categories: { ...categoryRecord(false), sexual: true },
+            category_applied_input_types: {
+              ...categoryRecord([]),
+              sexual: ["image"],
+            },
+          }),
+        ]);
+      },
+    });
+
+    const evaluated = await Effect.runPromise(
+      provider.evaluateImage({ bytes, mediaType: "image/webp", sha256 }),
+    );
+    expect(evaluated.input_sha256).toBe(sha256);
+    expect(evaluated.matched_categories).toEqual(["sexual"]);
+    expect(evaluated.evidence.applied_input_types.sexual).toEqual(["image"]);
+  });
+
   test("sends separate ordered fields to the pinned model in one exact request", async () => {
     let calls = 0;
     const provider = makeOpenAiTextModerationProvider({

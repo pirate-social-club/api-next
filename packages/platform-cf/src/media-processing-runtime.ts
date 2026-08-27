@@ -51,6 +51,8 @@ const TRANSLOADIT_JOB_URL = new RegExp(
 );
 const ID3_HEADER_BYTES = 10;
 const ID3_MAX_TAG_BYTES = 1_048_576;
+const COVER_MAX_OUTPUT_BYTES = 700_000;
+const COVER_MAX_DIMENSION = 1_200;
 const textDecoder = new TextDecoder("utf-8", { fatal: true });
 
 export type MediaProcessingFetch = (
@@ -441,6 +443,34 @@ export function makeR2MediaProcessingArtifactReader(
       }
       return bytes;
     },
+    readCoverArtifact: async (artifact, maximumBytes, signal) => {
+      if (
+        !SHA256.test(artifact.artifactSha256) ||
+        !["image/jpeg", "image/png", "image/webp"].includes(artifact.mediaType) ||
+        !Number.isSafeInteger(maximumBytes) ||
+        maximumBytes < 1
+      ) {
+        throw new MediaProcessingArtifactFailure("object_shape_mismatch");
+      }
+      const selected = await selectVerifiedObject(
+        retainedArtifacts,
+        derivedCoverObjectKey(artifact.artifactRef),
+      );
+      if (
+        selected.object.size < 1 ||
+        selected.object.size > maximumBytes ||
+        selected.object.httpMetadata?.contentType !== artifact.mediaType ||
+        selected.object.customMetadata?.sha256 !== artifact.artifactSha256
+      ) {
+        void selected.body.cancel("object_shape_mismatch");
+        throw new MediaProcessingArtifactFailure("object_shape_mismatch");
+      }
+      const bytes = await readBoundedStream(selected.body, maximumBytes, signal);
+      if (bytesToHex(await crypto.subtle.digest("SHA-256", bytes)) !== artifact.artifactSha256) {
+        throw new MediaProcessingArtifactFailure("object_shape_mismatch");
+      }
+      return bytes;
+    },
   };
 }
 
@@ -496,12 +526,49 @@ function decodeId3Text(frame: Uint8Array): string {
   return normalized;
 }
 
-type Id3Facts = Readonly<{ readonly title: string | null; readonly artworkPresent: boolean }>;
+type Id3Artwork = Readonly<{
+  readonly mediaType: "image/jpeg" | "image/png" | "image/webp";
+  readonly bytes: Uint8Array;
+}>;
+
+type Id3Facts = Readonly<{ readonly title: string | null; readonly artwork: Id3Artwork | null }>;
+
+function apicDescriptionEnd(frame: Uint8Array, offset: number, encoding: number): number {
+  if (encoding === 0 || encoding === 3) {
+    const end = frame.indexOf(0, offset);
+    if (end < 0) throw new TypeError("unterminated apic description");
+    return end + 1;
+  }
+  if (encoding === 1 || encoding === 2) {
+    for (let index = offset; index + 1 < frame.byteLength; index += 2) {
+      if (frame[index] === 0 && frame[index + 1] === 0) return index + 2;
+    }
+  }
+  throw new TypeError("unsupported apic description");
+}
+
+function decodeApic(frame: Uint8Array): Id3Artwork {
+  const encoding = frame[0];
+  if (encoding === undefined) throw new TypeError("missing apic encoding");
+  const mimeEnd = frame.indexOf(0, 1);
+  if (mimeEnd < 2 || mimeEnd + 2 > frame.byteLength) throw new TypeError("invalid apic mime");
+  const mime = new TextDecoder("windows-1252", { fatal: true })
+    .decode(frame.subarray(1, mimeEnd))
+    .toLowerCase();
+  const mediaType = mime === "image/jpg" ? "image/jpeg" : mime;
+  if (mediaType !== "image/jpeg" && mediaType !== "image/png" && mediaType !== "image/webp") {
+    throw new TypeError("unsupported apic media type");
+  }
+  const imageOffset = apicDescriptionEnd(frame, mimeEnd + 2, encoding);
+  const bytes = frame.subarray(imageOffset);
+  if (bytes.byteLength === 0) throw new TypeError("empty apic image");
+  return { mediaType, bytes };
+}
 
 function parseId3(bytes: Uint8Array): Id3Facts {
-  if (bytes.byteLength < ID3_HEADER_BYTES) return { title: null, artworkPresent: false };
+  if (bytes.byteLength < ID3_HEADER_BYTES) return { title: null, artwork: null };
   if (String.fromCharCode(...bytes.subarray(0, 3)) !== "ID3") {
-    return { title: null, artworkPresent: false };
+    return { title: null, artwork: null };
   }
   const major = bytes[3];
   const flags = bytes[5] ?? 0;
@@ -513,7 +580,7 @@ function parseId3(bytes: Uint8Array): Id3Facts {
   const end = ID3_HEADER_BYTES + tagBytes;
   let offset = ID3_HEADER_BYTES;
   let title: string | null = null;
-  let artworkPresent = false;
+  let artwork: Id3Artwork | null = null;
   while (offset + 10 <= end) {
     const id = String.fromCharCode(...bytes.subarray(offset, offset + 4));
     if (/^\0{4}$/u.test(id)) break;
@@ -524,11 +591,35 @@ function parseId3(bytes: Uint8Array): Id3Facts {
     }
     const frame = bytes.subarray(offset + 10, offset + 10 + size);
     if (id === "TIT2") title = decodeId3Text(frame);
-    if (id === "APIC") artworkPresent = true;
+    if (id === "APIC" && artwork === null) artwork = decodeApic(frame);
     offset += 10 + size;
   }
-  return { title, artworkPresent };
+  return { title, artwork };
 }
+
+function derivedCoverObjectKey(reference: string): string {
+  const prefix = "media://cover/";
+  if (!reference.startsWith(prefix)) throw new MediaProcessingArtifactFailure("invalid_reference");
+  const suffix = reference.slice(prefix.length);
+  if (
+    suffix.length === 0 ||
+    suffix.length > 768 ||
+    suffix.startsWith("/") ||
+    suffix.includes("\\") ||
+    suffix.split("/").includes("..")
+  ) {
+    throw new MediaProcessingArtifactFailure("invalid_reference");
+  }
+  return `covers/${suffix}`;
+}
+
+const byteStream = (bytes: Uint8Array): ReadableStream<Uint8Array> =>
+  new ReadableStream({
+    start(controller) {
+      controller.enqueue(bytes);
+      controller.close();
+    },
+  });
 
 function immutableObjectKey(reference: string): string {
   if (!reference.startsWith(IMMUTABLE_REF_PREFIX)) {
@@ -549,6 +640,8 @@ function immutableObjectKey(reference: string): string {
 
 export function makeR2EmbeddedMetadataPort(
   immutableOriginals: R2Bucket,
+  derivedArtifacts?: R2Bucket,
+  images?: ImagesBinding,
   maximumTagBytes = ID3_MAX_TAG_BYTES,
 ): MediaProcessingMetadataPort {
   return {
@@ -584,13 +677,78 @@ export function makeR2EmbeddedMetadataPort(
           cover: { status: "rejected", reasonCode: "invalid" },
         };
       }
+      let cover: MediaProcessingEmbeddedMetadata["cover"];
+      if (facts.artwork === null) {
+        cover = { status: "absent", reasonCode: "not_embedded" };
+      } else if (derivedArtifacts === undefined || images === undefined) {
+        cover = { status: "rejected", reasonCode: "invalid" };
+      } else {
+        try {
+          const transformed = await images
+            .input(byteStream(facts.artwork.bytes))
+            .transform({
+              width: COVER_MAX_DIMENSION,
+              height: COVER_MAX_DIMENSION,
+              fit: "scale-down",
+            })
+            .output({ format: "image/webp", quality: 82, anim: false });
+          const normalized = await readBoundedStream(
+            transformed.image(),
+            COVER_MAX_OUTPUT_BYTES,
+            signal,
+          );
+          const info = await images.info(byteStream(normalized));
+          if (!("width" in info) || info.width < 1 || info.height < 1) {
+            throw new TypeError("invalid normalized cover");
+          }
+          const artifactSha256 = bytesToHex(await crypto.subtle.digest("SHA-256", normalized));
+          const artifactRef = `media://cover/${authority.operationId}/analysis/${authority.analysisRevision}.webp`;
+          const objectKey = derivedCoverObjectKey(artifactRef);
+          const existing = await derivedArtifacts.head(objectKey);
+          if (
+            existing !== null &&
+            (existing.size !== normalized.byteLength ||
+              existing.httpMetadata?.contentType !== "image/webp" ||
+              existing.customMetadata?.sha256 !== artifactSha256)
+          ) {
+            throw new TypeError("immutable cover conflict");
+          }
+          if (existing === null) {
+            const stored = await derivedArtifacts.put(objectKey, normalized, {
+              onlyIf: { etagDoesNotMatch: "*" },
+              httpMetadata: { contentType: "image/webp" },
+              customMetadata: { sha256: artifactSha256 },
+            });
+            if (stored === null) {
+              const raced = await derivedArtifacts.head(objectKey);
+              if (
+                raced === null ||
+                raced.size !== normalized.byteLength ||
+                raced.customMetadata?.sha256 !== artifactSha256
+              ) {
+                throw new TypeError("immutable cover race");
+              }
+            }
+          }
+          cover = {
+            status: "ready",
+            artifactRef,
+            artifactSha256,
+            mediaType: "image/webp",
+            width: info.width,
+            height: info.height,
+            normalizationRevision: "cloudflare-images-cover-v1",
+            safetyPolicyRevision: "openai-cover-general-audience-v1",
+          };
+        } catch {
+          cover = { status: "rejected", reasonCode: "invalid" };
+        }
+      }
       return {
         evidenceRef: `metadata-evidence-${authority.operationId}-a${authority.analysisRevision}`,
         adapterRevision: "id3v2-mp3-metadata-v1",
         trackTitle: facts.title,
-        cover: facts.artworkPresent
-          ? { status: "rejected", reasonCode: "invalid" }
-          : { status: "absent", reasonCode: "not_embedded" },
+        cover,
       } satisfies MediaProcessingEmbeddedMetadata;
     },
   };

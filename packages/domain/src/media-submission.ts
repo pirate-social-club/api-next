@@ -1,5 +1,7 @@
 /** Pure Spec 013 song creation state machine. */
 
+import type { ModerationPolicyCategoryV1 } from "./content/community-moderation-policy.ts";
+
 export type SongType = "original" | "remix";
 export type MediaSubmissionPhase =
   | "reserve"
@@ -115,10 +117,35 @@ export type TrustedSongAnalysis = Readonly<{
   mediaSafety:
     | "not_applicable"
     | "allow"
+    | "cover_withheld"
     | "visual_provider_unavailable"
     | "draft"
     | "review_required"
     | "blocked";
+  coverModeration?: Readonly<{
+    decision: "not_applicable" | "allow" | "withheld";
+    reason:
+      | "not_embedded"
+      | "clean"
+      | "matched_category"
+      | "provider_unavailable"
+      | "invalid_image"
+      | "limits_exceeded";
+    providerId: "openai" | null;
+    requestedModel: string | null;
+    returnedModel: string | null;
+    inputSha256: string | null;
+    matchedCategories: readonly ModerationPolicyCategoryV1[];
+    evidenceRef: string | null;
+    evidence: Readonly<{
+      input_sha256: string;
+      categories: Readonly<Record<ModerationPolicyCategoryV1, boolean>>;
+      scores: Readonly<Record<ModerationPolicyCategoryV1, number>>;
+      applied_input_types: Readonly<
+        Record<ModerationPolicyCategoryV1, readonly ("text" | "image")[]>
+      >;
+    }> | null;
+  }>;
   contentModeration?: Readonly<{
     decision: "allow" | "manual_review" | "blocked";
     resultingContentRating: "general" | "adult_18";
@@ -1116,7 +1143,7 @@ export function transitionMediaSubmission(
         current.analysis.acr.decision === "skipped" ||
         (current.analysis.acr.decision === "requires_reference" &&
           current.boundReference === null) ||
-        !["not_applicable", "allow", "visual_provider_unavailable"].includes(
+        !["not_applicable", "allow", "cover_withheld", "visual_provider_unavailable"].includes(
           current.analysis.mediaSafety,
         ) ||
         !["not_applicable", "allow"].includes(current.analysis.lyricsSafety) ||
@@ -1261,7 +1288,7 @@ export function transitionMediaSubmission(
         command.decision.lyricsRevision !== (current.lyrics?.lyricsRevision ?? null) ||
         command.decision.canonicalAudioSha256 !== current.audio.canonicalSha256 ||
         command.decision.decisionRevision !== current.decisionRevision + 1 ||
-        !["not_applicable", "allow", "visual_provider_unavailable"].includes(
+        !["not_applicable", "allow", "cover_withheld", "visual_provider_unavailable"].includes(
           current.analysis.mediaSafety,
         ) ||
         !["not_applicable", "allow"].includes(current.analysis.lyricsSafety) ||

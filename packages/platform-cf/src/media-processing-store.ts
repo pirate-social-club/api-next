@@ -193,6 +193,24 @@ const processingAnalysis = (
         acr: analysis.acr,
         lyricsSafety: analysis.lyricsSafety,
         mediaSafety: analysis.mediaSafety,
+        coverModeration: analysis.coverModeration ?? {
+          decision:
+            analysis.embeddedMetadata.cover.status === "absent" ? "not_applicable" : "withheld",
+          reason:
+            analysis.embeddedMetadata.cover.status === "absent"
+              ? "not_embedded"
+              : "provider_unavailable",
+          providerId: null,
+          requestedModel: null,
+          returnedModel: null,
+          inputSha256:
+            analysis.embeddedMetadata.cover.status === "ready"
+              ? analysis.embeddedMetadata.cover.artifactSha256
+              : null,
+          matchedCategories: [],
+          evidenceRef: analysis.embeddedMetadata.evidenceRef,
+          evidence: null,
+        },
         contentModeration: analysis.contentModeration ?? {
           decision: "manual_review",
           resultingContentRating: "general",
@@ -617,6 +635,7 @@ export function makeMediaProcessingStore(
       acr: analysis.acr,
       lyricsSafety: analysis.lyricsSafety,
       mediaSafety: analysis.mediaSafety,
+      coverModeration: analysis.coverModeration,
       contentModeration: analysis.contentModeration,
       boundReference: state.boundReference,
     };

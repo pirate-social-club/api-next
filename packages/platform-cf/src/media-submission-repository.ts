@@ -50,8 +50,27 @@ const canonicalJson = (value: unknown): string => {
       .join(", ")}}`;
   return JSON.stringify(value);
 };
+const coverModerationFor = (
+  analysis: TrustedSongAnalysis,
+): NonNullable<TrustedSongAnalysis["coverModeration"]> =>
+  analysis.coverModeration ?? {
+    decision: analysis.embeddedMetadata.cover.status === "absent" ? "not_applicable" : "withheld",
+    reason:
+      analysis.embeddedMetadata.cover.status === "absent" ? "not_embedded" : "provider_unavailable",
+    providerId: null,
+    requestedModel: null,
+    returnedModel: null,
+    inputSha256:
+      analysis.embeddedMetadata.cover.status === "ready"
+        ? analysis.embeddedMetadata.cover.artifactSha256
+        : null,
+    matchedCategories: [],
+    evidenceRef: analysis.embeddedMetadata.evidenceRef,
+    evidence: null,
+  };
 const trustedAnalysisSnapshot = (analysis: TrustedSongAnalysis): unknown => ({
   ...analysis,
+  coverModeration: coverModerationFor(analysis),
   lyricsAnalysis:
     analysis.lyricsAnalysis.status === "not_applicable"
       ? analysis.lyricsAnalysis
@@ -2008,6 +2027,7 @@ export function makeControlPlaneMediaSubmissionRepository(
             analysis: input.analysis,
           });
           const cover = input.analysis.embeddedMetadata.cover;
+          const coverModeration = coverModerationFor(input.analysis);
           const lyricsAnalysis = input.analysis.lyricsAnalysis;
           const bound = input.analysis.boundReference;
           if (bound !== null) {
@@ -2034,7 +2054,7 @@ export function makeControlPlaneMediaSubmissionRepository(
           }
           yield* tx.execute({
             label: "media-analysis.insert",
-            text: "INSERT INTO media_analysis_evidence (submission_id,community_id,actor_user_id,operation_id,analysis_version,audio_revision,analysis_revision,canonical_audio_sha256,finalized_audio_ref,probe_evidence_ref,embedded_metadata_evidence_ref,embedded_metadata_adapter_revision,embedded_title,embedded_title_provenance,cover_status,cover_artifact_ref,cover_artifact_sha256,cover_media_type,cover_width,cover_height,cover_normalization_revision,cover_safety_policy_revision,cover_facts,speech_status,transcript_artifact_ref,transcript_sha256,explicitness,primary_language_bcp47,secondary_language_bcp47,speech_evidence_ref,speech_policy_revision,speech_adapter_revision,acr_decision,acr_evidence_ref,acr_policy_revision,acr_adapter_revision,media_safety,lyrics_safety,bound_reference_asset_id,bound_reference_audio_revision,bound_reference_analysis_revision,bound_reference_audio_sha256,bound_reference_upstream_share_bps,analysis_snapshot,author_persona_id,transcript_revision,lyrics_revision,material_disagreement) VALUES ($1,$2,$3,$4,'song-trusted-analysis-v1',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::jsonb,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43::jsonb,$44,$45,$46,$47)",
+            text: "INSERT INTO media_analysis_evidence (submission_id,community_id,actor_user_id,operation_id,analysis_version,audio_revision,analysis_revision,canonical_audio_sha256,finalized_audio_ref,probe_evidence_ref,embedded_metadata_evidence_ref,embedded_metadata_adapter_revision,embedded_title,embedded_title_provenance,cover_status,cover_artifact_ref,cover_artifact_sha256,cover_media_type,cover_width,cover_height,cover_normalization_revision,cover_safety_policy_revision,cover_facts,speech_status,transcript_artifact_ref,transcript_sha256,explicitness,primary_language_bcp47,secondary_language_bcp47,speech_evidence_ref,speech_policy_revision,speech_adapter_revision,acr_decision,acr_evidence_ref,acr_policy_revision,acr_adapter_revision,media_safety,lyrics_safety,bound_reference_asset_id,bound_reference_audio_revision,bound_reference_analysis_revision,bound_reference_audio_sha256,bound_reference_upstream_share_bps,analysis_snapshot,author_persona_id,transcript_revision,lyrics_revision,material_disagreement,cover_moderation_decision,cover_moderation_reason,cover_moderation_provider_id,cover_moderation_requested_model,cover_moderation_returned_model,cover_moderation_input_sha256,cover_moderation_matched_categories,cover_moderation_evidence_ref,cover_moderation_evidence) VALUES ($1,$2,$3,$4,'song-trusted-analysis-v1',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::jsonb,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43::jsonb,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54::jsonb,$55,$56::jsonb)",
             values: [
               current.submissionId,
               current.communityId,
@@ -2083,6 +2103,15 @@ export function makeControlPlaneMediaSubmissionRepository(
               null,
               lyricsAnalysis.status === "not_applicable" ? null : lyricsAnalysis.lyricsRevision,
               false,
+              coverModeration.decision,
+              coverModeration.reason,
+              coverModeration.providerId,
+              coverModeration.requestedModel,
+              coverModeration.returnedModel,
+              coverModeration.inputSha256,
+              json(coverModeration.matchedCategories),
+              coverModeration.evidenceRef,
+              coverModeration.evidence === null ? null : json(coverModeration.evidence),
             ],
             readonly: false,
           });

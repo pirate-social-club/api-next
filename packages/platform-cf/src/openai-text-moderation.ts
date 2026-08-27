@@ -1,4 +1,5 @@
 import { TextModerationProviderError } from "@pirate/application";
+import type { ImageModerationProviderServiceV1 } from "@pirate/application/media/processing-contracts";
 import type {
   NormalizedModerationInputEvidenceV1,
   TextModerationProviderEvaluationV1,
@@ -205,9 +206,69 @@ const validateOptions = (options: OpenAiTextModerationOptions) => {
 
 export function makeOpenAiTextModerationProvider(
   options: OpenAiTextModerationOptions,
-): TextModerationProviderServiceV1 {
+): TextModerationProviderServiceV1 & ImageModerationProviderServiceV1 {
   const config = validateOptions(options);
   const transport = options.transport ?? ((request: Request) => fetch(request));
+
+  const requestModeration = async (inputs: readonly unknown[]) => {
+    const body = new TextEncoder().encode(JSON.stringify({ model: config.model, input: inputs }));
+    if (body.byteLength > config.maxRequestBytes) {
+      throw new OpenAiModerationFailure("invalid");
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort("moderation timeout"), config.timeoutMs);
+    try {
+      let response: Response;
+      try {
+        response = await transport(
+          new Request(config.endpoint, {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${options.apiKey}`,
+              "content-type": "application/json",
+            },
+            body,
+            signal: controller.signal,
+            redirect: "error",
+          }),
+        );
+      } catch (cause) {
+        if (controller.signal.aborted) throw new OpenAiModerationFailure("timeout");
+        throw cause;
+      }
+      if (!response.ok) throw new OpenAiModerationFailure("unavailable");
+      const responseBytes = await readBoundedBody(
+        response,
+        config.maxResponseBytes,
+        controller.signal,
+      );
+      let raw: unknown;
+      try {
+        raw = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(responseBytes));
+      } catch {
+        throw new OpenAiModerationFailure("invalid");
+      }
+      if (!closedCategoryObjects(raw)) throw new OpenAiModerationFailure("invalid");
+      let decoded: Schema.Schema.Type<typeof OpenAiModerationResponse>;
+      try {
+        decoded = Schema.decodeUnknownSync(OpenAiModerationResponse, {
+          onExcessProperty: "error",
+        })(raw);
+      } catch {
+        throw new OpenAiModerationFailure("invalid");
+      }
+      if (
+        decoded.model !== config.model ||
+        decoded.results.length === 0 ||
+        decoded.results.length !== inputs.length
+      ) {
+        throw new OpenAiModerationFailure("invalid");
+      }
+      return decoded;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
 
   const evaluate: TextModerationProviderServiceV1["evaluate"] = (input) =>
     Effect.tryPromise({
@@ -215,97 +276,95 @@ export function makeOpenAiTextModerationProvider(
         const canonical = canonicalTextModerationInput(input);
         if (canonical.kind !== "accepted") throw new OpenAiModerationFailure("invalid");
         const inputs = textInputs(input);
-        const body = new TextEncoder().encode(
-          JSON.stringify({ model: config.model, input: inputs }),
-        );
-        if (body.byteLength > config.maxRequestBytes) {
-          throw new OpenAiModerationFailure("invalid");
+        const decoded = await requestModeration(inputs);
+        const inputEvidence: NormalizedModerationInputEvidenceV1[] = [];
+        const matched = new Set<ModerationPolicyCategoryV1>();
+        for (let index = 0; index < decoded.results.length; index += 1) {
+          const result = decoded.results[index];
+          const text = inputs[index];
+          if (result === undefined || text === undefined) {
+            throw new OpenAiModerationFailure("invalid");
+          }
+          for (const category of MODERATION_POLICY_CATEGORIES_V1) {
+            if (result.categories[category]) matched.add(category);
+          }
+          inputEvidence.push({
+            input_sha256: await digestHex(new TextEncoder().encode(text)),
+            categories: result.categories,
+            scores: result.category_scores,
+            applied_input_types: result.category_applied_input_types,
+          });
         }
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort("moderation timeout"), config.timeoutMs);
-        try {
-          let response: Response;
-          try {
-            response = await transport(
-              new Request(config.endpoint, {
-                method: "POST",
-                headers: {
-                  authorization: `Bearer ${options.apiKey}`,
-                  "content-type": "application/json",
-                },
-                body,
-                signal: controller.signal,
-                redirect: "error",
-              }),
-            );
-          } catch (cause) {
-            if (controller.signal.aborted) throw new OpenAiModerationFailure("timeout");
-            throw cause;
-          }
-          if (!response.ok) throw new OpenAiModerationFailure("unavailable");
-          const responseBytes = await readBoundedBody(
-            response,
-            config.maxResponseBytes,
-            controller.signal,
-          );
-          let raw: unknown;
-          try {
-            raw = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(responseBytes));
-          } catch {
-            throw new OpenAiModerationFailure("invalid");
-          }
-          if (!closedCategoryObjects(raw)) throw new OpenAiModerationFailure("invalid");
-          let decoded: Schema.Schema.Type<typeof OpenAiModerationResponse>;
-          try {
-            decoded = Schema.decodeUnknownSync(OpenAiModerationResponse, {
-              onExcessProperty: "error",
-            })(raw);
-          } catch {
-            throw new OpenAiModerationFailure("invalid");
-          }
-          if (
-            decoded.model !== config.model ||
-            decoded.results.length === 0 ||
-            decoded.results.length !== inputs.length
-          ) {
-            throw new OpenAiModerationFailure("invalid");
-          }
-          const inputEvidence: NormalizedModerationInputEvidenceV1[] = [];
-          const matched = new Set<ModerationPolicyCategoryV1>();
-          for (let index = 0; index < decoded.results.length; index += 1) {
-            const result = decoded.results[index];
-            const text = inputs[index];
-            if (result === undefined || text === undefined) {
-              throw new OpenAiModerationFailure("invalid");
-            }
-            for (const category of MODERATION_POLICY_CATEGORIES_V1) {
-              if (result.categories[category]) matched.add(category);
-            }
-            inputEvidence.push({
-              input_sha256: await digestHex(new TextEncoder().encode(text)),
-              categories: result.categories,
-              scores: result.category_scores,
-              applied_input_types: result.category_applied_input_types,
-            });
-          }
-          return {
-            provider_id: "openai",
-            requested_model: config.model,
-            returned_model: decoded.model,
-            input_sha256: canonical.sha256,
-            matched_categories: MODERATION_POLICY_CATEGORIES_V1.filter((category) =>
-              matched.has(category),
-            ),
-            inputs: inputEvidence,
-          } satisfies TextModerationProviderEvaluationV1;
-        } finally {
-          clearTimeout(timer);
-        }
+        return {
+          provider_id: "openai",
+          requested_model: config.model,
+          returned_model: decoded.model,
+          input_sha256: canonical.sha256,
+          matched_categories: MODERATION_POLICY_CATEGORIES_V1.filter((category) =>
+            matched.has(category),
+          ),
+          inputs: inputEvidence,
+        } satisfies TextModerationProviderEvaluationV1;
       },
       catch: (cause) =>
         cause instanceof OpenAiModerationFailure
           ? new TextModerationProviderError({ reason: cause.reason })
           : new TextModerationProviderError({ reason: "unavailable" }),
     });
-  return { evaluate };
+
+  const evaluateImage: ImageModerationProviderServiceV1["evaluateImage"] = (input) =>
+    Effect.tryPromise({
+      try: async () => {
+        if (
+          input.bytes.byteLength === 0 ||
+          !/^[0-9a-f]{64}$/u.test(input.sha256) ||
+          !["image/jpeg", "image/png", "image/webp"].includes(input.mediaType)
+        ) {
+          throw new OpenAiModerationFailure("invalid");
+        }
+        const actualSha256 = await digestHex(input.bytes);
+        if (actualSha256 !== input.sha256) throw new OpenAiModerationFailure("invalid");
+        let binary = "";
+        for (let offset = 0; offset < input.bytes.byteLength; offset += 32_768) {
+          binary += String.fromCharCode(...input.bytes.subarray(offset, offset + 32_768));
+        }
+        const decoded = await requestModeration([
+          {
+            type: "image_url",
+            image_url: { url: `data:${input.mediaType};base64,${btoa(binary)}` },
+          },
+        ]);
+        const result = decoded.results[0];
+        if (result === undefined) throw new OpenAiModerationFailure("invalid");
+        const matched = MODERATION_POLICY_CATEGORIES_V1.filter(
+          (category) => result.categories[category],
+        );
+        if (
+          matched.some(
+            (category) => !result.category_applied_input_types[category].includes("image"),
+          )
+        ) {
+          throw new OpenAiModerationFailure("invalid");
+        }
+        return {
+          provider_id: "openai",
+          requested_model: config.model,
+          returned_model: decoded.model,
+          input_sha256: input.sha256,
+          matched_categories: matched,
+          evidence: {
+            input_sha256: input.sha256,
+            categories: result.categories,
+            scores: result.category_scores,
+            applied_input_types: result.category_applied_input_types,
+          },
+        };
+      },
+      catch: (cause) =>
+        cause instanceof OpenAiModerationFailure
+          ? new TextModerationProviderError({ reason: cause.reason })
+          : new TextModerationProviderError({ reason: "unavailable" }),
+    });
+
+  return { evaluate, evaluateImage };
 }
