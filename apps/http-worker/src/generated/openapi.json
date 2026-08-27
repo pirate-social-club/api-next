@@ -48339,8 +48339,7 @@
         },
         "x-auth": {
           "policy": {
-            "kind": "admin",
-            "scope": "moderation"
+            "kind": "userOrAdmin"
           }
         },
         "x-errors": [

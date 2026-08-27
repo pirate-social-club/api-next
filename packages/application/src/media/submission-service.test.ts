@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { MediaIngressUploadPresigner } from "@pirate/application";
-import { InternalError, UploadObjectMissing } from "@pirate/contracts";
+import { InternalError, NotFound, UploadObjectMissing } from "@pirate/contracts";
 import { Effect } from "effect";
 import {
   createMediaSubmissionState,
@@ -14,6 +14,7 @@ import {
   type MediaSubmissionServices,
   type MediaUploadStore,
   mediaSha256Bytes,
+  moderateMediaSubmission,
   reserveMediaUpload,
 } from "./submission-service.ts";
 
@@ -164,6 +165,36 @@ const source = {
 };
 
 describe("media submission service upload orchestration", () => {
+  test("lets a human owner reach the ledger-backed moderation lookup without global scopes", async () => {
+    let lookupActor: unknown = null;
+    const services = servicesWith({
+      store: storeWith({
+        getViewForModerator: async ({ moderatorActor }) => {
+          lookupActor = moderatorActor;
+          return null;
+        },
+      }),
+    });
+
+    await expect(
+      moderateMediaSubmission(
+        {
+          submissionId: awaitingUpload.submissionId,
+          actor,
+          body: {
+            idempotency_key: "owner-moderation",
+            expected_creation_revision: 2,
+            action: "block",
+            evidence_ref: "owner-moderation-evidence",
+            reason_code: "policy_violation",
+          },
+        },
+        services,
+      ),
+    ).rejects.toBeInstanceOf(NotFound);
+    expect(lookupActor).toEqual(actor);
+  });
+
   test("replays a reservation before invoking the presigner", async () => {
     const document = {
       reservation_id: "media_reservation_replay",

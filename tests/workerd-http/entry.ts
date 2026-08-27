@@ -115,10 +115,6 @@ async function sessionCryptos() {
       ...common,
       defaultScope: "browser",
     }),
-    moderator: await makeSessionCrypto({
-      ...common,
-      defaultScope: "moderator",
-    }),
   };
 }
 
@@ -178,6 +174,33 @@ const account: IdentityAccountDocument = {
     reddit_verification_status: "not_started",
     reddit_import_status: "not_started",
   },
+};
+
+const ownerAccount: IdentityAccountDocument = {
+  ...account,
+  user: {
+    ...account.user,
+    user_id: "usr_workerd_owner",
+    primary_wallet_attachment_id: "wallet_workerd_owner",
+  },
+  profile: {
+    ...account.profile,
+    user_id: "usr_workerd_owner",
+    global_handle_id: "handle_workerd_owner",
+  },
+  global_handle: {
+    ...account.global_handle,
+    global_handle_id: "handle_workerd_owner",
+    label_display: "workerd-owner.pirate",
+  },
+  wallet_attachments: [
+    {
+      wallet_attachment_id: "wallet_workerd_owner",
+      chain_namespace: "eip155:1",
+      wallet_address_display: "0x1111111111111111111111111111111111111111",
+      is_primary: 1,
+    },
+  ],
 };
 
 const textSubmission = {
@@ -258,14 +281,26 @@ function createPostThroughContract(request: DecodedRequest) {
 }
 
 const identityStore: IdentityStore["Service"] = {
-  findUser: (userId) =>
-    Effect.succeed(userId === "usr_workerd_test" ? { userId: "usr_workerd_test", account } : null),
-  resolveCanonical: ({ sourceUserId }) =>
-    Effect.succeed({
+  findUser: (userId) => {
+    if (userId === "usr_workerd_test") {
+      return Effect.succeed({ userId, account });
+    }
+    if (userId === "usr_workerd_owner") {
+      return Effect.succeed({ userId, account: ownerAccount });
+    }
+    return Effect.succeed(null);
+  },
+  resolveCanonical: ({ sourceUserId }) => {
+    const canonicalUserId =
+      sourceUserId === "usr_workerd_owner_source" || sourceUserId === "usr_workerd_owner"
+        ? "usr_workerd_owner"
+        : "usr_workerd_test";
+    return Effect.succeed({
       sourceUserId,
-      canonicalUserId: "usr_workerd_test",
-      aliasPath: sourceUserId === "usr_workerd_test" ? [] : [sourceUserId],
-    }),
+      canonicalUserId,
+      aliasPath: sourceUserId === canonicalUserId ? [] : [sourceUserId],
+    });
+  },
 };
 
 const sessionCryptoInstances = await sessionCryptos();
@@ -273,24 +308,17 @@ const browserTokenVerifier = makeRs256SessionTokenVerifier(
   sessionCryptoInstances.browser,
   identityStore,
 );
-const moderatorTokenVerifier = makeRs256SessionTokenVerifier(
-  sessionCryptoInstances.moderator,
-  identityStore,
-);
-const tokenVerifier = {
-  verify: (input: Parameters<typeof browserTokenVerifier.verify>[0]) =>
-    browserTokenVerifier
-      .verify(input)
-      .pipe(Effect.catch(() => moderatorTokenVerifier.verify(input))),
-};
+const tokenVerifier = browserTokenVerifier;
 const browserTokenMinter = makeRs256SessionTokenMinter(sessionCryptoInstances.browser);
-const moderatorTokenMinter = makeRs256SessionTokenMinter(sessionCryptoInstances.moderator);
 const moderatorWalletAddress = "0x1111111111111111111111111111111111111111";
 const sessionExchange: SessionExchangeServices = {
   proofVerifier: {
     verifyPrivy: ({ accessToken }) =>
       Effect.succeed({
-        sourceUserId: "usr_workerd_source",
+        sourceUserId:
+          accessToken === "workerd-moderator-proof"
+            ? "usr_workerd_owner_source"
+            : "usr_workerd_source",
         classification: "user" as const,
         ...(accessToken === "workerd-moderator-proof"
           ? { walletAddress: moderatorWalletAddress }
@@ -299,16 +327,7 @@ const sessionExchange: SessionExchangeServices = {
   },
   identityStore: makeSessionIdentityStore(identityStore),
   productReadiness: { isReady: () => Effect.succeed(true) },
-  tokenMinter: {
-    scope: browserTokenMinter.scope,
-    ...(browserTokenMinter.ttlSeconds === undefined
-      ? {}
-      : { ttlSeconds: browserTokenMinter.ttlSeconds }),
-    mint: (input) =>
-      input.walletAddress === moderatorWalletAddress
-        ? moderatorTokenMinter.mint({ ...input, scope: moderatorTokenMinter.scope })
-        : browserTokenMinter.mint(input),
-  },
+  tokenMinter: browserTokenMinter,
 };
 
 const namespaceRoute = {
@@ -505,7 +524,7 @@ const communityModerationFixture: CommunityModerationStoreService = {
       status: "open" as const,
     }),
   actOnCase: ({ actor, action }) =>
-    actor.kind === "admin" || actor.scopes?.includes("moderator") === true
+    (actor.kind === "user" || actor.kind === "admin") && actor.userId === "usr_workerd_owner"
       ? Effect.succeed({
           version: "moderation-case-action-result-v2" as const,
           action_id: "action_workerd",

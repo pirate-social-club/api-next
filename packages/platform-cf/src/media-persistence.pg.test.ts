@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import type { ControlPlaneDb } from "@pirate/application";
+import { NotFound } from "@pirate/contracts";
 import { Effect } from "effect";
 import { Client } from "pg";
 import {
@@ -15,6 +16,7 @@ import type {
 import { makeControlPlaneMediaOutboxRepository } from "./media-outbox-repository";
 import { makeMediaProcessingStore } from "./media-processing-store";
 import { makeControlPlaneMediaSubmissionRepository } from "./media-submission-repository";
+import { makeMediaUploadApplicationCommands, makeMediaUploadStore } from "./media-upload-store";
 import {
   backfillActivePersonaWalletFixtures,
   createActivePersonaFixture,
@@ -1545,34 +1547,51 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     });
     completedTestCount += 1;
   }, 40_000);
-  test("derives moderator authority and persists an approval decision path", async () => {
+  test("aligns owner application authority with the media action trigger", async () => {
     await withSchema(async (admin, connection) => {
       await createThroughDecision(connection, reviewDecision);
       await expectHostileLyricsProjectionLeakRejected(admin);
+      const unused = async (): Promise<never> => {
+        throw new Error("unused media application dependency");
+      };
+      const commands = makeMediaUploadApplicationCommands({
+        store: makeMediaUploadStore(makeDirectPostgresControlPlaneLayer(connection)),
+        personaStore: {
+          findOwned: () => Effect.die("unused media moderation persona lookup"),
+        },
+        presigner: {
+          presign: () => Effect.die("unused media moderation presigner"),
+        },
+        sealer: { inspect: unused, seal: unused },
+        nowIso: () => "2026-08-27T00:00:00.000Z",
+      });
+      const body = {
+        idempotency_key: "moderate-key",
+        expected_creation_revision: 2,
+        action: "approve" as const,
+        approval_kind: "standard" as const,
+      };
+
+      await expect(
+        commands.moderate({
+          submissionId: submission,
+          actor: { userId: actor, kind: "admin", scopes: ["moderation", "moderator"] },
+          body: { ...body, idempotency_key: "scope-only-admin" },
+        }),
+      ).rejects.toBeInstanceOf(NotFound);
       expect(
-        await run(connection, (store) =>
-          store.moderate({
-            ...command(
-              connection,
-              "/media-post-submissions/:submissionId/moderate",
-              "moderate-key",
-            ),
-            expectedCreationRevision: 2,
-            action: "approve",
-            actor: { userId: moderator, kind: "admin", scopes: ["moderation"] },
-            approval: {
-              actionId: "moderator-action",
-              moderatorActorId: actor,
-              evidenceRef: "moderator-evidence",
-              approvalKind: "standard",
-              reasonCode: null,
-              heldRevision: 2,
-            },
-            decision: { ...decision, decisionRevision: 2 },
-            outbox: publicationWakeup("standard"),
-          }),
-        ),
-      ).toEqual({ kind: "committed", submissionId: submission });
+        await admin.query("SELECT 1 FROM media_moderation_actions WHERE submission_id=$1", [
+          submission,
+        ]),
+      ).toMatchObject({ rowCount: 0 });
+
+      await expect(
+        commands.moderate({
+          submissionId: submission,
+          actor: { userId: moderator, kind: "user" },
+          body,
+        }),
+      ).resolves.toMatchObject({ status: "processing", phase: "publish" });
       const state = await run(connection, (store) =>
         store.getForAuthor({
           communityId: community,
@@ -1601,7 +1620,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
             ...command(connection, endpointTemplate, idempotencyKey),
             expectedCreationRevision: 2,
             action: "block",
-            actor: { userId: moderator, kind: "admin", scopes: ["moderation"] },
+            actor: { userId: moderator, kind: "user" },
           }),
         ),
       ).toMatchObject({ kind: "committed" });
@@ -3086,7 +3105,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
             ),
             expectedCreationRevision: 2,
             action: "approve",
-            actor: { userId: moderator, kind: "admin", scopes: ["moderation"] },
+            actor: { userId: moderator, kind: "user" },
             approval: {
               actionId: "acr-override-action",
               moderatorActorId: actor,

@@ -1533,7 +1533,7 @@ export const CancelMediaPostSubmission = endpoint({
 export const ModerateMediaPostSubmission = endpoint({
   method: "POST",
   path: "/moderation/media-post-submissions/:submissionId/actions",
-  auth: Auth.admin("moderation"),
+  auth: Auth.userOrAdmin(),
   request: { path: PathMediaSubmission, body: ModerateSongSubmissionV1 },
   response: MediaPostSubmissionV1,
   errors: [AuthError, BadRequest, Conflict, IdempotencyConflict, NotFound, RateLimited],
