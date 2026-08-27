@@ -248,7 +248,7 @@ function normalizedCodec(value: unknown): MediaTransformAudioTrack["codec"] | nu
   if (codec === null) return null;
   if (codec === "aac") return "aac";
   if (codec === "flac") return "flac";
-  if (codec === "mp3" || codec === "mp3float") return "mp3";
+  if (codec === "mp3" || codec === "mp3float" || codec === "ffmp3") return "mp3";
   if (codec === "opus") return "opus";
   if (/^pcm_(?:f32|f64|s16|s24|s32)le$/u.test(codec)) return "pcm";
   return null;
@@ -442,7 +442,7 @@ export function sampleFromAssembly(
     return { status: "malformed_response", reason: "unsupported_shape" };
   }
   const codec = boundedProviderToken(meta.audio_codec);
-  if (codec !== "pcm_s16le") {
+  if (codec !== "pcm_s16le" && codec !== "ffpcm_s16le") {
     return { status: "rejected", reason: "unsupported_codec" };
   }
   const extension = boundedProviderToken(assembly.result.ext);

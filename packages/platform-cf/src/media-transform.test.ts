@@ -325,6 +325,21 @@ describe("probe", () => {
     expect(JSON.stringify(result)).not.toContain("x".repeat(512));
   });
 
+  test("normalizes Transloadit's ffmp3 decoder token to the supported MP3 codec", async () => {
+    const base = fixtures.probe_cases[0]?.file ?? {};
+    const transloaditMp3 = {
+      ...base,
+      meta: { ...(base.meta as Record<string, unknown>), audio_codec: "ffmp3" },
+    };
+    const result = await Effect.runPromise(
+      fixtureAdapter(completed(transloaditMp3)).probe(probeInput),
+    );
+    expect(result).toMatchObject({
+      status: "completed",
+      probe: { container: "mp3", mimeType: "audio/mpeg", tracks: [{ codec: "mp3" }] },
+    });
+  });
+
   test("rejects unsupported codecs and corrupt headers without inventing facts", async () => {
     const base = fixtures.probe_cases[0]?.file ?? {};
     const unsupported = {
@@ -491,6 +506,25 @@ describe("normalized ACR sample extraction", () => {
         "media-transform/operation-1/audio-r3/analysis-r2/attempt-1/primary.wav",
       );
     }
+  });
+
+  test("accepts Transloadit's ffpcm_s16le token for the required normalized PCM sample", async () => {
+    const sample = sampleFile(12) as Record<string, unknown>;
+    const result = await Effect.runPromise(
+      fixtureAdapter(
+        completed(
+          {
+            ...sample,
+            meta: { ...(sample.meta as Record<string, unknown>), audio_codec: "ffpcm_s16le" },
+          },
+          "sample",
+        ),
+      ).extractAudioSample(sampleInput),
+    );
+    expect(result).toMatchObject({
+      status: "completed",
+      artifact: { contentType: "audio/wav", durationMs: 12_000, variant: "primary" },
+    });
   });
 
   test("uses the whole input for sub-ten-second audio", async () => {
