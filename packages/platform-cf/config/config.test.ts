@@ -293,7 +293,7 @@ describe("config system (000 §9)", () => {
     expect(JSON.stringify(config)).not.toContain("HNS_OBSERVER_DRIVER");
   });
 
-  test("Wrangler enables Very web only in staging and keeps other ownership providers disabled", async () => {
+  test("Wrangler enables only the authorized Very web and OpenAI providers in staging", async () => {
     const config = BunRuntime.JSONC.parse(
       await BunRuntime.file(
         new URL("../../../apps/http-worker/wrangler.jsonc", import.meta.url),
@@ -317,13 +317,11 @@ describe("config system (000 §9)", () => {
     for (const environment of environments) {
       expect(environment.vars?.VERY_OAUTH_ENABLED).toBe("false");
       expect(environment.vars?.HNS_OWNERSHIP_ENABLED).toBe("false");
-      expect(environment.vars?.OPENAI_MODERATION_ENABLED).toBe("false");
       expect(environment.vars?.OPENAI_MODERATION_MODEL).toBe("omni-moderation-2024-09-26");
       expect(environment.vars?.OPENAI_MODERATION_BASE_URL).toBe("https://api.openai.com/v1");
       expect(environment.vars?.OPENAI_MODERATION_TIMEOUT_MS).toBe("10000");
       expect(environment.secrets?.required ?? []).not.toContain("VERY_OAUTH_CLIENT_SECRET");
       expect(environment.secrets?.required ?? []).not.toContain("VERY_OAUTH_SEALING_KEY");
-      expect(environment.secrets?.required ?? []).not.toContain("OPENAI_API_KEY");
     }
     // Development (the base block) and production rely on the fail-closed
     // default. Staging alone carries the operator-authorized Very web app.
@@ -332,6 +330,12 @@ describe("config system (000 §9)", () => {
     expect(staging?.vars?.VERY_WEB_APP_ID).toBe("fa6bb1db-51dd-4673-915a-b945e7a895a0");
     expect(production?.vars?.VERY_WEB_ENABLED).toBeUndefined();
     expect(production?.vars?.VERY_WEB_APP_ID).toBeUndefined();
+    expect(config.vars?.OPENAI_MODERATION_ENABLED).toBe("false");
+    expect(config.secrets?.required ?? []).not.toContain("OPENAI_API_KEY");
+    expect(staging?.vars?.OPENAI_MODERATION_ENABLED).toBe("true");
+    expect(staging?.secrets?.required ?? []).toContain("OPENAI_API_KEY");
+    expect(production?.vars?.OPENAI_MODERATION_ENABLED).toBe("false");
+    expect(production?.secrets?.required ?? []).not.toContain("OPENAI_API_KEY");
   });
 
   test("pins the production HTTP origin to its dedicated Hyperdrive and custom domain", async () => {

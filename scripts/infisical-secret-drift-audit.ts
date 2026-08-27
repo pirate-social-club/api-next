@@ -55,6 +55,8 @@ const STAGING_PROVISIONABLE_MEDIA_RUNTIME_SECRET_NAMES = [
   "MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID",
   "MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY",
 ] as const;
+
+const STAGING_PROVISIONABLE_HTTP_RUNTIME_SECRET_NAMES = ["OPENAI_API_KEY"] as const;
 const requiredWhenRuntimeEnabled = (
   environment: InfisicalEnvironment,
   names: readonly string[],
@@ -83,6 +85,7 @@ export const INFISICAL_POLICIES: readonly InfisicalPolicy[] = [
       ...RUNTIME_SECRET_NAMES,
       ...STAGING_MEGAPOT_RUNTIME_SECRET_NAMES,
       ...STAGING_PROVISIONABLE_MEDIA_RUNTIME_SECRET_NAMES,
+      ...STAGING_PROVISIONABLE_HTTP_RUNTIME_SECRET_NAMES,
     ],
   },
   {
