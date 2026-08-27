@@ -172,7 +172,7 @@
         // authorized live-document deployment is required for physical proof.
         "SELF_PASS_MOCK_PASSPORT": "true",
         "VERY_OAUTH_ENABLED": "false",
-        "OPENAI_MODERATION_ENABLED": "false",
+        "OPENAI_MODERATION_ENABLED": "true",
         "OPENAI_MODERATION_MODEL": "omni-moderation-2024-09-26",
         "OPENAI_MODERATION_BASE_URL": "https://api.openai.com/v1",
         "OPENAI_MODERATION_TIMEOUT_MS": "10000",
@@ -230,7 +230,8 @@
           "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
           "MEGAPOT_V2_RPC_URL",
           "MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID",
-          "MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY"
+          "MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY",
+          "OPENAI_API_KEY"
         ]
       }
     },

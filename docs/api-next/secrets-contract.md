@@ -341,6 +341,22 @@ the same reviewed tranche.
 OpenRouter scaffold does not own the credential name, and changing the selected
 classifier provider must not require renaming its role-based secret.
 
+### Staging OpenAI moderation boundary — 2026-08-27
+
+`OPENAI_API_KEY` is allowed only in Infisical environment `staging` at
+`/services/api-next` and is consumed only by the staging HTTP Worker. The
+checked staging configuration pins `omni-moderation-2024-09-26`, the official
+OpenAI API base URL, a 10-second timeout, and enables the already accepted
+single-attempt moderation adapter. The key must be synchronized by name only to
+`pirate-http-worker-staging`; blanket synchronization of the service folder is
+prohibited.
+
+The key value never belongs in Git, Wrangler vars, shell arguments, logs, task
+records, or evidence. Name-only inventory, Worker-secret presence, and a
+bounded text-only smoke request are sufficient operational proof. This
+boundary grants no image input, other OpenAI endpoint, production Worker,
+model alias, retry, deployment, or content-retention authority.
+
 ### R2 seal-probe retirement — 2026-08-26
 
 The disposable proof Worker, bucket, and operator credential pair were torn

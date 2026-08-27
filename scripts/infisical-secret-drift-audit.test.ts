@@ -181,6 +181,7 @@ describe("Infisical secret drift audit", () => {
           "MEDIA_CLASSIFIER_API_KEY",
           "MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID",
           "MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY",
+          "OPENAI_API_KEY",
         ],
       },
     };
