@@ -5,7 +5,7 @@
   "version": "0.24.0",
   "releaseType": "persona-wallet-provisioning-v1",
   "wireContract": "persona-wallet-provisioning-v1",
-  "sourceCommit": "f496f8c",
+  "sourceCommit": "fa4edf6",
   "artifact": {
     "path": "artifacts/api-client/pirate-api-client-0.24.0.tgz",
     "sha256": "2be3c3e69f6a5c38acf9c928565b5a21dd463811570a4de114c0351bdb5decee",
@@ -28,11 +28,11 @@
       "baselineCommit": "734a631",
       "reason": "The owner-ratified Spec 014 section 10 clean break makes confirmed indexed EVM wallet preparation a prerequisite for active persona and registration responses."
     },
-    "focusedRuntimeTests": "passed",
-    "postgresPersonaAndIdentitySuites": "8 passed",
-    "postgresRequiredSuite": "219 passed, 3 skipped",
+    "focusedRuntimeTests": "61 passed",
+    "postgresPersonaAndIdentitySuites": "9 passed",
+    "postgresRequiredSuite": "220 passed, 3 skipped",
     "postgresNamespaceOwnershipSuite": "33 passed",
-    "unitSuite": "1920 passed, 290 skipped",
+    "unitSuite": "1922 passed, 291 skipped",
     "workerdSuites": "84 passed",
     "packageVerifier": "passed",
     "repositoryCheck": "passed"
