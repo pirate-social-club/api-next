@@ -46,12 +46,43 @@ ALTER TABLE media_publication_projections
   ADD COLUMN content_rating TEXT NOT NULL DEFAULT 'general'
     CHECK (content_rating IN ('general', 'adult_18'));
 
+DO $migration$
+DECLARE definition TEXT; patched TEXT;
+BEGIN
+  SELECT pg_get_functiondef('guard_media_submission_update()'::regprocedure) INTO definition;
+  CREATE TEMP TABLE migration_0066_guard_definition (
+    definition TEXT NOT NULL
+  ) ON COMMIT DROP;
+  INSERT INTO migration_0066_guard_definition VALUES (definition);
+  patched := replace(
+    definition,
+    E'BEGIN\n  IF ROW(',
+    E'BEGIN\n  IF current_setting(''pirate.song_rating_backfill'', true) = ''on'' THEN RETURN NEW; END IF;\n  IF ROW('
+  );
+  IF patched = definition THEN
+    RAISE EXCEPTION 'media submission rating backfill seam was not found';
+  END IF;
+  EXECUTE patched;
+END;
+$migration$;
+
+SELECT set_config('pirate.song_rating_backfill', 'on', true);
 UPDATE media_post_submissions AS submission
    SET resulting_content_rating = post.content_rating
   FROM posts AS post
  WHERE post.community_id = submission.community_id
    AND post.post_id = submission.post_id
    AND submission.status = 'published';
+SELECT set_config('pirate.song_rating_backfill', 'off', true);
+
+DO $migration$
+DECLARE definition TEXT;
+BEGIN
+  SELECT saved.definition INTO STRICT definition
+    FROM migration_0066_guard_definition AS saved;
+  EXECUTE definition;
+END;
+$migration$;
 
 CREATE OR REPLACE FUNCTION enforce_song_rating_projection_v1()
 RETURNS trigger
@@ -140,8 +171,30 @@ BEGIN
     'analysis_record.media_safety NOT IN (''allow'', ''not_applicable'')',
     'analysis_record.media_safety NOT IN (''allow'', ''not_applicable'', ''visual_provider_unavailable'')'
   );
+  patched := replace(
+    patched,
+    'analysis_record.media_safety <> ''allow''',
+    'analysis_record.media_safety NOT IN (''allow'', ''visual_provider_unavailable'')'
+  );
   IF patched = definition THEN
     RAISE EXCEPTION 'guard_media_submission_update media-safety predicate was not found';
+  END IF;
+  EXECUTE patched;
+
+  SELECT pg_get_functiondef('validate_media_snapshot_insert()'::regprocedure) INTO definition;
+  patched := replace(
+    definition,
+    'ARRAY[''analysisRevision'',''audioRevision'',''canonicalAudioSha256'',''creationRevision'',''decisionRevision'',''evidenceRef'',''outcome'',''policyRevision'']::TEXT[]',
+    'ARRAY[''analysisRevision'',''audioRevision'',''canonicalAudioSha256'',''contentRating'',''creationRevision'',''decisionRevision'',''evidenceRef'',''outcome'',''policyRevision'']::TEXT[]'
+  );
+  patched := replace(
+    patched,
+    'OR jsonb_typeof(NEW.decision_snapshot->''evidenceRef'') IS DISTINCT FROM ''string'' THEN',
+    'OR jsonb_typeof(NEW.decision_snapshot->''evidenceRef'') IS DISTINCT FROM ''string''
+       OR NEW.decision_snapshot->>''contentRating'' NOT IN (''general'', ''adult_18'') THEN'
+  );
+  IF patched = definition THEN
+    RAISE EXCEPTION 'decision snapshot rating predicate was not found';
   END IF;
   EXECUTE patched;
 

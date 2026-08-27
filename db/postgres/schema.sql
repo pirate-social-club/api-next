@@ -11482,13 +11482,14 @@ BEGIN
       RAISE EXCEPTION 'royalty allocations do not form an exact author-inclusive 10000 bps split';
     END IF;
   ELSIF TG_TABLE_NAME = 'media_publication_decisions' THEN
-    IF (SELECT array_agg(key ORDER BY key) FROM jsonb_object_keys(NEW.decision_snapshot) AS key) IS DISTINCT FROM ARRAY['analysisRevision','audioRevision','canonicalAudioSha256','creationRevision','decisionRevision','evidenceRef','outcome','policyRevision']::TEXT[] THEN
+    IF (SELECT array_agg(key ORDER BY key) FROM jsonb_object_keys(NEW.decision_snapshot) AS key) IS DISTINCT FROM ARRAY['analysisRevision','audioRevision','canonicalAudioSha256','contentRating','creationRevision','decisionRevision','evidenceRef','outcome','policyRevision']::TEXT[] THEN
       RAISE EXCEPTION 'decision snapshot keys are not exact';
     END IF;
     IF jsonb_typeof(NEW.decision_snapshot->'canonicalAudioSha256') IS DISTINCT FROM 'string'
        OR jsonb_typeof(NEW.decision_snapshot->'outcome') IS DISTINCT FROM 'string'
        OR jsonb_typeof(NEW.decision_snapshot->'policyRevision') IS DISTINCT FROM 'string'
-       OR jsonb_typeof(NEW.decision_snapshot->'evidenceRef') IS DISTINCT FROM 'string' THEN
+       OR jsonb_typeof(NEW.decision_snapshot->'evidenceRef') IS DISTINCT FROM 'string'
+       OR NEW.decision_snapshot->>'contentRating' NOT IN ('general', 'adult_18') THEN
       RAISE EXCEPTION 'decision snapshot scalar types are not exact';
     END IF;
     IF jsonb_typeof(NEW.decision_snapshot->'decisionRevision') IS DISTINCT FROM 'number'

@@ -69,7 +69,7 @@ const trustedAnalysisSnapshot = (analysis: TrustedSongAnalysis): unknown => ({
 });
 const publicationDecisionSnapshot = (decision: PublicationDecision): unknown => {
   const { lyricsRevision: _, ...snapshot } = decision;
-  return snapshot;
+  return { ...snapshot, contentRating: snapshot.contentRating ?? "general" };
 };
 export const RESERVATION_ENDPOINT = "/communities/:communityId/media-upload-reservations";
 export const SUBMISSION_ENDPOINT = "/communities/:communityId/media-post-submissions";
