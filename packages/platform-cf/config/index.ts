@@ -256,6 +256,7 @@ export const HttpWorkerConfig = Config.all({
     Config.withDefault(10_000),
   ),
   ...MegapotRewardConfigFields,
+  MEGAPOT_V2_RPC_URL: secret("MEGAPOT_V2_RPC_URL").pipe(Config.withDefault(Redacted.make(""))),
 });
 
 export type HttpWorkerConfigValue = Config.Success<typeof HttpWorkerConfig>;

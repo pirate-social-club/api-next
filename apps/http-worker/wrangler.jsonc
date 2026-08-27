@@ -327,8 +327,7 @@
           "PIRATE_APP_JWT_PRIVATE_KEY",
           "PRIVY_APP_SECRET",
           "HNS_FORWARDER_V3_HMAC_KEY_REGISTRY",
-          "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
-          "MEGAPOT_V2_RPC_URL"
+          "COMMUNITY_PURCHASE_FUNDING_RPC_URL"
         ]
       }
     }

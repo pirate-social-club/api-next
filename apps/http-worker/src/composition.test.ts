@@ -288,6 +288,20 @@ describe("HTTP production composition", () => {
     );
   });
 
+  test("requires the Megapot RPC only while rewards are enabled", async () => {
+    const complete = await bindings();
+    const { MEGAPOT_V2_RPC_URL: _omitted, ...withoutMegapotRpc } = complete;
+    const disabled = await createProductionHttpWorker(withoutMegapotRpc);
+    expect((await disabled.request("https://worker.test/health")).status).toBe(200);
+
+    await expect(
+      createProductionHttpWorker({
+        ...withoutMegapotRpc,
+        MEGAPOT_REWARDS_ENABLED: "true",
+      }),
+    ).rejects.toThrow("HTTP worker configuration is incomplete or invalid");
+  });
+
   test("keeps Very OAuth disabled by default and fails closed when enabled incompletely", async () => {
     const configured = await bindings();
     const worker = await createProductionHttpWorker(configured);

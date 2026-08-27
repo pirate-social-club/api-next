@@ -43,7 +43,7 @@ Worker. HNS ownership stays disabled and unbound.
 | Infisical, historical project | workspace `5acea78e-7813-4d8a-b29c-9b862a0b1c71` | Reachable. Historical reference only. Its `/services/api` folder deliberately mixes API runtime, HNS, Spaces, media, Story, and operator credentials; that mixing is the boundary defect this contract corrects. Do not copy it wholesale. |
 | Cloudflare Worker secrets, canonical | account `08a4c22cf52e2ecae883e36f80a33f4a` | Reachable through the `api-next-canonical` Wrangler profile. Staging HTTP and jobs are active. Production HTTP is enabled with exactly three declared confidential names; production jobs remains absent. |
 | Cloudflare zone bridge, temporary | account `ff375d61cdc0c5dc946837f3e37725e0` | Reachable through the retained default Wrangler profile. The three misplaced staging Workers, their nine installed secrets, and the misplaced staging Hyperdrive were retired on 2026-08-23. The managed, secret-free `api-next-staging-zone-bridge` remains only for resolvers caching the old delegation after the zone moved to the canonical account. An unrelated production Hyperdrive was not changed. |
-| Declared Wrangler contract | `api-next/apps/http-worker/wrangler.jsonc` and `api-next/apps/jobs-worker/wrangler.jsonc` | In repository. Both Workers are in scope; earlier revisions of this document covered only the http Worker. `secrets.required` is a real Wrangler property — it drives type generation and local-dev warnings, but does not gate a deploy. See D9. |
+| Declared Wrangler contract | `api-next/apps/http-worker/wrangler.jsonc` and `api-next/apps/jobs-worker/wrangler.jsonc` | In repository. Both Workers are in scope; earlier revisions of this document covered only the http Worker. `secrets.required` is a real Wrangler property — Wrangler 4.123 gates deployment when a listed secret is absent. See D9. |
 
 Environments are Infisical environments. Never encode an environment into a
 secret name.
@@ -280,9 +280,10 @@ The intended api-next custody path is
 `/services/api-next/hns-community-app-api`. No folder, secret, placeholder, or
 Cloudflare binding was created by the repository change. The Wrangler
 `secrets.required` entries are name-only declarations in development, staging,
-and production. `HNS_COMMUNITY_APP_API_ENABLED` remains `false` in all three,
-so absence of the secret keeps the path inert rather than weakening ordinary
-HTTP traffic.
+and production. `HNS_COMMUNITY_APP_API_ENABLED` remains `false` in all three.
+Because Wrangler 4.123 gates deployment on every required name, the HNS
+forwarder registry must be provisioned before deploying a configuration that
+declares it even while the runtime path remains disabled.
 
 The protected ingress origin, Access issuer, Access JWKS URL, Access audience,
 key-registry reference and version, freshness window, and future-clock skew are
@@ -554,15 +555,16 @@ latent — but it is the reason the name must never be left to deployment-time
 injection. Pin `API_NEXT_ENV` to the Wrangler vocabulary and never let the
 Infisical slug reach it.
 
-**D9 — enforcement is weaker than the contract implies.**
+**D9 — `secrets.required` is a deployment gate.**
 
 Corrected 2026-08-22: `secrets` **is** a real Wrangler configuration property.
 The installed schema (`wrangler` 4.123.0,
 `node_modules/wrangler/config-schema.json`) defines `secrets.required` as an
-array of strings that "replaces `.dev.vars`/`.env`/`process.env` inference for
-type generation" and "enables local dev validation with warnings for missing
-secrets". An earlier revision of this document called it a documentation
-convention that no tooling reads. That was wrong.
+array of strings used for type generation and local validation. An earlier
+revision of this document called it a documentation convention that no tooling
+reads, and a later revision claimed missing values do not gate deployment.
+Both claims were wrong. A production deployment attempt on 2026-08-27 stopped
+before creating a Worker version when required names were absent.
 
 What it does and does not do matters for the rule set:
 
@@ -570,16 +572,22 @@ What it does and does not do matters for the rule set:
 | --- | --- |
 | Feeds `wrangler types` generation | yes |
 | Warns on missing secrets in local dev | yes, a warning |
-| Fails a deploy when a required secret is absent | no |
+| Fails a deploy when a required secret is absent | yes |
 | Detects a name consumed in source but listed nowhere | no |
 | Detects a public value misdeclared as a secret | no |
 
-So rule 3 is partially enforced for secrets in local dev, and not at all for
-`vars`, for deploys, or in the source-to-config direction. The new
+So rule 3 is enforced for declared secrets during deployment, but not for
+`vars` or in the source-to-config direction. The
 `scripts/binding-contract-invariant.test.ts` covers both Wrangler configs and
 is compile-checked by `check:binding-contract`; it currently fails only on the
 known development Privy gaps, the staging ZK key-ID classification, and the
 missing production alert URLs.
+
+Production HTTP keeps `MEGAPOT_REWARDS_ENABLED="false"` and therefore omits
+`MEGAPOT_V2_RPC_URL` from its required declarations. Staging rewards remain
+enabled and keep the real staging RPC requirement. Any production rewards
+activation must add a reviewed mainnet RPC credential declaration and provision
+the corresponding value in the same authorized ceremony.
 
 The schema also notes that `secrets` is **not** inherited from the top-level
 environment and must be repeated in every named environment. Both configs do

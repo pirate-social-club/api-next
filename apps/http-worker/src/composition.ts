@@ -351,6 +351,12 @@ function loadWorkerConfig(bindings: HttpWorkerBindings): WorkerConfig {
   try {
     const config = loadConfigFrom(HttpWorkerConfig, configSource(bindings));
     assertMegapotRewardRuntimePosture(config);
+    if (
+      config.MEGAPOT_REWARDS_ENABLED &&
+      Redacted.value(config.MEGAPOT_V2_RPC_URL).trim().length === 0
+    ) {
+      throw new Error("enabled Megapot rewards require an RPC binding");
+    }
     const openAiApiKey = Redacted.value(config.OPENAI_API_KEY);
     if (
       (bindings.OPENAI_MODERATION_MODEL !== undefined &&
