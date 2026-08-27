@@ -20,7 +20,7 @@ import {
 } from "@pirate/application/media-provider-contracts";
 import { Effect, Option, Predicate, Schema } from "effect";
 
-export const OPENROUTER_ORIGIN = "https://openrouter.ai" as const;
+export const OPENROUTER_ORIGIN = "https://eu.openrouter.ai" as const;
 export const OPENROUTER_CLASSIFIER_PATH = "/api/v1/chat/completions" as const;
 export const OPENROUTER_CLASSIFIER_ENDPOINT =
   `${OPENROUTER_ORIGIN}${OPENROUTER_CLASSIFIER_PATH}` as const;

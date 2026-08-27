@@ -23,6 +23,13 @@ import {
   type ElevenLabsAlignmentTransport,
 } from "./media-providers/elevenlabs-alignment-types.ts";
 import {
+  OPENROUTER_CLASSIFIER_ENDPOINT,
+  type OpenRouterResponseBody,
+  type OpenRouterTransport,
+  type OpenRouterTransportRequest,
+  type OpenRouterTransportResponse,
+} from "./media-providers/openrouter.ts";
+import {
   TRANSLOADIT_ASSEMBLIES_PATH,
   TRANSLOADIT_ORIGIN,
   type TransloaditTransport,
@@ -214,6 +221,49 @@ export function makeAcrCloudFetchTransport(
       });
       return { status: response.status, headers: response.headers, body: responseStream(response) };
     },
+  };
+}
+
+function openRouterResponseBody(response: Response): OpenRouterResponseBody {
+  const stream = responseStream(response);
+  let opened = false;
+  return {
+    open: async function* (signal?: AbortSignal) {
+      if (opened) throw new TypeError("OpenRouter response body is one-pass");
+      opened = true;
+      const reader = stream.getReader();
+      try {
+        while (true) {
+          if (signal?.aborted) throw new DOMException("cancelled", "AbortError");
+          const next = await reader.read();
+          if (next.done) return;
+          yield next.value;
+        }
+      } finally {
+        reader.releaseLock();
+      }
+    },
+    cancel: (reason) => stream.cancel(reason),
+  };
+}
+
+/** Lyrics classification is fixed to the reviewed EU OpenRouter origin. */
+export function makeOpenRouterFetchTransport(
+  fetcher: MediaProcessingFetch = fetch,
+): OpenRouterTransport {
+  return async (request: OpenRouterTransportRequest): Promise<OpenRouterTransportResponse> => {
+    if (!validFetchRequest(request, "POST", OPENROUTER_CLASSIFIER_ENDPOINT)) {
+      throw new MediaProcessingTransportFailure("invalid_request");
+    }
+    if (request.headers["content-type"] !== "application/json") {
+      throw new MediaProcessingTransportFailure("invalid_request");
+    }
+    const response = await fetchResponse(fetcher, { ...request, body: request.body });
+    return {
+      status: response.status,
+      headers: response.headers,
+      body: openRouterResponseBody(response),
+    };
   };
 }
 

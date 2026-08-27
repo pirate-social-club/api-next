@@ -21,6 +21,9 @@ const disabledEnv = (): MediaProcessorRuntimeEnv => ({
   get ELEVENLABS_API_KEY(): string {
     throw new Error("disabled composition read a provider secret");
   },
+  get MEDIA_CLASSIFIER_API_KEY(): string {
+    throw new Error("disabled composition read a provider secret");
+  },
 });
 
 describe("media processor composition", () => {
@@ -36,5 +39,29 @@ describe("media processor composition", () => {
     );
     expect(() => mediaProcessingPhysicalObjectKey("immutable/operation-1")).toThrow();
     expect(() => mediaProcessingPhysicalObjectKey("media://immutable/../secret")).toThrow();
+  });
+
+  test("refuses the classifier provisioning sentinel before a provider call", () => {
+    expect(() =>
+      makeMediaProcessorComposition({
+        MEDIA_PROCESSING_ENABLED: "true",
+        DATA_REGISTRATION_ENABLED: "false",
+        CONTROL_PLANE: { connectionString: "postgres://enabled.invalid/control" },
+        MEDIA_PROCESSING_WORKFLOW: {
+          get: async () => ({
+            status: async () => ({ status: "unknown" }),
+            sendEvent: async () => undefined,
+          }),
+          createBatch: async () => [],
+        },
+        MEDIA_IMMUTABLE_ORIGINALS: {} as R2Bucket,
+        MEDIA_DERIVED_ARTIFACTS: {} as R2Bucket,
+        ACRCLOUD_IDENTIFY_HOST: "identify-eu-west-1.acrcloud.com",
+        ACRCLOUD_ACCESS_KEY: "fixture-access-key",
+        ACRCLOUD_ACCESS_SECRET: "fixture-access-secret",
+        ELEVENLABS_API_KEY: "fixture-elevenlabs-key",
+        MEDIA_CLASSIFIER_API_KEY: "PENDING",
+      }),
+    ).toThrow("MEDIA_CLASSIFIER_API_KEY is pending provisioning");
   });
 });
