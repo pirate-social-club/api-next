@@ -5,7 +5,7 @@
   "version": "0.25.0",
   "releaseType": "platform-pirate-cleanup-rename-v1",
   "wireContract": "spec-012-section-5.2",
-  "sourceCommit": "de0bc24",
+  "sourceCommit": "73a1255",
   "artifact": {
     "path": "artifacts/api-client/pirate-api-client-0.25.0.tgz",
     "sha256": "1d10384bdea723b7a788c2d7af377fde9f067216e2a01b308a55ab3e7c99597c",
@@ -29,9 +29,9 @@
       "reason": "The owner-ratified Spec 012 section 5.2 adds the one-time platform Pirate cleanup rename contract."
     },
     "focusedRuntimeTests": "20 passed, including browser-session and bearer-rejection fixtures",
-    "postgresFocusedSuites": "28 passed after current-schema identity correction",
-    "postgresRequiredSuite": "257 passed, 3 skipped; one stale predecessor-prefix fixture corrected and rerun before all 27 sentinels passed",
-    "unitSuite": "1973 passed, 295 skipped",
+    "postgresFocusedSuites": "29 passed, including post-rename account decode and acceptance fences",
+    "postgresRequiredSuite": "258 passed, 3 skipped; all 27 sentinels passed",
+    "unitSuite": "1973 passed, 296 skipped",
     "workerdSuites": "87 passed",
     "packageVerifier": "passed",
     "repositoryCheck": "passed"
