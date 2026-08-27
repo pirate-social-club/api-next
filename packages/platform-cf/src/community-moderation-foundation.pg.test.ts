@@ -38,6 +38,15 @@ const cutoverMigrationIndex = migrations.findIndex(
 const runtimeMigrationIndex = migrations.findIndex(
   (migration) => migration.version === runtimeMigrationVersion,
 );
+if (
+  foundationMigrationIndex < 0 ||
+  cutoverMigrationIndex <= foundationMigrationIndex ||
+  runtimeMigrationIndex <= cutoverMigrationIndex
+) {
+  throw new Error(
+    "community moderation migrations must exist in foundation, cutover, runtime order",
+  );
+}
 const foundationMigrations = migrations.slice(0, foundationMigrationIndex + 1);
 const cutoverMigrations = migrations.slice(0, cutoverMigrationIndex + 1);
 const runtimeMigrations = migrations.slice(0, runtimeMigrationIndex + 1);
@@ -614,9 +623,6 @@ suite("community moderation authority and policy migration", () => {
   }, 120_000);
 
   test("enforces owner-only runtime authority, policy, reports, actions, and platform holds", async () => {
-    if (runtimeMigrationIndex !== migrations.length - 1) {
-      throw new Error(`${runtimeMigrationVersion} must be the latest migration in this lane`);
-    }
     await withSchema(async (connection, admin) => {
       await runPostgresMigrations({ connectionString: connection, migrations: runtimeMigrations });
       const floor = await admin.query<{ category: string; decision: string }>(

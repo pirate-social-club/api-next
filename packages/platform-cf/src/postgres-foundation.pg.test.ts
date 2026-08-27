@@ -321,6 +321,12 @@ const communityModerationOwnerRuntimeMigrationSql = await Bun.file(
     import.meta.url,
   ),
 ).text();
+const mediaPersonaRecipientTriggerMigrationSql = await Bun.file(
+  new URL(
+    "../../../db/postgres/migrations/0064_media_persona_recipient_trigger.sql",
+    import.meta.url,
+  ),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -643,6 +649,11 @@ const communityModerationOwnerRuntimeMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0063_community_moderation_owner_runtime.sql"] ?? "",
   sql: communityModerationOwnerRuntimeMigrationSql,
 };
+const mediaPersonaRecipientTriggerMigration: PostgresMigration = {
+  version: "0064_media_persona_recipient_trigger.sql",
+  checksum: checksumManifest.migrations["0064_media_persona_recipient_trigger.sql"] ?? "",
+  sql: mediaPersonaRecipientTriggerMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -707,6 +718,7 @@ const migrations: readonly PostgresMigration[] = [
   openAiModerationDriverCutoverMigration,
   globalPirateHandleCleanupRenameMigration,
   communityModerationOwnerRuntimeMigration,
+  mediaPersonaRecipientTriggerMigration,
 ];
 
 function checksum(value: string): string {
