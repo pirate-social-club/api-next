@@ -102,7 +102,7 @@
         "TRANSLOADIT_PROBE_TEMPLATE_ID": "",
         "TRANSLOADIT_SAMPLE_PRIMARY_TEMPLATE_ID": "",
         "TRANSLOADIT_SAMPLE_ALTERNATE_TEMPLATE_ID": "",
-        "ACRCLOUD_IDENTIFY_HOST": ""
+        "ACRCLOUD_IDENTIFY_HOST": "identify-eu-west-1.acrcloud.com"
       },
       "secrets": {
         "required": [
