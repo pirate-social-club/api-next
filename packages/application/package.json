@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./text-moderation-runtime": "./src/text-moderation-runtime.ts",
     "./hns-community-app-gateway": "./src/hns-community-app-gateway.ts",
     "./hns-community-app-api": "./src/hns-community-app-api.ts",
     "./hns-forwarder-v3": "./src/hns-forwarder-v3.ts",

@@ -31,6 +31,14 @@ describe("config system (000 §9)", () => {
     delete process.env.API_NEXT_ENV_VALID;
   });
 
+  test("pins the OpenAI moderation origin at config decode", () => {
+    expect(() =>
+      loadConfigFrom(HttpWorkerConfig, {
+        OPENAI_MODERATION_BASE_URL: "https://moderation-proxy.invalid/v1",
+      }),
+    ).toThrow();
+  });
+
   test("a defaulted variable falls back rather than failing", () => {
     delete process.env.API_NEXT_PORT;
     const port = Config.port("API_NEXT_PORT").pipe(Config.withDefault(8080));
@@ -191,12 +199,17 @@ describe("config system (000 §9)", () => {
       HNS_FORWARDER_V3_KEY_REGISTRY_VERSION: "",
       HNS_FORWARDER_V3_FRESHNESS_WINDOW_SECONDS: 0,
       HNS_FORWARDER_V3_FUTURE_CLOCK_SKEW_SECONDS: -1,
+      OPENAI_MODERATION_ENABLED: false,
+      OPENAI_MODERATION_MODEL: "omni-moderation-2024-09-26",
+      OPENAI_MODERATION_BASE_URL: "https://api.openai.com/v1",
+      OPENAI_MODERATION_TIMEOUT_MS: 10_000,
       PIRATE_API_PUBLIC_ORIGIN: "",
     });
     expect(Redacted.value(configured.VERY_OAUTH_CLIENT_SECRET)).toBe("");
     expect(Redacted.value(configured.VERY_OAUTH_SEALING_KEY)).toBe("");
     expect(Redacted.value(configured.VERY_WEB_SEALING_KEY)).toBe("");
     expect(Redacted.value(configured.HNS_FORWARDER_V3_HMAC_KEY_REGISTRY)).toBe("");
+    expect(Redacted.value(configured.OPENAI_API_KEY)).toBe("");
   });
 
   test("declares the disabled HNS community API graph independently in every environment", async () => {
@@ -279,8 +292,13 @@ describe("config system (000 §9)", () => {
     for (const environment of environments) {
       expect(environment.vars?.VERY_OAUTH_ENABLED).toBe("false");
       expect(environment.vars?.HNS_OWNERSHIP_ENABLED).toBe("false");
+      expect(environment.vars?.OPENAI_MODERATION_ENABLED).toBe("false");
+      expect(environment.vars?.OPENAI_MODERATION_MODEL).toBe("omni-moderation-2024-09-26");
+      expect(environment.vars?.OPENAI_MODERATION_BASE_URL).toBe("https://api.openai.com/v1");
+      expect(environment.vars?.OPENAI_MODERATION_TIMEOUT_MS).toBe("10000");
       expect(environment.secrets?.required ?? []).not.toContain("VERY_OAUTH_CLIENT_SECRET");
       expect(environment.secrets?.required ?? []).not.toContain("VERY_OAUTH_SEALING_KEY");
+      expect(environment.secrets?.required ?? []).not.toContain("OPENAI_API_KEY");
     }
     // Development (the base block) and production rely on the fail-closed
     // default. Staging alone carries the operator-authorized Very web app.

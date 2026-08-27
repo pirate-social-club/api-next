@@ -240,6 +240,21 @@ export const HttpWorkerConfig = Config.all({
   HANDLE_RECIPIENT_TOKEN_ENVELOPE_KEYS: secret("HANDLE_RECIPIENT_TOKEN_ENVELOPE_KEYS").pipe(
     Config.withDefault(Redacted.make("")),
   ),
+  OPENAI_MODERATION_ENABLED: Config.boolean("OPENAI_MODERATION_ENABLED").pipe(
+    Config.withDefault(false),
+  ),
+  OPENAI_API_KEY: secret("OPENAI_API_KEY").pipe(Config.withDefault(Redacted.make(""))),
+  OPENAI_MODERATION_MODEL: Config.literals(
+    ["omni-moderation-2024-09-26"],
+    "OPENAI_MODERATION_MODEL",
+  ).pipe(Config.withDefault("omni-moderation-2024-09-26")),
+  OPENAI_MODERATION_BASE_URL: Config.literals(
+    ["https://api.openai.com/v1"],
+    "OPENAI_MODERATION_BASE_URL",
+  ).pipe(Config.withDefault("https://api.openai.com/v1")),
+  OPENAI_MODERATION_TIMEOUT_MS: Config.int("OPENAI_MODERATION_TIMEOUT_MS").pipe(
+    Config.withDefault(10_000),
+  ),
   ...MegapotRewardConfigFields,
 });
 

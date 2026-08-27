@@ -11,7 +11,6 @@ import {
   type ModerationActionOutcome,
   type TextCommentTargetResolution,
   type TextPostCommitOutcome,
-  type TextPostModerationEvaluation,
   TextPostRepositoryError,
   type TextPostRepositoryFailure,
   type TextPostStore,
@@ -19,10 +18,21 @@ import {
   type TextSubmissionSurface,
   type TextSubmissionTarget,
 } from "@pirate/application";
+import type {
+  RestrictedTextModerationEvidenceV1,
+  TextModerationPolicySnapshotV2,
+  TextPostCommitInputV2,
+  TextPostStoreServiceV2,
+} from "@pirate/application/text-moderation-runtime";
+import {
+  MODERATION_POLICY_CATEGORIES_V1,
+  type ModerationPolicyDecisionV1,
+  type ModerationPolicyTableV1,
+} from "@pirate/contracts";
 import {
   canonicalTextModerationInput,
   publicTextPublicationResult,
-  type TextModerationEvaluationV1,
+  type TextModerationEvaluation,
   textContentSubmissionInvariant,
   textModerationEvaluationInvariant,
 } from "@pirate/domain";
@@ -32,7 +42,7 @@ type Row = Readonly<Record<string, unknown>>;
 type Transaction = ControlPlaneTransaction;
 type StoreFailure = TextPostRepositoryFailure | ControlPlaneError;
 type ReplayInput = Parameters<TextPostStore["Service"]["replay"]>[0];
-type CommitInput = Parameters<TextPostStore["Service"]["commitTerminal"]>[0];
+type CommitInput = TextPostCommitInputV2;
 type GetInput = Parameters<TextPostStore["Service"]["getForAuthor"]>[0];
 type AuthorityInput = Parameters<TextPostStore["Service"]["checkAuthority"]>[0];
 type RepositoryService = {
@@ -49,6 +59,9 @@ type RepositoryService = {
   readonly commitTerminal: (
     input: CommitInput,
   ) => Effect.Effect<TextPostCommitOutcome, StoreFailure, ControlPlaneDb>;
+  readonly readModerationPolicy: (input: {
+    readonly communityId: string;
+  }) => Effect.Effect<TextModerationPolicySnapshotV2, StoreFailure, ControlPlaneDb>;
   readonly getForAuthor: (
     input: GetInput,
   ) => Effect.Effect<TextPostSubmissionDocument | null, StoreFailure, ControlPlaneDb>;
@@ -112,6 +125,33 @@ const safeIntegerValue = (row: Row, key: string): number | null => {
 const validId = (value: string | null): value is string =>
   value !== null && value.length > 0 && value.trim() === value && !value.includes("\u0000");
 const validHash = (value: string | null): value is string => value !== null && HASH.test(value);
+const POLICY_DECISIONS = new Set<ModerationPolicyDecisionV1>(["permit", "review", "block"]);
+
+const policyTable = (rows: readonly Row[]): ModerationPolicyTableV1 | null => {
+  if (rows.length !== MODERATION_POLICY_CATEGORIES_V1.length) return null;
+  const values: Partial<
+    Record<(typeof MODERATION_POLICY_CATEGORIES_V1)[number], ModerationPolicyDecisionV1>
+  > = {};
+  for (const row of rows) {
+    const category = stringValue(row, "category");
+    const decision = stringValue(row, "decision") as ModerationPolicyDecisionV1 | null;
+    if (
+      category === null ||
+      !MODERATION_POLICY_CATEGORIES_V1.includes(
+        category as (typeof MODERATION_POLICY_CATEGORIES_V1)[number],
+      ) ||
+      decision === null ||
+      !POLICY_DECISIONS.has(decision) ||
+      category in values
+    ) {
+      return null;
+    }
+    values[category as (typeof MODERATION_POLICY_CATEGORIES_V1)[number]] = decision;
+  }
+  return MODERATION_POLICY_CATEGORIES_V1.every((category) => values[category] !== undefined)
+    ? (values as ModerationPolicyTableV1)
+    : null;
+};
 const iso = (row: Row, key: string): string | null => {
   const value = row[key];
   if (value instanceof Date && Number.isFinite(value.getTime())) return value.toISOString();
@@ -247,11 +287,95 @@ const idempotencyLockKey = (
   key: string,
 ): string => JSON.stringify([actorUserId, personaId, surface, key]);
 
+const moderationPolicySnapshot = (
+  db: Transaction,
+  communityId: string,
+  lock: boolean,
+): Effect.Effect<TextModerationPolicySnapshotV2, StoreFailure> =>
+  Effect.gen(function* () {
+    const provider = yield* db.execute<Row>({
+      label: "text-moderation.policy.provider",
+      text: `SELECT pointer.policy_revision_id, revision.policy_hash
+               FROM text_moderation_policy_current AS pointer
+               JOIN text_moderation_policy_revisions AS revision
+                 ON revision.policy_revision_id = pointer.policy_revision_id
+              WHERE pointer.singleton = TRUE
+              ${lock ? "FOR UPDATE OF pointer" : ""}`,
+      values: [],
+      readonly: !lock,
+    });
+    const floor = yield* db.execute<Row>({
+      label: "text-moderation.policy.platform-floor",
+      text: `SELECT pointer.policy_revision_id, pointer.policy_hash,
+                    category.category, category.decision
+               FROM moderation_platform_floor_current AS pointer
+               JOIN moderation_platform_floor_category_decisions AS category
+                 ON category.policy_revision_id = pointer.policy_revision_id
+              WHERE pointer.singleton = TRUE
+              ORDER BY moderation_policy_category_ordinal_v1(category.category)
+              ${lock ? "FOR UPDATE OF pointer" : ""}`,
+      values: [],
+      readonly: !lock,
+    });
+    const community = yield* db.execute<Row>({
+      label: "text-moderation.policy.community",
+      text: `SELECT pointer.policy_revision_id, pointer.policy_hash,
+                    category.category, category.decision
+               FROM community_moderation_policy_current AS pointer
+               JOIN community_moderation_policy_category_decisions AS category
+                 ON category.community_id = pointer.community_id
+                AND category.policy_revision_id = pointer.policy_revision_id
+              WHERE pointer.community_id = $1
+              ORDER BY moderation_policy_category_ordinal_v1(category.category)
+              ${lock ? "FOR UPDATE OF pointer" : ""}`,
+      values: [communityId],
+      readonly: !lock,
+    });
+    const providerRow = provider.rows[0] as Row | undefined;
+    const floorRow = floor.rows[0] as Row | undefined;
+    const communityRow = community.rows[0] as Row | undefined;
+    const providerRevision =
+      providerRow === undefined ? null : stringValue(providerRow, "policy_revision_id");
+    const providerHash = providerRow === undefined ? null : stringValue(providerRow, "policy_hash");
+    const platformRevision =
+      floorRow === undefined ? null : stringValue(floorRow, "policy_revision_id");
+    const platformHash = floorRow === undefined ? null : stringValue(floorRow, "policy_hash");
+    const communityRevision =
+      communityRow === undefined ? null : stringValue(communityRow, "policy_revision_id");
+    const communityHash =
+      communityRow === undefined ? null : stringValue(communityRow, "policy_hash");
+    const platformPolicy = policyTable(floor.rows);
+    const communityPolicy = policyTable(community.rows);
+    if (
+      provider.rows.length !== 1 ||
+      !validId(providerRevision) ||
+      !validHash(providerHash) ||
+      !validId(platformRevision) ||
+      !validHash(platformHash) ||
+      platformPolicy === null ||
+      !validId(communityRevision) ||
+      !validHash(communityHash) ||
+      communityPolicy === null
+    ) {
+      return yield* Effect.fail(failure("commit", "invalid-row"));
+    }
+    return {
+      policy_revision: providerRevision,
+      policy_hash: providerHash,
+      platform_policy_revision: platformRevision,
+      platform_policy_hash: platformHash,
+      platform_policy: platformPolicy,
+      community_policy_revision: communityRevision,
+      community_policy_hash: communityHash,
+      community_policy: communityPolicy,
+    };
+  });
+
 const authority = (
   transaction: Transaction,
   communityId: string,
   actorUserId: string,
-): Effect.Effect<{ readonly policyRevision: string; readonly policyHash: string }, StoreFailure> =>
+): Effect.Effect<TextModerationPolicySnapshotV2, StoreFailure> =>
   Effect.gen(function* () {
     const community = yield* transaction.execute<Row>({
       label: "text-post.commit.lock-community",
@@ -282,23 +406,7 @@ const authority = (
       booleanValue(activeEffect.rows[0] as Row, "allowed") !== true
     )
       return yield* Effect.fail(failure("commit", "membership-required"));
-    const policy = yield* transaction.execute<Row>({
-      label: "text-post.commit.current-policy",
-      text: `SELECT pointer.policy_revision_id, revision.policy_hash
-               FROM text_moderation_policy_current AS pointer
-               JOIN text_moderation_policy_revisions AS revision
-                 ON revision.policy_revision_id = pointer.policy_revision_id
-              WHERE pointer.singleton = TRUE
-              FOR UPDATE OF pointer`,
-      values: [],
-      readonly: false,
-    });
-    const row = (policy.rows[0] ?? {}) as Row;
-    const policyRevision = stringValue(row, "policy_revision_id");
-    const policyHash = stringValue(row, "policy_hash");
-    if (policy.rows.length !== 1 || !validId(policyRevision) || !validHash(policyHash))
-      return yield* Effect.fail(failure("commit", "invalid-row"));
-    return { policyRevision, policyHash };
+    return yield* moderationPolicySnapshot(transaction, communityId, true);
   });
 
 const lockCommentTarget = (
@@ -444,9 +552,29 @@ const responseSnapshot = (input: {
   updated_at: input.at,
 });
 
-const isProviderFailure = (evaluation: TextPostModerationEvaluation): boolean =>
+const isProviderFailure = (evaluation: TextModerationEvaluation): boolean =>
   evaluation.decision === "manual_review" &&
   evaluation.reason_codes.some((reason) => reason.startsWith("provider_"));
+
+const restrictedEvidenceValid = (
+  evidence: RestrictedTextModerationEvidenceV1,
+  evaluation: Extract<TextModerationEvaluation, { readonly version: "text-moderation-v2" }>,
+): boolean =>
+  validId(evidence.evidence_ref) &&
+  validHash(evidence.evidence_hash) &&
+  evidence.evidence_ref === evaluation.evidence_ref &&
+  evidence.input_sha256 === evaluation.input_sha256 &&
+  validId(evidence.community_id) &&
+  evidence.policy_revision === evaluation.policy_revision &&
+  evidence.policy_hash === evaluation.policy_hash &&
+  evidence.platform_policy_revision === evaluation.platform_policy_revision &&
+  evidence.platform_policy_hash === evaluation.platform_policy_hash &&
+  evidence.community_policy_revision === evaluation.community_policy_revision &&
+  evidence.community_policy_hash === evaluation.community_policy_hash &&
+  evidence.provider_id === "openai" &&
+  evidence.requested_model === "omni-moderation-2024-09-26" &&
+  evidence.returned_model === "omni-moderation-2024-09-26" &&
+  evidence.inputs.length > 0;
 
 export function makeControlPlaneTextPostRepository(): RepositoryService {
   const checkAuthority: RepositoryService["checkAuthority"] = (input) =>
@@ -514,6 +642,15 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
       return outcome === null ? yield* Effect.fail(failure("replay", "invalid-row")) : outcome;
     });
 
+  const readModerationPolicy: RepositoryService["readModerationPolicy"] = (input) =>
+    Effect.gen(function* () {
+      if (!validId(input.communityId)) {
+        return yield* Effect.fail(failure("commit", "constraint"));
+      }
+      const db = yield* ControlPlaneDb;
+      return yield* moderationPolicySnapshot(db, input.communityId, false);
+    });
+
   const commitTerminal: RepositoryService["commitTerminal"] = (input) =>
     Effect.gen(function* () {
       const target = targetFor(input);
@@ -558,9 +695,14 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
       const emptyPolicy =
         input.evaluation.policy_revision === "" && input.evaluation.policy_hash === "";
       if (
-        textModerationEvaluationInvariant(input.evaluation as TextModerationEvaluationV1) !==
-          null &&
-        !(providerFailure && emptyPolicy)
+        (textModerationEvaluationInvariant(input.evaluation) !== null &&
+          !(input.evaluation.version === "text-moderation-v1" && providerFailure && emptyPolicy)) ||
+        (input.evaluation.version === "text-moderation-v2" &&
+          (providerFailure
+            ? input.restrictedEvidence !== undefined || input.evaluation.evidence_ref !== null
+            : input.restrictedEvidence === undefined ||
+              input.restrictedEvidence.community_id !== input.communityId ||
+              !restrictedEvidenceValid(input.restrictedEvidence, input.evaluation)))
       )
         return yield* Effect.fail(failure("commit", "constraint"));
       const db = yield* ControlPlaneDb;
@@ -604,27 +746,31 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
               ? { parentDepth: -1 }
               : yield* lockCommentTarget(transaction, target);
           const evaluation =
+            input.evaluation.version === "text-moderation-v1" &&
             providerFailure &&
             input.evaluation.policy_revision === "" &&
             input.evaluation.policy_hash === ""
               ? {
                   ...input.evaluation,
-                  policy_revision: current.policyRevision,
-                  policy_hash: current.policyHash,
+                  policy_revision: current.policy_revision,
+                  policy_hash: current.policy_hash,
                 }
               : input.evaluation;
           if (
-            evaluation.policy_revision !== current.policyRevision ||
-            evaluation.policy_hash !== current.policyHash
+            evaluation.policy_revision !== current.policy_revision ||
+            evaluation.policy_hash !== current.policy_hash ||
+            (evaluation.version === "text-moderation-v2" &&
+              (evaluation.platform_policy_revision !== current.platform_policy_revision ||
+                evaluation.platform_policy_hash !== current.platform_policy_hash ||
+                evaluation.community_policy_revision !== current.community_policy_revision ||
+                evaluation.community_policy_hash !== current.community_policy_hash))
           )
             return {
               kind: "policy-stale" as const,
-              policyRevision: current.policyRevision,
-              policyHash: current.policyHash,
+              policyRevision: current.policy_revision,
+              policyHash: current.policy_hash,
             };
-          const publicResult = publicTextPublicationResult(
-            evaluation as TextModerationEvaluationV1,
-          );
+          const publicResult = publicTextPublicationResult(evaluation);
           if (publicResult === null) return yield* Effect.fail(failure("commit", "constraint"));
           const nowResult = yield* transaction.execute<Row>({
             label: "text-post.commit.database-clock",
@@ -660,6 +806,110 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
           if (textContentSubmissionInvariant(snapshot) !== null)
             return yield* Effect.fail(failure("commit", "invalid-row"));
           const bytes = new TextEncoder().encode(JSON.stringify(snapshot));
+
+          if (
+            evaluation.version === "text-moderation-v2" &&
+            input.restrictedEvidence !== undefined
+          ) {
+            const evidence = input.restrictedEvidence;
+            const categories = Object.fromEntries(
+              evidence.inputs.map((entry, index) => [
+                `${index}:${entry.input_sha256}`,
+                entry.categories,
+              ]),
+            );
+            const scores = Object.fromEntries(
+              evidence.inputs.map((entry, index) => [
+                `${index}:${entry.input_sha256}`,
+                entry.scores,
+              ]),
+            );
+            const appliedInputTypes = Object.fromEntries(
+              evidence.inputs.map((entry, index) => [
+                `${index}:${entry.input_sha256}`,
+                entry.applied_input_types,
+              ]),
+            );
+            const inputHashes = evidence.inputs.map((entry) => entry.input_sha256);
+            yield* transaction.execute({
+              label: "text-post.commit.restricted-evidence",
+              text: `INSERT INTO text_moderation_evidence (
+                  evidence_ref, provider_id, requested_model_identifier,
+                  response_model_identifier, outcome, normalized_categories,
+                  normalized_scores, applied_input_types, input_sha256,
+                  input_hashes, evidence_hash, response_sha256, community_id,
+                  policy_revision_id, policy_hash,
+                  platform_policy_revision_id, platform_policy_hash,
+                  community_policy_revision_id, community_policy_hash
+                ) VALUES (
+                  $1, $2, $3, $4, 'evaluated', $5::jsonb, $6::jsonb, $7::jsonb,
+                  $8, $9::jsonb, $10, $10, $11, $12, $13, $14, $15, $16, $17
+                ) ON CONFLICT (evidence_ref) DO NOTHING`,
+              values: [
+                evidence.evidence_ref,
+                evidence.provider_id,
+                evidence.requested_model,
+                evidence.returned_model,
+                JSON.stringify(categories),
+                JSON.stringify(scores),
+                JSON.stringify(appliedInputTypes),
+                evidence.input_sha256,
+                JSON.stringify(inputHashes),
+                evidence.evidence_hash,
+                evidence.community_id,
+                evidence.policy_revision,
+                evidence.policy_hash,
+                evidence.platform_policy_revision,
+                evidence.platform_policy_hash,
+                evidence.community_policy_revision,
+                evidence.community_policy_hash,
+              ],
+              readonly: false,
+            });
+            const agreed = yield* transaction.execute({
+              label: "text-post.commit.restricted-evidence-agreement",
+              text: `SELECT evidence_ref FROM text_moderation_evidence
+                      WHERE evidence_ref = $1
+                        AND provider_id = $2
+                        AND requested_model_identifier = $3
+                        AND response_model_identifier = $4
+                        AND outcome = 'evaluated'
+                        AND normalized_categories = $5::jsonb
+                        AND normalized_scores = $6::jsonb
+                        AND applied_input_types = $7::jsonb
+                        AND input_sha256 = $8
+                        AND input_hashes = $9::jsonb
+                        AND evidence_hash = $10
+                        AND response_sha256 = $10
+                        AND community_id = $11
+                        AND policy_revision_id = $12 AND policy_hash = $13
+                        AND platform_policy_revision_id = $14 AND platform_policy_hash = $15
+                        AND community_policy_revision_id = $16 AND community_policy_hash = $17`,
+              values: [
+                evidence.evidence_ref,
+                evidence.provider_id,
+                evidence.requested_model,
+                evidence.returned_model,
+                JSON.stringify(categories),
+                JSON.stringify(scores),
+                JSON.stringify(appliedInputTypes),
+                evidence.input_sha256,
+                JSON.stringify(inputHashes),
+                evidence.evidence_hash,
+                evidence.community_id,
+                evidence.policy_revision,
+                evidence.policy_hash,
+                evidence.platform_policy_revision,
+                evidence.platform_policy_hash,
+                evidence.community_policy_revision,
+                evidence.community_policy_hash,
+              ],
+              readonly: false,
+            });
+            if (agreed.rows.length !== 1) {
+              return yield* Effect.fail(failure("commit", "invalid-row"));
+            }
+          }
 
           if (postId !== null) {
             yield* transaction.execute({
@@ -756,14 +1006,17 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
             text: `INSERT INTO text_content_submissions (
                 community_id, submission_id, operation_id, actor_user_id, surface, idempotency_key,
                 request_hash, status, moderation_decision, public_reason_code,
-                policy_revision_id, policy_hash, input_sha256, internal_reason_codes,
+                policy_revision_id, policy_hash,
+                platform_policy_revision_id, platform_policy_hash,
+                community_policy_revision_id, community_policy_hash,
+                input_sha256, internal_reason_codes,
                 evidence_ref, published_post_id, published_comment_id, review_ref,
                 target_post_id, target_parent_comment_id,
                 created_at, updated_at, response_snapshot_bytes, response_snapshot_sha256,
                 author_persona_id
-              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-                $14::jsonb, $15, $16, $17, $18, $19, $20, $21, $21, $22,
-                encode(sha256($22), 'hex'), $23)`,
+              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                $13, $14, $15, $16, $17, $18::jsonb, $19, $20, $21, $22, $23, $24,
+                $25, $25, $26, encode(sha256($26), 'hex'), $27)`,
             values: [
               input.communityId,
               submissionId,
@@ -775,8 +1028,16 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
               status,
               evaluation.decision,
               publicResult.reason_code,
-              current.policyRevision,
-              current.policyHash,
+              current.policy_revision,
+              current.policy_hash,
+              evaluation.version === "text-moderation-v2"
+                ? evaluation.platform_policy_revision
+                : null,
+              evaluation.version === "text-moderation-v2" ? evaluation.platform_policy_hash : null,
+              evaluation.version === "text-moderation-v2"
+                ? evaluation.community_policy_revision
+                : null,
+              evaluation.version === "text-moderation-v2" ? evaluation.community_policy_hash : null,
               canonical.sha256,
               JSON.stringify(evaluation.reason_codes),
               evaluation.evidence_ref,
@@ -861,9 +1122,29 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
             yield* transaction.execute({
               label: "text-post.commit.review-case",
               text: `INSERT INTO text_moderation_cases
-                (community_id, case_id, submission_id, status, created_at, updated_at)
-               VALUES ($1, $2, $3, 'open', $4, $4)`,
-              values: [input.communityId, reviewRef, submissionId, at],
+                (community_id, case_id, submission_id, status,
+                 platform_policy_revision_id, platform_policy_hash,
+                 community_policy_revision_id, community_policy_hash,
+                 created_at, updated_at)
+               VALUES ($1, $2, $3, 'open', $4, $5, $6, $7, $8, $8)`,
+              values: [
+                input.communityId,
+                reviewRef,
+                submissionId,
+                evaluation.version === "text-moderation-v2"
+                  ? evaluation.platform_policy_revision
+                  : null,
+                evaluation.version === "text-moderation-v2"
+                  ? evaluation.platform_policy_hash
+                  : null,
+                evaluation.version === "text-moderation-v2"
+                  ? evaluation.community_policy_revision
+                  : null,
+                evaluation.version === "text-moderation-v2"
+                  ? evaluation.community_policy_hash
+                  : null,
+                at,
+              ],
               readonly: false,
             });
             if (surface === "comment" || surface === "reply") {
@@ -1619,6 +1900,7 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
   return {
     checkAuthority,
     replay,
+    readModerationPolicy,
     commitTerminal,
     getForAuthor,
     resolveCommentTarget,
@@ -1633,13 +1915,14 @@ export function makeControlPlaneTextSubmissionRepository(): RepositoryService {
 
 export function makeControlPlaneTextSubmissionStore(
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
-): TextPostStore["Service"] {
+): TextPostStore["Service"] & TextPostStoreServiceV2 {
   const repository = makeControlPlaneTextPostRepository();
   const provide = <A, E>(effect: Effect.Effect<A, E, ControlPlaneDb>) =>
     Effect.provide(runtime)(effect);
   return {
     checkAuthority: (input) => provide(repository.checkAuthority(input)),
     replay: (input) => provide(repository.replay(input)),
+    readModerationPolicy: (input) => provide(repository.readModerationPolicy(input)),
     commitTerminal: (input) => provide(repository.commitTerminal(input)),
     getForAuthor: (input) => provide(repository.getForAuthor(input)),
     resolveCommentTarget: (input) => provide(repository.resolveCommentTarget(input)),
@@ -1648,4 +1931,4 @@ export function makeControlPlaneTextSubmissionStore(
   };
 }
 
-export type TextSubmissionRepository = TextPostStore["Service"];
+export type TextSubmissionRepository = TextPostStore["Service"] & TextPostStoreServiceV2;

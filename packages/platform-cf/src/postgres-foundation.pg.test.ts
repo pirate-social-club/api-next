@@ -303,6 +303,12 @@ const communityModerationAuthorityPolicyMigrationSql = await Bun.file(
 const personaWalletProvisioningMigrationSql = await Bun.file(
   new URL("../../../db/postgres/migrations/0060_persona_wallet_provisioning.sql", import.meta.url),
 ).text();
+const openAiModerationDriverCutoverMigrationSql = await Bun.file(
+  new URL(
+    "../../../db/postgres/migrations/0061_openai_moderation_driver_cutover.sql",
+    import.meta.url,
+  ),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -610,6 +616,11 @@ const personaWalletProvisioningMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0060_persona_wallet_provisioning.sql"] ?? "",
   sql: personaWalletProvisioningMigrationSql,
 };
+const openAiModerationDriverCutoverMigration: PostgresMigration = {
+  version: "0061_openai_moderation_driver_cutover.sql",
+  checksum: checksumManifest.migrations["0061_openai_moderation_driver_cutover.sql"] ?? "",
+  sql: openAiModerationDriverCutoverMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -671,6 +682,7 @@ const migrations: readonly PostgresMigration[] = [
   dataIpfsAndSigningIntentRepairMigration,
   communityModerationAuthorityPolicyMigration,
   personaWalletProvisioningMigration,
+  openAiModerationDriverCutoverMigration,
 ];
 
 function checksum(value: string): string {
@@ -953,6 +965,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       );
       expect(checksum(personaWalletProvisioningMigrationSql)).toBe(
         personaWalletProvisioningMigration.checksum,
+      );
+      expect(checksum(openAiModerationDriverCutoverMigrationSql)).toBe(
+        openAiModerationDriverCutoverMigration.checksum,
       );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
@@ -2851,7 +2866,12 @@ suite("Postgres 17 product and gates v2 foundation", () => {
 
   test("enforces durable text moderation policy, submission, review, and projection invariants", async () => {
     await withSchema(async (admin, scopedConnectionString) => {
-      await applyMigrations(scopedConnectionString, migrations);
+      // Preserve the historical V1 invariant suite at the last pre-cutover
+      // schema. Current V2 writes and the 0061 fence have dedicated coverage.
+      await applyMigrations(
+        scopedConnectionString,
+        migrations.slice(0, migrations.indexOf(openAiModerationDriverCutoverMigration)),
+      );
 
       const policy = await admin.query<{
         readonly policy_hash: string;

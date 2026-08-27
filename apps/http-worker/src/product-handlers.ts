@@ -50,6 +50,8 @@ type ContentServices = Parameters<typeof getPost>[1];
 type ContentStoreService = ContentServices["contentStore"];
 type TextPostStoreService = ContentServices["textPostStore"];
 type TextModerationService = ContentServices["textModeration"];
+type TextPostStoreV2Service = ContentServices["textPostStoreV2"];
+type TextModerationProviderService = ContentServices["textModerationProvider"];
 type PersonaStoreService = ContentServices["personaStore"];
 type CommunityActor = Parameters<typeof joinCommunity>[0]["actor"];
 type HomeFeedQuery = Parameters<typeof getHomeFeed>[0]["query"];
@@ -59,6 +61,8 @@ export interface ProductHandlerServices {
   readonly contentStore: ContentStoreService;
   readonly textPostStore?: TextPostStoreService;
   readonly textModeration?: TextModerationService;
+  readonly textPostStoreV2?: TextPostStoreV2Service;
+  readonly textModerationProvider?: TextModerationProviderService;
   readonly personaStore?: PersonaStoreService;
   readonly feedStore: FeedStoreService;
   readonly identityStore?: CurrentUserServices["identityStore"];
@@ -285,6 +289,12 @@ const createPostHandler = async (request: DecodedRequest, services: ProductHandl
       contentStore: services.contentStore,
       ...(services.textPostStore === undefined ? {} : { textPostStore: services.textPostStore }),
       ...(services.textModeration === undefined ? {} : { textModeration: services.textModeration }),
+      ...(services.textPostStoreV2 === undefined
+        ? {}
+        : { textPostStoreV2: services.textPostStoreV2 }),
+      ...(services.textModerationProvider === undefined
+        ? {}
+        : { textModerationProvider: services.textModerationProvider }),
       ...(services.personaStore === undefined ? {} : { personaStore: services.personaStore }),
     }),
   );
@@ -294,6 +304,12 @@ const createCommentHandler = async (request: DecodedRequest, services: ProductHa
     createCommentReply(createCommentInputFrom(request), {
       ...(services.textPostStore === undefined ? {} : { textPostStore: services.textPostStore }),
       ...(services.textModeration === undefined ? {} : { textModeration: services.textModeration }),
+      ...(services.textPostStoreV2 === undefined
+        ? {}
+        : { textPostStoreV2: services.textPostStoreV2 }),
+      ...(services.textModerationProvider === undefined
+        ? {}
+        : { textModerationProvider: services.textModerationProvider }),
       ...(services.personaStore === undefined ? {} : { personaStore: services.personaStore }),
     }),
   );
@@ -303,6 +319,12 @@ const createReplyHandler = async (request: DecodedRequest, services: ProductHand
     createCommentReply(createReplyInputFrom(request), {
       ...(services.textPostStore === undefined ? {} : { textPostStore: services.textPostStore }),
       ...(services.textModeration === undefined ? {} : { textModeration: services.textModeration }),
+      ...(services.textPostStoreV2 === undefined
+        ? {}
+        : { textPostStoreV2: services.textPostStoreV2 }),
+      ...(services.textModerationProvider === undefined
+        ? {}
+        : { textModerationProvider: services.textModerationProvider }),
       ...(services.personaStore === undefined ? {} : { personaStore: services.personaStore }),
     }),
   );

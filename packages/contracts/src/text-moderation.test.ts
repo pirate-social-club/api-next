@@ -3,6 +3,7 @@ import { Schema } from "effect";
 import {
   TextContentSubmissionV1,
   TextModerationEvaluationV1,
+  TextModerationEvaluationV2,
   TextModerationInputV1,
 } from "./text-moderation.ts";
 
@@ -71,6 +72,31 @@ describe("text moderation contracts", () => {
     ]) {
       expect(() => decode(candidate)).toThrow();
     }
+  });
+
+  test("binds V2 evaluations to all three policy revisions", () => {
+    const decode = Schema.decodeUnknownSync(TextModerationEvaluationV2);
+    expect(
+      decode({
+        version: "text-moderation-v2",
+        surface: "text_post",
+        decision: "manual_review",
+        reason_codes: ["harassment"],
+        policy_revision: "provider-v2",
+        policy_hash: "a".repeat(64),
+        platform_policy_revision: "floor-v1",
+        platform_policy_hash: "b".repeat(64),
+        community_policy_revision: "community-v1",
+        community_policy_hash: "c".repeat(64),
+        matched_categories: ["harassment"],
+        category_decisions: { harassment: "review" },
+        effective_policy_decision: "review",
+        author_declared_rating: "general",
+        resulting_content_rating: "general",
+        input_sha256: "d".repeat(64),
+        evidence_ref: "evidence-v2",
+      }),
+    ).toMatchObject({ version: "text-moderation-v2", decision: "manual_review" });
   });
 
   test("freezes reload-safe public submission variants", () => {
