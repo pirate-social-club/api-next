@@ -245,6 +245,10 @@
         {
           "pattern": "api-next.pirate.sc",
           "custom_domain": true
+        },
+        {
+          "pattern": "hns-community-api.pirate.sc",
+          "custom_domain": true
         }
       ],
       "durable_objects": {
@@ -297,14 +301,14 @@
         "OPENAI_MODERATION_TIMEOUT_MS": "10000",
         "HNS_OWNERSHIP_ENABLED": "false",
         "HNS_COMMUNITY_APP_API_ENABLED": "false",
-        "HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN": "",
-        "HNS_COMMUNITY_APP_API_ACCESS_ISSUER": "",
-        "HNS_COMMUNITY_APP_API_ACCESS_JWKS_URL": "",
-        "HNS_COMMUNITY_APP_API_ACCESS_AUDIENCE": "",
-        "HNS_FORWARDER_V3_KEY_REGISTRY_REFERENCE": "",
-        "HNS_FORWARDER_V3_KEY_REGISTRY_VERSION": "",
-        "HNS_FORWARDER_V3_FRESHNESS_WINDOW_SECONDS": "0",
-        "HNS_FORWARDER_V3_FUTURE_CLOCK_SKEW_SECONDS": "-1",
+        "HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN": "https://hns-community-api.pirate.sc",
+        "HNS_COMMUNITY_APP_API_ACCESS_ISSUER": "https://piratesocialclub.cloudflareaccess.com",
+        "HNS_COMMUNITY_APP_API_ACCESS_JWKS_URL": "https://piratesocialclub.cloudflareaccess.com/cdn-cgi/access/certs",
+        "HNS_COMMUNITY_APP_API_ACCESS_AUDIENCE": "0654e5ea35b95c368a012a9e014351840f743253f55a606976d5bb8e628383c9",
+        "HNS_FORWARDER_V3_KEY_REGISTRY_REFERENCE": "pirate:hns-forwarder-v3:production-community-app:v1",
+        "HNS_FORWARDER_V3_KEY_REGISTRY_VERSION": "2026-08-27-01",
+        "HNS_FORWARDER_V3_FRESHNESS_WINDOW_SECONDS": "300",
+        "HNS_FORWARDER_V3_FUTURE_CLOCK_SKEW_SECONDS": "5",
         "PIRATE_APP_JWT_ISSUER": "api-next-session-production",
         "PIRATE_APP_JWT_AUDIENCE": "api-next-browser-production",
         "PIRATE_APP_JWT_SCOPE": "api-next-browser-session-production",
