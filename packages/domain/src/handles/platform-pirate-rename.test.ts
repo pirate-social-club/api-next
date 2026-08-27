@@ -90,9 +90,19 @@ describe("platform Pirate cleanup rename", () => {
     for (const value of ["ab", "CAPTAIN", " captain", "captain.pirate", "xn--captain", "a--b"])
       expect(isPlatformPirateLabelV1(value)).toBe(false);
     expect(isGeneratedPlatformPiratePlaceholderV1("new-0123456789abcdefabcd")).toBe(true);
-    expect(isGeneratedPlatformPiratePlaceholderV1("new-0123456789abcdefabc")).toBe(false);
-    expect(isGeneratedPlatformPiratePlaceholderV1("new-0123456789abcdefabcD")).toBe(false);
-    expect(isReservedPlatformPirateLabelV1("new-abc")).toBe(true);
+    for (const value of [
+      "new-0123456789abcdefabc",
+      "new-0123456789abcdefabcde",
+      "new-0123456789abcdefabcD",
+    ])
+      expect(isGeneratedPlatformPiratePlaceholderV1(value)).toBe(false);
+    for (const value of [
+      "new-abc",
+      "new-fffffffffffffffffff",
+      "new-ffffffffffffffffffff",
+      "new-fffffffffffffffffffff",
+    ])
+      expect(isReservedPlatformPirateLabelV1(value)).toBe(true);
     expect(isReservedPlatformPirateLabelV1("admin")).toBe(true);
     expect(isReservedPlatformPirateLabelV1("newbie")).toBe(false);
     expect(platformPirateConfusabilityKeyV1("captain-data")).toBe("captaindata");

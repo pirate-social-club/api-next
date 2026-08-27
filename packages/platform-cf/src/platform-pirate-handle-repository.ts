@@ -384,7 +384,7 @@ export function makeControlPlanePlatformPirateHandleRepository() {
                             ),
                             '{global_handle,issuance_source}', '"free_cleanup_rename"'::jsonb, true
                           ),
-                          '{global_handle,free_rename_consumed}', 'true'::jsonb, true
+                          '{global_handle,free_rename_consumed}', '1'::jsonb, true
                         ),
                         '{onboarding,cleanup_rename_available}', 'false'::jsonb, true
                       )
