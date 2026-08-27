@@ -16383,7 +16383,7 @@ CREATE TABLE media_post_submissions (
     current_lyrics_revision bigint,
     workflow_replacement_sequence bigint DEFAULT 0 NOT NULL,
     author_declared_rating text DEFAULT 'general'::text NOT NULL,
-    resulting_content_rating text,
+    resulting_content_rating text DEFAULT 'general'::text NOT NULL,
     CONSTRAINT media_post_submissions_abandonment_reason_check CHECK (((abandonment_reason IS NULL) OR (abandonment_reason = ANY (ARRAY['author_cancelled'::text, 'reservation_expired'::text, 'action_deadline_elapsed'::text, 'upload_expectation_mismatch'::text, 'upload_source_changed_before_finalize'::text])))),
     CONSTRAINT media_post_submissions_action_kind_check CHECK (((action_kind IS NULL) OR (action_kind = 'reference_required'::text))),
     CONSTRAINT media_post_submissions_analysis_revision_check CHECK ((analysis_revision >= 0)),

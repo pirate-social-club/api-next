@@ -37,7 +37,7 @@ $$;
 ALTER TABLE media_post_submissions
   ADD COLUMN author_declared_rating TEXT NOT NULL DEFAULT 'general'
     CHECK (author_declared_rating IN ('general', 'adult_18')),
-  ADD COLUMN resulting_content_rating TEXT
+  ADD COLUMN resulting_content_rating TEXT NOT NULL DEFAULT 'general'
     CHECK (resulting_content_rating IN ('general', 'adult_18'));
 
 ALTER TABLE media_publication_projections
@@ -45,44 +45,6 @@ ALTER TABLE media_publication_projections
     CHECK (visibility IN ('public', 'members_only')),
   ADD COLUMN content_rating TEXT NOT NULL DEFAULT 'general'
     CHECK (content_rating IN ('general', 'adult_18'));
-
-DO $migration$
-DECLARE definition TEXT; patched TEXT;
-BEGIN
-  SELECT pg_get_functiondef('guard_media_submission_update()'::regprocedure) INTO definition;
-  CREATE TEMP TABLE migration_0066_guard_definition (
-    definition TEXT NOT NULL
-  ) ON COMMIT DROP;
-  INSERT INTO migration_0066_guard_definition VALUES (definition);
-  patched := replace(
-    definition,
-    E'BEGIN\n  IF ROW(',
-    E'BEGIN\n  IF current_setting(''pirate.song_rating_backfill'', true) = ''on'' THEN RETURN NEW; END IF;\n  IF ROW('
-  );
-  IF patched = definition THEN
-    RAISE EXCEPTION 'media submission rating backfill seam was not found';
-  END IF;
-  EXECUTE patched;
-END;
-$migration$;
-
-SELECT set_config('pirate.song_rating_backfill', 'on', true);
-UPDATE media_post_submissions AS submission
-   SET resulting_content_rating = post.content_rating
-  FROM posts AS post
- WHERE post.community_id = submission.community_id
-   AND post.post_id = submission.post_id
-   AND submission.status = 'published';
-SELECT set_config('pirate.song_rating_backfill', 'off', true);
-
-DO $migration$
-DECLARE definition TEXT;
-BEGIN
-  SELECT saved.definition INTO STRICT definition
-    FROM migration_0066_guard_definition AS saved;
-  EXECUTE definition;
-END;
-$migration$;
 
 CREATE OR REPLACE FUNCTION enforce_song_rating_projection_v1()
 RETURNS trigger

@@ -1363,7 +1363,7 @@ export function makeControlPlaneMediaSubmissionRepository(
           } satisfies MediaSubmissionState;
           const inserted = yield* tx.execute({
             label: "media-submission.create",
-            text: "INSERT INTO media_post_submissions (submission_id,community_id,actor_user_id,author_persona_id,operation_id,idempotency_key,request_hash,title,song_type,author_declared_rating,phase,start_input,audio_reservation_id,response_snapshot_bytes,response_snapshot_sha256) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'reserve',$11::jsonb,$12,$13,$14)",
+            text: "INSERT INTO media_post_submissions (submission_id,community_id,actor_user_id,author_persona_id,operation_id,idempotency_key,request_hash,title,song_type,author_declared_rating,resulting_content_rating,phase,start_input,audio_reservation_id,response_snapshot_bytes,response_snapshot_sha256) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10,'reserve',$11::jsonb,$12,$13,$14)",
             values: [
               submissionId,
               input.communityId,
