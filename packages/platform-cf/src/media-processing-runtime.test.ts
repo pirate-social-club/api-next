@@ -236,7 +236,7 @@ describe("media processor runtime boundary", () => {
       signal,
     });
     expect(requests).toHaveLength(3);
-    expect(requests.every(({ init }) => init?.redirect === "error")).toBe(true);
+    expect(requests.every(({ init }) => init?.redirect === "manual")).toBe(true);
     const acrBody = requests[1]?.init?.body;
     expect(acrBody).toBeInstanceOf(FormData);
     if (!(acrBody instanceof FormData)) throw new TypeError("expected native multipart body");

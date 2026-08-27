@@ -141,7 +141,9 @@ async function fetchResponse(
       headers: request.headers,
       ...(request.body === undefined ? {} : { body: request.body }),
       signal: request.signal,
-      redirect: "error",
+      // Workers rejects `error` at runtime. `manual` preserves the no-follow
+      // credential boundary while allowing the adapter to classify 3xx.
+      redirect: "manual",
     });
   } catch (error) {
     const diagnostic =
