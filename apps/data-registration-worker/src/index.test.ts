@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import type { DataRegistrationWorkflowDependencies } from "../../../packages/application/src/data/registration-workflow.ts";
 import type { DataRegistrationQueueDependencies } from "../../../packages/application/src/data/registration-workflow-queue.ts";
-import { type DataRegistrationWorkflowStep, makeDataRegistrationWorkflowRunner } from "./index.ts";
+import {
+  type DataRegistrationWorkflowStep,
+  makeDataRegistrationQueueWorker,
+  makeDataRegistrationWorkflowRunner,
+} from "./index.ts";
 import { isDataRegistrationEnabled } from "./posture.ts";
 
 describe("DATA registration Worker posture", () => {
@@ -46,5 +50,32 @@ describe("DATA registration Worker posture", () => {
       ),
     ).toEqual({ outcome: "inert" });
     expect(stepNames).toEqual(["data-registration-0"]);
+  });
+
+  test("retains queued identities without resolving secrets while disabled", async () => {
+    let resolved = false;
+    let retriedWith: unknown;
+    const worker = makeDataRegistrationQueueWorker(() => {
+      resolved = true;
+      throw new Error("disabled queue must not compose provider adapters");
+    });
+    await worker.queue(
+      {
+        messages: [
+          {
+            body: { outbox_id: "outbox-1" },
+            ack: () => {
+              throw new Error("disabled queue must not acknowledge authority");
+            },
+            retry: (options) => {
+              retriedWith = options;
+            },
+          },
+        ],
+      },
+      {},
+    );
+    expect(resolved).toBe(false);
+    expect(retriedWith).toEqual({ delaySeconds: 900 });
   });
 });

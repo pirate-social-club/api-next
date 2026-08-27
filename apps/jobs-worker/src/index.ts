@@ -40,6 +40,10 @@ import {
 
 import { makeCommunityPurchaseFundingReconciliationJob } from "./community-purchase-funding";
 import {
+  type DataRegistrationJobsBindings,
+  makeDataRegistrationMaintenance,
+} from "./data-registration-runtime";
+import {
   type HnsRouteRevalidationBindings,
   type HnsRouteRevalidationComposition,
   makeHnsRouteRevalidationComposition,
@@ -109,6 +113,7 @@ export {
 
 export interface JobsWorkerEnv
   extends AlertSinkBindings,
+    DataRegistrationJobsBindings,
     HnsRouteRevalidationBindings,
     MediaJobsBindings {
   readonly CRON_LOCK: DurableObjectNamespace<ScheduledCronLockDO>;
@@ -706,10 +711,14 @@ export default {
     const dueByLane = groupDueJobsByLane(registry, event.scheduledTime);
     const runtime = makeHyperdriveControlPlaneLayer(env.CONTROL_PLANE);
     const mediaMaintenance = makeMediaMaintenance(env, runtime);
+    const dataRegistrationMaintenance = makeDataRegistrationMaintenance(env, runtime);
     const scheduledWork: Promise<unknown>[] = Array.from(dueByLane, ([lane, laneJobs]) =>
       handleScheduled(env, lane, laneJobs, event.scheduledTime, { runtime }),
     );
     if (mediaMaintenance !== null) scheduledWork.push(mediaMaintenance());
+    if (dataRegistrationMaintenance !== null) {
+      scheduledWork.push(dataRegistrationMaintenance());
+    }
     await ctx.waitUntil(Promise.all(scheduledWork));
   },
 };

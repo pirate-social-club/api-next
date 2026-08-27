@@ -305,6 +305,7 @@ adapters remain disabled and runtime composition is absent.
 | `ACRCLOUD_ACCESS_SECRET` | ACRCloud identification signing secret |
 | `ELEVENLABS_API_KEY` | Platform-funded forced-alignment key; v1 has no ASR |
 | `FILEBASE_IPFS_TOKEN` | Filebase bucket-scoped IPFS bearer token |
+| `DATA_REGISTRATION_STAGING_PRIVATE_KEY` | Staging-only Aeneid DATA registration EOA; never shared with Megapot or production |
 | `MEDIA_CLASSIFIER_API_KEY` | Provider-neutral media-classifier credential |
 | `MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID` | Ingress-bucket-only R2 S3 access-key identifier |
 | `MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY` | Ingress-bucket-only R2 S3 signing secret |
@@ -314,6 +315,13 @@ each name. A stored name therefore records only the reviewed custody handoff;
 it is not evidence of a usable provider credential or enabled integration.
 Replacing a sentinel, validating provider-specific shape, and enabling an
 adapter remain separate reviewed actions.
+
+`DATA_REGISTRATION_STAGING_PRIVATE_KEY` is the sole exception to the initial
+provider-placeholder pattern: it is admitted only after the typed signer
+adapter is independently reviewed. It must correspond to the checked staging
+`DATA_REGISTRATION_SIGNER_ADDRESS`, is accepted only for chain 1315 and the
+`data_registration` namespace, and may sign only the persisted zero-value
+transaction envelope. Production custody remains separately gated.
 
 No current Worker receives these names. The two ingress names remain invalid
 `PENDING` sentinels and are absent from every checked-in Worker secret

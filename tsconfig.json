@@ -62,5 +62,10 @@
     }
   },
   "include": ["packages", "apps"],
-    "exclude": ["packages/platform-cf", "apps/jobs-worker", "apps/media-processor-worker"]
+    "exclude": [
+      "packages/platform-cf",
+      "apps/data-registration-worker",
+      "apps/jobs-worker",
+      "apps/media-processor-worker"
+    ]
 }

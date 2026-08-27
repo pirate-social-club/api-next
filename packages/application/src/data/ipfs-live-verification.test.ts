@@ -64,6 +64,14 @@ describe("live IPFS verification composition", () => {
     };
     expect(await Effect.runPromise(pinAndVerifyIpfsArtifact(pinning, gateway, input))).toEqual({
       status: "gateway_failed",
+      pin: {
+        status: "pinned",
+        outcome: "pinned",
+        cid: CID,
+        byte_length: 4,
+        sha256: SHA256,
+        recursive: true,
+      },
       gateway: { status: "rejected", reason: "cid" },
     });
   });

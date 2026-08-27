@@ -1,0 +1,539 @@
+import { ControlPlaneDb, type ControlPlaneError } from "@pirate/application";
+import type { IpfsGatewayVerifier } from "@pirate/application/data/ipfs-live-verification";
+import { pinAndVerifyIpfsArtifact } from "@pirate/application/data/ipfs-live-verification";
+import type { IpfsPinningService } from "@pirate/application/data/ipfs-pinning";
+import {
+  type DataRegistrationArtifact,
+  type DataRegistrationOperation,
+  type DataRegistrationPinVerification,
+  deterministicDataRegistrationArtifactId,
+} from "@pirate/application/data/registration-persistence";
+import type {
+  DataRegistrationArtifactPipeline,
+  DataRegistrationPreparedArtifact,
+} from "@pirate/application/data/registration-workflow";
+import { canonicalJson } from "@pirate/domain";
+import { Effect, type Layer, Predicate } from "effect";
+
+const IMMUTABLE_REF_PREFIX = "media://immutable/";
+const SHA256 = /^[0-9a-f]{64}$/u;
+const ADDRESS = /^0x[0-9a-f]{40}$/u;
+
+type Row = Readonly<Record<string, unknown>>;
+
+export type DataRegistrationRoyaltyAllocation = Readonly<{
+  recipientId: string;
+  address: string;
+  shareBps: number;
+}>;
+
+export type DataRegistrationArtifactAuthority = Readonly<{
+  postId: string;
+  title: string;
+  projectedAt: string;
+  audioAssetRef: string;
+  audioMediaType: string;
+  audioByteLength: bigint;
+  canonicalAudioSha256: string;
+  coverArtifactRef: string | null;
+  lyrics: string | null;
+  lyricsExplicitness: "not_applicable" | "not_explicit" | "explicit" | "uncertain";
+  primaryLanguageBcp47: string | null;
+  licensePreset: "non-commercial" | "commercial-use" | "commercial-remix";
+  commercialRemixShareBps: number;
+  royaltyAllocations: readonly DataRegistrationRoyaltyAllocation[];
+  acrDecision: string;
+  acrPolicyRevision: string;
+  creatorAddress: string;
+}>;
+
+export interface DataRegistrationArtifactAuthorityReader {
+  readonly read: (
+    operation: DataRegistrationOperation,
+  ) => Promise<DataRegistrationArtifactAuthority>;
+  readonly listPins: (
+    registrationOperationId: string,
+  ) => Promise<readonly DataRegistrationPinVerification[]>;
+}
+
+const text = (row: Row, key: string): string => {
+  const value = row[key];
+  if (typeof value !== "string" || value.length === 0 || value !== value.trim()) {
+    throw new Error("invalid DATA artifact authority");
+  }
+  return value;
+};
+
+const nullableText = (row: Row, key: string): string | null => {
+  const value = row[key];
+  return value === null || value === undefined ? null : text(row, key);
+};
+
+const instant = (row: Row, key: string): string => {
+  const value = row[key];
+  const milliseconds = value instanceof Date ? value.getTime() : Date.parse(String(value));
+  if (!Number.isFinite(milliseconds)) throw new Error("invalid DATA artifact authority");
+  return new Date(milliseconds).toISOString();
+};
+
+const positiveBigint = (value: unknown): bigint => {
+  const parsed = String(value);
+  if (!/^[1-9][0-9]*$/u.test(parsed)) throw new Error("invalid DATA artifact authority");
+  return BigInt(parsed);
+};
+
+const integer = (value: unknown, minimum: number, maximum: number): number => {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < minimum || parsed > maximum) {
+    throw new Error("invalid DATA artifact authority");
+  }
+  return parsed;
+};
+
+const parseAllocations = (
+  value: unknown,
+): readonly Readonly<{
+  recipientId: string;
+  shareBps: number;
+}>[] => {
+  if (!Array.isArray(value) || value.length === 0) throw new Error("invalid royalty allocations");
+  const allocations = value.map((entry) => {
+    if (!Predicate.isObject(entry)) throw new Error("invalid royalty allocations");
+    return {
+      recipientId: text(entry, "recipientId"),
+      shareBps: integer(entry.shareBps, 1, 10_000),
+    };
+  });
+  if (allocations.reduce((total, allocation) => total + allocation.shareBps, 0) !== 10_000) {
+    throw new Error("invalid royalty allocations");
+  }
+  return allocations;
+};
+
+export function makePostgresDataRegistrationArtifactAuthorityReader(
+  runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+): DataRegistrationArtifactAuthorityReader {
+  const run = <A, E>(effect: Effect.Effect<A, E, ControlPlaneDb>): Promise<A> =>
+    Effect.runPromise(Effect.provide(runtime)(effect));
+  return {
+    read: (operation) =>
+      run(
+        Effect.gen(function* () {
+          const db = yield* ControlPlaneDb;
+          const publication = yield* db.execute<Row>({
+            label: "data-registration.artifacts.authority",
+            text: `SELECT p.post_id,p.title,p.projected_at,p.audio_asset_ref,p.canonical_audio_sha256,
+                          p.cover_artifact_ref,p.lyrics_text,p.lyrics_explicitness,
+                          p.primary_language_bcp47,a.content_type,a.size_bytes,
+                          t.license_preset,t.commercial_remix_share_bps,t.royalty_allocations,
+                          e.acr_decision,e.acr_policy_revision,w.address AS creator_address
+                     FROM media_publication_projections p
+                     JOIN media_audio_revisions a
+                       ON a.community_id=p.community_id AND a.actor_user_id=p.actor_user_id
+                      AND a.submission_id=p.submission_id AND a.operation_id=p.operation_id
+                      AND a.audio_revision=p.audio_revision
+                     JOIN media_submission_terms t
+                       ON t.community_id=p.community_id AND t.actor_user_id=p.actor_user_id
+                      AND t.submission_id=p.submission_id AND t.operation_id=p.operation_id
+                      AND t.creation_revision=p.creation_revision
+                     JOIN media_analysis_evidence e
+                       ON e.community_id=p.community_id AND e.actor_user_id=p.actor_user_id
+                      AND e.submission_id=p.submission_id AND e.operation_id=p.operation_id
+                      AND e.analysis_revision=p.analysis_revision
+                     JOIN persona_wallet_assignments w
+                       ON w.persona_id=p.author_persona_id AND w.chain_account_kind='evm'
+                      AND w.status='active'
+                    WHERE p.community_id=$1 AND p.actor_user_id=$2 AND p.submission_id=$3
+                      AND p.operation_id=$4 AND p.post_id=$5`,
+            values: [
+              operation.communityId,
+              operation.actorUserId,
+              operation.submissionId,
+              operation.mediaOperationId,
+              operation.postId,
+            ],
+            readonly: true,
+          });
+          if (publication.rows.length !== 1 || publication.rows[0] === undefined) {
+            throw new Error("DATA publication authority missing");
+          }
+          const row = publication.rows[0];
+          const allocations = parseAllocations(row.royalty_allocations);
+          const recipients = yield* db.execute<Row>({
+            label: "data-registration.artifacts.recipients",
+            text: `SELECT persona.account_id,wallet.address
+                     FROM personas persona
+                     JOIN persona_wallet_assignments wallet
+                       ON wallet.persona_id=persona.persona_id
+                      AND wallet.chain_account_kind='evm' AND wallet.status='active'
+                    WHERE persona.is_first_persona=true AND persona.account_id = ANY($1::text[])
+                    ORDER BY persona.account_id`,
+            values: [allocations.map(({ recipientId }) => recipientId)],
+            readonly: true,
+          });
+          const addresses = new Map(
+            recipients.rows.map((recipient) => [
+              text(recipient, "account_id"),
+              text(recipient, "address").toLowerCase(),
+            ]),
+          );
+          const royaltyAllocations = allocations.map((allocation) => {
+            const address = addresses.get(allocation.recipientId);
+            if (address === undefined || !ADDRESS.test(address)) {
+              throw new Error("DATA royalty recipient wallet missing");
+            }
+            return { ...allocation, address };
+          });
+          const creatorAddress = text(row, "creator_address").toLowerCase();
+          const audioSha256 = text(row, "canonical_audio_sha256");
+          const explicitness = text(row, "lyrics_explicitness");
+          const licensePreset = text(row, "license_preset");
+          if (
+            !ADDRESS.test(creatorAddress) ||
+            !SHA256.test(audioSha256) ||
+            !["not_applicable", "not_explicit", "explicit", "uncertain"].includes(explicitness) ||
+            !["non-commercial", "commercial-use", "commercial-remix"].includes(licensePreset)
+          ) {
+            throw new Error("invalid DATA artifact authority");
+          }
+          return {
+            postId: text(row, "post_id"),
+            title: text(row, "title"),
+            projectedAt: instant(row, "projected_at"),
+            audioAssetRef: text(row, "audio_asset_ref"),
+            audioMediaType: text(row, "content_type"),
+            audioByteLength: positiveBigint(row.size_bytes),
+            canonicalAudioSha256: audioSha256,
+            coverArtifactRef: nullableText(row, "cover_artifact_ref"),
+            lyrics: nullableText(row, "lyrics_text"),
+            lyricsExplicitness:
+              explicitness as DataRegistrationArtifactAuthority["lyricsExplicitness"],
+            primaryLanguageBcp47: nullableText(row, "primary_language_bcp47"),
+            licensePreset: licensePreset as DataRegistrationArtifactAuthority["licensePreset"],
+            commercialRemixShareBps: integer(row.commercial_remix_share_bps, 0, 10_000),
+            royaltyAllocations,
+            acrDecision: text(row, "acr_decision"),
+            acrPolicyRevision: text(row, "acr_policy_revision"),
+            creatorAddress,
+          };
+        }),
+      ),
+    listPins: (registrationOperationId) =>
+      run(
+        Effect.gen(function* () {
+          const db = yield* ControlPlaneDb;
+          const result = yield* db.execute<Row>({
+            label: "data-registration.artifacts.pins",
+            text: `SELECT pin_verification_id,registration_operation_id,artifact_id,artifact_kind,
+                          role,provider_id,attempt_number,outcome,cid,canonical_sha256,
+                          byte_length,evidence_ref,verified_at
+                     FROM data_registration_pin_verifications
+                    WHERE registration_operation_id=$1`,
+            values: [registrationOperationId],
+            readonly: true,
+          });
+          return result.rows.map((row) => ({
+            pinVerificationId: text(row, "pin_verification_id"),
+            registrationOperationId: text(row, "registration_operation_id"),
+            artifactId: text(row, "artifact_id"),
+            artifactKind: text(
+              row,
+              "artifact_kind",
+            ) as DataRegistrationPinVerification["artifactKind"],
+            role: text(row, "role") as DataRegistrationPinVerification["role"],
+            providerId: text(row, "provider_id"),
+            attemptNumber: integer(row.attempt_number, 1, 10),
+            outcome: text(row, "outcome") as DataRegistrationPinVerification["outcome"],
+            cid: nullableText(row, "cid"),
+            canonicalSha256: nullableText(row, "canonical_sha256"),
+            byteLength: row.byte_length === null ? null : positiveBigint(row.byte_length),
+            evidenceRef: text(row, "evidence_ref"),
+            verifiedAt:
+              row.verified_at === null ? null : new Date(text(row, "verified_at")).toISOString(),
+          }));
+        }),
+      ),
+  };
+}
+
+const sha256 = async (bytes: Uint8Array): Promise<string> =>
+  [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+
+const memoryArtifact = async (
+  operation: DataRegistrationOperation,
+  kind: "ip_metadata" | "nft_metadata",
+  value: unknown,
+): Promise<DataRegistrationPreparedArtifact> => {
+  const bytes = new TextEncoder().encode(canonicalJson(value));
+  const hash = await sha256(bytes);
+  const artifact: DataRegistrationArtifact = {
+    artifactId: deterministicDataRegistrationArtifactId(operation.registrationOperationId, kind),
+    registrationOperationId: operation.registrationOperationId,
+    artifactKind: kind,
+    sourceRef: `data-registration://canonical/${operation.registrationOperationId}/${kind}`,
+    mediaType: "application/json",
+    byteLength: BigInt(bytes.byteLength),
+    canonicalSha256: hash,
+    canonicalizationRevision: "rfc8785-jcs-v1",
+  };
+  return {
+    artifact,
+    filename: `${kind}.json`,
+    contentType: artifact.mediaType,
+    open: async function* () {
+      yield new Uint8Array(bytes);
+    },
+  };
+};
+
+function immutableKey(reference: string): string {
+  if (!reference.startsWith(IMMUTABLE_REF_PREFIX)) throw new Error("invalid immutable reference");
+  const suffix = reference.slice(IMMUTABLE_REF_PREFIX.length);
+  if (
+    suffix.length === 0 ||
+    suffix.length > 768 ||
+    suffix.startsWith("/") ||
+    suffix.includes("\\") ||
+    suffix.split("/").includes("..")
+  ) {
+    throw new Error("invalid immutable reference");
+  }
+  return `immutable/${suffix}`;
+}
+
+const audioArtifact = (
+  operation: DataRegistrationOperation,
+  authority: DataRegistrationArtifactAuthority,
+  bucket: R2Bucket,
+): DataRegistrationPreparedArtifact => {
+  const key = immutableKey(authority.audioAssetRef);
+  const artifact: DataRegistrationArtifact = {
+    artifactId: deterministicDataRegistrationArtifactId(
+      operation.registrationOperationId,
+      "canonical_audio",
+    ),
+    registrationOperationId: operation.registrationOperationId,
+    artifactKind: "canonical_audio",
+    sourceRef: authority.audioAssetRef,
+    mediaType: authority.audioMediaType,
+    byteLength: authority.audioByteLength,
+    canonicalSha256: authority.canonicalAudioSha256,
+    canonicalizationRevision: null,
+  };
+  return {
+    artifact,
+    filename: "canonical-audio",
+    contentType: artifact.mediaType,
+    open: async function* (signal) {
+      const selected = await bucket.get(key);
+      if (
+        selected === null ||
+        selected.size !== Number(artifact.byteLength) ||
+        selected.httpMetadata?.contentType !== artifact.mediaType ||
+        selected.body === undefined
+      ) {
+        throw new Error("canonical audio object mismatch");
+      }
+      const reader = selected.body.getReader();
+      try {
+        while (true) {
+          if (signal.aborted) throw new DOMException("cancelled", "AbortError");
+          const part = await reader.read();
+          if (part.done) return;
+          yield part.value;
+        }
+      } finally {
+        reader.releaseLock();
+      }
+    },
+  };
+};
+
+export type DataRegistrationArtifactPipelineOptions = Readonly<{
+  authority: DataRegistrationArtifactAuthorityReader;
+  immutableOriginals: R2Bucket;
+  pinning: IpfsPinningService;
+  gateway: IpfsGatewayVerifier;
+  publicOrigin: string;
+  now?: () => number;
+}>;
+
+export function makeDataRegistrationArtifactPipeline(
+  options: DataRegistrationArtifactPipelineOptions,
+): DataRegistrationArtifactPipeline {
+  const now = options.now ?? Date.now;
+  return {
+    prepare: async (operation) => {
+      const authority = await options.authority.read(operation);
+      if (
+        authority.postId !== operation.postId ||
+        authority.canonicalAudioSha256 !== operation.canonicalAudioSha256 ||
+        authority.coverArtifactRef !== null
+      ) {
+        throw new Error("DATA publication authority mismatch");
+      }
+      const audio = audioArtifact(operation, authority, options.immutableOriginals);
+      const pins = await options.authority.listPins(operation.registrationOperationId);
+      const audioPin = pins.find(
+        (pin) =>
+          pin.artifactKind === "canonical_audio" &&
+          pin.role === "primary" &&
+          pin.providerId === "filebase" &&
+          pin.outcome === "verified" &&
+          pin.cid !== null &&
+          pin.canonicalSha256 === authority.canonicalAudioSha256 &&
+          pin.byteLength === authority.audioByteLength,
+      );
+      if (audioPin?.cid === undefined || audioPin.cid === null) return [audio];
+
+      const creators = authority.royaltyAllocations.map((allocation) => ({
+        name: allocation.recipientId,
+        address: allocation.address,
+        contributionPercent: allocation.shareBps / 100,
+      }));
+      const mediaUrl = `ipfs://${audioPin.cid}`;
+      const common = {
+        schema_version: "pirate-data-metadata-v1",
+        title: authority.title,
+        createdAt: authority.projectedAt,
+        creators,
+        external_url: new URL(
+          `/posts/${encodeURIComponent(authority.postId)}`,
+          options.publicOrigin,
+        ).toString(),
+      } as const;
+      const ipMetadata = await memoryArtifact(operation, "ip_metadata", {
+        ...common,
+        description: "Public song published on Pirate.",
+        mediaUrl,
+        mediaHash: `0x${authority.canonicalAudioSha256}`,
+        mediaType: authority.audioMediaType,
+        ...(authority.lyrics === null ? {} : { lyrics: authority.lyrics }),
+        rights: {
+          basis: "original",
+          license_preset: authority.licensePreset,
+          commercial_remix_share_bps: authority.commercialRemixShareBps,
+          royalty_allocations: authority.royaltyAllocations.map(({ recipientId, shareBps }) => ({
+            recipient_id: recipientId,
+            share_bps: shareBps,
+          })),
+        },
+        provenance: {
+          acr_decision: authority.acrDecision,
+          acr_policy_revision: authority.acrPolicyRevision,
+        },
+        lyrics_explicitness: authority.lyricsExplicitness,
+        primary_language_bcp47: authority.primaryLanguageBcp47,
+      });
+      const nftMetadata = await memoryArtifact(operation, "nft_metadata", {
+        ...common,
+        name: authority.title,
+        description: "Pirate public song IP Asset.",
+        animation_url: mediaUrl,
+        attributes: [
+          { trait_type: "License", value: authority.licensePreset },
+          { trait_type: "Explicit lyrics", value: authority.lyricsExplicitness },
+        ],
+      });
+      return [audio, ipMetadata, nftMetadata];
+    },
+    pinAndVerify: async (_operation, prepared) => {
+      if (prepared.artifact.byteLength > BigInt(Number.MAX_SAFE_INTEGER)) {
+        return { status: "failed", evidenceRef: "data-registration://artifact-too-large" };
+      }
+      const retainedPins = await options.authority.listPins(
+        prepared.artifact.registrationOperationId,
+      );
+      const retainedPrimary = retainedPins.find(
+        (pin) =>
+          pin.artifactId === prepared.artifact.artifactId &&
+          pin.role === "primary" &&
+          pin.providerId === "filebase" &&
+          pin.outcome === "verified" &&
+          pin.cid !== null &&
+          pin.byteLength === prepared.artifact.byteLength &&
+          pin.canonicalSha256 === prepared.artifact.canonicalSha256,
+      );
+      if (retainedPrimary?.cid !== undefined && retainedPrimary.cid !== null) {
+        const gateway = await Effect.runPromise(
+          options.gateway.verify({
+            version: "ipfs-gateway-verification-v1",
+            request_id: prepared.artifact.artifactId,
+            cid: retainedPrimary.cid,
+            expected_byte_length: Number(prepared.artifact.byteLength),
+            expected_sha256: prepared.artifact.canonicalSha256,
+          }),
+        );
+        if (gateway.status === "verified") {
+          return {
+            status: "verified",
+            cid: retainedPrimary.cid,
+            byteLength: BigInt(gateway.byte_length),
+            canonicalSha256: gateway.sha256,
+            primaryEvidenceRef: retainedPrimary.evidenceRef,
+            gatewayEvidenceRef: `data-registration://ipfs.io/${prepared.artifact.artifactId}`,
+            verifiedAt: new Date(now()).toISOString(),
+          };
+        }
+        return {
+          status: "primary_verified",
+          cid: retainedPrimary.cid,
+          byteLength: prepared.artifact.byteLength,
+          canonicalSha256: prepared.artifact.canonicalSha256,
+          primaryEvidenceRef: retainedPrimary.evidenceRef,
+          gatewayEvidenceRef: `data-registration://ipfs.io/${prepared.artifact.artifactId}`,
+          verifiedAt: retainedPrimary.verifiedAt ?? new Date(now()).toISOString(),
+          gatewayRetryable: gateway.status === "retryable",
+        };
+      }
+      const result = await Effect.runPromise(
+        pinAndVerifyIpfsArtifact(options.pinning, options.gateway, {
+          version: "ipfs-pinning-v1",
+          request_id: prepared.artifact.artifactId,
+          filename: prepared.filename,
+          content_type: prepared.contentType,
+          source: {
+            byte_length: Number(prepared.artifact.byteLength),
+            open: prepared.open,
+          },
+          expected_byte_length: Number(prepared.artifact.byteLength),
+          expected_sha256: prepared.artifact.canonicalSha256,
+        }),
+      );
+      if (result.status === "verified") {
+        return {
+          status: "verified",
+          cid: result.pin.cid,
+          byteLength: BigInt(result.pin.byte_length),
+          canonicalSha256: result.pin.sha256,
+          primaryEvidenceRef: `data-registration://filebase/${prepared.artifact.artifactId}`,
+          gatewayEvidenceRef: `data-registration://ipfs.io/${prepared.artifact.artifactId}`,
+          verifiedAt: new Date(now()).toISOString(),
+        };
+      }
+      if (result.status === "gateway_failed") {
+        return {
+          status: "primary_verified",
+          cid: result.pin.cid,
+          byteLength: BigInt(result.pin.byte_length),
+          canonicalSha256: result.pin.sha256,
+          primaryEvidenceRef: `data-registration://filebase/${prepared.artifact.artifactId}`,
+          gatewayEvidenceRef: `data-registration://ipfs.io/${prepared.artifact.artifactId}`,
+          verifiedAt: new Date(now()).toISOString(),
+          gatewayRetryable: result.gateway.status === "retryable",
+        };
+      }
+      const retryable =
+        result.status === "pin_failed" &&
+        ["timeout", "retryable", "cancelled", "not_found"].includes(result.pin.status);
+      return retryable
+        ? { status: "retryable" }
+        : {
+            status: "failed",
+            evidenceRef: `data-registration://pin-failed/${prepared.artifact.artifactId}`,
+          };
+    },
+  };
+}

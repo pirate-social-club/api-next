@@ -22,6 +22,12 @@
       "name": "pirate-media-processing",
       "class_name": "MediaProcessingWorkflow",
       "script_name": "pirate-media-processor-worker"
+    },
+    {
+      "binding": "DATA_REGISTRATION_WORKFLOW",
+      "name": "pirate-data-registration",
+      "class_name": "DataRegistrationWorkflow",
+      "script_name": "pirate-data-registration-worker"
     }
   ],
   "queues": {
@@ -29,12 +35,17 @@
       {
         "binding": "MEDIA_PROCESSING_QUEUE",
         "queue": "pirate-media-processing-development"
+      },
+      {
+        "binding": "DATA_REGISTRATION_QUEUE",
+        "queue": "pirate-data-registration-development"
       }
     ]
   },
   "vars": {
     "API_NEXT_ENV": "development",
     "MEDIA_PROCESSING_ENABLED": "false",
+    "DATA_REGISTRATION_ENABLED": "false",
     "HNS_OWNERSHIP_ENABLED": "false",
     "MEGAPOT_REWARDS_ENABLED": "false",
     "MEGAPOT_CHAIN_ID": "84532",
@@ -81,6 +92,12 @@
           "name": "pirate-media-processing-staging",
           "class_name": "MediaProcessingWorkflow",
           "script_name": "pirate-media-processor-worker-staging"
+        },
+        {
+          "binding": "DATA_REGISTRATION_WORKFLOW",
+          "name": "pirate-data-registration-staging",
+          "class_name": "DataRegistrationWorkflow",
+          "script_name": "pirate-data-registration-worker-staging"
         }
       ],
       "queues": {
@@ -88,12 +105,17 @@
           {
             "binding": "MEDIA_PROCESSING_QUEUE",
             "queue": "pirate-media-processing-staging"
+          },
+          {
+            "binding": "DATA_REGISTRATION_QUEUE",
+            "queue": "pirate-data-registration-staging"
           }
         ]
       },
       "vars": {
         "API_NEXT_ENV": "staging",
         "MEDIA_PROCESSING_ENABLED": "false",
+        "DATA_REGISTRATION_ENABLED": "false",
         "HNS_OWNERSHIP_ENABLED": "false",
         "HNS_OWNERSHIP_CONFIGURATION_REFERENCE": "hns-owner-staging",
         "HNS_OWNERSHIP_CONFIGURATION_VERSION": "hns-owner-config-v1",
@@ -157,6 +179,12 @@
           "name": "pirate-media-processing-production",
           "class_name": "MediaProcessingWorkflow",
           "script_name": "pirate-media-processor-worker-production"
+        },
+        {
+          "binding": "DATA_REGISTRATION_WORKFLOW",
+          "name": "pirate-data-registration-production",
+          "class_name": "DataRegistrationWorkflow",
+          "script_name": "pirate-data-registration-worker-production"
         }
       ],
       "queues": {
@@ -164,12 +192,17 @@
           {
             "binding": "MEDIA_PROCESSING_QUEUE",
             "queue": "pirate-media-processing-production"
+          },
+          {
+            "binding": "DATA_REGISTRATION_QUEUE",
+            "queue": "pirate-data-registration-production"
           }
         ]
       },
       "vars": {
         "API_NEXT_ENV": "production",
         "MEDIA_PROCESSING_ENABLED": "false",
+        "DATA_REGISTRATION_ENABLED": "false",
         "HNS_OWNERSHIP_ENABLED": "false",
         "MEGAPOT_REWARDS_ENABLED": "false",
         "MEGAPOT_CHAIN_ID": "8453",

@@ -2,5 +2,9 @@
   "name": "@pirate/data-registration-worker",
   "version": "0.0.0",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "dependencies": {
+    "@pirate/application": "workspace:*",
+    "@pirate/platform-cf": "workspace:*"
+  }
 }
