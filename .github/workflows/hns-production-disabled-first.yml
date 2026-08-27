@@ -4,7 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       expected_sha:
-        description: Exact 40-character main commit to deploy
+        description: Exact 40-character source commit to deploy
+        required: true
+        type: string
+      expected_bundle_sha256:
+        description: SHA-256 of the exact dry-run Worker index.js
         required: true
         type: string
       confirmation:
@@ -26,7 +30,7 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.expected_sha }}
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
@@ -34,15 +38,17 @@ jobs:
       - name: Verify exact disabled-first dispatch
         env:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
+          EXPECTED_BUNDLE_SHA256: ${{ inputs.expected_bundle_sha256 }}
           CONFIRMATION: ${{ inputs.confirmation }}
         run: |
           set -euo pipefail
           [[ "$GITHUB_REF" == "refs/heads/main" ]]
           [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$EXPECTED_SHA" == "$GITHUB_SHA" ]]
+          [[ "$EXPECTED_BUNDLE_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$(git rev-parse HEAD)" == "$EXPECTED_SHA" ]]
           [[ "$CONFIRMATION" == "deploy-disabled-first" ]]
           latest_migration="$(find db/postgres/migrations -maxdepth 1 -type f -name '[0-9][0-9][0-9][0-9]_*.sql' -printf '%f\n' | sort | tail -1)"
-          [[ "$latest_migration" == "0064_media_persona_recipient_trigger.sql" ]]
+          [[ "$latest_migration" == "0065_text_ratings_age_access.sql" ]]
       - run: bun install --frozen-lockfile
       - name: Verify production switches remain disabled
         run: >-
@@ -84,14 +90,21 @@ jobs:
       - name: Credential-safe production dry run
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: bunx wrangler deploy --dry-run --env production --config apps/http-worker/wrangler.jsonc
+          EXPECTED_BUNDLE_SHA256: ${{ inputs.expected_bundle_sha256 }}
+        run: |
+          set -euo pipefail
+          bunx wrangler deploy --dry-run --env production \
+            --config apps/http-worker/wrangler.jsonc \
+            --outdir "$RUNNER_TEMP/api-worker-bundle"
+          observed="$(sha256sum "$RUNNER_TEMP/api-worker-bundle/index.js" | cut -d ' ' -f 1)"
+          [[ "$observed" == "$EXPECTED_BUNDLE_SHA256" ]]
       - name: Deploy production API with HNS disabled
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: >-
           bunx wrangler deploy --env production
           --config apps/http-worker/wrangler.jsonc
-          --message "HNS disabled-first $GITHUB_SHA"
+          --message "HNS disabled-first ${{ inputs.expected_sha }}"
       - name: Probe canonical API after deployment
         run: curl --fail --silent --show-error --max-time 10 https://api-next.pirate.sc/health > /dev/null
       - name: Record deployed version and protected domain
