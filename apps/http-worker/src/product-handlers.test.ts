@@ -18,6 +18,7 @@ type FeedStore = ProductHandlerServices["feedStore"];
 type TextStore = NonNullable<ProductHandlerServices["textPostStore"]>;
 type Moderation = NonNullable<ProductHandlerServices["textModeration"]>;
 type PersonaStore = NonNullable<ProductHandlerServices["personaStore"]>;
+type CommunityModerationStore = NonNullable<ProductHandlerServices["moderationStore"]>;
 const personaId = "persona-a";
 
 const feed = { items: [], top_communities: [], next_cursor: null };
@@ -82,6 +83,7 @@ function stores(
     readonly textPost?: Partial<TextStore>;
     readonly textModeration?: Partial<Moderation>;
     readonly feed?: Partial<FeedStore>;
+    readonly moderation?: Partial<CommunityModerationStore>;
   } = {},
 ): {
   readonly communityStore: CommunityStore;
@@ -90,6 +92,7 @@ function stores(
   readonly textModeration: Moderation;
   readonly personaStore: PersonaStore;
   readonly feedStore: FeedStore;
+  readonly moderationStore: CommunityModerationStore;
 } {
   return {
     communityStore: {
@@ -153,6 +156,17 @@ function stores(
       listHome: () => Effect.succeed(feed),
       ...overrides.feed,
     },
+    moderationStore: {
+      getCapabilities: () => Effect.die("unexpected moderation capability read"),
+      listCases: () => Effect.die("unexpected moderation case list"),
+      getCase: () => Effect.die("unexpected moderation case detail"),
+      getPolicy: () => Effect.die("unexpected moderation policy read"),
+      updatePolicy: () => Effect.die("unexpected moderation policy update"),
+      reportTarget: () => Effect.die("unexpected moderation report"),
+      replayLegacyAction: () => Effect.succeed(null),
+      actOnCase: () => Effect.die("unexpected moderation action"),
+      ...overrides.moderation,
+    },
   };
 }
 
@@ -160,15 +174,16 @@ describe("HTTP product handlers", () => {
   test("maps comment report and moderation action outcomes to contract response shapes", async () => {
     const handlers = makeProductHandlers(
       stores({
-        textPost: {
-          reportComment: () =>
-            Effect.succeed({ reportId: "report-a", caseRef: "case-a", status: "open" as const }),
-          moderateCaseAction: ({ action }) =>
+        moderation: {
+          reportTarget: () =>
+            Effect.succeed({ report_id: "report-a", case_ref: "case-a", status: "open" as const }),
+          actOnCase: ({ action }) =>
             Effect.succeed({
-              actionId: "action-a",
-              caseRef: "case-a",
+              version: "moderation-case-action-result-v2" as const,
+              action_id: "action-a",
+              case_ref: "case-a",
               action,
-              targetStatus: "hidden" as const,
+              target_status: "hidden" as const,
             }),
         },
       }),
@@ -189,10 +204,16 @@ describe("HTTP product handlers", () => {
         request({
           params: { caseRef: "case-a" },
           principal,
-          body: { idempotency_key: "action-key", action: "hide" },
+          body: {
+            version: "moderation-case-action-v2",
+            idempotency_key: "action-key",
+            expected_case_revision: 1,
+            action: "hide",
+          },
         }),
       ),
     ).resolves.toEqual({
+      version: "moderation-case-action-result-v2",
       action_id: "action-a",
       case_ref: "case-a",
       action: "hide",

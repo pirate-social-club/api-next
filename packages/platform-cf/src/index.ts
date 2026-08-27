@@ -50,6 +50,10 @@ export {
   makeCloudflareAccessJwtValidatorV1,
 } from "./cloudflare-access-jwt";
 export {
+  makeControlPlaneCommunityModerationRepository,
+  makeControlPlaneCommunityModerationStore,
+} from "./community-moderation-repository.ts";
+export {
   COMMUNITY_PURCHASE_CHAIN_RPC_MAX_RESPONSE_BYTES,
   COMMUNITY_PURCHASE_CHAIN_RPC_TIMEOUT_MS,
   type CommunityPurchaseFundingChainFetcher,

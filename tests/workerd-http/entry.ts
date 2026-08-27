@@ -1,11 +1,15 @@
 import {
+  CommunityModerationStoreError,
+  type CommunityModerationStoreService,
   ContentRepositoryError,
   type ContentStore,
   createTextPost,
   type IdentityStore,
   type M2Actor,
+  moderateCommunityCase,
   type PersonaRecord,
   type PersonaStoreService,
+  reportCommunityContent,
   type TextModeration,
   TextModerationProviderError,
   TextPostRepositoryError,
@@ -54,10 +58,6 @@ import {
 import { makeVerificationHandlers } from "../../apps/http-worker/src/verification-handlers.ts";
 import { castPostVote } from "../../packages/application/src/use-cases/content/cast-post-vote.ts";
 import { clearPostVote } from "../../packages/application/src/use-cases/content/clear-post-vote.ts";
-import {
-  moderateCaseAction,
-  reportComment,
-} from "../../packages/application/src/use-cases/content/comment-moderation.ts";
 import { createCommentReply } from "../../packages/application/src/use-cases/content/comments-replies.ts";
 import {
   makeVeryWebProvider,
@@ -490,21 +490,32 @@ const moderationFixture: TextPostStore["Service"] = {
       parentCommentId: null,
       parentDepth: -1,
     }),
-  reportComment: () =>
+};
+const communityModerationFixture: CommunityModerationStoreService = {
+  getCapabilities: () => Effect.die("unused Workerd moderation capability operation"),
+  listCases: () => Effect.die("unused Workerd moderation list operation"),
+  getCase: () => Effect.die("unused Workerd moderation detail operation"),
+  getPolicy: () => Effect.die("unused Workerd moderation policy operation"),
+  updatePolicy: () => Effect.die("unused Workerd moderation policy update"),
+  replayLegacyAction: () => Effect.succeed(null),
+  reportTarget: () =>
     Effect.succeed({
-      reportId: "report_workerd",
-      caseRef: "case_workerd",
+      report_id: "report_workerd",
+      case_ref: "case_workerd",
       status: "open" as const,
     }),
-  moderateCaseAction: ({ actor, action }) =>
+  actOnCase: ({ actor, action }) =>
     actor.kind === "admin" || actor.scopes?.includes("moderator") === true
       ? Effect.succeed({
-          actionId: "action_workerd",
-          caseRef: "case_workerd",
+          version: "moderation-case-action-result-v2" as const,
+          action_id: "action_workerd",
+          case_ref: "case_workerd",
           action,
-          targetStatus: action === "hide" ? ("hidden" as const) : ("published" as const),
+          target_status: action === "hide" ? ("hidden" as const) : ("published" as const),
         })
-      : Effect.fail(new TextPostRepositoryError({ operation: "action", reason: "not-found" })),
+      : Effect.fail(
+          new CommunityModerationStoreError({ operation: "action", reason: "not-found" }),
+        ),
 };
 const voteFixture: ContentStore["Service"] = {
   resolvePost: ({ postId }) =>
@@ -744,24 +755,36 @@ const app = createHttpWorker({
       ),
     ReportComment: (request) =>
       Effect.runPromise(
-        reportComment(
+        reportCommunityContent(
           {
-            commentId: String(moderationParams(request).commentId),
+            targetType: "comment",
+            targetId: String(moderationParams(request).commentId),
             actor: moderationActor(request),
-            body: request.body,
+            idempotencyKey: String(
+              (request.body as { readonly idempotency_key: string }).idempotency_key,
+            ),
+            reasonCode: (request.body as { readonly reason_code: "spam" }).reason_code,
+            requestHash: "a".repeat(64),
           },
-          { textPostStore: moderationFixture },
+          { moderationStore: communityModerationFixture },
         ),
       ),
     ModerateCaseAction: (request) =>
       Effect.runPromise(
-        moderateCaseAction(
+        moderateCommunityCase(
           {
             caseRef: String(moderationParams(request).caseRef),
             actor: moderationActor(request),
-            body: request.body,
+            idempotencyKey: String(
+              (request.body as { readonly idempotency_key: string }).idempotency_key,
+            ),
+            expectedCaseRevision: Number(
+              (request.body as { readonly expected_case_revision: number }).expected_case_revision,
+            ),
+            action: (request.body as { readonly action: "hide" }).action,
+            requestHash: "b".repeat(64),
           },
-          { textPostStore: moderationFixture },
+          { moderationStore: communityModerationFixture },
         ),
       ),
     CreatePost: createPostThroughContract,

@@ -18,12 +18,6 @@ import {
   clearPostVote,
 } from "@pirate/application/use-cases/content/clear-post-vote";
 import {
-  type ModerateCaseActionInput,
-  moderateCaseAction,
-  type ReportCommentInput,
-  reportComment,
-} from "@pirate/application/use-cases/content/comment-moderation";
-import {
   type CreateCommentReplyInput,
   createCommentReply,
 } from "@pirate/application/use-cases/content/comments-replies";
@@ -66,6 +60,7 @@ export interface ProductHandlerServices {
   readonly personaStore?: PersonaStoreService;
   readonly feedStore: FeedStoreService;
   readonly identityStore?: CurrentUserServices["identityStore"];
+  readonly moderationStore?: CommunityModerationStoreService;
 }
 
 export type ProductHandlers = Readonly<{
@@ -79,7 +74,13 @@ export type ProductHandlers = Readonly<{
   readonly CreateComment: EndpointHandler;
   readonly CreateCommentReply: EndpointHandler;
   readonly ReportComment: EndpointHandler;
+  readonly ReportPost: EndpointHandler;
   readonly ModerateCaseAction: EndpointHandler;
+  readonly GetCommunityModerationCapabilities: EndpointHandler;
+  readonly ListCommunityModerationCases: EndpointHandler;
+  readonly GetCommunityModerationCase: EndpointHandler;
+  readonly GetCommunityModerationPolicy: EndpointHandler;
+  readonly UpdateCommunityModerationPolicy: EndpointHandler;
   readonly GetTextContentSubmission: EndpointHandler;
   readonly GetPost: EndpointHandler;
   readonly CastPostVote: EndpointHandler;
@@ -185,16 +186,6 @@ const createReplyInputFrom = (request: DecodedRequest): CreateCommentReplyInput 
     actor: communityActor(request.principal),
     body: request.body,
   };
-};
-
-const reportCommentInputFrom = (request: DecodedRequest): ReportCommentInput => {
-  const { commentId } = commentPath(request);
-  return { commentId, actor: communityActor(request.principal), body: request.body };
-};
-
-const moderateCaseActionInputFrom = (request: DecodedRequest): ModerateCaseActionInput => {
-  const { caseRef } = casePath(request);
-  return { caseRef, actor: communityActor(request.principal), body: request.body };
 };
 
 export const castPostVoteInputFrom = (request: DecodedRequest): CastPostVoteInput => {
@@ -329,21 +320,148 @@ const createReplyHandler = async (request: DecodedRequest, services: ProductHand
     }),
   );
 
-const reportCommentHandler = async (request: DecodedRequest, services: ProductHandlerServices) =>
-  Effect.runPromise(
-    reportComment(reportCommentInputFrom(request), {
-      ...(services.textPostStore === undefined ? {} : { textPostStore: services.textPostStore }),
+type ReportBody = Readonly<{
+  readonly idempotency_key: string;
+  readonly reason_code: Parameters<
+    CommunityModerationStoreService["reportTarget"]
+  >[0]["reasonCode"];
+}>;
+type ActionBody = Readonly<{
+  readonly version: "moderation-case-action-v2";
+  readonly idempotency_key: string;
+  readonly expected_case_revision: number;
+  readonly action: Parameters<CommunityModerationStoreService["actOnCase"]>[0]["action"];
+}>;
+
+const moderationStoreFrom = (services: ProductHandlerServices): CommunityModerationStoreService => {
+  if (services.moderationStore === undefined) {
+    throw new Error("Community moderation store is not configured");
+  }
+  return services.moderationStore;
+};
+
+const reportHandler = async (
+  request: DecodedRequest,
+  services: ProductHandlerServices,
+  targetType: "post" | "comment",
+) => {
+  const targetId =
+    targetType === "post" ? postPath(request).postId : commentPath(request).commentId;
+  const body = request.body as ReportBody;
+  const requestHash = await Effect.runPromise(
+    canonicalBodyHash({
+      endpoint: `POST /${targetType}s/:${targetType}Id/reports`,
+      [`${targetType}_id`]: targetId,
+      body,
     }),
   );
+  return Effect.runPromise(
+    reportCommunityContent(
+      {
+        targetType,
+        targetId,
+        actor: communityActor(request.principal),
+        idempotencyKey: body.idempotency_key,
+        reasonCode: body.reason_code,
+        requestHash,
+      },
+      { moderationStore: moderationStoreFrom(services) },
+    ),
+  );
+};
 
 const moderateCaseActionHandler = async (
   request: DecodedRequest,
   services: ProductHandlerServices,
+) => {
+  const { caseRef } = casePath(request);
+  const body = request.body as ActionBody;
+  const requestHash = await Effect.runPromise(
+    canonicalBodyHash({
+      endpoint: "POST /moderation/cases/:caseRef/actions",
+      case_ref: caseRef,
+      body,
+    }),
+  );
+  return Effect.runPromise(
+    moderateCommunityCase(
+      {
+        caseRef,
+        actor: communityActor(request.principal),
+        idempotencyKey: body.idempotency_key,
+        expectedCaseRevision: body.expected_case_revision,
+        action: body.action,
+        requestHash,
+      },
+      { moderationStore: moderationStoreFrom(services) },
+    ),
+  );
+};
+
+const moderationCapabilitiesHandler = async (
+  request: DecodedRequest,
+  services: ProductHandlerServices,
 ) =>
   Effect.runPromise(
-    moderateCaseAction(moderateCaseActionInputFrom(request), {
-      ...(services.textPostStore === undefined ? {} : { textPostStore: services.textPostStore }),
-    }),
+    getCommunityModerationCapabilities(
+      { communityId: communityPath(request).communityId, actor: communityActor(request.principal) },
+      { moderationStore: moderationStoreFrom(services) },
+    ),
+  );
+
+const moderationCaseListHandler = async (
+  request: DecodedRequest,
+  services: ProductHandlerServices,
+) =>
+  Effect.runPromise(
+    listCommunityModerationCases(
+      {
+        communityId: communityPath(request).communityId,
+        actor: communityActor(request.principal),
+        view: (request.query as { readonly view: "open" | "hidden" }).view,
+      },
+      { moderationStore: moderationStoreFrom(services) },
+    ),
+  );
+
+const moderationCaseDetailHandler = async (
+  request: DecodedRequest,
+  services: ProductHandlerServices,
+) =>
+  Effect.runPromise(
+    getCommunityModerationCase(
+      {
+        communityId: communityPath(request).communityId,
+        caseRef: casePath(request).caseRef,
+        actor: communityActor(request.principal),
+      },
+      { moderationStore: moderationStoreFrom(services) },
+    ),
+  );
+
+const moderationPolicyHandler = async (request: DecodedRequest, services: ProductHandlerServices) =>
+  Effect.runPromise(
+    getCommunityModerationPolicy(
+      { communityId: communityPath(request).communityId, actor: communityActor(request.principal) },
+      { moderationStore: moderationStoreFrom(services) },
+    ),
+  );
+
+const updateModerationPolicyHandler = async (
+  request: DecodedRequest,
+  services: ProductHandlerServices,
+) =>
+  Effect.runPromise(
+    updateCommunityModerationPolicy(
+      {
+        communityId: communityPath(request).communityId,
+        actor: communityActor(request.principal),
+        update: request.body as Parameters<
+          CommunityModerationStoreService["updatePolicy"]
+        >[0]["update"],
+      },
+      { moderationStore: moderationStoreFrom(services) },
+    ),
   );
 
 const getTextContentSubmissionHandler = async (
@@ -392,8 +510,14 @@ export const makeProductHandlers = (services: ProductHandlerServices): ProductHa
   CreatePost: (request) => createPostHandler(request, services),
   CreateComment: (request) => createCommentHandler(request, services),
   CreateCommentReply: (request) => createReplyHandler(request, services),
-  ReportComment: (request) => reportCommentHandler(request, services),
+  ReportComment: (request) => reportHandler(request, services, "comment"),
+  ReportPost: (request) => reportHandler(request, services, "post"),
   ModerateCaseAction: (request) => moderateCaseActionHandler(request, services),
+  GetCommunityModerationCapabilities: (request) => moderationCapabilitiesHandler(request, services),
+  ListCommunityModerationCases: (request) => moderationCaseListHandler(request, services),
+  GetCommunityModerationCase: (request) => moderationCaseDetailHandler(request, services),
+  GetCommunityModerationPolicy: (request) => moderationPolicyHandler(request, services),
+  UpdateCommunityModerationPolicy: (request) => updateModerationPolicyHandler(request, services),
   GetTextContentSubmission: (request) => getTextContentSubmissionHandler(request, services),
   GetPost: (request) => post(request, services),
   CastPostVote: (request) => castPostVoteHandler(request, services),
@@ -401,3 +525,15 @@ export const makeProductHandlers = (services: ProductHandlerServices): ProductHa
   GetPublicHomeFeed: (request) => publicHomeFeed(request, services),
   GetHomeFeed: (request) => homeFeed(request, services),
 });
+
+import {
+  type CommunityModerationStoreService,
+  canonicalBodyHash,
+  getCommunityModerationCapabilities,
+  getCommunityModerationCase,
+  getCommunityModerationPolicy,
+  listCommunityModerationCases,
+  moderateCommunityCase,
+  reportCommunityContent,
+  updateCommunityModerationPolicy,
+} from "@pirate/application/use-cases/content/community-moderation-runtime";

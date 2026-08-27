@@ -5,6 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./community-moderation-runtime": "./src/community-moderation-runtime.ts",
+    "./use-cases/content/community-moderation-runtime": "./src/use-cases/content/community-moderation-runtime.ts",
     "./text-moderation-runtime": "./src/text-moderation-runtime.ts",
     "./hns-community-app-gateway": "./src/hns-community-app-gateway.ts",
     "./hns-community-app-api": "./src/hns-community-app-api.ts",

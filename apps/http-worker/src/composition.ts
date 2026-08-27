@@ -23,6 +23,7 @@ import { makeControlPlaneActivityQualificationStore } from "@pirate/platform-cf/
 import { makeControlPlaneCommunityCreationIntentResolver } from "@pirate/platform-cf/community-creation-intent-resolver";
 import { makeControlPlaneCommunityCreationStore } from "@pirate/platform-cf/community-creation-repository";
 import { makeControlPlaneCommunityJoinIntentResolver } from "@pirate/platform-cf/community-join-intent-resolver";
+import { makeControlPlaneCommunityModerationStore } from "@pirate/platform-cf/community-moderation-repository";
 import { makeCommunityPurchaseFundingChainReader } from "@pirate/platform-cf/community-purchase-funding-chain-reader";
 import {
   makeControlPlaneCommunityPurchaseFundingProducerStore,
@@ -120,6 +121,7 @@ import { Effect, Redacted, Schema } from "effect";
 import { makeActivityQualificationHandlers } from "./activity-qualification-handlers.ts";
 import { makeCanonicalCommunityRouteHandlers } from "./canonical-community-route-handlers.ts";
 import { makeCommunityCreationHandlers } from "./community-creation-handlers.ts";
+import { makeLegacyModerationActionCompatibility } from "./community-moderation-compatibility.ts";
 import {
   makeCommunityPurchaseFundingObservationHandlers,
   makeCommunityPurchaseFundingQuoteHandlers,
@@ -586,6 +588,7 @@ export async function createProductionHttpWorker(
       : makeMediaUploadHandlers(makeMediaUploadApplicationCommands(mediaServices));
   const contentStore = makeControlPlaneContentStore(controlPlane);
   const textPostStore = makeControlPlaneTextSubmissionStore(controlPlane);
+  const moderationStore = makeControlPlaneCommunityModerationStore(controlPlane);
   // The runtime is installed even when no provider credentials are enabled.
   // Unavailability is a durable manual-review result, never an allow fallback.
   const textModeration: TextModeration["Service"] = {
@@ -745,6 +748,7 @@ export async function createProductionHttpWorker(
     personaStore,
     feedStore,
     identityStore,
+    moderationStore,
   });
   const communityCreationHandlers = makeCommunityCreationHandlers({
     communityCreationStore,
@@ -924,6 +928,7 @@ export async function createProductionHttpWorker(
       GetJwks: () => sessionCrypto.jwks(),
       GetPublicProfileByHandle: publicProfile,
     },
+    beforeDecode: makeLegacyModerationActionCompatibility(moderationStore),
     sessionExchange,
     identityRegistration,
     profile,

@@ -5,10 +5,8 @@ import {
   IdempotencyConflict,
   InternalError,
   MembershipRequired,
-  type ModerateCaseAction as ModerateCaseActionContract,
   NotFound,
   ReplyDepthExceeded,
-  type ReportComment as ReportCommentContract,
 } from "@pirate/contracts";
 import { Effect, Schema } from "effect";
 import type {
@@ -20,8 +18,17 @@ import { type M2Actor, TextPostRepositoryError, type TextPostStore } from "../..
 import { canonicalBodyHash, validateHumanDirectActor, validateIdentifier } from "./common.ts";
 
 const exactParseOptions = { onExcessProperty: "error" } as const;
-type CommentReportResponse = Schema.Schema.Type<typeof ReportCommentContract.response>;
-type ModerationCaseActionResponse = Schema.Schema.Type<typeof ModerateCaseActionContract.response>;
+type CommentReportResponse = Readonly<{
+  readonly report_id: string;
+  readonly case_ref: string;
+  readonly status: "open" | "coalesced";
+}>;
+type ModerationCaseActionResponse = Readonly<{
+  readonly action_id: string;
+  readonly case_ref: string;
+  readonly action: ModerationAction;
+  readonly target_status: "held" | "published" | "hidden" | "removed";
+}>;
 const ReportBody = Schema.Struct({
   idempotency_key: Schema.String,
   reason_code: Schema.Literals([

@@ -101,6 +101,17 @@ export interface AuthorizationArgs {
   readonly input: DecodedRequest;
 }
 
+export interface BeforeDecodeArgs {
+  readonly bindingName: string;
+  readonly endpoint: EndpointDefinition;
+  readonly principal: Principal | null;
+  readonly request: {
+    readonly url: string;
+    readonly headers: { readonly get: (name: string) => string | null };
+    readonly arrayBuffer: () => Promise<ArrayBuffer>;
+  };
+}
+
 export interface HttpWorkerConfig {
   /** Comma-separated exact allowed origins, or `*`, supplied by Worker configuration. */
   readonly corsOrigin: string;
@@ -121,6 +132,10 @@ export interface HttpWorkerOptions {
   readonly authenticate?: (args: AuthenticationArgs) => Principal | Promise<Principal>;
   /** Runs after decoding and receives only the frozen request shape. */
   readonly authorize?: (args: AuthorizationArgs) => void | Promise<void>;
+  /** Narrow compatibility fence for durable replay before the current body is decoded. */
+  readonly beforeDecode?: (
+    args: BeforeDecodeArgs,
+  ) => Response | undefined | Promise<Response | undefined>;
   /** Source-closed interactive HNS origin authority. Production remains disabled and unbound. */
   readonly hnsCommunityAppApi?: HnsCommunityAppApiComposition;
   /** Source-closed public handle-host authority. Production remains disabled and unbound. */
@@ -810,6 +825,13 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
           }
 
           // Authentication deliberately precedes every request-schema decode.
+          const compatibilityResponse = await options.beforeDecode?.({
+            bindingName: binding.name,
+            endpoint: binding.endpoint,
+            principal,
+            request: context.req.raw.clone(),
+          });
+          if (compatibilityResponse !== undefined) return compatibilityResponse;
           const input = await decodeInput(binding.endpoint, context, principal);
           const edgeClientIp = context.req.header("CF-Connecting-IP");
           const requestWithEdgeIp = {

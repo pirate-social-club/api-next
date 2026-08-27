@@ -2577,6 +2577,18 @@ export function makeControlPlaneCommunityCreationRepository(
         readonly: false,
       });
       yield* transaction.execute({
+        label: "community.creation.commit-v2.require-owner-byte-agreement",
+        text: "SELECT initialize_community_owner_v1($1, $2, $3::timestamptz)",
+        values: [communityId, input.actor.userId, activationNow],
+        readonly: false,
+      });
+      yield* transaction.execute({
+        label: "community.creation.commit-v2.require-moderation-policy-byte-agreement",
+        text: "SELECT initialize_community_moderation_policy_v1($1, $2::timestamptz)",
+        values: [communityId, activationNow],
+        readonly: false,
+      });
+      yield* transaction.execute({
         label: "community.creation.commit-v2.insert-creator-membership",
         text: `INSERT INTO community_memberships (
                  community_id, membership_id, user_id, status,

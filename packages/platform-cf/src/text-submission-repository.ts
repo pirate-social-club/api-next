@@ -1013,10 +1013,12 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
                 evidence_ref, published_post_id, published_comment_id, review_ref,
                 target_post_id, target_parent_comment_id,
                 created_at, updated_at, response_snapshot_bytes, response_snapshot_sha256,
-                author_persona_id
+                author_persona_id, author_declared_rating, resulting_content_rating,
+                matched_categories, category_decisions, effective_policy_decision
               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
                 $13, $14, $15, $16, $17, $18::jsonb, $19, $20, $21, $22, $23, $24,
-                $25, $25, $26, encode(sha256($26), 'hex'), $27)`,
+                $25, $25, $26, encode(sha256($26), 'hex'), $27, $28, $29,
+                $30::jsonb, $31::jsonb, $32)`,
             values: [
               input.communityId,
               submissionId,
@@ -1049,6 +1051,21 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
               at,
               bytes,
               input.personaId,
+              evaluation.version === "text-moderation-v2"
+                ? evaluation.author_declared_rating
+                : null,
+              evaluation.version === "text-moderation-v2"
+                ? evaluation.resulting_content_rating
+                : null,
+              evaluation.version === "text-moderation-v2"
+                ? JSON.stringify(evaluation.matched_categories)
+                : null,
+              evaluation.version === "text-moderation-v2"
+                ? JSON.stringify(evaluation.category_decisions)
+                : null,
+              evaluation.version === "text-moderation-v2"
+                ? evaluation.effective_policy_decision
+                : null,
             ],
             readonly: false,
           });
@@ -1157,6 +1174,30 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
                 readonly: false,
               });
             }
+            yield* transaction.execute({
+              label: "text-post.commit.owner-moderation-case-v2",
+              text: `INSERT INTO community_moderation_cases_v2 (
+                  case_ref, community_id, submission_id, target_type,
+                  target_resource_id, source, visibility, view_state,
+                  target_status, case_revision, created_at, updated_at
+                ) VALUES ($1, $2, $3, $4, NULL, 'automatic', 'owner',
+                  'open', 'held', 1, $5, $5)`,
+              values: [reviewRef, input.communityId, submissionId, surface, at],
+              readonly: false,
+            });
+          }
+          if (status === "blocked" && evaluation.reason_codes.includes("sexual_minors")) {
+            yield* transaction.execute({
+              label: "text-post.commit.platform-hold-v2",
+              text: `INSERT INTO community_moderation_cases_v2 (
+                  case_ref, community_id, submission_id, target_type,
+                  target_resource_id, source, visibility, view_state,
+                  target_status, case_revision, created_at, updated_at
+                ) VALUES ($1, $2, $3, $4, NULL, 'platform_held', 'platform',
+                  'platform_held', 'blocked', 1, $5, $5)`,
+              values: [makeId("platform-hold"), input.communityId, submissionId, surface, at],
+              readonly: false,
+            });
           }
           return { kind: "created" as const, snapshot };
         }),

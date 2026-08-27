@@ -62,6 +62,7 @@
     "0059_community_moderation_authority_policy.sql": "0ff247fc81ea719bf90e40c693613cb456e46648c668ab10314b4ab527937f90",
     "0060_persona_wallet_provisioning.sql": "1c07a066a155c65bcd0d7326dcb66ae39d92d27dd86b535586a0e4236e66c9ba",
     "0061_openai_moderation_driver_cutover.sql": "77a2409573f48881abc047e552a5e449eaaa6fd2aede89aa7e1cf5508a9d99a3",
-    "0062_global_pirate_handle_cleanup_rename.sql": "c1ff78018c39632d8f36637a3b5b46d9a788b1d120f5777d4b129168314f1ea5"
+    "0062_global_pirate_handle_cleanup_rename.sql": "c1ff78018c39632d8f36637a3b5b46d9a788b1d120f5777d4b129168314f1ea5",
+    "0063_community_moderation_owner_runtime.sql": "5bfb22c32a6bc7d7fcaa92bd4297cbb919a48c41d6ea7699f4b4edbd21da7abe"
   }
 }
