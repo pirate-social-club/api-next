@@ -559,7 +559,9 @@ function r2AlignmentAudio(
         void selected.body.cancel("object_changed");
         throw new MediaProcessingArtifactFailure("object_changed");
       }
-      const digest = new DigestStream("SHA-256");
+      const DigestStreamConstructor = (crypto as Crypto & { DigestStream: typeof DigestStream })
+        .DigestStream;
+      const digest = new DigestStreamConstructor("SHA-256");
       const [providerBody, digestBody] = selected.body.tee();
       digestState.task = digestBody.pipeTo(digest).then(async () => ({
         sha256: bytesToHex(await digest.digest),

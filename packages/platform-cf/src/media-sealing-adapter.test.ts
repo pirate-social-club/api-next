@@ -5,7 +5,7 @@ import {
   sealMediaUpload,
 } from "./media-sealing-adapter.ts";
 
-const originalDigestStream = Object.getOwnPropertyDescriptor(globalThis, "DigestStream");
+const originalDigestStream = Object.getOwnPropertyDescriptor(crypto, "DigestStream");
 let failDigest = false;
 
 class TestDigestStream extends WritableStream<ArrayBuffer | ArrayBufferView> {
@@ -58,7 +58,7 @@ class TestDigestStream extends WritableStream<ArrayBuffer | ArrayBufferView> {
 }
 
 beforeAll(() => {
-  Object.defineProperty(globalThis, "DigestStream", {
+  Object.defineProperty(crypto, "DigestStream", {
     configurable: true,
     value: TestDigestStream,
   });
@@ -66,9 +66,9 @@ beforeAll(() => {
 
 afterAll(() => {
   if (originalDigestStream === undefined) {
-    Reflect.deleteProperty(globalThis, "DigestStream");
+    Reflect.deleteProperty(crypto, "DigestStream");
   } else {
-    Object.defineProperty(globalThis, "DigestStream", originalDigestStream);
+    Object.defineProperty(crypto, "DigestStream", originalDigestStream);
   }
 });
 

@@ -14,7 +14,7 @@ import {
 } from "./media-processing-runtime.ts";
 import type { ElevenLabsAlignmentInput } from "./media-providers/elevenlabs-alignment-types.ts";
 
-const originalDigestStream = Object.getOwnPropertyDescriptor(globalThis, "DigestStream");
+const originalDigestStream = Object.getOwnPropertyDescriptor(crypto, "DigestStream");
 
 class TestDigestStream extends WritableStream<ArrayBuffer | ArrayBufferView> {
   readonly digest: Promise<ArrayBuffer>;
@@ -54,15 +54,15 @@ class TestDigestStream extends WritableStream<ArrayBuffer | ArrayBufferView> {
 }
 
 beforeAll(() => {
-  Object.defineProperty(globalThis, "DigestStream", {
+  Object.defineProperty(crypto, "DigestStream", {
     configurable: true,
     value: TestDigestStream,
   });
 });
 
 afterAll(() => {
-  if (originalDigestStream === undefined) Reflect.deleteProperty(globalThis, "DigestStream");
-  else Object.defineProperty(globalThis, "DigestStream", originalDigestStream);
+  if (originalDigestStream === undefined) Reflect.deleteProperty(crypto, "DigestStream");
+  else Object.defineProperty(crypto, "DigestStream", originalDigestStream);
 });
 
 function r2Object(key: string, bytes: Uint8Array, contentType: string): R2Object {

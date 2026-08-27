@@ -61,7 +61,7 @@ type SealDigestStream = WritableStream &
 
 const digestStream = (algorithm: "SHA-256"): SealDigestStream => {
   const DigestStreamConstructor = (
-    globalThis as typeof globalThis & {
+    crypto as Crypto & {
       readonly DigestStream: new (algorithm: "SHA-256") => SealDigestStream;
     }
   ).DigestStream;
