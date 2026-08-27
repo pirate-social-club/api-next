@@ -187,6 +187,7 @@ function harness(
       return "created" as const;
     },
     markMined: async () => {
+      calls.push("mark-mined");
       if (currentAttempt === null) throw new Error("attempt missing");
       currentAttempt = { ...currentAttempt, state: "mined" };
       currentOperation = { ...currentOperation, state: "confirming" };
@@ -392,7 +393,7 @@ describe("DATA registration Workflow interpreter", () => {
     );
   });
 
-  test("reloads and replays after pin, sign, and broadcast edges", async () => {
+  test("converges a fast-confirmed broadcast through the mined fence", async () => {
     const state = harness();
     await advanceDataRegistrationWorkflow(payload, state.dependencies);
     await advanceDataRegistrationWorkflow(payload, state.dependencies);
@@ -402,9 +403,28 @@ describe("DATA registration Workflow interpreter", () => {
 
     await advanceDataRegistrationWorkflow(payload, state.dependencies);
     expect(state.attempt()?.state).toBe("broadcast");
+    state.calls.length = 0;
     expect(await advanceDataRegistrationWorkflow(payload, state.dependencies)).toEqual({
       outcome: "registered",
     });
+    expect(state.calls).toEqual(["receipt", "record-receipt", "mark-mined", "confirm"]);
+  });
+
+  test("does not repeat the mined transition when confirming a mined attempt", async () => {
+    const state = harness();
+    await advanceDataRegistrationWorkflow(payload, state.dependencies);
+    await advanceDataRegistrationWorkflow(payload, state.dependencies);
+    await advanceDataRegistrationWorkflow(payload, state.dependencies);
+    await advanceDataRegistrationWorkflow(payload, state.dependencies);
+    await advanceDataRegistrationWorkflow(payload, state.dependencies);
+    expect(state.attempt()?.state).toBe("broadcast");
+
+    await state.dependencies.store.markMined(ATTEMPT_ID, "evidence://receipt/mined");
+    state.calls.length = 0;
+    expect(await advanceDataRegistrationWorkflow(payload, state.dependencies)).toEqual({
+      outcome: "registered",
+    });
+    expect(state.calls).toEqual(["receipt", "record-receipt", "confirm"]);
   });
 
   test("preserves a durable primary pin while completing its missing gateway", async () => {

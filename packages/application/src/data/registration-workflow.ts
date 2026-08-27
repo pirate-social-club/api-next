@@ -568,6 +568,12 @@ export async function advanceDataRegistrationWorkflow(
       return { outcome: "waiting" };
     }
     if (receipt.status === "confirmed") {
+      if (attempt.state === "broadcast") {
+        await dependencies.store.markMined(
+          attempt.submissionAttemptId,
+          receipt.observation.evidenceRef,
+        );
+      }
       await dependencies.store.confirmRegistration(receipt.observation);
       return { outcome: "registered" };
     }
