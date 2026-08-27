@@ -14,6 +14,7 @@ import {
 import { makeControlPlaneCommunityRouteExpiryStore } from "./community-route-expiry-repository.ts";
 import { makeControlPlaneCanonicalCommunityRouteStore } from "./community-route-repository.ts";
 import { makeControlPlaneOperatorManagedRouteStore } from "./operator-managed-route-repository.ts";
+import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -436,6 +437,7 @@ suite("canonical community route Postgres repository", () => {
       await runPostgresMigrations({ connectionString: connection });
       const communityId = "community_123e4567-e89b-42d3-a456-426614174000";
       await admin.query("INSERT INTO users (user_id) VALUES ('route-actor')");
+      await activatePendingPersonaFixtures(admin);
       await admin.query(
         `INSERT INTO communities (
            community_id, display_name, status, created_by_user_id,

@@ -97,6 +97,7 @@ describe("registration Durable Object limiters", () => {
             }),
         },
         store: {
+          getFirstPersonaWalletPreparation: () => Effect.succeed(null),
           registerCredential: () =>
             Effect.succeed({
               kind: "created" as const,
@@ -116,6 +117,7 @@ describe("registration Durable Object limiters", () => {
         ttlSeconds: 3_600,
         mint: () => Effect.succeed("workerd-session-token"),
       },
+      productReadiness: { isReady: () => Effect.succeed(true) },
       rateLimiter,
     };
 

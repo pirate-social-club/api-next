@@ -15,6 +15,10 @@ import type {
 import { makeControlPlaneMediaOutboxRepository } from "./media-outbox-repository";
 import { makeMediaProcessingStore } from "./media-processing-store";
 import { makeControlPlaneMediaSubmissionRepository } from "./media-submission-repository";
+import {
+  backfillActivePersonaWalletFixtures,
+  createActivePersonaFixture,
+} from "./persona-wallet.pg-fixture";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -168,6 +172,15 @@ async function withSchema<A>(
     });
     expect(before.rows[0]?.media_table).toBeNull();
     if (populated) expect(before.rows[0]?.hns_operations).toBe("1");
+    const walletMigrationIndex = migrations.findIndex(
+      ({ version }) => version === "0060_persona_wallet_provisioning.sql",
+    );
+    expect(walletMigrationIndex).toBeGreaterThan(mediaMigrationIndex);
+    await runPostgresMigrations({
+      connectionString: connection,
+      migrations: migrations.slice(0, walletMigrationIndex),
+    });
+    if (populated) await backfillActivePersonaWalletFixtures(admin);
     await runPostgresMigrations({ connectionString: connection, migrations });
     if (populated) {
       const personas = await admin.query<{ account_id: string; persona_id: string }>(
@@ -774,10 +787,16 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
             persona,
           ],
         );
+      const walletMigrationIndex = migrations.findIndex(
+        ({ version }) => version === "0060_persona_wallet_provisioning.sql",
+      );
+      expect(walletMigrationIndex).toBeGreaterThan(lyricsIndex);
       await runPostgresMigrations({
         connectionString: connection,
-        migrations,
+        migrations: migrations.slice(0, walletMigrationIndex),
       });
+      await backfillActivePersonaWalletFixtures(admin);
+      await runPostgresMigrations({ connectionString: connection, migrations });
       expect(
         (
           await admin.query(
@@ -1280,10 +1299,11 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       ).rows[0]?.persona_id;
       if (firstPersona === undefined) throw new Error("missing first test persona");
       const secondPersona = "media_pg_second_persona";
-      await admin.query(
-        "INSERT INTO personas (persona_id,account_id,status,is_first_persona) VALUES ($1,$2,'active',FALSE)",
-        [secondPersona, actor],
-      );
+      await createActivePersonaFixture(admin, {
+        accountId: actor,
+        personaId: secondPersona,
+        profile: { displayName: "Second media persona" },
+      });
       const reserve = (personaId: string, reservationId: string) =>
         run(connection, (store) =>
           store.reserve({

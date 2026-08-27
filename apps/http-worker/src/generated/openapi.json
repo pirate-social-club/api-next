@@ -24170,193 +24170,118 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "properties": {
-                    "persona_id": {
-                      "type": "string"
-                    },
-                    "object": {
-                      "type": "string",
-                      "enum": [
-                        "persona"
-                      ]
-                    },
-                    "status": {
-                      "type": "string",
-                      "enum": [
-                        "active",
-                        "suspended",
-                        "retired"
-                      ]
-                    },
-                    "profile": {
+                  "anyOf": [
+                    {
                       "type": "object",
                       "properties": {
                         "persona_id": {
                           "type": "string"
                         },
-                        "object": {
+                        "chain_account_kind": {
                           "type": "string",
                           "enum": [
-                            "persona_profile"
+                            "evm"
                           ]
                         },
-                        "revision": {
+                        "hd_wallet_index": {
                           "type": "integer",
                           "allOf": [
                             {
-                              "minimum": 1,
+                              "minimum": 0,
                               "maximum": 9007199254740991
                             }
                           ]
                         },
-                        "display_name": {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "pending"
                           ]
                         },
-                        "avatar_ref": {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "cover_ref": {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "bio": {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "preferred_locale": {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "primary_public_handle": {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
+                        "assignment": {
+                          "type": "null"
                         }
                       },
                       "required": [
                         "persona_id",
-                        "object",
-                        "revision",
-                        "display_name",
-                        "avatar_ref",
-                        "cover_ref",
-                        "bio",
-                        "preferred_locale",
-                        "primary_public_handle"
+                        "chain_account_kind",
+                        "hd_wallet_index",
+                        "status",
+                        "assignment"
                       ],
                       "additionalProperties": false
                     },
-                    "wallet_set": {
+                    {
                       "type": "object",
                       "properties": {
-                        "evm": {
-                          "anyOf": [
+                        "persona_id": {
+                          "type": "string"
+                        },
+                        "chain_account_kind": {
+                          "type": "string",
+                          "enum": [
+                            "evm"
+                          ]
+                        },
+                        "hd_wallet_index": {
+                          "type": "integer",
+                          "allOf": [
                             {
-                              "type": "object",
-                              "properties": {
-                                "chain_account_kind": {
-                                  "type": "string",
-                                  "enum": [
-                                    "evm"
-                                  ]
-                                },
-                                "hd_wallet_index": {
-                                  "type": "integer",
-                                  "allOf": [
-                                    {
-                                      "minimum": 0,
-                                      "maximum": 9007199254740991
-                                    }
-                                  ]
-                                },
-                                "address": {
-                                  "type": "string"
-                                },
-                                "assigned_at": {
-                                  "type": "string"
-                                }
-                              },
-                              "required": [
-                                "chain_account_kind",
-                                "hd_wallet_index",
-                                "address",
-                                "assigned_at"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "null"
+                              "minimum": 0,
+                              "maximum": 9007199254740991
                             }
                           ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "active"
+                          ]
+                        },
+                        "assignment": {
+                          "type": "object",
+                          "properties": {
+                            "chain_account_kind": {
+                              "type": "string",
+                              "enum": [
+                                "evm"
+                              ]
+                            },
+                            "hd_wallet_index": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "address": {
+                              "type": "string"
+                            },
+                            "assigned_at": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "chain_account_kind",
+                            "hd_wallet_index",
+                            "address",
+                            "assigned_at"
+                          ],
+                          "additionalProperties": false
                         }
                       },
                       "required": [
-                        "evm"
+                        "persona_id",
+                        "chain_account_kind",
+                        "hd_wallet_index",
+                        "status",
+                        "assignment"
                       ],
                       "additionalProperties": false
-                    },
-                    "created_at": {
-                      "type": "string"
-                    },
-                    "retired_at": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
                     }
-                  },
-                  "required": [
-                    "persona_id",
-                    "object",
-                    "status",
-                    "profile",
-                    "wallet_set",
-                    "created_at",
-                    "retired_at"
-                  ],
-                  "additionalProperties": false
+                  ]
                 }
               }
             }
@@ -24520,6 +24445,59 @@
               "conflict"
             ]
           },
+          "429": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "rate_limited"
+            ]
+          },
           "500": {
             "description": "api-next error envelope v2",
             "content": {
@@ -24583,7 +24561,8 @@
           "AuthError",
           "BadRequest",
           "Conflict",
-          "InternalError"
+          "InternalError",
+          "RateLimited"
         ]
       }
     },
@@ -25121,6 +25100,349 @@
                     "hd_wallet_index",
                     "address",
                     "assigned_at"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "404": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "not_found"
+            ]
+          },
+          "409": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "conflict"
+            ]
+          },
+          "500": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "userOrAdmin"
+          }
+        },
+        "x-errors": [
+          "AuthError",
+          "BadRequest",
+          "Conflict",
+          "InternalError",
+          "NotFound"
+        ]
+      }
+    },
+    "/personas/{personaId}/retire": {
+      "post": {
+        "operationId": "post_personasPersonaIdRetire",
+        "parameters": [
+          {
+            "name": "personaId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "idempotency_key": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "idempotency_key"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "persona_id": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "retired"
+                      ]
+                    },
+                    "retired_at": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "persona_id",
+                    "status",
+                    "retired_at"
                   ],
                   "additionalProperties": false
                 }
@@ -27096,411 +27418,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "properties": {
-                    "user": {
+                  "anyOf": [
+                    {
                       "type": "object",
                       "properties": {
-                        "id": {
-                          "type": "string"
-                        },
-                        "object": {
-                          "type": "string",
-                          "enum": [
-                            "user"
-                          ]
-                        },
-                        "primary_wallet_attachment": {
-                          "anyOf": [
-                            {
-                              "anyOf": [
-                                {
-                                  "type": "string"
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ]
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "verification_state": {
-                          "type": "string",
-                          "enum": [
-                            "unverified",
-                            "pending",
-                            "verified",
-                            "reverification_required"
-                          ]
-                        },
-                        "capability_provider": {
-                          "anyOf": [
-                            {
-                              "anyOf": [
-                                {
-                                  "type": "string",
-                                  "enum": [
-                                    "self",
-                                    "zkpassport",
-                                    "very"
-                                  ]
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ]
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "verification_capabilities": {
-                          "$ref": "#/$defs/Objects_"
-                        },
-                        "verified_at": {
-                          "anyOf": [
-                            {
-                              "anyOf": [
-                                {
-                                  "$ref": "#/$defs/Union_"
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ]
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "created": {
-                          "$ref": "#/$defs/Union_"
-                        }
-                      },
-                      "required": [
-                        "id",
-                        "object",
-                        "verification_state",
-                        "verification_capabilities",
-                        "created"
-                      ],
-                      "additionalProperties": false
-                    },
-                    "profile": {
-                      "type": "object",
-                      "properties": {
-                        "id": {
-                          "type": "string"
-                        },
-                        "object": {
-                          "type": "string",
-                          "enum": [
-                            "profile"
-                          ]
-                        },
-                        "display_name": {
-                          "anyOf": [
-                            {
-                              "anyOf": [
-                                {
-                                  "type": "string"
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ]
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "avatar_ref": {
-                          "anyOf": [
-                            {
-                              "anyOf": [
-                                {
-                                  "type": "string"
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ]
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "avatar_source": {
-                          "anyOf": [
-                            {
-                              "anyOf": [
-                                {
-                                  "type": "string",
-                                  "enum": [
-                                    "ens",
-                                    "upload",
-                                    "none"
-                                  ]
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ]
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "cover_ref": {
-                          "anyOf": [
-                            {
-                              "anyOf": [
-                                {
-                                  "type": "string"
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ]
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "cover_source": {
-                          "anyOf": [
-                            {
-                              "anyOf": [
-                                {
-                                  "type": "string",
-                                  "enum": [
-                                    "ens",
-                                    "upload",
-                                    "none"
-                                  ]
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ]
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "bio": {
-                          "anyOf": [
-                            {
-                              "anyOf": [
-                                {
-                                  "type": "string"
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ]
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "bio_source": {
-                          "anyOf": [
-                            {
-                              "anyOf": [
-                                {
-                                  "type": "string",
-                                  "enum": [
-                                    "ens",
-                                    "manual",
-                                    "none"
-                                  ]
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ]
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "preferred_locale": {
-                          "anyOf": [
-                            {
-                              "anyOf": [
-                                {
-                                  "type": "string"
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ]
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "explicit_content_preference": {
-                          "anyOf": [
-                            {
-                              "type": "string",
-                              "enum": [
-                                "show",
-                                "hide"
-                              ]
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "display_verified_nationality_badge": {
-                          "anyOf": [
-                            {
-                              "anyOf": [
-                                {
-                                  "type": "boolean"
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ]
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "nationality_badge_country": {
-                          "anyOf": [
-                            {
-                              "anyOf": [
-                                {
-                                  "type": "string"
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ]
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "linked_handles": {
-                          "anyOf": [
-                            {
-                              "anyOf": [
-                                {
-                                  "type": "array",
-                                  "items": {
-                                    "$ref": "#/$defs/Objects_1"
-                                  }
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ]
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "primary_public_handle": {
-                          "anyOf": [
-                            {
-                              "anyOf": [
-                                {
-                                  "$ref": "#/$defs/Objects_1"
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ]
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "primary_wallet_address": {
-                          "anyOf": [
-                            {
-                              "anyOf": [
-                                {
-                                  "type": "string"
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ]
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "is_bookable": {
-                          "anyOf": [
-                            {
-                              "type": "boolean"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "xmtp_inbox": {
-                          "anyOf": [
-                            {
-                              "anyOf": [
-                                {
-                                  "type": "string"
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ]
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "verification_capabilities": {
-                          "anyOf": [
-                            {
-                              "anyOf": [
-                                {
-                                  "$ref": "#/$defs/Objects_"
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ]
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "global_handle": {
+                        "user": {
                           "type": "object",
                           "properties": {
                             "id": {
@@ -27509,39 +27431,10 @@
                             "object": {
                               "type": "string",
                               "enum": [
-                                "global_handle"
+                                "user"
                               ]
                             },
-                            "label": {
-                              "type": "string"
-                            },
-                            "tier": {
-                              "type": "string",
-                              "enum": [
-                                "generated",
-                                "standard",
-                                "premium"
-                              ]
-                            },
-                            "status": {
-                              "type": "string",
-                              "enum": [
-                                "active",
-                                "redirect",
-                                "retired"
-                              ]
-                            },
-                            "issuance_source": {
-                              "type": "string",
-                              "enum": [
-                                "generated_signup",
-                                "free_cleanup_rename",
-                                "reddit_verified_claim",
-                                "paid_upgrade",
-                                "admin_grant"
-                              ]
-                            },
-                            "redirect_target_global_handle": {
+                            "primary_wallet_attachment": {
                               "anyOf": [
                                 {
                                   "anyOf": [
@@ -27558,7 +27451,41 @@
                                 }
                               ]
                             },
-                            "price_paid_cents": {
+                            "verification_state": {
+                              "type": "string",
+                              "enum": [
+                                "unverified",
+                                "pending",
+                                "verified",
+                                "reverification_required"
+                              ]
+                            },
+                            "capability_provider": {
+                              "anyOf": [
+                                {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "enum": [
+                                        "self",
+                                        "zkpassport",
+                                        "very"
+                                      ]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "verification_capabilities": {
+                              "$ref": "#/$defs/Objects_"
+                            },
+                            "verified_at": {
                               "anyOf": [
                                 {
                                   "anyOf": [
@@ -27575,7 +27502,285 @@
                                 }
                               ]
                             },
-                            "free_rename_consumed": {
+                            "created": {
+                              "$ref": "#/$defs/Union_"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "object",
+                            "verification_state",
+                            "verification_capabilities",
+                            "created"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "profile": {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "object": {
+                              "type": "string",
+                              "enum": [
+                                "profile"
+                              ]
+                            },
+                            "display_name": {
+                              "anyOf": [
+                                {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "avatar_ref": {
+                              "anyOf": [
+                                {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "avatar_source": {
+                              "anyOf": [
+                                {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "enum": [
+                                        "ens",
+                                        "upload",
+                                        "none"
+                                      ]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "cover_ref": {
+                              "anyOf": [
+                                {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "cover_source": {
+                              "anyOf": [
+                                {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "enum": [
+                                        "ens",
+                                        "upload",
+                                        "none"
+                                      ]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "bio": {
+                              "anyOf": [
+                                {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "bio_source": {
+                              "anyOf": [
+                                {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "enum": [
+                                        "ens",
+                                        "manual",
+                                        "none"
+                                      ]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "preferred_locale": {
+                              "anyOf": [
+                                {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "explicit_content_preference": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "enum": [
+                                    "show",
+                                    "hide"
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "display_verified_nationality_badge": {
+                              "anyOf": [
+                                {
+                                  "anyOf": [
+                                    {
+                                      "type": "boolean"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "nationality_badge_country": {
+                              "anyOf": [
+                                {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "linked_handles": {
+                              "anyOf": [
+                                {
+                                  "anyOf": [
+                                    {
+                                      "type": "array",
+                                      "items": {
+                                        "$ref": "#/$defs/Objects_1"
+                                      }
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "primary_public_handle": {
+                              "anyOf": [
+                                {
+                                  "anyOf": [
+                                    {
+                                      "$ref": "#/$defs/Objects_1"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "primary_wallet_address": {
+                              "anyOf": [
+                                {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "is_bookable": {
                               "anyOf": [
                                 {
                                   "type": "boolean"
@@ -27585,10 +27790,179 @@
                                 }
                               ]
                             },
-                            "issued_at": {
-                              "$ref": "#/$defs/Union_"
+                            "xmtp_inbox": {
+                              "anyOf": [
+                                {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
                             },
-                            "replaced_at": {
+                            "verification_capabilities": {
+                              "anyOf": [
+                                {
+                                  "anyOf": [
+                                    {
+                                      "$ref": "#/$defs/Objects_"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "global_handle": {
+                              "type": "object",
+                              "properties": {
+                                "id": {
+                                  "type": "string"
+                                },
+                                "object": {
+                                  "type": "string",
+                                  "enum": [
+                                    "global_handle"
+                                  ]
+                                },
+                                "label": {
+                                  "type": "string"
+                                },
+                                "tier": {
+                                  "type": "string",
+                                  "enum": [
+                                    "generated",
+                                    "standard",
+                                    "premium"
+                                  ]
+                                },
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "active",
+                                    "redirect",
+                                    "retired"
+                                  ]
+                                },
+                                "issuance_source": {
+                                  "type": "string",
+                                  "enum": [
+                                    "generated_signup",
+                                    "free_cleanup_rename",
+                                    "reddit_verified_claim",
+                                    "paid_upgrade",
+                                    "admin_grant"
+                                  ]
+                                },
+                                "redirect_target_global_handle": {
+                                  "anyOf": [
+                                    {
+                                      "anyOf": [
+                                        {
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "price_paid_cents": {
+                                  "anyOf": [
+                                    {
+                                      "anyOf": [
+                                        {
+                                          "$ref": "#/$defs/Union_"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "free_rename_consumed": {
+                                  "anyOf": [
+                                    {
+                                      "type": "boolean"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "issued_at": {
+                                  "$ref": "#/$defs/Union_"
+                                },
+                                "replaced_at": {
+                                  "anyOf": [
+                                    {
+                                      "anyOf": [
+                                        {
+                                          "$ref": "#/$defs/Union_"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "id",
+                                "object",
+                                "label",
+                                "tier",
+                                "status",
+                                "issuance_source",
+                                "issued_at"
+                              ],
+                              "additionalProperties": false
+                            },
+                            "created": {
+                              "$ref": "#/$defs/Union_"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "object",
+                            "global_handle",
+                            "created"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "onboarding": {
+                          "type": "object",
+                          "properties": {
+                            "generated_handle_assigned": {
+                              "type": "boolean"
+                            },
+                            "cleanup_rename_available": {
+                              "type": "boolean"
+                            },
+                            "onboarding_dismissed_at": {
                               "anyOf": [
                                 {
                                   "anyOf": [
@@ -27604,168 +27978,250 @@
                                   "type": "null"
                                 }
                               ]
-                            }
-                          },
-                          "required": [
-                            "id",
-                            "object",
-                            "label",
-                            "tier",
-                            "status",
-                            "issuance_source",
-                            "issued_at"
-                          ],
-                          "additionalProperties": false
-                        },
-                        "created": {
-                          "$ref": "#/$defs/Union_"
-                        }
-                      },
-                      "required": [
-                        "id",
-                        "object",
-                        "global_handle",
-                        "created"
-                      ],
-                      "additionalProperties": false
-                    },
-                    "onboarding": {
-                      "type": "object",
-                      "properties": {
-                        "generated_handle_assigned": {
-                          "type": "boolean"
-                        },
-                        "cleanup_rename_available": {
-                          "type": "boolean"
-                        },
-                        "onboarding_dismissed_at": {
-                          "anyOf": [
-                            {
-                              "anyOf": [
-                                {
-                                  "$ref": "#/$defs/Union_"
-                                },
-                                {
-                                  "type": "null"
-                                }
+                            },
+                            "unique_human_verification_status": {
+                              "type": "string",
+                              "enum": [
+                                "not_started",
+                                "pending",
+                                "verified",
+                                "expired",
+                                "failed"
                               ]
                             },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "unique_human_verification_status": {
-                          "type": "string",
-                          "enum": [
-                            "not_started",
-                            "pending",
-                            "verified",
-                            "expired",
-                            "failed"
-                          ]
-                        },
-                        "namespace_verification_status": {
-                          "type": "string",
-                          "enum": [
-                            "not_started",
-                            "pending",
-                            "verified",
-                            "stale",
-                            "expired",
-                            "disputed",
-                            "failed"
-                          ]
-                        },
-                        "community_creation_ready": {
-                          "type": "boolean"
-                        },
-                        "missing_requirements": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          }
-                        },
-                        "reddit_verification_status": {
-                          "type": "string",
-                          "enum": [
-                            "not_started",
-                            "pending",
-                            "verified",
-                            "failed"
-                          ]
-                        },
-                        "reddit_import_status": {
-                          "type": "string",
-                          "enum": [
-                            "not_started",
-                            "queued",
-                            "running",
-                            "succeeded",
-                            "failed"
-                          ]
-                        },
-                        "suggested_community_ids": {
-                          "anyOf": [
-                            {
+                            "namespace_verification_status": {
+                              "type": "string",
+                              "enum": [
+                                "not_started",
+                                "pending",
+                                "verified",
+                                "stale",
+                                "expired",
+                                "disputed",
+                                "failed"
+                              ]
+                            },
+                            "community_creation_ready": {
+                              "type": "boolean"
+                            },
+                            "missing_requirements": {
                               "type": "array",
                               "items": {
                                 "type": "string"
                               }
                             },
+                            "reddit_verification_status": {
+                              "type": "string",
+                              "enum": [
+                                "not_started",
+                                "pending",
+                                "verified",
+                                "failed"
+                              ]
+                            },
+                            "reddit_import_status": {
+                              "type": "string",
+                              "enum": [
+                                "not_started",
+                                "queued",
+                                "running",
+                                "succeeded",
+                                "failed"
+                              ]
+                            },
+                            "suggested_community_ids": {
+                              "anyOf": [
+                                {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "generated_handle_assigned",
+                            "cleanup_rename_available",
+                            "unique_human_verification_status",
+                            "namespace_verification_status",
+                            "community_creation_ready",
+                            "missing_requirements",
+                            "reddit_verification_status",
+                            "reddit_import_status"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "wallet_attachments": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "wallet_attachment": {
+                                "type": "string"
+                              },
+                              "chain_namespace": {
+                                "type": "string"
+                              },
+                              "wallet_address": {
+                                "type": "string"
+                              },
+                              "is_primary": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "wallet_attachment",
+                              "chain_namespace",
+                              "wallet_address",
+                              "is_primary"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "user",
+                        "profile",
+                        "onboarding",
+                        "wallet_attachments"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "wallet_setup_required"
+                          ]
+                        },
+                        "wallet": {
+                          "anyOf": [
                             {
-                              "type": "null"
+                              "type": "object",
+                              "properties": {
+                                "persona_id": {
+                                  "type": "string"
+                                },
+                                "chain_account_kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "evm"
+                                  ]
+                                },
+                                "hd_wallet_index": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 0,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                },
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "pending"
+                                  ]
+                                },
+                                "assignment": {
+                                  "type": "null"
+                                }
+                              },
+                              "required": [
+                                "persona_id",
+                                "chain_account_kind",
+                                "hd_wallet_index",
+                                "status",
+                                "assignment"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "persona_id": {
+                                  "type": "string"
+                                },
+                                "chain_account_kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "evm"
+                                  ]
+                                },
+                                "hd_wallet_index": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 0,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                },
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "active"
+                                  ]
+                                },
+                                "assignment": {
+                                  "type": "object",
+                                  "properties": {
+                                    "chain_account_kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "evm"
+                                      ]
+                                    },
+                                    "hd_wallet_index": {
+                                      "type": "integer",
+                                      "allOf": [
+                                        {
+                                          "minimum": 0,
+                                          "maximum": 9007199254740991
+                                        }
+                                      ]
+                                    },
+                                    "address": {
+                                      "type": "string"
+                                    },
+                                    "assigned_at": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "chain_account_kind",
+                                    "hd_wallet_index",
+                                    "address",
+                                    "assigned_at"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              },
+                              "required": [
+                                "persona_id",
+                                "chain_account_kind",
+                                "hd_wallet_index",
+                                "status",
+                                "assignment"
+                              ],
+                              "additionalProperties": false
                             }
                           ]
                         }
                       },
                       "required": [
-                        "generated_handle_assigned",
-                        "cleanup_rename_available",
-                        "unique_human_verification_status",
-                        "namespace_verification_status",
-                        "community_creation_ready",
-                        "missing_requirements",
-                        "reddit_verification_status",
-                        "reddit_import_status"
+                        "status",
+                        "wallet"
                       ],
                       "additionalProperties": false
-                    },
-                    "wallet_attachments": {
-                      "type": "array",
-                      "items": {
-                        "type": "object",
-                        "properties": {
-                          "wallet_attachment": {
-                            "type": "string"
-                          },
-                          "chain_namespace": {
-                            "type": "string"
-                          },
-                          "wallet_address": {
-                            "type": "string"
-                          },
-                          "is_primary": {
-                            "type": "boolean"
-                          }
-                        },
-                        "required": [
-                          "wallet_attachment",
-                          "chain_namespace",
-                          "wallet_address",
-                          "is_primary"
-                        ],
-                        "additionalProperties": false
-                      }
                     }
-                  },
-                  "required": [
-                    "user",
-                    "profile",
-                    "onboarding",
-                    "wallet_attachments"
                   ],
-                  "additionalProperties": false,
                   "$defs": {
                     "Union_": {
                       "anyOf": [

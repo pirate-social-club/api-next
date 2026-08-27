@@ -12,6 +12,7 @@ import { Effect } from "effect";
 import { Client } from "pg";
 import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 import { makeDataRegistrationStore } from "./data-registration-repository.ts";
+import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { applyPostgresMigrations } from "./postgres-migrations.ts";
 
@@ -80,6 +81,10 @@ async function seedPublishedSong(admin: Client): Promise<{
   await admin.query("INSERT INTO users (user_id,status,account) VALUES ($1,'active','{}'::jsonb)", [
     accountId,
   ]);
+  const walletSchema = await admin.query<{ relation: string | null }>(
+    "SELECT to_regclass('persona_pending_profiles')::text AS relation",
+  );
+  if (walletSchema.rows[0]?.relation !== null) await activatePendingPersonaFixtures(admin);
   const personas = await admin.query<{ persona_id: string }>(
     "SELECT persona_id FROM personas WHERE account_id=$1 AND is_first_persona",
     [accountId],
@@ -146,7 +151,7 @@ suite("DATA registration persistence", () => {
       const media = await seedPublishedSong(admin);
       await Effect.runPromise(
         Effect.scoped(
-          applyPostgresMigrations(migrations).pipe(
+          applyPostgresMigrations(migrations.slice(0, dataPersistenceIndex + 1)).pipe(
             Effect.provide(makeDirectPostgresControlPlaneLayer(scopedConnection)),
           ),
         ),

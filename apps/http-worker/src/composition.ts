@@ -6,6 +6,7 @@ import {
   TextModerationProviderError,
 } from "@pirate/application/use-cases/content/text-post";
 import { makeRandomIdentityRegistrationCandidateSource } from "@pirate/application/use-cases/identity-registration";
+import { PERSONA_WALLET_SETUP_SESSION_SCOPE } from "@pirate/application/use-cases/identity-registration-handler";
 import { getMyProfile } from "@pirate/application/use-cases/profile";
 import { makePublicProfileHandler } from "@pirate/application/use-cases/public-profile";
 import type { StudyItemSource } from "@pirate/application/use-cases/rewards/activity-qualification";
@@ -16,6 +17,7 @@ import {
 } from "@pirate/application/use-cases/session-authentication";
 import { makeSessionIdentityStore } from "@pirate/application/use-cases/session-exchange";
 import type { VerificationIntentResolver } from "@pirate/application/verification";
+import { AuthError } from "@pirate/contracts";
 import { makeControlPlaneAcceptedLyricsStudyItemSource } from "@pirate/platform-cf/accepted-lyrics-study-item-source";
 import { makeControlPlaneActivityQualificationStore } from "@pirate/platform-cf/activity-qualification-repository";
 import { makeControlPlaneCommunityCreationIntentResolver } from "@pirate/platform-cf/community-creation-intent-resolver";
@@ -44,6 +46,7 @@ import { makeControlPlaneHnsCommunityAppHostAuthoritySource } from "@pirate/plat
 import {
   makeControlPlaneIdentityRegistrationStore,
   makeControlPlaneIdentityStore,
+  makeControlPlaneSessionProductReadiness,
 } from "@pirate/platform-cf/identity-repository";
 import { makeR2MediaIngressPresigner } from "@pirate/platform-cf/media-ingress-presigner";
 import {
@@ -809,6 +812,7 @@ export async function createProductionHttpWorker(
     proofVerifier,
     identityStore: makeSessionIdentityStore(identityStore),
     tokenMinter,
+    productReadiness: makeControlPlaneSessionProductReadiness(controlPlane),
   };
   const identityRegistration = {
     providerAppId: config.PRIVY_APP_ID,
@@ -818,6 +822,7 @@ export async function createProductionHttpWorker(
       store: makeControlPlaneIdentityRegistrationStore(controlPlane),
     },
     tokenMinter,
+    productReadiness: makeControlPlaneSessionProductReadiness(controlPlane),
     rateLimiter: makeProductionIdentityRegistrationRateLimiter(bindings, config.API_NEXT_ENV),
   };
   const tokenVerifier = makeRs256SessionTokenVerifier(sessionCrypto, identityStore);
@@ -865,15 +870,25 @@ export async function createProductionHttpWorker(
     identityRegistration,
     profile,
     authenticate,
-    authorize: ({ input }) =>
+    authorize: ({ endpoint, input }) =>
       Effect.runPromise(
-        authorizeSession({
-          session: {
-            subject: input.principal?.subject ?? "",
-            kind: input.principal?.kind ?? "device",
-            ...(input.principal?.scopes === undefined ? {} : { scopes: input.principal.scopes }),
-          },
-          allowedKinds: ["user", "admin"],
+        Effect.gen(function* () {
+          yield* authorizeSession({
+            session: {
+              subject: input.principal?.subject ?? "",
+              kind: input.principal?.kind ?? "device",
+              ...(input.principal?.scopes === undefined ? {} : { scopes: input.principal.scopes }),
+            },
+            allowedKinds: ["user", "admin"],
+          });
+          if (input.principal?.scopes?.includes(PERSONA_WALLET_SETUP_SESSION_SCOPE)) {
+            const setupPath =
+              endpoint.method === "POST" &&
+              (endpoint.path === "/personas/:personaId/wallets/evm/prepare" ||
+                endpoint.path === "/personas/:personaId/wallets/evm/confirm" ||
+                endpoint.path === "/personas/:personaId/retire");
+            if (!setupPath) return yield* new AuthError({ message: "Authorization failed" });
+          }
         }),
       ),
   });

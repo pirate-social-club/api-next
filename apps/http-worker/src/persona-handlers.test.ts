@@ -44,7 +44,13 @@ function services(observed: unknown[]): PersonaHandlerServices {
     },
     create: (input: Parameters<PersonaHandlerServices["personas"]["store"]["create"]>[0]) => {
       observed.push({ create: input });
-      return Effect.succeed(input.persona);
+      return Effect.succeed({
+        persona_id: input.personaId,
+        chain_account_kind: "evm",
+        hd_wallet_index: 2,
+        status: "pending",
+        assignment: null,
+      } as const);
     },
   };
   const walletStore: PersonaWalletServices["store"] = {
@@ -76,6 +82,14 @@ function services(observed: unknown[]): PersonaHandlerServices {
         hd_wallet_index: 2,
         address: input.attestation.address,
         assigned_at: "2026-08-24T12:01:00.000Z",
+      });
+    },
+    retire: (input) => {
+      observed.push({ retire: input });
+      return Effect.succeed({
+        persona_id: input.personaId,
+        status: "retired",
+        retired_at: "2026-08-24T12:02:00.000Z",
       });
     },
   };
@@ -114,7 +128,10 @@ describe("persona HTTP handlers", () => {
         },
       }),
     );
-    expect(created).toMatchObject({ body: persona, status: 201 });
+    expect(created).toMatchObject({
+      body: { persona_id: persona.persona_id, status: "pending", hd_wallet_index: 2 },
+      status: 201,
+    });
     expect(observed).toContainEqual({ list: "account_handler" });
     expect(observed).toContainEqual({
       create: expect.objectContaining({
@@ -137,6 +154,9 @@ describe("persona HTTP handlers", () => {
         body: { proof: { privy_access_token: "privy-access-handler" } },
       }),
     );
+    await handlers.RetirePersona(
+      request({ params, body: { idempotency_key: "persona-handler-retire" } }),
+    );
     expect(observed).toContainEqual({
       reserve: {
         accountId: "account_handler",
@@ -149,6 +169,13 @@ describe("persona HTTP handlers", () => {
         accountId: "account_handler",
         personaId: persona.persona_id,
       }),
+    });
+    expect(observed).toContainEqual({
+      retire: {
+        accountId: "account_handler",
+        personaId: persona.persona_id,
+        idempotencyKey: "persona-handler-retire",
+      },
     });
   });
 

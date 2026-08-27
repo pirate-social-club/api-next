@@ -270,7 +270,7 @@ suite("Postgres 17 identity repository", () => {
             (SELECT count(*) FROM users)::text AS users,
             (SELECT count(*) FROM public_handle_index)::text AS handles,
             (SELECT count(*) FROM identity_credentials)::text AS credentials`);
-      expect(counts.rows[0]).toEqual({ users: "1", handles: "1", credentials: "1" });
+      expect(counts.rows[0]).toEqual({ users: "1", handles: "0", credentials: "1" });
     });
     completedTestCount += 1;
   });

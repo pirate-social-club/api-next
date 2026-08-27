@@ -4,6 +4,7 @@ import { ControlPlaneDb } from "@pirate/application";
 import { Effect } from "effect";
 import { Client } from "pg";
 
+import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres";
 import {
   applyPostgresMigrations,
@@ -298,6 +299,9 @@ const communityModerationAuthorityPolicyMigrationSql = await Bun.file(
     "../../../db/postgres/migrations/0059_community_moderation_authority_policy.sql",
     import.meta.url,
   ),
+).text();
+const personaWalletProvisioningMigrationSql = await Bun.file(
+  new URL("../../../db/postgres/migrations/0060_persona_wallet_provisioning.sql", import.meta.url),
 ).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
@@ -601,6 +605,11 @@ const communityModerationAuthorityPolicyMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0059_community_moderation_authority_policy.sql"] ?? "",
   sql: communityModerationAuthorityPolicyMigrationSql,
 };
+const personaWalletProvisioningMigration: PostgresMigration = {
+  version: "0060_persona_wallet_provisioning.sql",
+  checksum: checksumManifest.migrations["0060_persona_wallet_provisioning.sql"] ?? "",
+  sql: personaWalletProvisioningMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -661,6 +670,7 @@ const migrations: readonly PostgresMigration[] = [
   dataRegistrationPersistenceMigration,
   dataIpfsAndSigningIntentRepairMigration,
   communityModerationAuthorityPolicyMigration,
+  personaWalletProvisioningMigration,
 ];
 
 function checksum(value: string): string {
@@ -941,6 +951,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       expect(checksum(communityModerationAuthorityPolicyMigrationSql)).toBe(
         communityModerationAuthorityPolicyMigration.checksum,
       );
+      expect(checksum(personaWalletProvisioningMigrationSql)).toBe(
+        personaWalletProvisioningMigration.checksum,
+      );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
@@ -1157,9 +1170,13 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "persona_activity_presentation_actions",
         "persona_activity_presentations",
         "persona_create_actions",
+        "persona_pending_first_handles",
+        "persona_pending_profiles",
         "persona_profiles",
+        "persona_retirement_replays",
         "persona_role_presentations",
         "persona_wallet_assignments",
+        "persona_wallet_preparation_replays",
         "personas",
         "platform_operator_route_authority_grants",
         "platform_referral_revenue_ledger",
@@ -1604,6 +1621,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         text: "INSERT INTO users (user_id) VALUES ($1), ($2)",
         values: ["user-a", "user-b"],
       });
+      await activatePendingPersonaFixtures(admin);
       await expectPostgresFailure(
         admin,
         "23502",
@@ -2604,6 +2622,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       await applyMigrations(scopedConnectionString, migrations);
       const now = new Date();
       await admin.query("INSERT INTO users (user_id) VALUES ('user-a'), ('user-b')");
+      await activatePendingPersonaFixtures(admin);
       await admin.query({
         text: "INSERT INTO communities (community_id, display_name, created_by_user_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $4), ($5, $6, $7, $4, $4)",
         values: ["community-a", "A", "user-a", now, "community-b", "B", "user-b"],
@@ -2639,6 +2658,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       await applyMigrations(scopedConnectionString, migrations);
       const now = new Date();
       await admin.query("INSERT INTO users (user_id) VALUES ('user-a'), ('user-b')");
+      await activatePendingPersonaFixtures(admin);
       await admin.query({
         text: "INSERT INTO communities (community_id, display_name, created_by_user_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $4), ($5, $6, $7, $4, $4)",
         values: ["community-a", "A", "user-a", now, "community-b", "B", "user-b"],
@@ -2856,6 +2876,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       expect(checksum(persistedPolicy.policy_preimage)).toBe(persistedPolicy.policy_hash);
 
       await admin.query("INSERT INTO users (user_id) VALUES ('text-author'), ('other-author')");
+      await activatePendingPersonaFixtures(admin);
       await admin.query(
         `INSERT INTO communities (
            community_id, display_name, created_by_user_id, created_at, updated_at

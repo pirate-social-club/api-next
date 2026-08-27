@@ -3,6 +3,7 @@ import { PublicCommunityThreadsRepositoryError } from "@pirate/application";
 import { Cause, Effect, Exit, Result } from "effect";
 import { Client } from "pg";
 import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
+import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { applyPostgresMigrations } from "./postgres-migrations.ts";
 import { makeControlPlanePublicCommunityThreadsRepository } from "./public-community-threads-repository.ts";
@@ -75,6 +76,7 @@ suite("Postgres 17 public community threads repository", () => {
       await apply(connection);
       const base = new Date("2026-08-17T12:00:00.000Z");
       await admin.query("INSERT INTO users (user_id) VALUES ('usr_author'), ('usr_other')");
+      await activatePendingPersonaFixtures(admin);
       await admin.query(
         `INSERT INTO communities
           (community_id, route_slug, display_name, status, created_by_user_id, created_at, updated_at)
@@ -205,6 +207,7 @@ suite("Postgres 17 public community threads repository", () => {
       await apply(connection);
       const now = new Date("2026-08-17T12:00:00.000Z");
       await admin.query("INSERT INTO users (user_id) VALUES ('usr_a'), ('usr_b')");
+      await activatePendingPersonaFixtures(admin);
       await admin.query(
         `INSERT INTO communities
           (community_id, route_slug, display_name, created_by_user_id, created_at, updated_at)
@@ -287,6 +290,7 @@ suite("Postgres 17 public community threads repository", () => {
       await apply(connection);
       const now = new Date("2026-08-17T12:00:00.000Z");
       await admin.query("INSERT INTO users (user_id) VALUES ('usr_author')");
+      await activatePendingPersonaFixtures(admin);
       await admin.query(
         `INSERT INTO communities
           (community_id, route_slug, display_name, created_by_user_id, created_at, updated_at)

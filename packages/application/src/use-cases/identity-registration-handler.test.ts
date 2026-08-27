@@ -42,6 +42,7 @@ function services(
     registration: {
       candidates: { next: () => Effect.succeed(candidate) },
       store: {
+        getFirstPersonaWalletPreparation: () => Effect.succeed(null),
         registerCredential: () =>
           Effect.succeed({
             kind: "created",
@@ -55,6 +56,7 @@ function services(
       ttlSeconds: 3_600,
       mint: () => Effect.succeed("session-token"),
     },
+    productReadiness: { isReady: () => Effect.succeed(true) },
     rateLimiter: {
       checkIp: () => Effect.succeed(undefined),
       checkApplication: () => Effect.succeed(undefined),
@@ -64,6 +66,53 @@ function services(
 }
 
 describe("identity registration HTTP use case", () => {
+  test("returns only private wallet setup state and mints a setup-scoped session", async () => {
+    let mintedScope = "";
+    const configured = services();
+    const result = await Effect.runPromise(
+      registerIdentityRequest(
+        { body: { privy_access_token: "access-token" }, edgeClientIp: "203.0.113.8" },
+        services({
+          registration: {
+            candidates: configured.registration.candidates,
+            store: {
+              registerCredential: configured.registration.store.registerCredential,
+              getFirstPersonaWalletPreparation: () =>
+                Effect.succeed({
+                  persona_id: "persona_pending",
+                  chain_account_kind: "evm",
+                  hd_wallet_index: 0,
+                  status: "pending",
+                  assignment: null,
+                }),
+            },
+          },
+          tokenMinter: {
+            scope: "api-next-browser-session",
+            ttlSeconds: 3_600,
+            mint: ({ scope }) =>
+              Effect.sync(() => {
+                mintedScope = scope;
+                return "setup-token";
+              }),
+          },
+        }),
+      ),
+    );
+    expect(result.response).toEqual({
+      status: "wallet_setup_required",
+      wallet: {
+        persona_id: "persona_pending",
+        chain_account_kind: "evm",
+        hd_wallet_index: 0,
+        status: "pending",
+        assignment: null,
+      },
+    });
+    expect(mintedScope).toBe("persona-wallet-setup-v1");
+    expect(JSON.stringify(result.response)).not.toContain("generated-1.pirate");
+  });
+
   test("creates an account and mints the browser session", async () => {
     const result = await Effect.runPromise(
       registerIdentityRequest(
@@ -82,6 +131,7 @@ describe("identity registration HTTP use case", () => {
           registration: {
             candidates: { next: () => Effect.succeed(candidate) },
             store: {
+              getFirstPersonaWalletPreparation: () => Effect.succeed(null),
               registerCredential: () =>
                 Effect.succeed({
                   kind: "already_registered",
@@ -96,6 +146,28 @@ describe("identity registration HTTP use case", () => {
     expect(result.sessionToken).toBe("session-token");
   });
 
+  test("refuses a product session when registration replay has no pending or active first persona", async () => {
+    let mintCalls = 0;
+    const exit = await Effect.runPromiseExit(
+      registerIdentityRequest(
+        { body: { privy_access_token: "access-token" }, edgeClientIp: "203.0.113.8" },
+        services({
+          productReadiness: { isReady: () => Effect.succeed(false) },
+          tokenMinter: {
+            scope: "api-next-browser-session",
+            ttlSeconds: 3_600,
+            mint: () => {
+              mintCalls += 1;
+              return Effect.succeed("must-not-mint");
+            },
+          },
+        }),
+      ),
+    );
+    expect(failureOf(exit)).toBeInstanceOf(AuthError);
+    expect(mintCalls).toBe(0);
+  });
+
   test("maps a tombstoned credential to a permanent conflict", async () => {
     const exit = await Effect.runPromiseExit(
       registerIdentityRequest(
@@ -103,7 +175,10 @@ describe("identity registration HTTP use case", () => {
         services({
           registration: {
             candidates: { next: () => Effect.succeed(candidate) },
-            store: { registerCredential: () => Effect.succeed({ kind: "tombstoned" }) },
+            store: {
+              getFirstPersonaWalletPreparation: () => Effect.succeed(null),
+              registerCredential: () => Effect.succeed({ kind: "tombstoned" }),
+            },
           },
         }),
       ),
@@ -119,6 +194,7 @@ describe("identity registration HTTP use case", () => {
           registration: {
             candidates: { next: () => Effect.succeed(candidate) },
             store: {
+              getFirstPersonaWalletPreparation: () => Effect.succeed(null),
               registerCredential: () =>
                 Effect.fail(new IdentityRegistrationStoreFailure({ reason: "identity-conflict" })),
             },
@@ -139,6 +215,7 @@ describe("identity registration HTTP use case", () => {
           registration: {
             candidates: { next: () => Effect.succeed(candidate) },
             store: {
+              getFirstPersonaWalletPreparation: () => Effect.succeed(null),
               registerCredential: () => {
                 registrationCalls += 1;
                 return Effect.succeed({

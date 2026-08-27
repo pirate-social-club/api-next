@@ -14,6 +14,10 @@ import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts"
 import { makeHandleRecipientTokenVault } from "./handle-recipient-token-vault.ts";
 import { makeControlPlaneHandleSalesStore } from "./handle-sales-repository.ts";
 import { makeControlPlaneHnsHandlePersonaHostAuthoritySource } from "./hns-handle-host-authority-repository.ts";
+import {
+  activatePendingPersonaFixtures,
+  createActivePersonaFixture,
+} from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { applyPostgresMigrations } from "./postgres-migrations.ts";
 
@@ -73,6 +77,7 @@ const key = (byte: number): string =>
 
 async function seedAccount(admin: Client, accountId: string): Promise<string> {
   await admin.query(`INSERT INTO users (user_id,status) VALUES ($1,'active')`, [accountId]);
+  await activatePendingPersonaFixtures(admin);
   const result = await admin.query<{ readonly persona_id: string }>(
     `SELECT persona_id FROM personas WHERE account_id=$1 AND is_first_persona`,
     [accountId],
@@ -388,8 +393,9 @@ suite("community handle sales on PostgreSQL 17", () => {
                    clock_timestamp(),clock_timestamp(),NULL,'optional_route_v2')`,
         [archivedCommunityId],
       );
+      const throughHandleSales = migrations.slice(0, handleSalesMigrationIndex + 1);
       await Effect.runPromise(
-        Effect.scoped(applyPostgresMigrations(migrations).pipe(Effect.provide(layer))),
+        Effect.scoped(applyPostgresMigrations(throughHandleSales).pipe(Effect.provide(layer))),
       );
       const grants = await admin.query(
         `SELECT source_kind,status,
@@ -408,7 +414,7 @@ suite("community handle sales on PostgreSQL 17", () => {
         },
       ]);
       await Effect.runPromise(
-        Effect.scoped(applyPostgresMigrations(migrations).pipe(Effect.provide(layer))),
+        Effect.scoped(applyPostgresMigrations(throughHandleSales).pipe(Effect.provide(layer))),
       );
       const count = await admin.query<{ readonly count: number }>(
         `SELECT count(*)::int AS count FROM community_handle_sales_authority_grants
@@ -623,11 +629,10 @@ suite("community handle sales on PostgreSQL 17", () => {
       });
 
       const siblingPersona = "persona-recipient-sibling";
-      await admin.query(
-        `INSERT INTO personas (persona_id,account_id,status,is_first_persona)
-         VALUES ($1,'recipient-account','active',FALSE)`,
-        [siblingPersona],
-      );
+      await createActivePersonaFixture(admin, {
+        accountId: "recipient-account",
+        personaId: siblingPersona,
+      });
       await run(
         sales.confirmPersonaReuse({
           accountId: "recipient-account",
@@ -906,11 +911,10 @@ suite("community handle sales on PostgreSQL 17", () => {
 
       const capPersonaA = await seedAccount(admin, "cap-account");
       const capPersonaB = "persona-cap-sibling";
-      await admin.query(
-        `INSERT INTO personas (persona_id,account_id,status,is_first_persona)
-         VALUES ($1,'cap-account','active',FALSE)`,
-        [capPersonaB],
-      );
+      await createActivePersonaFixture(admin, {
+        accountId: "cap-account",
+        personaId: capPersonaB,
+      });
       const capReservations = [];
       for (const [personaId, label, suffix] of [
         [capPersonaA, "capalpha", "a"],

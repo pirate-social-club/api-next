@@ -18,6 +18,7 @@ import { Cause, Effect, Exit, Result } from "effect";
 import { Client } from "pg";
 import { runPostgresMigrations } from "../../../scripts/postgres-migrations";
 import { makeControlPlanePersonaStore } from "./persona-repository";
+import { createActivePersonaFixture } from "./persona-wallet.pg-fixture";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres";
 import { makeControlPlaneTextSubmissionStore } from "./text-submission-repository";
 
@@ -173,14 +174,11 @@ async function seed(admin: Client, schema: string): Promise<void> {
   const expiresAt = new Date(Date.now() + 60 * 60 * 1_000);
   await admin.query("INSERT INTO users (user_id) VALUES ($1)", [actor.userId]);
   await admin.query("INSERT INTO users (user_id) VALUES ($1)", [otherActor.userId]);
-  await admin.query(
-    "INSERT INTO personas (persona_id,account_id,status,is_first_persona) VALUES ($1,$2,'active',FALSE),($3,$4,'active',FALSE)",
-    [actorPersonaId, actor.userId, otherActorPersonaId, otherActor.userId],
-  );
-  await admin.query("INSERT INTO persona_profiles (persona_id,revision) VALUES ($1,1),($2,1)", [
-    actorPersonaId,
-    otherActorPersonaId,
-  ]);
+  await createActivePersonaFixture(admin, { accountId: actor.userId, personaId: actorPersonaId });
+  await createActivePersonaFixture(admin, {
+    accountId: otherActor.userId,
+    personaId: otherActorPersonaId,
+  });
   await admin.query(
     `INSERT INTO community_creation_intents (
        intent_id, actor_id, create_idempotency_key, create_request_hash, revision, status,

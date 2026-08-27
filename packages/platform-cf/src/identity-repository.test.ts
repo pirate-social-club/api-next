@@ -165,8 +165,8 @@ describe("identity credential registration", () => {
     });
     expect(fake.labels).toEqual([
       "identity.registration.lock-credential",
+      "identity.registration.check-handle",
       "identity.registration.insert-user",
-      "identity.registration.insert-handle",
       "identity.registration.insert-credential",
     ]);
     expect(fake.labels.some((label) => label.includes("delete"))).toBe(false);

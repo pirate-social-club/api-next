@@ -8,9 +8,11 @@ import {
   PersonaStoreConflict,
   type PersonaStoreService,
   PersonaUnavailable,
+  PersonaWalletProofRejected,
   type PersonaWalletStoreService,
   preparePersonaEvmWallet,
   requireActiveOwnedPersona,
+  retirePersona,
 } from "./personas.ts";
 
 const activePersona: PersonaRecord = {
@@ -41,7 +43,14 @@ const storeWith = (overrides: Partial<PersonaStoreService> = {}): PersonaStoreSe
         ? activePersona
         : null,
     ),
-  create: ({ persona }) => Effect.succeed(persona),
+  create: ({ personaId }) =>
+    Effect.succeed({
+      persona_id: personaId,
+      chain_account_kind: "evm",
+      hd_wallet_index: 2,
+      status: "pending",
+      assignment: null,
+    }),
   ...overrides,
 });
 
@@ -67,6 +76,12 @@ const walletStoreWith = (
   reserveEvm: () => Effect.succeed(pendingPreparation),
   getEvmPreparation: () => Effect.succeed(pendingPreparation),
   confirmEvm: () => Effect.succeed(assignment),
+  retire: ({ personaId }) =>
+    Effect.succeed({
+      persona_id: personaId,
+      status: "retired",
+      retired_at: "2026-08-23T23:00:00.000Z",
+    }),
   ...overrides,
 });
 
@@ -87,7 +102,7 @@ const walletServicesWith = (store: PersonaWalletStoreService) => ({
 });
 
 describe("account-owned persona use cases", () => {
-  test("creates an active profile without eagerly inventing a wallet", async () => {
+  test("creates a private pending persona with its reserved wallet index", async () => {
     let capturedAccountId = "";
     let capturedKey = "";
     let capturedIntent: unknown;
@@ -103,11 +118,17 @@ describe("account-owned persona use cases", () => {
         },
         {
           store: storeWith({
-            create: ({ accountId, idempotencyKey, intent, persona }) => {
+            create: ({ accountId, idempotencyKey, intent, personaId }) => {
               capturedAccountId = accountId;
               capturedKey = idempotencyKey;
               capturedIntent = intent;
-              return Effect.succeed(persona);
+              return Effect.succeed({
+                persona_id: personaId,
+                chain_account_kind: "evm",
+                hd_wallet_index: 2,
+                status: "pending",
+                assignment: null,
+              });
             },
           }),
           nextPersonaId: () => Effect.succeed("persona_squirtle"),
@@ -125,9 +146,9 @@ describe("account-owned persona use cases", () => {
     });
     expect(persona).toMatchObject({
       persona_id: "persona_squirtle",
-      status: "active",
-      wallet_set: { evm: null },
-      profile: { display_name: "Squirtle", revision: 1 },
+      status: "pending",
+      hd_wallet_index: 2,
+      assignment: null,
     });
   });
 
@@ -226,6 +247,7 @@ describe("account-owned persona use cases", () => {
 
     const foreign = walletStoreWith({
       findOwned: () => Effect.succeed(null),
+      getEvmPreparation: () => Effect.succeed(null),
       reserveEvm: () => {
         reservationCount += 1;
         return Effect.succeed(pendingPreparation);
@@ -317,6 +339,35 @@ describe("account-owned persona use cases", () => {
     expect(confirmCount).toBe(0);
   });
 
+  test("retains pending setup when the provider proof boundary is unavailable", async () => {
+    let confirmCount = 0;
+    const exit = await Effect.runPromiseExit(
+      confirmPersonaEvmWallet(
+        {
+          accountId: "account_owner",
+          personaId: activePersona.persona_id,
+          body: { proof: { type: "privy_access_token", privy_access_token: "access-token" } },
+        },
+        {
+          ...walletServicesWith(
+            walletStoreWith({
+              confirmEvm: () => {
+                confirmCount += 1;
+                return Effect.succeed(assignment);
+              },
+            }),
+          ),
+          verifier: {
+            verifyPrivyEmbeddedEvmWallet: () =>
+              Effect.fail(new PersonaWalletProofRejected({ reason: "unavailable" })),
+          },
+        },
+      ),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+    expect(confirmCount).toBe(0);
+  });
+
   test("replays an active assignment without selecting from the login wallet set", async () => {
     let verifierCount = 0;
     const activePreparation = {
@@ -349,5 +400,32 @@ describe("account-owned persona use cases", () => {
     );
     expect(result).toEqual(assignment);
     expect(verifierCount).toBe(0);
+  });
+
+  test("retires through the authenticated account without exposing store conflicts", async () => {
+    let capturedKey = "";
+    const result = await Effect.runPromise(
+      retirePersona(
+        {
+          accountId: "account_owner",
+          personaId: activePersona.persona_id,
+          body: { idempotency_key: "persona-retire-1" },
+        },
+        {
+          store: walletStoreWith({
+            retire: ({ idempotencyKey, personaId }) => {
+              capturedKey = idempotencyKey;
+              return Effect.succeed({
+                persona_id: personaId,
+                status: "retired",
+                retired_at: "2026-08-23T23:00:00.000Z",
+              });
+            },
+          }),
+        },
+      ),
+    );
+    expect(capturedKey).toBe("persona-retire-1");
+    expect(result.status).toBe("retired");
   });
 });

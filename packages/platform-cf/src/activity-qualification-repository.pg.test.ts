@@ -20,6 +20,10 @@ import { Client } from "pg";
 import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 import { makeControlPlaneAcceptedLyricsStudyItemSource } from "./accepted-lyrics-study-item-source.ts";
 import { makeControlPlaneActivityQualificationStore } from "./activity-qualification-repository.ts";
+import {
+  activatePendingPersonaFixtures,
+  createActivePersonaFixture,
+} from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { applyPostgresMigrations } from "./postgres-migrations.ts";
 
@@ -86,6 +90,7 @@ async function seedAccountSong(
      VALUES ($1, 'active', '{}'::jsonb, '2026-08-01T00:00:00.000Z')`,
     [accountId],
   );
+  await activatePendingPersonaFixtures(admin);
   const firstPersona = await admin.query<{ readonly persona_id: string }>(
     `SELECT persona_id FROM personas WHERE account_id=$1 AND is_first_persona`,
     [accountId],
@@ -165,6 +170,7 @@ async function seedParticipant(
      VALUES ($1, 'active', '{}'::jsonb, '2026-08-01T00:00:00.000Z')`,
     [accountId],
   );
+  await activatePendingPersonaFixtures(admin);
   const firstPersona = await admin.query<{ readonly persona_id: string }>(
     `SELECT persona_id FROM personas WHERE account_id=$1 AND is_first_persona`,
     [accountId],
@@ -628,19 +634,11 @@ suite("Postgres 17 activity qualification repository", () => {
       expect(replay).toEqual(result);
 
       const secondPersonaId = `persona-${crypto.randomUUID()}`;
-      await admin.query(
-        `INSERT INTO personas (
-           persona_id, account_id, status, is_first_persona, created_at, retired_at
-         ) VALUES ($1,$2,'active',false,'2026-08-10T00:00:00.000Z',NULL)`,
-        [secondPersonaId, identity.accountId],
-      );
-      await admin.query(
-        `INSERT INTO persona_profiles (
-           persona_id, revision, display_name, created_at, updated_at
-         ) VALUES ($1,1,'Second Persona','2026-08-10T00:00:00.000Z',
-           '2026-08-10T00:00:00.000Z')`,
-        [secondPersonaId],
-      );
+      await createActivePersonaFixture(admin, {
+        accountId: identity.accountId,
+        personaId: secondPersonaId,
+        profile: { displayName: "Second Persona" },
+      });
       const secondSession = await Effect.runPromise(
         provideServices(
           ["session-2", "item-2"],
@@ -789,19 +787,11 @@ suite("Postgres 17 activity qualification repository", () => {
       await qualify(identity, "pool-share-eligible", "2026-08-25T15:00:00.000Z");
 
       const secondPersonaId = `persona-${crypto.randomUUID()}`;
-      await admin.query(
-        `INSERT INTO personas (
-           persona_id,account_id,status,is_first_persona,created_at,retired_at
-         ) VALUES ($1,$2,'active',false,'2026-08-10T00:00:00.000Z',NULL)`,
-        [secondPersonaId, identity.accountId],
-      );
-      await admin.query(
-        `INSERT INTO persona_profiles (
-           persona_id,revision,display_name,created_at,updated_at
-         ) VALUES ($1,1,'Second Pool Persona','2026-08-10T00:00:00.000Z',
-           '2026-08-10T00:00:00.000Z')`,
-        [secondPersonaId],
-      );
+      await createActivePersonaFixture(admin, {
+        accountId: identity.accountId,
+        personaId: secondPersonaId,
+        profile: { displayName: "Second Pool Persona" },
+      });
       await qualify(
         { accountId: identity.accountId, personaId: secondPersonaId },
         "pool-share-second-persona",

@@ -5,6 +5,7 @@ import {
   type PersonaServices,
   type PersonaWalletServices,
   preparePersonaEvmWallet,
+  retirePersona,
 } from "@pirate/application/use-cases/personas";
 import { AuthError } from "@pirate/contracts";
 import { Effect } from "effect";
@@ -16,6 +17,7 @@ export type PersonaHandlers = Readonly<{
   readonly CreatePersona: EndpointHandler;
   readonly PreparePersonaEvmWallet: EndpointHandler;
   readonly ConfirmPersonaEvmWallet: EndpointHandler;
+  readonly RetirePersona: EndpointHandler;
 }>;
 
 export type PersonaHandlerServices = Readonly<{
@@ -70,6 +72,17 @@ export function makePersonaHandlers(services: PersonaHandlerServices): PersonaHa
             accountId: accountId(request.principal),
             personaId: personaId(request),
             body: request.body as Parameters<typeof confirmPersonaEvmWallet>[0]["body"],
+          },
+          services.wallets,
+        ),
+      ),
+    RetirePersona: async (request) =>
+      await Effect.runPromise(
+        retirePersona(
+          {
+            accountId: accountId(request.principal),
+            personaId: personaId(request),
+            body: request.body as Parameters<typeof retirePersona>[0]["body"],
           },
           services.wallets,
         ),

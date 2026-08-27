@@ -68,6 +68,7 @@ const servicesFor = (
     verifyPrivy: () => Effect.succeed({ sourceUserId: "source-user", classification: "user" }),
   },
   identityStore: { resolve: () => Effect.succeed(account) },
+  productReadiness: { isReady: () => Effect.succeed(true) },
   tokenMinter: {
     scope: "api-next-browser-session-test",
     mint: () => Effect.succeed("session-token"),
@@ -76,6 +77,28 @@ const servicesFor = (
 });
 
 describe("session exchange application use case", () => {
+  it("refuses an ordinary session until the first persona wallet is active", async () => {
+    let mintCalls = 0;
+    const exit = await Effect.runPromiseExit(
+      exchangeSession(
+        { proof: { type: "privy_access_token", privy_access_token: "privy-proof" } },
+        servicesFor({
+          productReadiness: { isReady: () => Effect.succeed(false) },
+          tokenMinter: {
+            scope: "api-next-browser-session-test",
+            mint: () =>
+              Effect.sync(() => {
+                mintCalls += 1;
+                return "must-not-mint";
+              }),
+          },
+        }),
+      ),
+    );
+    expect(failureOf(exit)).toBeInstanceOf(AuthError);
+    expect(mintCalls).toBe(0);
+  });
+
   it("exchanges a Privy proof through the injected verifier", async () => {
     let privyCalls = 0;
     const services = servicesFor({

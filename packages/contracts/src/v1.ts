@@ -16,7 +16,7 @@ import {
   ReplyDepthExceeded,
   UploadObjectMissing,
 } from "./errors.ts";
-import { PersonaIdV1, PublicPersonaV1 } from "./personas.ts";
+import { PersonaEvmWalletPreparationV1, PersonaIdV1, PublicPersonaV1 } from "./personas.ts";
 import { TextContentSubmissionV1 } from "./text-moderation.ts";
 
 /**
@@ -1202,7 +1202,13 @@ export const RegisterIdentity = endpoint({
   path: "/auth/register",
   auth: Auth.public(),
   request: { body: Schema.Struct({ privy_access_token: Schema.String }) },
-  response: SessionExchangeResponse,
+  response: Schema.Union([
+    SessionExchangeResponse,
+    Schema.Struct({
+      status: Schema.Literal("wallet_setup_required"),
+      wallet: PersonaEvmWalletPreparationV1,
+    }),
+  ]),
   successStatus: 201,
   errors: [AuthError, BadRequest, RateLimited, Conflict, InternalError],
 });

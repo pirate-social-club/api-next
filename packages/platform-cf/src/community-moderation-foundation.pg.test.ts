@@ -139,8 +139,12 @@ suite("community moderation authority and policy migration", () => {
         "SELECT policy_revision_id FROM text_moderation_policy_current WHERE singleton",
       );
 
-      await runPostgresMigrations({ connectionString: connection, migrations });
-      const replay = await runPostgresMigrations({ connectionString: connection, migrations });
+      const throughModeration = migrations.slice(0, migrationIndex + 1);
+      await runPostgresMigrations({ connectionString: connection, migrations: throughModeration });
+      const replay = await runPostgresMigrations({
+        connectionString: connection,
+        migrations: throughModeration,
+      });
       expect(replay).toEqual({
         dryRun: false,
         result: { applied: [], currentVersion: migrationVersion },
