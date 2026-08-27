@@ -187,6 +187,57 @@ async function dnsDocument(inventoryDigest: string, generation: number, zoneRevi
 }
 
 suite("HNS first-party host persistence on PostgreSQL 17", () => {
+  test("resolves through the exact read-only role with an empty caller search path", async () => {
+    await withSchema(async (connection, admin) => {
+      await runPostgresMigrations({ connectionString: connection });
+      const schema = String(
+        (await admin.query("SELECT current_schema() AS schema")).rows[0]?.schema,
+      );
+      const role = `hns_authority_reader_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      const quotedRole = quoteIdentifier(role);
+      const quotedSchema = quoteIdentifier(schema);
+      await admin.query(`CREATE ROLE ${quotedRole} NOLOGIN`);
+      try {
+        await admin.query(`GRANT USAGE ON SCHEMA ${quotedSchema} TO ${quotedRole}`);
+        await admin.query(
+          `GRANT SELECT ON TABLE
+             ${quotedSchema}.communities,
+             ${quotedSchema}.community_canonical_route_bindings,
+             ${quotedSchema}.community_route_ownership_evidence,
+             ${quotedSchema}.operator_managed_route_activations,
+             ${quotedSchema}.hns_community_app_host_activation_current,
+             ${quotedSchema}.hns_community_app_host_activation_revisions,
+             ${quotedSchema}.hns_dns_zone_activation_current,
+             ${quotedSchema}.hns_dns_zone_activation_revisions,
+             ${quotedSchema}.hns_authority_inventories,
+             ${quotedSchema}.hns_dns_zone_health_observations
+           TO ${quotedRole}`,
+        );
+        await admin.query(
+          `GRANT EXECUTE ON FUNCTION
+             ${quotedSchema}.effective_active_route(TEXT, TIMESTAMPTZ),
+             ${quotedSchema}.effective_route_authority_v2(TEXT, TIMESTAMPTZ),
+             ${quotedSchema}.resolve_hns_community_app_host_authority_v1(TEXT, TIMESTAMPTZ)
+           TO ${quotedRole}`,
+        );
+        await admin.query(`SET ROLE ${quotedRole}`);
+        await admin.query("SET search_path = ''");
+        const result = await admin.query(
+          `SELECT * FROM ${quotedSchema}.resolve_hns_community_app_host_authority_v1(
+             'app.-pirate-readiness-invalid', clock_timestamp()
+           )`,
+        );
+        expect(result.rows).toEqual([]);
+        await admin.query("RESET ROLE");
+      } finally {
+        await admin.query("RESET ROLE");
+        await admin.query(`DROP OWNED BY ${quotedRole}`);
+        await admin.query(`DROP ROLE ${quotedRole}`);
+      }
+      completedTestCount += 1;
+    });
+  }, 30_000);
+
   test("replays exactly and fails route, DNS, delegation, DS, generation, and time drift closed", async () => {
     await withSchema(async (connection, admin) => {
       await runPostgresMigrations({ connectionString: connection });
@@ -431,6 +482,6 @@ suite("HNS first-party host persistence on PostgreSQL 17", () => {
 });
 
 afterAll(async () => {
-  if (connectionString === undefined || completedTestCount !== 2) return;
+  if (connectionString === undefined || completedTestCount !== 3) return;
   await Bun.write(sentinelPath, sentinelContents);
 });
