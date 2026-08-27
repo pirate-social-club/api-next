@@ -107,14 +107,17 @@ suite("Postgres 17 account persona and EVM wallet persistence", () => {
     await admin.connect();
     await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
     const scopedConnection = connectionForSchema(connectionString, schema);
-    const migration = migrations.at(-1);
-    if (migration?.version !== "0060_persona_wallet_provisioning.sql") {
-      throw new Error("persona wallet migration must remain the latest migration for this fixture");
+    const migrationIndex = migrations.findIndex(
+      ({ version }) => version === "0060_persona_wallet_provisioning.sql",
+    );
+    const migration = migrations[migrationIndex];
+    if (migration === undefined) {
+      throw new Error("persona wallet migration is required for this fixture");
     }
     try {
       await Effect.runPromise(
         Effect.scoped(
-          applyPostgresMigrations(migrations.slice(0, -1)).pipe(
+          applyPostgresMigrations(migrations.slice(0, migrationIndex)).pipe(
             Effect.provide(makeDirectPostgresControlPlaneLayer(scopedConnection)),
           ),
         ),
@@ -127,7 +130,7 @@ suite("Postgres 17 account persona and EVM wallet persistence", () => {
 
       const migrationExit = await Effect.runPromiseExit(
         Effect.scoped(
-          applyPostgresMigrations(migrations).pipe(
+          applyPostgresMigrations(migrations.slice(0, migrationIndex + 1)).pipe(
             Effect.provide(makeDirectPostgresControlPlaneLayer(scopedConnection)),
           ),
         ),

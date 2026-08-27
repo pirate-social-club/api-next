@@ -4,6 +4,7 @@ import {
   loadPostgresMigrations,
   runPostgresMigrations,
 } from "../../../scripts/postgres-migrations.ts";
+import { backfillActivePersonaWalletFixtures } from "./persona-wallet.pg-fixture.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -15,11 +16,18 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_COMMUNITY_MODERATION_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-community-moderation-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-community-moderation-suite-complete\n";
-const testCount = 2;
+const testCount = 3;
 let completedTestCount = 0;
 const migrations = await loadPostgresMigrations();
-const migrationVersion = "0059_community_moderation_authority_policy.sql";
-const migrationIndex = migrations.findIndex((migration) => migration.version === migrationVersion);
+const foundationMigrationVersion = "0059_community_moderation_authority_policy.sql";
+const cutoverMigrationVersion = "0061_openai_moderation_driver_cutover.sql";
+const foundationMigrationIndex = migrations.findIndex(
+  (migration) => migration.version === foundationMigrationVersion,
+);
+const cutoverMigrationIndex = migrations.findIndex(
+  (migration) => migration.version === cutoverMigrationVersion,
+);
+const foundationMigrations = migrations.slice(0, foundationMigrationIndex + 1);
 
 function schemaName(): string {
   return `api_next_community_moderation_${crypto.randomUUID().replaceAll("-", "")}`;
@@ -57,10 +65,11 @@ async function withSchema(
 }
 
 async function applyMigrationPrefix(connection: string): Promise<void> {
-  if (migrationIndex < 1) throw new Error(`${migrationVersion} is not in the migration plan`);
+  if (foundationMigrationIndex < 1)
+    throw new Error(`${foundationMigrationVersion} is not in the migration plan`);
   await runPostgresMigrations({
     connectionString: connection,
-    migrations: migrations.slice(0, migrationIndex),
+    migrations: migrations.slice(0, foundationMigrationIndex),
   });
 }
 
@@ -139,15 +148,17 @@ suite("community moderation authority and policy migration", () => {
         "SELECT policy_revision_id FROM text_moderation_policy_current WHERE singleton",
       );
 
-      const throughModeration = migrations.slice(0, migrationIndex + 1);
-      await runPostgresMigrations({ connectionString: connection, migrations: throughModeration });
+      await runPostgresMigrations({
+        connectionString: connection,
+        migrations: foundationMigrations,
+      });
       const replay = await runPostgresMigrations({
         connectionString: connection,
-        migrations: throughModeration,
+        migrations: foundationMigrations,
       });
       expect(replay).toEqual({
         dryRun: false,
-        result: { applied: [], currentVersion: migrationVersion },
+        result: { applied: [], currentVersion: foundationMigrationVersion },
       });
 
       const owners = await admin.query<{
@@ -410,18 +421,179 @@ suite("community moderation authority and policy migration", () => {
         await insertCommunity(admin, `moderation-invalid-${fixture}`, creatorId);
 
         await expect(
-          runPostgresMigrations({ connectionString: connection, migrations }),
+          runPostgresMigrations({ connectionString: connection, migrations: foundationMigrations }),
         ).rejects.toThrow();
         const ledger = await admin.query<{ version: string }>(
           "SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1",
         );
-        expect(ledger.rows[0]?.version).toBe(migrations[migrationIndex - 1]?.version);
+        expect(ledger.rows[0]?.version).toBe(migrations[foundationMigrationIndex - 1]?.version);
         const authorityTable = await admin.query<{ table_name: string | null }>(
           "SELECT to_regclass('community_role_assignments')::text AS table_name",
         );
         expect(authorityTable.rows[0]?.table_name).toBeNull();
       });
     }
+    completedTestCount += 1;
+  }, 120_000);
+
+  test("cuts over to the pinned provider and fences new writes to complete V2 evidence", async () => {
+    if (cutoverMigrationIndex !== migrations.length - 1) {
+      throw new Error(`${cutoverMigrationVersion} must be the latest migration in this lane`);
+    }
+    await withSchema(async (connection, admin) => {
+      await applyMigrationPrefix(connection);
+      await insertUser(admin, "moderation-cutover-owner");
+      await insertCommunity(admin, "moderation-cutover", "moderation-cutover-owner");
+      await backfillActivePersonaWalletFixtures(admin);
+      await runPostgresMigrations({
+        connectionString: connection,
+        migrations: foundationMigrations,
+      });
+
+      await runPostgresMigrations({ connectionString: connection, migrations });
+      const replay = await runPostgresMigrations({ connectionString: connection, migrations });
+      expect(replay).toEqual({
+        dryRun: false,
+        result: { applied: [], currentVersion: cutoverMigrationVersion },
+      });
+
+      const pointer = await admin.query<{
+        policy_revision_id: string;
+        model_identifier: string;
+      }>(
+        `SELECT current.policy_revision_id, revision.model_identifier
+           FROM text_moderation_policy_current AS current
+           JOIN text_moderation_policy_revisions AS revision
+             ON revision.policy_revision_id = current.policy_revision_id
+          WHERE current.singleton`,
+      );
+      expect(pointer.rows).toEqual([
+        {
+          policy_revision_id: "text-moderation-policy-openai-omni-2024-09-26-v1",
+          model_identifier: "omni-moderation-2024-09-26",
+        },
+      ]);
+
+      await expect(
+        admin.query(
+          `INSERT INTO text_content_submissions (
+             community_id, submission_id, actor_user_id, surface, idempotency_key,
+             request_hash, status, moderation_decision, public_reason_code,
+             policy_revision_id, policy_hash, input_sha256, internal_reason_codes,
+             evidence_ref, published_post_id, published_comment_id, review_ref,
+             operation_id, response_snapshot_bytes, response_snapshot_sha256,
+             author_persona_id
+           ) SELECT
+             'moderation-cutover', 'moderation-cutover-v1', 'moderation-cutover-owner',
+             'text_post', 'moderation-cutover-v1-key', $1, 'blocked', 'blocked',
+             'policy_violation', current.policy_revision_id, revision.policy_hash, $2,
+             '["other_policy"]'::jsonb, NULL, NULL, NULL, NULL,
+             'moderation-cutover-v1-operation', convert_to('{}', 'UTF8'),
+             encode(sha256(convert_to('{}', 'UTF8')), 'hex'), persona.persona_id
+           FROM text_moderation_policy_current AS current
+           JOIN text_moderation_policy_revisions AS revision
+             ON revision.policy_revision_id = current.policy_revision_id
+           JOIN personas AS persona
+             ON persona.account_id = 'moderation-cutover-owner' AND persona.is_first_persona
+          WHERE current.singleton`,
+          ["5".repeat(64), "6".repeat(64)],
+        ),
+      ).rejects.toThrow("new text moderation submissions require complete V2 policy evidence");
+
+      await admin.query(
+        `INSERT INTO text_moderation_evidence (
+           evidence_ref, provider_id, requested_model_identifier,
+           response_model_identifier, outcome, normalized_categories,
+           normalized_scores, response_sha256, applied_input_types,
+           input_sha256, input_hashes, evidence_hash, community_id,
+           policy_revision_id, policy_hash,
+           platform_policy_revision_id, platform_policy_hash,
+           community_policy_revision_id, community_policy_hash
+         ) SELECT
+           'moderation-cutover-evidence', 'openai', provider.model_identifier,
+           provider.model_identifier, 'evaluated', '{}'::jsonb, '{}'::jsonb, $1,
+           '{}'::jsonb, $2, to_jsonb(ARRAY[$2]::text[]), $1, 'moderation-cutover',
+           provider.policy_revision_id, provider.policy_hash,
+           platform.policy_revision_id, platform.policy_hash,
+           community.policy_revision_id, community.policy_hash
+         FROM text_moderation_policy_current AS provider_current
+         JOIN text_moderation_policy_revisions AS provider
+           ON provider.policy_revision_id = provider_current.policy_revision_id
+         CROSS JOIN moderation_platform_floor_current AS platform_current
+         JOIN moderation_platform_floor_revisions AS platform
+           ON platform.policy_revision_id = platform_current.policy_revision_id
+          AND platform.policy_hash = platform_current.policy_hash
+         JOIN community_moderation_policy_current AS community_current
+           ON community_current.community_id = 'moderation-cutover'
+         JOIN community_moderation_policy_revisions AS community
+           ON community.community_id = community_current.community_id
+          AND community.policy_revision_id = community_current.policy_revision_id
+          AND community.policy_hash = community_current.policy_hash
+        WHERE provider_current.singleton AND platform_current.singleton`,
+        ["7".repeat(64), "8".repeat(64)],
+      );
+
+      await admin.query(
+        `INSERT INTO text_content_submissions (
+           community_id, submission_id, actor_user_id, surface, idempotency_key,
+           request_hash, status, moderation_decision, public_reason_code,
+           policy_revision_id, policy_hash, input_sha256, internal_reason_codes,
+           evidence_ref, published_post_id, published_comment_id, review_ref,
+           operation_id, response_snapshot_bytes, response_snapshot_sha256,
+           author_persona_id, platform_policy_revision_id, platform_policy_hash,
+           community_policy_revision_id, community_policy_hash
+         ) SELECT
+           'moderation-cutover', 'moderation-cutover-v2', 'moderation-cutover-owner',
+           'text_post', 'moderation-cutover-v2-key', $1, 'blocked', 'blocked',
+           'policy_violation', provider.policy_revision_id, provider.policy_hash, $2,
+           '["other_policy"]'::jsonb, 'moderation-cutover-evidence', NULL, NULL, NULL,
+           'moderation-cutover-v2-operation', convert_to('{}', 'UTF8'),
+           encode(sha256(convert_to('{}', 'UTF8')), 'hex'), persona.persona_id,
+           platform.policy_revision_id, platform.policy_hash,
+           community.policy_revision_id, community.policy_hash
+         FROM text_moderation_policy_current AS provider_current
+         JOIN text_moderation_policy_revisions AS provider
+           ON provider.policy_revision_id = provider_current.policy_revision_id
+         CROSS JOIN moderation_platform_floor_current AS platform_current
+         JOIN moderation_platform_floor_revisions AS platform
+           ON platform.policy_revision_id = platform_current.policy_revision_id
+          AND platform.policy_hash = platform_current.policy_hash
+         JOIN community_moderation_policy_current AS community_current
+           ON community_current.community_id = 'moderation-cutover'
+         JOIN community_moderation_policy_revisions AS community
+           ON community.community_id = community_current.community_id
+          AND community.policy_revision_id = community_current.policy_revision_id
+          AND community.policy_hash = community_current.policy_hash
+         JOIN personas AS persona
+           ON persona.account_id = 'moderation-cutover-owner' AND persona.is_first_persona
+        WHERE provider_current.singleton AND platform_current.singleton`,
+        ["9".repeat(64), "8".repeat(64)],
+      );
+
+      const persisted = await admin.query<{
+        submission_id: string;
+        evidence_ref: string;
+        provider_policy: string;
+        platform_policy: string;
+        community_policy: string;
+      }>(
+        `SELECT submission_id, evidence_ref,
+                policy_revision_id AS provider_policy,
+                platform_policy_revision_id AS platform_policy,
+                community_policy_revision_id AS community_policy
+           FROM text_content_submissions
+          WHERE submission_id = 'moderation-cutover-v2'`,
+      );
+      expect(persisted.rows).toEqual([
+        {
+          submission_id: "moderation-cutover-v2",
+          evidence_ref: "moderation-cutover-evidence",
+          provider_policy: "text-moderation-policy-openai-omni-2024-09-26-v1",
+          platform_policy: "moderation-platform-floor-v1",
+          community_policy: "community-moderation-policy:moderation-cutover:r1",
+        },
+      ]);
+    });
     completedTestCount += 1;
   }, 120_000);
 });

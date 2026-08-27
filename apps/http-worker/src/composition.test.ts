@@ -432,6 +432,46 @@ describe("HTTP production composition", () => {
     ).rejects.toThrow("HTTP worker configuration is incomplete or invalid");
   });
 
+  test("keeps OpenAI moderation disabled by default and rejects incomplete enablement", async () => {
+    const configured = await bindings();
+    await expect(createProductionHttpWorker(configured)).resolves.toBeDefined();
+    await expect(
+      createProductionHttpWorker({
+        ...configured,
+        OPENAI_MODERATION_ENABLED: "true",
+      }),
+    ).rejects.toThrow("HTTP worker configuration is incomplete or invalid");
+    await expect(
+      createProductionHttpWorker({
+        ...configured,
+        OPENAI_MODERATION_MODEL: "omni-moderation-latest",
+      }),
+    ).rejects.toThrow("HTTP worker configuration is incomplete or invalid");
+  });
+
+  test("constructs the pinned OpenAI driver without making a provider request", async () => {
+    const configured = await bindings();
+    let calls = 0;
+    const worker = await createProductionHttpWorker(
+      {
+        ...configured,
+        OPENAI_MODERATION_ENABLED: "true",
+        OPENAI_API_KEY: "test-openai-key",
+        OPENAI_MODERATION_MODEL: "omni-moderation-2024-09-26",
+        OPENAI_MODERATION_BASE_URL: "https://api.openai.com/v1",
+        OPENAI_MODERATION_TIMEOUT_MS: "10000",
+      },
+      {
+        openai_moderation_transport: async () => {
+          calls += 1;
+          throw new Error("provider transport must stay idle during composition");
+        },
+      },
+    );
+    expect((await worker.request("https://worker.test/health")).status).toBe(200);
+    expect(calls).toBe(0);
+  });
+
   test("fails closed on incomplete or reused ZKPassport signing configuration", async () => {
     const configured = await bindings();
     const base = {

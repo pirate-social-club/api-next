@@ -71,6 +71,13 @@ import {
   makeControlPlaneNamespaceOwnershipStartStore,
 } from "@pirate/platform-cf/namespace-ownership-start-repository";
 import {
+  makeOpenAiTextModerationProvider,
+  OPENAI_MODERATION_BASE_URL,
+  OPENAI_MODERATION_MODEL,
+  OPENAI_MODERATION_TIMEOUT_MS,
+  type OpenAiModerationTransport,
+} from "@pirate/platform-cf/openai-text-moderation";
+import {
   makeControlPlanePersonaStore,
   makeControlPlanePersonaWalletStore,
 } from "@pirate/platform-cf/persona-repository";
@@ -196,6 +203,11 @@ export interface HttpWorkerBindings {
   readonly COMMUNITY_PURCHASE_FUNDING_RPC_URL?: string;
   readonly HANDLE_RECIPIENT_TOKEN_HMAC_KEYS?: string;
   readonly HANDLE_RECIPIENT_TOKEN_ENVELOPE_KEYS?: string;
+  readonly OPENAI_MODERATION_ENABLED?: string;
+  readonly OPENAI_API_KEY?: string;
+  readonly OPENAI_MODERATION_MODEL?: string;
+  readonly OPENAI_MODERATION_BASE_URL?: string;
+  readonly OPENAI_MODERATION_TIMEOUT_MS?: string;
   readonly MEGAPOT_REWARDS_ENABLED?: string;
   readonly MEGAPOT_CHAIN_ID?: string;
   readonly MEGAPOT_V2_RPC_URL?: string;
@@ -218,6 +230,8 @@ export interface HttpWorkerCompositionDependencies {
   readonly study_item_source?: StudyItemSource["Service"];
   /** Test/review injection. Production constructs this only when media is explicitly enabled. */
   readonly media_services?: MediaSubmissionServices;
+  /** Fake transport for provider-free composition and request-path tests. */
+  readonly openai_moderation_transport?: OpenAiModerationTransport;
 }
 
 type WorkerConfig = HttpWorkerConfigValue;
@@ -312,6 +326,11 @@ function configSource(bindings: HttpWorkerBindings): Record<string, string | und
     COMMUNITY_PURCHASE_FUNDING_RPC_URL: bindings.COMMUNITY_PURCHASE_FUNDING_RPC_URL,
     HANDLE_RECIPIENT_TOKEN_HMAC_KEYS: bindings.HANDLE_RECIPIENT_TOKEN_HMAC_KEYS,
     HANDLE_RECIPIENT_TOKEN_ENVELOPE_KEYS: bindings.HANDLE_RECIPIENT_TOKEN_ENVELOPE_KEYS,
+    OPENAI_MODERATION_ENABLED: bindings.OPENAI_MODERATION_ENABLED,
+    OPENAI_API_KEY: bindings.OPENAI_API_KEY,
+    OPENAI_MODERATION_MODEL: bindings.OPENAI_MODERATION_MODEL,
+    OPENAI_MODERATION_BASE_URL: bindings.OPENAI_MODERATION_BASE_URL,
+    OPENAI_MODERATION_TIMEOUT_MS: bindings.OPENAI_MODERATION_TIMEOUT_MS,
     MEGAPOT_REWARDS_ENABLED: bindings.MEGAPOT_REWARDS_ENABLED,
     MEGAPOT_CHAIN_ID: bindings.MEGAPOT_CHAIN_ID,
     MEGAPOT_V2_RPC_URL: bindings.MEGAPOT_V2_RPC_URL,
@@ -328,6 +347,23 @@ function loadWorkerConfig(bindings: HttpWorkerBindings): WorkerConfig {
   try {
     const config = loadConfigFrom(HttpWorkerConfig, configSource(bindings));
     assertMegapotRewardRuntimePosture(config);
+    const openAiApiKey = Redacted.value(config.OPENAI_API_KEY);
+    if (
+      (bindings.OPENAI_MODERATION_MODEL !== undefined &&
+        bindings.OPENAI_MODERATION_MODEL !== OPENAI_MODERATION_MODEL) ||
+      (bindings.OPENAI_MODERATION_BASE_URL !== undefined &&
+        bindings.OPENAI_MODERATION_BASE_URL !== OPENAI_MODERATION_BASE_URL) ||
+      (bindings.OPENAI_MODERATION_TIMEOUT_MS !== undefined &&
+        bindings.OPENAI_MODERATION_TIMEOUT_MS !== String(OPENAI_MODERATION_TIMEOUT_MS)) ||
+      (config.OPENAI_MODERATION_ENABLED &&
+        (openAiApiKey.length === 0 ||
+          openAiApiKey.trim() !== openAiApiKey ||
+          config.OPENAI_MODERATION_MODEL !== OPENAI_MODERATION_MODEL ||
+          config.OPENAI_MODERATION_BASE_URL !== OPENAI_MODERATION_BASE_URL ||
+          config.OPENAI_MODERATION_TIMEOUT_MS !== OPENAI_MODERATION_TIMEOUT_MS))
+    ) {
+      throw new Error("invalid OpenAI moderation configuration");
+    }
     if (config.PIRATE_APP_JWT_TTL_SECONDS <= 0) {
       throw new Error("invalid money-path configuration");
     }
@@ -553,6 +589,20 @@ export async function createProductionHttpWorker(
   const textModeration: TextModeration["Service"] = {
     evaluate: () => Effect.fail(new TextModerationProviderError({ reason: "unavailable" })),
   };
+  const textModerationProvider = config.OPENAI_MODERATION_ENABLED
+    ? makeOpenAiTextModerationProvider({
+        apiKey: Redacted.value(config.OPENAI_API_KEY),
+        model: config.OPENAI_MODERATION_MODEL,
+        baseUrl: config.OPENAI_MODERATION_BASE_URL,
+        timeoutMs: config.OPENAI_MODERATION_TIMEOUT_MS,
+        ...(dependencies.openai_moderation_transport === undefined
+          ? {}
+          : { transport: dependencies.openai_moderation_transport }),
+      })
+    : {
+        evaluate: () =>
+          Effect.fail(new TextModerationProviderError({ reason: "unavailable" as const })),
+      };
   const feedStore = makeControlPlaneFeedStore(controlPlane);
   const fundingJournal = makeControlPlaneCommunityPurchaseFundingStore(controlPlane);
   const fundingProducer = makeControlPlaneCommunityPurchaseFundingProducerStore(controlPlane);
@@ -688,6 +738,8 @@ export async function createProductionHttpWorker(
     contentStore,
     textPostStore,
     textModeration,
+    textPostStoreV2: textPostStore,
+    textModerationProvider,
     personaStore,
     feedStore,
     identityStore,

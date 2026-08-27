@@ -7,16 +7,27 @@ import type {
   TextPostStore,
   TextPostSubmissionDocument,
 } from "@pirate/application";
+import {
+  evaluateTextModerationV2,
+  type TextPostStoreServiceV2,
+} from "@pirate/application/text-moderation-runtime";
 import { canonicalBodyHash } from "@pirate/application/use-cases/content/common";
 import {
   createTextPost,
   getTextContentSubmission,
   TextModerationProviderError,
 } from "@pirate/application/use-cases/content/text-post";
+import {
+  MODERATION_POLICY_CATEGORIES_V1,
+  type ModerationPolicyCategoryV1,
+} from "@pirate/contracts";
 import { canonicalTextModerationInput } from "@pirate/domain";
 import { Cause, Effect, Exit, Result } from "effect";
 import { Client } from "pg";
-import { runPostgresMigrations } from "../../../scripts/postgres-migrations";
+import {
+  loadPostgresMigrations,
+  runPostgresMigrations,
+} from "../../../scripts/postgres-migrations";
 import { makeControlPlanePersonaStore } from "./persona-repository";
 import { createActivePersonaFixture } from "./persona-wallet.pg-fixture";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres";
@@ -31,8 +42,15 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_TEXT_SUBMISSION_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-text-submission-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-text-submission-suite-complete\n";
-const testCount = 9;
+const testCount = 10;
 let completedTestCount = 0;
+const migrations = await loadPostgresMigrations();
+type LoadedPostgresMigration = (typeof migrations)[number];
+const cutoverMigrationIndex = migrations.findIndex(
+  (migration) => migration.version === "0061_openai_moderation_driver_cutover.sql",
+);
+if (cutoverMigrationIndex < 1) throw new Error("OpenAI moderation cutover migration is missing");
+const historicalV1Migrations = migrations.slice(0, cutoverMigrationIndex);
 
 afterEach(() => {
   completedTestCount += 1;
@@ -148,7 +166,10 @@ function scopedConnection(raw: string, schema: string): string {
   return `${raw}${separator}options=${encodeURIComponent(`-c search_path=${schema}`)}`;
 }
 
-async function withSchema<A>(use: (client: Client, connection: string) => Promise<A>): Promise<A> {
+async function withSchema<A>(
+  use: (client: Client, connection: string) => Promise<A>,
+  migrationPlan: readonly LoadedPostgresMigration[] = historicalV1Migrations,
+): Promise<A> {
   if (connectionString === undefined) throw new Error("Postgres test configuration is unavailable");
   const schema = schemaName();
   const admin = new Client({ connectionString });
@@ -156,7 +177,7 @@ async function withSchema<A>(use: (client: Client, connection: string) => Promis
   await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
   const connection = scopedConnection(connectionString, schema);
   try {
-    await runPostgresMigrations({ connectionString: connection });
+    await runPostgresMigrations({ connectionString: connection, migrations: migrationPlan });
     await seed(admin, schema);
     return await use(admin, connection);
   } finally {
@@ -359,6 +380,20 @@ function runStore<A, E>(
   return Effect.runPromise(Effect.scoped(use(store)));
 }
 
+function runStoreV2<A, E>(
+  connection: string,
+  use: (store: TextPostStoreServiceV2) => Effect.Effect<A, E>,
+): Promise<A> {
+  const layer = makeDirectPostgresControlPlaneLayer(connection);
+  const store = makeControlPlaneTextSubmissionStore(layer) as TextPostStoreServiceV2;
+  return Effect.runPromise(Effect.scoped(use(store)));
+}
+
+const categoryRecord = <A>(value: A): Record<ModerationPolicyCategoryV1, A> =>
+  Object.fromEntries(
+    MODERATION_POLICY_CATEGORIES_V1.map((category) => [category, value]),
+  ) as Record<ModerationPolicyCategoryV1, A>;
+
 function snapshotBytes(snapshot: TextPostSubmissionDocument): Uint8Array {
   return new TextEncoder().encode(JSON.stringify(snapshot));
 }
@@ -401,6 +436,94 @@ async function insertParentComment(
 }
 
 suite("Postgres 17 terminal text submission repository", () => {
+  test("commits a current V2 evaluation with complete restricted evidence", async () => {
+    await withSchema(async (admin, connection) => {
+      const requestHash = await Effect.runPromise(
+        canonicalBodyHash({ community_id: "text-community", body }),
+      );
+      let expectedEvidenceRef: string | undefined;
+      const result = await runStoreV2(connection, (store) =>
+        Effect.gen(function* () {
+          const moderated = yield* evaluateTextModerationV2({
+            communityId: "text-community",
+            moderationInput: input,
+            inputSha256: inputSha,
+            store,
+            provider: {
+              evaluate: () =>
+                Effect.succeed({
+                  provider_id: "openai" as const,
+                  requested_model: "omni-moderation-2024-09-26",
+                  returned_model: "omni-moderation-2024-09-26",
+                  input_sha256: inputSha,
+                  matched_categories: [],
+                  inputs: [
+                    {
+                      input_sha256: inputSha,
+                      categories: categoryRecord(false),
+                      scores: categoryRecord(0),
+                      applied_input_types: categoryRecord([] as readonly ("text" | "image")[]),
+                    },
+                  ],
+                }),
+            },
+          });
+          const restrictedEvidence = moderated.restrictedEvidence;
+          if (restrictedEvidence === undefined) {
+            throw new Error("expected restricted V2 evidence");
+          }
+          expectedEvidenceRef = restrictedEvidence.evidence_ref;
+          return yield* store.commitTerminal({
+            communityId: "text-community",
+            actor,
+            personaId: actorPersonaId,
+            body,
+            moderationInput: input,
+            idempotencyKey: body.idempotency_key,
+            requestHash,
+            operationId: "operation_text_v2",
+            evaluation: moderated.evaluation,
+            restrictedEvidence,
+          });
+        }),
+      );
+      expect(result.kind).toBe("created");
+      if (result.kind !== "created") throw new Error("expected a created V2 submission");
+      if (expectedEvidenceRef === undefined) throw new Error("expected restricted V2 evidence");
+      expect(result.snapshot.status).toBe("published");
+
+      const persisted = await admin.query<{
+        evidence_ref: string;
+        provider_policy: string;
+        platform_policy: string;
+        community_policy: string;
+        evidence_count: number;
+      }>(
+        `SELECT submission.evidence_ref,
+                  submission.policy_revision_id AS provider_policy,
+                  submission.platform_policy_revision_id AS platform_policy,
+                  submission.community_policy_revision_id AS community_policy,
+                  count(evidence.evidence_ref)::int AS evidence_count
+             FROM text_content_submissions AS submission
+             JOIN text_moderation_evidence AS evidence
+               ON evidence.evidence_ref = submission.evidence_ref
+            WHERE submission.operation_id = 'operation_text_v2'
+            GROUP BY submission.evidence_ref, submission.policy_revision_id,
+                     submission.platform_policy_revision_id,
+                     submission.community_policy_revision_id`,
+      );
+      expect(persisted.rows).toEqual([
+        {
+          evidence_ref: expectedEvidenceRef,
+          provider_policy: "text-moderation-policy-openai-omni-2024-09-26-v1",
+          platform_policy: "moderation-platform-floor-v1",
+          community_policy: "community-moderation-policy:text-community:r1",
+          evidence_count: 1,
+        },
+      ]);
+    }, migrations);
+  }, 30_000);
+
   test("commits one terminal row and makes concurrent same-key submissions replay the winner", async () => {
     await withSchema(async (admin, connection) => {
       const requestHash = await Effect.runPromise(

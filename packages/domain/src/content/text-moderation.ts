@@ -1,4 +1,9 @@
 import { sha256Hex } from "../gates-v2/sha256.ts";
+import type {
+  ContentRatingV1,
+  ModerationPolicyCategoryV1,
+  ModerationPolicyDecisionV1,
+} from "./community-moderation-policy.ts";
 
 export type TextPublicationDecision = "allow" | "manual_review" | "blocked";
 export type TextModerationSurface = "text_post" | "comment" | "reply";
@@ -39,6 +44,30 @@ export type TextModerationEvaluationV1 = Readonly<{
   readonly input_sha256: string;
   readonly evidence_ref: string | null;
 }>;
+
+export type TextModerationEvaluationV2 = Readonly<{
+  readonly version: "text-moderation-v2";
+  readonly surface: TextModerationSurface;
+  readonly decision: TextPublicationDecision;
+  readonly reason_codes: readonly TextModerationReasonCode[];
+  readonly policy_revision: string;
+  readonly policy_hash: string;
+  readonly platform_policy_revision: string;
+  readonly platform_policy_hash: string;
+  readonly community_policy_revision: string;
+  readonly community_policy_hash: string;
+  readonly matched_categories: readonly ModerationPolicyCategoryV1[];
+  readonly category_decisions: Readonly<{
+    readonly [K in ModerationPolicyCategoryV1]?: ModerationPolicyDecisionV1 | undefined;
+  }>;
+  readonly effective_policy_decision: ModerationPolicyDecisionV1;
+  readonly author_declared_rating: ContentRatingV1;
+  readonly resulting_content_rating: ContentRatingV1;
+  readonly input_sha256: string;
+  readonly evidence_ref: string | null;
+}>;
+
+export type TextModerationEvaluation = TextModerationEvaluationV1 | TextModerationEvaluationV2;
 
 export type PublicTextPublicationResultV1 =
   | Readonly<{ readonly decision: "allow"; readonly reason_code: null }>
@@ -224,9 +253,11 @@ export function moreRestrictiveTextPublicationDecision(
 }
 
 export function textModerationEvaluationInvariant(
-  evaluation: TextModerationEvaluationV1,
+  evaluation: TextModerationEvaluation,
 ): string | null {
-  if (evaluation.version !== "text-moderation-v1") return "version";
+  if (evaluation.version !== "text-moderation-v1" && evaluation.version !== "text-moderation-v2") {
+    return "version";
+  }
   if (!isTextModerationSurface(evaluation.surface)) return "surface";
   if (
     evaluation.policy_revision.length === 0 ||
@@ -238,6 +269,31 @@ export function textModerationEvaluationInvariant(
   if (!SHA256_HEX.test(evaluation.input_sha256)) return "input_sha256";
   if (evaluation.evidence_ref !== null && !nonEmpty(evaluation.evidence_ref)) {
     return "evidence_ref";
+  }
+  if (evaluation.version === "text-moderation-v2") {
+    if (!nonEmpty(evaluation.platform_policy_revision)) return "platform_policy_revision";
+    if (!SHA256_HEX.test(evaluation.platform_policy_hash)) return "platform_policy_hash";
+    if (!nonEmpty(evaluation.community_policy_revision)) return "community_policy_revision";
+    if (!SHA256_HEX.test(evaluation.community_policy_hash)) return "community_policy_hash";
+    if (new Set(evaluation.matched_categories).size !== evaluation.matched_categories.length) {
+      return "duplicate_matched_categories";
+    }
+    const decisionKeys = Object.keys(evaluation.category_decisions);
+    if (
+      decisionKeys.length !== evaluation.matched_categories.length ||
+      evaluation.matched_categories.some(
+        (category) => evaluation.category_decisions[category] === undefined,
+      )
+    ) {
+      return "category_decisions";
+    }
+    const expectedDecision: TextPublicationDecision =
+      evaluation.effective_policy_decision === "permit"
+        ? "allow"
+        : evaluation.effective_policy_decision === "review"
+          ? "manual_review"
+          : "blocked";
+    if (evaluation.decision !== expectedDecision) return "effective_policy_decision";
   }
   if (new Set(evaluation.reason_codes).size !== evaluation.reason_codes.length) {
     return "duplicate_reason_codes";
@@ -262,7 +318,7 @@ export function textModerationEvaluationInvariant(
 }
 
 export function publicTextPublicationResult(
-  evaluation: TextModerationEvaluationV1,
+  evaluation: TextModerationEvaluation,
 ): PublicTextPublicationResultV1 | null {
   if (textModerationEvaluationInvariant(evaluation) !== null) return null;
   if (evaluation.decision === "allow") return { decision: "allow", reason_code: null };

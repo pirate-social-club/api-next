@@ -8,6 +8,7 @@ import {
   NotFound,
   PersonaIdV1,
   ReplyDepthExceeded,
+  type TextModerationEvaluation,
 } from "@pirate/contracts";
 import {
   canonicalTextModerationInput,
@@ -25,7 +26,12 @@ import {
   TextPostRepositoryError,
   type TextPostRepositoryFailure,
   type TextPostSubmissionDocument,
+  type TextSubmissionTarget,
 } from "../../ports.ts";
+import {
+  evaluateTextModerationV2,
+  type RestrictedTextModerationEvidenceV1,
+} from "../../text-moderation-runtime.ts";
 import { PersonaUnavailable, requireActiveOwnedPersona } from "../personas.ts";
 import { canonicalBodyHash, validateHumanDirectActor, validateIdentifier } from "./common.ts";
 import type { TextPostServices } from "./text-post.ts";
@@ -165,12 +171,14 @@ export const createCommentReply = Effect.fn("createCommentReply")(function* (
   | CommentsRepliesPolicyStale
   | CommentsRepliesRuntimeUnavailable
 > {
-  const store = services.textPostStore;
+  const store = services.textPostStoreV2 ?? services.textPostStore;
   const moderation = services.textModeration;
+  const moderationProvider = services.textModerationProvider;
   const personaStore = services.personaStore;
   if (
     store?.resolveCommentTarget === undefined ||
-    moderation === undefined ||
+    (moderation === undefined &&
+      (moderationProvider === undefined || services.textPostStoreV2 === undefined)) ||
     personaStore === undefined
   )
     return yield* new CommentsRepliesRuntimeUnavailable();
@@ -241,39 +249,68 @@ export const createCommentReply = Effect.fn("createCommentReply")(function* (
       .checkAuthority({ communityId: target.communityId, actor: input.actor })
       .pipe(Effect.mapError(mapStoreFailure));
 
-    const evaluation = yield* moderation.evaluate(normalized.input).pipe(
-      Effect.map((result) => safeEvaluation(result, normalized.input, canonical.sha256)),
-      Effect.catchTag("TextModerationProviderError", (failure) =>
-        Effect.succeed(fallbackEvaluation(normalized.input, canonical.sha256, failure.reason)),
-      ),
-      Effect.catchDefect(() =>
-        Effect.succeed(
-          fallbackEvaluation(normalized.input, canonical.sha256, "invalid-evaluation"),
-        ),
-      ),
-    );
-    const committed: TextPostCommitOutcome = yield* store
-      .commitTerminal({
+    let evaluation: TextModerationEvaluation;
+    let restrictedEvidence: RestrictedTextModerationEvidenceV1 | undefined;
+    if (moderationProvider !== undefined && services.textPostStoreV2 !== undefined) {
+      const evaluated = yield* evaluateTextModerationV2({
         communityId: target.communityId,
-        actor: input.actor,
-        personaId: body.persona_id,
-        body,
         moderationInput: normalized.input,
-        idempotencyKey: body.idempotency_key,
-        requestHash,
-        operationId: `operation_${crypto.randomUUID()}`,
-        evaluation,
-        target:
-          input.surface === "comment"
-            ? { surface: "comment", communityId: target.communityId, postId: target.postId }
-            : {
-                surface: "reply",
-                communityId: target.communityId,
-                postId: target.postId,
-                parentCommentId: target.parentCommentId as string,
-              },
-      })
-      .pipe(Effect.mapError(mapStoreFailure));
+        inputSha256: canonical.sha256,
+        store: services.textPostStoreV2,
+        provider: moderationProvider,
+      }).pipe(Effect.mapError(mapStoreFailure));
+      evaluation = evaluated.evaluation;
+      restrictedEvidence = evaluated.restrictedEvidence;
+    } else {
+      const legacyModeration = moderation as NonNullable<TextPostServices["textModeration"]>;
+      evaluation = yield* legacyModeration.evaluate(normalized.input).pipe(
+        Effect.map((result) => safeEvaluation(result, normalized.input, canonical.sha256)),
+        Effect.catchTag("TextModerationProviderError", (failure) =>
+          Effect.succeed(fallbackEvaluation(normalized.input, canonical.sha256, failure.reason)),
+        ),
+        Effect.catchDefect(() =>
+          Effect.succeed(
+            fallbackEvaluation(normalized.input, canonical.sha256, "invalid-evaluation"),
+          ),
+        ),
+      );
+    }
+    const commitTarget: TextSubmissionTarget =
+      input.surface === "comment"
+        ? { surface: "comment", communityId: target.communityId, postId: target.postId }
+        : {
+            surface: "reply",
+            communityId: target.communityId,
+            postId: target.postId,
+            parentCommentId: target.parentCommentId as string,
+          };
+    const commitInput = {
+      communityId: target.communityId,
+      actor: input.actor,
+      personaId: body.persona_id,
+      body,
+      moderationInput: normalized.input,
+      idempotencyKey: body.idempotency_key,
+      requestHash,
+      operationId: `operation_${crypto.randomUUID()}`,
+      target: commitTarget,
+    } as const;
+    const commitEffect =
+      services.textPostStoreV2 !== undefined
+        ? services.textPostStoreV2.commitTerminal({
+            ...commitInput,
+            evaluation,
+            ...(restrictedEvidence === undefined ? {} : { restrictedEvidence }),
+          })
+        : (services.textPostStore as NonNullable<TextPostServices["textPostStore"]>).commitTerminal(
+            {
+              ...commitInput,
+              evaluation: evaluation as TextPostModerationEvaluation,
+            },
+          );
+    const committed: TextPostCommitOutcome = yield* commitEffect.pipe(
+      Effect.mapError(mapStoreFailure),
+    );
     if (committed.kind === "created" || committed.kind === "replay") return committed.snapshot;
     if (committed.kind === "conflict") return yield* idempotencyConflict(committed.submissionId);
   }

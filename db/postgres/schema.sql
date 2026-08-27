@@ -7517,6 +7517,80 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION require_text_moderation_v2_case() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  current_provider_policy TEXT;
+BEGIN
+  SELECT policy_revision_id INTO current_provider_policy
+    FROM text_moderation_policy_current
+   WHERE singleton = TRUE;
+  IF current_provider_policy = 'text-moderation-policy-openai-omni-2024-09-26-v1'
+    AND num_nonnulls(
+      NEW.platform_policy_revision_id,
+      NEW.platform_policy_hash,
+      NEW.community_policy_revision_id,
+      NEW.community_policy_hash
+    ) <> 4
+  THEN
+    RAISE EXCEPTION 'new text moderation cases require complete V2 policy evidence';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION require_text_moderation_v2_evidence() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  current_provider_policy TEXT;
+BEGIN
+  SELECT policy_revision_id INTO current_provider_policy
+    FROM text_moderation_policy_current
+   WHERE singleton = TRUE;
+  IF current_provider_policy = 'text-moderation-policy-openai-omni-2024-09-26-v1'
+    AND num_nonnulls(
+      NEW.input_sha256,
+      NEW.evidence_hash,
+      NEW.community_id,
+      NEW.policy_revision_id,
+      NEW.policy_hash,
+      NEW.platform_policy_revision_id,
+      NEW.platform_policy_hash,
+      NEW.community_policy_revision_id,
+      NEW.community_policy_hash
+    ) <> 9
+  THEN
+    RAISE EXCEPTION 'new text moderation evidence requires complete V2 policy evidence';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION require_text_moderation_v2_submission() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  current_provider_policy TEXT;
+BEGIN
+  SELECT policy_revision_id INTO current_provider_policy
+    FROM text_moderation_policy_current
+   WHERE singleton = TRUE;
+  IF current_provider_policy = 'text-moderation-policy-openai-omni-2024-09-26-v1'
+    AND num_nonnulls(
+      NEW.platform_policy_revision_id,
+      NEW.platform_policy_hash,
+      NEW.community_policy_revision_id,
+      NEW.community_policy_hash
+    ) <> 4
+  THEN
+    RAISE EXCEPTION 'new text moderation submissions require complete V2 policy evidence';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION reserve_hns_dns_zone_activation_v1(input_operation_id text, input_idempotency_key text, input_activation_document_digest text, input_dns_zone_activation_id text, input_expected_activation_generation bigint, input_lease_seconds integer) RETURNS TABLE(outcome text, operation_id text, dns_zone_activation_id text, fence_token bigint, lease_expires_at timestamp with time zone, activation_generation bigint)
     LANGUAGE plpgsql
     AS $$
@@ -17844,7 +17918,8 @@ CREATE TABLE text_content_submissions (
     CONSTRAINT text_content_submissions_status_shape CHECK ((((status = 'published'::text) AND (public_reason_code IS NULL) AND (review_ref IS NULL) AND (((surface = 'text_post'::text) AND (published_post_id IS NOT NULL) AND (published_comment_id IS NULL)) OR ((surface = ANY (ARRAY['comment'::text, 'reply'::text])) AND (published_post_id IS NULL) AND (published_comment_id IS NOT NULL)))) OR ((status = 'manual_review'::text) AND (public_reason_code IS NOT NULL) AND (public_reason_code = ANY (ARRAY['review_required'::text, 'moderation_unavailable'::text])) AND (review_ref IS NOT NULL) AND (published_post_id IS NULL) AND (published_comment_id IS NULL)) OR ((status = 'blocked'::text) AND (public_reason_code IS NOT NULL) AND (public_reason_code = 'policy_violation'::text) AND (review_ref IS NULL) AND (published_post_id IS NULL) AND (published_comment_id IS NULL)))),
     CONSTRAINT text_content_submissions_surface_check CHECK ((surface = ANY (ARRAY['text_post'::text, 'comment'::text, 'reply'::text]))),
     CONSTRAINT text_content_submissions_target_shape CHECK ((((surface = 'text_post'::text) AND (target_post_id IS NULL) AND (target_parent_comment_id IS NULL)) OR ((surface = 'comment'::text) AND (target_post_id IS NOT NULL) AND (target_parent_comment_id IS NULL)) OR ((surface = 'reply'::text) AND (target_post_id IS NOT NULL) AND (target_parent_comment_id IS NOT NULL)))),
-    CONSTRAINT text_content_submissions_time_order CHECK ((updated_at >= created_at))
+    CONSTRAINT text_content_submissions_time_order CHECK ((updated_at >= created_at)),
+    CONSTRAINT text_content_submissions_v2_evidence_shape CHECK (((platform_policy_revision_id IS NULL) OR ((internal_reason_codes ?| ARRAY['provider_unavailable'::text, 'provider_timeout'::text, 'provider_invalid'::text]) AND (evidence_ref IS NULL)) OR ((NOT (internal_reason_codes ?| ARRAY['provider_unavailable'::text, 'provider_timeout'::text, 'provider_invalid'::text])) AND (evidence_ref IS NOT NULL))))
 );
 
 CREATE TABLE text_moderation_cases (
@@ -17877,11 +17952,30 @@ CREATE TABLE text_moderation_evidence (
     normalized_scores jsonb DEFAULT '{}'::jsonb NOT NULL,
     response_sha256 text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
+    applied_input_types jsonb DEFAULT '{}'::jsonb NOT NULL,
+    input_sha256 text,
+    input_hashes jsonb DEFAULT '[]'::jsonb NOT NULL,
+    evidence_hash text,
+    community_id text,
+    policy_revision_id text,
+    policy_hash text,
+    platform_policy_revision_id text,
+    platform_policy_hash text,
+    community_policy_revision_id text,
+    community_policy_hash text,
+    CONSTRAINT text_moderation_evidence_applied_types_object CHECK ((jsonb_typeof(applied_input_types) = 'object'::text)),
     CONSTRAINT text_moderation_evidence_categories_object CHECK ((jsonb_typeof(normalized_categories) = 'object'::text)),
+    CONSTRAINT text_moderation_evidence_community_policy_hash_check CHECK (((community_policy_hash IS NULL) OR (community_policy_hash ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT text_moderation_evidence_evidence_hash_check CHECK (((evidence_hash IS NULL) OR (evidence_hash ~ '^[0-9a-f]{64}$'::text))),
     CONSTRAINT text_moderation_evidence_identifiers_not_blank CHECK (((btrim(evidence_ref) <> ''::text) AND (evidence_ref = btrim(evidence_ref)) AND (btrim(provider_id) <> ''::text) AND (provider_id = btrim(provider_id)) AND (btrim(requested_model_identifier) <> ''::text) AND (requested_model_identifier = btrim(requested_model_identifier)) AND ((response_model_identifier IS NULL) OR ((btrim(response_model_identifier) <> ''::text) AND (response_model_identifier = btrim(response_model_identifier)))))),
+    CONSTRAINT text_moderation_evidence_input_hashes_array CHECK ((jsonb_typeof(input_hashes) = 'array'::text)),
+    CONSTRAINT text_moderation_evidence_input_sha256_check CHECK (((input_sha256 IS NULL) OR (input_sha256 ~ '^[0-9a-f]{64}$'::text))),
     CONSTRAINT text_moderation_evidence_outcome_check CHECK ((outcome = ANY (ARRAY['evaluated'::text, 'provider_unavailable'::text, 'provider_timeout'::text, 'provider_invalid'::text]))),
+    CONSTRAINT text_moderation_evidence_platform_policy_hash_check CHECK (((platform_policy_hash IS NULL) OR (platform_policy_hash ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT text_moderation_evidence_policy_hash_check CHECK (((policy_hash IS NULL) OR (policy_hash ~ '^[0-9a-f]{64}$'::text))),
     CONSTRAINT text_moderation_evidence_response_sha256_check CHECK (((response_sha256 IS NULL) OR (response_sha256 ~ '^[0-9a-f]{64}$'::text))),
-    CONSTRAINT text_moderation_evidence_scores_object CHECK ((jsonb_typeof(normalized_scores) = 'object'::text))
+    CONSTRAINT text_moderation_evidence_scores_object CHECK ((jsonb_typeof(normalized_scores) = 'object'::text)),
+    CONSTRAINT text_moderation_evidence_v2_shape CHECK ((num_nonnulls(input_sha256, evidence_hash, community_id, policy_revision_id, policy_hash, platform_policy_revision_id, platform_policy_hash, community_policy_revision_id, community_policy_hash) = ANY (ARRAY[0, 9])))
 );
 
 CREATE TABLE text_moderation_policy_current (
@@ -20538,6 +20632,8 @@ CREATE TRIGGER text_content_submission_update_guard BEFORE UPDATE ON text_conten
 
 CREATE TRIGGER text_content_submissions_active_persona BEFORE INSERT ON text_content_submissions FOR EACH ROW EXECUTE FUNCTION require_active_author_persona();
 
+CREATE TRIGGER text_content_submissions_require_v2 BEFORE INSERT ON text_content_submissions FOR EACH ROW EXECUTE FUNCTION require_text_moderation_v2_submission();
+
 CREATE TRIGGER text_moderation_case_delete_guard BEFORE DELETE ON text_moderation_cases FOR EACH ROW EXECUTE FUNCTION reject_text_moderation_append_only_change();
 
 CREATE TRIGGER text_moderation_case_insert_guard BEFORE INSERT ON text_moderation_cases FOR EACH ROW EXECUTE FUNCTION validate_text_review_child_insert();
@@ -20546,7 +20642,11 @@ CREATE CONSTRAINT TRIGGER text_moderation_case_relations_guard AFTER INSERT OR U
 
 CREATE TRIGGER text_moderation_case_update_guard BEFORE UPDATE ON text_moderation_cases FOR EACH ROW EXECUTE FUNCTION guard_text_moderation_case_update();
 
+CREATE TRIGGER text_moderation_cases_require_v2 BEFORE INSERT ON text_moderation_cases FOR EACH ROW EXECUTE FUNCTION require_text_moderation_v2_case();
+
 CREATE TRIGGER text_moderation_evidence_append_only BEFORE DELETE OR UPDATE ON text_moderation_evidence FOR EACH ROW EXECUTE FUNCTION reject_text_moderation_append_only_change();
+
+CREATE TRIGGER text_moderation_evidence_require_v2 BEFORE INSERT ON text_moderation_evidence FOR EACH ROW EXECUTE FUNCTION require_text_moderation_v2_evidence();
 
 CREATE TRIGGER text_moderation_policy_revisions_append_only BEFORE DELETE OR UPDATE ON text_moderation_policy_revisions FOR EACH ROW EXECUTE FUNCTION reject_text_moderation_append_only_change();
 
@@ -22320,6 +22420,18 @@ ALTER TABLE ONLY text_moderation_cases
 
 ALTER TABLE ONLY text_moderation_cases
     ADD CONSTRAINT text_moderation_cases_submission_fk FOREIGN KEY (community_id, submission_id) REFERENCES text_content_submissions(community_id, submission_id);
+
+ALTER TABLE ONLY text_moderation_evidence
+    ADD CONSTRAINT text_moderation_evidence_community_fk FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY text_moderation_evidence
+    ADD CONSTRAINT text_moderation_evidence_community_policy_fk FOREIGN KEY (community_id, community_policy_revision_id, community_policy_hash) REFERENCES community_moderation_policy_revisions(community_id, policy_revision_id, policy_hash) MATCH FULL;
+
+ALTER TABLE ONLY text_moderation_evidence
+    ADD CONSTRAINT text_moderation_evidence_platform_policy_fk FOREIGN KEY (platform_policy_revision_id, platform_policy_hash) REFERENCES moderation_platform_floor_revisions(policy_revision_id, policy_hash) MATCH FULL;
+
+ALTER TABLE ONLY text_moderation_evidence
+    ADD CONSTRAINT text_moderation_evidence_provider_policy_fk FOREIGN KEY (policy_revision_id, policy_hash) REFERENCES text_moderation_policy_revisions(policy_revision_id, policy_hash) MATCH FULL;
 
 ALTER TABLE ONLY text_moderation_policy_current
     ADD CONSTRAINT text_moderation_policy_current_revision_fk FOREIGN KEY (policy_revision_id) REFERENCES text_moderation_policy_revisions(policy_revision_id);

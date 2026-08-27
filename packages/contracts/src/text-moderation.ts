@@ -1,4 +1,9 @@
 import { Schema } from "effect";
+import {
+  ContentRatingV1,
+  ModerationPolicyCategoryV1,
+  ModerationPolicyDecisionV1,
+} from "./community-moderation-policy.ts";
 
 const Sha256Hex = Schema.String.check(
   Schema.makeFilter((value) =>
@@ -134,6 +139,73 @@ export const TextModerationEvaluationV1 = Schema.Struct({
   }),
 );
 export type TextModerationEvaluationV1 = Schema.Schema.Type<typeof TextModerationEvaluationV1>;
+
+const MatchedCategoryDecisionsV1 = Schema.Record(
+  ModerationPolicyCategoryV1,
+  Schema.optional(ModerationPolicyDecisionV1),
+);
+
+export const TextModerationEvaluationV2 = Schema.Struct({
+  version: Schema.Literal("text-moderation-v2"),
+  surface: TextModerationSurface,
+  decision: TextPublicationDecision,
+  reason_codes: Schema.Array(TextModerationReasonCode),
+  policy_revision: CanonicalIdentifier,
+  policy_hash: Sha256Hex,
+  platform_policy_revision: CanonicalIdentifier,
+  platform_policy_hash: Sha256Hex,
+  community_policy_revision: CanonicalIdentifier,
+  community_policy_hash: Sha256Hex,
+  matched_categories: Schema.Array(ModerationPolicyCategoryV1),
+  category_decisions: MatchedCategoryDecisionsV1,
+  effective_policy_decision: ModerationPolicyDecisionV1,
+  author_declared_rating: ContentRatingV1,
+  resulting_content_rating: ContentRatingV1,
+  input_sha256: Sha256Hex,
+  evidence_ref: Schema.NullOr(CanonicalIdentifier),
+}).check(
+  Schema.makeFilter((evaluation) => {
+    if (new Set(evaluation.reason_codes).size !== evaluation.reason_codes.length) {
+      return "Expected unique moderation reason codes";
+    }
+    if (new Set(evaluation.matched_categories).size !== evaluation.matched_categories.length) {
+      return "Expected unique moderation categories";
+    }
+    const decisionKeys = Object.keys(evaluation.category_decisions);
+    if (
+      decisionKeys.length !== evaluation.matched_categories.length ||
+      evaluation.matched_categories.some(
+        (category) => evaluation.category_decisions[category] === undefined,
+      )
+    ) {
+      return "Expected one policy decision per matched category";
+    }
+    if (evaluation.decision === "allow") {
+      return evaluation.reason_codes.length === 0 &&
+        evaluation.effective_policy_decision === "permit"
+        ? undefined
+        : "Allow decisions require a permitted policy result without reasons";
+    }
+    if (evaluation.reason_codes.length === 0) {
+      return "Non-allow decisions require a reason";
+    }
+    if (evaluation.effective_policy_decision === "block") {
+      return evaluation.decision === "blocked"
+        ? undefined
+        : "Blocked policy results must block publication";
+    }
+    return evaluation.decision === "manual_review"
+      ? undefined
+      : "Review policy results must hold publication";
+  }),
+);
+export type TextModerationEvaluationV2 = Schema.Schema.Type<typeof TextModerationEvaluationV2>;
+
+export const TextModerationEvaluation = Schema.Union([
+  TextModerationEvaluationV1,
+  TextModerationEvaluationV2,
+]);
+export type TextModerationEvaluation = Schema.Schema.Type<typeof TextModerationEvaluation>;
 
 export const PublicTextModerationReasonCode = Schema.Literals([
   "policy_violation",

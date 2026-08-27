@@ -28,6 +28,7 @@
     "./accepted-lyrics-study-item-source": "./src/accepted-lyrics-study-item-source.ts",
     "./data-registration-repository": "./src/data-registration-repository.ts",
     "./content-repository": "./src/content-repository.ts",
+    "./openai-text-moderation": "./src/openai-text-moderation.ts",
     "./feed-repository": "./src/feed-repository.ts",
     "./public-community-threads-repository": "./src/public-community-threads-repository.ts",
     "./identity-repository": "./src/identity-repository.ts",
