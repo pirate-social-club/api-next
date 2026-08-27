@@ -97,7 +97,8 @@ function isQuotedString(value: string): boolean {
 
 function isJsonMediaType(value: string): boolean {
   const parts = value.split(";");
-  if (trimOws(parts[0] ?? "").toLowerCase() !== "application/json") return false;
+  const mediaType = trimOws(parts[0] ?? "").toLowerCase();
+  if (mediaType !== "application/json" && mediaType !== "text/plain") return false;
   for (const rawParameter of parts.slice(1)) {
     const parameter = trimOws(rawParameter);
     const equals = parameter.indexOf("=");

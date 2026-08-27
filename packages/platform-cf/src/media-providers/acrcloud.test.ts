@@ -376,7 +376,7 @@ describe("ACRCloud closed outcomes", () => {
     });
     expectContext(malformed);
 
-    for (const contentType of ["text/plain", "application/jsonx"]) {
+    for (const contentType of ["text/html", "application/jsonx"]) {
       const wrongContentType = await resultOf(
         jsonResponse({ status: { code: 0 } }, 200, contentType),
       );
@@ -391,6 +391,11 @@ describe("ACRCloud closed outcomes", () => {
     );
     expect(parameterizedJson).toMatchObject({ outcome: "no_match" });
     expectContext(parameterizedJson);
+    const providerTextJson = await resultOf(
+      jsonResponse({ status: { code: 2004 } }, 200, "text/plain; charset=utf-8"),
+    );
+    expect(providerTextJson).toMatchObject({ outcome: "inconclusive_fingerprint" });
+    expectContext(providerTextJson);
 
     const duplicate = await resultOf(
       jsonResponse({
