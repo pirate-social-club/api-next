@@ -19,7 +19,7 @@ import { Effect } from "effect";
 import type { EndpointHandler, Principal } from "./transport.ts";
 
 const accountId = (principal: Principal | null): string => {
-  if (principal === null || (principal.kind !== "user" && principal.kind !== "admin")) {
+  if (principal === null || principal.kind !== "user") {
     throw new AuthError({ message: "Authentication required" });
   }
   return principal.subject;

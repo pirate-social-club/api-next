@@ -26154,8 +26154,9 @@
         },
         "x-auth": {
           "policy": {
-            "kind": "userOrAdmin"
-          }
+            "kind": "user"
+          },
+          "browserSessionOnly": true
         },
         "x-errors": [
           "AuthError",
@@ -26643,8 +26644,9 @@
         },
         "x-auth": {
           "policy": {
-            "kind": "userOrAdmin"
-          }
+            "kind": "user"
+          },
+          "browserSessionOnly": true
         },
         "x-errors": [
           "AuthError",

@@ -21,11 +21,42 @@ const worker = (value: PlatformPirateHandleStore) =>
 const post = (path: string, body: unknown) =>
   new Request(`https://api.pirate.test${path}`, {
     method: "POST",
-    headers: { authorization: "Bearer test", "content-type": "application/json" },
+    headers: {
+      cookie: "__Host-pirate_session=test; __Host-pirate_csrf=csrf",
+      origin: "https://app.pirate.test",
+      "x-csrf-token": "csrf",
+      "content-type": "application/json",
+    },
     body: JSON.stringify(body),
   });
 
 describe("platform Pirate handle HTTP handlers", () => {
+  test("rejects machine bearers before reading private handle input", async () => {
+    let called = false;
+    const app = worker(
+      store({
+        checkAvailability: () => {
+          called = true;
+          return Effect.succeed({ kind: "available" });
+        },
+      }),
+    );
+    const response = await app.request(
+      "https://api.pirate.test/platform-pirate-handles/availability",
+      {
+        method: "POST",
+        headers: { authorization: "Bearer machine", "content-type": "application/json" },
+        body: JSON.stringify({
+          persona_id: "persona-http",
+          platform_handle_id: "platform-http",
+          desired_label: "captain",
+        }),
+      },
+    );
+    expect(response.status).toBe(401);
+    expect(called).toBe(false);
+  });
+
   test("keeps invalid availability advisory and session-derives the account", async () => {
     let calls = 0;
     const app = worker(

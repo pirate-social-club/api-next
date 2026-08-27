@@ -143,7 +143,7 @@ const errors = [
 export const CheckPlatformPirateLabelAvailability = endpoint({
   method: "POST",
   path: "/platform-pirate-handles/availability",
-  auth: Auth.userOrAdmin(),
+  auth: Auth.user({ browserSessionOnly: true }),
   request: { body: AvailabilityRequestV1 },
   response: PlatformPirateLabelAvailabilityResultV1,
   errors,
@@ -152,7 +152,7 @@ export const CheckPlatformPirateLabelAvailability = endpoint({
 export const RenamePlatformPirateHandle = endpoint({
   method: "POST",
   path: "/platform-pirate-handles/rename",
-  auth: Auth.userOrAdmin(),
+  auth: Auth.user({ browserSessionOnly: true }),
   request: { body: RenameRequestV1 },
   response: RenamePlatformPirateHandleResultV1,
   errors,
