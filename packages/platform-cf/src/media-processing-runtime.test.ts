@@ -228,6 +228,10 @@ describe("media processor runtime boundary", () => {
     });
     expect(requests).toHaveLength(3);
     expect(requests.every(({ init }) => init?.redirect === "error")).toBe(true);
+    const acrBody = requests[1]?.init?.body;
+    expect(acrBody).toBeInstanceOf(ReadableStream);
+    if (!(acrBody instanceof ReadableStream)) throw new TypeError("expected stream body");
+    expect(new Uint8Array(await new Response(acrBody).arrayBuffer())).toEqual(new Uint8Array([1]));
 
     const invalid = makeTransloaditFetchTransport(fetcher).request({
       requestId: "request",

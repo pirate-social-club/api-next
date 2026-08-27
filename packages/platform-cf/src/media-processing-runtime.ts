@@ -108,6 +108,15 @@ function responseStream(response: Response): ReadableStream<Uint8Array> {
   );
 }
 
+function requestByteStream(bytes: Uint8Array): ReadableStream<Uint8Array> {
+  return new ReadableStream({
+    start(controller) {
+      controller.enqueue(bytes);
+      controller.close();
+    },
+  });
+}
+
 function validFetchRequest(
   request: Readonly<{
     method: string;
@@ -185,7 +194,10 @@ export function makeAcrCloudFetchTransport(
       if (!validFetchRequest(request, "POST", endpoint)) {
         throw new MediaProcessingTransportFailure("invalid_request");
       }
-      const response = await fetchResponse(fetcher, { ...request, body: request.body });
+      const response = await fetchResponse(fetcher, {
+        ...request,
+        body: requestByteStream(request.body),
+      });
       return { status: response.status, headers: response.headers, body: responseStream(response) };
     },
   };
