@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.27.0",
+  "releaseType": "text-ratings-and-age-access-v1",
+  "wireContract": "spec-006-section-2.1-spec-010-sections-4-and-7-spec-013-text-track",
+  "sourceCommit": "5114769",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.27.0.tgz",
+    "sha256": "bacef8360960a5f1b7d86e5b8fa8a1763e188c09d6785bafe026bc926e0e6bb9",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@db545a06bed08229307e12f2640ee0e7b7c9ff63099a012678d11b65c2f27485",
+    "openapiSha256": "db545a06bed08229307e12f2640ee0e7b7c9ff63099a012678d11b65c2f27485",
+    "clientSha256": "c7334fb61137f7eed6c8dd21b6ea73506b328b248e57611976ebec2ed0d6dd35"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "authorized",
+      "baselineCommit": "b199212",
+      "reason": "Ratified specs 006 and 010 require the registration attestation, text ratings, account age capability, and viewer-scoped text access contract."
+    },
+    "focusedPostgresSuites": "text submission 10 passed; moderation foundation 4 passed; exact valid and expired age capability fixtures passed",
+    "fullUnitSuite": "1986 passed, 297 database-gated tests skipped, 0 failed",
+    "fullWorkerdSuite": "90 passed, 0 failed",
+    "packageVerifier": "passed",
+    "repositoryCheck": "passed"
+  }
+}
