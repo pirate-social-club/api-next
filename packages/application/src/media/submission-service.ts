@@ -1648,9 +1648,6 @@ export async function moderateMediaSubmission(
   services: MediaSubmissionServices,
 ): Promise<MediaPostSubmissionV1> {
   requireMediaHumanActor(input.actor);
-  if (input.actor.kind !== "admin" || input.actor.scopes?.includes("moderation") !== true) {
-    throw new NotFound({ message: "Media submission not found" });
-  }
   const body = decodeBody(ModerateSongSubmissionV1, input.body);
   let view: MediaModeratorView | null;
   try {

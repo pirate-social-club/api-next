@@ -7,9 +7,8 @@ import {
 import type { DecodedRequest, EndpointHandlerResult } from "./transport.ts";
 
 const principal = {
-  kind: "admin" as const,
+  kind: "user" as const,
   subject: "account_media",
-  scopes: ["moderation"],
 };
 
 const request = (overrides: Partial<DecodedRequest> = {}): DecodedRequest => ({
@@ -70,12 +69,12 @@ describe("media upload handlers", () => {
     ]);
     expect(observed[0]?.input).toEqual({
       communityId: "community_media",
-      actor: { kind: "admin", userId: "account_media", scopes: ["moderation"] },
+      actor: { kind: "user", userId: "account_media" },
       body: { fixture: true },
     });
     expect(observed[5]?.input).toEqual({
       submissionId: "submission_media",
-      actor: { kind: "admin", userId: "account_media", scopes: ["moderation"] },
+      actor: { kind: "user", userId: "account_media" },
     });
   });
 

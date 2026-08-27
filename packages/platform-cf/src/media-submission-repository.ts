@@ -2489,12 +2489,9 @@ export function makeControlPlaneMediaSubmissionRepository(
     );
   const moderate: MediaSubmissionStore["moderate"] = (input) => {
     const actorId = input.actor.userId;
-    const moderatorScope =
-      (input.actor.kind === "admin" && input.actor.scopes?.includes("moderation") === true) ||
-      input.actor.scopes?.includes("moderator") === true;
     if (
       !validId(actorId) ||
-      !moderatorScope ||
+      (input.actor.kind !== "user" && input.actor.kind !== "admin") ||
       (input.action === "approve" &&
         (input.approval === undefined ||
           input.decision === undefined ||
@@ -2541,16 +2538,23 @@ export function makeControlPlaneMediaSubmissionRepository(
             return yield* Effect.fail(
               fail("moderation", "not-found", { submissionId: input.submissionId }),
             );
+          const authority = yield* tx.execute<Row>({
+            label: "media-moderation.authority",
+            text: `SELECT has_community_moderation_capability_v1(
+                            $1, $2, 'moderation.act'
+                          ) AS allowed`,
+            values: [actorId, current.communityId],
+            readonly: true,
+          });
+          const allowed = authority.rows.length === 1 && authority.rows[0]?.allowed === true;
+          if (!allowed) {
+            return yield* Effect.fail(
+              fail("moderation", "not-found", { submissionId: input.submissionId }),
+            );
+          }
           const replayInput = { ...authorityInput, actorUserId: actorId, personaId: null };
           const prior = yield* replayInTx(tx, replayInput, "moderation");
           if (prior !== null) return prior;
-          const authority = yield* tx.execute<Row>({
-            label: "media-moderation.authority",
-            text: "SELECT (c.status='active' AND m.status='member') AS allowed FROM communities c JOIN community_memberships m ON m.community_id=c.community_id AND m.user_id=$2 WHERE c.community_id=$1 FOR SHARE",
-            values: [current.communityId, actorId],
-            readonly: false,
-          });
-          const allowed = authority.rows.length === 1 && authority.rows[0]?.allowed === true;
           const moderatorActionId = input.approval?.actionId ?? `moderator-${crypto.randomUUID()}`;
           const moderatorEvidenceRef =
             input.approval?.evidenceRef ?? input.evidenceRef ?? "moderator-evidence";

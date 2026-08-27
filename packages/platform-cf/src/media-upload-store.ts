@@ -126,16 +126,22 @@ function readLocatorByModerator(input: {
 }) {
   return Effect.gen(function* () {
     if (
-      input.moderatorActor.kind !== "admin" ||
-      input.moderatorActor.scopes?.includes("moderation") !== true
+      (input.moderatorActor.kind !== "user" && input.moderatorActor.kind !== "admin") ||
+      !validId(input.moderatorActor.userId)
     ) {
       return yield* Effect.fail(new MediaUploadStoreError({ reason: "not-found" }));
     }
     const db = yield* ControlPlaneDb;
     const result = yield* db.execute<Row>({
       label: "media-upload.moderator-view-locator",
-      text: "SELECT community_id,actor_user_id,author_persona_id,updated_at,public_persona_projection(author_persona_id) AS author_persona FROM media_post_submissions WHERE submission_id=$1",
-      values: [input.submissionId],
+      text: `SELECT community_id, actor_user_id, author_persona_id, updated_at,
+                    public_persona_projection(author_persona_id) AS author_persona
+               FROM media_post_submissions
+              WHERE submission_id = $1
+                AND has_community_moderation_capability_v1(
+                  $2, community_id, 'moderation.act'
+                )`,
+      values: [input.submissionId, input.moderatorActor.userId],
       readonly: true,
     });
     if (result.rows.length === 0) return null;

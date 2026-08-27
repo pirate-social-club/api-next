@@ -1,10 +1,17 @@
 import { afterAll, describe, expect, test } from "bun:test";
+import { MODERATION_PLATFORM_FLOOR_V1, MODERATION_POLICY_CATEGORIES_V1 } from "@pirate/domain";
+import { Effect } from "effect";
 import { Client } from "pg";
 import {
   loadPostgresMigrations,
   runPostgresMigrations,
 } from "../../../scripts/postgres-migrations.ts";
-import { backfillActivePersonaWalletFixtures } from "./persona-wallet.pg-fixture.ts";
+import { makeControlPlaneCommunityModerationStore } from "./community-moderation-repository.ts";
+import {
+  activatePendingPersonaFixtures,
+  backfillActivePersonaWalletFixtures,
+} from "./persona-wallet.pg-fixture.ts";
+import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -16,19 +23,24 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_COMMUNITY_MODERATION_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-community-moderation-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-community-moderation-suite-complete\n";
-const testCount = 3;
+const testCount = 4;
 let completedTestCount = 0;
 const migrations = await loadPostgresMigrations();
 const foundationMigrationVersion = "0059_community_moderation_authority_policy.sql";
 const cutoverMigrationVersion = "0061_openai_moderation_driver_cutover.sql";
+const runtimeMigrationVersion = "0063_community_moderation_owner_runtime.sql";
 const foundationMigrationIndex = migrations.findIndex(
   (migration) => migration.version === foundationMigrationVersion,
 );
 const cutoverMigrationIndex = migrations.findIndex(
   (migration) => migration.version === cutoverMigrationVersion,
 );
+const runtimeMigrationIndex = migrations.findIndex(
+  (migration) => migration.version === runtimeMigrationVersion,
+);
 const foundationMigrations = migrations.slice(0, foundationMigrationIndex + 1);
 const cutoverMigrations = migrations.slice(0, cutoverMigrationIndex + 1);
+const runtimeMigrations = migrations.slice(0, runtimeMigrationIndex + 1);
 
 function schemaName(): string {
   return `api_next_community_moderation_${crypto.randomUUID().replaceAll("-", "")}`;
@@ -597,6 +609,341 @@ suite("community moderation authority and policy migration", () => {
           community_policy: "community-moderation-policy:moderation-cutover:r1",
         },
       ]);
+    });
+    completedTestCount += 1;
+  }, 120_000);
+
+  test("enforces owner-only runtime authority, policy, reports, actions, and platform holds", async () => {
+    if (runtimeMigrationIndex !== migrations.length - 1) {
+      throw new Error(`${runtimeMigrationVersion} must be the latest migration in this lane`);
+    }
+    await withSchema(async (connection, admin) => {
+      await runPostgresMigrations({ connectionString: connection, migrations: runtimeMigrations });
+      const floor = await admin.query<{ category: string; decision: string }>(
+        `SELECT decision.category, decision.decision
+           FROM moderation_platform_floor_current AS current
+           JOIN moderation_platform_floor_category_decisions AS decision
+             ON decision.policy_revision_id = current.policy_revision_id
+          WHERE current.singleton
+          ORDER BY moderation_policy_category_ordinal_v1(decision.category)`,
+      );
+      expect(floor.rows.map(({ category }) => category)).toEqual([
+        ...MODERATION_POLICY_CATEGORIES_V1,
+      ]);
+      expect(
+        Object.fromEntries(floor.rows.map(({ category, decision }) => [category, decision])),
+      ).toEqual(MODERATION_PLATFORM_FLOOR_V1);
+      await insertUser(admin, "moderation-runtime-owner");
+      await insertUser(admin, "moderation-runtime-foreign");
+      await insertUser(admin, "moderation-runtime-member");
+      await activatePendingPersonaFixtures(admin);
+      await insertCommunity(admin, "moderation-runtime", "moderation-runtime-owner");
+      await admin.query(
+        `INSERT INTO community_memberships (
+           community_id, membership_id, user_id, status, joined_at, created_at, updated_at
+         ) VALUES
+           ('moderation-runtime', 'moderation-runtime-owner-membership',
+            'moderation-runtime-owner', 'member', now(), now(), now()),
+           ('moderation-runtime', 'moderation-runtime-member-membership',
+            'moderation-runtime-member', 'member', now(), now(), now())`,
+      );
+      await admin.query(
+        `INSERT INTO text_moderation_evidence (
+           evidence_ref, provider_id, requested_model_identifier,
+           response_model_identifier, outcome, normalized_categories,
+           normalized_scores, response_sha256, applied_input_types,
+           input_sha256, input_hashes, evidence_hash, community_id,
+           policy_revision_id, policy_hash, platform_policy_revision_id,
+           platform_policy_hash, community_policy_revision_id,
+           community_policy_hash
+         ) SELECT
+           'moderation-runtime-evidence', 'openai', provider.model_identifier,
+           provider.model_identifier, 'evaluated', '{}'::jsonb, '{}'::jsonb,
+           repeat('1', 64), '{}'::jsonb, repeat('2', 64),
+           to_jsonb(ARRAY[repeat('2', 64)]::text[]), repeat('1', 64),
+           'moderation-runtime', provider.policy_revision_id, provider.policy_hash,
+           platform.policy_revision_id, platform.policy_hash,
+           community.policy_revision_id, community.policy_hash
+         FROM text_moderation_policy_current AS provider_current
+         JOIN text_moderation_policy_revisions AS provider
+           ON provider.policy_revision_id = provider_current.policy_revision_id
+         CROSS JOIN moderation_platform_floor_current AS platform_current
+         JOIN moderation_platform_floor_revisions AS platform
+           ON platform.policy_revision_id = platform_current.policy_revision_id
+          AND platform.policy_hash = platform_current.policy_hash
+         JOIN community_moderation_policy_current AS community_current
+           ON community_current.community_id = 'moderation-runtime'
+         JOIN community_moderation_policy_revisions AS community
+           ON community.community_id = community_current.community_id
+          AND community.policy_revision_id = community_current.policy_revision_id
+          AND community.policy_hash = community_current.policy_hash
+        WHERE provider_current.singleton AND platform_current.singleton`,
+      );
+
+      const insertSubmission = async (input: {
+        readonly submissionId: string;
+        readonly caseRef: string;
+        readonly rating: "general" | "adult_18";
+        readonly status: "manual_review" | "blocked";
+        readonly source: "automatic" | "platform_held";
+      }) => {
+        await admin.query("BEGIN");
+        try {
+          await admin.query(
+            `INSERT INTO text_content_submissions (
+             community_id, submission_id, actor_user_id, author_persona_id,
+             surface, idempotency_key, request_hash, status,
+             moderation_decision, public_reason_code, policy_revision_id,
+             policy_hash, platform_policy_revision_id, platform_policy_hash,
+             community_policy_revision_id, community_policy_hash, input_sha256,
+             internal_reason_codes, evidence_ref, review_ref, operation_id,
+             response_snapshot_bytes, response_snapshot_sha256,
+             author_declared_rating, resulting_content_rating,
+             matched_categories, category_decisions, effective_policy_decision
+           ) SELECT
+             'moderation-runtime', $1, 'moderation-runtime-member', persona.persona_id,
+             'text_post', $1 || '-key', repeat('3', 64), $2,
+             CASE WHEN $2 = 'manual_review' THEN 'manual_review' ELSE 'blocked' END,
+             CASE WHEN $2 = 'manual_review' THEN 'review_required' ELSE 'policy_violation' END,
+             provider.policy_revision_id, provider.policy_hash,
+             platform.policy_revision_id, platform.policy_hash,
+             community.policy_revision_id, community.policy_hash, repeat('4', 64),
+             CASE WHEN $5 = 'platform_held'
+               THEN '["sexual_minors"]'::jsonb ELSE '["harassment"]'::jsonb END,
+             'moderation-runtime-evidence',
+             CASE WHEN $2 = 'manual_review' THEN $3 ELSE NULL END,
+             $1 || '-operation', convert_to('{}', 'UTF8'),
+             encode(sha256(convert_to('{}', 'UTF8')), 'hex'),
+             $4, $4,
+             CASE WHEN $5 = 'platform_held'
+               THEN '["sexual/minors"]'::jsonb ELSE '["harassment"]'::jsonb END,
+             CASE WHEN $5 = 'platform_held'
+               THEN '{"sexual/minors":"block"}'::jsonb
+               ELSE '{"harassment":"review"}'::jsonb END,
+             CASE WHEN $2 = 'manual_review' THEN 'review' ELSE 'block' END
+           FROM text_moderation_policy_current AS provider_current
+           JOIN text_moderation_policy_revisions AS provider
+             ON provider.policy_revision_id = provider_current.policy_revision_id
+           CROSS JOIN moderation_platform_floor_current AS platform_current
+           JOIN moderation_platform_floor_revisions AS platform
+             ON platform.policy_revision_id = platform_current.policy_revision_id
+            AND platform.policy_hash = platform_current.policy_hash
+           JOIN community_moderation_policy_current AS community_current
+             ON community_current.community_id = 'moderation-runtime'
+           JOIN community_moderation_policy_revisions AS community
+             ON community.community_id = community_current.community_id
+            AND community.policy_revision_id = community_current.policy_revision_id
+            AND community.policy_hash = community_current.policy_hash
+           JOIN personas AS persona
+             ON persona.account_id = 'moderation-runtime-member' AND persona.is_first_persona
+          WHERE provider_current.singleton AND platform_current.singleton`,
+            [input.submissionId, input.status, input.caseRef, input.rating, input.source],
+          );
+          if (input.status === "manual_review") {
+            await admin.query(
+              `INSERT INTO text_content_held_revisions (
+               community_id, held_revision_id, submission_id, title, body, content_sha256
+             ) VALUES ('moderation-runtime', $1, $2, 'Held title', 'Held body', repeat('5', 64))`,
+              [`${input.submissionId}-held`, input.submissionId],
+            );
+            await admin.query(
+              `INSERT INTO text_moderation_cases (
+                 community_id, case_id, submission_id,
+                 platform_policy_revision_id, platform_policy_hash,
+                 community_policy_revision_id, community_policy_hash
+               ) SELECT 'moderation-runtime', $1, submission_id,
+                        platform_policy_revision_id, platform_policy_hash,
+                        community_policy_revision_id, community_policy_hash
+                   FROM text_content_submissions
+                  WHERE community_id = 'moderation-runtime' AND submission_id = $2`,
+              [input.caseRef, input.submissionId],
+            );
+          }
+          await admin.query(
+            `INSERT INTO community_moderation_cases_v2 (
+             case_ref, community_id, submission_id, target_type, source,
+             visibility, view_state, target_status
+           ) VALUES (
+             $1, 'moderation-runtime', $2, 'text_post', $3,
+             CASE WHEN $3 = 'platform_held' THEN 'platform' ELSE 'owner' END,
+             CASE WHEN $3 = 'platform_held' THEN 'platform_held' ELSE 'open' END,
+             CASE WHEN $3 = 'platform_held' THEN 'blocked' ELSE 'held' END
+           )`,
+            [input.caseRef, input.submissionId, input.source],
+          );
+          await admin.query("COMMIT");
+        } catch (error) {
+          await admin.query("ROLLBACK");
+          throw error;
+        }
+      };
+
+      await insertSubmission({
+        submissionId: "moderation-runtime-general",
+        caseRef: "moderation-runtime-case-general",
+        rating: "general",
+        status: "manual_review",
+        source: "automatic",
+      });
+      await insertSubmission({
+        submissionId: "moderation-runtime-adult",
+        caseRef: "moderation-runtime-case-adult",
+        rating: "adult_18",
+        status: "manual_review",
+        source: "automatic",
+      });
+      await insertSubmission({
+        submissionId: "moderation-runtime-platform",
+        caseRef: "moderation-runtime-case-platform",
+        rating: "adult_18",
+        status: "blocked",
+        source: "platform_held",
+      });
+
+      const store = makeControlPlaneCommunityModerationStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      const owner = { kind: "user" as const, userId: "moderation-runtime-owner" };
+      const foreign = { kind: "user" as const, userId: "moderation-runtime-foreign" };
+      const capabilities = await Effect.runPromise(
+        store.getCapabilities({ communityId: "moderation-runtime", actor: owner }),
+      );
+      expect(capabilities.capabilities).toEqual(["moderation.view", "moderation.act"]);
+      await expect(
+        Effect.runPromise(
+          store.listCases({ communityId: "moderation-runtime", actor: foreign, view: "open" }),
+        ),
+      ).rejects.toMatchObject({ reason: "not-found" });
+
+      const adultDetail = await Effect.runPromise(
+        store.getCase({
+          communityId: "moderation-runtime",
+          caseRef: "moderation-runtime-case-adult",
+          actor: owner,
+        }),
+      );
+      expect(adultDetail.preview).toEqual({ kind: "locked", reason: "adult_rating" });
+      await expect(
+        Effect.runPromise(
+          store.getCase({
+            communityId: "moderation-runtime",
+            caseRef: "moderation-runtime-case-platform",
+            actor: owner,
+          }),
+        ),
+      ).rejects.toMatchObject({ reason: "not-found" });
+      await expect(
+        Effect.runPromise(
+          store.actOnCase({
+            caseRef: "moderation-runtime-case-adult",
+            actor: owner,
+            idempotencyKey: "adult-approval",
+            expectedCaseRevision: 1,
+            action: "approve_as_adult_18",
+            requestHash: "6".repeat(64),
+          }),
+        ),
+      ).rejects.toMatchObject({ reason: "conflict" });
+
+      const approved = await Effect.runPromise(
+        store.actOnCase({
+          caseRef: "moderation-runtime-case-general",
+          actor: owner,
+          idempotencyKey: "general-approval",
+          expectedCaseRevision: 1,
+          action: "approve_as_general",
+          requestHash: "7".repeat(64),
+        }),
+      );
+      expect(approved).toMatchObject({
+        version: "moderation-case-action-result-v2",
+        action: "approve_as_general",
+        target_status: "published",
+      });
+      const replayed = await Effect.runPromise(
+        store.actOnCase({
+          caseRef: "moderation-runtime-case-general",
+          actor: owner,
+          idempotencyKey: "general-approval",
+          expectedCaseRevision: 1,
+          action: "approve_as_general",
+          requestHash: "7".repeat(64),
+        }),
+      );
+      expect(replayed).toEqual(approved);
+      const published = await admin.query<{ published_post_id: string }>(
+        `SELECT published_post_id FROM text_content_submissions
+          WHERE submission_id = 'moderation-runtime-general'`,
+      );
+      const postId = published.rows[0]?.published_post_id;
+      expect(postId).toBeString();
+      if (postId === undefined) throw new Error("approved post was not persisted");
+
+      const firstReport = await Effect.runPromise(
+        store.reportTarget({
+          targetType: "post",
+          targetId: postId,
+          actor: { kind: "user", userId: "moderation-runtime-member" },
+          idempotencyKey: "report-one",
+          reasonCode: "spam",
+          requestHash: "8".repeat(64),
+        }),
+      );
+      expect(firstReport.status).toBe("open");
+      const coalesced = await Effect.runPromise(
+        store.reportTarget({
+          targetType: "post",
+          targetId: postId,
+          actor: { kind: "user", userId: "moderation-runtime-member" },
+          idempotencyKey: "report-two",
+          reasonCode: "misleading",
+          requestHash: "9".repeat(64),
+        }),
+      );
+      expect(coalesced).toMatchObject({ case_ref: firstReport.case_ref, status: "coalesced" });
+
+      const policy = await Effect.runPromise(
+        store.getPolicy({ communityId: "moderation-runtime", actor: owner }),
+      );
+      const decisions = Object.fromEntries(
+        policy.categories.map((category) => [category.category, category.community_decision]),
+      ) as Parameters<typeof store.updatePolicy>[0]["update"]["decisions"];
+      const updated = await Effect.runPromise(
+        store.updatePolicy({
+          communityId: "moderation-runtime",
+          actor: owner,
+          update: {
+            expected_policy_revision: policy.policy_revision_id,
+            decisions: { ...decisions, harassment: "block" },
+          },
+        }),
+      );
+      expect(updated.revision).toBe(policy.revision + 1);
+      expect(
+        updated.categories.find((category) => category.category === "harassment"),
+      ).toMatchObject({ community_decision: "block", effective_decision: "block" });
+
+      const audit = await admin.query<{
+        presenting_persona_id: string;
+        owner_role_assignment_id: string;
+        platform_policy_revision_id: string;
+        community_policy_revision_id: string;
+        resolved_age_capability: string;
+      }>(
+        `SELECT presenting_persona_id, owner_role_assignment_id,
+                platform_policy_revision_id, community_policy_revision_id,
+                resolved_age_capability
+           FROM community_moderation_actions_v2
+          WHERE action_id = $1`,
+        [approved.action_id],
+      );
+      expect(audit.rows[0]).toMatchObject({
+        resolved_age_capability: "unavailable_owner_only_mvp",
+      });
+      expect(audit.rows[0]?.presenting_persona_id).toBeString();
+      expect(audit.rows[0]?.owner_role_assignment_id).toBeString();
+      expect(audit.rows[0]?.platform_policy_revision_id).toBeString();
+      expect(audit.rows[0]?.community_policy_revision_id).toBeString();
     });
     completedTestCount += 1;
   }, 120_000);

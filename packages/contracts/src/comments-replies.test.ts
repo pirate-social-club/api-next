@@ -85,10 +85,20 @@ describe("comments and replies contracts", () => {
     expect(ModerateCaseAction.path).toBe("/moderation/cases/:caseRef/actions");
     const actionBody = ModerateCaseAction.request?.body;
     const actionProperty = schemaProperties(actionBody).action as Record<string, unknown>;
-    expect(actionProperty.enum).toEqual(["approve", "dismiss", "hide", "remove", "restore"]);
+    expect(actionProperty.enum).toEqual([
+      "approve_as_general",
+      "approve_as_adult_18",
+      "reject",
+      "dismiss_report",
+      "hide",
+      "raise_rating_to_adult_18",
+      "restore",
+    ]);
     expect(() =>
       Schema.decodeUnknownSync(actionBody)({
+        version: "moderation-case-action-v2",
         idempotency_key: "action_1",
+        expected_case_revision: 1,
         action: "block",
       }),
     ).toThrow();

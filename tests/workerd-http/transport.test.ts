@@ -359,7 +359,12 @@ describe("real HTTP worker transport", () => {
           origin: "https://solid.test",
           "x-csrf-token": ordinaryBrowser.csrf,
         },
-        body: JSON.stringify({ idempotency_key: "workerd-action-unprivileged", action: "hide" }),
+        body: JSON.stringify({
+          version: "moderation-case-action-v2",
+          idempotency_key: "workerd-action-unprivileged",
+          expected_case_revision: 1,
+          action: "hide",
+        }),
       },
     );
     expect(ordinaryAction.status).toBe(404);
@@ -395,10 +400,16 @@ describe("real HTTP worker transport", () => {
     const action = await SELF.fetch("https://worker.test/moderation/cases/case_workerd/actions", {
       method: "POST",
       headers,
-      body: JSON.stringify({ idempotency_key: "workerd-action", action: "hide" }),
+      body: JSON.stringify({
+        version: "moderation-case-action-v2",
+        idempotency_key: "workerd-action",
+        expected_case_revision: 1,
+        action: "hide",
+      }),
     });
     expect(action.status).toBe(200);
     expect(await action.json()).toEqual({
+      version: "moderation-case-action-result-v2",
       action_id: "action_workerd",
       case_ref: "case_workerd",
       action: "hide",

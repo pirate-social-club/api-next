@@ -3,6 +3,11 @@
 
 SET check_function_bodies = false;
 
+CREATE TYPE community_moderation_policy_update_result_v1 AS (
+	outcome text,
+	policy_revision_id text
+);
+
 CREATE FUNCTION activate_hns_community_app_host_v1(input_operation_id text, input_idempotency_key text, input_request_hash text, input_app_host_activation_id text, input_community_id text, input_canonical_root text, input_route_binding_id text, input_route_authority_kind text, input_route_authority_reference text, input_route_authority_generation bigint, input_dns_zone_activation_id text, input_dns_zone_activation_generation bigint, input_gateway_deployment_reference text) RETURNS TABLE(outcome text, app_host_activation_id text, app_host_activation_generation bigint, status text)
     LANGUAGE plpgsql
     AS $$
@@ -563,6 +568,106 @@ CREATE FUNCTION community_moderation_policy_preimage_v1(input_community_id text,
     revision.revision,
     revision.platform_floor_revision_id,
     revision.platform_floor_hash;
+$$;
+
+CREATE FUNCTION create_community_moderation_policy_revision_v1(input_account_id text, input_community_id text, input_expected_policy_revision text, input_decisions jsonb) RETURNS community_moderation_policy_update_result_v1
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  current_revision community_moderation_policy_current%ROWTYPE;
+  floor_revision moderation_platform_floor_current%ROWTYPE;
+  next_revision BIGINT;
+  next_revision_id TEXT;
+  next_preimage TEXT;
+  next_hash TEXT;
+  created_at TIMESTAMPTZ;
+BEGIN
+  PERFORM 1 FROM communities WHERE community_id = input_community_id FOR UPDATE;
+  IF NOT FOUND OR NOT has_community_moderation_capability_v1(
+    input_account_id,
+    input_community_id,
+    'moderation.act'
+  ) THEN
+    RETURN ('not_found', NULL)::community_moderation_policy_update_result_v1;
+  END IF;
+  SELECT * INTO current_revision
+    FROM community_moderation_policy_current
+   WHERE community_id = input_community_id
+   FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN ('not_found', NULL)::community_moderation_policy_update_result_v1;
+  END IF;
+  IF current_revision.policy_revision_id <> input_expected_policy_revision THEN
+    RETURN ('conflict', current_revision.policy_revision_id)::community_moderation_policy_update_result_v1;
+  END IF;
+  IF jsonb_typeof(input_decisions) <> 'object'
+    OR (SELECT count(*) FROM jsonb_object_keys(input_decisions)) <> 13
+    OR EXISTS (
+      SELECT 1
+        FROM jsonb_each_text(input_decisions) AS choice(category, decision)
+       WHERE moderation_policy_category_ordinal_v1(choice.category) IS NULL
+          OR moderation_policy_decision_severity_v1(choice.decision) IS NULL
+    )
+    OR EXISTS (
+      SELECT 1
+        FROM moderation_platform_floor_category_decisions AS floor_choice
+       WHERE floor_choice.policy_revision_id = (
+         SELECT policy_revision_id FROM moderation_platform_floor_current WHERE singleton
+       )
+         AND moderation_policy_decision_severity_v1(input_decisions ->> floor_choice.category)
+           < moderation_policy_decision_severity_v1(floor_choice.decision)
+    )
+  THEN
+    RETURN ('constraint', NULL)::community_moderation_policy_update_result_v1;
+  END IF;
+  SELECT * INTO floor_revision
+    FROM moderation_platform_floor_current
+   WHERE singleton
+   FOR SHARE;
+  SELECT revision + 1 INTO next_revision
+    FROM community_moderation_policy_revisions
+   WHERE community_id = input_community_id
+     AND policy_revision_id = current_revision.policy_revision_id;
+  IF next_revision IS NULL THEN
+    RETURN ('not_found', NULL)::community_moderation_policy_update_result_v1;
+  END IF;
+  next_revision_id := 'community-moderation-policy:' || input_community_id || ':r' || next_revision;
+  SELECT format(
+    '["community-moderation-policy-v1",%s,%s,%s,%s,%s,[%s]]',
+    to_json(input_community_id)::text,
+    to_json(next_revision_id)::text,
+    next_revision,
+    to_json(floor_revision.policy_revision_id)::text,
+    to_json(floor_revision.policy_hash)::text,
+    string_agg(
+      format('[%s,%s]', to_json(choice.category)::text, to_json(choice.decision)::text),
+      ',' ORDER BY moderation_policy_category_ordinal_v1(choice.category)
+    )
+  ) INTO next_preimage
+  FROM jsonb_each_text(input_decisions) AS choice(category, decision);
+  next_hash := encode(sha256(convert_to(next_preimage, 'UTF8')), 'hex');
+  created_at := clock_timestamp();
+  INSERT INTO community_moderation_policy_revisions (
+    community_id, policy_revision_id, revision,
+    platform_floor_revision_id, platform_floor_hash,
+    policy_preimage, policy_hash, created_at
+  ) VALUES (
+    input_community_id, next_revision_id, next_revision,
+    floor_revision.policy_revision_id, floor_revision.policy_hash,
+    next_preimage, next_hash, created_at
+  );
+  INSERT INTO community_moderation_policy_category_decisions (
+    community_id, policy_revision_id, category, decision
+  )
+  SELECT input_community_id, next_revision_id, choice.category, choice.decision
+    FROM jsonb_each_text(input_decisions) AS choice(category, decision);
+  UPDATE community_moderation_policy_current
+     SET policy_revision_id = next_revision_id,
+         policy_hash = next_hash,
+         updated_at = created_at
+   WHERE community_id = input_community_id;
+  RETURN ('updated', next_revision_id)::community_moderation_policy_update_result_v1;
+END;
 $$;
 
 CREATE FUNCTION current_hns_sale_namespace_dependency_v1(input_community_id text, input_namespace_authority_reference text, input_namespace_authority_generation bigint, input_dns_zone_activation_id text, input_dns_zone_activation_generation bigint, database_now timestamp with time zone) RETURNS TABLE(canonical_root text, display_root text, namespace_authority_current boolean, dns_zone_current boolean, dns_delegation_current boolean)
@@ -2066,6 +2171,170 @@ BEGIN
   END IF;
   IF OLD.status = 'active' AND NEW.status <> 'revoked' THEN
     RAISE EXCEPTION 'community handle-sales authority grant transition is invalid';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION guard_community_moderation_action_v2_insert() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  target_case community_moderation_cases_v2%ROWTYPE;
+  rating TEXT;
+BEGIN
+  SELECT * INTO target_case
+    FROM community_moderation_cases_v2
+   WHERE community_id = NEW.community_id
+     AND case_ref = NEW.case_ref
+   FOR UPDATE;
+  IF NOT FOUND
+    OR target_case.visibility <> 'owner'
+    OR target_case.view_state NOT IN ('open', 'hidden')
+  THEN
+    RAISE EXCEPTION 'moderation case is not owner-actionable';
+  END IF;
+  IF NOT has_community_moderation_capability_v1(
+    NEW.actor_user_id,
+    NEW.community_id,
+    'moderation.act'
+  ) THEN
+    RAISE EXCEPTION 'moderation action requires active owner authority';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1
+      FROM community_role_assignments AS assignment
+     WHERE assignment.role_assignment_id = NEW.owner_role_assignment_id
+       AND assignment.community_id = NEW.community_id
+       AND assignment.account_id = NEW.actor_user_id
+       AND assignment.role = 'owner'
+       AND assignment.status = 'active'
+  ) THEN
+    RAISE EXCEPTION 'moderation action owner snapshot is invalid';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1
+      FROM personas AS persona
+     WHERE persona.persona_id = NEW.presenting_persona_id
+       AND persona.account_id = NEW.actor_user_id
+       AND persona.status = 'active'
+  ) THEN
+    RAISE EXCEPTION 'moderation action presenting persona is invalid';
+  END IF;
+  SELECT COALESCE(submission.resulting_content_rating, 'adult_18')
+    INTO rating
+    FROM text_content_submissions AS submission
+   WHERE submission.community_id = target_case.community_id
+     AND submission.submission_id = target_case.submission_id;
+  IF NEW.expected_case_revision <> target_case.case_revision
+    OR NEW.before_view_state <> target_case.view_state
+    OR NEW.before_target_status <> target_case.target_status
+    OR NEW.before_rating <> rating
+  THEN
+    RAISE EXCEPTION 'moderation action case revision is stale';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1
+      FROM text_content_submissions AS submission
+     WHERE submission.community_id = target_case.community_id
+       AND submission.submission_id = target_case.submission_id
+       AND submission.platform_policy_revision_id = NEW.platform_policy_revision_id
+       AND submission.platform_policy_hash = NEW.platform_policy_hash
+       AND submission.community_policy_revision_id = NEW.community_policy_revision_id
+       AND submission.community_policy_hash = NEW.community_policy_hash
+       AND submission.evidence_ref IS NOT DISTINCT FROM NEW.evidence_ref
+  ) THEN
+    RAISE EXCEPTION 'moderation action policy evidence snapshot is invalid';
+  END IF;
+  IF NEW.action IN ('approve_as_adult_18', 'raise_rating_to_adult_18') THEN
+    RAISE EXCEPTION 'adult rating actions require the rating projection lane';
+  END IF;
+  IF rating = 'adult_18' AND NEW.action NOT IN ('hide', 'reject') THEN
+    RAISE EXCEPTION 'adult moderation action fails closed';
+  END IF;
+  IF NOT (
+    (NEW.action = 'approve_as_general'
+      AND target_case.view_state = 'open'
+      AND target_case.target_status = 'held'
+      AND rating = 'general'
+      AND NEW.after_view_state = 'resolved'
+      AND NEW.after_target_status = 'published'
+      AND NEW.after_rating = 'general')
+    OR (NEW.action = 'reject'
+      AND target_case.view_state = 'open'
+      AND target_case.target_status = 'held'
+      AND NEW.after_view_state = 'resolved'
+      AND NEW.after_target_status = 'blocked'
+      AND NEW.after_rating = rating)
+    OR (NEW.action = 'dismiss_report'
+      AND target_case.view_state = 'open'
+      AND target_case.target_status = 'published'
+      AND target_case.source IN ('member_report', 'mixed')
+      AND NEW.after_view_state = 'resolved'
+      AND NEW.after_target_status = 'published'
+      AND NEW.after_rating = rating)
+    OR (NEW.action = 'hide'
+      AND target_case.view_state = 'open'
+      AND target_case.target_status = 'published'
+      AND NEW.after_view_state = 'hidden'
+      AND NEW.after_target_status = 'hidden'
+      AND NEW.after_rating = rating)
+    OR (NEW.action = 'restore'
+      AND target_case.view_state = 'hidden'
+      AND target_case.target_status = 'hidden'
+      AND NEW.after_view_state = 'resolved'
+      AND NEW.after_target_status = 'published'
+      AND NEW.after_rating = rating)
+  ) THEN
+    RAISE EXCEPTION 'moderation action is outside the closed state matrix';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION guard_community_moderation_case_v2_update() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF ROW(
+    NEW.case_ref,
+    NEW.community_id,
+    NEW.submission_id,
+    NEW.target_type,
+    NEW.source,
+    NEW.visibility,
+    NEW.created_at
+  ) IS DISTINCT FROM ROW(
+    OLD.case_ref,
+    OLD.community_id,
+    OLD.submission_id,
+    OLD.target_type,
+    OLD.source,
+    OLD.visibility,
+    OLD.created_at
+  ) THEN
+    RAISE EXCEPTION 'community moderation case identity is immutable';
+  END IF;
+  IF OLD.visibility <> 'owner'
+    OR OLD.view_state NOT IN ('open', 'hidden')
+    OR NEW.case_revision <> OLD.case_revision + 1
+    OR NEW.updated_at <= OLD.updated_at
+    OR NEW.last_action_id IS NULL
+    OR NOT EXISTS (
+      SELECT 1
+        FROM community_moderation_actions_v2 AS action
+       WHERE action.action_id = NEW.last_action_id
+         AND action.community_id = OLD.community_id
+         AND action.case_ref = OLD.case_ref
+         AND action.expected_case_revision = OLD.case_revision
+         AND action.before_view_state = OLD.view_state
+         AND action.after_view_state = NEW.view_state
+         AND action.before_target_status = OLD.target_status
+         AND action.after_target_status = NEW.target_status
+         AND action.created_at = NEW.updated_at
+    )
+  THEN
+    RAISE EXCEPTION 'community moderation case transition lacks its exact action';
   END IF;
   RETURN NEW;
 END;
@@ -6153,6 +6422,11 @@ BEGIN
     NEW.input_sha256,
     NEW.internal_reason_codes,
     NEW.evidence_ref,
+    NEW.author_declared_rating,
+    NEW.resulting_content_rating,
+    NEW.matched_categories,
+    NEW.category_decisions,
+    NEW.effective_policy_decision,
     NEW.created_at,
     NEW.response_snapshot_bytes,
     NEW.response_snapshot_sha256
@@ -6177,6 +6451,11 @@ BEGIN
     OLD.input_sha256,
     OLD.internal_reason_codes,
     OLD.evidence_ref,
+    OLD.author_declared_rating,
+    OLD.resulting_content_rating,
+    OLD.matched_categories,
+    OLD.category_decisions,
+    OLD.effective_policy_decision,
     OLD.created_at,
     OLD.response_snapshot_bytes,
     OLD.response_snapshot_sha256
@@ -6243,6 +6522,26 @@ CREATE FUNCTION has_community_handle_sales_authority(expected_community_id text,
        AND authority_grant.authority = 'manage_handle_sales'
        AND authority_grant.status = 'active'
   )
+$$;
+
+CREATE FUNCTION has_community_moderation_capability_v1(input_account_id text, input_community_id text, input_capability text) RETURNS boolean
+    LANGUAGE sql STABLE PARALLEL SAFE
+    AS $$
+  SELECT input_capability IN ('moderation.view', 'moderation.act')
+    AND EXISTS (
+      SELECT 1
+        FROM community_role_assignments AS assignment
+        JOIN communities AS community
+          ON community.community_id = assignment.community_id
+         AND community.status = 'active'
+        JOIN users AS account
+          ON account.user_id = assignment.account_id
+         AND account.status = 'active'
+       WHERE assignment.community_id = input_community_id
+         AND assignment.account_id = input_account_id
+         AND assignment.role = 'owner'
+         AND assignment.status = 'active'
+    );
 $$;
 
 CREATE FUNCTION has_community_route_authority(expected_community_id text, expected_principal_user_id text) RETURNS boolean
@@ -7430,6 +7729,14 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION reject_community_moderation_v2_delete() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION '% is append-only', TG_TABLE_NAME;
+END;
+$$;
+
 CREATE FUNCTION reject_community_purchase_funding_append_only_change() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -7673,6 +7980,25 @@ BEGIN
     ) <> 4
   THEN
     RAISE EXCEPTION 'new text moderation submissions require complete V2 policy evidence';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION require_text_submission_v2_decision_evidence() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.platform_policy_revision_id IS NOT NULL
+    AND num_nonnulls(
+      NEW.author_declared_rating,
+      NEW.resulting_content_rating,
+      NEW.matched_categories,
+      NEW.category_decisions,
+      NEW.effective_policy_decision
+    ) <> 5
+  THEN
+    RAISE EXCEPTION 'V2 text submission requires complete decision evidence';
   END IF;
   RETURN NEW;
 END;
@@ -10438,14 +10764,16 @@ $$;
 CREATE FUNCTION validate_media_moderation_action_insert() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
-DECLARE allowed BOOLEAN; submission_record media_post_submissions%ROWTYPE;
+DECLARE
+  submission_record media_post_submissions%ROWTYPE;
 BEGIN
-  SELECT (c.status = 'active' AND m.status = 'member') INTO allowed
-    FROM communities c
-    JOIN community_memberships m ON m.community_id = c.community_id AND m.user_id = NEW.authority_actor_user_id
-    WHERE c.community_id = NEW.community_id
-    FOR SHARE;
-  IF allowed IS DISTINCT FROM TRUE THEN RAISE EXCEPTION 'moderation action requires active community membership'; END IF;
+  IF NOT has_community_moderation_capability_v1(
+    NEW.authority_actor_user_id,
+    NEW.community_id,
+    'moderation.act'
+  ) THEN
+    RAISE EXCEPTION 'moderation action requires active owner authority';
+  END IF;
   SELECT * INTO submission_record FROM media_post_submissions
     WHERE community_id = NEW.community_id AND actor_user_id = NEW.actor_user_id
       AND submission_id = NEW.submission_id AND operation_id = NEW.operation_id
@@ -10455,14 +10783,67 @@ BEGIN
      OR submission_record.review_ref IS NULL THEN
     RAISE EXCEPTION 'moderation action is not bound to a held review';
   END IF;
-  IF NEW.held_revision IS DISTINCT FROM submission_record.held_revision THEN RAISE EXCEPTION 'moderation held revision does not match'; END IF;
-  IF NEW.action_kind = 'approve' AND (NEW.decision_revision IS NULL OR NEW.decision_revision <> submission_record.decision_revision + 1 OR NEW.decision_snapshot IS DISTINCT FROM (SELECT decision_snapshot FROM media_publication_decisions WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id AND decision_revision=NEW.decision_revision)) THEN
+  IF NEW.held_revision IS DISTINCT FROM submission_record.held_revision THEN
+    RAISE EXCEPTION 'moderation held revision does not match';
+  END IF;
+  IF NEW.action_kind = 'approve' AND (
+    NEW.decision_revision IS NULL
+    OR NEW.decision_revision <> submission_record.decision_revision + 1
+    OR NEW.decision_snapshot IS DISTINCT FROM (
+      SELECT decision_snapshot FROM media_publication_decisions
+       WHERE community_id = NEW.community_id
+         AND actor_user_id = NEW.actor_user_id
+         AND submission_id = NEW.submission_id
+         AND operation_id = NEW.operation_id
+         AND decision_revision = NEW.decision_revision
+    )
+  ) THEN
     RAISE EXCEPTION 'moderation approval decision revision is not current';
   END IF;
-  IF NEW.action_kind = 'approve' AND (SELECT acr_decision FROM media_analysis_evidence WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id AND analysis_revision=submission_record.analysis_revision) = 'inconclusive' AND (NEW.approval_kind IS DISTINCT FROM 'acr_override' OR NEW.reason_code IS DISTINCT FROM CASE WHEN submission_record.review_exhaustion_code = 'acr_exhausted' THEN 'acr_exhausted' ELSE 'acr_inconclusive' END) THEN RAISE EXCEPTION 'inconclusive ACR moderation mapping is not exact'; END IF;
-  IF NEW.action_kind = 'approve' AND (SELECT acr_decision FROM media_analysis_evidence WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id AND analysis_revision=submission_record.analysis_revision) = 'skipped' AND (NEW.approval_kind IS DISTINCT FROM 'acr_override' OR NEW.reason_code IS DISTINCT FROM 'acr_skipped') THEN RAISE EXCEPTION 'skipped ACR moderation mapping is not exact'; END IF;
-  IF NEW.action_kind = 'approve' AND (SELECT acr_decision FROM media_analysis_evidence WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id AND analysis_revision=submission_record.analysis_revision) = 'allow' AND (NEW.approval_kind IS DISTINCT FROM 'standard' OR NEW.reason_code IS NOT NULL) THEN RAISE EXCEPTION 'allow ACR moderation mapping is not exact'; END IF;
-  IF NEW.action_kind = 'approve' AND NEW.reason_code = 'acr_exhausted' AND submission_record.review_exhaustion_code IS DISTINCT FROM 'acr_exhausted' THEN
+  IF NEW.action_kind = 'approve' AND (
+    SELECT acr_decision FROM media_analysis_evidence
+     WHERE community_id = NEW.community_id
+       AND actor_user_id = NEW.actor_user_id
+       AND submission_id = NEW.submission_id
+       AND operation_id = NEW.operation_id
+       AND analysis_revision = submission_record.analysis_revision
+  ) = 'inconclusive' AND (
+    NEW.approval_kind IS DISTINCT FROM 'acr_override'
+    OR NEW.reason_code IS DISTINCT FROM CASE
+      WHEN submission_record.review_exhaustion_code = 'acr_exhausted'
+      THEN 'acr_exhausted' ELSE 'acr_inconclusive' END
+  ) THEN
+    RAISE EXCEPTION 'inconclusive ACR moderation mapping is not exact';
+  END IF;
+  IF NEW.action_kind = 'approve' AND (
+    SELECT acr_decision FROM media_analysis_evidence
+     WHERE community_id = NEW.community_id
+       AND actor_user_id = NEW.actor_user_id
+       AND submission_id = NEW.submission_id
+       AND operation_id = NEW.operation_id
+       AND analysis_revision = submission_record.analysis_revision
+  ) = 'skipped' AND (
+    NEW.approval_kind IS DISTINCT FROM 'acr_override'
+    OR NEW.reason_code IS DISTINCT FROM 'acr_skipped'
+  ) THEN
+    RAISE EXCEPTION 'skipped ACR moderation mapping is not exact';
+  END IF;
+  IF NEW.action_kind = 'approve' AND (
+    SELECT acr_decision FROM media_analysis_evidence
+     WHERE community_id = NEW.community_id
+       AND actor_user_id = NEW.actor_user_id
+       AND submission_id = NEW.submission_id
+       AND operation_id = NEW.operation_id
+       AND analysis_revision = submission_record.analysis_revision
+  ) = 'allow' AND (
+    NEW.approval_kind IS DISTINCT FROM 'standard' OR NEW.reason_code IS NOT NULL
+  ) THEN
+    RAISE EXCEPTION 'allow ACR moderation mapping is not exact';
+  END IF;
+  IF NEW.action_kind = 'approve'
+    AND NEW.reason_code = 'acr_exhausted'
+    AND submission_record.review_exhaustion_code IS DISTINCT FROM 'acr_exhausted'
+  THEN
     RAISE EXCEPTION 'ACR exhaustion override lacks its private exhaustion hold';
   END IF;
   RETURN NEW;
@@ -12727,8 +13108,13 @@ CREATE TABLE comment_moderation_actions (
     action text NOT NULL,
     target_status text NOT NULL,
     created_at timestamp with time zone NOT NULL,
+    response_snapshot_bytes bytea NOT NULL,
+    response_snapshot_sha256 text NOT NULL,
     CONSTRAINT comment_moderation_actions_action_check CHECK ((action = ANY (ARRAY['approve'::text, 'dismiss'::text, 'hide'::text, 'remove'::text, 'restore'::text]))),
     CONSTRAINT comment_moderation_actions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT comment_moderation_actions_response_snapshot_hash CHECK ((encode(sha256(response_snapshot_bytes), 'hex'::text) = response_snapshot_sha256)),
+    CONSTRAINT comment_moderation_actions_response_snapshot_nonempty CHECK ((octet_length(response_snapshot_bytes) > 0)),
+    CONSTRAINT comment_moderation_actions_response_snapshot_sha256_check CHECK ((response_snapshot_sha256 ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT comment_moderation_actions_target_status_check CHECK ((target_status = ANY (ARRAY['held'::text, 'published'::text, 'hidden'::text, 'removed'::text])))
 );
 
@@ -12974,6 +13360,25 @@ CREATE TABLE community_commerce_settlement_policy_versions (
     policy_version bigint NOT NULL,
     settlement_mode text NOT NULL,
     CONSTRAINT community_commerce_settlement_mode_check CHECK ((settlement_mode = ANY (ARRAY['delivery_only_story_settlement'::text, 'royalty_native_story_payment'::text])))
+);
+
+CREATE TABLE community_content_reports_v2 (
+    report_id text NOT NULL,
+    community_id text NOT NULL,
+    submission_id text NOT NULL,
+    target_type text NOT NULL,
+    target_resource_id text NOT NULL,
+    case_ref text NOT NULL,
+    reporter_user_id text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    reason_code text NOT NULL,
+    status text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT community_content_reports_v2_reason_code_check CHECK ((reason_code = ANY (ARRAY['spam'::text, 'harassment'::text, 'hate'::text, 'sexual_content'::text, 'graphic_content'::text, 'misleading'::text, 'other'::text]))),
+    CONSTRAINT community_content_reports_v2_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_content_reports_v2_status_check CHECK ((status = ANY (ARRAY['open'::text, 'coalesced'::text]))),
+    CONSTRAINT community_content_reports_v2_target_type_check CHECK ((target_type = ANY (ARRAY['post'::text, 'comment'::text])))
 );
 
 CREATE TABLE community_creation_ceremony_attempts (
@@ -13344,6 +13749,75 @@ CREATE TABLE community_memberships (
     CONSTRAINT community_memberships_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'member'::text, 'left'::text, 'banned'::text])))
 );
 
+CREATE TABLE community_moderation_actions_v2 (
+    action_id text NOT NULL,
+    community_id text NOT NULL,
+    case_ref text NOT NULL,
+    actor_user_id text NOT NULL,
+    owner_role_assignment_id text NOT NULL,
+    presenting_persona_id text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    expected_case_revision bigint NOT NULL,
+    action text NOT NULL,
+    before_view_state text NOT NULL,
+    after_view_state text NOT NULL,
+    before_target_status text NOT NULL,
+    after_target_status text NOT NULL,
+    before_rating text NOT NULL,
+    after_rating text NOT NULL,
+    platform_policy_revision_id text NOT NULL,
+    platform_policy_hash text NOT NULL,
+    community_policy_revision_id text NOT NULL,
+    community_policy_hash text NOT NULL,
+    evidence_ref text,
+    resolved_age_capability text NOT NULL,
+    response_snapshot_bytes bytea NOT NULL,
+    response_snapshot_sha256 text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT community_moderation_actions_v2_action_check CHECK ((action = ANY (ARRAY['approve_as_general'::text, 'approve_as_adult_18'::text, 'reject'::text, 'dismiss_report'::text, 'hide'::text, 'raise_rating_to_adult_18'::text, 'restore'::text]))),
+    CONSTRAINT community_moderation_actions_v2_after_rating_check CHECK ((after_rating = ANY (ARRAY['general'::text, 'adult_18'::text]))),
+    CONSTRAINT community_moderation_actions_v2_after_target_status_check CHECK ((after_target_status = ANY (ARRAY['published'::text, 'hidden'::text, 'blocked'::text]))),
+    CONSTRAINT community_moderation_actions_v2_after_view_state_check CHECK ((after_view_state = ANY (ARRAY['hidden'::text, 'resolved'::text]))),
+    CONSTRAINT community_moderation_actions_v2_before_rating_check CHECK ((before_rating = ANY (ARRAY['general'::text, 'adult_18'::text]))),
+    CONSTRAINT community_moderation_actions_v2_before_target_status_check CHECK ((before_target_status = ANY (ARRAY['held'::text, 'published'::text, 'hidden'::text]))),
+    CONSTRAINT community_moderation_actions_v2_before_view_state_check CHECK ((before_view_state = ANY (ARRAY['open'::text, 'hidden'::text]))),
+    CONSTRAINT community_moderation_actions_v2_community_policy_hash_check CHECK ((community_policy_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_moderation_actions_v2_expected_case_revision_check CHECK ((expected_case_revision > 0)),
+    CONSTRAINT community_moderation_actions_v2_platform_policy_hash_check CHECK ((platform_policy_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_moderation_actions_v2_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_moderation_actions_v2_resolved_age_capability_check CHECK ((resolved_age_capability = 'unavailable_owner_only_mvp'::text)),
+    CONSTRAINT community_moderation_actions_v2_response_hash CHECK ((encode(sha256(response_snapshot_bytes), 'hex'::text) = response_snapshot_sha256)),
+    CONSTRAINT community_moderation_actions_v2_response_snapshot_bytes_check CHECK ((octet_length(response_snapshot_bytes) > 0)),
+    CONSTRAINT community_moderation_actions_v2_response_snapshot_sha256_check CHECK ((response_snapshot_sha256 ~ '^[0-9a-f]{64}$'::text))
+);
+
+CREATE TABLE community_moderation_cases_v2 (
+    case_ref text NOT NULL,
+    community_id text NOT NULL,
+    submission_id text NOT NULL,
+    target_type text NOT NULL,
+    target_resource_id text,
+    source text NOT NULL,
+    visibility text NOT NULL,
+    view_state text NOT NULL,
+    target_status text NOT NULL,
+    case_revision bigint DEFAULT 1 NOT NULL,
+    last_action_id text,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT community_moderation_cases_v2_case_revision_check CHECK ((case_revision > 0)),
+    CONSTRAINT community_moderation_cases_v2_identity_not_blank CHECK (((btrim(case_ref) <> ''::text) AND (case_ref = btrim(case_ref)))),
+    CONSTRAINT community_moderation_cases_v2_source_check CHECK ((source = ANY (ARRAY['automatic'::text, 'member_report'::text, 'mixed'::text, 'platform_held'::text]))),
+    CONSTRAINT community_moderation_cases_v2_target_status_check CHECK ((target_status = ANY (ARRAY['held'::text, 'published'::text, 'hidden'::text, 'blocked'::text]))),
+    CONSTRAINT community_moderation_cases_v2_target_type_check CHECK ((target_type = ANY (ARRAY['text_post'::text, 'comment'::text, 'reply'::text]))),
+    CONSTRAINT community_moderation_cases_v2_time_order CHECK ((updated_at >= created_at)),
+    CONSTRAINT community_moderation_cases_v2_view_shape CHECK ((((view_state = 'open'::text) AND (target_status = ANY (ARRAY['held'::text, 'published'::text]))) OR ((view_state = 'hidden'::text) AND (target_status = 'hidden'::text)) OR ((view_state = 'resolved'::text) AND (target_status = ANY (ARRAY['published'::text, 'blocked'::text]))) OR ((view_state = 'platform_held'::text) AND (target_status = 'blocked'::text)))),
+    CONSTRAINT community_moderation_cases_v2_view_state_check CHECK ((view_state = ANY (ARRAY['open'::text, 'hidden'::text, 'resolved'::text, 'platform_held'::text]))),
+    CONSTRAINT community_moderation_cases_v2_visibility_check CHECK ((visibility = ANY (ARRAY['owner'::text, 'platform'::text]))),
+    CONSTRAINT community_moderation_cases_v2_visibility_shape CHECK ((((visibility = 'platform'::text) AND (source = 'platform_held'::text) AND (view_state = 'platform_held'::text)) OR ((visibility = 'owner'::text) AND (source <> 'platform_held'::text) AND (view_state <> 'platform_held'::text))))
+);
+
 CREATE TABLE community_moderation_policy_category_decisions (
     community_id text NOT NULL,
     policy_revision_id text NOT NULL,
@@ -13374,6 +13848,21 @@ CREATE TABLE community_moderation_policy_revisions (
     CONSTRAINT community_moderation_policy_revisions_platform_floor_hash_check CHECK ((platform_floor_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT community_moderation_policy_revisions_policy_hash_check CHECK ((policy_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT community_moderation_policy_revisions_revision_check CHECK ((revision > 0))
+);
+
+CREATE TABLE community_moderation_system_actions_v1 (
+    action_id text NOT NULL,
+    action text NOT NULL,
+    community_id text NOT NULL,
+    target_type text NOT NULL,
+    target_resource_id text NOT NULL,
+    before_status text NOT NULL,
+    after_status text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT community_moderation_system_actions_v1_action_check CHECK ((action = 'legacy_removed_normalized_to_hidden'::text)),
+    CONSTRAINT community_moderation_system_actions_v1_after_status_check CHECK ((after_status = 'hidden'::text)),
+    CONSTRAINT community_moderation_system_actions_v1_before_status_check CHECK ((before_status = 'removed'::text)),
+    CONSTRAINT community_moderation_system_actions_v1_target_type_check CHECK ((target_type = ANY (ARRAY['text_post'::text, 'comment'::text])))
 );
 
 CREATE TABLE community_policy_current (
@@ -18063,6 +18552,11 @@ CREATE TABLE text_content_submissions (
     platform_policy_hash text,
     community_policy_revision_id text,
     community_policy_hash text,
+    author_declared_rating text,
+    resulting_content_rating text,
+    matched_categories jsonb,
+    category_decisions jsonb,
+    effective_policy_decision text,
     CONSTRAINT text_content_submissions_identifiers_not_blank CHECK (((btrim(submission_id) <> ''::text) AND (submission_id = btrim(submission_id)) AND (btrim(actor_user_id) <> ''::text) AND (actor_user_id = btrim(actor_user_id)) AND (btrim(idempotency_key) <> ''::text) AND (idempotency_key = btrim(idempotency_key)) AND ((review_ref IS NULL) OR ((btrim(review_ref) <> ''::text) AND (review_ref = btrim(review_ref)))))),
     CONSTRAINT text_content_submissions_input_sha256_check CHECK ((input_sha256 ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT text_content_submissions_moderation_decision_check CHECK ((moderation_decision = ANY (ARRAY['allow'::text, 'manual_review'::text, 'blocked'::text]))),
@@ -18080,6 +18574,7 @@ CREATE TABLE text_content_submissions (
     CONSTRAINT text_content_submissions_surface_check CHECK ((surface = ANY (ARRAY['text_post'::text, 'comment'::text, 'reply'::text]))),
     CONSTRAINT text_content_submissions_target_shape CHECK ((((surface = 'text_post'::text) AND (target_post_id IS NULL) AND (target_parent_comment_id IS NULL)) OR ((surface = 'comment'::text) AND (target_post_id IS NOT NULL) AND (target_parent_comment_id IS NULL)) OR ((surface = 'reply'::text) AND (target_post_id IS NOT NULL) AND (target_parent_comment_id IS NOT NULL)))),
     CONSTRAINT text_content_submissions_time_order CHECK ((updated_at >= created_at)),
+    CONSTRAINT text_content_submissions_v2_decision_evidence_shape CHECK (((num_nonnulls(author_declared_rating, resulting_content_rating, matched_categories, category_decisions, effective_policy_decision) = ANY (ARRAY[0, 5])) AND ((author_declared_rating IS NULL) OR ((author_declared_rating = ANY (ARRAY['general'::text, 'adult_18'::text])) AND (resulting_content_rating = ANY (ARRAY['general'::text, 'adult_18'::text])) AND (jsonb_typeof(matched_categories) = 'array'::text) AND (jsonb_typeof(category_decisions) = 'object'::text) AND (effective_policy_decision = ANY (ARRAY['permit'::text, 'review'::text, 'block'::text])))))),
     CONSTRAINT text_content_submissions_v2_evidence_shape CHECK (((platform_policy_revision_id IS NULL) OR ((internal_reason_codes ?| ARRAY['provider_unavailable'::text, 'provider_timeout'::text, 'provider_invalid'::text]) AND (evidence_ref IS NULL)) OR ((NOT (internal_reason_codes ?| ARRAY['provider_unavailable'::text, 'provider_timeout'::text, 'provider_invalid'::text])) AND (evidence_ref IS NOT NULL))))
 );
 
@@ -18370,6 +18865,12 @@ ALTER TABLE ONLY community_commerce_pricing_policy_versions
 ALTER TABLE ONLY community_commerce_settlement_policy_versions
     ADD CONSTRAINT community_commerce_settlement_policy_versions_pkey PRIMARY KEY (community_id, policy_version);
 
+ALTER TABLE ONLY community_content_reports_v2
+    ADD CONSTRAINT community_content_reports_v2_pkey PRIMARY KEY (report_id);
+
+ALTER TABLE ONLY community_content_reports_v2
+    ADD CONSTRAINT community_content_reports_v2_reporter_key_unique UNIQUE (reporter_user_id, target_type, target_resource_id, idempotency_key);
+
 ALTER TABLE ONLY community_creation_ceremony_attempts
     ADD CONSTRAINT community_creation_ceremony_attempts_actor_ceremony_unique UNIQUE (actor_id, ceremony_intent_id);
 
@@ -18478,6 +18979,18 @@ ALTER TABLE ONLY community_memberships
 ALTER TABLE ONLY community_memberships
     ADD CONSTRAINT community_memberships_user_unique UNIQUE (community_id, user_id);
 
+ALTER TABLE ONLY community_moderation_actions_v2
+    ADD CONSTRAINT community_moderation_actions_v2_actor_key_unique UNIQUE (case_ref, actor_user_id, idempotency_key);
+
+ALTER TABLE ONLY community_moderation_actions_v2
+    ADD CONSTRAINT community_moderation_actions_v2_pkey PRIMARY KEY (action_id);
+
+ALTER TABLE ONLY community_moderation_cases_v2
+    ADD CONSTRAINT community_moderation_cases_v2_community_ref_unique UNIQUE (community_id, case_ref);
+
+ALTER TABLE ONLY community_moderation_cases_v2
+    ADD CONSTRAINT community_moderation_cases_v2_pkey PRIMARY KEY (case_ref);
+
 ALTER TABLE ONLY community_moderation_policy_category_decisions
     ADD CONSTRAINT community_moderation_policy_category_decisions_pkey PRIMARY KEY (community_id, policy_revision_id, category);
 
@@ -18492,6 +19005,12 @@ ALTER TABLE ONLY community_moderation_policy_revisions
 
 ALTER TABLE ONLY community_moderation_policy_revisions
     ADD CONSTRAINT community_moderation_policy_revisions_pkey PRIMARY KEY (community_id, policy_revision_id);
+
+ALTER TABLE ONLY community_moderation_system_actions_v1
+    ADD CONSTRAINT community_moderation_system_a_target_type_target_resource_i_key UNIQUE (target_type, target_resource_id);
+
+ALTER TABLE ONLY community_moderation_system_actions_v1
+    ADD CONSTRAINT community_moderation_system_actions_v1_pkey PRIMARY KEY (action_id);
 
 ALTER TABLE ONLY community_policy_current
     ADD CONSTRAINT community_policy_current_pk PRIMARY KEY (community_id, policy_key);
@@ -19841,6 +20360,10 @@ CREATE INDEX community_handle_sales_authority_grants_principal_idx ON community_
 
 CREATE INDEX community_memberships_status_idx ON community_memberships USING btree (community_id, status, updated_at DESC);
 
+CREATE UNIQUE INDEX community_moderation_cases_v2_active_submission_uidx ON community_moderation_cases_v2 USING btree (submission_id) WHERE (view_state = ANY (ARRAY['open'::text, 'hidden'::text, 'platform_held'::text]));
+
+CREATE INDEX community_moderation_cases_v2_owner_queue_idx ON community_moderation_cases_v2 USING btree (community_id, view_state, updated_at DESC, case_ref) WHERE ((visibility = 'owner'::text) AND (view_state = ANY (ARRAY['open'::text, 'hidden'::text])));
+
 CREATE INDEX community_policy_current_version_idx ON community_policy_current USING btree (policy_version_id);
 
 CREATE UNIQUE INDEX community_purchase_correction_idempotency ON community_purchase_correction_events USING btree (target_identity, kind);
@@ -20155,6 +20678,8 @@ CREATE TRIGGER community_commerce_route_policy_append_only BEFORE DELETE OR UPDA
 
 CREATE TRIGGER community_commerce_settlement_policy_append_only BEFORE DELETE OR UPDATE ON community_commerce_settlement_policy_versions FOR EACH ROW EXECUTE FUNCTION reject_community_commerce_immutable_change();
 
+CREATE TRIGGER community_content_reports_v2_change_guard BEFORE DELETE OR UPDATE ON community_content_reports_v2 FOR EACH ROW EXECUTE FUNCTION reject_community_moderation_v2_delete();
+
 CREATE TRIGGER community_creation_ceremony_attempt_append_only BEFORE DELETE OR UPDATE ON community_creation_ceremony_attempts FOR EACH ROW EXECUTE FUNCTION reject_community_creation_immutable_change();
 
 CREATE TRIGGER community_creation_ceremony_attempt_insert_guard BEFORE INSERT ON community_creation_ceremony_attempts FOR EACH ROW EXECUTE FUNCTION validate_community_creation_ceremony_attempt_insert();
@@ -20197,6 +20722,14 @@ CREATE TRIGGER community_handle_offering_revisions_append_only BEFORE DELETE OR 
 
 CREATE TRIGGER community_handle_sales_authority_grants_change_guard BEFORE DELETE OR UPDATE ON community_handle_sales_authority_grants FOR EACH ROW EXECUTE FUNCTION guard_community_handle_sales_authority_grant_change();
 
+CREATE TRIGGER community_moderation_actions_v2_change_guard BEFORE DELETE OR UPDATE ON community_moderation_actions_v2 FOR EACH ROW EXECUTE FUNCTION reject_community_moderation_v2_delete();
+
+CREATE TRIGGER community_moderation_actions_v2_insert_guard BEFORE INSERT ON community_moderation_actions_v2 FOR EACH ROW EXECUTE FUNCTION guard_community_moderation_action_v2_insert();
+
+CREATE TRIGGER community_moderation_cases_v2_delete_guard BEFORE DELETE ON community_moderation_cases_v2 FOR EACH ROW EXECUTE FUNCTION reject_community_moderation_v2_delete();
+
+CREATE TRIGGER community_moderation_cases_v2_update_guard BEFORE UPDATE ON community_moderation_cases_v2 FOR EACH ROW EXECUTE FUNCTION guard_community_moderation_case_v2_update();
+
 CREATE TRIGGER community_moderation_policy_categories_append_only BEFORE DELETE OR UPDATE ON community_moderation_policy_category_decisions FOR EACH ROW EXECUTE FUNCTION reject_text_moderation_append_only_change();
 
 CREATE CONSTRAINT TRIGGER community_moderation_policy_category_completeness_guard AFTER INSERT OR DELETE OR UPDATE ON community_moderation_policy_category_decisions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_community_moderation_policy_revision();
@@ -20208,6 +20741,8 @@ CREATE TRIGGER community_moderation_policy_current_change_guard BEFORE DELETE OR
 CREATE CONSTRAINT TRIGGER community_moderation_policy_revision_completeness_guard AFTER INSERT OR UPDATE ON community_moderation_policy_revisions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_community_moderation_policy_revision();
 
 CREATE TRIGGER community_moderation_policy_revisions_append_only BEFORE DELETE OR UPDATE ON community_moderation_policy_revisions FOR EACH ROW EXECUTE FUNCTION reject_text_moderation_append_only_change();
+
+CREATE TRIGGER community_moderation_system_actions_v1_change_guard BEFORE DELETE OR UPDATE ON community_moderation_system_actions_v1 FOR EACH ROW EXECUTE FUNCTION reject_community_moderation_v2_delete();
 
 CREATE TRIGGER community_policy_provider_binding_append_only BEFORE DELETE OR UPDATE ON community_policy_provider_bindings FOR EACH ROW EXECUTE FUNCTION reject_community_creation_immutable_change();
 
@@ -20843,6 +21378,8 @@ CREATE TRIGGER text_content_submissions_active_persona BEFORE INSERT ON text_con
 
 CREATE TRIGGER text_content_submissions_require_v2 BEFORE INSERT ON text_content_submissions FOR EACH ROW EXECUTE FUNCTION require_text_moderation_v2_submission();
 
+CREATE TRIGGER text_content_submissions_v2_decision_evidence_guard BEFORE INSERT ON text_content_submissions FOR EACH ROW EXECUTE FUNCTION require_text_submission_v2_decision_evidence();
+
 CREATE TRIGGER text_moderation_case_delete_guard BEFORE DELETE ON text_moderation_cases FOR EACH ROW EXECUTE FUNCTION reject_text_moderation_append_only_change();
 
 CREATE TRIGGER text_moderation_case_insert_guard BEFORE INSERT ON text_moderation_cases FOR EACH ROW EXECUTE FUNCTION validate_text_review_child_insert();
@@ -21037,6 +21574,15 @@ ALTER TABLE ONLY community_commerce_pricing_policy_versions
 ALTER TABLE ONLY community_commerce_settlement_policy_versions
     ADD CONSTRAINT community_commerce_settlement__community_id_policy_version_fkey FOREIGN KEY (community_id, policy_version) REFERENCES community_commerce_policy_revisions(community_id, policy_version);
 
+ALTER TABLE ONLY community_content_reports_v2
+    ADD CONSTRAINT community_content_reports_v2_case_fk FOREIGN KEY (community_id, case_ref) REFERENCES community_moderation_cases_v2(community_id, case_ref);
+
+ALTER TABLE ONLY community_content_reports_v2
+    ADD CONSTRAINT community_content_reports_v2_reporter_user_id_fkey FOREIGN KEY (reporter_user_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY community_content_reports_v2
+    ADD CONSTRAINT community_content_reports_v2_submission_fk FOREIGN KEY (community_id, submission_id) REFERENCES text_content_submissions(community_id, submission_id);
+
 ALTER TABLE ONLY community_creation_ceremony_attempts
     ADD CONSTRAINT community_creation_ceremony_attempts_actor_id_fkey FOREIGN KEY (actor_id) REFERENCES users(user_id);
 
@@ -21201,6 +21747,27 @@ ALTER TABLE ONLY community_handle_sales_authority_grants
 
 ALTER TABLE ONLY community_memberships
     ADD CONSTRAINT community_memberships_community_fk FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY community_moderation_actions_v2
+    ADD CONSTRAINT community_moderation_actions_v2_actor_user_id_fkey FOREIGN KEY (actor_user_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY community_moderation_actions_v2
+    ADD CONSTRAINT community_moderation_actions_v2_case_fk FOREIGN KEY (community_id, case_ref) REFERENCES community_moderation_cases_v2(community_id, case_ref);
+
+ALTER TABLE ONLY community_moderation_actions_v2
+    ADD CONSTRAINT community_moderation_actions_v2_owner_role_assignment_id_fkey FOREIGN KEY (owner_role_assignment_id) REFERENCES community_role_assignments(role_assignment_id);
+
+ALTER TABLE ONLY community_moderation_actions_v2
+    ADD CONSTRAINT community_moderation_actions_v2_presenting_persona_id_fkey FOREIGN KEY (presenting_persona_id) REFERENCES personas(persona_id);
+
+ALTER TABLE ONLY community_moderation_cases_v2
+    ADD CONSTRAINT community_moderation_cases_v2_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY community_moderation_cases_v2
+    ADD CONSTRAINT community_moderation_cases_v2_last_action_fk FOREIGN KEY (last_action_id) REFERENCES community_moderation_actions_v2(action_id);
+
+ALTER TABLE ONLY community_moderation_cases_v2
+    ADD CONSTRAINT community_moderation_cases_v2_submission_fk FOREIGN KEY (community_id, submission_id) REFERENCES text_content_submissions(community_id, submission_id);
 
 ALTER TABLE ONLY community_moderation_policy_category_decisions
     ADD CONSTRAINT community_moderation_policy_category_revision_fk FOREIGN KEY (community_id, policy_revision_id) REFERENCES community_moderation_policy_revisions(community_id, policy_revision_id);

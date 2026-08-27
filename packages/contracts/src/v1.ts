@@ -1,5 +1,15 @@
 import { Effect, Schema } from "effect";
 import { Auth } from "./auth.ts";
+import {
+  GetCommunityModerationCapabilities,
+  GetCommunityModerationCase,
+  GetCommunityModerationPolicy,
+  ListCommunityModerationCases,
+  ModerateCaseAction,
+  ReportComment,
+  ReportPost,
+  UpdateCommunityModerationPolicy,
+} from "./community-moderation-runtime.ts";
 import { endpoint } from "./endpoint.ts";
 import {
   AuthError,
@@ -1150,41 +1160,6 @@ const TextCommentReplyRequestV1 = Schema.Struct({
   body: Schema.String,
 });
 
-const CommentReportReasonCode = Schema.Literals([
-  "spam",
-  "harassment",
-  "hate",
-  "sexual_content",
-  "graphic_content",
-  "misleading",
-  "other",
-]);
-
-const CommentReportRequestV1 = Schema.Struct({
-  idempotency_key: Schema.String,
-  reason_code: CommentReportReasonCode,
-});
-
-const CommentReportResponseV1 = Schema.Struct({
-  report_id: Schema.String,
-  case_ref: Schema.String,
-  status: Schema.Literals(["open", "coalesced"]),
-});
-
-const TextModerationAction = Schema.Literals(["approve", "dismiss", "hide", "remove", "restore"]);
-
-const ModerationCaseActionRequestV1 = Schema.Struct({
-  idempotency_key: Schema.String,
-  action: TextModerationAction,
-});
-
-const ModerationCaseActionResponseV1 = Schema.Struct({
-  action_id: Schema.String,
-  case_ref: Schema.String,
-  action: TextModerationAction,
-  target_status: Schema.Literals(["held", "published", "hidden", "removed"]),
-});
-
 const Jwk = Schema.Struct({
   kty: Schema.String,
   n: Schema.String,
@@ -1558,7 +1533,7 @@ export const CancelMediaPostSubmission = endpoint({
 export const ModerateMediaPostSubmission = endpoint({
   method: "POST",
   path: "/moderation/media-post-submissions/:submissionId/actions",
-  auth: Auth.admin("moderation"),
+  auth: Auth.userOrAdmin(),
   request: { path: PathMediaSubmission, body: ModerateSongSubmissionV1 },
   response: MediaPostSubmissionV1,
   errors: [AuthError, BadRequest, Conflict, IdempotencyConflict, NotFound, RateLimited],
@@ -1675,38 +1650,6 @@ export const CreateCommentReply = endpoint({
   ],
 });
 
-export const ReportComment = endpoint({
-  method: "POST",
-  path: "/comments/:commentId/reports",
-  auth: Auth.userOrAdmin(),
-  request: { path: PathComment, body: CommentReportRequestV1 },
-  response: CommentReportResponseV1,
-  successStatus: 201,
-  errors: [AuthError, BadRequest, IdempotencyConflict, MembershipRequired, NotFound, RateLimited],
-});
-
-export const ModerateCaseAction = endpoint({
-  method: "POST",
-  path: "/moderation/cases/:caseRef/actions",
-  auth: Auth.userOrAdmin(),
-  request: {
-    path: Schema.Struct({ caseRef: Schema.String }),
-    body: ModerationCaseActionRequestV1,
-  },
-  response: ModerationCaseActionResponseV1,
-  successStatus: 200,
-  errors: [
-    AuthError,
-    BadRequest,
-    CommentsLocked,
-    Conflict,
-    IdempotencyConflict,
-    NotFound,
-    RateLimited,
-    ReplyDepthExceeded,
-  ],
-});
-
 // --- home feed -------------------------------------------------------------
 
 export const GetPublicHomeFeed = endpoint({
@@ -1781,7 +1724,13 @@ export const v1Registry = {
   CastPostVote,
   ClearPostVote,
   CreateCommentReply,
+  GetCommunityModerationCapabilities,
+  ListCommunityModerationCases,
+  GetCommunityModerationCase,
+  GetCommunityModerationPolicy,
+  UpdateCommunityModerationPolicy,
   ReportComment,
+  ReportPost,
   ModerateCaseAction,
   GetPublicHomeFeed,
   GetPublicCommunityThreads,

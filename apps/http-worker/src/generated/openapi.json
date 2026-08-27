@@ -48339,8 +48339,7 @@
         },
         "x-auth": {
           "policy": {
-            "kind": "admin",
-            "scope": "moderation"
+            "kind": "userOrAdmin"
           }
         },
         "x-errors": [
@@ -53792,12 +53791,2717 @@
         ]
       }
     },
+    "/communities/{communityId}/me/capabilities": {
+      "get": {
+        "operationId": "get_communitiesCommunityIdMeCapabilities",
+        "parameters": [
+          {
+            "name": "communityId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "community_id": {
+                      "type": "string"
+                    },
+                    "role": {
+                      "type": "string",
+                      "enum": [
+                        "owner"
+                      ]
+                    },
+                    "role_assignment_id": {
+                      "type": "string"
+                    },
+                    "capabilities": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "moderation.view",
+                          "moderation.act"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "community_id",
+                    "role",
+                    "role_assignment_id",
+                    "capabilities"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "404": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "not_found"
+            ]
+          },
+          "429": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "rate_limited"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "userOrAdmin"
+          }
+        },
+        "x-errors": [
+          "AuthError",
+          "BadRequest",
+          "NotFound",
+          "RateLimited"
+        ]
+      }
+    },
+    "/communities/{communityId}/moderation/cases": {
+      "get": {
+        "operationId": "get_communitiesCommunityIdModerationCases",
+        "parameters": [
+          {
+            "name": "communityId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "view",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "open",
+                "hidden"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "object": {
+                      "type": "string",
+                      "enum": [
+                        "community_moderation_case_list"
+                      ]
+                    },
+                    "community_id": {
+                      "type": "string"
+                    },
+                    "view": {
+                      "type": "string",
+                      "enum": [
+                        "open",
+                        "hidden"
+                      ]
+                    },
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "case_ref": {
+                            "type": "string"
+                          },
+                          "community_id": {
+                            "type": "string"
+                          },
+                          "target_type": {
+                            "type": "string",
+                            "enum": [
+                              "text_post",
+                              "comment",
+                              "reply"
+                            ]
+                          },
+                          "target_id": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "author_persona_id": {
+                            "type": "string"
+                          },
+                          "source": {
+                            "type": "string",
+                            "enum": [
+                              "automatic",
+                              "member_report",
+                              "mixed"
+                            ]
+                          },
+                          "target_status": {
+                            "type": "string",
+                            "enum": [
+                              "held",
+                              "published",
+                              "hidden",
+                              "blocked"
+                            ]
+                          },
+                          "resulting_content_rating": {
+                            "type": "string",
+                            "enum": [
+                              "general",
+                              "adult_18"
+                            ]
+                          },
+                          "case_revision": {
+                            "anyOf": [
+                              {
+                                "type": "number"
+                              },
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "Infinity",
+                                  "-Infinity",
+                                  "NaN"
+                                ]
+                              }
+                            ]
+                          },
+                          "permitted_actions": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "enum": [
+                                "approve_as_general",
+                                "approve_as_adult_18",
+                                "reject",
+                                "dismiss_report",
+                                "hide",
+                                "raise_rating_to_adult_18",
+                                "restore"
+                              ]
+                            }
+                          },
+                          "created_at": {
+                            "type": "string"
+                          },
+                          "updated_at": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "case_ref",
+                          "community_id",
+                          "target_type",
+                          "target_id",
+                          "author_persona_id",
+                          "source",
+                          "target_status",
+                          "resulting_content_rating",
+                          "case_revision",
+                          "permitted_actions",
+                          "created_at",
+                          "updated_at"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "object",
+                    "community_id",
+                    "view",
+                    "items"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "404": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "not_found"
+            ]
+          },
+          "429": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "rate_limited"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "userOrAdmin"
+          }
+        },
+        "x-errors": [
+          "AuthError",
+          "BadRequest",
+          "NotFound",
+          "RateLimited"
+        ]
+      }
+    },
+    "/communities/{communityId}/moderation/cases/{caseRef}": {
+      "get": {
+        "operationId": "get_communitiesCommunityIdModerationCasesCaseRef",
+        "parameters": [
+          {
+            "name": "communityId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "caseRef",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "object": {
+                      "type": "string",
+                      "enum": [
+                        "community_moderation_case"
+                      ]
+                    },
+                    "case": {
+                      "type": "object",
+                      "properties": {
+                        "case_ref": {
+                          "type": "string"
+                        },
+                        "community_id": {
+                          "type": "string"
+                        },
+                        "target_type": {
+                          "type": "string",
+                          "enum": [
+                            "text_post",
+                            "comment",
+                            "reply"
+                          ]
+                        },
+                        "target_id": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "author_persona_id": {
+                          "type": "string"
+                        },
+                        "source": {
+                          "type": "string",
+                          "enum": [
+                            "automatic",
+                            "member_report",
+                            "mixed"
+                          ]
+                        },
+                        "target_status": {
+                          "type": "string",
+                          "enum": [
+                            "held",
+                            "published",
+                            "hidden",
+                            "blocked"
+                          ]
+                        },
+                        "resulting_content_rating": {
+                          "$ref": "#/$defs/Union_"
+                        },
+                        "case_revision": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "string",
+                              "enum": [
+                                "Infinity",
+                                "-Infinity",
+                                "NaN"
+                              ]
+                            }
+                          ]
+                        },
+                        "permitted_actions": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "enum": [
+                              "approve_as_general",
+                              "approve_as_adult_18",
+                              "reject",
+                              "dismiss_report",
+                              "hide",
+                              "raise_rating_to_adult_18",
+                              "restore"
+                            ]
+                          }
+                        },
+                        "created_at": {
+                          "type": "string"
+                        },
+                        "updated_at": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "case_ref",
+                        "community_id",
+                        "target_type",
+                        "target_id",
+                        "author_persona_id",
+                        "source",
+                        "target_status",
+                        "resulting_content_rating",
+                        "case_revision",
+                        "permitted_actions",
+                        "created_at",
+                        "updated_at"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "preview": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "text"
+                              ]
+                            },
+                            "title": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "body": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "title",
+                            "body"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "locked"
+                              ]
+                            },
+                            "reason": {
+                              "type": "string",
+                              "enum": [
+                                "adult_rating"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "reason"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    },
+                    "evidence": {
+                      "type": "object",
+                      "properties": {
+                        "matched_categories": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "enum": [
+                              "harassment",
+                              "harassment/threatening",
+                              "hate",
+                              "hate/threatening",
+                              "illicit",
+                              "illicit/violent",
+                              "self-harm",
+                              "self-harm/intent",
+                              "self-harm/instructions",
+                              "sexual",
+                              "sexual/minors",
+                              "violence",
+                              "violence/graphic"
+                            ]
+                          }
+                        },
+                        "category_decisions": {
+                          "type": "object",
+                          "properties": {
+                            "harassment": {
+                              "$ref": "#/$defs/Union_1"
+                            },
+                            "harassment/threatening": {
+                              "$ref": "#/$defs/Union_1"
+                            },
+                            "hate": {
+                              "$ref": "#/$defs/Union_1"
+                            },
+                            "hate/threatening": {
+                              "$ref": "#/$defs/Union_1"
+                            },
+                            "illicit": {
+                              "$ref": "#/$defs/Union_1"
+                            },
+                            "illicit/violent": {
+                              "$ref": "#/$defs/Union_1"
+                            },
+                            "self-harm": {
+                              "$ref": "#/$defs/Union_1"
+                            },
+                            "self-harm/intent": {
+                              "$ref": "#/$defs/Union_1"
+                            },
+                            "self-harm/instructions": {
+                              "$ref": "#/$defs/Union_1"
+                            },
+                            "sexual": {
+                              "$ref": "#/$defs/Union_1"
+                            },
+                            "sexual/minors": {
+                              "$ref": "#/$defs/Union_1"
+                            },
+                            "violence": {
+                              "$ref": "#/$defs/Union_1"
+                            },
+                            "violence/graphic": {
+                              "$ref": "#/$defs/Union_1"
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "effective_decision": {
+                          "$ref": "#/$defs/Union_2"
+                        },
+                        "resulting_content_rating": {
+                          "$ref": "#/$defs/Union_"
+                        },
+                        "author_declared_rating": {
+                          "$ref": "#/$defs/Union_"
+                        },
+                        "provider_scores": {
+                          "type": "object",
+                          "properties": {
+                            "harassment": {
+                              "$ref": "#/$defs/Union_3"
+                            },
+                            "harassment/threatening": {
+                              "$ref": "#/$defs/Union_3"
+                            },
+                            "hate": {
+                              "$ref": "#/$defs/Union_3"
+                            },
+                            "hate/threatening": {
+                              "$ref": "#/$defs/Union_3"
+                            },
+                            "illicit": {
+                              "$ref": "#/$defs/Union_3"
+                            },
+                            "illicit/violent": {
+                              "$ref": "#/$defs/Union_3"
+                            },
+                            "self-harm": {
+                              "$ref": "#/$defs/Union_3"
+                            },
+                            "self-harm/intent": {
+                              "$ref": "#/$defs/Union_3"
+                            },
+                            "self-harm/instructions": {
+                              "$ref": "#/$defs/Union_3"
+                            },
+                            "sexual": {
+                              "$ref": "#/$defs/Union_3"
+                            },
+                            "sexual/minors": {
+                              "$ref": "#/$defs/Union_3"
+                            },
+                            "violence": {
+                              "$ref": "#/$defs/Union_3"
+                            },
+                            "violence/graphic": {
+                              "$ref": "#/$defs/Union_3"
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "applied_input_types": {
+                          "type": "object",
+                          "properties": {
+                            "harassment": {
+                              "$ref": "#/$defs/Union_4"
+                            },
+                            "harassment/threatening": {
+                              "$ref": "#/$defs/Union_4"
+                            },
+                            "hate": {
+                              "$ref": "#/$defs/Union_4"
+                            },
+                            "hate/threatening": {
+                              "$ref": "#/$defs/Union_4"
+                            },
+                            "illicit": {
+                              "$ref": "#/$defs/Union_4"
+                            },
+                            "illicit/violent": {
+                              "$ref": "#/$defs/Union_4"
+                            },
+                            "self-harm": {
+                              "$ref": "#/$defs/Union_4"
+                            },
+                            "self-harm/intent": {
+                              "$ref": "#/$defs/Union_4"
+                            },
+                            "self-harm/instructions": {
+                              "$ref": "#/$defs/Union_4"
+                            },
+                            "sexual": {
+                              "$ref": "#/$defs/Union_4"
+                            },
+                            "sexual/minors": {
+                              "$ref": "#/$defs/Union_4"
+                            },
+                            "violence": {
+                              "$ref": "#/$defs/Union_4"
+                            },
+                            "violence/graphic": {
+                              "$ref": "#/$defs/Union_4"
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "policy_revision": {
+                          "type": "string"
+                        },
+                        "policy_hash": {
+                          "type": "string"
+                        },
+                        "platform_policy_revision": {
+                          "type": "string"
+                        },
+                        "platform_policy_hash": {
+                          "type": "string"
+                        },
+                        "community_policy_revision": {
+                          "type": "string"
+                        },
+                        "community_policy_hash": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "matched_categories",
+                        "category_decisions",
+                        "effective_decision",
+                        "resulting_content_rating",
+                        "author_declared_rating",
+                        "provider_scores",
+                        "applied_input_types",
+                        "policy_revision",
+                        "policy_hash",
+                        "platform_policy_revision",
+                        "platform_policy_hash",
+                        "community_policy_revision",
+                        "community_policy_hash"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "object",
+                    "case",
+                    "preview",
+                    "evidence"
+                  ],
+                  "additionalProperties": false,
+                  "$defs": {
+                    "Union_": {
+                      "type": "string",
+                      "enum": [
+                        "general",
+                        "adult_18"
+                      ]
+                    },
+                    "Union_2": {
+                      "type": "string",
+                      "enum": [
+                        "permit",
+                        "review",
+                        "block"
+                      ]
+                    },
+                    "Union_1": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/Union_2"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "Union_3": {
+                      "anyOf": [
+                        {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "string",
+                              "enum": [
+                                "Infinity",
+                                "-Infinity",
+                                "NaN"
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "Union_4": {
+                      "anyOf": [
+                        {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "enum": [
+                              "text",
+                              "image"
+                            ]
+                          }
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "404": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "not_found"
+            ]
+          },
+          "429": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "rate_limited"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "userOrAdmin"
+          }
+        },
+        "x-errors": [
+          "AuthError",
+          "BadRequest",
+          "NotFound",
+          "RateLimited"
+        ]
+      }
+    },
+    "/communities/{communityId}/moderation/policy": {
+      "get": {
+        "operationId": "get_communitiesCommunityIdModerationPolicy",
+        "parameters": [
+          {
+            "name": "communityId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "version": {
+                      "type": "string",
+                      "enum": [
+                        "community-moderation-policy-v1"
+                      ]
+                    },
+                    "community_id": {
+                      "type": "string"
+                    },
+                    "policy_revision_id": {
+                      "type": "string"
+                    },
+                    "policy_hash": {
+                      "type": "string"
+                    },
+                    "revision": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "string",
+                          "enum": [
+                            "Infinity",
+                            "-Infinity",
+                            "NaN"
+                          ]
+                        }
+                      ]
+                    },
+                    "platform_floor_revision_id": {
+                      "type": "string"
+                    },
+                    "platform_floor_hash": {
+                      "type": "string"
+                    },
+                    "categories": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "category": {
+                            "type": "string",
+                            "enum": [
+                              "harassment",
+                              "harassment/threatening",
+                              "hate",
+                              "hate/threatening",
+                              "illicit",
+                              "illicit/violent",
+                              "self-harm",
+                              "self-harm/intent",
+                              "self-harm/instructions",
+                              "sexual",
+                              "sexual/minors",
+                              "violence",
+                              "violence/graphic"
+                            ]
+                          },
+                          "input_types": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "enum": [
+                                "text",
+                                "image"
+                              ]
+                            }
+                          },
+                          "platform_floor_decision": {
+                            "$ref": "#/$defs/Union_"
+                          },
+                          "community_decision": {
+                            "$ref": "#/$defs/Union_"
+                          },
+                          "effective_decision": {
+                            "$ref": "#/$defs/Union_"
+                          },
+                          "locked": {
+                            "type": "boolean"
+                          },
+                          "permit_rating": {
+                            "type": "string",
+                            "enum": [
+                              "general",
+                              "adult_18"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "category",
+                          "input_types",
+                          "platform_floor_decision",
+                          "community_decision",
+                          "effective_decision",
+                          "locked",
+                          "permit_rating"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "updated_at": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "version",
+                    "community_id",
+                    "policy_revision_id",
+                    "policy_hash",
+                    "revision",
+                    "platform_floor_revision_id",
+                    "platform_floor_hash",
+                    "categories",
+                    "updated_at"
+                  ],
+                  "additionalProperties": false,
+                  "$defs": {
+                    "Union_": {
+                      "type": "string",
+                      "enum": [
+                        "permit",
+                        "review",
+                        "block"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "404": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "not_found"
+            ]
+          },
+          "429": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "rate_limited"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "userOrAdmin"
+          }
+        },
+        "x-errors": [
+          "AuthError",
+          "BadRequest",
+          "NotFound",
+          "RateLimited"
+        ]
+      },
+      "put": {
+        "operationId": "put_communitiesCommunityIdModerationPolicy",
+        "parameters": [
+          {
+            "name": "communityId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "expected_policy_revision": {
+                    "type": "string"
+                  },
+                  "decisions": {
+                    "type": "object",
+                    "properties": {
+                      "harassment": {
+                        "$ref": "#/$defs/Union_"
+                      },
+                      "harassment/threatening": {
+                        "$ref": "#/$defs/Union_"
+                      },
+                      "hate": {
+                        "$ref": "#/$defs/Union_"
+                      },
+                      "hate/threatening": {
+                        "$ref": "#/$defs/Union_"
+                      },
+                      "illicit": {
+                        "$ref": "#/$defs/Union_"
+                      },
+                      "illicit/violent": {
+                        "$ref": "#/$defs/Union_"
+                      },
+                      "self-harm": {
+                        "$ref": "#/$defs/Union_"
+                      },
+                      "self-harm/intent": {
+                        "$ref": "#/$defs/Union_"
+                      },
+                      "self-harm/instructions": {
+                        "$ref": "#/$defs/Union_"
+                      },
+                      "sexual": {
+                        "$ref": "#/$defs/Union_"
+                      },
+                      "sexual/minors": {
+                        "$ref": "#/$defs/Union_"
+                      },
+                      "violence": {
+                        "$ref": "#/$defs/Union_"
+                      },
+                      "violence/graphic": {
+                        "$ref": "#/$defs/Union_"
+                      }
+                    },
+                    "required": [
+                      "harassment",
+                      "harassment/threatening",
+                      "hate",
+                      "hate/threatening",
+                      "illicit",
+                      "illicit/violent",
+                      "self-harm",
+                      "self-harm/intent",
+                      "self-harm/instructions",
+                      "sexual",
+                      "sexual/minors",
+                      "violence",
+                      "violence/graphic"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "expected_policy_revision",
+                  "decisions"
+                ],
+                "additionalProperties": false,
+                "$defs": {
+                  "Union_": {
+                    "type": "string",
+                    "enum": [
+                      "permit",
+                      "review",
+                      "block"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "version": {
+                      "type": "string",
+                      "enum": [
+                        "community-moderation-policy-v1"
+                      ]
+                    },
+                    "community_id": {
+                      "type": "string"
+                    },
+                    "policy_revision_id": {
+                      "type": "string"
+                    },
+                    "policy_hash": {
+                      "type": "string"
+                    },
+                    "revision": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "string",
+                          "enum": [
+                            "Infinity",
+                            "-Infinity",
+                            "NaN"
+                          ]
+                        }
+                      ]
+                    },
+                    "platform_floor_revision_id": {
+                      "type": "string"
+                    },
+                    "platform_floor_hash": {
+                      "type": "string"
+                    },
+                    "categories": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "category": {
+                            "type": "string",
+                            "enum": [
+                              "harassment",
+                              "harassment/threatening",
+                              "hate",
+                              "hate/threatening",
+                              "illicit",
+                              "illicit/violent",
+                              "self-harm",
+                              "self-harm/intent",
+                              "self-harm/instructions",
+                              "sexual",
+                              "sexual/minors",
+                              "violence",
+                              "violence/graphic"
+                            ]
+                          },
+                          "input_types": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "enum": [
+                                "text",
+                                "image"
+                              ]
+                            }
+                          },
+                          "platform_floor_decision": {
+                            "$ref": "#/$defs/Union_"
+                          },
+                          "community_decision": {
+                            "$ref": "#/$defs/Union_"
+                          },
+                          "effective_decision": {
+                            "$ref": "#/$defs/Union_"
+                          },
+                          "locked": {
+                            "type": "boolean"
+                          },
+                          "permit_rating": {
+                            "type": "string",
+                            "enum": [
+                              "general",
+                              "adult_18"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "category",
+                          "input_types",
+                          "platform_floor_decision",
+                          "community_decision",
+                          "effective_decision",
+                          "locked",
+                          "permit_rating"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "updated_at": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "version",
+                    "community_id",
+                    "policy_revision_id",
+                    "policy_hash",
+                    "revision",
+                    "platform_floor_revision_id",
+                    "platform_floor_hash",
+                    "categories",
+                    "updated_at"
+                  ],
+                  "additionalProperties": false,
+                  "$defs": {
+                    "Union_": {
+                      "type": "string",
+                      "enum": [
+                        "permit",
+                        "review",
+                        "block"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "404": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "not_found"
+            ]
+          },
+          "409": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "conflict"
+            ]
+          },
+          "429": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "rate_limited"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "userOrAdmin"
+          }
+        },
+        "x-errors": [
+          "AuthError",
+          "BadRequest",
+          "Conflict",
+          "NotFound",
+          "RateLimited"
+        ]
+      }
+    },
     "/comments/{commentId}/reports": {
       "post": {
         "operationId": "post_commentsCommentIdReports",
         "parameters": [
           {
             "name": "commentId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "idempotency_key": {
+                    "type": "string"
+                  },
+                  "reason_code": {
+                    "type": "string",
+                    "enum": [
+                      "spam",
+                      "harassment",
+                      "hate",
+                      "sexual_content",
+                      "graphic_content",
+                      "misleading",
+                      "other"
+                    ]
+                  }
+                },
+                "required": [
+                  "idempotency_key",
+                  "reason_code"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "report_id": {
+                      "type": "string"
+                    },
+                    "case_ref": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "open",
+                        "coalesced"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "report_id",
+                    "case_ref",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "403": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "membership_required"
+            ]
+          },
+          "404": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "not_found"
+            ]
+          },
+          "409": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "type": "object",
+                          "properties": {
+                            "reason_code": {
+                              "type": "string",
+                              "enum": [
+                                "idempotency_conflict"
+                              ]
+                            },
+                            "submission_id": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "reason_code",
+                            "submission_id"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable",
+                        "details"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "conflict"
+            ]
+          },
+          "429": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "rate_limited"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "userOrAdmin"
+          }
+        },
+        "x-errors": [
+          "AuthError",
+          "BadRequest",
+          "IdempotencyConflict",
+          "MembershipRequired",
+          "NotFound",
+          "RateLimited"
+        ]
+      }
+    },
+    "/posts/{postId}/reports": {
+      "post": {
+        "operationId": "post_postsPostIdReports",
+        "parameters": [
+          {
+            "name": "postId",
             "in": "path",
             "required": true,
             "schema": {
@@ -54232,22 +56936,47 @@
               "schema": {
                 "type": "object",
                 "properties": {
+                  "version": {
+                    "type": "string",
+                    "enum": [
+                      "moderation-case-action-v2"
+                    ]
+                  },
                   "idempotency_key": {
                     "type": "string"
+                  },
+                  "expected_case_revision": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "string",
+                        "enum": [
+                          "Infinity",
+                          "-Infinity",
+                          "NaN"
+                        ]
+                      }
+                    ]
                   },
                   "action": {
                     "type": "string",
                     "enum": [
-                      "approve",
-                      "dismiss",
+                      "approve_as_general",
+                      "approve_as_adult_18",
+                      "reject",
+                      "dismiss_report",
                       "hide",
-                      "remove",
+                      "raise_rating_to_adult_18",
                       "restore"
                     ]
                   }
                 },
                 "required": [
+                  "version",
                   "idempotency_key",
+                  "expected_case_revision",
                   "action"
                 ],
                 "additionalProperties": false
@@ -54263,6 +56992,12 @@
                 "schema": {
                   "type": "object",
                   "properties": {
+                    "version": {
+                      "type": "string",
+                      "enum": [
+                        "moderation-case-action-result-v2"
+                      ]
+                    },
                     "action_id": {
                       "type": "string"
                     },
@@ -54272,10 +57007,12 @@
                     "action": {
                       "type": "string",
                       "enum": [
-                        "approve",
-                        "dismiss",
+                        "approve_as_general",
+                        "approve_as_adult_18",
+                        "reject",
+                        "dismiss_report",
                         "hide",
-                        "remove",
+                        "raise_rating_to_adult_18",
                         "restore"
                       ]
                     },
@@ -54285,11 +57022,12 @@
                         "held",
                         "published",
                         "hidden",
-                        "removed"
+                        "blocked"
                       ]
                     }
                   },
                   "required": [
+                    "version",
                     "action_id",
                     "case_ref",
                     "action",
@@ -54627,6 +57365,59 @@
             "x-error-codes": [
               "rate_limited"
             ]
+          },
+          "500": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ]
           }
         },
         "x-auth": {
@@ -54640,6 +57431,7 @@
           "CommentsLocked",
           "Conflict",
           "IdempotencyConflict",
+          "InternalError",
           "NotFound",
           "RateLimited",
           "ReplyDepthExceeded"

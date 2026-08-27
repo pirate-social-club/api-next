@@ -2,6 +2,10 @@ import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
 
 const alias = {
+  "@pirate/application/use-cases/content/community-moderation-runtime": new URL(
+    "../../packages/application/src/use-cases/content/community-moderation-runtime.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/application/namespace-ownership": new URL(
     "../../packages/application/src/namespace-ownership/index.ts",
     import.meta.url,

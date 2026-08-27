@@ -61,7 +61,6 @@ afterAll(async () => {
 });
 type RuntimeStore = TextPostStore["Service"] & {
   readonly reportComment: NonNullable<TextPostStore["Service"]["reportComment"]>;
-  readonly moderateCaseAction: NonNullable<TextPostStore["Service"]["moderateCaseAction"]>;
 };
 
 const actor: M2Actor = { userId: "usr_text_order5", kind: "user" };
@@ -838,7 +837,7 @@ suite("Postgres 17 terminal text submission repository", () => {
     });
   }, 30_000);
 
-  test("publishes posts, comments, and approved held comments without a namespace binding", async () => {
+  test("publishes posts and comments without a namespace binding", async () => {
     await withSchema(async (admin, connection) => {
       const communityId = "community_123e4567-e89b-42d3-a456-426614174000";
       await admin.query(
@@ -936,71 +935,6 @@ suite("Postgres 17 terminal text submission repository", () => {
         kind: "created",
         snapshot: { status: "published", published_resource: { kind: "comment" } },
       });
-
-      const heldText = "namespaceless held comment";
-      const heldInput = { ...commentInput, body: heldText };
-      const heldCanonical = canonicalTextModerationInput(heldInput);
-      if (heldCanonical.kind === "rejected") throw new Error(heldCanonical.reason);
-      const heldRequestHash = await Effect.runPromise(
-        canonicalBodyHash({
-          endpoint: "comment",
-          community_id: communityId,
-          post_id: "namespaceless-comment-target",
-          body: {
-            idempotency_key: "namespaceless-held",
-            persona_id: actorPersonaId,
-            body: heldText,
-          },
-        }),
-      );
-      const heldResult = await runStore(connection, (store) =>
-        store.commitTerminal({
-          communityId,
-          actor,
-          personaId: actorPersonaId,
-          body: {
-            idempotency_key: "namespaceless-held",
-            persona_id: actorPersonaId,
-            body: heldText,
-          },
-          moderationInput: heldInput,
-          idempotencyKey: "namespaceless-held",
-          requestHash: heldRequestHash,
-          operationId: "operation_namespaceless_held",
-          evaluation: {
-            ...commentEvaluation,
-            decision: "manual_review",
-            reason_codes: ["provider_unavailable"],
-            input_sha256: heldCanonical.sha256,
-          },
-          target: {
-            surface: "comment",
-            communityId,
-            postId: "namespaceless-comment-target",
-          },
-        }),
-      );
-      if (heldResult.kind !== "created" || heldResult.snapshot.review_ref === null) {
-        throw new Error("expected held namespaceless comment");
-      }
-      const actionHash = await Effect.runPromise(
-        canonicalBodyHash({
-          endpoint: "POST /moderation/cases/:caseRef/actions",
-          case_ref: heldResult.snapshot.review_ref,
-          body: { idempotency_key: "namespaceless-approve", action: "approve" },
-        }),
-      );
-      await expect(
-        runStore(connection, (store) =>
-          store.moderateCaseAction({
-            caseRef: heldResult.snapshot.review_ref as string,
-            actor: { ...actor, scopes: ["moderator"] },
-            idempotencyKey: "namespaceless-approve",
-            action: "approve",
-            requestHash: actionHash,
-          }),
-        ),
-      ).resolves.toMatchObject({ action: "approve", targetStatus: "published" });
     });
   }, 30_000);
 
@@ -1280,7 +1214,7 @@ suite("Postgres 17 terminal text submission repository", () => {
     });
   }, 30_000);
 
-  test("reports coalesce, held state and approval are atomic, and invalid visibility pairs fail", async () => {
+  test("reports coalesce and held state is atomic", async () => {
     await withSchema(async (admin, connection) => {
       await insertCommentPost(admin);
       const requestHash = await commentRequestHash("comment-order6-report", commentBody.body);
@@ -1387,7 +1321,6 @@ suite("Postgres 17 terminal text submission repository", () => {
       );
       if (heldResult.kind !== "created" || heldResult.snapshot.review_ref === null)
         throw new Error("expected held comment");
-      const heldCaseRef = heldResult.snapshot.review_ref;
       const heldCounts = await admin.query(
         `SELECT
            (SELECT count(*)::int FROM text_content_held_revisions
@@ -1415,246 +1348,6 @@ suite("Postgres 17 terminal text submission repository", () => {
         comment_count: 1,
         outbox: 0,
       });
-      const actionHash = (key: string, action: string) =>
-        Effect.runPromise(
-          canonicalBodyHash({
-            endpoint: "POST /moderation/cases/:caseRef/actions",
-            case_ref: heldCaseRef,
-            body: { idempotency_key: key, action },
-          }),
-        );
-      const moderator = { ...actor, scopes: ["moderator"] };
-      const authorApproveHash = await actionHash("action-order6-author-approve", "approve");
-      const authorApproveFailure = await runStore(connection, (store) =>
-        store.moderateCaseAction({
-          caseRef: heldCaseRef,
-          actor,
-          idempotencyKey: "action-order6-author-approve",
-          action: "approve",
-          requestHash: authorApproveHash,
-        }),
-      ).then(
-        () => null,
-        (error: unknown) => error,
-      );
-      expect(authorApproveFailure).toMatchObject({
-        _tag: "TextPostRepositoryError",
-        reason: "not-found",
-      });
-      const dismissHash = await actionHash("action-order6-dismiss", "dismiss");
-      const dismissFailure = await runStore(connection, (store) =>
-        store.moderateCaseAction({
-          caseRef: heldCaseRef,
-          actor: moderator,
-          idempotencyKey: "action-order6-dismiss",
-          action: "dismiss",
-          requestHash: dismissHash,
-        }),
-      ).then(
-        () => null,
-        (error: unknown) => error,
-      );
-      expect(dismissFailure).toMatchObject({
-        _tag: "TextPostRepositoryError",
-        reason: "action-conflict",
-      });
-      const approveHash = await actionHash("action-order6-approve", "approve");
-      const approved = await runStore(connection, (store) =>
-        store.moderateCaseAction({
-          caseRef: heldCaseRef,
-          actor: moderator,
-          idempotencyKey: "action-order6-approve",
-          action: "approve",
-          requestHash: approveHash,
-        }),
-      );
-      expect(approved).toMatchObject({
-        caseRef: heldCaseRef,
-        action: "approve",
-        targetStatus: "published",
-      });
-      const approvedReplay = await runStore(connection, (store) =>
-        store.moderateCaseAction({
-          caseRef: heldCaseRef,
-          actor: moderator,
-          idempotencyKey: "action-order6-approve",
-          action: "approve",
-          requestHash: approveHash,
-        }),
-      );
-      expect(approvedReplay).toEqual(approved);
-      const approvedSubmissionReplay = await runStore(connection, (store) =>
-        store.commitTerminal({
-          communityId: "text-community",
-          actor,
-          personaId: actorPersonaId,
-          body: { idempotency_key: heldKey, persona_id: actorPersonaId, body: "held comment" },
-          moderationInput: heldInput,
-          idempotencyKey: heldKey,
-          requestHash: heldHash,
-          operationId: "operation_comment_held_replay",
-          evaluation: {
-            ...commentEvaluation,
-            decision: "manual_review",
-            reason_codes: ["provider_unavailable"],
-            input_sha256: heldCanonical.sha256,
-          },
-          target: { surface: "comment", communityId: "text-community", postId: "text-order6-post" },
-        }),
-      );
-      expect(approvedSubmissionReplay).toMatchObject({
-        kind: "replay",
-        snapshot: { status: "manual_review", published_resource: null },
-      });
-      const approvedRead = await runStore(connection, (store) =>
-        store.getForAuthor({ submissionId: heldResult.snapshot.submission_id, actor }),
-      );
-      expect(approvedRead).toMatchObject({
-        status: "published",
-        published_resource: { kind: "comment" },
-      });
-      const counts = await admin.query(
-        `SELECT
-           (SELECT count(*)::int FROM comment_reports) AS reports,
-           (SELECT count(*)::int FROM text_moderation_cases) AS cases,
-           (SELECT count(*)::int FROM comment_moderation_cases) AS comment_cases,
-           (SELECT count(*)::int FROM comments) AS comments,
-           (SELECT comment_count FROM posts WHERE post_id = 'text-order6-post') AS comment_count,
-           (SELECT count(*)::int FROM content_publication_outbox) AS outbox`,
-      );
-      expect(counts.rows[0]).toEqual({
-        reports: 2,
-        cases: 1,
-        comment_cases: 2,
-        comments: 2,
-        comment_count: 2,
-        outbox: 6,
-      });
-
-      const awaitActionHash = (caseRef: string, key: string, action: string) =>
-        Effect.runPromise(
-          canonicalBodyHash({
-            endpoint: "POST /moderation/cases/:caseRef/actions",
-            case_ref: caseRef,
-            body: { idempotency_key: key, action },
-          }),
-        );
-      const runAction = async (caseRef: string, key: string, action: string) => {
-        const requestHash = await awaitActionHash(caseRef, key, action);
-        return runStore(connection, (store) =>
-          store.moderateCaseAction({
-            caseRef,
-            actor: moderator,
-            idempotencyKey: key,
-            action: action as "approve" | "dismiss" | "hide" | "remove" | "restore",
-            requestHash,
-          }),
-        );
-      };
-      const expectActionConflict = async (caseRef: string, key: string, action: string) => {
-        let actionFailure: unknown = await runAction(caseRef, key, action).then(
-          () => null,
-          (error: unknown) => error,
-        );
-        while (Array.isArray(actionFailure)) actionFailure = actionFailure[0];
-        expect(actionFailure).toMatchObject({
-          _tag: "TextPostRepositoryError",
-          reason: "action-conflict",
-        });
-      };
-      const resolvedCaseHash = await awaitActionHash(
-        report.caseRef,
-        "action-order6-resolved-case",
-        "restore",
-      );
-      const resolvedCaseAction = await runStore(connection, (store) =>
-        store.moderateCaseAction({
-          caseRef: report.caseRef,
-          actor: moderator,
-          idempotencyKey: "action-order6-resolved-case",
-          action: "restore",
-          requestHash: resolvedCaseHash,
-        }),
-      ).then(
-        () => null,
-        (error: unknown) => error,
-      );
-      let resolvedCaseFailure: unknown = resolvedCaseAction;
-      while (Array.isArray(resolvedCaseFailure)) resolvedCaseFailure = resolvedCaseFailure[0];
-      expect(resolvedCaseFailure).toMatchObject({
-        _tag: "TextPostRepositoryError",
-        reason: "action-conflict",
-      });
-      const hidden = await runAction(report.caseRef, "action-order6-hide", "hide");
-      expect(hidden).toMatchObject({ targetStatus: "hidden" });
-      const afterHideHash = await reportHash("report-order6-3");
-      const afterHideReport = await runStore(connection, (store) =>
-        store.reportComment({
-          commentId,
-          actor,
-          idempotencyKey: "report-order6-3",
-          reasonCode: "spam",
-          requestHash: afterHideHash,
-        }),
-      );
-      expect(afterHideReport).toMatchObject({ status: "open" });
-      await expectActionConflict(afterHideReport.caseRef, "action-order6-hide-hidden", "hide");
-      const restored = await runAction(
-        afterHideReport.caseRef,
-        "action-order6-restore-hidden",
-        "restore",
-      );
-      expect(restored).toMatchObject({ targetStatus: "published" });
-      const afterRestoreHash = await reportHash("report-order6-4");
-      const afterRestoreReport = await runStore(connection, (store) =>
-        store.reportComment({
-          commentId,
-          actor,
-          idempotencyKey: "report-order6-4",
-          reasonCode: "spam",
-          requestHash: afterRestoreHash,
-        }),
-      );
-      await expectActionConflict(
-        afterRestoreReport.caseRef,
-        "action-order6-restore-published",
-        "restore",
-      );
-      const removed = await runAction(afterRestoreReport.caseRef, "action-order6-remove", "remove");
-      expect(removed).toMatchObject({ targetStatus: "removed" });
-      const afterRemoveHash = await reportHash("report-order6-5");
-      const afterRemoveReport = await runStore(connection, (store) =>
-        store.reportComment({
-          commentId,
-          actor,
-          idempotencyKey: "report-order6-5",
-          reasonCode: "spam",
-          requestHash: afterRemoveHash,
-        }),
-      );
-      await expectActionConflict(
-        afterRemoveReport.caseRef,
-        "action-order6-remove-removed",
-        "remove",
-      );
-      const restoredRemoved = await runAction(
-        afterRemoveReport.caseRef,
-        "action-order6-restore-removed",
-        "restore",
-      );
-      expect(restoredRemoved).toMatchObject({ targetStatus: "published" });
-      const visibilityEffects = await admin.query<{
-        readonly event_type: string;
-        readonly effect_key: string;
-      }>(
-        `SELECT event_type, effect_key
-           FROM content_publication_outbox
-          WHERE submission_id = $1 AND event_type = 'comment_cache_invalidation'
-          ORDER BY effect_key`,
-        [publishedResult.snapshot.submission_id],
-      );
-      expect(visibilityEffects.rows).toHaveLength(5);
-      expect(new Set(visibilityEffects.rows.map((row) => row.effect_key)).size).toBe(5);
     });
   }, 30_000);
 });

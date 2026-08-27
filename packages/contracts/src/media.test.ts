@@ -205,7 +205,7 @@ describe("song media R1 derived-analysis contracts", () => {
       "/moderation/media-post-submissions/:submissionId/actions",
     );
     expect(ModerateMediaPostSubmission.auth).toEqual({
-      policy: { kind: "admin", scope: "moderation" },
+      policy: { kind: "userOrAdmin" },
     });
     expect(() =>
       decode(ModerateMediaPostSubmission.request?.body as Schema.Schema<unknown>, {
