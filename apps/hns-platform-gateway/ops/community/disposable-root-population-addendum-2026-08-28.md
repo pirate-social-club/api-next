@@ -92,16 +92,26 @@ gateway provenance and remains out of scope.
 
 ## Decisions still required
 
-The root nomination does not settle the remaining owner decisions:
+The workspace owner selected a two-stage acceptance sequence on 2026-08-28.
+Stage one uses mainnet `11qx` and a freshly provisioned public gateway with the
+staging application, database, and Privy tuple. It is the true public-HNS and
+free-handle acceptance gate, but it excludes the canonical
+`https://pirate.sc/c/11qx` route and every production migration or data-plane
+write. A separately populated and authorized stage two may later prove the
+canonical route and production composition.
 
-1. whether to run the isolated staging shadow before the public-root pilot;
-2. which production-capable application and database environment hosts the
-   public mainnet pilot;
-3. the exact root, gateway, database, protected-origin, credential, replay,
-   deployment, and evidence tuple isolated from every production root tuple;
-4. whether every missing migration from the live production ledger through
-   the exact selected deployment commit is separately authorized; and
-5. the exact scope and rollback limits for each DNS, HNS, provider,
+The root nomination and sequence decision do not settle the remaining owner
+decisions:
+
+1. the exact staging gateway, database, protected-origin, credential, replay,
+   deployment, and evidence tuple, isolated from production;
+2. resolution of the Solid/api-next protected-origin topology contradiction
+   before any protected resource is created;
+3. every missing staging migration through the exact stage-one deployment
+   commit and its separate authorization, without production database access;
+4. whether to populate and authorize the distinct production second stage,
+   including its irreversible production migration and pilot-data writes; and
+5. the exact scope and rollback limits for each stage's DNS, HNS, provider,
    deployment, credential, key, certificate, database, and transaction
    mutation.
 

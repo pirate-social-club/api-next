@@ -30,6 +30,32 @@ https://<handle-label>.<root> public hosted persona origin
 The production `pirate` root, `app.pirate`, its certificate, its DNSSEC keys,
 and its gateway release are preservation targets, not rehearsal inputs.
 
+## Staged acceptance amendment — 2026-08-28
+
+The first live pilot uses Handshake mainnet and the disposable `11qx` root,
+but it is hosted by the staging application, database, and Privy tuple. This is
+a true acceptance gate for public HNS resolution, NS/glue and DS delegation,
+DNSSEC, DANE, the freshly provisioned gateway, the direct `app.11qx` origin,
+the hosted-persona origin, and the complete free handle lifecycle. It is not a
+non-binding shadow and it does not prove the canonical
+`https://pirate.sc/c/11qx` route.
+
+The canonical `pirate.sc` route, production Privy composition, and production
+application/database integration move to a separately populated and separately
+authorized second pilot. Passing stage one does not authorize stage two. Stage
+one must not apply a production migration, create production activation,
+offering, reservation, claim, grant, route, replay, or evidence state, or use
+the production Privy application. Any production data-plane write remains a
+hard stop until the second pilot's exact migration and mutation ceremonies are
+accepted.
+
+Each stage has one internally coherent environment tuple. The mainnet root and
+public gateway evidence from stage one may be retained for comparison, but no
+database identity, activation generation, replay store, protected origin,
+credential, deployment reference, or evidence record may be shared across the
+staging and production tuples. Moving from stage one to stage two is a new
+pilot population, not promotion of staging rows in place.
+
 ## Combined rehearsal amendment — 2026-08-27
 
 This amendment consolidates the third-party-root `hosted_persona_v1` pilot
@@ -57,26 +83,27 @@ ceremony.
 
 ### Owner decision register
 
-Document preparation may continue, but population and execution stop until
-the workspace owner records all four decisions together:
+Document preparation may continue, but stage-one population and execution stop
+until the workspace owner records these decisions:
 
 1. one exact disposable Handshake root, its network, and access-controlled
    custody proof;
-2. whether the public pilot is hosted by the staging or production-capable
-   application and database environment;
-3. a distinct root, network, gateway, database, protected-origin, credential,
-   replay, deployment, and evidence tuple from any production root tuple; and
-4. whether the required `0049`-onward production migration ceremony is
-   authorized before the pilot, if the production-capable environment is
-   selected.
+2. the staging application, database, Privy, gateway, protected-origin,
+   credential, replay, deployment, and evidence tuple for the first live
+   pilot;
+3. the exact stage-one migration and mutation scopes, including rollback
+   limits and proof that production is unreachable from the selected tuple.
 
-Staging containment is not permission to publish a root. A staging shadow may
-prove code paths and isolated transport, but it cannot prove public HNS,
-DNSSEC, DANE, browser-origin, or production identity behavior. Conversely,
-selecting a production-capable environment does not authorize its migration
-ceremony or any root mutation. The populated addendum must reject any attempt
-to split one root across staging and production or to reuse the platform's
-protected `pirate` root.
+The production tuple and its migration and data-plane mutation decisions are
+deferred. They become hard stops only if the workspace owner elects to
+populate the optional second pilot after stage one passes.
+
+Staging containment is not permission to publish a root. Stage one requires a
+separately authorized mainnet root mutation and real public HNS, DNSSEC, DANE,
+gateway, and browser-origin proof while keeping application and database state
+in staging. It proves no production identity or canonical `pirate.sc` behavior.
+The populated addendum must reject any attempt to mix the two environment
+tuples or to reuse the platform's protected `pirate` root.
 
 ### Frozen handle pilot profile
 
@@ -198,8 +225,10 @@ document, the combined transcript must prove:
   stale and replayed evidence remains unusable.
 
 Passing the community application surface does not imply that the handle
-surface passed, and passing a staging shadow proves neither public surface.
-All three evidence classes must be reported separately.
+surface passed. A private staging shadow proves neither public surface; the
+stage-one mainnet pilot is distinct because it exercises the public root and
+gateway while retaining staging application and database state. Community,
+handle, and canonical production-route evidence must be reported separately.
 
 ## Decision summary and stop conditions
 
@@ -209,10 +238,10 @@ Solid production ingress assembly, and the separate VPS community executable
 all exist at the accepted repository heads described below. Every declared
 HNS enable switch remains `"false"`, so nothing is live.
 
-This plan proposes the production Pirate environment tuple because only that
-tuple can satisfy the required canonical route at `pirate.sc`. A staging
-preflight may be planned separately, but successful staging evidence cannot
-be substituted for this rehearsal's production-tuple acceptance.
+This plan selects the staging application/database tuple for the first live
+mainnet pilot. That stage deliberately excludes the canonical route at
+`pirate.sc`; proving that route is a separate production-tuple acceptance run
+that cannot be inferred from stage one or performed under its authorization.
 
 No disposable root is proposed yet. The read-only HSD observer proved public
 chain state for several names, but no wallet or owner-account source was
@@ -322,9 +351,10 @@ nevertheless rejects equal `HNS_COMMUNITY_APP_API_ORIGIN` and
 `HNS_COMMUNITY_APP_AUTHORITY_ORIGIN` values. The proposed two-application
 topology cannot assemble until
 `solid-hns-community-app-shared-protected-api-origin` is reviewed and merged.
-This source defect is a hard stop for both the staging preflight and this
-production plan; it may not be worked around by inventing a third Access
-application or api-next deployment in an operations addendum. The Durable
+This source defect is a hard stop for stage one and, unless independently
+resolved in a later populated addendum, stage two. It may not be worked around
+by inventing a third Access application or api-next deployment in an
+operations addendum. The Durable
 Object migration tag is `v4`, the class is
 `HnsForwarderReplayStoreDO`, and the consumer scope is
 `pirate:hns-forwarder-v3:api-next-community-app-api:v1`.
@@ -731,9 +761,36 @@ commit and compare the complete `checksums.json` ledger with production. Any
 new migration extends the required ceremony before the candidate can be built
 or deployed.
 
-## Frozen environment tuple proposal
+## Frozen environment tuple proposals
 
-Subject to separate acceptance, the proposed tuple is:
+Subject to separate population and mutation authorization, the selected
+stage-one tuple is:
+
+| Member | Proposed exact value |
+| --- | --- |
+| Pirate environment | `staging` |
+| Solid canonical origin | `https://web-next-staging.pirate.sc` |
+| api-next origin | `https://api-next-staging.pirate.sc` |
+| Privy application | `cmsw5pis300b80cladbxx7bsr` |
+| Handshake network | `main` |
+| disposable root | `11qx` |
+| staging community route | `https://web-next-staging.pirate.sc/c/11qx` |
+| public HNS origin | `https://app.11qx` |
+| Solid Worker | `__UNRESOLVED_EXACT_STAGING_SOLID_WORKER__` |
+| api-next Worker | `__UNRESOLVED_EXACT_STAGING_API_NEXT_WORKER__` |
+| control plane | `__UNRESOLVED_EXACT_STAGING_HYPERDRIVE_AND_POSTGRES_ORIGIN__` |
+| gateway authority endpoint | `__UNRESOLVED_EXACT_STAGING_GATEWAY_AUTHORITY_ENDPOINT__` without credentials |
+| Solid protected origin | `__UNRESOLVED_EXACT_STAGING_SOLID_PROTECTED_ORIGIN__` |
+| api-next protected origin | `__UNRESOLVED_EXACT_STAGING_API_PROTECTED_ORIGIN__` |
+| private authority origin | `__UNRESOLVED_EXACT_STAGING_AUTHORITY_PROTECTED_ORIGIN__` |
+
+The unresolved staging members are hard stops. The populated addendum must
+prove that every selected staging resource is isolated from production and
+that the mainnet gateway cannot write production application or database
+state. Stage one does not use `https://pirate.sc/c/11qx` and cannot satisfy or
+claim canonical production-route acceptance.
+
+The separately gated stage-two production proposal is:
 
 | Member | Proposed exact value |
 | --- | --- |
@@ -745,23 +802,25 @@ Subject to separate acceptance, the proposed tuple is:
 | control plane | Hyperdrive `884b68c5a7904982a86620ed90032b77` and its production Postgres origin |
 | gateway authority endpoint | `postgresql://us-east-1.pg.psdb.cloud:5432/postgres?sslmode=verify-full` without credentials |
 | Privy application | `cmnbdx9xk00ty0clapn2q8pdj` |
-| canonical route | `https://pirate.sc/c/__UNRESOLVED_OWNER_VERIFIED_DISPOSABLE_ROOT__` |
-| HNS origin | `https://app.__UNRESOLVED_OWNER_VERIFIED_DISPOSABLE_ROOT__` |
+| canonical route | `https://pirate.sc/c/11qx` |
+| HNS origin | `https://app.11qx` |
 | Solid protected origin candidate | `https://hns-community-ingress.pirate.sc` |
 | api-next protected origin candidate | `https://hns-community-api.pirate.sc` |
 | private authority origin candidate | `https://hns-community-api.pirate.sc` (same protected api-next origin) |
 
-The alternative staging tuple is
-`https://web-next-staging.pirate.sc`,
-`https://api-next-staging.pirate.sc`, and Privy application
-`cmsw5pis300b80cladbxx7bsr`. It is internally coherent for an engineering
-preflight, but it cannot produce the required canonical
-`https://pirate.sc/c/<root>` result and is not selected here.
+The production proposal shares the live production Postgres data plane and
+Privy application used by ordinary production traffic. Accepting stage two
+therefore authorizes neither a disposable sandbox nor reversible test state:
+its namespace activation, offering, reservation, claim, grant, route, replay,
+and evidence records are production writes, and cleanup is forward repair.
+The separately accepted stage-two transcript must state that consequence and
+name every production mutation explicitly.
 
-The two candidate protected hosts returned NXDOMAIN and were not present in
-the Worker custom-domain inventory at discovery. They are reservations in
-this draft only. Creating DNS, Worker domains, Access resources, or secrets
-for them is prohibited until the populated plan is accepted.
+The production candidate protected hosts returned NXDOMAIN and were not
+present in the Worker custom-domain inventory at discovery. They are
+stage-two reservations only. They must not be reused for stage one, and
+creating DNS, Worker domains, Access resources, or secrets for either stage is
+prohibited until that stage's populated plan is accepted.
 
 The following identity values remain unresolved:
 
@@ -802,17 +861,39 @@ The read-only candidate population for `11qx` is recorded separately in
 and unresolved-decision tracking only; it does not replace this plan's owner,
 environment, migration, or mutation authorization gates.
 
-A separately supplied read-only migration credential must then query the
-selected production database's authoritative migration ledger and prove that
-the complete ledger from 0001 through the exact deployment commit's latest
-migration is applied once, in order, with the repository-expected digests. At
-this checkpoint that means proving the recorded 0001-through-0048 state and
-the 0049-through-0055 gap, not merely checking the HNS migrations. The
-transcript also verifies that the target community and all three proposed
-activation ids are absent before creation. The migration-reader credential is
-not reused by the gateway and cannot mutate schema or data.
+A separately supplied read-only migration credential must first query the
+selected staging database's authoritative migration ledger and prove that the
+complete ledger from 0001 through the exact stage-one deployment commit's
+latest migration is applied once, in order, with the repository-expected
+digests. The stage-one transcript also verifies that the target staging
+community and all proposed activation ids are absent before creation. Any
+missing staging migration requires its own exact authorization; the stage-one
+ceremony must not connect to or mutate production Postgres.
+
+If stage two is later populated, a different read-only ceremony must query the
+production database ledger and derive its complete missing range from the
+exact stage-two deployment commit. The recorded 0001-through-0048 state and
+0049-through-0055 gap below remain dated discovery evidence only. Applying any
+production migration and creating any production pilot state require the
+separate stage-two authorization. Neither migration-reader credential is
+reused by the gateway or allowed to mutate schema or data.
 
 ## Cloudflare Access and secret plan
+
+Protected-origin topology is unresolved for stage one. The current plan's
+single-origin api-next model must be reconciled against the Solid production-
+configuration assertion that the API and private-authority origins differ.
+The populated addendum must cite the exact Solid and api-next source commits,
+run both repositories' topology assertions, and select one source-closed
+model. If one repository requires distinct origins while the other requires
+one origin and one pinned Access audience, the operation stops for a reviewed
+code or contract correction. No protected DNS name, Worker custom domain,
+Access application, policy, audience, token, or secret may be created while
+that contradiction remains.
+
+The production values below are retained as the stage-two proposal. Stage one
+must populate its own staging protected origins and Access resources after the
+topology decision; it must not reuse these production reservations.
 
 The account requires an Access organization and two separate self-hosted
 applications. The team domain is not guessed. Once the workspace owner chooses
@@ -1141,26 +1222,37 @@ host. It never changes production `pirate` DNS or certificate material.
 ## Worker, Privy, and database activation sequence
 
 After all preflight stops are cleared and only under separately accepted
-mutation authority, sequence reversible layers as follows:
+mutation authority, run the sequence below against one accepted environment
+tuple. For stage one, every Worker, Access, Privy, database, route, replay, and
+evidence reference is the populated staging value. The migration backup and
+command cover only the staging database, and the Privy origin is added only to
+the staging application. The mainnet root, public gateway, authoritative DNS,
+DNSSEC, and DANE portions remain real public-HNS operations.
+
+The production names and discovery values retained below describe only the
+optional stage-two population. They are not stage-one defaults and may not be
+substituted into a stage-one transcript. Stage two must repeat source closure,
+population, backup, migration authorization, deployment, and acceptance as a
+new ceremony.
+
+Sequence the selected tuple as follows:
 
 1. Create the two Access applications, their exact-host custom domains and
    policies, then generate the three distinct service tokens into custody.
    Leave all HNS switches false.
 2. Install the forwarder registry and Access secret references in the selected
-   Solid and api-next production environments. Declare every value explicitly;
-   do not rely on Wrangler inheritance.
+   Solid and api-next environment. Declare every value explicitly; do not rely
+   on Wrangler inheritance.
 3. Re-run the read-only full-ledger comparison, take and independently verify
-   the accepted production database backup, then execute the separately
-   authorized migration command
-   `__UNRESOLVED_ACCEPTED_PRODUCTION_MIGRATION_COMMAND__` from the exact
-   deployment commit. At this checkpoint the expected forward range is 0049
-   through 0055 with the digests above; plan population must extend it through
-   any later migration in the selected commit. Apply each migration once and
-   in order, stop on the first precondition or digest failure, and prove the
-   complete post-state ledger before continuing. These migrations are
-   production data/schema mutations with forward-repair rather than Git
-   rollback; their authorization and recovery transcript are distinct from a
-   Worker deploy.
+   the accepted database backup, then execute the separately authorized
+   environment-specific migration command from the exact deployment commit.
+   Apply each migration once and in order, stop on the first precondition or
+   digest failure, and prove the complete post-state ledger before continuing.
+   Stage one must use the populated staging command and must prove that it
+   cannot reach production. The dated 0049-through-0055 production gap is not
+   a stage-one migration range. A stage-two population must derive the current
+   production range and record that production schema/data mutations use
+   forward repair rather than Git rollback.
 4. Deploy api-next from the accepted commit with switch false. This explicitly
    provisions `HNS_COMMUNITY_APP_API_REPLAY` and applies Durable Object
    migration `v4`. Record the new Worker version and preserve
@@ -1173,9 +1265,9 @@ mutation authority, sequence reversible layers as follows:
    `__UNRESOLVED_CURRENT_SOLID_ROLLBACK_VERSION__` as rollback. The discovery
    baseline was `d20fa9cc-2e3f-41c1-b76d-f73383e5ad26`, but it must be re-read
    at population time.
-6. Add exact Privy allowed origin `https://app.<root>` to production app
-   `cmnbdx9xk00ty0clapn2q8pdj` and add only the exact OAuth callback required
-   by the selected provider flow. The callback is
+6. Add exact Privy allowed origin `https://app.<root>` to the selected stage's
+   Privy application and add only the exact OAuth callback required by the
+   selected provider flow. The callback is
    `__UNRESOLVED_EXACT_OAUTH_CALLBACK_OR_EXPLICIT_NONE__`. Wildcards are
    prohibited. Passkeys remain unavailable on the HNS origin.
 7. Build and deploy the shadow VPS gateway, prove source closure, then deploy
@@ -1213,8 +1305,11 @@ for sale-namespace authority.
 The accepted transcript must prove all of the following without storing raw
 test credentials:
 
-- `https://pirate.sc/c/<root>` remains available before, during, and after
-  every promotion, suspension, recovery, revocation, and rollback.
+- Stage one proves the populated staging community route and
+  `https://app.<root>` before, during, and after every promotion, suspension,
+  recovery, revocation, and rollback. It does not claim evidence for
+  `https://pirate.sc/c/<root>`. Stage two, if separately authorized, must prove
+  that canonical route with the same lifecycle coverage.
 - Direct DNSKEY, DS, RRSIG, NSEC, A, explicit AAAA absence, and TLSA validation
   succeeds from both independent views. The served certificate SPKI SHA-256
   equals the TLSA 3 1 1 value exactly.
@@ -1236,8 +1331,10 @@ test credentials:
   `x-pirate-hns-forwarder-*` fields while serving ordinary traffic when HNS
   assembly is deliberately misconfigured.
 - The same Privy subject resolves to the same Pirate account, memberships,
-  personas, and existing wallet assignments on `pirate.sc` and `app.<root>`.
-  Session and CSRF cookies remain origin-local.
+  personas, and existing wallet assignments on the selected stage's canonical
+  application origin and `app.<root>`. Session and CSRF cookies remain
+  origin-local. Stage one uses only the staging Privy application; any
+  `pirate.sc` comparison belongs to stage two.
 - Merely visiting or joining creates no persona or wallet. The HNS origin
   begins with no inherited acting persona or wallet from another origin.
   Selection is explicit and the server rechecks active account ownership,
@@ -1285,18 +1382,19 @@ and confirmation period.
 
 ## Required owner ceremonies and separate authorization
 
-The workspace owner must supply or approve, in order:
+For stage one, the workspace owner must supply or approve, in order:
 
 1. read-only wallet/account proof and one unused root nomination;
-2. a migration-reader ceremony proving the complete ledger expected by the
-   exact deployment commit, followed by separate authorization for every
-   missing production migration before api-next deployment;
+2. a migration-reader ceremony proving the complete staging ledger expected
+   by the exact deployment commit, followed by separate authorization for
+   every missing staging migration before api-next deployment, with proof that
+   production Postgres is unreachable;
 3. resolution or explicit acceptance of the VPS verifier and backup
    `NOTCONFIGURED` conditions, plus separately authorized repair of the stale
    gateway installed-file manifest after confirming the active Caddy bytes;
 4. the Cloudflare Access team domain and authority to enable Access;
 5. one-time Access service-token and forwarder-key custody ceremonies;
-6. production Privy administration for the exact HNS origin and callback;
+6. staging Privy administration for the exact HNS origin and callback;
 7. disposable DNSSEC, AXFR, and DANE key/certificate custody and backup;
 8. independently identified DNS validation vantages;
 9. exact activation ids, generations, zone bytes, manifest bytes, Caddy bytes,
@@ -1305,14 +1403,20 @@ The workspace owner must supply or approve, in order:
 10. a final accepted addendum resolving every placeholder; and
 11. a new authorization naming each external mutation to execute.
 
-The requested mutation authorization must name Access organization,
+The requested stage-one mutation authorization must name Access organization,
 applications, policies, service tokens, Worker custom domains, secrets,
 bindings, Durable Object migrations and deployments; Privy origin/callback;
-production PostgreSQL migrations, database role and activation rows; VPS
+staging PostgreSQL migrations, database role and activation rows; VPS
 credentials, verifier-baseline repair, releases, units and Caddy bytes;
 PowerDNS zone, transfer and DNSSEC state; DANE certificate; backups; and the
 exact Handshake transaction digest and fee. Acceptance of this draft alone
 authorizes none of them.
+
+If stage two is elected after stage-one acceptance, it requires a new version
+of every applicable ceremony above naming the production tuple. That separate
+authorization must explicitly accept production PostgreSQL migrations,
+production Privy administration, irreversible production pilot-data writes,
+and forward-repair cleanup. No stage-one approval carries forward.
 
 Stop here. Do not execute this plan in the authorization step that accepts or
 amends it.
