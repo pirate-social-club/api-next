@@ -1394,3 +1394,23 @@ authority inventory, DNS-zone activation generation, app-host activation
 generation, and health observation, all internally bound to one another. That
 generation transition requires separate authorization. Privy, Caddy,
 PowerDNS, Handshake, and public exposure remain unchanged.
+
+### Successor authority and Solid assembly stop — 2026-08-28T10:11Z
+
+The authorized successor transition committed atomically. Authority inventory
+`2026-08-28.v2` expires at 2026-08-28T12:11:28Z. DNS-zone activation generation
+2 and its health generation 1 are current. The app host moved through suspended
+generation 2 to restored active generation 3 bound to DNS generation 2. A
+post-transaction resolver read proved every route, delegation, DS, retained
+zone, gateway-reference, SPKI, and health gate true.
+
+The repeated private `/` and `/api/health` probes then reached the upstream
+boundary but failed closed with 502. A credentialed direct request from the VPS
+passed Cloudflare Access and received the Solid Worker's redacted 503 assembly
+failure. The VPS Access client id and secret have value-only shapes with no
+header prefix or colon. The remaining failure surface is therefore the enabled
+Solid composition's five runtime secrets or their cross-secret consistency:
+the shared forwarder registry and the distinct API and authority Access token
+pairs. Execution stopped without reinstalling secrets or attempting another
+deployment. Privy, Caddy, PowerDNS, Handshake, certificates, and public DNS
+remain unchanged.
