@@ -54,6 +54,14 @@ export interface SessionIdentityStore {
   }) => Effect.Effect<SessionAccount | null, unknown>;
 }
 
+export interface PrivySessionCredentialStore {
+  /** Resolves one provider subject under the server-owned Privy application. */
+  readonly resolveCanonicalUserId: (input: {
+    readonly providerAppId: string;
+    readonly providerSubject: string;
+  }) => Effect.Effect<string | null, unknown>;
+}
+
 export interface SessionTokenMinter {
   /** The subject is always the canonical control-plane user id. */
   readonly mint: (input: {
@@ -96,6 +104,37 @@ export function makeSessionIdentityStore(
             : error,
         ),
       ),
+  };
+}
+
+/** Resolves the external Privy subject before applying api-next alias semantics. */
+export function makePrivySessionIdentityStore(input: {
+  readonly providerAppId: string;
+  readonly credentials: PrivySessionCredentialStore;
+  readonly canonicalIdentities: SessionIdentityStore;
+}): SessionIdentityStore {
+  const resolve = Effect.fn("PrivySessionIdentityStore.resolve")(function* ({
+    sourceUserId: providerSubject,
+  }: {
+    readonly sourceUserId: string;
+  }) {
+    if (!validCanonicalUserId(input.providerAppId) || !validCanonicalUserId(providerSubject)) {
+      return yield* new SessionIdentityRejected({ reason: "invalid" });
+    }
+    const canonicalUserId = yield* input.credentials.resolveCanonicalUserId({
+      providerAppId: input.providerAppId,
+      providerSubject,
+    });
+    if (canonicalUserId === null) {
+      return yield* new SessionIdentityRejected({ reason: "missing" });
+    }
+    if (!validCanonicalUserId(canonicalUserId)) {
+      return yield* new SessionIdentityRejected({ reason: "invalid" });
+    }
+    return yield* input.canonicalIdentities.resolve({ sourceUserId: canonicalUserId });
+  });
+  return {
+    resolve,
   };
 }
 

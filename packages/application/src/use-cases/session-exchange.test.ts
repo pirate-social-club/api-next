@@ -4,6 +4,7 @@ import { Cause, Effect, Exit, Result } from "effect";
 import {
   exchangeSession,
   MAX_BROWSER_SESSION_TTL_SECONDS,
+  makePrivySessionIdentityStore,
   makeSessionExchangeHandler,
   type SessionAccount,
   type SessionExchangeServices,
@@ -77,6 +78,63 @@ const servicesFor = (
 });
 
 describe("session exchange application use case", () => {
+  it("resolves a returning Privy subject before following canonical account aliases", async () => {
+    const credentialLookups: unknown[] = [];
+    const canonicalLookups: string[] = [];
+    const identityStore = makePrivySessionIdentityStore({
+      providerAppId: "privy-staging",
+      credentials: {
+        resolveCanonicalUserId: (input) => {
+          credentialLookups.push(input);
+          return Effect.succeed("usr_registered");
+        },
+      },
+      canonicalIdentities: {
+        resolve: ({ sourceUserId }) => {
+          canonicalLookups.push(sourceUserId);
+          return Effect.succeed(account);
+        },
+      },
+    });
+
+    const result = await Effect.runPromise(
+      identityStore.resolve({ sourceUserId: "did:privy:returning" }),
+    );
+
+    expect(credentialLookups).toEqual([
+      {
+        providerAppId: "privy-staging",
+        providerSubject: "did:privy:returning",
+      },
+    ]);
+    expect(canonicalLookups).toEqual(["usr_registered"]);
+    expect(result?.canonicalUserId).toBe("canonical-user");
+  });
+
+  it("fails closed before alias resolution when the Privy credential is missing", async () => {
+    let canonicalLookups = 0;
+    const identityStore = makePrivySessionIdentityStore({
+      providerAppId: "privy-staging",
+      credentials: { resolveCanonicalUserId: () => Effect.succeed(null) },
+      canonicalIdentities: {
+        resolve: () => {
+          canonicalLookups += 1;
+          return Effect.succeed(account);
+        },
+      },
+    });
+
+    const exit = await Effect.runPromiseExit(
+      identityStore.resolve({ sourceUserId: "did:privy:missing" }),
+    );
+
+    expect(failureOf(exit)).toMatchObject({
+      _tag: "SessionIdentityRejected",
+      reason: "missing",
+    });
+    expect(canonicalLookups).toBe(0);
+  });
+
   it("refuses an ordinary session until the first persona wallet is active", async () => {
     let mintCalls = 0;
     const exit = await Effect.runPromiseExit(

@@ -8,6 +8,10 @@ import {
   MAX_CANONICAL_ALIAS_HOPS,
 } from "@pirate/application";
 import { IdentityAccountDocument } from "@pirate/application/use-cases/identity-account";
+import {
+  type PrivySessionCredentialStore,
+  SessionIdentityRejected,
+} from "@pirate/application/use-cases/session-exchange";
 import { PersonaEvmWalletPreparationV1 } from "@pirate/contracts";
 import { platformPirateHandleStateV1Hash } from "@pirate/domain";
 import { Data, Effect, type Layer, Result, Schema } from "effect";
@@ -110,6 +114,11 @@ type CredentialRow = {
   readonly status: unknown;
   readonly user_status: unknown;
   readonly account: unknown;
+};
+
+type SessionCredentialRow = {
+  readonly canonical_user_id: unknown;
+  readonly status: unknown;
 };
 
 class IdentityRegistrationRace extends Data.TaggedError("IdentityRegistrationRace")<{
@@ -612,6 +621,55 @@ export function makeControlPlaneIdentityStore(
             : error,
         ),
       ),
+  };
+}
+
+/** Exact Privy-app credential lookup for returning browser sessions. */
+export function makeControlPlanePrivySessionCredentialStore(
+  runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+): PrivySessionCredentialStore {
+  const resolveCanonicalUserId = Effect.fn(
+    "ControlPlanePrivySessionCredentialStore.resolveCanonicalUserId",
+  )(function* ({
+    providerAppId,
+    providerSubject,
+  }: {
+    readonly providerAppId: string;
+    readonly providerSubject: string;
+  }) {
+    if (!validId(providerAppId) || !validId(providerSubject)) {
+      return yield* new SessionIdentityRejected({ reason: "invalid" });
+    }
+    const db = yield* ControlPlaneDb;
+    const result = yield* db.execute<SessionCredentialRow>({
+      label: "identity.session.resolve-privy-credential",
+      text: `SELECT canonical_user_id,status
+               FROM identity_credentials
+              WHERE provider='privy'
+                AND provider_app_id=$1
+                AND provider_subject=$2`,
+      values: [providerAppId, providerSubject],
+      readonly: true,
+    });
+    if (result.rows.length === 0) return null;
+    if (result.rows.length !== 1) {
+      return yield* new SessionIdentityRejected({ reason: "invalid" });
+    }
+    const row = result.rows[0];
+    if (row?.status === "tombstoned") {
+      return yield* new SessionIdentityRejected({ reason: "deleted" });
+    }
+    if (
+      row?.status !== "active" ||
+      typeof row.canonical_user_id !== "string" ||
+      !validId(row.canonical_user_id)
+    ) {
+      return yield* new SessionIdentityRejected({ reason: "invalid" });
+    }
+    return row.canonical_user_id;
+  });
+  return {
+    resolveCanonicalUserId: (input) => resolveCanonicalUserId(input).pipe(Effect.provide(runtime)),
   };
 }
 

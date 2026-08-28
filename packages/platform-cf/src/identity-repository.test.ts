@@ -7,6 +7,7 @@ import {
   IdentityRepositoryError,
   makeControlPlaneIdentityRegistrationStore,
   makeControlPlaneIdentityRepository,
+  makeControlPlanePrivySessionCredentialStore,
 } from "./identity-repository.ts";
 
 const account = (userId: string, handleId: string, label: string): IdentityAccountDocument => ({
@@ -58,6 +59,71 @@ const account = (userId: string, handleId: string, label: string): IdentityAccou
     reddit_verification_status: "not_started",
     reddit_import_status: "not_started",
   },
+});
+
+describe("returning Privy session credential resolution", () => {
+  test("resolves only the exact active credential under the configured app", async () => {
+    const seen: Array<{ readonly label: string; readonly values: readonly unknown[] }> = [];
+    const execute: ControlPlaneDb["Service"]["execute"] = (statement) => {
+      seen.push({ label: statement.label, values: statement.values });
+      return Effect.succeed({
+        rows: [
+          { canonical_user_id: "usr_registered", status: "active" },
+        ] as unknown as readonly never[],
+        rowCount: 1,
+      });
+    };
+    const store = makeControlPlanePrivySessionCredentialStore(
+      Layer.succeed(ControlPlaneDb, {
+        execute,
+        withTransaction: (use) => use({ execute }),
+      }),
+    );
+
+    await expect(
+      Effect.runPromise(
+        store.resolveCanonicalUserId({
+          providerAppId: "privy-staging",
+          providerSubject: "did:privy:returning",
+        }),
+      ),
+    ).resolves.toBe("usr_registered");
+    expect(seen).toEqual([
+      {
+        label: "identity.session.resolve-privy-credential",
+        values: ["privy-staging", "did:privy:returning"],
+      },
+    ]);
+  });
+
+  test("fails closed for ambiguous, tombstoned, and malformed credential rows", async () => {
+    for (const rows of [
+      [
+        { canonical_user_id: "usr_a", status: "active" },
+        { canonical_user_id: "usr_b", status: "active" },
+      ],
+      [{ canonical_user_id: "usr_a", status: "tombstoned" }],
+      [{ canonical_user_id: " padded ", status: "active" }],
+    ]) {
+      const execute: ControlPlaneDb["Service"]["execute"] = () =>
+        Effect.succeed({ rows: rows as unknown as readonly never[], rowCount: rows.length });
+      const store = makeControlPlanePrivySessionCredentialStore(
+        Layer.succeed(ControlPlaneDb, {
+          execute,
+          withTransaction: (use) => use({ execute }),
+        }),
+      );
+      const failure = await Effect.runPromise(
+        Effect.flip(
+          store.resolveCanonicalUserId({
+            providerAppId: "privy-staging",
+            providerSubject: "did:privy:returning",
+          }),
+        ),
+      );
+      expect(failure).toMatchObject({ _tag: "SessionIdentityRejected" });
+    }
+  });
 });
 
 function fakeDb() {
