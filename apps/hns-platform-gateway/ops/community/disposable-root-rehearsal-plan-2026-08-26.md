@@ -1342,3 +1342,32 @@ This checkpoint authorizes only a short-lived fixture refresh, both protected
 Worker dispatches, recording the resulting Worker versions, and the private
 positive-path probe through loopback listeners 4169/4171. It does not authorize
 Privy, Caddy, PowerDNS, Handshake, or public-exposure changes.
+
+### Execution result — 2026-08-28T06:22Z
+
+Health generation 3 was recorded for activation generation 1 with the exact
+manifest reference and certificate SPKI above. Its fixture lifetime ends at
+2026-08-28T07:21:23Z and it must not be treated as a public DNS observation.
+
+The protected api-next workflow run `33147666246` succeeded at the pinned
+commit and deployed enabled Worker version
+`e16794e6-7dd1-446d-8677-1ac8bc74a8f7`. The canonical API health probe
+returned 200 afterward.
+
+The protected Solid workflow run `33147666275` failed in its build-and-deploy
+step. The build completed and uploaded 87 static assets, but no new Solid
+Worker version was created. The generated `dist/ssr/wrangler.json` already
+named `pirate-web-solid-production` and contained the enabled production
+variables. The workflow nevertheless retained `CLOUDFLARE_ENV=production`
+while invoking Wrangler against that flattened generated configuration.
+Wrangler attempted to select a second, absent production environment and
+reported that the target Worker did not exist and its five required secrets
+were unset. The canonical Solid origin remained healthy with HTTP 200; both
+Access-protected boundaries continued to return 401 without credentials.
+
+Execution stopped on that first failure. No retry or private positive-path
+probe was performed. A reviewed workflow correction must prevent Wrangler from
+reapplying an environment to the flattened generated configuration, prove the
+resulting target name before mutation, and receive a new authorization for one
+corrected Solid deployment attempt. The health fixture must be refreshed again
+if it expires before that attempt.
