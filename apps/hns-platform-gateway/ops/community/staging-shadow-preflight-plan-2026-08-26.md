@@ -45,8 +45,10 @@ host to Caddy, or represent loopback evidence as a public-root pilot.
 The handle-shadow fixture and transcript must cover:
 
 1. one sale-namespace activation and one broad free offering using
-   `hns_ascii_ldh_1_63_v1`, the 8–32-character launch band,
-   `first_come_v1`, and the default one-active-grant cap;
+   `hns_ascii_ldh_1_63_v1`, a seller-narrowed 8–15-character launch band,
+   `first_come_v1`, and the default one-active-grant cap; this is configuration
+   inside the ratified seller-narrowable 8–32 broad band, not a contract or
+   backend-grammar change;
 2. quote, reservation, claim, and grant creation for one existing
    wallet-backed public persona, with every immutable id, generation, and
    hash pinned through the sequence;
@@ -59,7 +61,15 @@ The handle-shadow fixture and transcript must cover:
 5. retained-grant recovery through fresh current authority and required fresh
    generations, with stale and replayed evidence still rejected; and
 6. offering suspension preventing a second quote while leaving the active
-   grant intact.
+   grant intact; and
+7. one label from the pinned platform-reserved set remaining unavailable
+   through both broad and exact precedence. Owner-authored namespace
+   blocklists are a parallel follow-up, not a prerequisite for this shadow or
+   the first public pilot.
+
+Any separately named optional exact-label fixture must use no more than 15
+characters for this launch rehearsal. The backend exact-label grammar remains
+1–63 characters and is not narrowed by this plan.
 
 The staging tuple must be isolated from every production tuple. A root,
 network, database, protected origin, gateway listener, credential, replay
