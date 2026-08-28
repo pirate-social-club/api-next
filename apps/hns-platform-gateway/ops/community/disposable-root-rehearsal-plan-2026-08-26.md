@@ -1308,3 +1308,37 @@ authorizes none of them.
 
 Stop here. Do not execute this plan in the authorization step that accepts or
 amends it.
+
+## Execution checkpoint — 2026-08-28
+
+The workspace owner accepted the production migration result through
+`0068_general_audience_song_covers.sql` and authorized the bounded private
+enablement checkpoint. Rotation of the exposed
+`hns-community-gateway-authority-v1` password is deferred as dated technical
+debt by explicit owner decision. The installed credential remains restricted
+to the thirteen resolver grants, is delivered through systemd
+`LoadCredential=`, and must be rotated before this rehearsal is converted into
+a retained production service.
+
+The active shadow manifest digest is
+`f795fef30b7b24c9eb6081ded4d180f3f385d6d398b6e855c306a3a0831df1e5`.
+Its embedded gateway certificate SPKI SHA-256 and the independently derived
+SPKI of the installed certificate are both
+`e5dd96b162d67af3016c1db8c19108dd93b5419c7c8eecc7e36c55f98f2d3f08`.
+The disposable certificate expires on 2026-09-27. Continuing the host beyond
+that date requires a separately reviewed certificate and TLSA rotation before
+expiry; the rehearsal certificate is not a durable production certificate.
+
+The protected enablement dispatches are pinned to api-next commit
+`89dfb7b2034898fea0673493d3a4c71ec4b1787e` and Solid commit
+`56771ed5b9bf6379ed67ab221ac59dd9ec7c3d4d`. Both remote `main` refs were
+verified at those exact commits immediately before this checkpoint. The
+api-next workflow requires the production ledger tip to remain exactly 0068.
+Both workflows must therefore be dispatched in the same execution session;
+any intervening api-next migration or movement of either remote `main`
+invalidates the checkpoint and stops execution.
+
+This checkpoint authorizes only a short-lived fixture refresh, both protected
+Worker dispatches, recording the resulting Worker versions, and the private
+positive-path probe through loopback listeners 4169/4171. It does not authorize
+Privy, Caddy, PowerDNS, Handshake, or public-exposure changes.
