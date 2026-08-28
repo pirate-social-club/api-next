@@ -1713,3 +1713,108 @@ caused by the authority token being absent from the service-auth policy, not
 by malformed GitHub credentials or a revoked token. Registry rotation remains
 mandatory before public exposure because the active key material was rendered
 in an earlier operator transcript.
+
+### Public end-to-end acceptance and operational closure — 2026-08-28
+
+The registry was rotated under custody reference
+`HNS_FORWARDER_V3_HMAC_KEY_REGISTRY`, version `2026-08-28-02`. The document
+bytes remain outside the repository. The registry was installed in api-next,
+Solid, and the gateway before the previous key was retired.
+
+The accepted gateway source is api-next merge commit
+`b0a61b31ad8a660047ee1ac517b6d595709cc4f2`. The community bundle SHA-256 is
+`ef0f210d94cfe06b0c444cd1e3031274aa4f0b5b29660a2432a060af9c1d4dd9`.
+The selected manifest and deployment reference use SHA-256
+`c71dad926193c155b38e8a2363f722d7d729cf1813882b7ff4a96ba3d09a9e23`.
+The selected release is
+`b0a61b3-ef0f210d-manifest-c71dad92`; release
+`488002c-5ee2fbb9-manifest-c54da255` remains the immediate rollback. The
+gateway unit continues to use `DynamicUser=yes` and four systemd
+`LoadCredential=` inputs.
+
+The current authority tuple is inventory `2026-08-28.v5`, DNS-zone activation
+generation 5, app-host activation generation 9, and health observation
+generation 2. A resolver read returned one current row and every route,
+delegation, DS, retained-zone, gateway-reference, SPKI, and health gate true.
+The generation-2 health fixture was recorded with a two-hour expiry after the
+same facts were independently verified against the public zone. It is not a
+substitute for a bound observer driver.
+
+The primary and secondary authorities returned the same SOA serial
+`2026080805`, DNSKEY/RRSIG set, IPv4 address `94.103.168.161`, and no AAAA
+record for `app.<root>`. Both returned TLSA `3 1 1
+e5dd96b162d67af3016c1db8c19108dd93b5419c7c8eecc7e36c55f98f2d3f08`.
+The SHA-256 of the SPKI served by the public TLS endpoint was exactly the same
+`e5dd96b1...f2d3f08` value. The disposable certificate expires on
+2026-09-27; continued service requires a certificate and TLSA rotation before
+that date.
+
+The gateway concurrency correction maps authority infrastructure failures to
+503/504 while retaining 421 for a completed resolution with no acceptable
+authority. It also adds bounded concurrent authority reads and in-flight
+coalescing with settle-time eviction. After promotion, three rounds of eight
+loopback requests returned 24 of 24 successful responses, two public rounds
+returned 16 of 16, and the final browser asset burst returned 12 of 12. The
+first synthetic burst after database-credential rotation contained one 503;
+three immediate successor rounds returned 24 of 24. This transient failure is
+retained in the record rather than discarded.
+
+The transient failures were traced to production-origin connection exhaustion,
+not to host authority. An abandoned operator database shell was stopped. Only
+idle, transaction-free production Hyperdrive connections were terminated.
+Hyperdrive configuration `884b68c5a7904982a86620ed90032b77` now has an
+origin connection limit of 8. The final inventory showed no active
+transactions, and gateway readiness remained 204 under the acceptance load.
+
+The least-privilege gateway database role credential was rotated. The first
+install attempt was truncated by an output-filtering pipeline; the gateway
+rejected that credential and entered its fail-closed restart loop. The exact
+provider value was then installed without rendering it, local and remote file
+digests matched, the schema-qualified resolver returned one row on the VPS,
+and readiness recovered to 204. No credential bytes or credential digest are
+retained here.
+
+The api-next production Worker version observed after enablement is
+`ed856310-ad8e-4baf-a2a0-216fb7f5d575`. The final Solid source is commit
+`c8d07d73dc7a74bcc7a387968d02e2e81f00ccc6`, deployed as Worker version
+`697033e7-0009-494d-b0dd-90091aca03ea`; version
+`c685ee9d-071c-4eb9-8174-2a372bbea10d` is its immediate deployment rollback.
+The returning-account correction treats only an expected registration 409
+after a successful session exchange as an established account. Focused tests,
+177 application tests, TypeScript, and the production build passed before the
+protected deployment.
+
+The public browser acceptance passed on `https://app.<root>`. A fresh
+returning-account sign-in redirected to `/`, rendered the selected community,
+showed no sign-in error, and returned 200 for `/api/users/me`,
+`/api/personas`, and `/api/health`, with one active persona. The same
+production test identity resolved to the same account, memberships, persona
+document, and existing wallet assignment on the canonical and HNS origins.
+The origins required independent sign-ins. The API session cookie was
+HttpOnly, the CSRF cookie was origin-local and readable as intended, no acting
+persona or wallet was inherited across origins, and no passkey option was
+offered on the HNS origin. The only database repair was removal of a redundant
+pending handle draft that conflicted with the same account's already-active
+protected platform handle; the protected handle and its history were retained.
+
+`GET /` mapped to `/c/<root>`. Non-root navigation preserved path and query.
+An invalid bounded PATCH reached the application boundary and returned 404.
+The canonical `https://pirate.sc/c/<root>` route remained available. Public
+`pirate.sc`, `app.pirate`, api-next health, the direct HNS root, and the direct
+HNS API health all passed preservation probes.
+
+Replay rejection was proven with one byte-identical signed unsafe request.
+The first `POST /api/health` envelope reached the application boundary and
+returned 404 with body SHA-256
+`7d04f7431bbfa41a04bcc7e6b98b9de0d919756c4c671c5785c99fff45f16402`.
+The second envelope, using the same nonce and signature, was rejected by the
+Solid replay store with 421 and body SHA-256
+`91aab38c683e01804107fa82417ff4d05753dff1c7cb5066b57656290e58ca47`.
+The one-off signing program and its local and VPS outputs were removed after
+the redacted evidence was recorded.
+
+This completes public application acceptance for the selected disposable
+root. Suspension, recovery with a new generation, revocation, and final
+destruction were not executed because the owner elected to leave the accepted
+host running. Those lifecycle actions require a separately accepted teardown
+or recovery ceremony; this acceptance record does not claim they occurred.
