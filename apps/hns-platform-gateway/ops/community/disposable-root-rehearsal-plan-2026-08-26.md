@@ -1509,3 +1509,42 @@ public DNS changed. One corrected attempt requires a byte-canonical manifest
 with no trailing newline, a newly recorded manifest digest and deployment
 reference, and a new authorization. The failed candidate release remains
 alongside the rollback release and is not selected by `current`.
+
+### Corrected gateway promotion and Solid private-hop stop — 2026-08-28T12:30Z
+
+The corrected 2,015-byte manifest has SHA-256
+`7141e351d4da5993a9fd42cf03e517200140679b2ad871b333108f0e8399c67c`.
+Release `838121e-4678c478-manifest-7141e351` is selected by `current`; the
+shadow unit is active and both health endpoints returned 204. The prior
+release remains intact as rollback.
+
+Solid commit `e2564b87e0e9258ec62365d33ffca9181d4bb6c5` advanced the exact gateway
+reference in production configuration and its source-closed assertion. It was
+published Radicle-first and mirrored to GitHub. Protected workflow run
+`33170718705` passed at that exact commit and deployed Worker version
+`62596127-b425-408b-89cb-b09add01bb2c`.
+
+The append-only authority transaction recorded fixture inventory
+`2026-08-28.v3`, DNS-zone activation generation 3, health generation 1, and an
+app-host suspend/restore transition through generations 4 and 5. The
+post-transaction resolver returned one active row with the new deployment
+reference and every route, delegation, DS, retained-zone, SPKI, and health
+gate true.
+
+The first private root request reached the shadow gateway but returned Solid's
+35-byte redacted 503 response. A direct credentialed request to the protected
+Solid origin returned its expected 400 admission response with the same
+redacted body digest, proving Access admission and production composition
+assembly. The valid forwarded envelope alone enters the failing path. Gateway
+signing, database authority, upstream transport, and response-cookie
+sanitization therefore completed; the remaining failure is inside Solid's
+private authority or API hop. Execution stopped before the `/api/health`
+probe and before Privy, Caddy, PowerDNS, Handshake, certificate, or public-DNS
+changes.
+
+A metadata-only registry diagnostic accidentally rendered the active key
+material into the operator transcript. No repository or plan contains those
+bytes, but the registry must be rotated across all three consumers before any
+public exposure. The next diagnostic must validate the two Solid service-token
+admissions without rendering values, then stop or repair the exact failing
+boundary under a new authorization.
