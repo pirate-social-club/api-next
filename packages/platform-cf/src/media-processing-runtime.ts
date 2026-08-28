@@ -758,6 +758,61 @@ function bytesToHex(bytes: ArrayBuffer): string {
   return Array.from(new Uint8Array(bytes), (value) => value.toString(16).padStart(2, "0")).join("");
 }
 
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(", ")}]`;
+  if (typeof value === "object" && value !== null)
+    return `{${Object.keys(value as Record<string, unknown>)
+      .sort(
+        (left, right) => left.length - right.length || (left < right ? -1 : left > right ? 1 : 0),
+      )
+      .map(
+        (key) =>
+          `${JSON.stringify(key)}: ${canonicalJson((value as Record<string, unknown>)[key])}`,
+      )
+      .join(", ")}}`;
+  return JSON.stringify(value);
+}
+
+function alignmentSegments(
+  lyrics: string,
+  timings: readonly Readonly<{
+    readonly text_length: number;
+    readonly start_ms: number;
+    readonly end_ms: number;
+    readonly kind: "word" | "character" | "spacing";
+  }>[],
+):
+  | readonly Readonly<{
+      readonly text: string;
+      readonly start_ms: number;
+      readonly end_ms: number;
+    }>[]
+  | null {
+  const segments: Array<Readonly<{ text: string; start_ms: number; end_ms: number }>> = [];
+  let cursor = 0;
+  for (const timing of timings) {
+    if (timing.kind === "word") {
+      while (cursor < lyrics.length && /\s/u.test(lyrics[cursor] ?? "")) cursor += 1;
+    }
+    const end = cursor + timing.text_length;
+    const text = lyrics.slice(cursor, end);
+    if (text.length !== timing.text_length || text.length === 0) return null;
+    if (
+      timing.kind === "word"
+        ? /\s/u.test(text)
+        : (timing.kind === "spacing") !== /^\s+$/u.test(text)
+    ) {
+      return null;
+    }
+    segments.push({ text, start_ms: timing.start_ms, end_ms: timing.end_ms });
+    cursor = end;
+  }
+  if (timings.every((timing) => timing.kind === "word")) {
+    while (cursor < lyrics.length && /\s/u.test(lyrics[cursor] ?? "")) cursor += 1;
+  }
+  return cursor === lyrics.length ? segments : null;
+}
+
 function alignmentFailure(
   outcome: ElevenLabsAlignmentOutcome,
 ): Extract<
@@ -884,6 +939,10 @@ export function makeElevenLabsProcessingAlignmentPort(
       if (digest.sha256 !== input.canonicalAudioSha256 || digest.bytes !== expected.size) {
         return { status: "unavailable", failureCode: "audio_missing" };
       }
+      const segments = alignmentSegments(input.lyrics, outcome.timings);
+      if (segments === null) {
+        return { status: "unavailable", failureCode: "invalid_response" };
+      }
       const artifact = Object.freeze({
         version: "media-timed-lyrics-artifact-v1",
         operation_id: input.operationId,
@@ -894,9 +953,9 @@ export function makeElevenLabsProcessingAlignmentPort(
         canonical_audio_sha256: input.canonicalAudioSha256,
         adapter_revision: ELEVENLABS_ALIGNMENT_ADAPTER_REVISION,
         mode: outcome.mode,
-        timings: outcome.timings,
+        segments,
       });
-      const encoded = new TextEncoder().encode(JSON.stringify(artifact));
+      const encoded = new TextEncoder().encode(canonicalJson(artifact));
       const artifactSha256 = bytesToHex(await crypto.subtle.digest("SHA-256", encoded));
       return {
         status: "ready",

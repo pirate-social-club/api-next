@@ -74,3 +74,18 @@ export const overlappingTimingResponse = {
   ],
   loss: 0.1,
 } as const;
+
+export const quantizedTimingResponse = {
+  characters: [
+    { text: "g", start: 0, end: 0 },
+    { text: "o", start: 0, end: 0.1 },
+    { text: " ", start: 0.1, end: 0.2 },
+    { text: "g", start: 0.2, end: 0.3 },
+    { text: "o", start: 0.3, end: 0.4 },
+  ],
+  words: [
+    { text: "go", start: 0, end: 0.2, loss: 0.1 },
+    { text: "go", start: 0.199, end: 0.4, loss: 0.1 },
+  ],
+  loss: 0.1,
+} as const;

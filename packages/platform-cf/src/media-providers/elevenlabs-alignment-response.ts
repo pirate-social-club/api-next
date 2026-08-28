@@ -56,14 +56,19 @@ function timingMilliseconds(
     !Predicate.isNumber(end) ||
     !Number.isFinite(end) ||
     start < 0 ||
-    end <= start ||
+    end < start ||
     end * 1000 > maxTimingMs
   ) {
     return null;
   }
-  const startMs = Math.round(start * 1000);
-  const endMs = Math.round(end * 1000);
-  return endMs > startMs && startMs >= previousEndMs ? { startMs, endMs } : null;
+  const rawStartMs = Math.round(start * 1000);
+  const rawEndMs = Math.round(end * 1000);
+  if (rawEndMs < rawStartMs || rawStartMs + MAXIMUM_QUANTIZATION_OVERLAP_MS < previousEndMs) {
+    return null;
+  }
+  const startMs = Math.max(rawStartMs, previousEndMs);
+  const endMs = Math.max(rawEndMs, startMs);
+  return { startMs, endMs };
 }
 
 type AlignmentTextTiming = Readonly<{
@@ -71,6 +76,11 @@ type AlignmentTextTiming = Readonly<{
   readonly startMs: number;
   readonly endMs: number;
 }>;
+
+// The provider's documented schema permits equal start/end values, and live
+// responses can quantize adjacent entries across the same millisecond. Clamp a
+// tiny boundary overlap while rejecting materially reordered timing data.
+const MAXIMUM_QUANTIZATION_OVERLAP_MS = 5;
 
 /** Words omit whitespace; bind their text and intervals to character spans in order. */
 function wordsBindToCharacters(
@@ -159,6 +169,7 @@ function parseProviderTimings(
     characterEntries.push({ text: entry.text, startMs: timing.startMs, endMs: timing.endMs });
     characterTimings.push({
       token_index: index,
+      text_length: entry.text.length,
       start_ms: timing.startMs,
       end_ms: timing.endMs,
       kind: /^\s+$/u.test(entry.text) ? "spacing" : "character",
@@ -190,6 +201,7 @@ function parseProviderTimings(
     wordEntries.push({ text: entry.text, startMs: timing.startMs, endMs: timing.endMs });
     wordTimings.push({
       token_index: wordTimings.length,
+      text_length: entry.text.length,
       start_ms: timing.startMs,
       end_ms: timing.endMs,
       kind: "word",

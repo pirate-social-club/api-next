@@ -109,7 +109,7 @@
           "ACRCLOUD_ACCESS_SECRET",
           "ELEVENLABS_API_KEY",
           "OPENAI_API_KEY",
-          "MEDIA_CLASSIFIER_API_KEY"
+          "OPENROUTER_API_KEY"
         ]
       }
     },
