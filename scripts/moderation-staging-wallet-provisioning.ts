@@ -87,20 +87,33 @@ export async function provisionModerationStagingWallets(args: readonly string[])
     const results: { role: string; reserved_index: number; created_wallets: number }[] = [];
     for (const role of roles) {
       const { subject } = await authenticate(role);
-      const reservation = await database.query<{ hd_wallet_index: string }>(
-        `SELECT assignment.hd_wallet_index::text
+      const reservation = await database.query<{
+        hd_wallet_index: string;
+        persona_status: string;
+        assignment_status: string;
+      }>(
+        `SELECT assignment.hd_wallet_index::text,
+                persona.status AS persona_status,
+                assignment.status AS assignment_status
            FROM identity_credentials credential
            JOIN personas persona ON persona.account_id = credential.canonical_user_id
            JOIN persona_wallet_assignments assignment ON assignment.persona_id = persona.persona_id
           WHERE credential.provider = 'privy' AND credential.provider_app_id = $1
             AND credential.provider_subject = $2 AND credential.status = 'active'
-            AND persona.status = 'pending_wallet' AND assignment.status = 'pending'
           ORDER BY assignment.hd_wallet_index LIMIT 1`,
         [APP_ID, subject],
       );
-      const target = Number(reservation.rows[0]?.hd_wallet_index);
+      const row = reservation.rows[0];
+      const target = Number(row?.hd_wallet_index);
       if (!Number.isSafeInteger(target) || target < 0)
-        throw new Error("Pending wallet reservation missing.");
+        throw new Error("Wallet reservation missing.");
+      if (row?.persona_status === "active" && row.assignment_status === "active") {
+        results.push({ role: role.toLowerCase(), reserved_index: target, created_wallets: 0 });
+        continue;
+      }
+      if (row?.persona_status !== "pending_wallet" || row.assignment_status !== "pending") {
+        throw new Error("Wallet reservation has an invalid state.");
+      }
       const userResponse = await fetch(
         `${AUTH_ORIGIN}/api/v1/users/${encodeURIComponent(subject)}`,
         {
