@@ -162,12 +162,51 @@ suite("localization Postgres foundation", () => {
          ) VALUES ('lyrics_community', 'song_post', NULL, 'song', 'published',
            'public', clock_timestamp(), clock_timestamp())`,
       );
+      await admin.query("SET session_replication_role = replica");
+      try {
+        await admin.query(
+          `INSERT INTO media_post_submissions (
+             submission_id, community_id, actor_user_id, operation_id,
+             idempotency_key, request_hash, title, song_type, start_input,
+             audio_reservation_id, status, phase, post_id,
+             response_snapshot_bytes, response_snapshot_sha256,
+             author_persona_id, lyrics_revision, current_lyrics_revision
+           ) VALUES (
+             'lyrics_submission', 'lyrics_community', 'lyrics_author', 'lyrics_operation',
+             'lyrics-idempotency', $1, 'Lyrics', 'original', '{}'::jsonb,
+             'lyrics_reservation', 'published', NULL, 'song_post',
+             convert_to('snapshot', 'UTF8'), encode(sha256(convert_to('snapshot', 'UTF8')), 'hex'),
+             'lyrics_persona', 2, 2
+           )`,
+          ["f".repeat(64)],
+        );
+        await admin.query(
+          `INSERT INTO media_song_lyrics_revisions (
+             submission_id, community_id, actor_user_id, author_persona_id,
+             operation_id, lyrics_revision, creation_revision, audio_revision,
+             canonical_audio_sha256, lyrics_text, lyrics_sha256, provenance
+           ) VALUES
+             ('lyrics_submission', 'lyrics_community', 'lyrics_author', 'lyrics_persona',
+              'lyrics_operation', 1, 2, 1, $1, 'revision one',
+              encode(sha256(convert_to('revision one', 'UTF8')), 'hex'), 'pasted'),
+             ('lyrics_submission', 'lyrics_community', 'lyrics_author', 'lyrics_persona',
+              'lyrics_operation', 2, 3, 1, $1, 'revision two',
+              encode(sha256(convert_to('revision two', 'UTF8')), 'hex'), 'pasted')`,
+          ["a".repeat(64)],
+        );
+      } finally {
+        await admin.query("SET session_replication_role = origin");
+      }
       await admin.query(
         `INSERT INTO localization_lyric_line_occurrences (
            community_id, post_id, lyric_line_id
          ) VALUES
            ('lyrics_community', 'song_post', 'line_a'),
            ('lyrics_community', 'song_post', 'line_b'),
+           ('lyrics_community', 'song_post', 'line_deleted'),
+           ('lyrics_community', 'song_post', 'line_merge_1'),
+           ('lyrics_community', 'song_post', 'line_merge_2'),
+           ('lyrics_community', 'song_post', 'line_merged'),
            ('lyrics_community', 'song_post', 'line_split_1'),
            ('lyrics_community', 'song_post', 'line_split_2')`,
       );
@@ -180,9 +219,40 @@ suite("localization Postgres foundation", () => {
            ('lyrics_community', 'song_post', 'line_a', 1, 'Repeated chorus', 'en', $1),
            ('lyrics_community', 'song_post', 'line_a', 2, 'Corrected chorus', 'en', $2),
            ('lyrics_community', 'song_post', 'line_b', 1, 'Repeated chorus', 'en', $1),
+           ('lyrics_community', 'song_post', 'line_deleted', 1, 'Delete me', 'en', $3),
+           ('lyrics_community', 'song_post', 'line_merge_1', 1, 'Merge', 'en', $3),
+           ('lyrics_community', 'song_post', 'line_merge_2', 1, 'these', 'en', $4),
+           ('lyrics_community', 'song_post', 'line_merged', 1, 'Merge these', 'en', $5),
            ('lyrics_community', 'song_post', 'line_split_1', 1, 'Repeated', 'en', $3),
            ('lyrics_community', 'song_post', 'line_split_2', 1, 'chorus', 'en', $4)`,
-        [repeatedHash, "c".repeat(64), "d".repeat(64), "e".repeat(64)],
+        [repeatedHash, "c".repeat(64), "d".repeat(64), "e".repeat(64), "f".repeat(64)],
+      );
+      await admin.query(
+        `INSERT INTO localization_lyrics_revision_lines (
+           community_id, actor_user_id, post_id, lyrics_revision, ordinal,
+           lyric_line_id, line_version, source_hash, submission_id
+         ) VALUES
+           ('lyrics_community', 'lyrics_author', 'song_post', 1, 1, 'line_a', 1, $1,
+            'lyrics_submission'),
+           ('lyrics_community', 'lyrics_author', 'song_post', 1, 2, 'line_b', 1, $1,
+            'lyrics_submission'),
+           ('lyrics_community', 'lyrics_author', 'song_post', 1, 3, 'line_deleted', 1, $2,
+            'lyrics_submission'),
+           ('lyrics_community', 'lyrics_author', 'song_post', 1, 4, 'line_merge_1', 1, $2,
+            'lyrics_submission'),
+           ('lyrics_community', 'lyrics_author', 'song_post', 1, 5, 'line_merge_2', 1, $3,
+            'lyrics_submission'),
+           ('lyrics_community', 'lyrics_author', 'song_post', 2, 1, 'line_b', 1, $1,
+            'lyrics_submission'),
+           ('lyrics_community', 'lyrics_author', 'song_post', 2, 2, 'line_a', 2, $4,
+            'lyrics_submission'),
+           ('lyrics_community', 'lyrics_author', 'song_post', 2, 3, 'line_split_1', 1, $2,
+            'lyrics_submission'),
+           ('lyrics_community', 'lyrics_author', 'song_post', 2, 4, 'line_split_2', 1, $3,
+            'lyrics_submission'),
+           ('lyrics_community', 'lyrics_author', 'song_post', 2, 5, 'line_merged', 1, $5,
+            'lyrics_submission')`,
+        [repeatedHash, "d".repeat(64), "e".repeat(64), "c".repeat(64), "f".repeat(64)],
       );
       await admin.query(
         `UPDATE localization_lyric_line_occurrences
@@ -196,7 +266,23 @@ suite("localization Postgres foundation", () => {
            community_id, post_id, transition_kind, predecessor_line_id, successor_line_id
          ) VALUES
            ('lyrics_community', 'song_post', 'split', 'line_a', 'line_split_1'),
-           ('lyrics_community', 'song_post', 'split', 'line_a', 'line_split_2')`,
+           ('lyrics_community', 'song_post', 'split', 'line_a', 'line_split_2'),
+           ('lyrics_community', 'song_post', 'merge', 'line_merge_1', 'line_merged'),
+           ('lyrics_community', 'song_post', 'merge', 'line_merge_2', 'line_merged')`,
+      );
+      await admin.query(
+        `UPDATE localization_lyric_line_occurrences
+            SET lifecycle_status = 'retired', retirement_reason = 'deleted',
+                retired_at = clock_timestamp()
+          WHERE community_id = 'lyrics_community' AND post_id = 'song_post'
+            AND lyric_line_id = 'line_deleted'`,
+      );
+      await admin.query(
+        `UPDATE localization_lyric_line_occurrences
+            SET lifecycle_status = 'retired', retirement_reason = 'merged',
+                retired_at = clock_timestamp()
+          WHERE community_id = 'lyrics_community' AND post_id = 'song_post'
+            AND lyric_line_id IN ('line_merge_1', 'line_merge_2')`,
       );
       await admin.query(
         `INSERT INTO localization_lyric_reconciliation_decisions (
@@ -229,6 +315,11 @@ suite("localization Postgres foundation", () => {
         repeated_occurrences: string;
         line_a_versions: string;
         split_successors: string;
+        merge_predecessors: string;
+        revision_one_memberships: string;
+        revision_two_memberships: string;
+        reordered_line_b: boolean;
+        deleted_lines: string;
         uncertain_without_identity: boolean;
       }>(
         `SELECT
@@ -238,6 +329,17 @@ suite("localization Postgres foundation", () => {
              WHERE lyric_line_id = 'line_a') AS line_a_versions,
            (SELECT count(*)::text FROM localization_lyric_line_lineage
              WHERE predecessor_line_id = 'line_a') AS split_successors,
+           (SELECT count(*)::text FROM localization_lyric_line_lineage
+             WHERE transition_kind = 'merge' AND successor_line_id = 'line_merged')
+             AS merge_predecessors,
+           (SELECT count(*)::text FROM localization_lyrics_revision_lines
+             WHERE lyrics_revision = 1) AS revision_one_memberships,
+           (SELECT count(*)::text FROM localization_lyrics_revision_lines
+             WHERE lyrics_revision = 2) AS revision_two_memberships,
+           (SELECT ordinal = 1 FROM localization_lyrics_revision_lines
+             WHERE lyrics_revision = 2 AND lyric_line_id = 'line_b') AS reordered_line_b,
+           (SELECT count(*)::text FROM localization_lyric_line_occurrences
+             WHERE retirement_reason = 'deleted') AS deleted_lines,
            (SELECT lyric_line_id IS NULL FROM localization_lyric_reconciliation_decisions
              WHERE reconciliation_id = 'reconcile_uncertain') AS uncertain_without_identity`,
       );
@@ -246,6 +348,11 @@ suite("localization Postgres foundation", () => {
           repeated_occurrences: "2",
           line_a_versions: "2",
           split_successors: "2",
+          merge_predecessors: "2",
+          revision_one_memberships: "5",
+          revision_two_memberships: "5",
+          reordered_line_b: true,
+          deleted_lines: "1",
           uncertain_without_identity: true,
         },
       ]);
