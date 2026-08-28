@@ -441,8 +441,8 @@ describe("ElevenLabs forced-alignment adapter", () => {
     expect(result).toMatchObject({ outcome: "ready", mode: "word" });
     if (result.outcome !== "ready") throw new Error("expected quantized alignment");
     expect(result.timings).toEqual([
-      { token_index: 0, start_ms: 0, end_ms: 200, kind: "word" },
-      { token_index: 1, start_ms: 200, end_ms: 400, kind: "word" },
+      { token_index: 0, text_length: 2, start_ms: 0, end_ms: 200, kind: "word" },
+      { token_index: 1, text_length: 2, start_ms: 200, end_ms: 400, kind: "word" },
     ]);
   });
 

@@ -350,7 +350,22 @@ describe("media processor runtime boundary", () => {
             adapter_revision: "elevenlabs-alignment-adapter-v2-provider-quantization" as const,
           },
           mode: "word" as const,
-          timings: [{ token_index: 0, start_ms: 0, end_ms: 500, kind: "word" as const }],
+          timings: [
+            {
+              token_index: 0,
+              text_length: 7,
+              start_ms: 0,
+              end_ms: 500,
+              kind: "word" as const,
+            },
+            {
+              token_index: 1,
+              text_length: 6,
+              start_ms: 500,
+              end_ms: 1_000,
+              kind: "word" as const,
+            },
+          ],
         };
       },
     };
@@ -374,12 +389,15 @@ describe("media processor runtime boundary", () => {
     expect(result).toMatchObject({
       status: "ready",
       artifactRef: "media://timed-lyrics/operation/audio/1/analysis/1/lyrics/2",
-      artifactSha256: "d13b5212718e5fcbc33101188d8fa54b89155b92c3678a8e84205440d89fb2f9",
       artifact: {
         operation_id: "operation",
         post_id: "post",
         lyrics_revision: 2,
         canonical_audio_sha256: hash,
+        segments: [
+          { text: "project", start_ms: 0, end_ms: 500 },
+          { text: "lyrics", start_ms: 500, end_ms: 1_000 },
+        ],
       },
     });
   });

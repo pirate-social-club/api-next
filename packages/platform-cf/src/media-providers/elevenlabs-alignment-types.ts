@@ -179,6 +179,7 @@ export type ElevenLabsAlignmentOutcome =
 export type ElevenLabsAlignmentTiming = Readonly<{
   /** Position in the caller-owned transcript token stream; text never crosses this boundary. */
   readonly token_index: number;
+  readonly text_length: number;
   readonly start_ms: number;
   readonly end_ms: number;
   readonly kind: "word" | "character" | "spacing";

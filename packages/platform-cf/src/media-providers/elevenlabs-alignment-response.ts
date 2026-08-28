@@ -169,6 +169,7 @@ function parseProviderTimings(
     characterEntries.push({ text: entry.text, startMs: timing.startMs, endMs: timing.endMs });
     characterTimings.push({
       token_index: index,
+      text_length: entry.text.length,
       start_ms: timing.startMs,
       end_ms: timing.endMs,
       kind: /^\s+$/u.test(entry.text) ? "spacing" : "character",
@@ -200,6 +201,7 @@ function parseProviderTimings(
     wordEntries.push({ text: entry.text, startMs: timing.startMs, endMs: timing.endMs });
     wordTimings.push({
       token_index: wordTimings.length,
+      text_length: entry.text.length,
       start_ms: timing.startMs,
       end_ms: timing.endMs,
       kind: "word",
