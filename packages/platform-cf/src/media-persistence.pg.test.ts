@@ -103,6 +103,7 @@ const analysis: TrustedSongAnalysis = {
 const decision: PublicationDecision = {
   decisionRevision: 1,
   outcome: "allow",
+  contentRating: "general",
   creationRevision: 2,
   audioRevision: 1,
   analysisRevision: 1,
