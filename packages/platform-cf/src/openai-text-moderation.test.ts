@@ -167,6 +167,64 @@ describe("OpenAI text moderation provider", () => {
     expect(await failureReason(oversized)).toBe("invalid");
   });
 
+  test("reports bounded non-success metadata without request or response content", async () => {
+    const diagnostics: unknown[] = [];
+    const provider = makeOpenAiTextModerationProvider({
+      apiKey: "secret-test-key",
+      reportDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+      transport: async () =>
+        new Response(
+          JSON.stringify({
+            error: {
+              type: "insufficient_quota",
+              code: "billing_hard_limit_reached",
+              message: "Separate title secret-test-key",
+            },
+          }),
+          {
+            status: 429,
+            headers: {
+              "retry-after": "12",
+              "x-ratelimit-limit-requests": "0",
+              "x-ratelimit-remaining-requests": "0",
+            },
+          },
+        ),
+    });
+
+    expect(await failureReason(provider)).toBe("unavailable");
+    expect(diagnostics).toEqual([
+      {
+        outcome: "non_success",
+        status: 429,
+        error_type: "insufficient_quota",
+        error_code: "billing_hard_limit_reached",
+        rate_limit_requests: "0",
+        rate_limit_remaining_requests: "0",
+        retry_after: "12",
+      },
+    ]);
+    const serialized = JSON.stringify(diagnostics);
+    expect(serialized).not.toContain("Separate title");
+    expect(serialized).not.toContain("Separate body");
+    expect(serialized).not.toContain("secret-test-key");
+    expect(serialized).not.toContain("message");
+  });
+
+  test("reports only the thrown error class when transport fails", async () => {
+    const diagnostics: unknown[] = [];
+    const provider = makeOpenAiTextModerationProvider({
+      apiKey: "secret-test-key",
+      reportDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+      transport: async () => {
+        throw new TypeError("Separate body secret-test-key");
+      },
+    });
+
+    expect(await failureReason(provider)).toBe("unavailable");
+    expect(diagnostics).toEqual([{ outcome: "fetch_error", error_name: "TypeError" }]);
+  });
+
   test("rejects moving aliases, alternate origins, and malformed credentials", () => {
     expect(() =>
       makeOpenAiTextModerationProvider({
