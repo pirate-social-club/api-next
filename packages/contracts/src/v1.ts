@@ -33,6 +33,7 @@ import {
   ReplyDepthExceeded,
   UploadObjectMissing,
 } from "./errors.ts";
+import { LanguageTagV1 } from "./language.ts";
 import { PersonaEvmWalletPreparationV1, PersonaIdV1, PublicPersonaV1 } from "./personas.ts";
 import { TextContentSubmissionV1 } from "./text-moderation.ts";
 
@@ -716,12 +717,6 @@ const SongAuthorString = Schema.NonEmptyString;
 const SongTitle = Schema.NonEmptyString.check(Schema.isMaxLength(200));
 const EvidenceRef = Schema.NonEmptyString.check(Schema.isMaxLength(512));
 const RevisionIdentifier = Schema.NonEmptyString.check(Schema.isMaxLength(128));
-const CanonicalBcp47LanguageTag = Schema.String.check(
-  Schema.isMaxLength(35),
-  Schema.isPattern(
-    /^(?:[a-z]{2,3})(?:-[A-Z][a-z]{3})?(?:-(?:[A-Z]{2}|[0-9]{3}))?(?:-[a-z0-9]{5,8}|-[0-9][a-z0-9]{3})*$/u,
-  ),
-);
 const RoyaltyAllocations = Schema.Array(
   Schema.Struct({
     recipient_id: SongAuthorString,
@@ -1019,8 +1014,8 @@ const ReadyLyricsAnalysisV1 = Schema.Struct({
   status: Schema.Literal("ready"),
   lyrics_revision: PositiveRevision,
   explicitness: Schema.Literals(["not_explicit", "explicit", "uncertain"]),
-  primary_language_bcp47: CanonicalBcp47LanguageTag,
-  secondary_language_bcp47: Schema.NullOr(CanonicalBcp47LanguageTag),
+  primary_language_bcp47: LanguageTagV1,
+  secondary_language_bcp47: Schema.NullOr(LanguageTagV1),
   evidence_ref: EvidenceRef,
   policy_revision: RevisionIdentifier,
   adapter_revision: RevisionIdentifier,
@@ -1147,8 +1142,8 @@ export const SongPublishedProjectionV1 = Schema.Struct({
   language_detection: Schema.Union([
     Schema.Struct({
       status: Schema.Literal("ready"),
-      primary_language_bcp47: CanonicalBcp47LanguageTag,
-      secondary_language_bcp47: Schema.NullOr(CanonicalBcp47LanguageTag),
+      primary_language_bcp47: LanguageTagV1,
+      secondary_language_bcp47: Schema.NullOr(LanguageTagV1),
     }).check(
       Schema.makeFilter((value) =>
         value.secondary_language_bcp47 === null ||
