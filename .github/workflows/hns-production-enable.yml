@@ -43,7 +43,7 @@ jobs:
           [[ "$EXPECTED_SHA" == "$GITHUB_SHA" ]]
           [[ "$CONFIRMATION" == "enable-production-community" ]]
           latest_migration="$(find db/postgres/migrations -maxdepth 1 -type f -name '[0-9][0-9][0-9][0-9]_*.sql' -printf '%f\n' | sort | tail -1)"
-          [[ "$latest_migration" == "0068_general_audience_song_covers.sql" ]]
+          [[ "$latest_migration" == "0069_media_analysis_snapshot_recovery.sql" ]]
       - run: bun install --frozen-lockfile
       - name: Verify production community graph
         run: >-
