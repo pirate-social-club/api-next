@@ -118,3 +118,52 @@ decisions:
 Until those decisions and fresh read-only ceremonies are accepted, `11qx`
 remains a nominated candidate and nothing may sign, broadcast, deploy, migrate,
 or change its records.
+
+## Repository-only stage-one population checkpoint
+
+The 2026-08-28 documentation lane fetched both public repositories and froze
+only values present in reviewed source. It did not query Cloudflare, Privy,
+PostgreSQL, a gateway host, Bob Wallet, HSD, authoritative DNS, or any other
+external system.
+
+The selected source and static staging composition are:
+
+```text
+api_next_source_commit = 24fd9a90f44ba97ffcd93015c8de47f6361688e5
+solid_source_commit = 4f511992b3473c620ff48a459672464328cb0561
+shared_origin_contract_commit = c7aee1c1c6f938861558a4c39e308141ddc8a28e
+api_next_worker = pirate-http-worker-staging
+api_next_public_origin = https://api-next-staging.pirate.sc
+solid_worker = pirate-web-solid-staging
+solid_canonical_origin = https://web-next-staging.pirate.sc
+staging_privy_application = cmsw5pis300b80cladbxx7bsr
+staging_hyperdrive_id = 8cb7658a0f7143359c1becfec6a15c23
+api_next_replay_binding = HNS_COMMUNITY_APP_API_REPLAY
+solid_replay_binding = HNS_COMMUNITY_APP_REPLAY
+owner_verifier_worker = pirate-hns-owner-verifier-staging
+owner_verifier_source = hns_parent_chain_txt
+owner_verifier_configuration_reference = hns-owner-staging
+owner_verifier_configuration_version = hns-owner-config-v1
+repository_migration_tip = 0069_media_analysis_snapshot_recovery.sql
+repository_migration_tip_sha256 = 7e26e0cff1f2c8a1b2e1d119a73971a2ae793caebaba89b4b5bf50fda0dd14ca
+```
+
+The Solid source contains the completed shared-protected-origin contract at
+`c7aee1c1c6f938861558a4c39e308141ddc8a28e`. The api-next and Solid staging
+configurations keep their HNS enable switches false and their protected-origin,
+Access, forwarder-registry, and gateway-deployment values empty. Those empty
+values are containment evidence, not populated infrastructure.
+
+Repository state cannot prove the backing staging PostgreSQL origin, current
+migration ledger, protected hostnames, Access issuer or audiences, gateway
+authority endpoint, gateway host, Worker deployment versions, registry
+identity, certificate, DNSSEC material, or evidence destination. Those values
+remain explicit hard stops and require a later authorized read-only inventory.
+No candidate protected hostname is accepted merely from a naming convention.
+
+The namespace activation, route, DNS-zone, app-host, offering, quote,
+reservation, claim, grant, persona, and generation identifiers also remain
+unresolved. Some are selected before a mutation ceremony and others are
+server-generated results; the accepted transcript must distinguish the two
+instead of inventing live identifiers from repository state. No deployment or
+mutation ceremony is executable from this checkpoint.
