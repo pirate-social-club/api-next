@@ -73,17 +73,41 @@ describe("Cloudflare media processing adapters", () => {
     );
   });
 
-  test("uses Workflow status rather than handle construction as presence proof", async () => {
-    const binding = {
-      createBatch: async () => [],
-      get: async () => ({
-        status: async () => ({ status: "unknown" }),
-        sendEvent: async () => undefined,
-      }),
-    };
-    const launcher = makeCloudflareMediaProcessingWorkflowLauncher(binding, isMissing);
+  test("projects active statuses as present and terminal statuses as replacement candidates", async () => {
+    for (const status of [
+      "queued",
+      "running",
+      "paused",
+      "waiting",
+      "waitingForPause",
+      "rollingBack",
+    ] as const) {
+      const launcher = makeCloudflareMediaProcessingWorkflowLauncher(
+        {
+          createBatch: async () => [],
+          get: async () => ({
+            status: async () => ({ status }),
+            sendEvent: async () => undefined,
+          }),
+        },
+        isMissing,
+      );
+      expect(await launcher.get("media-operation-1-r1")).toBe("present");
+    }
 
-    expect(await launcher.get("media-operation-1-r1")).toBe("missing");
+    for (const status of ["unknown", "errored", "terminated", "complete"] as const) {
+      const launcher = makeCloudflareMediaProcessingWorkflowLauncher(
+        {
+          createBatch: async () => [],
+          get: async () => ({
+            status: async () => ({ status }),
+            sendEvent: async () => undefined,
+          }),
+        },
+        isMissing,
+      );
+      expect(await launcher.get("media-operation-1-r1")).toBe("missing");
+    }
   });
 
   test("does not turn a transient get failure into retained-instance loss", async () => {

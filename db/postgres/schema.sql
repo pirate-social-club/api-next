@@ -10690,17 +10690,51 @@ $$;
 CREATE FUNCTION validate_media_analysis_snapshot_v2() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
-DECLARE lyrics_analysis JSONB; expected_keys TEXT[];
+DECLARE
+  lyrics_analysis JSONB;
+  content_moderation JSONB;
+  provider_evidence JSONB;
+  expected_keys TEXT[];
 BEGIN
   IF (SELECT array_agg(key ORDER BY key) FROM jsonb_object_keys(NEW.analysis_snapshot) AS key)
        IS DISTINCT FROM ARRAY['acr','analysisRevision','audioRevision','boundReference',
-         'canonicalAudioSha256','coverModeration','embeddedMetadata','finalizedAudioRef','lyricsAnalysis',
-         'lyricsSafety','mediaSafety','operationId','probeEvidenceRef','version']::TEXT[] THEN
+         'canonicalAudioSha256','contentModeration','coverModeration','embeddedMetadata',
+         'finalizedAudioRef','lyricsAnalysis','lyricsSafety','mediaSafety','operationId',
+         'probeEvidenceRef','version']::TEXT[] THEN
     RAISE EXCEPTION 'analysis snapshot keys are not exact';
   END IF;
   lyrics_analysis := NEW.analysis_snapshot->'lyricsAnalysis';
-  IF jsonb_typeof(lyrics_analysis) IS DISTINCT FROM 'object' THEN
-    RAISE EXCEPTION 'lyrics analysis snapshot is not an object';
+  content_moderation := NEW.analysis_snapshot->'contentModeration';
+  provider_evidence := content_moderation->'providerEvidence';
+  IF jsonb_typeof(lyrics_analysis) IS DISTINCT FROM 'object'
+     OR jsonb_typeof(content_moderation) IS DISTINCT FROM 'object' THEN
+    RAISE EXCEPTION 'analysis snapshot nested facts are not objects';
+  END IF;
+  IF (SELECT array_agg(key ORDER BY key) FROM jsonb_object_keys(content_moderation) AS key)
+       IS DISTINCT FROM ARRAY['communityPolicyRevision','decision','evidenceRef','inputSha256',
+         'matchedCategories','platformPolicyRevision','policyRevision','providerEvidence',
+         'resultingContentRating']::TEXT[]
+     OR content_moderation->>'decision' NOT IN ('allow','manual_review','blocked')
+     OR content_moderation->>'resultingContentRating' NOT IN ('general','adult_18')
+     OR COALESCE(btrim(content_moderation->>'inputSha256'), '') = ''
+     OR jsonb_typeof(content_moderation->'matchedCategories') IS DISTINCT FROM 'array'
+     OR COALESCE(btrim(content_moderation->>'policyRevision'), '') = ''
+     OR COALESCE(btrim(content_moderation->>'platformPolicyRevision'), '') = ''
+     OR COALESCE(btrim(content_moderation->>'communityPolicyRevision'), '') = ''
+     OR (content_moderation->'evidenceRef' IS DISTINCT FROM 'null'::jsonb
+       AND jsonb_typeof(content_moderation->'evidenceRef') IS DISTINCT FROM 'string')
+     OR (provider_evidence IS DISTINCT FROM 'null'::jsonb
+       AND jsonb_typeof(provider_evidence) IS DISTINCT FROM 'object') THEN
+    RAISE EXCEPTION 'content moderation snapshot shape is invalid';
+  END IF;
+  IF provider_evidence IS DISTINCT FROM 'null'::jsonb
+     AND ((SELECT array_agg(key ORDER BY key) FROM jsonb_object_keys(provider_evidence) AS key)
+            IS DISTINCT FROM ARRAY['inputs','providerId','requestedModel','returnedModel']::TEXT[]
+       OR provider_evidence->>'providerId' IS DISTINCT FROM 'openai'
+       OR COALESCE(btrim(provider_evidence->>'requestedModel'), '') = ''
+       OR COALESCE(btrim(provider_evidence->>'returnedModel'), '') = ''
+       OR jsonb_typeof(provider_evidence->'inputs') IS DISTINCT FROM 'array') THEN
+    RAISE EXCEPTION 'content moderation provider evidence shape is invalid';
   END IF;
   expected_keys := CASE NEW.speech_status
     WHEN 'ready' THEN ARRAY['adapterRevision','evidenceRef','explicitness','policyRevision',
