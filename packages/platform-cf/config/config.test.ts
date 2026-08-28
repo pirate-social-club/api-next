@@ -334,13 +334,15 @@ describe("config system (000 §9)", () => {
       expect(environment.vars?.HNS_OWNERSHIP_ENABLED).toBe("false");
       expect(environment.vars?.OPENAI_MODERATION_MODEL).toBe("omni-moderation-2024-09-26");
       expect(environment.vars?.OPENAI_MODERATION_BASE_URL).toBe("https://api.openai.com/v1");
-      expect(environment.vars?.OPENAI_MODERATION_TIMEOUT_MS).toBe("10000");
       expect(environment.secrets?.required ?? []).not.toContain("VERY_OAUTH_CLIENT_SECRET");
       expect(environment.secrets?.required ?? []).not.toContain("VERY_OAUTH_SEALING_KEY");
     }
     // Development (the base block) and production rely on the fail-closed
     // default. Staging alone carries the operator-authorized Very web app.
     expect(config.vars?.VERY_WEB_ENABLED).toBeUndefined();
+    expect(config.vars?.OPENAI_MODERATION_TIMEOUT_MS).toBe("10000");
+    expect(staging?.vars?.OPENAI_MODERATION_TIMEOUT_MS).toBe("30000");
+    expect(production?.vars?.OPENAI_MODERATION_TIMEOUT_MS).toBe("10000");
     expect(staging?.vars?.VERY_WEB_ENABLED).toBe("true");
     expect(staging?.vars?.VERY_WEB_APP_ID).toBe("fa6bb1db-51dd-4673-915a-b945e7a895a0");
     expect(production?.vars?.VERY_WEB_ENABLED).toBeUndefined();
