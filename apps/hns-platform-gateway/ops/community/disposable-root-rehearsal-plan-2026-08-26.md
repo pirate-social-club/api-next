@@ -1371,3 +1371,26 @@ reapplying an environment to the flattened generated configuration, prove the
 resulting target name before mutation, and receive a new authorization for one
 corrected Solid deployment attempt. The health fixture must be refreshed again
 if it expires before that attempt.
+
+### Corrected Solid attempt and private-probe stop — 2026-08-28T06:35Z
+
+The reviewed workflow correction was published Radicle-first and mirrored to
+GitHub at `57b0a0487199abb5a6abb2e21b896184a41f0e9c`. Corrected protected run
+`33148349973` succeeded and deployed Solid Worker version
+`c33bca27-6909-4e7a-9e87-23c01e16cdc6`. The canonical Solid and api-next
+origins both remained healthy.
+
+The authorized private positive probes for `/` and `/api/health` both failed
+closed with 421 before reaching an upstream. The current resolver row showed
+active app-host and DNS generations, current operator-managed route authority,
+matching DS, retained-zone digest, gateway reference, certificate SPKI, and
+healthy gateway state. Its sole false gate was
+`stable_chain_delegation_matches` because the activation-bound authority
+inventory `2026-08-28.v1` expired at 2026-08-28T05:44:56Z. Health generation 3
+could not revive an expired inventory.
+
+Execution stopped without retry. Recovery requires an append-only successor
+authority inventory, DNS-zone activation generation, app-host activation
+generation, and health observation, all internally bound to one another. That
+generation transition requires separate authorization. Privy, Caddy,
+PowerDNS, Handshake, and public exposure remain unchanged.
