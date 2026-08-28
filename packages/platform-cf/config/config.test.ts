@@ -292,7 +292,7 @@ describe("config system (000 §9)", () => {
     expect(production?.vars?.HNS_FORWARDER_V3_KEY_REGISTRY_REFERENCE).toBe(
       "pirate:hns-forwarder-v3:production-community-app:v1",
     );
-    expect(production?.vars?.HNS_FORWARDER_V3_KEY_REGISTRY_VERSION).toBe("2026-08-28-01");
+    expect(production?.vars?.HNS_FORWARDER_V3_KEY_REGISTRY_VERSION).toBe("2026-08-28-02");
     expect(production?.vars?.HNS_FORWARDER_V3_FRESHNESS_WINDOW_SECONDS).toBe("300");
     expect(production?.vars?.HNS_FORWARDER_V3_FUTURE_CLOCK_SKEW_SECONDS).toBe("5");
     expect(production?.secrets?.required).toContain("HNS_FORWARDER_V3_HMAC_KEY_REGISTRY");
