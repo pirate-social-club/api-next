@@ -791,8 +791,16 @@ private key, signing prompt, or raw wallet credential enters retained evidence.
 
 The selected name must not be `pirate`, must not collide with a community in
 service, and must have enough renewal horizon for the rehearsal and rollback
-observation window. If no inventoried name passes, the operation stops; it
-does not weaken the criteria.
+observation window. Its root label must contain at least one ASCII letter. An
+all-digit final hostname label enters the WHATWG IPv4 parser and can make
+`https://<handle-label>.<root>/` invalid before DNS resolution, so an
+all-numeric root cannot satisfy the browser acceptance path. If no inventoried
+name passes, the operation stops; it does not weaken the criteria.
+
+The read-only candidate population for `11qx` is recorded separately in
+`disposable-root-population-addendum-2026-08-28.md`. That addendum is evidence
+and unresolved-decision tracking only; it does not replace this plan's owner,
+environment, migration, or mutation authorization gates.
 
 A separately supplied read-only migration credential must then query the
 selected production database's authoritative migration ledger and prove that
