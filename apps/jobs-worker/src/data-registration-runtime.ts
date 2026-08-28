@@ -6,6 +6,7 @@ import {
 } from "@pirate/platform-cf/data/registration-workflow-cloudflare";
 import { makeDataRegistrationStore } from "@pirate/platform-cf/data-registration-repository";
 import { Effect, type Layer } from "effect";
+import { songWorkflowReplacementLimitReached } from "./song-workflow-recovery-policy";
 
 type DataRegistrationDispatchQueue = Readonly<{
   send: (message: Readonly<{ outbox_id: string }>) => Promise<void>;
@@ -24,6 +25,7 @@ export type DataRegistrationMaintenanceResult = Readonly<{
   present: number;
   replaced: number;
   stale: number;
+  limitReached: number;
 }>;
 
 export type DataRegistrationWorkflowCandidate = Readonly<{
@@ -42,12 +44,19 @@ export async function recoverDataRegistrationWorkflowCandidates(
     workflow: ReturnType<typeof makeCloudflareDataRegistrationWorkflowLauncher>;
   }>,
 ): Promise<
-  Pick<DataRegistrationMaintenanceResult, "inspected" | "present" | "replaced" | "stale">
+  Pick<
+    DataRegistrationMaintenanceResult,
+    "inspected" | "present" | "replaced" | "stale" | "limitReached"
+  >
 > {
-  const counts = { inspected: 0, present: 0, replaced: 0, stale: 0 };
+  const counts = { inspected: 0, present: 0, replaced: 0, stale: 0, limitReached: 0 };
   for (const candidate of candidates) {
     counts.inspected += 1;
     const revision = BigInt(candidate.workflow_revision);
+    if (songWorkflowReplacementLimitReached(revision)) {
+      counts.limitReached += 1;
+      continue;
+    }
     if ((await dependencies.workflow.get(candidate.workflow_instance_id)) === "present") {
       counts.present += 1;
       continue;

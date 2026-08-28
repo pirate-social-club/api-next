@@ -32,4 +32,17 @@ describe("song pipeline outbox alerts", () => {
       }).key,
     ).toBe("song-pipeline:media-queue_dlq");
   });
+
+  test("uses a distinct key when automatic replacements stop", () => {
+    expect(
+      exhaustedLaunchAlert({
+        subsystem: "data",
+        operation_id: "registration-2",
+        outbox_id: "outbox-4",
+        workflow_revision: "4",
+        failure_code: "workflow_unavailable",
+        outcome: "replacement_limit",
+      }).key,
+    ).toBe("song-pipeline:data-replacement-limit-reached");
+  });
 });

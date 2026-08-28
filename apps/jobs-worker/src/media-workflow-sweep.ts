@@ -4,12 +4,14 @@ import type {
   MediaProcessingStore,
   MediaProcessingWorkflowLauncher,
 } from "../../../packages/application/src/media/processing-contracts.ts";
+import { songWorkflowReplacementLimitReached } from "./song-workflow-recovery-policy.ts";
 
 export type MediaWorkflowSweepResult = Readonly<{
   readonly inspected: number;
   readonly present: number;
   readonly replaced: number;
   readonly stale: number;
+  readonly limitReached: number;
 }>;
 
 export type MediaWorkflowSweepDependencies = Readonly<{
@@ -39,10 +41,14 @@ export async function sweepMissingMediaWorkflows(
   dependencies: MediaWorkflowSweepDependencies,
 ): Promise<MediaWorkflowSweepResult> {
   const candidates = await dependencies.store.listWorkflowCandidates();
-  const result = { inspected: 0, present: 0, replaced: 0, stale: 0 };
+  const result = { inspected: 0, present: 0, replaced: 0, stale: 0, limitReached: 0 };
   for (const candidate of candidates) {
     if (candidate.workflowRevision < 1 || terminalStatuses.has(candidate.status)) continue;
     result.inspected += 1;
+    if (songWorkflowReplacementLimitReached(candidate.workflowRevision)) {
+      result.limitReached += 1;
+      continue;
+    }
     if ((await dependencies.workflow.get(workflowInstanceId(candidate))) === "present") {
       result.present += 1;
       continue;

@@ -8,11 +8,17 @@ type ExhaustedLaunch = Readonly<{
   outbox_id: string;
   workflow_revision: string;
   failure_code: string | null;
-  outcome: "exhausted" | "queue_dlq";
+  outcome: "exhausted" | "queue_dlq" | "replacement_limit";
 }>;
 
 export const exhaustedLaunchAlert = (row: ExhaustedLaunch) => ({
-  key: `song-pipeline:${row.subsystem}-${row.outcome === "exhausted" ? "launch-exhausted" : "queue_dlq"}`,
+  key: `song-pipeline:${row.subsystem}-${
+    row.outcome === "exhausted"
+      ? "launch-exhausted"
+      : row.outcome === "queue_dlq"
+        ? "queue_dlq"
+        : "replacement-limit-reached"
+  }`,
   severity: "high" as const,
   body: "A current song-pipeline launch exhausted and requires recovery observation.",
   entity: `${row.subsystem}:${row.operation_id}:r${row.workflow_revision}:${row.outbox_id}`,
@@ -30,7 +36,8 @@ export function collectSongPipelineOutboxAlerts(
                       outbox.outbox_event_id AS outbox_id,
                       outbox.workflow_revision::text AS workflow_revision,
                       outbox.failure_code,
-                      CASE WHEN outbox.state='exhausted' THEN 'exhausted'
+                      CASE WHEN outbox.workflow_revision>=4 THEN 'replacement_limit'
+                           WHEN outbox.state='exhausted' THEN 'exhausted'
                            ELSE 'queue_dlq' END AS outcome
                  FROM media_submission_outbox outbox
                  JOIN media_post_submissions submission
@@ -43,7 +50,8 @@ export function collectSongPipelineOutboxAlerts(
                 UNION ALL
                SELECT 'data'::text AS subsystem,outbox.registration_operation_id AS operation_id,
                       outbox.outbox_id,outbox.workflow_revision::text,outbox.failure_code,
-                      CASE WHEN outbox.state='exhausted' THEN 'exhausted'
+                      CASE WHEN outbox.workflow_revision>=4 THEN 'replacement_limit'
+                           WHEN outbox.state='exhausted' THEN 'exhausted'
                            ELSE 'queue_dlq' END AS outcome
                  FROM data_registration_outbox outbox
                  JOIN data_registration_operations operation

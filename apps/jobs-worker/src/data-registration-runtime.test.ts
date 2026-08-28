@@ -89,8 +89,8 @@ describe("DATA registration scheduled recovery", () => {
       workflow,
     });
 
-    expect(first).toEqual({ inspected: 1, present: 0, replaced: 1, stale: 0 });
-    expect(second).toEqual({ inspected: 1, present: 0, replaced: 0, stale: 1 });
+    expect(first).toEqual({ inspected: 1, present: 0, replaced: 1, stale: 0, limitReached: 0 });
+    expect(second).toEqual({ inspected: 1, present: 0, replaced: 0, stale: 1, limitReached: 0 });
     expect(replacements).toBe(1);
 
     expect(
@@ -111,6 +111,25 @@ describe("DATA registration scheduled recovery", () => {
         create: async () => "already_exists",
       },
     });
-    expect(result).toEqual({ inspected: 1, present: 1, replaced: 0, stale: 0 });
+    expect(result).toEqual({ inspected: 1, present: 1, replaced: 0, stale: 0, limitReached: 0 });
+  });
+
+  test("stops after three replacement revisions", async () => {
+    let reads = 0;
+    const result = await recoverDataRegistrationWorkflowCandidates(
+      [{ ...candidate, workflow_revision: "4" }],
+      {
+        store: {} as DataRegistrationStore,
+        workflow: {
+          get: async () => {
+            reads += 1;
+            return "missing";
+          },
+          create: async () => "created",
+        },
+      },
+    );
+    expect(result).toEqual({ inspected: 1, present: 0, replaced: 0, stale: 0, limitReached: 1 });
+    expect(reads).toBe(0);
   });
 });
