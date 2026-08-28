@@ -1548,3 +1548,31 @@ bytes, but the registry must be rotated across all three consumers before any
 public exposure. The next diagnostic must validate the two Solid service-token
 admissions without rendering values, then stop or repair the exact failing
 boundary under a new authorization.
+
+### Protected Access diagnostic — 2026-08-28T12:42Z
+
+Solid commits `1b61c999a95b0f76e4f5f91b669e72d95cec86bd` and
+`07222b64f9719ba7fe73937526b4b00c1f3f5d50` added and corrected a manual,
+production-environment diagnostic that prints only status, boundary class,
+elapsed time, body size and digest, and mitigation presence. Both commits were
+published Radicle-first and mirrored to GitHub. Initial run `33172022087`
+failed before either request because the runner's curl did not support an
+unnecessary option. Corrected run `33172124534` passed without rendering any
+credential.
+
+The API service token reached the api-next Worker in 0.769250 seconds. The
+Worker returned the expected 400 rejection for an unsigned `/api/health`
+request, with 134 response bytes and body SHA-256
+`7694d5f53bad9045e9394bed75988fd673af46db0338132e917f2fef2780f9bc`.
+The authority service token did not reach the Worker: Cloudflare Access
+returned an edge-classified 401 in 0.212776 seconds, with 308 response bytes
+and body SHA-256
+`044e5064321e1ae42150304be78e2192d362ac7b8f1d2f8bafae941eee8f5fa4`.
+
+This excludes the private-authority deadline, response parser, current-row
+equality, and deployment-reference equality as the first failure. The exact
+fault is authority-token admission: the token is absent from the authority
+application policy, disabled or revoked, or its installed GitHub pair does not
+match the admitted token. Execution stopped without policy, token, secret,
+Worker, registry, gateway, authority-generation, Privy, Caddy, PowerDNS,
+Handshake, certificate, or public-DNS mutation.
