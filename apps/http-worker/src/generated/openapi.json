@@ -33532,7 +33532,14 @@
                                         ]
                                       },
                                       "source_hash": {
-                                        "type": "string"
+                                        "anyOf": [
+                                          {
+                                            "type": "string"
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
                                       }
                                     },
                                     "required": [
@@ -50683,7 +50690,14 @@
                                                         ]
                                                       },
                                                       "source_hash": {
-                                                        "type": "string"
+                                                        "anyOf": [
+                                                          {
+                                                            "type": "string"
+                                                          },
+                                                          {
+                                                            "type": "null"
+                                                          }
+                                                        ]
                                                       }
                                                     },
                                                     "required": [
@@ -59503,7 +59517,14 @@
                                                                   ]
                                                                 },
                                                                 "source_hash": {
-                                                                  "type": "string"
+                                                                  "anyOf": [
+                                                                    {
+                                                                      "type": "string"
+                                                                    },
+                                                                    {
+                                                                      "type": "null"
+                                                                    }
+                                                                  ]
                                                                 }
                                                               },
                                                               "required": [
@@ -63671,7 +63692,14 @@
                                             ]
                                           },
                                           "source_hash": {
-                                            "type": "string"
+                                            "anyOf": [
+                                              {
+                                                "type": "string"
+                                              },
+                                              {
+                                                "type": "null"
+                                              }
+                                            ]
                                           }
                                         },
                                         "required": [
@@ -65891,7 +65919,14 @@
                                                                   ]
                                                                 },
                                                                 "source_hash": {
-                                                                  "type": "string"
+                                                                  "anyOf": [
+                                                                    {
+                                                                      "type": "string"
+                                                                    },
+                                                                    {
+                                                                      "type": "null"
+                                                                    }
+                                                                  ]
                                                                 }
                                                               },
                                                               "required": [

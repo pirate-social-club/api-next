@@ -371,7 +371,7 @@ const CommunityRoleSummary = Schema.Struct({
 });
 
 const CommunityTextLocalization = Schema.Struct({
-  resolved_locale: Schema.String,
+  resolved_locale: LanguageTagV1,
   items: Schema.Array(
     Schema.Struct({
       field_key: Schema.String,
@@ -384,7 +384,7 @@ const CommunityTextLocalization = Schema.Struct({
       ]),
       machine_translated: Schema.Boolean,
       translated_value: Schema.optional(Schema.NullOr(Schema.String)),
-      source_hash: Schema.String,
+      source_hash: Schema.NullOr(Schema.String),
     }),
   ),
 });
