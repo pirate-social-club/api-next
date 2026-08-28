@@ -347,7 +347,7 @@ describe("media processor runtime boundary", () => {
             analysis_revision: input.transcript.analysis_revision,
             canonical_audio_sha256: input.audio.canonical_audio_sha256,
             transcript_artifact_ref: input.transcript.artifact_ref,
-            adapter_revision: "elevenlabs-alignment-adapter-v1" as const,
+            adapter_revision: "elevenlabs-alignment-adapter-v2-provider-quantization" as const,
           },
           mode: "word" as const,
           timings: [{ token_index: 0, start_ms: 0, end_ms: 500, kind: "word" as const }],

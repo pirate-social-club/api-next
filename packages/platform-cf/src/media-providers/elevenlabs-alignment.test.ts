@@ -5,6 +5,7 @@ import {
   multilingualWordsResponse,
   noSpeechResponse,
   overlappingTimingResponse,
+  quantizedTimingResponse,
   repeatedWordResponse,
 } from "../../../../tests/fixtures/media-alignment/elevenlabs/responses.ts";
 import {
@@ -421,6 +422,28 @@ describe("ElevenLabs forced-alignment adapter", () => {
       reason: "malformed_response",
     });
     expect(whitespaceTransport.requests).toHaveLength(1);
+  });
+
+  test("accepts documented zero-duration entries and clamps millisecond quantization overlap", async () => {
+    const transport = fakeTransport(response(quantizedTimingResponse));
+    const result = await adapter(transport.transport).align(
+      input({
+        transcript: {
+          artifact_ref: "private/transcript-quantized",
+          operation_id: "operation-1",
+          audio_revision: 1,
+          analysis_revision: 3,
+          canonical_audio_sha256: sha,
+          transcript: "go go",
+        },
+      }),
+    );
+    expect(result).toMatchObject({ outcome: "ready", mode: "word" });
+    if (result.outcome !== "ready") throw new Error("expected quantized alignment");
+    expect(result.timings).toEqual([
+      { token_index: 0, start_ms: 0, end_ms: 200, kind: "word" },
+      { token_index: 1, start_ms: 200, end_ms: 400, kind: "word" },
+    ]);
   });
 
   test("rejects mismatched transcript and invalid or overlapping timings", async () => {

@@ -1,7 +1,8 @@
 /** Shared types and memory-safety ceilings for the isolated alignment seam. */
 
 export const ELEVENLABS_ALIGNMENT_ENDPOINT = "https://api.elevenlabs.io/v1/forced-alignment";
-export const ELEVENLABS_ALIGNMENT_ADAPTER_REVISION = "elevenlabs-alignment-adapter-v1";
+export const ELEVENLABS_ALIGNMENT_ADAPTER_REVISION =
+  "elevenlabs-alignment-adapter-v2-provider-quantization";
 export const ELEVENLABS_ALIGNMENT_MULTIPART_BOUNDARY_PREFIX = "pirate-elevenlabs-alignment-";
 export const ELEVENLABS_ALIGNMENT_BOUNDARY_RANDOM_BYTES = 18;
 
