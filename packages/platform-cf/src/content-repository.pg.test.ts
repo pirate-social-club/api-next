@@ -820,6 +820,74 @@ suite("Postgres 17 content repository", () => {
     completedTestCount += 1;
   });
 
+  test("returns adult-rated post content when the viewer capability allows it", async () => {
+    await withSchema(async (connection, admin) => {
+      await apply(connection);
+      await seed(admin);
+      await admin.query(
+        `CREATE OR REPLACE FUNCTION current_account_age_capability_v1(target_account_id TEXT)
+         RETURNS TEXT LANGUAGE sql STABLE AS $$
+           SELECT CASE WHEN target_account_id = 'usr_bob' THEN 'adult_18' ELSE 'general' END
+         $$`,
+      );
+      await admin.query(
+        "UPDATE posts SET content_rating = 'adult_18' WHERE post_id = 'post_parent'",
+      );
+      const store = await storeFor(connection);
+
+      await expect(
+        Effect.runPromise(
+          Effect.scoped(
+            store.getPost({
+              communityId: "community_1",
+              postId: "post_parent",
+              viewerUserId: "usr_bob",
+            }),
+          ),
+        ),
+      ).resolves.toMatchObject({
+        post: { id: "post_parent", body: "parent" },
+      });
+    });
+    completedTestCount += 1;
+  });
+
+  test("raises a text post and every descendant comment atomically", async () => {
+    await withSchema(async (connection, admin) => {
+      await apply(connection);
+      await seed(admin);
+      await admin.query(
+        `INSERT INTO comments
+          (community_id, comment_id, post_id, parent_comment_id, author_user_id,
+           author_persona_id, status, body, created_at, updated_at)
+         VALUES ('community_1', 'comment_reply', 'post_parent', 'comment_parent', $1, $2,
+                 'published', 'reply', now(), now())`,
+        [actor.userId, actorPersonaId],
+      );
+
+      const raised = await admin.query<{ changed: number }>(
+        `SELECT raise_text_rating_with_descendants_v1(
+           'community_1', 'text_post', 'post_parent', clock_timestamp()
+         ) AS changed`,
+      );
+      const post = await admin.query<{ content_rating: string }>(
+        "SELECT content_rating FROM posts WHERE post_id = 'post_parent'",
+      );
+      const comments = await admin.query<{ comment_id: string; content_rating: string }>(
+        `SELECT comment_id, content_rating FROM comments
+          WHERE post_id = 'post_parent' ORDER BY comment_id`,
+      );
+
+      expect(raised.rows[0]?.changed).toBe(3);
+      expect(post.rows[0]?.content_rating).toBe("adult_18");
+      expect(comments.rows).toEqual([
+        { comment_id: "comment_parent", content_rating: "adult_18" },
+        { comment_id: "comment_reply", content_rating: "adult_18" },
+      ]);
+    });
+    completedTestCount += 1;
+  });
+
   test("posts and votes in an optional-route community with no binding", async () => {
     await withSchema(async (connection, admin) => {
       await apply(connection);
@@ -983,7 +1051,7 @@ suite("Postgres 17 content repository", () => {
   }, 20_000);
 
   afterAll(async () => {
-    if (connectionString !== undefined && completedTestCount === 11) {
+    if (connectionString !== undefined && completedTestCount === 13) {
       await Bun.write(sentinelPath, sentinelContents);
     }
   });

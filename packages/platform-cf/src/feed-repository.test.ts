@@ -105,6 +105,30 @@ describe("home feed Postgres repository", () => {
     ]);
   });
 
+  test("returns the real adult-rated row when the viewer capability allows it", async () => {
+    const repository = makeControlPlaneFeedRepository();
+    const output = await Effect.runPromise(
+      repository.listHome({ query: {} }).pipe(
+        Effect.provideService(
+          ControlPlaneDb,
+          fakeDb(
+            () => [
+              feedRow(0, {
+                content_rating: "adult_18",
+                rating_view_allowed: true,
+              }),
+            ],
+            [],
+          ),
+        ),
+      ),
+    );
+
+    expect(output.items[0]).toMatchObject({
+      post: { post: { id: "post_0", body: "post 0" } },
+    });
+  });
+
   test("maps only published projection rows into the conservative wire shape", async () => {
     const calls: ControlPlaneStatement[] = [];
     const repository = makeControlPlaneFeedRepository({ now: () => 1_760_000_000_000 });

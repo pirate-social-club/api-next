@@ -49,6 +49,7 @@ import { makeControlPlaneHandleSalesStore } from "@pirate/platform-cf/handle-sal
 import type { HnsForwarderReplayStoreNamespace } from "@pirate/platform-cf/hns-forwarder-replay-store";
 import { makeControlPlaneHnsCommunityAppHostAuthoritySource } from "@pirate/platform-cf/hns-host-persistence-repository";
 import {
+  makeControlPlaneCredentialCanonicalResolver,
   makeControlPlaneIdentityRegistrationStore,
   makeControlPlaneIdentityStore,
   makeControlPlanePrivySessionCredentialStore,
@@ -555,6 +556,10 @@ export async function createProductionHttpWorker(
       : { replay_namespace: bindings.HNS_COMMUNITY_APP_API_REPLAY }),
   });
   const identityStore = makeControlPlaneIdentityStore(controlPlane);
+  const resolvePrivyCredentialAccount = makeControlPlaneCredentialCanonicalResolver(controlPlane, {
+    provider: "privy",
+    providerAppId: config.PRIVY_APP_ID,
+  });
   const publicProfileStore = makeControlPlanePublicProfileStore(controlPlane, identityStore);
   const communityStore = makeControlPlaneCommunityStore(controlPlane);
   const communityCreationStore = makeControlPlaneCommunityCreationStore(controlPlane, {
@@ -817,9 +822,9 @@ export async function createProductionHttpWorker(
       verifier: proofVerifier,
       accounts: {
         canonicalAccountId: (sourceUserId) =>
-          identityStore
-            .resolveCanonical({ sourceUserId })
-            .pipe(Effect.map((identity) => identity.canonicalUserId)),
+          resolvePrivyCredentialAccount(sourceUserId).pipe(
+            Effect.map((identity) => identity.canonicalUserId),
+          ),
       },
     },
   });

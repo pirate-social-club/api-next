@@ -245,7 +245,7 @@ describe("workerd Privy linked-wallet lookup", () => {
     let authorization: string | undefined;
     let appIdHeader: string | undefined;
     const fetcher: SessionProofFetcher = async (input, init) => {
-      if (input.includes("/api/v1/users/")) {
+      if (input.includes("/v1/users/")) {
         const headers = init?.headers as Record<string, string> | undefined;
         authorization = headers?.authorization;
         appIdHeader = headers?.["privy-app-id"];
@@ -267,9 +267,7 @@ describe("workerd Privy linked-wallet lookup", () => {
   it("resolves a requested wallet only when the provider attests it", async () => {
     const material = await keyMaterial();
     const fetcher: SessionProofFetcher = async (input) =>
-      input.includes("/api/v1/users/")
-        ? userResponse([embeddedAccount])
-        : jwksResponse(material.jwk);
+      input.includes("/v1/users/") ? userResponse([embeddedAccount]) : jwksResponse(material.jwk);
     const adapter = adapterWithApi(fetcher);
     const token = await signToken(material.privateKey, material.jwk.kid);
     expect(
@@ -294,7 +292,7 @@ describe("workerd Privy linked-wallet lookup", () => {
   it("fails open without a wallet when the lookup fails", async () => {
     const material = await keyMaterial();
     const fetcher: SessionProofFetcher = async (input) =>
-      input.includes("/api/v1/users/")
+      input.includes("/v1/users/")
         ? new Response("upstream failure", { status: 500 })
         : jwksResponse(material.jwk);
     const adapter = adapterWithApi(fetcher);
@@ -316,7 +314,7 @@ describe("workerd Privy linked-wallet lookup", () => {
   it("never selects from multiple linked wallets", async () => {
     const material = await keyMaterial();
     const fetcher: SessionProofFetcher = async (input) =>
-      input.includes("/api/v1/users/")
+      input.includes("/v1/users/")
         ? userResponse([embeddedAccount, { ...embeddedAccount, address: otherWallet }])
         : jwksResponse(material.jwk);
     const adapter = adapterWithApi(fetcher);
@@ -331,7 +329,7 @@ describe("workerd Privy linked-wallet lookup", () => {
     const material = await keyMaterial();
     let lookupCount = 0;
     const fetcher: SessionProofFetcher = async (input) => {
-      if (input.includes("/api/v1/users/")) {
+      if (input.includes("/v1/users/")) {
         lookupCount += 1;
         return userResponse([embeddedAccount]);
       }
@@ -352,7 +350,7 @@ describe("workerd Privy linked-wallet lookup", () => {
   it("attests only the embedded EVM wallet at the server-reserved HD index", async () => {
     const material = await keyMaterial();
     const fetcher: SessionProofFetcher = async (input) =>
-      input.includes("/api/v1/users/")
+      input.includes("/v1/users/")
         ? userResponse([
             embeddedAccount,
             { ...indexedEmbeddedAccount, address: `0x${"bB".repeat(20)}` },
@@ -380,7 +378,7 @@ describe("workerd Privy linked-wallet lookup", () => {
   it("rejects linked-wallet authority from a user document for another Privy subject", async () => {
     const material = await keyMaterial();
     const fetcher: SessionProofFetcher = async (input) =>
-      input.includes("/api/v1/users/")
+      input.includes("/v1/users/")
         ? new Response(
             JSON.stringify({
               id: "usr_other",
@@ -407,7 +405,7 @@ describe("workerd Privy linked-wallet lookup", () => {
   it("does not treat external wallets or another HD index as persona wallet authority", async () => {
     const material = await keyMaterial();
     const fetcher: SessionProofFetcher = async (input) =>
-      input.includes("/api/v1/users/")
+      input.includes("/v1/users/")
         ? userResponse([embeddedAccount, indexedEmbeddedAccount])
         : jwksResponse(material.jwk);
     const adapter = adapterWithApi(fetcher);
@@ -437,7 +435,7 @@ describe("workerd Privy linked-wallet lookup", () => {
       [{ ...indexedEmbeddedAccount, imported: true }],
     ]) {
       const adapter = adapterWithApi(async (input) =>
-        input.includes("/api/v1/users/") ? userResponse(accounts) : jwksResponse(material.jwk),
+        input.includes("/v1/users/") ? userResponse(accounts) : jwksResponse(material.jwk),
       );
       const error = await Effect.runPromise(
         adapter

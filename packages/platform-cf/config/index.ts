@@ -229,7 +229,7 @@ export const HttpWorkerConfig = Config.all({
   ),
   PRIVY_APP_ID: Config.nonEmptyString("PRIVY_APP_ID"),
   PRIVY_APP_SECRET: secret("PRIVY_APP_SECRET"),
-  PRIVY_API_URL: Config.string("PRIVY_API_URL").pipe(Config.withDefault("https://auth.privy.io")),
+  PRIVY_API_URL: Config.string("PRIVY_API_URL").pipe(Config.withDefault("https://api.privy.io")),
   PRIVY_JWKS_URL: Config.nonEmptyString("PRIVY_JWKS_URL"),
   PRIVY_JWT_ISSUER: Config.nonEmptyString("PRIVY_JWT_ISSUER"),
   PRIVY_JWT_AUDIENCE: Config.nonEmptyString("PRIVY_JWT_AUDIENCE"),

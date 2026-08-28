@@ -149,6 +149,21 @@ describe("config system (000 §9)", () => {
     }
   });
 
+  test("staging admits acceptance traffic without weakening production registration limits", async () => {
+    const config = BunRuntime.JSONC.parse(
+      await BunRuntime.file(
+        new URL("../../../apps/http-worker/wrangler.jsonc", import.meta.url),
+      ).text(),
+    ) as {
+      readonly env?: Readonly<Record<string, { readonly vars?: Readonly<Record<string, string>> }>>;
+    };
+
+    expect(config.env?.staging?.vars?.REGISTRATION_IP_LIMIT).toBe("50");
+    expect(config.env?.staging?.vars?.REGISTRATION_IP_WINDOW_SECONDS).toBe("900");
+    expect(config.env?.production?.vars?.REGISTRATION_IP_LIMIT).toBe("5");
+    expect(config.env?.production?.vars?.REGISTRATION_IP_WINDOW_SECONDS).toBe("900");
+  });
+
   test("Self stays disabled unless explicitly configured", () => {
     const configured = loadConfigFrom(HttpWorkerConfig, {
       API_NEXT_ENV: "development",

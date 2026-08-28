@@ -32,7 +32,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-media-persistence-suite-complete\n";
-const testCount = 28;
+const testCount = 29;
 let completedTestCount = 0;
 const actor = "media_pg_actor",
   moderator = "media_pg_moderator",
@@ -454,6 +454,38 @@ async function expectHostileLyricsProjectionLeakRejected(
 }
 
 suite("song media persistence PostgreSQL 17 race suite", () => {
+  test("installs the general-audience cover evidence and projection gate", async () => {
+    await withSchema(async (admin) => {
+      const columns = await admin.query<{ column_name: string; is_nullable: string }>(
+        `SELECT column_name, is_nullable
+           FROM information_schema.columns
+          WHERE table_schema = current_schema()
+            AND table_name = 'media_analysis_evidence'
+            AND column_name IN (
+              'cover_moderation_decision', 'cover_moderation_reason',
+              'cover_moderation_matched_categories', 'cover_moderation_evidence'
+            )
+          ORDER BY column_name`,
+      );
+      const projection = await admin.query<{ definition: string }>(
+        `SELECT pg_get_functiondef(
+           'validate_media_publication_projection_insert_v2()'::regprocedure
+         ) AS definition`,
+      );
+
+      expect(columns.rows).toEqual([
+        { column_name: "cover_moderation_decision", is_nullable: "NO" },
+        { column_name: "cover_moderation_evidence", is_nullable: "YES" },
+        { column_name: "cover_moderation_matched_categories", is_nullable: "NO" },
+        { column_name: "cover_moderation_reason", is_nullable: "NO" },
+      ]);
+      expect(projection.rows[0]?.definition).toContain(
+        "analysis_record.cover_moderation_decision='allow'",
+      );
+    }, false);
+    completedTestCount += 1;
+  }, 40_000);
+
   test("persists provider unavailability as a review hold without a publication decision", async () => {
     await withSchema(async (admin, connection) => {
       await createThroughDecision(connection, decision, analysis, true);
