@@ -120,6 +120,36 @@ suite("localization Postgres foundation", () => {
 
       await admin.query("INSERT INTO users (user_id) VALUES ('lyrics_author')");
       await admin.query(
+        `INSERT INTO account_language_preferences (
+           account_id, ui_locale, study_helper_language
+         ) VALUES ('lyrics_author', 'ar', 'ja')`,
+      );
+      await admin.query(
+        `UPDATE account_language_preferences
+           SET study_helper_language = 'zh-Hant', revision = revision + 1,
+               updated_at = clock_timestamp() + interval '1 millisecond'
+         WHERE account_id = 'lyrics_author'`,
+      );
+      await expect(
+        admin.query(
+          `UPDATE account_language_preferences
+             SET ui_locale = 'ja', revision = revision + 2,
+                 updated_at = clock_timestamp() + interval '2 milliseconds'
+           WHERE account_id = 'lyrics_author'`,
+        ),
+      ).rejects.toThrow("language preference update requires stable account and next revision");
+      const preferences = await admin.query<{
+        ui_locale: string;
+        study_helper_language: string;
+        revision: string;
+      }>(
+        `SELECT ui_locale, study_helper_language, revision::text
+           FROM account_language_preferences WHERE account_id = 'lyrics_author'`,
+      );
+      expect(preferences.rows).toEqual([
+        { ui_locale: "ar", study_helper_language: "zh-Hant", revision: "2" },
+      ]);
+      await admin.query(
         `INSERT INTO communities (
            community_id, display_name, status, created_by_user_id, created_at, updated_at
          ) VALUES ('lyrics_community', 'Lyrics', 'active', 'lyrics_author',
