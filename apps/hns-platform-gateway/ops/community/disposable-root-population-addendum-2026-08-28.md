@@ -74,6 +74,22 @@ repeat the parser check for its selected 8–15-character handle label and then
 prove real browser HTTPS behavior after the separately authorized public DNS
 and gateway ceremony.
 
+## Gateway host provenance
+
+No gateway host has been selected or provisioned for the `11qx` pilot. Host
+addresses and retained-host observations in the base rehearsal plan are
+read-only discovery evidence from earlier infrastructure work; they do not
+nominate a pilot host and must not be contacted, adopted, repaired, or mutated
+for this rehearsal.
+
+Before any gateway-host access or provisioning, an accepted population
+addendum must name the exact provider resource, instance identity, public
+addresses, environment, intended role, custody boundary, provisioning source,
+and rollback target. The workspace owner must then separately authorize the
+exact provider and host operations. An address inferred from local state,
+network ownership, browser history, another task, or an operator handoff is not
+gateway provenance and remains out of scope.
+
 ## Decisions still required
 
 The root nomination does not settle the remaining owner decisions:
