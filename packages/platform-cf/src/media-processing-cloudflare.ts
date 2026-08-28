@@ -11,7 +11,21 @@ import { consumeMediaProcessingQueueMessage } from "../../application/src/media/
 
 export interface CloudflareMediaWorkflowBinding {
   readonly get: (instanceId: string) => Promise<{
-    readonly status: () => Promise<Readonly<{ readonly status: string }>>;
+    readonly status: () => Promise<
+      Readonly<{
+        readonly status:
+          | "queued"
+          | "running"
+          | "paused"
+          | "errored"
+          | "terminated"
+          | "complete"
+          | "waiting"
+          | "waitingForPause"
+          | "rollingBack"
+          | "unknown";
+      }>
+    >;
     readonly sendEvent: (event: {
       readonly type: MediaProcessingEventType;
       readonly payload: MediaProcessingWorkflowPayload;
@@ -43,7 +57,9 @@ async function workflowIsPresent(
 ): Promise<boolean> {
   const instance = await binding.get(instanceId);
   const status = await instance.status();
-  return status.status !== "unknown";
+  return ["queued", "running", "paused", "waiting", "waitingForPause", "rollingBack"].includes(
+    status.status,
+  );
 }
 
 /**

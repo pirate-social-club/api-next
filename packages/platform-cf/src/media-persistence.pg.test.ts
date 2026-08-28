@@ -82,6 +82,22 @@ const analysis: TrustedSongAnalysis = {
   },
   mediaSafety: "allow",
   lyricsSafety: "not_applicable",
+  contentModeration: {
+    decision: "allow",
+    resultingContentRating: "general",
+    inputSha256: "b".repeat(64),
+    matchedCategories: [],
+    policyRevision: "moderation_policy_1",
+    platformPolicyRevision: "platform_policy_1",
+    communityPolicyRevision: "community_policy_1",
+    evidenceRef: "evidence_fixture",
+    providerEvidence: {
+      providerId: "openai",
+      requestedModel: "omni-moderation-2024-09-26",
+      returnedModel: "omni-moderation-2024-09-26",
+      inputs: [{ surface: "song_title" }],
+    },
+  },
   boundReference: null,
 };
 const decision: PublicationDecision = {
