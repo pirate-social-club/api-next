@@ -1474,6 +1474,38 @@ Until that succeeds, production secret assembly, canonical health, gateway
 process health, and the current fixture identity are proven, but
 gateway-to-Solid-to-api-next acceptance is not.
 
-Bob Wallet, `11qx`, Privy, Caddy, PowerDNS, Handshake, certificates, public
+The wallet application, `11qx`, Privy, Caddy, PowerDNS, Handshake, certificates, public
 DNS, production migrations, and application database state were not touched
 by this recovery checkpoint.
+
+### Gateway Access-cookie correction and promotion stop — 2026-08-28T11:13Z
+
+The Solid production-secret recovery proved that Access and the enabled Solid
+composition assembled. A credentialed request returned an Access
+`CF_Authorization` infrastructure cookie. The gateway treated that cookie as
+an unknown application response cookie and failed closed with 502. api-next PR
+112 corrected the response boundary: merge commit
+`838121e8e61ac6c2a81b88fc1b22f9194d64f531` strips exactly
+`CF_Authorization` before validating and forwarding application `Set-Cookie`
+fields. All 47 gateway tests and all required pull-request checks passed. The
+request boundary still forwards a client `Cookie` field unchanged; a separate
+reviewed correction must remove an exact `CF_Authorization` member there
+before public exposure. This does not block the private service-token probe.
+
+The authorized gateway bundle built from that merge commit has SHA-256
+`4678c478dd98b9e99fd3545ad002e909166291129806ac0b90d258c015c6733c`.
+The first candidate manifest retained the accepted SPKI and all other current
+manifest members, but its generated file included one trailing newline. Its
+2,016 bytes therefore violated the runtime's exact canonical-JSON comparison;
+the prior accepted manifest is 2,015 bytes. The new unit entered its configured
+restart loop and never opened 4169/4171. Execution stopped on that first
+failure. The `current` symlink was atomically restored to retained release
+`475f5bf-4215b3cc-spki-e5dd96b1`; the unit is active and both `/livez` and
+`/readyz` returned 204 afterward.
+
+No Solid variable, Worker version, authority row, health fixture, Privy
+origin, Caddy configuration, PowerDNS state, Handshake state, certificate, or
+public DNS changed. One corrected attempt requires a byte-canonical manifest
+with no trailing newline, a newly recorded manifest digest and deployment
+reference, and a new authorization. The failed candidate release remains
+alongside the rollback release and is not selected by `current`.
