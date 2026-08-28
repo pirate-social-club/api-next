@@ -15,7 +15,10 @@ import {
   authenticateSession,
   authorizeSession,
 } from "@pirate/application/use-cases/session-authentication";
-import { makeSessionIdentityStore } from "@pirate/application/use-cases/session-exchange";
+import {
+  makePrivySessionIdentityStore,
+  makeSessionIdentityStore,
+} from "@pirate/application/use-cases/session-exchange";
 import type { VerificationIntentResolver } from "@pirate/application/verification";
 import { AuthError } from "@pirate/contracts";
 import { makeControlPlaneAcceptedLyricsStudyItemSource } from "@pirate/platform-cf/accepted-lyrics-study-item-source";
@@ -48,6 +51,7 @@ import { makeControlPlaneHnsCommunityAppHostAuthoritySource } from "@pirate/plat
 import {
   makeControlPlaneIdentityRegistrationStore,
   makeControlPlaneIdentityStore,
+  makeControlPlanePrivySessionCredentialStore,
   makeControlPlaneSessionProductReadiness,
 } from "@pirate/platform-cf/identity-repository";
 import { makeR2MediaIngressPresigner } from "@pirate/platform-cf/media-ingress-presigner";
@@ -880,7 +884,11 @@ export async function createProductionHttpWorker(
   const tokenMinter = makeRs256SessionTokenMinter(sessionCrypto);
   const sessionExchange = {
     proofVerifier,
-    identityStore: makeSessionIdentityStore(identityStore),
+    identityStore: makePrivySessionIdentityStore({
+      providerAppId: config.PRIVY_APP_ID,
+      credentials: makeControlPlanePrivySessionCredentialStore(controlPlane),
+      canonicalIdentities: makeSessionIdentityStore(identityStore),
+    }),
     tokenMinter,
     productReadiness: makeControlPlaneSessionProductReadiness(controlPlane),
   };
