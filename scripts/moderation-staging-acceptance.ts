@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 
-const STAGING_HOST_SUFFIX = "-staging.workers.dev";
+const STAGING_HOSTS = new Set([
+  "api-next-staging.pirate.sc",
+  "pirate-http-worker-staging.piratesocialclub.workers.dev",
+  "localhost",
+]);
 const lockedKeys = ["kind", "content_rating", "next_action"] as const;
 
 export type AcceptanceEvidence = {
@@ -110,7 +114,7 @@ export function verifyModerationStagingEvidence(evidence: AcceptanceEvidence): A
     origin.password !== "" ||
     origin.search !== "" ||
     origin.hash !== "" ||
-    (!origin.hostname.endsWith(STAGING_HOST_SUFFIX) && origin.hostname !== "localhost")
+    !STAGING_HOSTS.has(origin.hostname)
   ) {
     throw new ModerationAcceptanceError(
       "not-staging",

@@ -11,7 +11,7 @@ const locked = {
 } as const;
 
 const validEvidence = (): AcceptanceEvidence => ({
-  origin: "https://pirate-http-worker-staging.workers.dev",
+  origin: "https://api-next-staging.pirate.sc",
   attestation: { before_restricted_status: 403, after_attestation_status: 200 },
   locked_resources: [locked, locked, locked],
   rating_ancestry: {
@@ -60,7 +60,7 @@ describe("moderation staging acceptance evidence", () => {
     expect(() =>
       verifyModerationStagingEvidence({
         ...validEvidence(),
-        origin: "http://pirate-http-worker-staging.workers.dev",
+        origin: "http://pirate-http-worker-staging.piratesocialclub.workers.dev",
       }),
     ).toThrow("explicit staging Worker");
   });

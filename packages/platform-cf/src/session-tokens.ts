@@ -110,7 +110,9 @@ export function makeRs256SessionTokenMinter(crypto: SessionCrypto): SessionToken
 export function makeRs256SessionTokenVerifier(
   crypto: SessionCrypto,
   identityRepository: Pick<IdentityStore["Service"], "resolveCanonical">,
+  options: { readonly additionalUserScopes?: readonly string[] } = {},
 ): SessionTokenVerifier {
+  const userScopes = new Set([crypto.defaultScope, ...(options.additionalUserScopes ?? [])]);
   return {
     verify: ({ token, requiredScope, requiredClassification }) =>
       Effect.tryPromise({
@@ -123,7 +125,7 @@ export function makeRs256SessionTokenVerifier(
         Effect.flatMap((claims) => {
           const scopeValue = claims.scope;
           const scopeTokens = scopeValue.split(/\s+/u).filter(Boolean);
-          const classification = scopeValue === crypto.defaultScope ? "user" : ("device" as const);
+          const classification = userScopes.has(scopeValue) ? "user" : ("device" as const);
           if (
             classification === "device" &&
             requiredScope !== undefined &&

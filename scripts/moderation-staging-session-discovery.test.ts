@@ -62,4 +62,59 @@ describe("moderation staging session discovery", () => {
       ),
     ).rejects.toThrow("Privy authentication failed with HTTP 401");
   });
+
+  test("confirms a pending registration wallet with CSRF and exchanges a full session", async () => {
+    const exchanges = new Map<string, number>();
+    const request = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/api/v1/passwordless/authenticate")) {
+        const body = JSON.parse(String(init?.body)) as { email: string };
+        return Response.json({ token: `token-${body.email}` });
+      }
+      if (url.endsWith("/auth/session/exchange")) {
+        const body = JSON.parse(String(init?.body)) as {
+          proof: { privy_access_token: string };
+        };
+        const token = body.proof.privy_access_token;
+        const count = (exchanges.get(token) ?? 0) + 1;
+        exchanges.set(token, count);
+        if (count === 1) return new Response(null, { status: 401 });
+        return Response.json(
+          { user: {} },
+          {
+            headers: {
+              "set-cookie":
+                "__Host-pirate_session=full; Secure, __Host-pirate_csrf=full-csrf; Secure",
+            },
+          },
+        );
+      }
+      if (url.endsWith("/auth/register")) {
+        return Response.json(
+          {
+            status: "wallet_setup_required",
+            wallet: { persona_id: "persona-test", status: "pending" },
+          },
+          {
+            status: 201,
+            headers: {
+              "set-cookie":
+                "__Host-pirate_session=setup; Secure, __Host-pirate_csrf=setup-csrf; Secure",
+            },
+          },
+        );
+      }
+      if (url.includes("/wallets/evm/confirm")) {
+        expect(new Headers(init?.headers).get("x-csrf-token")).toBe("setup-csrf");
+        return Response.json({ status: "active" });
+      }
+      return new Response(null, { status: 200 });
+    }) as typeof fetch;
+
+    const result = await discoverModerationStagingSessions(environment, request);
+    expect(
+      result.roles.every(({ wallet_confirmation_status }) => wallet_confirmation_status === 200),
+    ).toBe(true);
+    expect(result.roles.every(({ current_user_status }) => current_user_status === 200)).toBe(true);
+  });
 });

@@ -16,6 +16,8 @@ export type SessionDiscoveryResult = Readonly<{
     account_sha256: string;
     session_exchange_status: number;
     registration_status: number | null;
+    wallet_preparation_status: number | null;
+    wallet_confirmation_status: number | null;
     current_user_status: number;
     attestation_status: number;
   }>[];
@@ -56,6 +58,12 @@ function sessionCookies(response: Response): string {
   return cookies.join("; ");
 }
 
+function csrfToken(cookie: string): string {
+  const value = cookie.match(/(?:^|; )__Host-pirate_csrf=([^;]+)/u)?.[1];
+  if (!value) throw new SessionDiscoveryError("Session exchange returned no CSRF token.");
+  return value;
+}
+
 async function privyToken(input: {
   readonly appId: string;
   readonly email: string;
@@ -94,9 +102,14 @@ export async function discoverModerationStagingSessions(
 ): Promise<SessionDiscoveryResult> {
   const appId = environment.PRIVY_APP_ID ?? STAGING_APP_ID;
   if (appId !== STAGING_APP_ID) throw new SessionDiscoveryError("Unexpected Privy staging app ID.");
+  const selectedRole = environment.MODERATION_E2E_ROLE?.toUpperCase();
+  if (selectedRole !== undefined && !roles.includes(selectedRole as Role)) {
+    throw new SessionDiscoveryError("MODERATION_E2E_ROLE must be OWNER, MEMBER, or VIEWER.");
+  }
+  const selectedRoles = selectedRole === undefined ? roles : [selectedRole as Role];
   const results: SessionDiscoveryResult["roles"][number][] = [];
 
-  for (const role of roles) {
+  for (const role of selectedRoles) {
     const email = required(environment, `MODERATION_E2E_${role}_EMAIL`);
     const otp = required(environment, `MODERATION_E2E_${role}_OTP`);
     const token = await privyToken({ appId, email, otp, request });
@@ -109,6 +122,8 @@ export async function discoverModerationStagingSessions(
       }),
     });
     let registrationStatus: number | null = null;
+    let walletPreparationStatus: number | null = null;
+    let walletConfirmationStatus: number | null = null;
     if (exchange.status === 401) {
       const registration = await request(`${STAGING_API_ORIGIN}/auth/register`, {
         method: "POST",
@@ -124,7 +139,59 @@ export async function discoverModerationStagingSessions(
         }),
       });
       registrationStatus = registration.status;
-      if (registration.ok) exchange = registration;
+      if (registration.ok) {
+        const registered = await json(registration.clone());
+        exchange = registration;
+        const wallet = registered.wallet;
+        if (
+          registered.status === "wallet_setup_required" &&
+          wallet !== null &&
+          typeof wallet === "object" &&
+          !Array.isArray(wallet) &&
+          typeof (wallet as Record<string, unknown>).persona_id === "string"
+        ) {
+          const setupCookie = sessionCookies(registration);
+          const personaId = (wallet as Record<string, unknown>).persona_id as string;
+          const setupHeaders = {
+            "content-type": "application/json",
+            cookie: setupCookie,
+            origin: STAGING_WEB_ORIGIN,
+            "x-csrf-token": csrfToken(setupCookie),
+          } as const;
+          const preparation = await request(
+            `${STAGING_API_ORIGIN}/personas/${encodeURIComponent(personaId)}/wallets/evm/prepare`,
+            {
+              method: "POST",
+              headers: setupHeaders,
+              redirect: "error",
+              body: JSON.stringify({ idempotency_key: `moderation-e2e-${role.toLowerCase()}` }),
+            },
+          );
+          walletPreparationStatus = preparation.status;
+          const confirmation = await request(
+            `${STAGING_API_ORIGIN}/personas/${encodeURIComponent(personaId)}/wallets/evm/confirm`,
+            {
+              method: "POST",
+              headers: setupHeaders,
+              redirect: "error",
+              body: JSON.stringify({
+                proof: { type: "privy_access_token", privy_access_token: token },
+              }),
+            },
+          );
+          walletConfirmationStatus = confirmation.status;
+          if (confirmation.ok) {
+            exchange = await request(`${STAGING_API_ORIGIN}/auth/session/exchange`, {
+              method: "POST",
+              headers: { "content-type": "application/json", origin: STAGING_WEB_ORIGIN },
+              redirect: "error",
+              body: JSON.stringify({
+                proof: { type: "privy_access_token", privy_access_token: token },
+              }),
+            });
+          }
+        }
+      }
     }
     let currentUserStatus = 0;
     let attestationStatus = 0;
@@ -142,6 +209,8 @@ export async function discoverModerationStagingSessions(
       account_sha256: createHash("sha256").update(email, "utf8").digest("hex"),
       session_exchange_status: exchange.status,
       registration_status: registrationStatus,
+      wallet_preparation_status: walletPreparationStatus,
+      wallet_confirmation_status: walletConfirmationStatus,
       current_user_status: currentUserStatus,
       attestation_status: attestationStatus,
     });
