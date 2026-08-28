@@ -624,7 +624,7 @@ const LocalizedPost = Schema.Struct({
   viewer_is_author: Schema.optional(Schema.Boolean),
   viewer_reaction_kinds: Schema.Array(Schema.Literal("like")),
   age_gate_viewer_state: Schema.optional(Schema.NullOr(Schema.String)),
-  resolved_locale: Schema.String,
+  resolved_locale: LanguageTagV1,
   translation_state: Schema.Literals([
     "ready",
     "pending",
@@ -637,7 +637,7 @@ const LocalizedPost = Schema.Struct({
   translated_title: Schema.optional(Schema.NullOr(Schema.String)),
   translated_caption: Schema.optional(Schema.NullOr(Schema.String)),
   translated_embeds: Schema.optional(Schema.NullOr(Schema.Array(JsonObject))),
-  source_hash: Schema.String,
+  source_hash: Schema.NullOr(Schema.String),
 });
 
 const HomeFeedCommunitySummary = Schema.Struct({
