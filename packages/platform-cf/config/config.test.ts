@@ -142,7 +142,7 @@ describe("config system (000 §9)", () => {
         >;
       };
 
-      expect(config.env?.staging?.vars?.MEGAPOT_REWARDS_ENABLED).toBe("true");
+      expect(config.env?.staging?.vars?.MEGAPOT_REWARDS_ENABLED).toBe("false");
       expect(config.env?.staging?.vars?.MEGAPOT_CHAIN_ID).toBe("84532");
       expect(config.env?.production?.vars?.MEGAPOT_REWARDS_ENABLED).toBe("false");
       expect(config.env?.production?.vars?.MEGAPOT_CHAIN_ID).toBe("8453");

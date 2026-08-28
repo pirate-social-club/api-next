@@ -358,6 +358,21 @@ bounded text-only smoke request are sufficient operational proof. This
 boundary grants no image input, other OpenAI endpoint, production Worker,
 model alias, retry, deployment, or content-retention authority.
 
+### Staging moderation E2E identities — 2026-08-28
+
+The six names `MODERATION_E2E_OWNER_EMAIL`, `MODERATION_E2E_OWNER_OTP`,
+`MODERATION_E2E_MEMBER_EMAIL`, `MODERATION_E2E_MEMBER_OTP`,
+`MODERATION_E2E_VIEWER_EMAIL`, and `MODERATION_E2E_VIEWER_OTP` are allowed only
+in Infisical environment `staging` at `/services/api-next/operator`. They hold
+Privy dashboard test credentials with fixed OTPs for three distinct test
+identities. They are operator tooling inputs, are not Worker bindings, and must
+never be synchronized to Cloudflare or copied to development or production.
+
+Initial `PENDING` values are provisioning sentinels, not usable credentials.
+The acceptance runner must consume the entries through `infisical run`, must not
+print or persist their values, and must keep resulting session material in
+short-lived local files outside Git.
+
 ### R2 seal-probe retirement — 2026-08-26
 
 The disposable proof Worker, bucket, and operator credential pair were torn

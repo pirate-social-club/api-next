@@ -895,7 +895,9 @@ export async function createProductionHttpWorker(
     productReadiness: makeControlPlaneSessionProductReadiness(controlPlane),
     rateLimiter: makeProductionIdentityRegistrationRateLimiter(bindings, config.API_NEXT_ENV),
   };
-  const tokenVerifier = makeRs256SessionTokenVerifier(sessionCrypto, identityStore);
+  const tokenVerifier = makeRs256SessionTokenVerifier(sessionCrypto, identityStore, {
+    additionalUserScopes: [PERSONA_WALLET_SETUP_SESSION_SCOPE],
+  });
   const authenticate = ({
     credentials,
   }: {
