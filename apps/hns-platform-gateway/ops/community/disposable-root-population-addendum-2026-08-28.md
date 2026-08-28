@@ -167,3 +167,99 @@ unresolved. Some are selected before a mutation ceremony and others are
 server-generated results; the accepted transcript must distinguish the two
 instead of inventing live identifiers from repository state. No deployment or
 mutation ceremony is executable from this checkpoint.
+
+## Credential-safe external inventory checkpoint
+
+The workspace owner authorized a bounded read-only inventory on 2026-08-28.
+The inventory used existing authenticated sessions without rendering a secret
+value. It queried only Cloudflare resource metadata, secret names, the staging
+`schema_migrations` ledger, public DNS, and the public Handshake explorer. It
+did not read product tables, account data, Bob Wallet, private keys, or signing
+interfaces and made no external mutation.
+
+The exact candidate sources after the inventory are api-next
+`72619e2817cb268f170d9044e5d586643e54957e` and Solid
+`4f511992b3473c620ff48a459672464328cb0561`. The api-next advance from the
+earlier `24fd9a9` pin adds this population record and an unrelated Megapot
+operator-script repair; it adds no migration and does not change the HNS
+runtime. The latest deployed staging compositions are older than those
+candidate sources:
+
+```text
+api_next_deployment_id = ed442fc6-3df7-4f04-856f-28a2785c4825
+api_next_worker_version = 35e4f25a-8259-49ff-8a2d-324c30582943
+api_next_deployed_source = 24fd9a90f44ba97ffcd93015c8de47f6361688e5
+solid_deployment_id = 58c856c9-65ff-438e-9bc7-0dbce01904ca
+solid_worker_version = 2af726d7-e629-4fe7-9447-53136d932943
+solid_deployed_source = a72b9213da15b659cd974b25946cfa8c055f8851
+```
+
+Both deployed Workers retain their replay Durable Object bindings. Their HNS
+enable switches are false, and every community-app protected origin, Access
+issuer, JWKS URL, audience, forwarder-registry reference/version, and gateway
+deployment reference is empty. The api-next Worker has the forwarder-registry
+secret name installed. The Solid Worker has the forwarder-registry name and
+the six community API, authority, and handle-authority Access client names
+installed. Secret presence does not prove correct, distinct, or current secret
+bytes.
+
+Hyperdrive `8cb7658a0f7143359c1becfec6a15c23` is named `api-next-staging` and targets
+`us-east-3.pg.psdb.cloud:5432/postgres`, with caching disabled. The credential-
+free gateway authority endpoint is therefore
+`postgresql://us-east-3.pg.psdb.cloud:5432/postgres?sslmode=verify-full`; a later
+ceremony must create a least-privilege staging credential without recording its
+value. The injected migration-reader connected to database `postgres`, schema
+`api_next`, and read exactly 69 ordered ledger rows. The last row is
+`0069_media_analysis_snapshot_recovery.sql` with checksum
+`7e26e0cff1f2c8a1b2e1d119a73971a2ae793caebaba89b4b5bf50fda0dd14ca`.
+The canonical JSON array of returned version/checksum rows has SHA-256
+`f7ba1a2af6fa8985344658275c7de6aa1e00cc466e135eef60030078f704c214`
+and matches the exact repository manifest at the candidate source.
+
+The stage-one migration ceremony is therefore a no-op at this source. Its
+accepted preflight must repeat the same ledger-only query immediately before
+deployment and require database `postgres`, schema `api_next`, 69 rows, the
+same ordered-ledger digest, and the same `0069` tip/checksum. When all values
+match, no migration command is run. Any missing, additional, reordered, or
+checksum-mismatched row stops the pilot and requires a new reviewed migration
+plan; it does not authorize `db:migrate` as a repair.
+
+The proposed new protected hosts are
+`hns-community-ingress-staging.pirate.sc` for Solid and
+`hns-community-api-staging.pirate.sc` for the shared api-next API/authority
+origin. Public A, AAAA, and CNAME queries returned NXDOMAIN for both names at
+this checkpoint, and neither deployed Worker references them. Wrangler exposes
+no Access-application listing command, and the existing browser session did
+not provide a compatible read-only control channel. Their Access-application
+absence is therefore unproved. The names remain proposed reservations, not
+accepted resources, until a later credential-safe provider listing proves no
+collision and returns the exact Access team domain and application audiences.
+No OAuth bearer token was retrieved to bypass that stop.
+
+No gateway host or evidence destination has been selected. Consequently no
+authoritative nameserver address, DNSSEC keyset, DANE certificate, registry
+identity, gateway manifest, deployment reference, or rollback target can be
+populated honestly. Existing machines and addresses from other lanes remain
+out of scope.
+
+At public Handshake explorer block 344,626, `11qx` remained registered to the
+same public owner address recorded above, with renewal-window end 443,415 and
+the same live 33-byte version-zero resource effective since block 104,580:
+
+```text
+GLUE4 ns1.11qx. 44.231.6.183
+NS    ns1.11qx.
+GLUE4 ns2.11qx. 54.214.136.246
+NS    ns2.11qx.
+```
+
+There was still no later resource UPDATE. This public observation is neither
+wallet custody proof nor authorization to replace the resource. The exact
+`11qx` mutation ceremony remains a draft with this pre-state and the following
+unresolved replacement inputs: fresh owner outpoint and chain tip, two new
+authoritative nameserver addresses, complete NS/glue resource bytes, DNSSEC DS
+records, signed-zone digest, transaction preimage, unsigned transaction bytes,
+fee and confirmation threshold, signed-transaction digest, and rollback UPDATE
+bytes. Those values depend on an accepted fresh gateway/DNS host and custody
+ceremony. No transaction can be assembled, signed, or broadcast before they
+exist and receive separate authorization.

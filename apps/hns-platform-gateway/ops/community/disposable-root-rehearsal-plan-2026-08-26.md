@@ -778,11 +778,11 @@ stage-one tuple is:
 | staging community route | `https://web-next-staging.pirate.sc/c/11qx` |
 | public HNS origin | `https://app.11qx` |
 | Solid source | `4f511992b3473c620ff48a459672464328cb0561` |
-| api-next source | `24fd9a90f44ba97ffcd93015c8de47f6361688e5` |
+| api-next source | `72619e2817cb268f170d9044e5d586643e54957e` |
 | Solid Worker | `pirate-web-solid-staging` |
 | api-next Worker | `pirate-http-worker-staging` |
-| control plane | Hyperdrive `8cb7658a0f7143359c1becfec6a15c23`; backing staging PostgreSQL origin remains `__UNRESOLVED_EXACT_STAGING_POSTGRES_ORIGIN__` |
-| gateway authority endpoint | `__UNRESOLVED_EXACT_STAGING_GATEWAY_AUTHORITY_ENDPOINT__` without credentials |
+| control plane | Hyperdrive `8cb7658a0f7143359c1becfec6a15c23`; PostgreSQL origin `postgresql://us-east-3.pg.psdb.cloud:5432/postgres?sslmode=verify-full`, schema `api_next` |
+| gateway authority endpoint | `postgresql://us-east-3.pg.psdb.cloud:5432/postgres?sslmode=verify-full` without credentials |
 | Solid protected origin | `__UNRESOLVED_EXACT_STAGING_SOLID_PROTECTED_ORIGIN__` |
 | api-next shared protected origin | `__UNRESOLVED_EXACT_STAGING_API_NEXT_PROTECTED_ORIGIN__` |
 | private authority origin | the same `__UNRESOLVED_EXACT_STAGING_API_NEXT_PROTECTED_ORIGIN__` |
@@ -1119,7 +1119,7 @@ acknowledged at signing.
 The repository-only population checkpoint pins the exact api-next source:
 
 ```text
-api_next_source_commit = 24fd9a90f44ba97ffcd93015c8de47f6361688e5
+api_next_source_commit = 72619e2817cb268f170d9044e5d586643e54957e
 ```
 
 Immediately before population, fetch without pruning, require clean and equal
