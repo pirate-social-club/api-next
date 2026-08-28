@@ -791,8 +791,16 @@ private key, signing prompt, or raw wallet credential enters retained evidence.
 
 The selected name must not be `pirate`, must not collide with a community in
 service, and must have enough renewal horizon for the rehearsal and rollback
-observation window. If no inventoried name passes, the operation stops; it
-does not weaken the criteria.
+observation window. Its root label must contain at least one ASCII letter. An
+all-digit final hostname label enters the WHATWG IPv4 parser and can make
+`https://<handle-label>.<root>/` invalid before DNS resolution, so an
+all-numeric root cannot satisfy the browser acceptance path. If no inventoried
+name passes, the operation stops; it does not weaken the criteria.
+
+The read-only candidate population for `11qx` is recorded separately in
+`disposable-root-population-addendum-2026-08-28.md`. That addendum is evidence
+and unresolved-decision tracking only; it does not replace this plan's owner,
+environment, migration, or mutation authorization gates.
 
 A separately supplied read-only migration credential must then query the
 selected production database's authoritative migration ledger and prove that
@@ -1308,3 +1316,109 @@ authorizes none of them.
 
 Stop here. Do not execute this plan in the authorization step that accepts or
 amends it.
+
+## Execution checkpoint — 2026-08-28
+
+The workspace owner accepted the production migration result through
+`0068_general_audience_song_covers.sql` and authorized the bounded private
+enablement checkpoint. Rotation of the exposed
+`hns-community-gateway-authority-v1` password is deferred as dated technical
+debt by explicit owner decision. The installed credential remains restricted
+to the thirteen resolver grants, is delivered through systemd
+`LoadCredential=`, and must be rotated before this rehearsal is converted into
+a retained production service.
+
+The active shadow manifest digest is
+`f795fef30b7b24c9eb6081ded4d180f3f385d6d398b6e855c306a3a0831df1e5`.
+Its embedded gateway certificate SPKI SHA-256 and the independently derived
+SPKI of the installed certificate are both
+`e5dd96b162d67af3016c1db8c19108dd93b5419c7c8eecc7e36c55f98f2d3f08`.
+The disposable certificate expires on 2026-09-27. Continuing the host beyond
+that date requires a separately reviewed certificate and TLSA rotation before
+expiry; the rehearsal certificate is not a durable production certificate.
+
+The protected enablement dispatches are pinned to api-next commit
+`89dfb7b2034898fea0673493d3a4c71ec4b1787e` and Solid commit
+`56771ed5b9bf6379ed67ab221ac59dd9ec7c3d4d`. Both remote `main` refs were
+verified at those exact commits immediately before this checkpoint. The
+api-next workflow requires the production ledger tip to remain exactly 0068.
+Both workflows must therefore be dispatched in the same execution session;
+any intervening api-next migration or movement of either remote `main`
+invalidates the checkpoint and stops execution.
+
+This checkpoint authorizes only a short-lived fixture refresh, both protected
+Worker dispatches, recording the resulting Worker versions, and the private
+positive-path probe through loopback listeners 4169/4171. It does not authorize
+Privy, Caddy, PowerDNS, Handshake, or public-exposure changes.
+
+### Execution result — 2026-08-28T06:22Z
+
+Health generation 3 was recorded for activation generation 1 with the exact
+manifest reference and certificate SPKI above. Its fixture lifetime ends at
+2026-08-28T07:21:23Z and it must not be treated as a public DNS observation.
+
+The protected api-next workflow run `33147666246` succeeded at the pinned
+commit and deployed enabled Worker version
+`e16794e6-7dd1-446d-8677-1ac8bc74a8f7`. The canonical API health probe
+returned 200 afterward.
+
+The protected Solid workflow run `33147666275` failed in its build-and-deploy
+step. The build completed and uploaded 87 static assets, but no new Solid
+Worker version was created. The generated `dist/ssr/wrangler.json` already
+named `pirate-web-solid-production` and contained the enabled production
+variables. The workflow nevertheless retained `CLOUDFLARE_ENV=production`
+while invoking Wrangler against that flattened generated configuration.
+Wrangler attempted to select a second, absent production environment and
+reported that the target Worker did not exist and its five required secrets
+were unset. The canonical Solid origin remained healthy with HTTP 200; both
+Access-protected boundaries continued to return 401 without credentials.
+
+Execution stopped on that first failure. No retry or private positive-path
+probe was performed. A reviewed workflow correction must prevent Wrangler from
+reapplying an environment to the flattened generated configuration, prove the
+resulting target name before mutation, and receive a new authorization for one
+corrected Solid deployment attempt. The health fixture must be refreshed again
+if it expires before that attempt.
+
+### Corrected Solid attempt and private-probe stop — 2026-08-28T06:35Z
+
+The reviewed workflow correction was published Radicle-first and mirrored to
+GitHub at `57b0a0487199abb5a6abb2e21b896184a41f0e9c`. Corrected protected run
+`33148349973` succeeded and deployed Solid Worker version
+`c33bca27-6909-4e7a-9e87-23c01e16cdc6`. The canonical Solid and api-next
+origins both remained healthy.
+
+The authorized private positive probes for `/` and `/api/health` both failed
+closed with 421 before reaching an upstream. The current resolver row showed
+active app-host and DNS generations, current operator-managed route authority,
+matching DS, retained-zone digest, gateway reference, certificate SPKI, and
+healthy gateway state. Its sole false gate was
+`stable_chain_delegation_matches` because the activation-bound authority
+inventory `2026-08-28.v1` expired at 2026-08-28T05:44:56Z. Health generation 3
+could not revive an expired inventory.
+
+Execution stopped without retry. Recovery requires an append-only successor
+authority inventory, DNS-zone activation generation, app-host activation
+generation, and health observation, all internally bound to one another. That
+generation transition requires separate authorization. Privy, Caddy,
+PowerDNS, Handshake, and public exposure remain unchanged.
+
+### Successor authority and Solid assembly stop — 2026-08-28T10:11Z
+
+The authorized successor transition committed atomically. Authority inventory
+`2026-08-28.v2` expires at 2026-08-28T12:11:28Z. DNS-zone activation generation
+2 and its health generation 1 are current. The app host moved through suspended
+generation 2 to restored active generation 3 bound to DNS generation 2. A
+post-transaction resolver read proved every route, delegation, DS, retained
+zone, gateway-reference, SPKI, and health gate true.
+
+The repeated private `/` and `/api/health` probes then reached the upstream
+boundary but failed closed with 502. A credentialed direct request from the VPS
+passed Cloudflare Access and received the Solid Worker's redacted 503 assembly
+failure. The VPS Access client id and secret have value-only shapes with no
+header prefix or colon. The remaining failure surface is therefore the enabled
+Solid composition's five runtime secrets or their cross-secret consistency:
+the shared forwarder registry and the distinct API and authority Access token
+pairs. Execution stopped without reinstalling secrets or attempting another
+deployment. Privy, Caddy, PowerDNS, Handshake, certificates, and public DNS
+remain unchanged.
