@@ -211,18 +211,37 @@ describe("OpenAI text moderation provider", () => {
     expect(serialized).not.toContain("message");
   });
 
-  test("reports only the thrown error class when transport fails", async () => {
+  test("reports bounded transport causes without request content or credentials", async () => {
     const diagnostics: unknown[] = [];
     const provider = makeOpenAiTextModerationProvider({
       apiKey: "secret-test-key",
       reportDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
       transport: async () => {
-        throw new TypeError("Separate body secret-test-key");
+        throw new TypeError("fetch failed for Separate body secret-test-key", {
+          cause: Object.assign(new Error("connect ECONNRESET https://api.openai.com/v1"), {
+            cause: "socket closed near Separate title and sk-private-token",
+          }),
+        });
       },
     });
 
     expect(await failureReason(provider)).toBe("unavailable");
-    expect(diagnostics).toEqual([{ outcome: "fetch_error", error_name: "TypeError" }]);
+    expect(diagnostics).toEqual([
+      {
+        outcome: "fetch_error",
+        error_name: "TypeError",
+        error_message: "fetch failed for [redacted] [redacted]",
+        cause_name: "Error",
+        cause_message: "connect ECONNRESET [url]",
+        cause_detail: "socket closed near [redacted] and [redacted]",
+      },
+    ]);
+    const serialized = JSON.stringify(diagnostics);
+    expect(serialized).not.toContain("Separate title");
+    expect(serialized).not.toContain("Separate body");
+    expect(serialized).not.toContain("secret-test-key");
+    expect(serialized).not.toContain("sk-private-token");
+    expect(serialized).not.toContain("api.openai.com");
   });
 
   test("rejects moving aliases, alternate origins, and malformed credentials", () => {

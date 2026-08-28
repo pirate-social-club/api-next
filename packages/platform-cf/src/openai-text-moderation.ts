@@ -94,6 +94,10 @@ export type OpenAiModerationDiagnostic = Readonly<{
   readonly error_type?: string;
   readonly error_code?: string;
   readonly error_name?: string;
+  readonly error_message?: string;
+  readonly cause_name?: string;
+  readonly cause_message?: string;
+  readonly cause_detail?: string;
   readonly rate_limit_requests?: string;
   readonly rate_limit_remaining_requests?: string;
   readonly retry_after?: string;
@@ -185,6 +189,58 @@ const textInputs = (input: TextModerationInputV1): readonly string[] =>
 
 const safeDiagnosticToken = (value: string | null): string | undefined =>
   value !== null && /^[A-Za-z0-9_.:-]{1,128}$/u.test(value) ? value : undefined;
+
+const sanitizedTransportText = (
+  value: unknown,
+  sensitiveValues: readonly string[],
+): string | undefined => {
+  if (typeof value !== "string" || value.length === 0) return undefined;
+  let sanitized = value
+    .replaceAll(/[\r\n\t]/gu, " ")
+    .replaceAll(/https?:\/\/[^\s]+/giu, "[url]")
+    .replaceAll(/Bearer\s+[^\s]+/giu, "Bearer [redacted]")
+    .replaceAll(/\bsk-[A-Za-z0-9_-]+\b/gu, "[redacted]");
+  for (const sensitive of sensitiveValues) {
+    if (sensitive.length > 0) sanitized = sanitized.replaceAll(sensitive, "[redacted]");
+  }
+  return sanitized.slice(0, 256);
+};
+
+const transportErrorMetadata = (
+  value: unknown,
+  sensitiveValues: readonly string[],
+): Pick<
+  OpenAiModerationDiagnostic,
+  "cause_detail" | "cause_message" | "cause_name" | "error_message" | "error_name"
+> => {
+  if (!(value instanceof Error)) return { error_name: "unknown" };
+  try {
+    const cause = value.cause;
+    const causeName = cause instanceof Error ? cause.name : undefined;
+    const causeMessage =
+      cause instanceof Error
+        ? cause.message
+        : typeof cause === "string"
+          ? cause
+          : Predicate.isObject(cause) && typeof cause.message === "string"
+            ? cause.message
+            : undefined;
+    const causeDetail =
+      Predicate.isObject(cause) && typeof cause.cause === "string" ? cause.cause : undefined;
+    const errorMessage = sanitizedTransportText(value.message, sensitiveValues);
+    const sanitizedCauseMessage = sanitizedTransportText(causeMessage, sensitiveValues);
+    const sanitizedCauseDetail = sanitizedTransportText(causeDetail, sensitiveValues);
+    return {
+      error_name: value.name,
+      ...(errorMessage === undefined ? {} : { error_message: errorMessage }),
+      ...(causeName === undefined ? {} : { cause_name: causeName }),
+      ...(sanitizedCauseMessage === undefined ? {} : { cause_message: sanitizedCauseMessage }),
+      ...(sanitizedCauseDetail === undefined ? {} : { cause_detail: sanitizedCauseDetail }),
+    };
+  } catch {
+    return { error_name: value.name };
+  }
+};
 
 const reportDiagnosticSafely = (
   report: (diagnostic: OpenAiModerationDiagnostic) => void,
@@ -287,7 +343,10 @@ export function makeOpenAiTextModerationProvider(
         if (controller.signal.aborted) throw new OpenAiModerationFailure("timeout");
         reportDiagnosticSafely(reportDiagnostic, {
           outcome: "fetch_error",
-          error_name: cause instanceof Error ? cause.name : "unknown",
+          ...transportErrorMetadata(cause, [
+            options.apiKey,
+            ...inputs.filter((input): input is string => typeof input === "string"),
+          ]),
         });
         throw cause;
       }
