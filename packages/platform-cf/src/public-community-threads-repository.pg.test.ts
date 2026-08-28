@@ -144,6 +144,27 @@ suite("Postgres 17 public community threads repository", () => {
         content_rating: "adult_18",
         next_action: { kind: "verify_minimum_age", minimum_age: 18 },
       });
+      await admin.query(
+        `CREATE OR REPLACE FUNCTION current_account_age_capability_v1(target_account_id TEXT)
+         RETURNS TEXT LANGUAGE sql STABLE AS $$
+           SELECT CASE WHEN target_account_id = 'usr_other' THEN 'adult_18' ELSE 'general' END
+         $$`,
+      );
+      const adultCapable = requireDocument(
+        await Effect.runPromise(
+          Effect.scoped(
+            repository
+              .listPublicCommunityThreads({
+                ...request("collision"),
+                viewerUserId: "usr_other",
+              })
+              .pipe(Effect.provide(makeDirectPostgresControlPlaneLayer(connection))),
+          ),
+        ),
+      );
+      expect(adultCapable.items[0]).toMatchObject({
+        post: { id: "post_00", body: "post_00" },
+      });
       expect(exact.items.every((item) => "kind" in item || item.post.post_type === "text")).toBe(
         true,
       );
