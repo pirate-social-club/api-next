@@ -307,7 +307,7 @@ adapters remain disabled and runtime composition is absent.
 | `ELEVENLABS_API_KEY` | Platform-funded forced-alignment key; v1 has no ASR |
 | `FILEBASE_IPFS_TOKEN` | Filebase bucket-scoped IPFS bearer token |
 | `DATA_REGISTRATION_STAGING_PRIVATE_KEY` | Staging-only Aeneid DATA registration EOA; never shared with Megapot or production |
-| `MEDIA_CLASSIFIER_API_KEY` | Provider-neutral media-classifier credential |
+| `OPENROUTER_API_KEY` | OpenRouter API credential used by the lyrics classifier |
 | `MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID` | Ingress-bucket-only R2 S3 access-key identifier |
 | `MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY` | Ingress-bucket-only R2 S3 signing secret |
 
@@ -338,9 +338,9 @@ classifier likewise follow their owning roles. Any future assignment must
 update the destination Worker's binding contract and Wrangler declaration in
 the same reviewed tranche.
 
-`MEDIA_CLASSIFIER_API_KEY` is deliberately provider-neutral. The current
-OpenRouter scaffold does not own the credential name, and changing the selected
-classifier provider must not require renaming its role-based secret.
+`OPENROUTER_API_KEY` names the actual credential boundary. A reviewed model
+change within OpenRouter does not require a new secret. Replacing OpenRouter
+with another classifier provider requires a separately reviewed binding.
 
 ### Staging OpenAI moderation boundary — 2026-08-27
 

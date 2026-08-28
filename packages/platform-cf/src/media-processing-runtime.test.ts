@@ -252,7 +252,7 @@ describe("media processor runtime boundary", () => {
     });
     expect(requests).toHaveLength(4);
     expect(requests.every(({ init }) => init?.redirect === "manual")).toBe(true);
-    expect(requests[3]?.url).toBe("https://eu.openrouter.ai/api/v1/chat/completions");
+    expect(requests[3]?.url).toBe("https://openrouter.ai/api/v1/chat/completions");
     const acrBody = requests[1]?.init?.body;
     expect(acrBody).toBeInstanceOf(FormData);
     if (!(acrBody instanceof FormData)) throw new TypeError("expected native multipart body");
@@ -347,10 +347,25 @@ describe("media processor runtime boundary", () => {
             analysis_revision: input.transcript.analysis_revision,
             canonical_audio_sha256: input.audio.canonical_audio_sha256,
             transcript_artifact_ref: input.transcript.artifact_ref,
-            adapter_revision: "elevenlabs-alignment-adapter-v1" as const,
+            adapter_revision: "elevenlabs-alignment-adapter-v2-provider-quantization" as const,
           },
           mode: "word" as const,
-          timings: [{ token_index: 0, start_ms: 0, end_ms: 500, kind: "word" as const }],
+          timings: [
+            {
+              token_index: 0,
+              text_length: 7,
+              start_ms: 0,
+              end_ms: 500,
+              kind: "word" as const,
+            },
+            {
+              token_index: 1,
+              text_length: 6,
+              start_ms: 500,
+              end_ms: 1_000,
+              kind: "word" as const,
+            },
+          ],
         };
       },
     };
@@ -374,12 +389,15 @@ describe("media processor runtime boundary", () => {
     expect(result).toMatchObject({
       status: "ready",
       artifactRef: "media://timed-lyrics/operation/audio/1/analysis/1/lyrics/2",
-      artifactSha256: expect.stringMatching(/^[0-9a-f]{64}$/u),
       artifact: {
         operation_id: "operation",
         post_id: "post",
         lyrics_revision: 2,
         canonical_audio_sha256: hash,
+        segments: [
+          { text: "project", start_ms: 0, end_ms: 500 },
+          { text: "lyrics", start_ms: 500, end_ms: 1_000 },
+        ],
       },
     });
   });
