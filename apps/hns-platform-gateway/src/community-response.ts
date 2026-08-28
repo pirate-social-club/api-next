@@ -65,6 +65,12 @@ function invalidCookieValue(value: string): boolean {
   return false;
 }
 
+function isCloudflareAccessCookie(line: string): boolean {
+  const cookie = line.split(";", 1)[0]?.trim() ?? "";
+  const separator = cookie.indexOf("=");
+  return separator > 0 && cookie.slice(0, separator) === "CF_Authorization";
+}
+
 function validCookieLine(line: string): string | null {
   if (
     new TextEncoder().encode(line).byteLength > HNS_COMMUNITY_APP_INTERACTIVE_GATEWAY_PROFILE[12]
@@ -192,7 +198,9 @@ export async function sanitizeHnsCommunityAppGatewayResponse(
   if ((upstream.status === 204 || upstream.status === 304) && body.byteLength !== 0) {
     throw new HnsCommunityAppGatewayUpstreamError("Upstream response is invalid");
   }
-  const setCookies = headerSetCookies(upstream.headers);
+  const setCookies = headerSetCookies(upstream.headers).filter(
+    (cookie) => !isCloudflareAccessCookie(cookie),
+  );
   const cookieNames = setCookies.map(validCookieLine);
   if (
     cookieNames.some((name) => name === null) ||

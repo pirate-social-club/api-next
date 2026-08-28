@@ -406,6 +406,27 @@ describe("interactive HNS community application gateway", () => {
     expect((await enabled.service.handle(request())).status).toBe(502);
   });
 
+  test("strips the Cloudflare Access cookie while preserving exact application cookies", async () => {
+    const headers = new Headers();
+    headers.append(
+      "set-cookie",
+      "CF_Authorization=access-value; Path=/; Secure; HttpOnly; SameSite=None",
+    );
+    headers.append(
+      "set-cookie",
+      "__Host-pirate_session=session-value; Path=/; Secure; HttpOnly; SameSite=Lax",
+    );
+    const enabled = composition({ fetch: () => new Response("ok", { headers }) });
+    if (!enabled.enabled) throw new Error("test composition is disabled");
+
+    const response = await enabled.service.handle(request());
+
+    expect(response.status).toBe(200);
+    expect(response.headers.getSetCookie()).toEqual([
+      "__Host-pirate_session=session-value; Path=/; Secure; HttpOnly; SameSite=Lax",
+    ]);
+  });
+
   test("retains first-terminal deadline and caller-abort behavior", async () => {
     let fireDeadline: () => void = () => undefined;
     const signer = {
