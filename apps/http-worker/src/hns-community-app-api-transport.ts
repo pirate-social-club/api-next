@@ -140,7 +140,9 @@ export async function verifyHnsCommunityAppApiRequest(
   } catch (error) {
     if (request.signal.aborted) throw request.signal.reason ?? error;
     if (error instanceof HnsForwarderFailure) {
-      if (error.reason === "authority_unavailable") throw authorityUnavailable();
+      if (error.reason === "authority_unavailable" || error.reason === "authority_not_found") {
+        throw authorityUnavailable();
+      }
       throw invalidRequest();
     }
     throw infrastructureUnavailable();

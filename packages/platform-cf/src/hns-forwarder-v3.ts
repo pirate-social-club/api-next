@@ -217,6 +217,7 @@ export type HnsForwarderFailureReasonV1 =
   | "misconfigured"
   | "invalid_request"
   | "body_too_large"
+  | "authority_not_found"
   | "authority_unavailable"
   | "invalid_signature"
   | "stale"
@@ -360,7 +361,7 @@ async function resolveAuthority(
     const state = await Effect.runPromise(source.resolve(normalizedHost), { signal });
     const resolution = resolveActiveHnsHostAuthority(state);
     if (resolution === null || resolution.normalized_host !== normalizedHost) {
-      throw new HnsForwarderFailure("authority_unavailable");
+      throw new HnsForwarderFailure("authority_not_found");
     }
     return resolution;
   } catch (error) {

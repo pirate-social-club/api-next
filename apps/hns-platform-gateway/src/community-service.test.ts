@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { ControlPlaneAcquireFailed } from "@pirate/application";
 import {
   encodeHnsCommunityAppInteractiveGatewayProfileV2,
   HNS_COMMUNITY_APP_INTERACTIVE_GATEWAY_PROFILE,
@@ -9,7 +10,10 @@ import {
   HNS_FORWARDER_PATH_HEADER,
   HNS_FORWARDER_SIGNATURE_HEADER,
 } from "@pirate/application/hns-forwarder-v3";
-import type { HnsCommunityAppHostAuthorityStateV1 } from "@pirate/application/hns-host-serving";
+import type {
+  HnsCommunityAppHostAuthorityStateV1,
+  HnsForwarderGatewayAuthoritySourceV1,
+} from "@pirate/application/hns-host-serving";
 import { makeStaticHnsForwarderKeyRegistryV1 } from "@pirate/platform-cf/hns-forwarder-v3";
 import { Effect } from "effect";
 import {
@@ -99,6 +103,7 @@ function keyRegistry() {
 
 function composition(input: {
   current?: HnsCommunityAppHostAuthorityStateV1 | null;
+  authority_source?: HnsForwarderGatewayAuthoritySourceV1;
   fetch?: (request: Request) => Promise<Response> | Response;
   deployment_reference?: string;
 }) {
@@ -109,7 +114,7 @@ function composition(input: {
     solid_origin: "https://solid.example",
     solid_access_client_id: "gateway-access-client-id",
     solid_access_client_secret: "gateway-access-client-secret",
-    authority_source: {
+    authority_source: input.authority_source ?? {
       resolve: (normalizedHost) =>
         Effect.succeed(current?.normalized_host === normalizedHost ? current : null),
     },
@@ -325,6 +330,21 @@ describe("interactive HNS community application gateway", () => {
     if (!enabled.enabled) throw new Error("test composition is disabled");
     expect((await enabled.service.handle(request())).status).toBe(421);
     expect(calls).toBe(0);
+  });
+
+  test("distinguishes unavailable authority infrastructure from an unknown host", async () => {
+    const unavailable = composition({
+      authority_source: {
+        resolve: () =>
+          Effect.fail(
+            new ControlPlaneAcquireFailed({ phase: "connection", limitMs: 1_500, elapsedMs: 0 }),
+          ),
+      },
+    });
+    const missing = composition({ current: null });
+    if (!unavailable.enabled || !missing.enabled) throw new Error("test composition is disabled");
+    expect((await unavailable.service.handle(request())).status).toBe(503);
+    expect((await missing.service.handle(request())).status).toBe(421);
   });
 
   test("enforces request framing, target, and body bounds before signing or fetch", async () => {
