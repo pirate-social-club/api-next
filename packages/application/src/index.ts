@@ -8,6 +8,7 @@ export * from "./hns-handle-host-api.ts";
 export * from "./hns-host-persistence.ts";
 export * from "./hns-host-serving.ts";
 export * from "./hns-static-platform-app-gateway.ts";
+export * from "./localization-source-hash.ts";
 export * from "./localization-translation-commit.ts";
 export * from "./money/community-purchase-funding.ts";
 export * from "./money/community-purchase-funding-admission.ts";
