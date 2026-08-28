@@ -52,7 +52,7 @@ jobs:
           const vars = config.env?.production?.vars;
           if (vars?.HNS_OWNERSHIP_ENABLED !== "false" ||
           vars?.HNS_COMMUNITY_APP_API_ENABLED !== "true" ||
-          vars?.HNS_FORWARDER_V3_KEY_REGISTRY_VERSION !== "2026-08-28-01")
+          vars?.HNS_FORWARDER_V3_KEY_REGISTRY_VERSION !== "2026-08-28-02")
           throw new Error("production community graph mismatch");'
       - name: Verify secret and canonical API before mutation
         env:
