@@ -43,6 +43,15 @@ export interface IdentityRepository {
     ControlPlaneError | IdentityRepositoryError,
     ControlPlaneDb
   >;
+  readonly resolveCredentialCanonical: (input: {
+    readonly provider: string;
+    readonly providerAppId: string;
+    readonly providerSubject: string;
+  }) => Effect.Effect<
+    CanonicalIdentity,
+    ControlPlaneError | IdentityRepositoryError,
+    ControlPlaneDb
+  >;
   readonly upsertAccount: (input: {
     readonly userId: string;
     readonly account: unknown;
@@ -309,6 +318,33 @@ export function makeControlPlaneIdentityRepository(): IdentityRepository {
       }
 
       return yield* Effect.fail(new IdentityRepositoryError({ reason: "cyclic" }));
+    });
+
+  const resolveCredentialCanonical: IdentityRepository["resolveCredentialCanonical"] = (input) =>
+    Effect.gen(function* () {
+      if (
+        !validId(input.provider) ||
+        !validId(input.providerAppId) ||
+        !validId(input.providerSubject)
+      ) {
+        return yield* Effect.fail(invalid());
+      }
+      const db = yield* ControlPlaneDb;
+      const result = yield* db.execute<{ canonical_user_id: unknown }>({
+        label: "identity.credentials.resolve-canonical",
+        text: `SELECT canonical_user_id
+                 FROM identity_credentials
+                WHERE provider=$1 AND provider_app_id=$2 AND provider_subject=$3
+                  AND status='active'`,
+        values: [input.provider, input.providerAppId, input.providerSubject],
+        readonly: true,
+      });
+      if (result.rows.length === 0) return yield* Effect.fail(missing());
+      const canonicalUserId = result.rows[0]?.canonical_user_id;
+      if (result.rows.length !== 1 || typeof canonicalUserId !== "string") {
+        return yield* Effect.fail(invalid());
+      }
+      return yield* resolveCanonical({ sourceUserId: canonicalUserId });
     });
 
   const upsertAccount: IdentityRepository["upsertAccount"] = ({ userId, account }) =>
@@ -591,7 +627,24 @@ export function makeControlPlaneIdentityRepository(): IdentityRepository {
     return yield* credentialOutcome(winner.rows[0]);
   });
 
-  return { findUser, resolveCanonical, upsertAccount, registerCredential };
+  return {
+    findUser,
+    resolveCanonical,
+    resolveCredentialCanonical,
+    upsertAccount,
+    registerCredential,
+  };
+}
+
+export function makeControlPlaneCredentialCanonicalResolver(
+  runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+  identity: Readonly<{ provider: string; providerAppId: string }>,
+) {
+  const repository = makeControlPlaneIdentityRepository();
+  return (providerSubject: string) =>
+    repository
+      .resolveCredentialCanonical({ ...identity, providerSubject })
+      .pipe(Effect.provide(runtime));
 }
 
 /** Bind the SQL repository to one request-scoped ControlPlaneDb layer. */

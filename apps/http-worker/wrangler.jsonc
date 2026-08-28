@@ -91,7 +91,7 @@
     "PIRATE_APP_JWT_AUDIENCE": "api-next-browser-development",
     "PIRATE_APP_JWT_SCOPE": "api-next-browser-session-development",
     "PRIVY_JWT_ISSUER": "privy.io",
-    "PRIVY_API_URL": "https://auth.privy.io"
+    "PRIVY_API_URL": "https://api.privy.io"
   },
   "secrets": {
     "required": [
@@ -160,7 +160,7 @@
         "MEDIA_UPLOADS_ENABLED": "true",
         "MEDIA_INGRESS_R2_ACCOUNT_ID": "08a4c22cf52e2ecae883e36f80a33f4a",
         "MEDIA_INGRESS_R2_BUCKET_NAME": "pirate-media-ingress-staging",
-        "REGISTRATION_IP_LIMIT": "5",
+        "REGISTRATION_IP_LIMIT": "50",
         "REGISTRATION_IP_WINDOW_SECONDS": "900",
         "REGISTRATION_APPLICATION_LIMIT": "100",
         "REGISTRATION_APPLICATION_WINDOW_SECONDS": "60",
@@ -217,7 +217,7 @@
         // Reviewed inventory: staging currently has no additional internal
         // credential headers beyond the platform denylist.
         "VERIFICATION_CALLBACK_CREDENTIAL_HEADERS": "",
-        "PRIVY_API_URL": "https://auth.privy.io"
+        "PRIVY_API_URL": "https://api.privy.io"
       },
       "secrets": {
         "required": [
@@ -320,7 +320,7 @@
         // Reviewed inventory: production currently has no additional internal
         // credential headers beyond the platform denylist.
         "VERIFICATION_CALLBACK_CREDENTIAL_HEADERS": "",
-        "PRIVY_API_URL": "https://auth.privy.io"
+        "PRIVY_API_URL": "https://api.privy.io"
       },
       "secrets": {
         "required": [

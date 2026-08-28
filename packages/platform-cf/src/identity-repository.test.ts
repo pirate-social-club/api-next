@@ -164,6 +164,50 @@ function registrationDb(
 }
 
 describe("identity public-handle maintenance", () => {
+  test("resolves a provider subject through its active credential before canonical aliases", async () => {
+    const calls: Array<{ label: string; values: readonly unknown[] }> = [];
+    const execute: ControlPlaneDb["Service"]["execute"] = <Row>(statement: {
+      readonly label: string;
+      readonly values: readonly unknown[];
+    }) => {
+      calls.push({ label: statement.label, values: statement.values });
+      const rows =
+        statement.label === "identity.credentials.resolve-canonical"
+          ? [{ canonical_user_id: "usr_member" }]
+          : statement.label === "identity.aliases.find-active"
+            ? []
+            : statement.label === "identity.users.find-active"
+              ? [
+                  {
+                    user_id: "usr_member",
+                    account: account("usr_member", "handle_member", "member.pirate"),
+                  },
+                ]
+              : [];
+      return Effect.succeed({ rows: rows as unknown as readonly Row[], rowCount: rows.length });
+    };
+    const db: ControlPlaneDb["Service"] = {
+      execute,
+      withTransaction: (use) => use({ execute }),
+    };
+
+    const resolved = await Effect.runPromise(
+      makeControlPlaneIdentityRepository()
+        .resolveCredentialCanonical({
+          provider: "privy",
+          providerAppId: "app_staging",
+          providerSubject: "did:privy:member",
+        })
+        .pipe(Effect.provideService(ControlPlaneDb, db)),
+    );
+
+    expect(resolved.canonicalUserId).toBe("usr_member");
+    expect(calls[0]).toEqual({
+      label: "identity.credentials.resolve-canonical",
+      values: ["privy", "app_staging", "did:privy:member"],
+    });
+  });
+
   test("enriches the private account projection with the current stable rename state", async () => {
     const document = account(
       "usr_captain",

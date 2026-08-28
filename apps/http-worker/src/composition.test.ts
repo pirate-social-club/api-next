@@ -48,7 +48,7 @@ async function bindings(): Promise<HttpWorkerBindings> {
     PIRATE_APP_JWT_TTL_SECONDS: "3600",
     PRIVY_APP_ID: "privy-test",
     PRIVY_APP_SECRET: "test-only-secret",
-    PRIVY_API_URL: "https://auth.privy.test",
+    PRIVY_API_URL: "https://api.privy.test",
     PRIVY_JWKS_URL: "https://auth.privy.test/jwks.json",
     PRIVY_JWT_ISSUER: "privy-test",
     PRIVY_JWT_AUDIENCE: "privy-test",

@@ -169,6 +169,10 @@ function configuredApiUrl(value: string): string {
   return url.toString().replace(/\/+$/u, "");
 }
 
+export function privyUserLookupUrl(apiUrl: string, sourceUserId: string): string {
+  return `${configuredApiUrl(apiUrl)}/v1/users/${encodeURIComponent(sourceUserId)}`;
+}
+
 function configuredString(value: string): string {
   if (!value || value.trim() !== value || value.includes("\r") || value.includes("\n")) {
     throw new Error("invalid provider configuration");
@@ -415,18 +419,15 @@ export function makeJwksSessionProofVerifier(
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), fetchTimeoutMs);
     try {
-      const response = await fetcher(
-        `${privyApi.apiUrl}/api/v1/users/${encodeURIComponent(sourceUserId)}`,
-        {
-          method: "GET",
-          headers: {
-            accept: "application/json",
-            authorization: `Basic ${btoa(`${privyApi.appId}:${privyApi.appSecret}`)}`,
-            "privy-app-id": privyApi.appId,
-          },
-          signal: controller.signal,
+      const response = await fetcher(privyUserLookupUrl(privyApi.apiUrl, sourceUserId), {
+        method: "GET",
+        headers: {
+          accept: "application/json",
+          authorization: `Basic ${btoa(`${privyApi.appId}:${privyApi.appSecret}`)}`,
+          "privy-app-id": privyApi.appId,
         },
-      );
+        signal: controller.signal,
+      });
       if (!response.ok) return undefined;
       const body = await response.text();
       if (body.length > SESSION_PROOF_MAX_USER_BYTES) return undefined;
