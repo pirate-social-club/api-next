@@ -87,13 +87,23 @@ control. It must not introduce payment, auction, renewal, resale, transfer,
 wallet provisioning, Spaces, or delegated-zone behavior.
 
 The first public grant uses a broad `label_rule_v2` offering with grammar
-`hns_ascii_ldh_1_63_v1`, launch length band 8 through 32 characters,
-`first_come_v1`, `free_v1`, and the default cap of one active grant per
-account for the offering. The selected label must be canonical lowercase LDH,
-must not be reserved, and must be inside the 8–32 launch band. An exact-label
-direct grant may be rehearsed only as a separately named optional case using
-the recipient-generated, short-lived token flow; it is not required to prove
-the first free pilot.
+`hns_ascii_ldh_1_63_v1`, a seller-narrowed launch length band of 8 through 15
+characters, `first_come_v1`, `free_v1`, and the default cap of one active grant
+per account for the offering. The 8–15 setting is launch configuration inside
+the ratified seller-narrowable 8–32 broad band; it does not change the contract
+or backend grammar. The selected label must be canonical lowercase LDH, must
+not be reserved, and must be inside the configured 8–15 launch band.
+
+An exact-label direct grant may be rehearsed only as a separately named
+optional case using the recipient-generated, short-lived token flow; it is not
+required to prove the first free pilot. The backend exact-label grammar remains
+1–63 characters, but this pilot must not select or invite an exact label longer
+than 15 characters.
+
+The first pilot pins the existing platform-reserved label document and proves
+at least one label from that resolved set is unavailable through both broad and
+exact precedence. Namespace-owner-authored reserved labels remain a parallel
+follow-up and are not a prerequisite for this first pilot.
 
 The buyer must already own one active public persona with its confirmed,
 indexed EVM wallet. Handle operations must neither create nor repair a persona
@@ -110,7 +120,7 @@ offering_id = __UNRESOLVED_FREE_BROAD_OFFERING_ID__
 offering_revision = __UNRESOLVED_FREE_BROAD_OFFERING_REVISION__
 offering_v2_hash = __UNRESOLVED_FREE_BROAD_OFFERING_V2_HASH__
 buyer_persona_public_id = __UNRESOLVED_EXISTING_WALLET_BACKED_PERSONA_REFERENCE__
-handle_label = __UNRESOLVED_CANONICAL_8_TO_32_CHARACTER_LABEL__
+handle_label = __UNRESOLVED_CANONICAL_8_TO_15_CHARACTER_LABEL__
 quote_id = __UNRESOLVED_HANDLE_QUOTE_ID__
 reservation_id = __UNRESOLVED_HANDLE_RESERVATION_ID__
 claim_id = __UNRESOLVED_HANDLE_CLAIM_ID__
@@ -169,9 +179,12 @@ document, the combined transcript must prove:
 - the seller storefront contract is `/c/<community_id>/names`, while the
   public handle host serves only the persona-public `GET /` and `HEAD /`
   profile;
-- one 8–32-character broad label is granted for zero price to one pre-existing
+- one 8–15-character broad label is granted for zero price to one pre-existing
   wallet-backed persona, and the default one-active-grant cap rejects a second
   concurrent grant for the same account and offering;
+- one label from the pinned platform-reserved set is unavailable through both
+  broad and exact precedence; owner-authored namespace blocklists are not a
+  prerequisite for this first pilot;
 - the quote, reservation, claim, grant, activation, offering revision,
   namespace authority, DNS zone, gateway, forwarder, and deployment evidence
   are mutually consistent and current;
