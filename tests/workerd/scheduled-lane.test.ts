@@ -180,6 +180,18 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
     }
   });
 
+  it("does not query song outbox alerts when both media runtimes are disabled", async () => {
+    const waits: Promise<unknown>[] = [];
+    const workerEnv = scheduledWorkerEnv({
+      MEDIA_PROCESSING_ENABLED: "false",
+      DATA_REGISTRATION_ENABLED: "false",
+    });
+
+    await jobsWorker.scheduled(nonDueScheduledEvent, workerEnv, recordingContext(waits));
+    expect(waits).toHaveLength(1);
+    await expect(Promise.all(waits)).resolves.toBeDefined();
+  });
+
   it("declares database-time expiry under the sole HNS route-binding writer when enabled", () => {
     const hns = makeHnsRouteRevalidationComposition({
       HNS_OWNER_VERIFIER: {

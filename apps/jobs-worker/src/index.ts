@@ -54,6 +54,10 @@ import { handleMegapotPublicCommitment } from "./megapot-commitment-public";
 import { type MegapotRewardsJobOptions, makeMegapotRewardsJob } from "./megapot-rewards";
 import { buildJobRegistry, groupDueJobsByLane, JobContext, type JobDeclaration } from "./registry";
 import { makeCommunityCatalogIntegrityJob } from "./routing-integrity";
+import {
+  collectSongPipelineOutboxAlerts,
+  runSongPipelineOutboxAlertTick,
+} from "./song-pipeline-outbox-alerts";
 
 export { ScheduledCronLockDO } from "@pirate/platform-cf";
 export {
@@ -718,6 +722,11 @@ export default {
     if (mediaMaintenance !== null) scheduledWork.push(mediaMaintenance());
     if (dataRegistrationMaintenance !== null) {
       scheduledWork.push(dataRegistrationMaintenance());
+    }
+    if (mediaMaintenance !== null || dataRegistrationMaintenance !== null) {
+      scheduledWork.push(
+        runSongPipelineOutboxAlertTick(sink, collectSongPipelineOutboxAlerts(runtime)),
+      );
     }
     await ctx.waitUntil(Promise.all(scheduledWork));
   },

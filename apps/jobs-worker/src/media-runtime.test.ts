@@ -11,14 +11,14 @@ describe("media scheduled maintenance", () => {
       },
       sweep: async () => {
         events.push("sweep");
-        return { inspected: 1, present: 1, replaced: 0, stale: 0 };
+        return { inspected: 1, present: 1, replaced: 0, stale: 0, limitReached: 0 };
       },
     });
 
     expect(events).toEqual(["dispatch", "sweep"]);
     expect(result).toEqual({
       dispatch: { selected: 2, sent: 2, failed: 0 },
-      sweep: { inspected: 1, present: 1, replaced: 0, stale: 0 },
+      sweep: { inspected: 1, present: 1, replaced: 0, stale: 0, limitReached: 0 },
     });
   });
 });
