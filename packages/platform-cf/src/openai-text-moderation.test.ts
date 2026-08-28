@@ -93,6 +93,7 @@ describe("OpenAI text moderation provider", () => {
         calls += 1;
         expect(request.method).toBe("POST");
         expect(request.url).toBe("https://api.openai.com/v1/moderations");
+        expect(request.redirect).toBe("manual");
         expect(request.headers.get("authorization")).toBe("Bearer test-key");
         expect(await request.json()).toEqual({
           model: OPENAI_MODERATION_MODEL,
@@ -146,6 +147,18 @@ describe("OpenAI text moderation provider", () => {
     });
     expect(await failureReason(unavailable)).toBe("unavailable");
     expect(unavailableCalls).toBe(1);
+
+    const redirected = makeOpenAiTextModerationProvider({
+      apiKey: "test-key",
+      transport: async (request) => {
+        expect(request.redirect).toBe("manual");
+        return new Response(null, {
+          status: 302,
+          headers: { location: "https://redirect.invalid/moderations" },
+        });
+      },
+    });
+    expect(await failureReason(redirected)).toBe("unavailable");
 
     const timedOut = makeOpenAiTextModerationProvider({
       apiKey: "test-key",

@@ -336,7 +336,10 @@ export function makeOpenAiTextModerationProvider(
             },
             body,
             signal: controller.signal,
-            redirect: "error",
+            // Workers does not implement redirect="error". Manual mode keeps
+            // redirects observable without following them; every 3xx then
+            // fails closed through the non-success branch below.
+            redirect: "manual",
           }),
         );
       } catch (cause) {
