@@ -374,7 +374,7 @@ describe("media processor runtime boundary", () => {
     expect(result).toMatchObject({
       status: "ready",
       artifactRef: "media://timed-lyrics/operation/audio/1/analysis/1/lyrics/2",
-      artifactSha256: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      artifactSha256: "d13b5212718e5fcbc33101188d8fa54b89155b92c3678a8e84205440d89fb2f9",
       artifact: {
         operation_id: "operation",
         post_id: "post",

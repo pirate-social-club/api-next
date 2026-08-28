@@ -758,6 +758,21 @@ function bytesToHex(bytes: ArrayBuffer): string {
   return Array.from(new Uint8Array(bytes), (value) => value.toString(16).padStart(2, "0")).join("");
 }
 
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(", ")}]`;
+  if (typeof value === "object" && value !== null)
+    return `{${Object.keys(value as Record<string, unknown>)
+      .sort(
+        (left, right) => left.length - right.length || (left < right ? -1 : left > right ? 1 : 0),
+      )
+      .map(
+        (key) =>
+          `${JSON.stringify(key)}: ${canonicalJson((value as Record<string, unknown>)[key])}`,
+      )
+      .join(", ")}}`;
+  return JSON.stringify(value);
+}
+
 function alignmentFailure(
   outcome: ElevenLabsAlignmentOutcome,
 ): Extract<
@@ -896,7 +911,7 @@ export function makeElevenLabsProcessingAlignmentPort(
         mode: outcome.mode,
         timings: outcome.timings,
       });
-      const encoded = new TextEncoder().encode(JSON.stringify(artifact));
+      const encoded = new TextEncoder().encode(canonicalJson(artifact));
       const artifactSha256 = bytesToHex(await crypto.subtle.digest("SHA-256", encoded));
       return {
         status: "ready",
