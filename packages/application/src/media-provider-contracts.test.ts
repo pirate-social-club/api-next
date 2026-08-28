@@ -94,7 +94,7 @@ describe("provider-neutral lyrics analysis contracts", () => {
   });
 
   test("validates canonical BCP47 tags and a closed classifier result", () => {
-    for (const tag of ["en", "en-US", "zh-Hant-TW", "sr-Latn", "deu-CH"] as const) {
+    for (const tag of ["en", "en-US", "zh-Hant-TW", "sr-Latn", "de-CH"] as const) {
       expect(Schema.is(MediaBcp47LanguageTag)(tag)).toBe(true);
     }
     for (const tag of ["EN", "en_us", "english", "en-US-extra-"] as const) {

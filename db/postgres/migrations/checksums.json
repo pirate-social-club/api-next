@@ -69,6 +69,10 @@
     "0066_song_ratings_age_access.sql": "2a62aed69cabd1f7786aa3d6f5baf8cd3b555320c67bf850b199211d4c0fe09f",
     "0067_hns_authority_resolver_search_path.sql": "8e8b7bb9b39de801f224c174ae51643ee6c43e97e2caf06a24e48aead8f0cd38",
     "0068_general_audience_song_covers.sql": "131a3f48ad834650154085d691ef76e44be89e3a7317b45180c1481e082738e1",
-    "0069_media_analysis_snapshot_recovery.sql": "7e26e0cff1f2c8a1b2e1d119a73971a2ae793caebaba89b4b5bf50fda0dd14ca"
+    "0069_media_analysis_snapshot_recovery.sql": "7e26e0cff1f2c8a1b2e1d119a73971a2ae793caebaba89b4b5bf50fda0dd14ca",
+    "0070_localization_content_foundation.sql": "efd415fde354fa2e46c4aef53e8a7be0fef3f0f731495d1f265f5d08870e7905",
+    "0071_canonical_lyric_line_lifecycle.sql": "9e8e11f14384f8ff5eeaccdb8ff55de60917c6103de205f921aa0b75fc9601b5",
+    "0072_private_language_preferences.sql": "fcb1f6a349a1db0a7f6e67056c3c9269cec4e69c0bba1f1557c12f8d285b7af6",
+    "0073_immutable_lyrics_revision_line_anchor.sql": "0e8ddf6480c3fdb81c2d72a205c7add48dbed7e979e5bb03fef8f41afefd5eae"
   }
 }

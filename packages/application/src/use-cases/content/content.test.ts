@@ -268,9 +268,9 @@ describe("M2 content use cases", () => {
           viewer_vote: null,
           viewer_reaction_kinds: [],
           resolved_locale: "en",
-          translation_state: "same_language" as const,
+          translation_state: "policy_blocked" as const,
           machine_translated: false,
-          source_hash: "",
+          source_hash: null,
         });
       },
       checkVoteAuthority: ({ communityId, postId }) => {

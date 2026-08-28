@@ -288,9 +288,9 @@ const feedItemFromRow = (
       viewer_is_author: viewerUserId !== undefined && authorAccountId === viewerUserId,
       viewer_reaction_kinds: [],
       resolved_locale: locale,
-      translation_state: "same_language",
+      translation_state: "policy_blocked",
       machine_translated: false,
-      source_hash: "",
+      source_hash: null,
     },
   };
 };

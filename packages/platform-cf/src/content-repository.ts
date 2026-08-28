@@ -171,6 +171,86 @@ const allowedMembershipStatus = (
 const validIdempotencyHash = (value: string | null): value is string =>
   value !== null && /^[0-9a-f]{64}$/u.test(value);
 
+const CONTENT_TRANSLATION_POLICY_VERSION = "translation-policy-v1" as const;
+
+const validLanguageTag = (value: string): boolean =>
+  /^[a-z]{2,3}(?:-[A-Z][a-z]{3})?(?:-(?:[A-Z]{2}|[0-9]{3}))?(?:-[a-z0-9]{5,8}|-[0-9][a-z0-9]{3})*$/u.test(
+    value,
+  );
+
+type PostLocalizationProjection = Readonly<{
+  resolved_locale: string;
+  translation_state: "ready" | "pending" | "failed" | "same_language" | "policy_blocked";
+  machine_translated: boolean;
+  translated_body: string | null;
+  source_hash: string | null;
+}>;
+
+const blockedPostLocalization = (locale: string): PostLocalizationProjection => ({
+  resolved_locale: locale,
+  translation_state: "policy_blocked",
+  machine_translated: false,
+  translated_body: null,
+  source_hash: null,
+});
+
+const postLocalizationFromRows = (
+  locale: string,
+  rows: readonly Row[],
+): PostLocalizationProjection | null => {
+  if (rows.length === 0) return blockedPostLocalization(locale);
+  if (rows.length !== 1) return blockedPostLocalization(locale);
+  const row = rows[0];
+  if (row === undefined) return blockedPostLocalization(locale);
+  const sourceLanguage = stringValue(row, "source_language");
+  const sourceHash = stringValue(row, "source_hash");
+  if (
+    sourceLanguage === null ||
+    !validLanguageTag(sourceLanguage) ||
+    sourceHash === null ||
+    !/^[0-9a-f]{64}$/u.test(sourceHash)
+  ) {
+    return null;
+  }
+  if (sourceLanguage === locale) {
+    return {
+      resolved_locale: locale,
+      translation_state: "same_language",
+      machine_translated: false,
+      translated_body: null,
+      source_hash: sourceHash,
+    };
+  }
+
+  const translatedValue = stringValue(row, "translated_value");
+  const translationOrigin = stringValue(row, "translation_origin");
+  if (translatedValue !== null && translatedValue.length > 0) {
+    if (translationOrigin !== "machine" && translationOrigin !== "human") return null;
+    return {
+      resolved_locale: locale,
+      translation_state: "ready",
+      machine_translated: translationOrigin === "machine",
+      translated_body: translatedValue,
+      source_hash: sourceHash,
+    };
+  }
+
+  const jobStatus = stringValue(row, "job_status");
+  const translationState =
+    jobStatus === "pending" || jobStatus === "leased"
+      ? "pending"
+      : jobStatus === "failed" || jobStatus === "stale"
+        ? "failed"
+        : "policy_blocked";
+  return {
+    resolved_locale: locale,
+    translation_state: translationState,
+    machine_translated: false,
+    translated_body: null,
+    source_hash: sourceHash,
+  };
+};
+
 const postFromRow = (row: Row): PostDocument | null => {
   const id = stringValue(row, "post_id");
   const community = stringValue(row, "community_id");
@@ -911,6 +991,8 @@ export function makeControlPlaneContentRepository(): ContentRepository {
   const getPost: ContentRepository["getPost"] = ({ communityId, postId, viewerUserId, locale }) =>
     Effect.gen(function* () {
       if (!validId(communityId) || !validId(postId) || !validId(viewerUserId)) return null;
+      const resolvedLocale = locale ?? "en";
+      if (!validLanguageTag(resolvedLocale)) return null;
       const db = yield* ControlPlaneDb;
       return yield* db.withTransaction((transaction) =>
         Effect.gen(function* () {
@@ -980,6 +1062,55 @@ export function makeControlPlaneContentRepository(): ContentRepository {
               next_action: { kind: "verify_minimum_age", minimum_age: 18 },
             } as const;
           }
+          const canonicalBody = stringValue(row, "body");
+          const localizationRows =
+            canonicalBody === null
+              ? []
+              : (yield* transaction.execute<Row>({
+                  label: "content.posts.localization",
+                  text: `SELECT source.source_language, source.source_hash,
+                                  version.translated_value, version.translation_origin,
+                                  job.status AS job_status
+                           FROM localization_source_units AS source
+                           LEFT JOIN localization_translation_selections AS selection
+                             ON selection.source_unit_kind = source.source_unit_kind
+                            AND selection.source_unit_id = source.source_unit_id
+                            AND selection.field_key = source.field_key
+                            AND selection.source_revision = source.source_revision
+                            AND selection.source_hash = source.source_hash
+                            AND selection.target_language = $2
+                            AND selection.translation_policy_version = $4
+                           LEFT JOIN localization_translation_versions AS version
+                             ON version.translation_version_id = selection.selected_translation_version_id
+                           LEFT JOIN LATERAL (
+                             SELECT status
+                               FROM localization_translation_jobs
+                              WHERE source_unit_kind = source.source_unit_kind
+                                AND source_unit_id = source.source_unit_id
+                                AND field_key = source.field_key
+                                AND source_revision = source.source_revision
+                                AND source_hash = source.source_hash
+                                AND target_language = $2
+                                AND translation_policy_version = $4
+                              ORDER BY attempt_number DESC
+                              LIMIT 1
+                           ) AS job ON TRUE
+                          WHERE source.source_unit_kind = 'post'
+                            AND source.source_unit_id = $1
+                            AND source.field_key = 'body'
+                            AND source.canonical_value = $3
+                          ORDER BY source.source_revision DESC
+                          LIMIT 2`,
+                  values: [
+                    postId,
+                    resolvedLocale,
+                    canonicalBody,
+                    CONTENT_TRANSLATION_POLICY_VERSION,
+                  ],
+                  readonly: true,
+                })).rows;
+          const localization = postLocalizationFromRows(resolvedLocale, localizationRows);
+          if (localization === null) return yield* invalid("get-post");
           const counts = yield* transaction.execute<Row>({
             label: "content.posts.counts",
             text: `SELECT
@@ -1058,10 +1189,7 @@ export function makeControlPlaneContentRepository(): ContentRepository {
             viewer_vote: vote,
             viewer_is_author: authorAccountId === viewerUserId,
             viewer_reaction_kinds: [],
-            resolved_locale: locale ?? "en",
-            translation_state: "same_language",
-            machine_translated: false,
-            source_hash: "",
+            ...localization,
           } satisfies LocalizedPostDocument;
         }),
       );
