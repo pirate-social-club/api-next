@@ -175,7 +175,7 @@
         "OPENAI_MODERATION_ENABLED": "true",
         "OPENAI_MODERATION_MODEL": "omni-moderation-2024-09-26",
         "OPENAI_MODERATION_BASE_URL": "https://api.openai.com/v1",
-        "OPENAI_MODERATION_TIMEOUT_MS": "30000",
+        "OPENAI_MODERATION_TIMEOUT_MS": "10000",
         "VERY_WEB_ENABLED": "true",
         "VERY_WEB_APP_ID": "fa6bb1db-51dd-4673-915a-b945e7a895a0",
         "VERY_WEB_API_URL": "https://api.very.org/api/v1",
