@@ -4,8 +4,13 @@ This verifier turns a staging test transcript into one sanitized digest. It
 does not create accounts, alter policy, upload media, call a provider, or retain
 request content. It refuses production origins.
 
-Collect evidence with dedicated staging accounts and a disposable community.
-Use harmless text and synthetic clean artwork. Provider failure is tested by a
+Collect evidence with three dedicated staging accounts—a community owner, an
+ordinary non-owner, and a viewer without an adult-age receipt—and a disposable
+community. Do not seed a staging adult-age receipt or add a fixture provider.
+The adult-capable branch is exercised in the isolated PostgreSQL suite with a
+synthetic accepted-provider receipt in a disposable schema; a real passport
+ceremony belongs to verification acceptance. Use harmless text and synthetic
+clean artwork. Provider failure is tested by a
 controlled staging deployment with `OPENAI_MODERATION_ENABLED=false`; do not
 damage or replace the API key. Suspected-minor escalation is tested only with a
 stubbed provider verdict in the automated adapter suite. Never source or upload
