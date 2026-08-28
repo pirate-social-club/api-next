@@ -207,7 +207,7 @@ describe("HNS forwarder v3 WebCrypto adapter", () => {
     await expectReason(downgraded, "invalid_signature");
     const wrongHost = new Headers(envelope.headers);
     wrongHost.set("x-pirate-hns-host", "app.pirate");
-    await expectReason(wrongHost, "authority_unavailable");
+    await expectReason(wrongHost, "authority_not_found");
     const stale = new Headers(envelope.headers);
     stale.set("x-pirate-hns-forwarder-timestamp", String(now - 301));
     await expectReason(stale, "stale");

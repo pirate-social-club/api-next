@@ -10,6 +10,10 @@ import { Effect } from "effect";
 import { Client } from "pg";
 import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 import {
+  HNS_COMMUNITY_APP_GATEWAY_AUTHORITY_READINESS_HOST,
+  makePostgresHnsCommunityAppGatewayAuthorityV1,
+} from "./hns-community-app-gateway-authority-postgres.ts";
+import {
   makeControlPlaneHnsCommunityAppHostAuthoritySource,
   makeControlPlaneHnsFirstPartyHostPersistenceRepository,
 } from "./hns-host-persistence-repository.ts";
@@ -41,9 +45,12 @@ function connectionForSchema(raw: string, schema: string): string {
   return `${raw}${separator}options=${encodeURIComponent(`-c search_path=${schema}`)}`;
 }
 
-async function withSchema<A>(use: (connection: string, admin: Client) => Promise<A>): Promise<A> {
+async function withSchema<A>(
+  use: (connection: string, admin: Client) => Promise<A>,
+  selectedSchema = schemaIdentifier(),
+): Promise<A> {
   if (connectionString === undefined) throw new Error("test URL was not configured");
-  const schema = schemaIdentifier();
+  const schema = selectedSchema;
   const admin = new Client({ connectionString });
   await admin.connect();
   await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
@@ -327,6 +334,22 @@ suite("HNS first-party host persistence on PostgreSQL 17", () => {
         active?.variant === "community_app_v1" && isHnsCommunityAppHostAuthorityActive(active),
       ).toBeTrue();
 
+      if (active === null) throw new Error("expected active HNS community authority fixture");
+      const gatewayAuthority = makePostgresHnsCommunityAppGatewayAuthorityV1(connection);
+      const concurrent = await Promise.all(
+        Array.from({ length: 8 }, (_, index) =>
+          Effect.runPromise(
+            gatewayAuthority.authority_source.resolve(
+              index % 2 === 0
+                ? active.normalized_host
+                : HNS_COMMUNITY_APP_GATEWAY_AUTHORITY_READINESS_HOST,
+            ),
+          ),
+        ),
+      );
+      expect(concurrent.filter((state) => state !== null)).toHaveLength(4);
+      expect(concurrent.filter((state) => state === null)).toHaveLength(4);
+
       const future = await admin.query(
         "SELECT * FROM resolve_hns_community_app_host_authority_v1('app.jazleeuw', clock_timestamp() + interval '2 hours')",
       );
@@ -431,7 +454,7 @@ suite("HNS first-party host persistence on PostgreSQL 17", () => {
           isHnsCommunityAppHostAuthorityActive(routeRevoked),
       ).toBeFalse();
       completedTestCount += 1;
-    });
+    }, "api_next");
   }, 30_000);
 
   test("rejects stale finalizers and contradictory exact documents", async () => {

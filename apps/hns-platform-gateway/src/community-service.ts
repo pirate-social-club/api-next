@@ -68,7 +68,8 @@ function signerFailureResponse(error: unknown): Response {
   if (!(error instanceof HnsForwarderFailure)) return redacted(503);
   if (error.reason === "body_too_large") return redacted(413);
   if (error.reason === "invalid_request") return redacted(400);
-  if (error.reason === "authority_unavailable") return redacted(421);
+  if (error.reason === "authority_not_found") return redacted(421);
+  if (error.reason === "authority_unavailable") return redacted(503);
   return redacted(503);
 }
 
