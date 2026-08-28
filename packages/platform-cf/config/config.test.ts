@@ -261,7 +261,7 @@ describe("config system (000 §9)", () => {
       });
     }
     const production = config.env?.production;
-    expect(production?.vars?.HNS_COMMUNITY_APP_API_ENABLED).toBe("false");
+    expect(production?.vars?.HNS_COMMUNITY_APP_API_ENABLED).toBe("true");
     expect(production?.vars?.HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN).toBe(
       "https://hns-community-api.pirate.sc",
     );
@@ -277,7 +277,7 @@ describe("config system (000 §9)", () => {
     expect(production?.vars?.HNS_FORWARDER_V3_KEY_REGISTRY_REFERENCE).toBe(
       "pirate:hns-forwarder-v3:production-community-app:v1",
     );
-    expect(production?.vars?.HNS_FORWARDER_V3_KEY_REGISTRY_VERSION).toBe("2026-08-27-01");
+    expect(production?.vars?.HNS_FORWARDER_V3_KEY_REGISTRY_VERSION).toBe("2026-08-28-01");
     expect(production?.vars?.HNS_FORWARDER_V3_FRESHNESS_WINDOW_SECONDS).toBe("300");
     expect(production?.vars?.HNS_FORWARDER_V3_FUTURE_CLOCK_SKEW_SECONDS).toBe("5");
     expect(production?.secrets?.required).toContain("HNS_FORWARDER_V3_HMAC_KEY_REGISTRY");
