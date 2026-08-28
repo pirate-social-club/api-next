@@ -346,15 +346,16 @@ branch is `/api` and `/api/*`. Unsafe requests require the exact dynamic Origin
 `https://app.<normalized-root>`. Current authority comes from the selected
 control-plane database. Both branches are intended to share one exact
 protected api-next origin, Access validator, and pinned api-next audience;
-their downstream wire validation is different. Current Solid source
-nevertheless rejects equal `HNS_COMMUNITY_APP_API_ORIGIN` and
-`HNS_COMMUNITY_APP_AUTHORITY_ORIGIN` values. The proposed two-application
-topology cannot assemble until
-`solid-hns-community-app-shared-protected-api-origin` is reviewed and merged.
-This source defect is a hard stop for stage one and, unless independently
-resolved in a later populated addendum, stage two. It may not be worked around
-by inventing a third Access application or api-next deployment in an
-operations addendum. The Durable
+their downstream wire validation is different. Solid task
+`solid-hns-community-app-shared-protected-api-origin` completed on 2026-08-26
+at commit `c7aee1c1c6f938861558a4c39e308141ddc8a28e`. Current Solid source
+permits equal `HNS_COMMUNITY_APP_API_ORIGIN` and
+`HNS_COMMUNITY_APP_AUTHORITY_ORIGIN` values while retaining distinct API and
+authority service-token credentials. Its production configuration and direct
+composition fixture use the shared protected api-next origin required by the
+api-next graph. The populated addendum must pin source commits that retain
+this model and rerun both repositories' assertions; it may not invent a third
+Access application or api-next deployment. The Durable
 Object migration tag is `v4`, the class is
 `HnsForwarderReplayStoreDO`, and the consumer scope is
 `pirate:hns-forwarder-v3:api-next-community-app-api:v1`.
@@ -781,8 +782,8 @@ stage-one tuple is:
 | control plane | `__UNRESOLVED_EXACT_STAGING_HYPERDRIVE_AND_POSTGRES_ORIGIN__` |
 | gateway authority endpoint | `__UNRESOLVED_EXACT_STAGING_GATEWAY_AUTHORITY_ENDPOINT__` without credentials |
 | Solid protected origin | `__UNRESOLVED_EXACT_STAGING_SOLID_PROTECTED_ORIGIN__` |
-| api-next protected origin | `__UNRESOLVED_EXACT_STAGING_API_PROTECTED_ORIGIN__` |
-| private authority origin | `__UNRESOLVED_EXACT_STAGING_AUTHORITY_PROTECTED_ORIGIN__` |
+| api-next shared protected origin | `__UNRESOLVED_EXACT_STAGING_API_NEXT_PROTECTED_ORIGIN__` |
+| private authority origin | the same `__UNRESOLVED_EXACT_STAGING_API_NEXT_PROTECTED_ORIGIN__` |
 
 The unresolved staging members are hard stops. The populated addendum must
 prove that every selected staging resource is isolated from production and
@@ -880,16 +881,15 @@ reused by the gateway or allowed to mutate schema or data.
 
 ## Cloudflare Access and secret plan
 
-Protected-origin topology is unresolved for stage one. The current plan's
-single-origin api-next model must be reconciled against the Solid production-
-configuration assertion that the API and private-authority origins differ.
-The populated addendum must cite the exact Solid and api-next source commits,
-run both repositories' topology assertions, and select one source-closed
-model. If one repository requires distinct origins while the other requires
-one origin and one pinned Access audience, the operation stops for a reviewed
-code or contract correction. No protected DNS name, Worker custom domain,
-Access application, policy, audience, token, or secret may be created while
-that contradiction remains.
+The protected-origin contract is source-closed for one shared api-next origin,
+one Access application and pinned audience, and two distinct Solid outbound
+credential pairs. Solid commit
+`c7aee1c1c6f938861558a4c39e308141ddc8a28e` removed the obsolete inequality,
+and current production configuration plus the shared-origin fixture retain
+that contract. The populated addendum must cite exact Solid and api-next
+source commits, run both repositories' topology assertions, and stop if either
+selected commit has drifted from the shared-origin model. This is a source-pin
+verification gate, not an unresolved implementation dependency.
 
 The production values below are retained as the stage-two proposal. Stage one
 must populate its own staging protected origins and Access resources after the

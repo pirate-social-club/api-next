@@ -105,8 +105,8 @@ decisions:
 
 1. the exact staging gateway, database, protected-origin, credential, replay,
    deployment, and evidence tuple, isolated from production;
-2. resolution of the Solid/api-next protected-origin topology contradiction
-   before any protected resource is created;
+2. source-pin verification that Solid and api-next retain the completed shared
+   protected-origin contract before any protected resource is created;
 3. every missing staging migration through the exact stage-one deployment
    commit and its separate authorization, without production database access;
 4. whether to populate and authorize the distinct production second stage,
