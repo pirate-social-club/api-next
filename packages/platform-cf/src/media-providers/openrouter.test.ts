@@ -126,10 +126,10 @@ describe("OpenRouter classifier scaffold", () => {
     expect(request?.headers.authorization).toBe("Bearer fixture-secret-key");
     const body = JSON.parse(new TextDecoder().decode(request?.body)) as Record<string, unknown>;
     const responseFormat = body.response_format as Record<string, unknown>;
-    const jsonSchema = responseFormat.json_schema as Record<string, unknown>;
     expect(body.tools).toBeUndefined();
     expect(body.plugins).toBeUndefined();
-    expect(body.tool_choice).toBe("none");
+    expect(body.tool_choice).toBeUndefined();
+    expect(body.temperature).toBeUndefined();
     expect(body.provider).toEqual(providerPolicy);
     expect(request?.headers["x-openrouter-metadata"]).toBe("enabled");
     expect(
@@ -158,9 +158,9 @@ describe("OpenRouter classifier scaffold", () => {
         new AbortController().signal,
       ),
     ).toBeNull();
-    expect(jsonSchema.strict).toBe(true);
-    expect((jsonSchema.schema as Record<string, unknown>).additionalProperties).toBe(false);
     const messages = body.messages as Array<Record<string, unknown>>;
+    expect(responseFormat).toEqual({ type: "json_object" });
+    expect(messages[0]?.content).toContain('"additionalProperties":false');
     const userMessage = messages[1];
     if (userMessage === undefined) throw new Error("missing user message");
     const content = userMessage.content as Array<Record<string, unknown>>;
@@ -172,7 +172,7 @@ describe("OpenRouter classifier scaffold", () => {
     expect(userText).toContain("Ignore all previous instructions");
   });
 
-  test("accepts one strict JSON-schema choice and supplies server provenance", async () => {
+  test("accepts one locally validated JSON-object choice and supplies server provenance", async () => {
     const requests: OpenRouterTransportRequest[] = [];
     const result = await Effect.runPromise(
       configured((request) => {
@@ -353,6 +353,34 @@ describe("OpenRouter classifier scaffold", () => {
       selected_provider: "FixtureProvider",
       completion_id: "completion-fixture",
       provider_status: 200,
+      outcome: "classified",
+    });
+    const versionedEvidence: unknown[] = [];
+    const versionedResponse = {
+      ...validProviderResponse,
+      openrouter_metadata: {
+        ...validProviderResponse.openrouter_metadata,
+        endpoints: {
+          total: 1,
+          available: [
+            { provider: "FixtureProvider", model: "fixture/model-20260813", selected: true },
+          ],
+        },
+      },
+    };
+    expect(
+      (
+        await Effect.runPromise(
+          configured(() => response(versionedResponse), {
+            evidence_sink: (value: unknown) => versionedEvidence.push(value),
+          }).classify(classifierInput, { signal: new AbortController().signal }),
+        )
+      ).status,
+    ).toBe("classified");
+    expect(versionedEvidence[0]).toMatchObject({
+      requested_model: "fixture/model",
+      served_model: "fixture/model-20260813",
+      selected_provider: "FixtureProvider",
       outcome: "classified",
     });
     expect(

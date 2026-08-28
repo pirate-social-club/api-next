@@ -21,7 +21,7 @@ const disabledEnv = (): MediaProcessorRuntimeEnv => ({
   get ELEVENLABS_API_KEY(): string {
     throw new Error("disabled composition read a provider secret");
   },
-  get MEDIA_CLASSIFIER_API_KEY(): string {
+  get OPENROUTER_API_KEY(): string {
     throw new Error("disabled composition read a provider secret");
   },
 });
@@ -62,8 +62,8 @@ describe("media processor composition", () => {
         ACRCLOUD_ACCESS_SECRET: "fixture-access-secret",
         ELEVENLABS_API_KEY: "fixture-elevenlabs-key",
         OPENAI_API_KEY: "fixture-openai-key",
-        MEDIA_CLASSIFIER_API_KEY: "PENDING",
+        OPENROUTER_API_KEY: "PENDING",
       }),
-    ).toThrow("MEDIA_CLASSIFIER_API_KEY is pending provisioning");
+    ).toThrow("OPENROUTER_API_KEY is pending provisioning");
   });
 });

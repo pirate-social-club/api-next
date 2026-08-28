@@ -40,7 +40,7 @@ export type MediaProcessorRuntimeEnv = MediaProcessorWorkerEnv &
     readonly ACRCLOUD_ACCESS_SECRET?: string;
     readonly ELEVENLABS_API_KEY?: string;
     readonly OPENAI_API_KEY?: string;
-    readonly MEDIA_CLASSIFIER_API_KEY?: string;
+    readonly OPENROUTER_API_KEY?: string;
     readonly DATA_REGISTRATION_ENABLED?: string;
     readonly DATA_REGISTRATION_CHAIN_ID?: string;
   }>;
@@ -154,12 +154,12 @@ function makeEnabledProviders(env: MediaProcessorRuntimeEnv): MediaProcessingPro
     identification,
     classifier: makeOpenRouterClassifierAdapter({
       enabled: true,
-      api_key: requiredOperationalSecret(env.MEDIA_CLASSIFIER_API_KEY, "MEDIA_CLASSIFIER_API_KEY"),
-      model: "google/gemini-3.1-flash-lite",
+      api_key: requiredOperationalSecret(env.OPENROUTER_API_KEY, "OPENROUTER_API_KEY"),
+      model: "google/gemini-3.7-flash",
       prompt_revision: "lyrics-explicitness-language-prompt-v1",
-      policy_revision: "lyrics-explicitness-language-policy-v1",
-      classifier_revision: "lyrics-explicitness-language-classifier-v1",
-      adapter_revision: "openrouter-classifier-adapter-v2-eu",
+      policy_revision: "lyrics-explicitness-language-policy-v2-openrouter-zdr",
+      classifier_revision: "lyrics-explicitness-language-classifier-v2-gemini-3.7-flash",
+      adapter_revision: "openrouter-classifier-adapter-v3-standard-zdr",
       provider_policy: {
         require_parameters: true,
         data_collection: "deny",

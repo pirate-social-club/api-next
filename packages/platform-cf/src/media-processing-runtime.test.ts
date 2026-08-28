@@ -252,7 +252,7 @@ describe("media processor runtime boundary", () => {
     });
     expect(requests).toHaveLength(4);
     expect(requests.every(({ init }) => init?.redirect === "manual")).toBe(true);
-    expect(requests[3]?.url).toBe("https://eu.openrouter.ai/api/v1/chat/completions");
+    expect(requests[3]?.url).toBe("https://openrouter.ai/api/v1/chat/completions");
     const acrBody = requests[1]?.init?.body;
     expect(acrBody).toBeInstanceOf(FormData);
     if (!(acrBody instanceof FormData)) throw new TypeError("expected native multipart body");
