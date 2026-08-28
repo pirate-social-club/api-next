@@ -61,7 +61,41 @@ jobs:
           set -euo pipefail
           curl --fail --silent --show-error --max-time 10 https://api-next.pirate.sc/health > /dev/null
           bunx wrangler secret list --env production --config apps/http-worker/wrangler.jsonc --format json > "$RUNNER_TEMP/secrets.json"
-          jq -e 'map(.name) | index("HNS_FORWARDER_V3_HMAC_KEY_REGISTRY") != null' "$RUNNER_TEMP/secrets.json" > /dev/null
+          jq -e 'map(.name) as $names | ($names | index("HNS_FORWARDER_V3_HMAC_KEY_REGISTRY") != null) and ($names | index("PIRATE_APP_JWT_PRIVATE_KEY") != null)' "$RUNNER_TEMP/secrets.json" > /dev/null
+      - name: Validate and reinstall rotated production secrets
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          HNS_FORWARDER_V3_HMAC_KEY_REGISTRY: ${{ secrets.HNS_FORWARDER_V3_HMAC_KEY_REGISTRY }}
+          PIRATE_APP_JWT_PRIVATE_KEY: ${{ secrets.PIRATE_APP_JWT_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          bun run - <<'BUN'
+          import { createHash, createPrivateKey, createPublicKey } from "node:crypto";
+          import { parseJsonc } from "./scripts/secret-drift-audit.ts";
+          const registry = process.env.HNS_FORWARDER_V3_HMAC_KEY_REGISTRY ?? "";
+          const digest = createHash("sha256").update(registry).digest("hex");
+          if (digest !== "6fa7dcad7c6a989998a10ec8cf228434d00387343d9008da11c7dfeabed95f33") {
+            throw new Error("forwarder registry digest mismatch");
+          }
+          const document = JSON.parse(registry);
+          if (
+            document.schema !== "pirate-hns-forwarder-v3-key-registry-v1" ||
+            document.registry_reference !== "pirate:hns-forwarder-v3:production-community-app:v1" ||
+            document.registry_version !== "2026-08-28-02" ||
+            !Array.isArray(document.keys) ||
+            document.keys.filter((key: { signing_enabled?: unknown }) => key.signing_enabled === true).length !== 1
+          ) throw new Error("forwarder registry shape mismatch");
+          const privatePem = process.env.PIRATE_APP_JWT_PRIVATE_KEY ?? "";
+          const derivedPublic = createPublicKey(createPrivateKey(privatePem))
+            .export({ type: "spki", format: "pem" })
+            .trim();
+          const config = parseJsonc(await Bun.file("apps/http-worker/wrangler.jsonc").text());
+          const expectedPublic = config.env?.production?.vars?.PIRATE_APP_JWT_PUBLIC_KEY?.trim();
+          if (derivedPublic !== expectedPublic) throw new Error("JWT key pair mismatch");
+          console.log("rotated production secret shapes verified");
+          BUN
+          bun -e 'process.stdout.write(JSON.stringify({HNS_FORWARDER_V3_HMAC_KEY_REGISTRY:process.env.HNS_FORWARDER_V3_HMAC_KEY_REGISTRY,PIRATE_APP_JWT_PRIVATE_KEY:process.env.PIRATE_APP_JWT_PRIVATE_KEY}))' |
+            bunx wrangler secret bulk --env production --config apps/http-worker/wrangler.jsonc
       - name: Record rollback version
         id: before
         env:
