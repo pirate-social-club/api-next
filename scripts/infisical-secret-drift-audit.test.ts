@@ -53,6 +53,12 @@ describe("Infisical secret drift audit", () => {
           "CONTROL_PLANE_POSTGRES_ADMIN_URL",
           "CONTROL_PLANE_POSTGRES_RUNTIME_URL",
           "MEGAPOT_REFERRER_PRIVATE_KEY",
+          "MODERATION_E2E_OWNER_EMAIL",
+          "MODERATION_E2E_OWNER_OTP",
+          "MODERATION_E2E_MEMBER_EMAIL",
+          "MODERATION_E2E_MEMBER_OTP",
+          "MODERATION_E2E_VIEWER_EMAIL",
+          "MODERATION_E2E_VIEWER_OTP",
         ],
       },
     };

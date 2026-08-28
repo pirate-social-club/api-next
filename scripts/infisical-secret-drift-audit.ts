@@ -55,6 +55,14 @@ const STAGING_PROVISIONABLE_MEDIA_RUNTIME_SECRET_NAMES = [
 ] as const;
 
 const STAGING_PROVISIONABLE_HTTP_RUNTIME_SECRET_NAMES = ["OPENAI_API_KEY"] as const;
+const STAGING_MODERATION_E2E_OPERATOR_SECRET_NAMES = [
+  "MODERATION_E2E_OWNER_EMAIL",
+  "MODERATION_E2E_OWNER_OTP",
+  "MODERATION_E2E_MEMBER_EMAIL",
+  "MODERATION_E2E_MEMBER_OTP",
+  "MODERATION_E2E_VIEWER_EMAIL",
+  "MODERATION_E2E_VIEWER_OTP",
+] as const;
 const requiredWhenRuntimeEnabled = (
   environment: InfisicalEnvironment,
   names: readonly string[],
@@ -90,7 +98,11 @@ export const INFISICAL_POLICIES: readonly InfisicalPolicy[] = [
     environment: "staging",
     path: "/services/api-next/operator",
     requiredNames: [...OPERATOR_SECRET_NAMES, "MEGAPOT_REFERRER_PRIVATE_KEY"],
-    allowedNames: [...OPERATOR_SECRET_NAMES, "MEGAPOT_REFERRER_PRIVATE_KEY"],
+    allowedNames: [
+      ...OPERATOR_SECRET_NAMES,
+      "MEGAPOT_REFERRER_PRIVATE_KEY",
+      ...STAGING_MODERATION_E2E_OPERATOR_SECRET_NAMES,
+    ],
   },
   {
     environment: "prod",
