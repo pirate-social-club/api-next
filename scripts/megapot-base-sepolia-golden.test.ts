@@ -22,6 +22,7 @@ const input = parseMegapotGoldenInput({
   entry_cutoff_seconds: 300,
   eligible_activities: ["study"],
   study_participant: {
+    persona_id: "participant_persona_1",
     timezone: "UTC",
     accepted_lyrics: "Sail away",
   },
@@ -78,14 +79,16 @@ const funding = {
 
 const options = {
   execute: true,
+  qualifyStudy: true,
   apiOrigin: "https://api-next-staging.pirate.sc",
   authorization: "Bearer staging-test-token",
+  participantAuthorization: "Bearer staging-participant-token",
 } as const;
 
 const activeStudySession = {
   object: "study_session",
   session_id: "study_session_1",
-  persona_id: input.persona_id,
+  persona_id: input.study_participant.persona_id,
   community_id: input.community_id,
   post_id: input.post_id,
   audio_revision: 1,
@@ -128,7 +131,7 @@ const activeStudySession = {
 const studyQualification = {
   object: "activity_qualification",
   qualification_id: "qualification_1",
-  persona_id: input.persona_id,
+  persona_id: input.study_participant.persona_id,
   community_id: input.community_id,
   post_id: input.post_id,
   audio_revision: 1,
@@ -247,6 +250,7 @@ describe("Base Sepolia Megapot golden flow", () => {
     });
     const methods: string[] = [];
     const paths: string[] = [];
+    const authorizations: Array<string | null> = [];
     let observations = 0;
     let sleeps = 0;
     const confirmed = {
@@ -259,6 +263,7 @@ describe("Base Sepolia Megapot golden flow", () => {
       fetcher: async (url, init) => {
         methods.push(init?.method ?? "GET");
         paths.push(new URL(url).pathname);
+        authorizations.push(new Headers(init?.headers).get("authorization"));
         const path = new URL(url).pathname;
         if (path.endsWith("/reward-offers")) return json({ offer, replayed: true });
         if (path.endsWith("/megapot-pool-legs")) return json({ leg, funding, replayed: true });
@@ -303,6 +308,8 @@ describe("Base Sepolia Megapot golden flow", () => {
     expect(sleeps).toBe(1);
     expect(methods).toEqual(["POST", "POST", "POST", "POST", "GET", "GET", "POST", "POST", "GET"]);
     expect(paths.at(-1)).toEndWith(`/study/sessions/${activeStudySession.session_id}`);
+    expect(authorizations.slice(0, 6)).toEqual(Array(6).fill("Bearer staging-test-token"));
+    expect(authorizations.slice(6)).toEqual(Array(3).fill("Bearer staging-participant-token"));
     expect(result).toMatchObject({
       mode: "execute",
       state: "funded_and_qualified",
@@ -314,5 +321,46 @@ describe("Base Sepolia Megapot golden flow", () => {
         qualification_id: studyQualification.qualification_id,
       },
     });
+  });
+
+  test("stops at funded until Study qualification is explicitly requested", async () => {
+    const transactionHash = hash("6");
+    const withTransaction = parseMegapotGoldenInput({
+      ...input,
+      funding_transaction_hash: transactionHash,
+    });
+    const paths: string[] = [];
+    const confirmed = {
+      ...funding,
+      status: "confirmed",
+      confirmed_amount_atomic: funding.expected_amount_atomic,
+      transaction_hash: transactionHash,
+    } as const;
+    const result = await runMegapotBaseSepoliaGolden(
+      withTransaction,
+      { ...options, qualifyStudy: false },
+      {
+        fetcher: async (url) => {
+          const path = new URL(url).pathname;
+          paths.push(path);
+          if (path.endsWith("/reward-offers")) return json({ offer, replayed: true });
+          if (path.endsWith("/megapot-pool-legs")) {
+            return json({ leg, funding, replayed: true });
+          }
+          if (path.endsWith("/observations")) {
+            return json({ funding: confirmed, replayed: false });
+          }
+          if (path.endsWith(`/funding/${funding.funding_effect_id}`)) {
+            return json({ funding: confirmed });
+          }
+          if (path.endsWith("/rewards/megapot-pool")) return json({ pool: null });
+          throw new Error(`unexpected path: ${path}`);
+        },
+        sleep: async () => {},
+      },
+    );
+
+    expect(paths.every((path) => !path.includes("/study/"))).toBe(true);
+    expect(result).toMatchObject({ state: "funded", participant: null });
   });
 });

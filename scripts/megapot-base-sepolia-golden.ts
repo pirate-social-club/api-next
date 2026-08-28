@@ -40,6 +40,7 @@ const GoldenInput = Schema.Struct({
     Schema.isMaxLength(2),
   ),
   study_participant: Schema.Struct({
+    persona_id: Identifier,
     timezone: Identifier,
     accepted_lyrics: Schema.NonEmptyString.check(Schema.isMaxLength(SONG_LYRICS_TEXT_MAX_LENGTH)),
   }),
@@ -51,10 +52,14 @@ type Fetcher = (input: string, init?: RequestInit) => Promise<Response>;
 
 export type MegapotGoldenOptions = Readonly<{
   execute: boolean;
+  qualifyStudy?: boolean;
   apiOrigin: string;
   authorization?: string;
   cookie?: string;
   csrfToken?: string;
+  participantAuthorization?: string;
+  participantCookie?: string;
+  participantCsrfToken?: string;
 }>;
 
 export type MegapotGoldenDependencies = Readonly<{
@@ -168,6 +173,21 @@ function authHeaders(options: MegapotGoldenOptions, write: boolean): Headers {
   return headers;
 }
 
+function participantOptions(options: MegapotGoldenOptions): MegapotGoldenOptions {
+  return {
+    execute: options.execute,
+    ...(options.qualifyStudy === undefined ? {} : { qualifyStudy: options.qualifyStudy }),
+    apiOrigin: options.apiOrigin,
+    ...(options.participantAuthorization === undefined
+      ? {}
+      : { authorization: options.participantAuthorization }),
+    ...(options.participantCookie === undefined ? {} : { cookie: options.participantCookie }),
+    ...(options.participantCsrfToken === undefined
+      ? {}
+      : { csrfToken: options.participantCsrfToken }),
+  };
+}
+
 async function requestJson<S extends Schema.ConstraintDecoder<unknown>>(
   dependencies: MegapotGoldenDependencies,
   options: MegapotGoldenOptions,
@@ -203,7 +223,7 @@ function idempotencyKey(input: GoldenInput, step: "offer" | "leg" | "funding"): 
   return `megapot-golden-${input.run_id}-${step}`;
 }
 
-function dryRun(input: GoldenInput) {
+function dryRun(input: GoldenInput, options: MegapotGoldenOptions) {
   return {
     mode: "dry-run" as const,
     chain_id: 84_532 as const,
@@ -213,6 +233,7 @@ function dryRun(input: GoldenInput) {
       activity: "study" as const,
       execution: "authenticated_participant_api" as const,
       fixture_source: "accepted_lyrics" as const,
+      requested: options.qualifyStudy === true,
     },
     funding_transaction_supplied: input.funding_transaction_hash != null,
     idempotency_keys: {
@@ -231,7 +252,7 @@ export async function runMegapotBaseSepoliaGolden(
     sleep: (milliseconds) => Bun.sleep(milliseconds),
   },
 ) {
-  const plan = dryRun(input);
+  const plan = dryRun(input, options);
   endpoint(options.apiOrigin, "/");
   if (!options.execute) return plan;
 
@@ -326,13 +347,13 @@ export async function runMegapotBaseSepoliaGolden(
     ),
   ]);
   const participant =
-    funding.funding.status === "confirmed"
+    funding.funding.status === "confirmed" && options.qualifyStudy === true
       ? await runStagingStudyParticipant(
           {
             runId: input.run_id,
             communityId: input.community_id,
             postId: input.post_id,
-            personaId: input.persona_id,
+            personaId: input.study_participant.persona_id,
             timezone: input.study_participant.timezone,
             acceptedLyrics: input.study_participant.accepted_lyrics,
           },
@@ -340,7 +361,7 @@ export async function runMegapotBaseSepoliaGolden(
             startSession: ({ communityId, postId, idempotencyKey, personaId, timezone }) =>
               requestJson(
                 dependencies,
-                options,
+                participantOptions(options),
                 `/communities/${encodeURIComponent(communityId)}/posts/${encodeURIComponent(postId)}/study/sessions`,
                 StartStudySession.response,
                 {
@@ -362,7 +383,7 @@ export async function runMegapotBaseSepoliaGolden(
             }) =>
               requestJson(
                 dependencies,
-                options,
+                participantOptions(options),
                 `/communities/${encodeURIComponent(communityId)}/study/sessions/${encodeURIComponent(sessionId)}/items/${encodeURIComponent(sessionItemId)}/answers`,
                 SubmitStudyAnswer.response,
                 {
@@ -377,7 +398,7 @@ export async function runMegapotBaseSepoliaGolden(
             getSession: ({ communityId, sessionId }) =>
               requestJson(
                 dependencies,
-                options,
+                participantOptions(options),
                 `/communities/${encodeURIComponent(communityId)}/study/sessions/${encodeURIComponent(sessionId)}`,
                 GetStudySession.response,
               ),
@@ -403,26 +424,35 @@ export async function runMegapotBaseSepoliaGolden(
 
 function parseOptions(args: readonly string[]): {
   readonly execute: boolean;
+  readonly qualifyStudy: boolean;
   readonly input: string;
 } {
   const execute = args.includes("--execute");
   const confirmed = args.includes("--confirm-base-sepolia");
+  const qualifyStudy = args.includes("--qualify-study");
   const inputIndex = args.indexOf("--input");
   const input = inputIndex < 0 ? undefined : args[inputIndex + 1];
-  const allowed = new Set(["--execute", "--confirm-base-sepolia", "--input", input]);
+  const allowed = new Set([
+    "--execute",
+    "--confirm-base-sepolia",
+    "--qualify-study",
+    "--input",
+    input,
+  ]);
   const unknown = args.find((argument) => !allowed.has(argument));
   if (
     unknown !== undefined ||
     input === undefined ||
     input.startsWith("--") ||
-    execute !== confirmed
+    execute !== confirmed ||
+    (qualifyStudy && !execute)
   ) {
     throw new MegapotBaseSepoliaGoldenFailed(
       "invalid-options",
-      "Use --input PATH for dry-run, or add --execute --confirm-base-sepolia together.",
+      "Use --input PATH for dry-run, add --execute --confirm-base-sepolia for writes, and add --qualify-study only after an eligible drawing is open.",
     );
   }
-  return { execute, input };
+  return { execute, qualifyStudy, input };
 }
 
 export async function main(args: readonly string[] = Bun.argv.slice(2)): Promise<void> {
@@ -441,6 +471,7 @@ export async function main(args: readonly string[] = Bun.argv.slice(2)): Promise
   }
   const result = await runMegapotBaseSepoliaGolden(parseMegapotGoldenInput(document), {
     execute: parsed.execute,
+    qualifyStudy: parsed.qualifyStudy,
     apiOrigin: process.env.PIRATE_API_PUBLIC_ORIGIN ?? "https://api-next-staging.pirate.sc",
     ...(process.env.PIRATE_STAGING_AUTHORIZATION === undefined
       ? {}
@@ -451,6 +482,15 @@ export async function main(args: readonly string[] = Bun.argv.slice(2)): Promise
     ...(process.env.PIRATE_STAGING_CSRF_TOKEN === undefined
       ? {}
       : { csrfToken: process.env.PIRATE_STAGING_CSRF_TOKEN }),
+    ...(process.env.PIRATE_STAGING_PARTICIPANT_AUTHORIZATION === undefined
+      ? {}
+      : { participantAuthorization: process.env.PIRATE_STAGING_PARTICIPANT_AUTHORIZATION }),
+    ...(process.env.PIRATE_STAGING_PARTICIPANT_COOKIE === undefined
+      ? {}
+      : { participantCookie: process.env.PIRATE_STAGING_PARTICIPANT_COOKIE }),
+    ...(process.env.PIRATE_STAGING_PARTICIPANT_CSRF_TOKEN === undefined
+      ? {}
+      : { participantCsrfToken: process.env.PIRATE_STAGING_PARTICIPANT_CSRF_TOKEN }),
   });
   console.log(JSON.stringify(result, null, 2));
 }
