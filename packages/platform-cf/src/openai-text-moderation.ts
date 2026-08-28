@@ -88,6 +88,17 @@ const OpenAiModerationResponse = Schema.Struct({
 
 export type OpenAiModerationTransport = (request: Request) => Promise<Response>;
 
+export type OpenAiModerationDiagnostic = Readonly<{
+  readonly outcome: "fetch_error" | "non_success";
+  readonly status?: number;
+  readonly error_type?: string;
+  readonly error_code?: string;
+  readonly error_name?: string;
+  readonly rate_limit_requests?: string;
+  readonly rate_limit_remaining_requests?: string;
+  readonly retry_after?: string;
+}>;
+
 export type OpenAiTextModerationOptions = Readonly<{
   readonly apiKey: string;
   readonly model?: typeof OPENAI_MODERATION_MODEL;
@@ -96,6 +107,7 @@ export type OpenAiTextModerationOptions = Readonly<{
   readonly maxRequestBytes?: number;
   readonly maxResponseBytes?: number;
   readonly transport?: OpenAiModerationTransport;
+  readonly reportDiagnostic?: (diagnostic: OpenAiModerationDiagnostic) => void;
 }>;
 
 class OpenAiModerationFailure extends Error {
@@ -171,6 +183,41 @@ const readBoundedBody = async (
 const textInputs = (input: TextModerationInputV1): readonly string[] =>
   [input.title, input.body].filter((value): value is string => value !== null);
 
+const safeDiagnosticToken = (value: string | null): string | undefined =>
+  value !== null && /^[A-Za-z0-9_.:-]{1,128}$/u.test(value) ? value : undefined;
+
+const reportDiagnosticSafely = (
+  report: (diagnostic: OpenAiModerationDiagnostic) => void,
+  diagnostic: OpenAiModerationDiagnostic,
+): void => {
+  try {
+    report(diagnostic);
+  } catch {
+    // Diagnostics must never alter fail-closed moderation behavior.
+  }
+};
+
+const boundedProviderErrorMetadata = async (
+  response: Response,
+  signal: AbortSignal,
+): Promise<Pick<OpenAiModerationDiagnostic, "error_code" | "error_type">> => {
+  try {
+    const bytes = await readBoundedBody(response, 16_384, signal);
+    const raw: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    if (!Predicate.isObject(raw) || !Predicate.isObject(raw.error)) return {};
+    const errorType =
+      typeof raw.error.type === "string" ? safeDiagnosticToken(raw.error.type) : undefined;
+    const errorCode =
+      typeof raw.error.code === "string" ? safeDiagnosticToken(raw.error.code) : undefined;
+    return {
+      ...(errorType === undefined ? {} : { error_type: errorType }),
+      ...(errorCode === undefined ? {} : { error_code: errorCode }),
+    };
+  } catch {
+    return {};
+  }
+};
+
 const validateOptions = (options: OpenAiTextModerationOptions) => {
   const model = options.model ?? OPENAI_MODERATION_MODEL;
   const baseUrl = options.baseUrl ?? OPENAI_MODERATION_BASE_URL;
@@ -209,6 +256,10 @@ export function makeOpenAiTextModerationProvider(
 ): TextModerationProviderServiceV1 & ImageModerationProviderServiceV1 {
   const config = validateOptions(options);
   const transport = options.transport ?? ((request: Request) => fetch(request));
+  const reportDiagnostic =
+    options.reportDiagnostic ??
+    ((diagnostic: OpenAiModerationDiagnostic) =>
+      console.warn("openai_moderation_provider_failure", diagnostic));
 
   const requestModeration = async (inputs: readonly unknown[]) => {
     const body = new TextEncoder().encode(JSON.stringify({ model: config.model, input: inputs }));
@@ -234,9 +285,33 @@ export function makeOpenAiTextModerationProvider(
         );
       } catch (cause) {
         if (controller.signal.aborted) throw new OpenAiModerationFailure("timeout");
+        reportDiagnosticSafely(reportDiagnostic, {
+          outcome: "fetch_error",
+          error_name: cause instanceof Error ? cause.name : "unknown",
+        });
         throw cause;
       }
-      if (!response.ok) throw new OpenAiModerationFailure("unavailable");
+      if (!response.ok) {
+        const providerMetadata = await boundedProviderErrorMetadata(response, controller.signal);
+        const rateLimitRequests = safeDiagnosticToken(
+          response.headers.get("x-ratelimit-limit-requests"),
+        );
+        const rateLimitRemainingRequests = safeDiagnosticToken(
+          response.headers.get("x-ratelimit-remaining-requests"),
+        );
+        const retryAfter = safeDiagnosticToken(response.headers.get("retry-after"));
+        reportDiagnosticSafely(reportDiagnostic, {
+          outcome: "non_success",
+          status: response.status,
+          ...providerMetadata,
+          ...(rateLimitRequests === undefined ? {} : { rate_limit_requests: rateLimitRequests }),
+          ...(rateLimitRemainingRequests === undefined
+            ? {}
+            : { rate_limit_remaining_requests: rateLimitRemainingRequests }),
+          ...(retryAfter === undefined ? {} : { retry_after: retryAfter }),
+        });
+        throw new OpenAiModerationFailure("unavailable");
+      }
       const responseBytes = await readBoundedBody(
         response,
         config.maxResponseBytes,
