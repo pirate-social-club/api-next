@@ -267,9 +267,7 @@ describe("workerd Privy linked-wallet lookup", () => {
   it("resolves a requested wallet only when the provider attests it", async () => {
     const material = await keyMaterial();
     const fetcher: SessionProofFetcher = async (input) =>
-      input.includes("/v1/users/")
-        ? userResponse([embeddedAccount])
-        : jwksResponse(material.jwk);
+      input.includes("/v1/users/") ? userResponse([embeddedAccount]) : jwksResponse(material.jwk);
     const adapter = adapterWithApi(fetcher);
     const token = await signToken(material.privateKey, material.jwk.kid);
     expect(
