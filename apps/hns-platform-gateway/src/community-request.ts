@@ -152,6 +152,14 @@ function isApiTarget(target: string): boolean {
   return pathname === "/api" || pathname.startsWith("/api/");
 }
 
+function withoutCloudflareAuthorizationCookie(value: string): string | null {
+  const retained = value
+    .split(";")
+    .map((member) => member.trim())
+    .filter((member) => member.length !== 0 && !member.startsWith("CF_Authorization="));
+  return retained.length === 0 ? null : retained.join("; ");
+}
+
 export function admitHnsCommunityAppGatewayRequest(
   request: HnsStaticPlatformGatewayRequest,
 ): HnsCommunityAppGatewayAdmission | HnsCommunityAppGatewayRejection {
@@ -237,7 +245,10 @@ export function admitHnsCommunityAppGatewayRequest(
     ) {
       continue;
     }
-    if (name === "cookie" || name === "origin") upstreamHeaders.set(name, value);
+    if (name === "cookie") {
+      const sanitized = withoutCloudflareAuthorizationCookie(value);
+      if (sanitized !== null) upstreamHeaders.set(name, sanitized);
+    } else if (name === "origin") upstreamHeaders.set(name, value);
     else upstreamHeaders.append(name, value);
   }
   upstreamHeaders.delete("content-length");

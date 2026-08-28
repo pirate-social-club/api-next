@@ -236,7 +236,10 @@ describe("interactive HNS community application gateway", () => {
       ...request().header_fields,
       ["Content-Length", String(body.byteLength)],
       ["Content-Type", "application/json"],
-      ["Cookie", "__Host-pirate_session=session; __Host-pirate_csrf=csrf"],
+      [
+        "Cookie",
+        "CF_Authorization=infrastructure; __Host-pirate_session=session; __Host-pirate_csrf=csrf",
+      ],
       ["Origin", `https://${host}`],
       ["X-CSRF-Token", "csrf"],
       ["CF-Access-Jwt-Assertion", "client-forgery"],
