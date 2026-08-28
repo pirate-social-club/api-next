@@ -1576,3 +1576,34 @@ application policy, disabled or revoked, or its installed GitHub pair does not
 match the admitted token. Execution stopped without policy, token, secret,
 Worker, registry, gateway, authority-generation, Privy, Caddy, PowerDNS,
 Handshake, certificate, or public-DNS mutation.
+
+### Protected Access policy repair — 2026-08-28T12:50Z
+
+The workspace owner inspected the service-auth policy attached to the
+protected api-next application. Its include set contained only one service
+token. The owner added the existing
+`hns-community-solid-authority-production` service token to that same policy;
+no token was created, regenerated, disabled, or deleted, and no GitHub or
+Worker secret changed.
+
+Diagnostic run `33172619431` was cancelled before execution because the local
+`origin/main` ref was stale and did not match GitHub's authoritative `main`.
+The corrected exact-source run `33172639512` used Solid commit
+`07222b64f9719ba7fe73937526b4b00c1f3f5d50` and completed successfully after
+the production-environment review gate.
+
+The API service token reached the api-next Worker in 1.139773 seconds. The
+Worker returned the expected 400 rejection for an unsigned `/api/health`
+request, with 134 response bytes and body SHA-256
+`8c8382e0c6835b3905c37a63d93744b575a295b20c12c6cad2f455fb3ecbad3b`.
+The authority service token also reached the Worker, in 0.787047 seconds. The
+deliberately nonexistent authority request returned a Worker-classified 404,
+with 143 response bytes and body SHA-256
+`e2e0e081ba8ff8317b6ed014ae2736e6375b26e3e92bcb0c1b174ed2d5772a45`.
+Neither response was Cloudflare-mitigated.
+
+Both Solid service-token admissions are therefore proven. The prior 401 was
+caused by the authority token being absent from the service-auth policy, not
+by malformed GitHub credentials or a revoked token. Registry rotation remains
+mandatory before public exposure because the active key material was rendered
+in an earlier operator transcript.
