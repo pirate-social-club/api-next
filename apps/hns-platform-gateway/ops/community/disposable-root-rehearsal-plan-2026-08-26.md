@@ -1422,3 +1422,58 @@ the shared forwarder registry and the distinct API and authority Access token
 pairs. Execution stopped without reinstalling secrets or attempting another
 deployment. Privy, Caddy, PowerDNS, Handshake, certificates, and public DNS
 remain unchanged.
+
+### Solid secret recovery and private-probe freshness stop — 2026-08-28T11:12Z
+
+The reviewed Solid recovery workflow at exact main commit
+`747d3136a80fb59fbaed9e2b5bde6b0affa550a6` completed successfully in run
+`33163749516`. It validated the five production community secret names,
+registry digest and shape, bare Access credential shapes, and distinct API and
+authority credentials before reinstalling them. It retained Worker version
+`642b5013-0492-47d1-83c9-95cc7b01dc2c` as rollback, deployed enabled Worker
+version `53dade5b-5705-42b4-96b8-bec47de9a243`, and proved the canonical Solid
+origin healthy afterward. No secret value entered the transcript.
+
+A later operator session did not initially observe that completed run and
+queued run `33164552259` at the same exact commit. Discovery found the earlier
+success before the queued job executed. The redundant run was canceled; its
+job completed as canceled with zero steps, so it performed no second secret
+installation or deployment.
+
+The required private positive-path probe was not accepted. An initial
+batch-mode connection used the workstation's default account and was rejected
+before executing a remote command. Read-only local evidence recovered the
+established retained-host role account; the same agent identity then
+authenticated successfully without weakening authentication or requesting a
+password. The shadow unit was active, listeners `127.0.0.1:4169` and
+`127.0.0.1:4171` were owned, and `/livez` and `/readyz` both returned 204. The
+installed manifest retained the accepted profile digest, protected origins,
+registry identity, certificate SPKI, and shadow listener pair.
+
+The exact activation-bound fixture hostname was not available in the accepted
+public transcript. A historical candidate inferred from unrelated local
+evidence was mistakenly used for one status-only loopback attempt without the
+required external-scheme and TLS-SNI framing headers; `/` and `/api/health`
+both returned 400. That malformed attempt is not acceptance evidence.
+
+A subsequent read-only query through the shadow gateway's restricted database
+role and schema-qualified authority relations proved that the current fixture
+host is `app.jazleeuw`. The current app-host generation 3, DNS-zone generation
+2, and operator-managed route generation 1 remained active and mutually
+current. At 2026-08-28T11:11:36Z, however, the accepted resolver returned
+delegation, DS, retained-zone, and gateway-health gates false. A bounded
+read-only freshness check then proved that health generation 1 expired at
+2026-08-28T11:11:29Z, seven seconds before the resolver read. Authority
+inventory `2026-08-28.v2` remained valid until 2026-08-28T12:11:28Z. The
+process-level `/livez` and `/readyz` checks still returned 204.
+
+No new application probe was sent after the failed freshness gate. Recovery
+requires one accepted health-fixture refresh followed by a fresh resolver and
+health check before the two correctly framed loopback probes run exactly once.
+Until that succeeds, production secret assembly, canonical health, gateway
+process health, and the current fixture identity are proven, but
+gateway-to-Solid-to-api-next acceptance is not.
+
+Bob Wallet, `11qx`, Privy, Caddy, PowerDNS, Handshake, certificates, public
+DNS, production migrations, and application database state were not touched
+by this recovery checkpoint.
