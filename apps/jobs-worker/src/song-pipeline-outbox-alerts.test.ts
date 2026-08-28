@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { exhaustedLaunchAlert } from "./song-pipeline-outbox-alerts";
+import { Effect } from "effect";
+import {
+  exhaustedLaunchAlert,
+  runSongPipelineOutboxAlertTick,
+} from "./song-pipeline-outbox-alerts";
 
 describe("song pipeline outbox alerts", () => {
   test("projects only redacted launch identity into one stable alert", () => {
@@ -44,5 +48,22 @@ describe("song pipeline outbox alerts", () => {
         outcome: "replacement_limit",
       }).key,
     ).toBe("song-pipeline:data-replacement-limit-reached");
+  });
+
+  test("isolates alert collection failure from the scheduled tick", async () => {
+    const messages: string[] = [];
+    const original = console.error;
+    console.error = (message?: unknown) => messages.push(String(message));
+    try {
+      await expect(
+        runSongPipelineOutboxAlertTick(
+          { email: () => Effect.void, webhook: () => Effect.void },
+          Effect.fail(new Error("database unavailable")),
+        ),
+      ).resolves.toBeUndefined();
+    } finally {
+      console.error = original;
+    }
+    expect(messages).toEqual(["song-pipeline outbox alert collection unavailable"]);
   });
 });

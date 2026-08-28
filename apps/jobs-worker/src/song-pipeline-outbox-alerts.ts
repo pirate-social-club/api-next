@@ -1,6 +1,7 @@
 import { AlertCollector, ControlPlaneDb, type ControlPlaneError } from "@pirate/application";
-import type { Layer } from "effect";
+import type { Effect as EffectType, Layer } from "effect";
 import { Effect } from "effect";
+import { type AlertSink, alertTick } from "../../../packages/platform-cf/src/alerts.ts";
 
 type ExhaustedLaunch = Readonly<{
   subsystem: "media" | "data";
@@ -70,4 +71,16 @@ export function collectSongPipelineOutboxAlerts(
       return result.rows.length;
     }),
   );
+}
+
+/** Alert transport or database outages must not reject the rest of a jobs tick. */
+export async function runSongPipelineOutboxAlertTick(
+  sink: AlertSink,
+  alerts: EffectType.Effect<number, unknown, AlertCollector>,
+): Promise<void> {
+  try {
+    await Effect.runPromise(alertTick(sink, alerts));
+  } catch {
+    console.error("song-pipeline outbox alert collection unavailable");
+  }
 }
