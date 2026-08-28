@@ -777,9 +777,11 @@ stage-one tuple is:
 | disposable root | `11qx` |
 | staging community route | `https://web-next-staging.pirate.sc/c/11qx` |
 | public HNS origin | `https://app.11qx` |
-| Solid Worker | `__UNRESOLVED_EXACT_STAGING_SOLID_WORKER__` |
-| api-next Worker | `__UNRESOLVED_EXACT_STAGING_API_NEXT_WORKER__` |
-| control plane | `__UNRESOLVED_EXACT_STAGING_HYPERDRIVE_AND_POSTGRES_ORIGIN__` |
+| Solid source | `4f511992b3473c620ff48a459672464328cb0561` |
+| api-next source | `24fd9a90f44ba97ffcd93015c8de47f6361688e5` |
+| Solid Worker | `pirate-web-solid-staging` |
+| api-next Worker | `pirate-http-worker-staging` |
+| control plane | Hyperdrive `8cb7658a0f7143359c1becfec6a15c23`; backing staging PostgreSQL origin remains `__UNRESOLVED_EXACT_STAGING_POSTGRES_ORIGIN__` |
 | gateway authority endpoint | `__UNRESOLVED_EXACT_STAGING_GATEWAY_AUTHORITY_ENDPOINT__` without credentials |
 | Solid protected origin | `__UNRESOLVED_EXACT_STAGING_SOLID_PROTECTED_ORIGIN__` |
 | api-next shared protected origin | `__UNRESOLVED_EXACT_STAGING_API_NEXT_PROTECTED_ORIGIN__` |
@@ -1114,10 +1116,10 @@ acknowledged at signing.
 
 ## Gateway build, deployment, and Caddy plan
 
-The source pin is deliberately unresolved until plan population:
+The repository-only population checkpoint pins the exact api-next source:
 
 ```text
-api_next_source_commit = __UNRESOLVED_EXACT_DEPLOYMENT_COMMIT__
+api_next_source_commit = 24fd9a90f44ba97ffcd93015c8de47f6361688e5
 ```
 
 Immediately before population, fetch without pruning, require clean and equal
