@@ -78,6 +78,13 @@ function bigint(row: Row, field: string): bigint {
   return BigInt(value);
 }
 
+function instantMillis(row: Row, field: string): number {
+  const value = row[field];
+  const millis = value instanceof Date ? value.getTime() : Date.parse(String(value));
+  if (!Number.isFinite(millis)) throw new Error(`invalid ${field}`);
+  return millis;
+}
+
 const CANDIDATE_SELECT = `
   SELECT attestation.attestation_id, attestation.environment,
          attestation.chain_id, attestation.jackpot_address,
@@ -269,7 +276,7 @@ function reserveNonceIn(
       const row = current.rows[0] as Row;
       if (
         input.observedBlockNumber < bigint(row, "observed_block_number") ||
-        Date.parse(input.observedAt) < new Date(text(row, "observed_at")).getTime()
+        Date.parse(input.observedAt) < instantMillis(row, "observed_at")
       ) {
         return yield* rejected("nonce-observation-stale");
       }

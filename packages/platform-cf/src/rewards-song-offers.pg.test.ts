@@ -1022,6 +1022,13 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         ballMax: 25,
         bonusballMax: 13,
       });
+      await admin.query(
+        `INSERT INTO reward_signer_nonces (
+           chain_id, signer_address, next_nonce, observed_pending_nonce,
+           observed_block_number, observed_block_hash, observed_at
+         ) VALUES ($1,$2,9,8,110,$3,clock_timestamp() - interval '1 second')`,
+        [candidate.chainId, candidate.custodyAddress, bytes32("7")],
+      );
       const reserved = await Effect.runPromise(
         store.reserveNonce({
           candidate,
@@ -1750,6 +1757,13 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         makeDirectPostgresControlPlaneLayer(scopedConnection),
       );
       const candidate = await Effect.runPromise(store.loadCandidate("megapot-base-sepolia-v2"));
+      await admin.query(
+        `INSERT INTO reward_signer_nonces (
+           chain_id, signer_address, next_nonce, observed_pending_nonce,
+           observed_block_number, observed_block_hash, observed_at
+         ) VALUES ($1,$2,12,11,119,$3,clock_timestamp() - interval '1 second')`,
+        [candidate.chainId, candidate.custodyAddress, bytes32("b")],
+      );
       const reserved = await Effect.runPromise(
         store.reserveNonce({
           candidate,
