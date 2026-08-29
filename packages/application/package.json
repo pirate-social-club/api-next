@@ -63,6 +63,7 @@
     "./use-cases/personas": "./src/use-cases/personas.ts",
     "./use-cases/public-profile": "./src/use-cases/public-profile.ts",
     "./use-cases/rewards/activity-qualification": "./src/use-cases/rewards/activity-qualification.ts",
+    "./use-cases/rewards/karaoke": "./src/use-cases/rewards/karaoke.ts",
     "./use-cases/rewards/study-v2": "./src/use-cases/rewards/study-v2.ts",
     "./use-cases/session-authentication": "./src/use-cases/session-authentication.ts",
     "./use-cases/session-exchange": "./src/use-cases/session-exchange.ts",

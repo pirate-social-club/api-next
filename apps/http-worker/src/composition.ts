@@ -1,4 +1,3 @@
-import { Clock, IdGen, type KaraokeFailure, makeKaraokeService } from "@pirate/application";
 import type { MediaSubmissionServices } from "@pirate/application/media/submission-service";
 import { makeCommunityPurchaseFundingInterpreter } from "@pirate/application/money/community-purchase-funding";
 import { makeCommunityPurchaseFundingObservationUseCase } from "@pirate/application/money/community-purchase-funding-observation";
@@ -14,6 +13,12 @@ import {
   type StudyItemSource,
   StudyItemSourceError,
 } from "@pirate/application/use-cases/rewards/activity-qualification";
+import {
+  Clock,
+  IdGen,
+  type KaraokeFailure,
+  makeKaraokeService,
+} from "@pirate/application/use-cases/rewards/karaoke";
 import type {
   StudyAudioArchive,
   StudyBatchTranscriber,
