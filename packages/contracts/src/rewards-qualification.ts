@@ -88,6 +88,14 @@ export const KaraokeQualificationPolicyV1 = Schema.Struct({
   minimum_coverage_bps: Schema.Literal(8_500),
   minimum_final_score_bps: Schema.Literal(7_000),
 });
+export const KaraokeQualificationPolicyV2 = Schema.Struct({
+  kind: Schema.Literal("karaoke_qualification_v2"),
+  qualification_policy_version_id: BoundedIdentifier,
+  minimum_scored_line_count: Schema.Literal(5),
+  minimum_coverage_bps: Schema.Literal(8_500),
+  minimum_final_score_bps: Schema.Literal(7_000),
+  eligible_playback_kinds: Schema.NonEmptyArray(Schema.Literals(["full_mix", "instrumental"])),
+});
 export const QualificationPolicyV1 = Schema.Union([
   StudyQualificationPolicyV1,
   KaraokeQualificationPolicyV1,
@@ -127,6 +135,26 @@ export const KaraokeQualificationEvidenceV1 = Schema.Struct({
   scoring_version: PositiveInteger,
   scoring_provider: BoundedIdentifier,
   karaoke_revision_id: BoundedIdentifier,
+}).check(
+  Schema.makeFilter(({ scored_line_count, line_count, coverage_bps, final_score_bps }) =>
+    scored_line_count <= line_count &&
+    scored_line_count >= 5 &&
+    coverage_bps >= 8_500 &&
+    final_score_bps >= 7_000
+      ? undefined
+      : "Karaoke qualification evidence must satisfy the frozen score policy",
+  ),
+);
+export const KaraokeQualificationEvidenceV2 = Schema.Struct({
+  kind: Schema.Literal("karaoke_qualification_v2"),
+  scored_line_count: PositiveInteger,
+  line_count: PositiveInteger,
+  coverage_bps: BasisPoints,
+  final_score_bps: BasisPoints,
+  scoring_version: PositiveInteger,
+  scoring_provider: BoundedIdentifier,
+  karaoke_revision_id: BoundedIdentifier,
+  playback_kind: Schema.Literals(["full_mix", "instrumental"]),
 }).check(
   Schema.makeFilter(({ scored_line_count, line_count, coverage_bps, final_score_bps }) =>
     scored_line_count <= line_count &&

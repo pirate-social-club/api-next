@@ -6,6 +6,8 @@ import {
   GetCommunityActivityLeaderboard,
   GetSongActivityLeaderboard,
   GetStudySession,
+  KaraokeQualificationEvidenceV2,
+  KaraokeQualificationPolicyV2,
   SetAccountStreakTimezone,
   SetActivityPresentationPersona,
   StartStudySession,
@@ -88,6 +90,32 @@ describe("rewards qualification contracts", () => {
     expect(JSON.stringify(decodedSession)).not.toContain("answer_key");
     expect(JSON.stringify(decodedSession)).not.toContain("account_id");
     expect(JSON.stringify(decodedSession)).not.toContain("score_submission");
+  });
+
+  test("types Karaoke v2 policy and evidence without widening Study v1 responses", () => {
+    expect(
+      Schema.decodeUnknownSync(KaraokeQualificationPolicyV2)({
+        kind: "karaoke_qualification_v2",
+        qualification_policy_version_id: "karaoke_qualification_v2@1",
+        minimum_scored_line_count: 5,
+        minimum_coverage_bps: 8_500,
+        minimum_final_score_bps: 7_000,
+        eligible_playback_kinds: ["full_mix"],
+      }).eligible_playback_kinds,
+    ).toEqual(["full_mix"]);
+    expect(
+      Schema.decodeUnknownSync(KaraokeQualificationEvidenceV2)({
+        kind: "karaoke_qualification_v2",
+        scored_line_count: 5,
+        line_count: 5,
+        coverage_bps: 9_000,
+        final_score_bps: 8_000,
+        scoring_version: 1,
+        scoring_provider: "provider-v1",
+        karaoke_revision_id: "karaoke-revision-v1",
+        playback_kind: "full_mix",
+      }).playback_kind,
+    ).toBe("full_mix");
   });
 
   test("accepts only typed answers and never a browser score", () => {

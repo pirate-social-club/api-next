@@ -17,7 +17,7 @@ const sentinelPath =
   "/tmp/api-next-control-plane-postgres-rewards-qualification-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-rewards-qualification-suite-complete\n";
 const migrations = await loadPostgresMigrations();
-const testCount = 4;
+const testCount = 5;
 let completedTestCount = 0;
 
 const schemaIdentifier = (): string =>
@@ -131,7 +131,7 @@ suite("Postgres 17 activity qualification persistence", () => {
         {
           activity_key: "karaoke",
           status: "active",
-          current_policy_version_id: "karaoke_qualification_v1@1",
+          current_policy_version_id: "karaoke_qualification_v2@1",
         },
         {
           activity_key: "study",
@@ -418,6 +418,106 @@ suite("Postgres 17 activity qualification persistence", () => {
       expect(stored.rows).toEqual([
         { qualification_id: "qualification-karaoke-1", score_bps: 8000 },
       ]);
+    });
+    completedTestCount += 1;
+  });
+
+  test("keeps full-mix qualification reversible through immutable v2 policy rows", async () => {
+    await withSchema(async (admin) => {
+      const identity = await seedAccountSong(admin, "karaoke-v2");
+      const createdAt = new Date(Date.now() - 60_000).toISOString();
+      const completedAt = new Date().toISOString();
+      await admin.query(
+        `INSERT INTO qualification_policy_versions (
+           qualification_policy_version_id, activity_key, policy_kind, policy_document
+         ) VALUES (
+           'karaoke_qualification_v2@test-instrumental-only', 'karaoke',
+           'karaoke_qualification_v2',
+           '{"minimum_scored_line_count":5,"minimum_coverage_bps":8500,"minimum_final_score_bps":7000,"eligible_playback_kinds":["instrumental"]}'::jsonb
+         )`,
+      );
+      const createAttempt = async (suffix: string, policyId: string, hashCharacter: string) => {
+        const sessionId = `karaoke-v2-session-${suffix}`;
+        const attemptId = `karaoke-v2-attempt-${suffix}`;
+        await admin.query(
+          `INSERT INTO karaoke_sessions (
+             session_id, attempt_id, account_id, persona_id, community_id, post_id,
+             audio_revision, karaoke_revision_id, qualification_policy_version_id,
+             idempotency_key, request_hash, timezone, playback_kind, created_at, expires_at
+           ) VALUES ($1,$2,$3,$4,$5,$6,1,$7,$8,$9,$10,'UTC','full_mix',$11,$11::timestamptz + interval '10 minutes')`,
+          [
+            sessionId,
+            attemptId,
+            identity.accountId,
+            identity.personaId,
+            identity.communityId,
+            identity.postId,
+            `karaoke-revision-${suffix}`,
+            policyId,
+            `idem-${suffix}`,
+            hash(hashCharacter),
+            createdAt,
+          ],
+        );
+        const evidence = {
+          kind: "karaoke_qualification_v2",
+          scored_line_count: 5,
+          line_count: 5,
+          coverage_bps: 10_000,
+          final_score_bps: 8_000,
+          scoring_version: 1,
+          scoring_provider: "provider-v1",
+          karaoke_revision_id: `karaoke-revision-${suffix}`,
+          playback_kind: "full_mix",
+        };
+        await admin.query(
+          `INSERT INTO karaoke_attempts (
+             attempt_id, session_id, completion_reason, scoring_version,
+             scoring_provider, scoring_model, final_score_bps, scored_line_count,
+             line_count, evidence_summary, completed_at, created_at
+           ) VALUES ($1,$2,'completed',1,'provider-v1','model-v1',8000,5,5,$3::jsonb,$4,$5)`,
+          [attemptId, sessionId, JSON.stringify(evidence), completedAt, createdAt],
+        );
+        await admin.query(
+          "UPDATE karaoke_sessions SET status='completed', completed_at=$1 WHERE session_id=$2",
+          [completedAt, sessionId],
+        );
+        return { attemptId, evidence, sessionId };
+      };
+      const eligible = await createAttempt("eligible", "karaoke_qualification_v2@1", "a");
+      const excluded = await createAttempt(
+        "excluded",
+        "karaoke_qualification_v2@test-instrumental-only",
+        "b",
+      );
+      const insertQualification = (suffix: string, attempt: typeof eligible) =>
+        admin.query(
+          `INSERT INTO activity_qualifications (
+             qualification_id, account_id, persona_id, community_id, post_id,
+             audio_revision, activity_key, karaoke_session_id, karaoke_attempt_id,
+             score_bps, qualification_policy_version_id, qualified_at,
+             streak_day, evidence_summary, created_at
+           ) SELECT $1, account_id, persona_id, community_id, post_id,
+             audio_revision, 'karaoke', session_id, attempt_id, 8000,
+             qualification_policy_version_id, $2,
+             ($2::timestamptz AT TIME ZONE timezone)::date, $3::jsonb, $2
+             FROM karaoke_sessions WHERE session_id=$4`,
+          [
+            `qualification-karaoke-v2-${suffix}`,
+            completedAt,
+            JSON.stringify(attempt.evidence),
+            attempt.sessionId,
+          ],
+        );
+      await insertQualification("eligible", eligible);
+      await expect(insertQualification("excluded", excluded)).rejects.toMatchObject({
+        message: expect.stringContaining("not exact reducer output"),
+      });
+      const stored = await admin.query(
+        "SELECT qualification_id FROM activity_qualifications WHERE karaoke_attempt_id=$1",
+        [eligible.attemptId],
+      );
+      expect(stored.rows).toEqual([{ qualification_id: "qualification-karaoke-v2-eligible" }]);
     });
     completedTestCount += 1;
   });

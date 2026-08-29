@@ -73507,6 +73507,476 @@
         ]
       }
     },
+    "/communities/{communityId}/posts/{postId}/karaoke": {
+      "get": {
+        "operationId": "get_communitiesCommunityIdPostsPostIdKaraoke",
+        "parameters": [
+          {
+            "name": "communityId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "postId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "unavailable"
+                          ]
+                        },
+                        "reason": {
+                          "type": "string",
+                          "enum": [
+                            "not_a_song",
+                            "lyrics_not_accepted",
+                            "alignment_unavailable",
+                            "line_catalog_missing",
+                            "invalid_timed_lyrics"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "state",
+                        "reason"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "processing"
+                          ]
+                        },
+                        "reason": {
+                          "type": "string",
+                          "enum": [
+                            "alignment_pending"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "state",
+                        "reason"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "ready"
+                          ]
+                        },
+                        "object": {
+                          "type": "string",
+                          "enum": [
+                            "song_karaoke_payload"
+                          ]
+                        },
+                        "community_id": {
+                          "type": "string"
+                        },
+                        "post_id": {
+                          "type": "string"
+                        },
+                        "title": {
+                          "type": "string"
+                        },
+                        "karaoke_revision_id": {
+                          "type": "string"
+                        },
+                        "playback_audio": {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "full_mix"
+                              ]
+                            },
+                            "ref": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "ref"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "playback_kind": {
+                          "type": "string",
+                          "enum": [
+                            "full_mix"
+                          ]
+                        },
+                        "karaoke_lines": {
+                          "type": "array",
+                          "prefixItems": [
+                            {
+                              "$ref": "#/$defs/Objects_"
+                            }
+                          ],
+                          "minItems": 1,
+                          "items": {
+                            "$ref": "#/$defs/Objects_"
+                          }
+                        }
+                      },
+                      "required": [
+                        "state",
+                        "object",
+                        "community_id",
+                        "post_id",
+                        "title",
+                        "karaoke_revision_id",
+                        "playback_audio",
+                        "playback_kind",
+                        "karaoke_lines"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ],
+                  "$defs": {
+                    "Union_": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "string",
+                          "enum": [
+                            "Infinity",
+                            "-Infinity",
+                            "NaN"
+                          ]
+                        }
+                      ]
+                    },
+                    "Objects_1": {
+                      "type": "object",
+                      "properties": {
+                        "text": {
+                          "type": "string"
+                        },
+                        "start_ms": {
+                          "$ref": "#/$defs/Union_"
+                        },
+                        "end_ms": {
+                          "$ref": "#/$defs/Union_"
+                        }
+                      },
+                      "required": [
+                        "text",
+                        "start_ms",
+                        "end_ms"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "Objects_": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "index": {
+                          "$ref": "#/$defs/Union_"
+                        },
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "lyric"
+                          ]
+                        },
+                        "text": {
+                          "type": "string"
+                        },
+                        "start_ms": {
+                          "$ref": "#/$defs/Union_"
+                        },
+                        "end_ms": {
+                          "$ref": "#/$defs/Union_"
+                        },
+                        "words": {
+                          "type": "array",
+                          "prefixItems": [
+                            {
+                              "$ref": "#/$defs/Objects_1"
+                            }
+                          ],
+                          "minItems": 1,
+                          "items": {
+                            "$ref": "#/$defs/Objects_1"
+                          }
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "index",
+                        "kind",
+                        "text",
+                        "start_ms",
+                        "end_ms",
+                        "words"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "404": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "not_found"
+            ]
+          },
+          "500": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "userOrAdmin"
+          }
+        },
+        "x-errors": [
+          "AuthError",
+          "BadRequest",
+          "NotFound",
+          "InternalError"
+        ]
+      }
+    },
     "/communities/{communityId}/karaoke/attempts/{attemptId}": {
       "get": {
         "operationId": "get_communitiesCommunityIdKaraokeAttemptsAttemptId",

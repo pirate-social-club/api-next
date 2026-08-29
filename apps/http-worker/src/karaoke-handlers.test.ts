@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { KaraokeAttempt, KaraokeSession, KaraokeSongLeaderboard } from "@pirate/contracts";
-import { makeKaraokeHandlers } from "./karaoke-handlers.ts";
+import { makeKaraokeHandlers, makeKaraokeReadinessHandlers } from "./karaoke-handlers.ts";
 import type { DecodedRequest } from "./transport.ts";
 
 const session: KaraokeSession = {
@@ -200,5 +200,20 @@ describe("karaoke HTTP handlers", () => {
       });
     }
     expect(called).toBe(false);
+  });
+
+  it("reads Karaoke readiness without installing the unfinished attempt runtime", async () => {
+    const calls: unknown[] = [];
+    const handlers = makeKaraokeReadinessHandlers({
+      get: async (input) => {
+        calls.push(input);
+        return { state: "processing", reason: "alignment_pending" };
+      },
+    });
+    expect(await handlers.GetKaraokeReadiness(request())).toEqual({
+      state: "processing",
+      reason: "alignment_pending",
+    });
+    expect(calls).toEqual([{ communityId: "community-1", postId: "post-1" }]);
   });
 });

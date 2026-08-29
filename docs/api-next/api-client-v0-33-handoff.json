@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.33.0",
+  "releaseType": "karaoke-readiness-v1",
+  "wireContract": "spec-019-sections-2-7",
+  "sourceCommit": "pending-review",
+  "supersedes": "0.32.0; adds stable lyric occurrence identifiers and the typed Karaoke readiness payload.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.33.0.tgz",
+    "sha256": "b2ba8456e2f1827f040406742ee7cff0f0f4ffb43f2e952b6f86e5c27c8f5eb8",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@19013eae42a9857627342d95a8c56359b82c53c27a3605eea755c335ba2f35d3",
+    "openapiSha256": "19013eae42a9857627342d95a8c56359b82c53c27a3605eea755c335ba2f35d3",
+    "clientSha256": "ff942fea6638ab72b02ef7c006676a986049702c59ca5ce456fd88d3be147360"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "authorized",
+      "baselineCommit": "4d0f39f",
+      "reason": "Ratified spec 019 adds the dedicated Karaoke readiness read and playback-aware qualification v2."
+    },
+    "focusedPostgresSuites": "39 passed on disposable local Postgres 17, including catalog publication and readiness, v2 playback eligibility, and competition ranking",
+    "fullUnitSuite": "2102 passed, 305 database-gated tests skipped, 0 failed",
+    "fullWorkerdSuite": "92 passed, 0 failed",
+    "packageVerifier": "passed",
+    "repositoryCheck": "passed"
+  }
+}

@@ -132,6 +132,59 @@ export const KaraokeAttemptCreateHeaders = Schema.Struct({
 
 export type KaraokeAttemptCreateRequest = Schema.Schema.Type<typeof KaraokeAttemptCreate>;
 
+export const KaraokePlaybackKind = Schema.Literal("full_mix");
+
+export const KaraokePlaybackAudio = Schema.Struct({
+  kind: KaraokePlaybackKind,
+  ref: Schema.String,
+});
+
+export const KaraokePayloadWord = Schema.Struct({
+  text: Schema.String,
+  start_ms: Schema.Number,
+  end_ms: Schema.Number,
+});
+
+export const KaraokePayloadLine = Schema.Struct({
+  id: Schema.String,
+  index: Schema.Number,
+  kind: Schema.Literal("lyric"),
+  text: Schema.String,
+  start_ms: Schema.Number,
+  end_ms: Schema.Number,
+  words: Schema.NonEmptyArray(KaraokePayloadWord),
+});
+
+export const KaraokeReadiness = Schema.Union([
+  Schema.Struct({
+    state: Schema.Literal("unavailable"),
+    reason: Schema.Literals([
+      "not_a_song",
+      "lyrics_not_accepted",
+      "alignment_unavailable",
+      "line_catalog_missing",
+      "invalid_timed_lyrics",
+    ]),
+  }),
+  Schema.Struct({
+    state: Schema.Literal("processing"),
+    reason: Schema.Literal("alignment_pending"),
+  }),
+  Schema.Struct({
+    state: Schema.Literal("ready"),
+    object: Schema.Literal("song_karaoke_payload"),
+    community_id: Schema.String,
+    post_id: Schema.String,
+    title: Schema.String,
+    karaoke_revision_id: Schema.String,
+    playback_audio: KaraokePlaybackAudio,
+    playback_kind: KaraokePlaybackKind,
+    karaoke_lines: Schema.NonEmptyArray(KaraokePayloadLine),
+  }),
+]);
+
+export type KaraokeReadiness = Schema.Schema.Type<typeof KaraokeReadiness>;
+
 export const KaraokeLeaderboardIdentity = Schema.Struct({
   visibility: Schema.Literals(["visible", "anonymized"]),
   display_name: Schema.NullOr(Schema.String),
@@ -189,6 +242,18 @@ export const CreateKaraokeAttempt = endpoint({
   response: KaraokeSession,
   successStatus: 201,
   errors: [AuthError, BadRequest, Conflict, NotFound, ProviderUnavailable, RateLimited],
+});
+
+export const GetKaraokeReadiness = endpoint({
+  method: "GET",
+  path: "/communities/:communityId/posts/:postId/karaoke",
+  auth: Auth.userOrAdmin(),
+  request: {
+    path: Schema.Struct({ communityId: Schema.String, postId: Schema.String }),
+  },
+  response: KaraokeReadiness,
+  successStatus: 200,
+  errors: [AuthError, BadRequest, NotFound, InternalError],
 });
 
 export const GetKaraokeAttempt = endpoint({

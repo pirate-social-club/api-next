@@ -729,6 +729,63 @@ suite("Postgres 17 activity qualification repository", () => {
     });
   });
 
+  test("uses competition rank and keeps every tie at the requested boundary", async () => {
+    await withSchema(async ({ admin, scopedConnection }) => {
+      const song = await seedAccountSong(admin, "rank-ties");
+      const second = await seedParticipant(admin, song, "rank-ties-second");
+      const third = await seedParticipant(admin, song, "rank-ties-third");
+      const fourth = await seedParticipant(admin, song, "rank-ties-fourth");
+      const ranked = [song, second, third, fourth];
+      for (const [index, identity] of ranked.entries()) {
+        await admin.query(
+          `INSERT INTO persona_activity_presentations (
+             community_id, account_id, persona_id
+           ) VALUES ($1,$2,$3)`,
+          [song.communityId, identity.accountId, identity.personaId],
+        );
+        const isLower = index === 3;
+        await admin.query(
+          `INSERT INTO song_streaks (
+             account_id, community_id, post_id, current_count, best_count,
+             started_day, last_day, total_days, active_until_at
+           ) VALUES ($1,$2,$3,$4,$4,$5,'2026-08-29',$4,'2026-09-01T00:00:00.000Z')`,
+          [
+            identity.accountId,
+            song.communityId,
+            song.postId,
+            isLower ? 2 : 3,
+            `2026-08-${String(25 - index).padStart(2, "0")}`,
+          ],
+        );
+      }
+      const leaderboard = await Effect.runPromise(
+        makeControlPlaneActivityQualificationStore(
+          makeDirectPostgresControlPlaneLayer(scopedConnection),
+        ).getSongLeaderboard({
+          accountId: null,
+          communityId: song.communityId,
+          limit: 1,
+          postId: song.postId,
+          readAt: "2026-08-29T12:00:00.000Z",
+        }),
+      );
+      expect(leaderboard.entries.map(({ rank }) => rank)).toEqual([1, 1, 1]);
+      expect(leaderboard.entries.map(({ persona }) => persona.persona_id)).toEqual([
+        third.personaId,
+        second.personaId,
+        song.personaId,
+      ]);
+      const allRanks = await admin.query<{ readonly rank: string }>(
+        `SELECT rank::text FROM (
+           SELECT rank() OVER (ORDER BY current_count DESC, best_count DESC) AS rank
+             FROM song_streaks WHERE community_id=$1 AND post_id=$2
+         ) AS ranked ORDER BY rank`,
+        [song.communityId, song.postId],
+      );
+      expect(allRanks.rows.map(({ rank }) => Number(rank))).toEqual([1, 1, 1, 4]);
+    });
+  });
+
   test("projects Study qualification into one Very-gated Megapot share per account", async () => {
     await withSchema(async ({ admin, scopedConnection }) => {
       const identity = await seedAccountSong(admin, "pool-share");

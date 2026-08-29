@@ -90,6 +90,28 @@ describe("server-authoritative activity qualification reducers", () => {
       }).qualifies,
     ).toBe(false);
   });
+
+  test("keeps playback eligibility in the immutable Karaoke policy", () => {
+    const attempt = {
+      completionReason: "completed" as const,
+      scoredLineCount: 5,
+      lineCount: 5,
+      finalScoreBps: 8_000,
+      playbackKind: "full_mix" as const,
+    };
+    expect(
+      evaluateKaraokeQualification({
+        ...attempt,
+        eligiblePlaybackKinds: ["full_mix"],
+      }).qualifies,
+    ).toBe(true);
+    expect(
+      evaluateKaraokeQualification({
+        ...attempt,
+        eligiblePlaybackKinds: ["instrumental"],
+      }).qualifies,
+    ).toBe(false);
+  });
 });
 
 describe("day-ledger streak recomputation", () => {

@@ -19,7 +19,12 @@ import * as money from "./community-purchase-funding.ts";
 import { GetCanonicalCommunityRoute } from "./community-route-resolution.ts";
 import { handleSalesRegistry } from "./handle-sales.ts";
 import { PollHnsOwnerRecovery, StartHnsOwnerRecovery } from "./hns-owner-recovery.ts";
-import { CreateKaraokeAttempt, GetKaraokeAttempt, GetKaraokeLeaderboard } from "./karaoke.ts";
+import {
+  CreateKaraokeAttempt,
+  GetKaraokeAttempt,
+  GetKaraokeLeaderboard,
+  GetKaraokeReadiness,
+} from "./karaoke.ts";
 import { PollNamespaceOwnership, StartNamespaceOwnership } from "./namespace-ownership.ts";
 import {
   ConfirmPersonaEvmWallet,
@@ -79,6 +84,7 @@ export const registry = {
   StartNamespaceOwnership,
   PollNamespaceOwnership,
   CreateKaraokeAttempt,
+  GetKaraokeReadiness,
   GetKaraokeAttempt,
   GetKaraokeLeaderboard,
   StartStudySession,

@@ -29,6 +29,7 @@ import {
   type TrustedSongAnalysis,
   transitionMediaSubmission,
 } from "../../domain/src/media-submission.ts";
+import { materializeAcceptedLyricLineCatalog } from "./lyric-line-catalog.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 type Bytes = Uint8Array;
@@ -3074,6 +3075,18 @@ export function makeControlPlaneMediaSubmissionRepository(
             ],
             readonly: false,
           });
+          if (current.lyrics !== null) {
+            yield* materializeAcceptedLyricLineCatalog(tx, {
+              actorUserId: current.actorId,
+              communityId: current.communityId,
+              lyrics: current.lyrics.text,
+              lyricsRevision: current.lyrics.lyricsRevision,
+              postId: ownedPostId,
+              sourceLanguage:
+                lyricsAnalysis.status === "ready" ? lyricsAnalysis.primaryLanguageBcp47 : null,
+              submissionId: current.submissionId,
+            });
+          }
           if (options.dataRegistrationChainId !== undefined) {
             const registrationRevision = 1n;
             const workflowRevision = 1n;
