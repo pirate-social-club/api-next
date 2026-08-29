@@ -953,7 +953,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
              commitment_effect_id, cutoff_frozen_at
            ) VALUES (
              $1, 101, 'drawing-observation-101', 'committed', 3,
-             clock_timestamp() + interval '55 minutes', 10000, 10000, 0,
+             clock_timestamp() + interval '55 minutes', 50000, 50000, 0,
              1, false, 'snapshot-101', 'commitment-101', clock_timestamp()
            )`,
           [legId],
@@ -991,7 +991,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         await admin.query("SET session_replication_role = origin");
       }
 
-      await admin.query(`UPDATE song_reward_offer_legs SET reserved_atomic=10000 WHERE leg_id=$1`, [
+      await admin.query(`UPDATE song_reward_offer_legs SET reserved_atomic=50000 WHERE leg_id=$1`, [
         legId,
       ]);
 
@@ -1088,6 +1088,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         readonly evidence_count: string;
         readonly reserved_atomic: string;
         readonly spent_atomic: string;
+        readonly actual_ticket_cost_atomic: string;
         readonly referral_fees_atomic: string;
       }>(
         `SELECT effect.state AS effect_state, drawing.status AS drawing_state,
@@ -1095,6 +1096,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
                 (SELECT count(*)::text FROM megapot_purchase_receipt_evidence
                   WHERE purchase_effect_id=effect.effect_id) AS evidence_count,
                 leg.reserved_atomic::text, leg.spent_atomic::text,
+                drawing.actual_ticket_cost_atomic::text,
                 evidence.referral_fees_atomic::text
            FROM reward_chain_effects effect
            JOIN megapot_pool_drawings drawing
@@ -1114,6 +1116,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
           evidence_count: "1",
           reserved_atomic: "0",
           spent_atomic: "10000",
+          actual_ticket_cost_atomic: "10000",
           referral_fees_atomic: "100",
         },
       ]);
@@ -1576,7 +1579,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
              commitment_effect_id, cutoff_frozen_at, created_at, updated_at
            ) VALUES (
              $1, 101, 'drawing-observation-prebroadcast-close', 'committed', 3,
-             clock_timestamp() - interval '15 minutes', 10000, 10000, 0,
+             clock_timestamp() - interval '15 minutes', 50000, 50000, 0,
              1, false, 'snapshot-prebroadcast-close',
              'commitment-prebroadcast-close', clock_timestamp() - interval '20 minutes',
              clock_timestamp() - interval '25 minutes',
@@ -1613,7 +1616,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
       } finally {
         await admin.query("SET session_replication_role = origin");
       }
-      await admin.query(`UPDATE song_reward_offer_legs SET reserved_atomic=10000 WHERE leg_id=$1`, [
+      await admin.query(`UPDATE song_reward_offer_legs SET reserved_atomic=50000 WHERE leg_id=$1`, [
         legId,
       ]);
       const layer = makeDirectPostgresControlPlaneLayer(scopedConnection);
