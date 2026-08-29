@@ -1844,3 +1844,72 @@ Suspension, recovery with a new generation, revocation, and final
 destruction were not executed because the owner elected to leave the accepted
 host running. Those lifecycle actions require a separately accepted teardown
 or recovery ceremony; this acceptance record does not claim they occurred.
+
+### Standing-stack handle preflight — 2026-08-29
+
+A bounded public read-only preflight tested the retained `jazleeuw` candidate.
+Queries from the operator workstation to both recorded authoritative addresses,
+`94.103.168.161` and `81.15.150.159`, were refused on UDP and TCP port 53.
+Read-only host inspection then proved that both PowerDNS processes remained
+running and bound to their public addresses, both host firewalls admitted TCP
+and UDP 53, each authority answered locally, and each authority queried the
+other successfully. A third existing workspace host independently received the
+same signed SOA serial `2026080805` over UDP and TCP from both authorities, the
+same `app.jazleeuw` A record, and the accepted TLSA value. The refusal is
+therefore specific to the workstation network path and is not evidence of an
+authoritative-service outage.
+
+Direct HTTPS to `app.jazleeuw` at the primary address completed TLS and
+presented an SPKI whose SHA-256 is exactly the accepted value
+`e5dd96b162d67af3016c1db8c19108dd93b5419c7c8eecc7e36c55f98f2d3f08`,
+and an unauthenticated request returned fail-closed HTTP 421. That response is
+expected without a valid forwarded envelope and proves no authority-generation
+fault. DNS and TLS identity are live; current application-authority freshness
+remains unproved until the credentialed resolver preflight is separately
+authorized and run.
+
+A neutral Cloudflare-edge TCP/53 probe subsequently reached both custom
+authority IPs directly and received matching authoritative, signed SOA answers
+with serial `2026080805`. This proves unrelated-network TCP reachability. A
+neutral UDP vantage remains an execution preflight requirement because the
+browser tool cannot originate UDP and the operator workstation blocks outbound
+port 53.
+
+The accepted gateway source `b0a61b31ad8a660047ee1ac517b6d595709cc4f2`
+descends from handle-sales merge `bc9f27c` and handle-host runtime merge
+`2992686`. The api-next source used by the accepted production enablement also
+descends from both merges. The final accepted Solid source
+`c8d07d73dc7a74bcc7a387968d02e2e81f00ccc6` descends from handle-persona
+ingress commit `f344354`. The runtime code is therefore present in the
+accepted source lineage.
+
+Presence is not enablement. The accepted Solid production configuration keeps
+`HNS_HANDLE_HOST_INGRESS_ENABLED` false, leaves every handle-host origin and
+audience unset, and omits dormant production handle-authority credentials from
+the required-secret gate. The selected gateway and `jazleeuw` zone were
+accepted for `community_app_v1`, not for a wildcard hosted-persona surface.
+
+Reuse remains the preferred path, but it requires a separately reviewed
+refresh-and-enable ceremony. That ceremony must, in order:
+
+1. retain an independent DNS vantage because the operator workstation cannot
+   directly reach authoritative port 53;
+2. re-read the exact Handshake delegation and DS, validate independent TCP and
+   UDP DNS views, and prove the retained zone, certificate, and current
+   application-authority generations; record successors only where freshness
+   or equality actually fails;
+3. populate and source-pin the production Solid handle-host origins, Access
+   audience, distinct authority credential references, and gateway deployment
+   reference, then enable the read-only handle graph in one reviewed deploy;
+4. build and promote a gateway profile and signed-zone records for
+   `<handle-label>.jazleeuw`, with exact rollback and certificate/TLSA evidence;
+5. rerun fail-closed public probes before any sale namespace, offering, quote,
+   reservation, claim, or grant row is written; and
+6. request explicit owner authorization for those production Postgres rows and
+   the exact selected 8–15-character test label before executing the handle
+   lifecycle.
+
+This preflight performed no provider or credential access, deployment,
+database read or write, DNS/HNS mutation, wallet operation, signing, or other
+live-state change. The `11qx` staging build remains parked as the fallback if
+the owner declines production rows or the recovery plan rejects `jazleeuw`.
