@@ -11,6 +11,10 @@ import {
   requireHnsAuthorityEmitObservationV1,
   requireReviewedHnsAuthorityCandidateV1,
 } from "./hns-host-persistence.ts";
+import {
+  encodeHnsAuthorityInventory,
+  hnsAuthorityCapabilitySetDigest,
+} from "./namespace-ownership/hns-authority-inventory.ts";
 
 describe("HNS authority successor generation preparation", () => {
   test("predicts the fenced jazleeuw successor generations without a reservation", () => {
@@ -146,6 +150,52 @@ const emittedSnapshot = {
   successor_dns_latest_health_generation: 0,
 } as const;
 
+async function canonicalCandidateArtifacts() {
+  const authoritativeNameserverGlue = [
+    {
+      authority_nameserver: "ns1.pirate",
+      authority_address_family: "GLUE4" as const,
+      authority_address: "94.103.168.161",
+      active: true,
+    },
+  ];
+  const dnsWriteCapabilities = [
+    {
+      capability_reference: "dns-write:jazleeuw",
+      scope_kind: "exact_root" as const,
+      root_label: "jazleeuw",
+      active: true,
+    },
+  ];
+  const authorityInventory = await encodeHnsAuthorityInventory({
+    version: "pirate-hns-authority-inventory-v1",
+    authority_inventory_reference: "authority-inventory:jazleeuw",
+    authority_inventory_version: "v6",
+    environment: "production",
+    completeness: "complete",
+    runtime_capability_set_digest: await hnsAuthorityCapabilitySetDigest({
+      environment: "production",
+      authoritative_nameserver_glue: authoritativeNameserverGlue,
+      dns_write_capabilities: dnsWriteCapabilities,
+    }),
+    published_at: "2026-08-29T17:00:00.000Z",
+    expires_at: "2026-08-29T18:00:00.000Z",
+    authoritative_nameserver_glue: authoritativeNameserverGlue,
+    dns_write_capabilities: dnsWriteCapabilities,
+  });
+  const observerEvidence = new TextEncoder().encode(
+    '{"version":"pirate-hns-control-observation-result-v2","observation_id":"observer-custody-unavailable-01","request_sha256":"dda73915eef72c40ba3b5d4d105814bb0cf8a69ceda29f1a94f15bf9345786a0","status":"unavailable","reason_code":"authority_inventory_unavailable","retry_after_seconds":null,"observer_snapshot_sha256":"8cdf5aade56695d4cbdcf0f98cdb381d49bed92be927894f09985ac919d239a7","diagnostic_ref":"hns-observer:regtest:custody-unavailable-01"}',
+  );
+  const artifact = (name: string) => new TextEncoder().encode(`exact-${name}-bytes`);
+  return {
+    authority_inventory: authorityInventory,
+    dns_zone_activation: artifact("dns6"),
+    app_host_activation: artifact("app10"),
+    health_observation: artifact("health1"),
+    observer_evidence: observerEvidence,
+  } as const;
+}
+
 test("refuses pointer drift independently of candidate byte identity", () => {
   const bytes = new TextEncoder().encode("reviewed-6-10-1");
   expect(() =>
@@ -182,7 +232,6 @@ test("admits only unchanged pointers and byte-identical recomputation", () => {
 });
 
 test("emits one canonical all-or-nothing 6/10/1 review package", async () => {
-  const artifact = (name: string) => new TextEncoder().encode(`exact-${name}-bytes`);
   const result = await prepareHnsAuthoritySuccessorCandidateV1({
     source_commit: "1".repeat(40),
     root_label: "jazleeuw",
@@ -192,13 +241,7 @@ test("emits one canonical all-or-nothing 6/10/1 review package", async () => {
     expected_authority_addresses: ["94.103.168.161", "81.15.150.159"],
     authority_views: [observedView("94.103.168.161"), observedView("81.15.150.159")],
     chain_ds: chainDs,
-    artifacts: {
-      authority_inventory: artifact("inventory"),
-      dns_zone_activation: artifact("dns6"),
-      app_host_activation: artifact("app10"),
-      health_observation: artifact("health1"),
-      observer_evidence: artifact("observer"),
-    },
+    artifacts: await canonicalCandidateArtifacts(),
   });
   expect(result.candidate.generations).toEqual({
     dns_activation_generation: 6,
@@ -216,7 +259,7 @@ test("emits one canonical all-or-nothing 6/10/1 review package", async () => {
 });
 
 test("refuses the entire package when any required artifact is empty", async () => {
-  const artifact = new TextEncoder().encode("exact-bytes");
+  const artifacts = await canonicalCandidateArtifacts();
   await expect(
     prepareHnsAuthoritySuccessorCandidateV1({
       source_commit: "1".repeat(40),
@@ -228,11 +271,8 @@ test("refuses the entire package when any required artifact is empty", async () 
       authority_views: [observedView("94.103.168.161"), observedView("81.15.150.159")],
       chain_ds: chainDs,
       artifacts: {
-        authority_inventory: artifact,
-        dns_zone_activation: artifact,
+        ...artifacts,
         app_host_activation: new Uint8Array(),
-        health_observation: artifact,
-        observer_evidence: artifact,
       },
     }),
   ).rejects.toThrow("incomplete_candidate_artifacts");

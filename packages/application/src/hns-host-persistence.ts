@@ -1,4 +1,12 @@
 import type { Effect } from "effect";
+import {
+  decodeHnsAuthorityInventoryBytes,
+  encodeHnsAuthorityInventory,
+} from "./namespace-ownership/hns-authority-inventory.ts";
+import {
+  decodeHnsControlObservationResultV2Bytes,
+  encodeHnsControlObservationResultV2,
+} from "./namespace-ownership/hns-control-observer-v2.ts";
 import type { ControlPlaneError } from "./ports.ts";
 
 export type HnsDnsZoneActivationLifecycleStatusV1 = "active" | "suspended" | "revoked";
@@ -36,7 +44,8 @@ export class HnsAuthorityEmitRefusal extends Error {
       | "authority_view_mismatch"
       | "dnskey_ds_mismatch"
       | "candidate_metadata_invalid"
-      | "incomplete_candidate_artifacts",
+      | "incomplete_candidate_artifacts"
+      | "noncanonical_candidate_artifact",
   ) {
     super(`HNS authority candidate emission refused: ${reason}`);
   }
@@ -119,6 +128,18 @@ export async function prepareHnsAuthoritySuccessorCandidateV1(
   ] as const;
   if (artifactNames.some((name) => input.artifacts[name].byteLength === 0)) {
     throw new HnsAuthorityEmitRefusal("incomplete_candidate_artifacts");
+  }
+  const inventory = await decodeHnsAuthorityInventoryBytes(input.artifacts.authority_inventory);
+  const canonicalInventory = await encodeHnsAuthorityInventory(inventory.inventory);
+  const observation = await decodeHnsControlObservationResultV2Bytes(
+    input.artifacts.observer_evidence,
+  );
+  const canonicalObservation = await encodeHnsControlObservationResultV2(observation.result);
+  if (
+    !equalBytes(canonicalInventory, input.artifacts.authority_inventory) ||
+    !equalBytes(canonicalObservation, input.artifacts.observer_evidence)
+  ) {
+    throw new HnsAuthorityEmitRefusal("noncanonical_candidate_artifact");
   }
   const artifacts = await Promise.all(
     artifactNames.map(async (name) => {
