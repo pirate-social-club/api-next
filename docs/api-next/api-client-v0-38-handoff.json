@@ -30,8 +30,8 @@
       "reason": "The release adds one authenticated processing command without removing or narrowing an existing route."
     },
     "focusedContractSuites": "36 passed, 0 failed across prompt, multilingual validation, provider bounds, Workflow convergence, HTTP processing, corpus thresholds, Study v2 contracts, and binding classification; the PostgreSQL fixture was skipped locally without DATABASE_URL",
-    "fullUnitSuite": "pending CI",
-    "fullWorkerdSuite": "pending CI",
+    "fullUnitSuite": "2254 passed, 308 database-gated tests skipped, 0 failed",
+    "fullWorkerdSuite": "40 passed in the first Workerd group; the next group produced no output for more than 90 seconds and was stopped to preserve local resources, so CI is authoritative for the remaining groups",
     "packageVerifier": "passed",
     "repositoryCheck": "not completed locally: the shared dependency tree exposes pre-existing TypeScript BufferSource failures, and Effect diagnostics was stopped after producing no output for 90 seconds; CI is authoritative"
   }

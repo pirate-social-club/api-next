@@ -1,4 +1,4 @@
-import { makeCloudflareStudyGenerationWorkflowEntrypoint } from "@pirate/platform-cf/study-generation-workflow-cloudflare";
+import { makeCloudflareStudyGenerationWorkflowEntrypoint } from "@pirate/platform-cf/study-generation-workflow-entrypoint";
 import {
   makeStudyGenerationWorkflowComposition,
   type StudyGenerationRuntimeEnv,
