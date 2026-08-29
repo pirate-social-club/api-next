@@ -561,6 +561,44 @@ export function makeDataRegistrationAeneidChain(
   };
 }
 
+const AENEID_RPC_MAX_RESPONSE_BYTES = 1_048_576;
+
+async function readBoundedRpcBody(response: Response): Promise<string> {
+  const contentLength = response.headers.get("content-length");
+  if (
+    contentLength !== null &&
+    (!/^[0-9]+$/u.test(contentLength) || Number(contentLength) > AENEID_RPC_MAX_RESPONSE_BYTES)
+  ) {
+    await response.body?.cancel("response_too_large");
+    throw new Error("Aeneid RPC response too large");
+  }
+  if (response.body === null) return "";
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      total += next.value.byteLength;
+      if (total > AENEID_RPC_MAX_RESPONSE_BYTES) {
+        await reader.cancel("response_too_large");
+        throw new Error("Aeneid RPC response too large");
+      }
+      chunks.push(next.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
+}
+
 export function makeJsonRpcTransport(
   rpcUrl: string,
   fetcher: typeof fetch = globalThis.fetch.bind(globalThis),
@@ -580,13 +618,7 @@ export function makeJsonRpcTransport(
       signal: AbortSignal.timeout(15_000),
     });
     if (!response.ok) throw new Error("Aeneid RPC unavailable");
-    const declaredLength = Number(response.headers.get("content-length") ?? "0");
-    if (Number.isFinite(declaredLength) && declaredLength > 1_048_576) {
-      await response.body?.cancel("response_too_large");
-      throw new Error("Aeneid RPC response too large");
-    }
-    const responseText = await response.text();
-    if (responseText.length > 1_048_576) throw new Error("Aeneid RPC response too large");
+    const responseText = await readBoundedRpcBody(response);
     let body: unknown;
     try {
       body = JSON.parse(responseText);

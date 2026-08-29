@@ -445,10 +445,10 @@ re-establish an active Infisical contract.
 ## Known drift
 
 1. Production has no `API_NEXT_ALERT_*` entries and no production jobs Worker.
-   The four names are active source bindings when production is enabled. The
-   two URLs need real HTTPS endpoints and the two tokens need real credentials
-   before a production deployment; the invalid root placeholders were deleted
-   rather than normalized into the service path.
+   The webhook URL and token are active source bindings when production is
+   enabled. A real HTTPS endpoint and credential are required before a
+   production deployment; the invalid root placeholders were deleted rather
+   than normalized into the service path.
 2. The verifier provisioning evidence records the active key ID as
    `staging-2026-08-18-01`. It is now a staging Wrangler var and has been
    removed from `secrets.required`. The canonical Worker now receives it as a
@@ -523,7 +523,7 @@ Scope: `HttpWorkerBindings` (`apps/http-worker/src/composition.ts`),
 `JobsWorkerEnv` (`apps/jobs-worker/src/index.ts`),
 `AlertSinkBindings` and `RegistrationRateLimiterEnvironment`
 (`packages/platform-cf/src/`), reconciled against both Wrangler configs and the
-Infisical inventory. Fifty-five distinct names are consumed by source.
+Infisical inventory. Fifty-six distinct names are consumed by source.
 
 Note: `apps/http-worker/src/composition.ts` and `wrangler.jsonc` changed during
 this session — the Very browser verification flow was ported in. Earlier
@@ -533,10 +533,10 @@ Rule 5 still applies to them; see D7.
 
 ### Confirmed source names
 
-- The four `API_NEXT_ALERT_*` production names are consumed by
-  `packages/platform-cf/src/alert-config.ts`, which requires them whenever
-  `API_NEXT_ENV` is `production`. The names are not junk, but the deleted root
-  placeholder entries were not valid configuration.
+- Operational alerts use structured Workers Logs in every environment and do
+  not consume destination bindings. The former `API_NEXT_ALERT_*` production
+  names have been retired from source, Wrangler configuration, and the
+  Infisical inventory.
 - The four `REGISTRATION_*` vars looked undeclared-and-unused against the
   Worker bindings, but are consumed by `RegistrationRateLimiterEnvironment`
   inside the Durable Object. They are correct as declared.
@@ -554,23 +554,11 @@ Zero consumers in the workspace. The Self capture seam's Durable Object class
 was retired by http-worker migration `v3`. All four entries were deleted from
 staging and prod, then re-inventoried.
 
-### Open defects
+### Defect status
 
-**D1 — production alert configuration is absent.** `pirate-jobs-worker`
-consumes all four `API_NEXT_ALERT_*` names in production. D1a is complete: the
-two token names are declared in its production `secrets.required` list. D1b and
-D1c remain open because no authorized URLs or token values exist; no production
-jobs Worker is deployed. The invalid root placeholders were deleted. This
-document previously described only the http Worker, which was the omission
-that let D1 hide.
-
-**D2 — the alert four are not one class.** `API_NEXT_ALERT_EMAIL_URL` and
-`API_NEXT_ALERT_WEBHOOK_URL` are endpoint URLs and belong in `vars`;
-`API_NEXT_ALERT_EMAIL_TOKEN` and `API_NEXT_ALERT_WEBHOOK_TOKEN` are bearer
-credentials and belong in `secrets.required`. They are currently stored
-nowhere while the production jobs runtime is disabled. A future production
-jobs configuration must preserve this classification. The deleted root
-placeholders broke rule 2.
+**D1 and D2 — resolved by the logs-only alert policy.** Operational alerts are
+persisted as structured Workers Logs records. There is no external destination,
+endpoint URL, or bearer credential in the runtime contract.
 
 **D3 — the ZKPassport rotation secret is intentionally inactive but not
 predeclared.**

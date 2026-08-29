@@ -1,6 +1,6 @@
 import { type Alert, AlertCollector, type AlertSeverity } from "@pirate/application";
 import type { Effect as EffectType } from "effect";
-import { Data, Effect, Exit, Layer, Redacted, Schedule } from "effect";
+import { Effect, Layer } from "effect";
 
 export interface AlertDeliveryLedger {
   /** Marks a delivery before dispatch; false means it was already marked. */
@@ -16,10 +16,6 @@ export interface AlertDeliveryStore {
   readonly getAlertSuppression: (conditionKey: string) => Promise<AlertSuppressionState | null>;
   readonly saveAlertSuppression: (state: AlertSuppressionState) => Promise<void>;
 }
-
-export class AlertSinkDeliveryFailed extends Data.TaggedError("AlertSinkDeliveryFailed")<{
-  readonly sink: "email" | "webhook";
-}> {}
 
 export interface AlertSuppressionState {
   readonly conditionKey: string;
@@ -46,6 +42,8 @@ export interface AlertTickOptions {
   /** Injectable clock for deterministic scheduler and repeated-tick tests. */
   readonly now?: () => number;
   readonly activeWindowMs?: number;
+  /** Injectable Workers Logs writer for focused tests. */
+  readonly log?: (event: string, fields: AlertLogFields) => void;
 }
 
 /** Transition immediately, then remind after 1h, 4h, 12h, 24h, 3d, 7d. */
@@ -112,16 +110,193 @@ export function decideAlertSuppression(input: {
   };
 }
 
+/** Safe correlation values that can be persisted in Workers Logs or a page. */
+export interface AlertCorrelationFields {
+  readonly operation_id?: string;
+  readonly outbox_id?: string;
+  readonly workflow_revision?: number;
+  readonly subsystem?: "media" | "data";
+  readonly operation?: "media-analysis" | "data-registration" | "maintenance";
+  readonly failure_class?: string;
+  readonly outcome?: "ok" | "retryable" | "terminal";
+}
+
+/** One structured, queryable event persisted to Workers Logs. */
+export interface AlertLogFields extends AlertCorrelationFields {
+  readonly event: "pipeline.alert";
+  readonly schema_version: 1;
+  readonly emitted_at: string;
+  readonly environment: string;
+  readonly key: string;
+  readonly severity: AlertSeverity;
+  readonly count: number;
+  readonly overflow: number;
+  readonly suppression: AlertSuppressionDecision["reason"];
+  readonly sampled: false;
+}
+
+export type PipelineHealthSnapshotFields = Readonly<{
+  readonly event: "pipeline.health.snapshot";
+  readonly schema_version: 1;
+  readonly emitted_at: string;
+  readonly environment: string;
+  readonly subsystem: "media" | "data";
+  readonly operation: "media-analysis" | "data-registration";
+  readonly pending_count: number;
+  readonly retrying_count: number;
+  readonly exhausted_count: number;
+  readonly terminal_count: number;
+  readonly oldest_pending_age_seconds: number | null;
+  readonly last_success_at: string | null;
+  readonly health: "healthy" | "degraded" | "blocked";
+  readonly sampled: false;
+}>;
+
+export type OperationsBalanceSnapshotFields = Readonly<{
+  readonly event: "operations.balance.snapshot";
+  readonly schema_version: 1;
+  readonly emitted_at: string;
+  readonly environment: string;
+  readonly wallet_role: "data_registration_signer" | "megapot_custody";
+  readonly chain_id: number | null;
+  readonly public_address: string | null;
+  readonly balance_wei: string | null;
+  readonly balance_ratio_bps: number | null;
+  readonly observation_status: "fresh" | "unavailable";
+  readonly reserve_status: "sufficient" | "low" | "blocked" | "unknown";
+  readonly sampled: false;
+}>;
+
+export type PipelineLogFields =
+  | AlertLogFields
+  | PipelineHealthSnapshotFields
+  | OperationsBalanceSnapshotFields;
+export type PipelineLogEvent = PipelineLogFields["event"];
+
+export type PipelineHealthSnapshotInput = Readonly<{
+  readonly environment: string;
+  readonly emitted_at: string;
+  readonly subsystem: "media" | "data";
+  readonly pending_count: number;
+  readonly retrying_count: number;
+  readonly exhausted_count: number;
+  readonly terminal_count: number;
+  readonly oldest_pending_age_seconds: number | null;
+  readonly last_success_at: string | null;
+  readonly health: PipelineHealthSnapshotFields["health"];
+}>;
+
+export function writePipelineHealthSnapshot(
+  input: PipelineHealthSnapshotInput,
+  writer: (event: PipelineLogEvent, fields: PipelineLogFields) => void,
+): void {
+  const counts = [
+    input.pending_count,
+    input.retrying_count,
+    input.exhausted_count,
+    input.terminal_count,
+  ];
+  if (
+    counts.some((count) => !Number.isSafeInteger(count) || count < 0) ||
+    (input.oldest_pending_age_seconds !== null &&
+      (!Number.isSafeInteger(input.oldest_pending_age_seconds) ||
+        input.oldest_pending_age_seconds < 0)) ||
+    (input.last_success_at !== null && !Number.isFinite(Date.parse(input.last_success_at)))
+  ) {
+    return;
+  }
+  writer("pipeline.health.snapshot", {
+    event: "pipeline.health.snapshot",
+    schema_version: 1,
+    emitted_at: input.emitted_at,
+    environment: safeCorrelationValue(input.environment) ?? "unknown",
+    subsystem: input.subsystem,
+    operation: input.subsystem === "media" ? "media-analysis" : "data-registration",
+    pending_count: input.pending_count,
+    retrying_count: input.retrying_count,
+    exhausted_count: input.exhausted_count,
+    terminal_count: input.terminal_count,
+    oldest_pending_age_seconds: input.oldest_pending_age_seconds,
+    last_success_at: input.last_success_at,
+    health: input.health,
+    sampled: false,
+  });
+}
+
+export type OperationsBalanceSnapshotInput = Readonly<{
+  readonly environment: string;
+  readonly emitted_at: string;
+  readonly wallet_role: OperationsBalanceSnapshotFields["wallet_role"];
+  readonly chain_id: number | null;
+  readonly public_address: string | null;
+  readonly balance_wei: bigint | null;
+  readonly reserve_floor_wei: bigint;
+  readonly blocked_floor_wei: bigint;
+}>;
+
+function balanceRatioBps(balance: bigint, floor: bigint): number {
+  if (floor <= 0n || balance <= 0n) return 0;
+  const ratio = (balance * 10_000n) / floor;
+  return Number(ratio > 1_000_000n ? 1_000_000n : ratio);
+}
+
+export function writeOperationsBalanceSnapshot(
+  input: OperationsBalanceSnapshotInput,
+  writer: (event: PipelineLogEvent, fields: PipelineLogFields) => void,
+): void {
+  const address = input.public_address?.toLowerCase() ?? null;
+  const identityUnavailable = input.chain_id === null && address === null;
+  if (
+    (!identityUnavailable &&
+      (input.chain_id === null ||
+        address === null ||
+        !/^0x[0-9a-f]{40}$/u.test(address) ||
+        !Number.isSafeInteger(input.chain_id) ||
+        input.chain_id <= 0)) ||
+    (identityUnavailable && input.balance_wei !== null) ||
+    input.reserve_floor_wei <= 0n ||
+    input.blocked_floor_wei <= 0n ||
+    input.blocked_floor_wei > input.reserve_floor_wei ||
+    (input.balance_wei !== null && input.balance_wei < 0n)
+  ) {
+    return;
+  }
+  const balance = input.balance_wei;
+  const ratio = balance === null ? null : balanceRatioBps(balance, input.reserve_floor_wei);
+  let reserveStatus: OperationsBalanceSnapshotFields["reserve_status"] = "unknown";
+  if (balance !== null) {
+    if (balance < input.blocked_floor_wei) {
+      reserveStatus = "blocked";
+    } else if (balance < input.reserve_floor_wei) {
+      reserveStatus = "low";
+    } else {
+      reserveStatus = "sufficient";
+    }
+  }
+  writer("operations.balance.snapshot", {
+    event: "operations.balance.snapshot",
+    schema_version: 1,
+    emitted_at: input.emitted_at,
+    environment: safeCorrelationValue(input.environment) ?? "unknown",
+    wallet_role: input.wallet_role,
+    chain_id: input.chain_id,
+    public_address: address,
+    balance_wei: balance?.toString(10) ?? null,
+    balance_ratio_bps: ratio,
+    observation_status: input.balance_wei === null ? "unavailable" : "fresh",
+    reserve_status: reserveStatus,
+    sampled: false,
+  });
+}
+
 /**
- * Production sinks for aggregated alert delivery (000 §12). One email per
- * tick plus a webhook page for high severity. Concrete email/webhook
- * adapters share this aggregation seam.
+ * Every operational alert is written to Workers Logs. Suppression state stays
+ * in the existing ledger so transitions and reminders remain bounded.
  */
 export interface AlertSink {
-  readonly email: (digest: AlertDigest) => EffectType.Effect<void, unknown>;
-  readonly webhook: (alerts: readonly Alert[]) => EffectType.Effect<void, unknown>;
-  /** Low-severity digest delivery is deliberately not an email sink. */
-  readonly digest?: (digest: AlertDigest) => EffectType.Effect<void, unknown>;
+  /** Injectable Workers Logs adapter retained for development callers. */
+  readonly log?: (event: PipelineLogEvent, fields: PipelineLogFields) => void;
+  readonly environment?: string;
   readonly delivery?: AlertDeliveryLedger;
 }
 
@@ -132,6 +307,13 @@ export interface AlertGroup {
   readonly entity?: string;
   readonly severity: AlertSeverity;
   readonly count: number;
+  readonly operation_id?: string;
+  readonly outbox_id?: string;
+  readonly workflow_revision?: number;
+  readonly subsystem?: "media" | "data";
+  readonly operation?: "media-analysis" | "data-registration" | "maintenance";
+  readonly failure_class?: string;
+  readonly outcome?: "ok" | "retryable" | "terminal";
 }
 
 export interface AlertDigest {
@@ -150,6 +332,50 @@ const SEVERITY_RANK: Record<AlertSeverity, number> = { low: 0, medium: 1, high: 
 const MAX_KEYS_PER_FAMILY = 5;
 const MAX_GROUPS_PER_TICK = 50;
 
+const SAFE_CORRELATION_VALUE = /^[A-Za-z0-9._:/-]{1,256}$/u;
+
+function safeCorrelationValue(value: string | null | undefined): string | undefined {
+  return value !== undefined && value !== null && SAFE_CORRELATION_VALUE.test(value)
+    ? value
+    : undefined;
+}
+
+function safeCorrelationFields(alert: Alert): AlertCorrelationFields {
+  const observable = alert as Alert & Partial<AlertCorrelationFields>;
+  const operationId = safeCorrelationValue(observable.operation_id);
+  const outboxId = safeCorrelationValue(observable.outbox_id);
+  const workflowRevision =
+    typeof observable.workflow_revision === "number" &&
+    Number.isSafeInteger(observable.workflow_revision) &&
+    observable.workflow_revision >= 0
+      ? observable.workflow_revision
+      : undefined;
+  const failureClass = safeCorrelationValue(observable.failure_class);
+  return {
+    ...(operationId === undefined ? {} : { operation_id: operationId }),
+    ...(outboxId === undefined ? {} : { outbox_id: outboxId }),
+    ...(workflowRevision === undefined ? {} : { workflow_revision: workflowRevision }),
+    ...(observable.subsystem === "media" || observable.subsystem === "data"
+      ? { subsystem: observable.subsystem }
+      : {}),
+    ...(observable.operation === "media-analysis" ||
+    observable.operation === "data-registration" ||
+    observable.operation === "maintenance"
+      ? { operation: observable.operation }
+      : {}),
+    ...(failureClass === undefined ? {} : { failure_class: failureClass }),
+    ...(observable.outcome === "ok" ||
+    observable.outcome === "retryable" ||
+    observable.outcome === "terminal"
+      ? { outcome: observable.outcome }
+      : {}),
+  };
+}
+
+function alertDedupeKey(alert: Alert): string {
+  return `${alert.key}|${alert.entity ?? ""}`;
+}
+
 /**
  * Pure aggregation for one tick: group by key family, dedupe with severity
  * excluded from the key (severity escalates via max), cap distinct keys per
@@ -158,7 +384,8 @@ const MAX_GROUPS_PER_TICK = 50;
 export function aggregateAlerts(alerts: readonly Alert[]): AlertDigest {
   const byKey = new Map<string, AlertGroup>();
   for (const alert of alerts) {
-    const dedupeKey = `${alert.key}|${alert.entity ?? ""}`;
+    const dedupeKey = alertDedupeKey(alert);
+    const correlation = safeCorrelationFields(alert);
     const existing = byKey.get(dedupeKey);
     if (existing === undefined) {
       byKey.set(dedupeKey, {
@@ -167,6 +394,7 @@ export function aggregateAlerts(alerts: readonly Alert[]): AlertDigest {
         ...(alert.entity !== undefined ? { entity: alert.entity } : {}),
         severity: alert.severity,
         count: 1,
+        ...correlation,
       });
       continue;
     }
@@ -224,133 +452,71 @@ export function makeAlertDeliveryLedger(store: AlertDeliveryStore): AlertDeliver
   };
 }
 
-function deliveryKey(
-  kind: "digest" | "email" | "webhook",
-  digest: AlertDigest,
-  nowMs: number,
-): string {
-  const groups = digest.groups
-    .map((group) => `${group.dedupeKey}:${group.severity}:${group.count}`)
-    .join(",");
-  const window = Math.floor(nowMs / (5 * 60 * 1000));
-  return `api-next-alert:${kind}:window-${window}:${groups}:overflow-${digest.overflow}`;
-}
-
-function deliverWithCompensatingRetry(
-  ledger: AlertDeliveryLedger,
-  key: string,
-  send: EffectType.Effect<void, unknown>,
-): EffectType.Effect<void, unknown> {
-  const attempt = Effect.gen(function* () {
-    const marked = yield* ledger.markSent(key);
-    if (!marked) return;
-    const result = yield* Effect.exit(send);
-    if (Exit.isSuccess(result)) return;
-    // The mark is removed only for a known dispatch failure. The bounded one-
-    // retry schedule prevents a sink outage from becoming a resend storm.
-    yield* ledger.compensate(key);
-    return yield* Effect.failCause(result.cause);
-  });
-  return Effect.retry(attempt, Schedule.recurs(1));
-}
-
-function pageOnce(alerts: readonly Alert[]): readonly Alert[] {
-  const seen = new Set<string>();
-  return alerts.filter((alert) => {
-    const key = `${alert.key}|${alert.entity ?? ""}`;
-    if (alert.severity !== "high" || seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
 /** A safe local sink for development; it never contacts a provider. */
-export function makeLocalAlertSink(
-  log: (event: string, digest: AlertDigest) => void = (event, digest) =>
-    console.info(event, { groups: digest.groups.length, overflow: digest.overflow }),
-): AlertSink {
+export function makeLocalAlertSink(environment = "development"): AlertSink {
   const delivery = memoryDeliveryLedger();
   return {
-    email: (digest) => Effect.sync(() => log("api-next alert email-equivalent", digest)),
-    digest: (digest) => Effect.sync(() => log("api-next alert digest", digest)),
-    webhook: (alerts) =>
-      Effect.sync(() =>
-        log("api-next alert webhook-equivalent", {
-          groups: alerts.map((alert) => ({
-            dedupeKey: `${alert.key}|${alert.entity ?? ""}`,
-            key: alert.key,
-            ...(alert.entity === undefined ? {} : { entity: alert.entity }),
-            severity: alert.severity,
-            count: 1,
-          })),
-          overflow: 0,
-        }),
-      ),
+    log: (event: PipelineLogEvent, fields: PipelineLogFields) => console.info(event, fields),
+    environment,
     delivery,
   };
 }
 
-export interface AlertHttpSinkConfig {
-  readonly emailUrl: string;
-  readonly webhookUrl: string;
-  readonly emailToken: Redacted.Redacted<string>;
-  readonly webhookToken: Redacted.Redacted<string>;
-  readonly fetch?: typeof globalThis.fetch;
-  readonly delivery?: AlertDeliveryLedger;
-}
-
-function postAlert(
-  sink: "email" | "webhook",
-  url: string,
-  token: Redacted.Redacted<string>,
-  payload: unknown,
-  fetcher: typeof globalThis.fetch,
-): EffectType.Effect<void, AlertSinkDeliveryFailed> {
-  return Effect.tryPromise({
-    try: async () => {
-      const response = await fetcher(url, {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${Redacted.value(token)}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify(payload),
-      });
-      if (!response.ok) throw new Error("alert sink rejected delivery");
-    },
-    catch: () => new AlertSinkDeliveryFailed({ sink }),
+function writeAlertLog(
+  group: AlertGroup,
+  overflow: number,
+  suppression: AlertLogFields["suppression"],
+  emittedAt: string,
+  environment: string,
+  writer: (event: string, fields: AlertLogFields) => void,
+): void {
+  writer("pipeline.alert", {
+    event: "pipeline.alert",
+    schema_version: 1,
+    emitted_at: emittedAt,
+    environment,
+    key: group.key,
+    severity: group.severity,
+    count: group.count,
+    overflow,
+    suppression,
+    sampled: false,
+    ...(group.operation_id === undefined ? {} : { operation_id: group.operation_id }),
+    ...(group.outbox_id === undefined ? {} : { outbox_id: group.outbox_id }),
+    ...(group.workflow_revision === undefined
+      ? {}
+      : { workflow_revision: group.workflow_revision }),
+    ...(group.subsystem === undefined ? {} : { subsystem: group.subsystem }),
+    operation: group.operation ?? "maintenance",
+    ...(group.failure_class === undefined ? {} : { failure_class: group.failure_class }),
+    ...(group.outcome === undefined ? {} : { outcome: group.outcome }),
   });
 }
 
-/** Production HTTP adapters. Endpoint and token values never enter alert data. */
-export function makeHttpAlertSink(config: AlertHttpSinkConfig): AlertSink {
-  const fetcher = config.fetch ?? globalThis.fetch;
-  return {
-    email: (digest) => postAlert("email", config.emailUrl, config.emailToken, digest, fetcher),
-    webhook: (alerts) =>
-      postAlert(
-        "webhook",
-        config.webhookUrl,
-        config.webhookToken,
-        alerts.map((alert) => ({
-          key: alert.key,
-          severity: alert.severity,
-          entity: alert.entity,
-          body: "api-next high-severity maintenance alert",
-        })),
-        fetcher,
-      ),
-    ...(config.delivery === undefined ? {} : { delivery: config.delivery }),
-  };
+function reportAlertDiagnostic(message: string): void {
+  console.error(message);
+}
+
+function safelyWriteAlertLog(
+  group: AlertGroup,
+  overflow: number,
+  suppression: AlertLogFields["suppression"],
+  emittedAt: string,
+  environment: string,
+  writer: (event: string, fields: AlertLogFields) => void,
+): void {
+  try {
+    writeAlertLog(group, overflow, suppression, emittedAt, environment, writer);
+  } catch {
+    reportAlertDiagnostic("api-next alert log unavailable");
+  }
 }
 
 /**
  * Runs `body` with an `AlertCollector` that buffers emits, then — in a scope
- * finalizer — aggregates the buffer and delivers at most one email per tick
- * plus a webhook for high severity. The finalizer runs on every exit
- * (success, expected failure, interruption), so alerts emitted before an
- * interruption are never lost. Severity floor: `low` never pages, it only
- * lands in the digest.
+ * finalizer — aggregates the buffer and persists one structured Workers Logs
+ * event per group. The finalizer runs on every exit (success, expected failure,
+ * interruption), so alerts emitted before an interruption are never lost.
  */
 export function alertTick<A, E, R>(
   sink: AlertSink,
@@ -372,14 +538,36 @@ export function alertTick<A, E, R>(
           const digest = aggregateAlerts(buffer);
           const ledger = sink.delivery ?? memoryDeliveryLedger();
           const nowMs = options.now?.() ?? Date.now();
+          const emittedAt = new Date(nowMs).toISOString();
+          const environment = safeCorrelationValue(sink.environment) ?? "unknown";
           const suppression = ledger.suppression;
-          const pendingStates: AlertSuppressionState[] = [];
-          const deliverGroups: AlertGroup[] = [];
+          const log: (event: string, fields: AlertLogFields) => void =
+            options.log ??
+            ((event, fields) => {
+              if (sink.log !== undefined) sink.log("pipeline.alert", fields);
+              else console.info(event, fields);
+            });
           if (suppression === undefined) {
-            deliverGroups.push(...digest.groups);
+            for (const group of digest.groups) {
+              safelyWriteAlertLog(
+                group,
+                digest.overflow,
+                "transition",
+                emittedAt,
+                environment,
+                log,
+              );
+            }
           } else {
             for (const group of digest.groups) {
-              const previous = yield* suppression.get(group.dedupeKey);
+              const previous = yield* suppression.get(group.dedupeKey).pipe(
+                Effect.catchCause(() =>
+                  Effect.sync(() => {
+                    reportAlertDiagnostic("api-next alert suppression read unavailable");
+                    return null;
+                  }),
+                ),
+              );
               const decision = decideAlertSuppression({
                 conditionKey: group.dedupeKey,
                 severity: group.severity,
@@ -390,50 +578,31 @@ export function alertTick<A, E, R>(
                 ...(previous === null ? {} : { previous }),
               });
               if (decision.deliver) {
-                pendingStates.push(decision.state);
-                deliverGroups.push(group);
-              } else {
-                yield* suppression.put(decision.state);
+                safelyWriteAlertLog(
+                  group,
+                  digest.overflow,
+                  decision.reason,
+                  emittedAt,
+                  environment,
+                  log,
+                );
               }
+              yield* suppression.put(decision.state).pipe(
+                Effect.catchCause(() =>
+                  Effect.sync(() => {
+                    reportAlertDiagnostic("api-next alert suppression write unavailable");
+                  }),
+                ),
+              );
             }
           }
-          if (deliverGroups.length === 0) return;
-          const deliverDigest: AlertDigest = { ...digest, groups: deliverGroups };
-          const deliverKeys = new Set(deliverGroups.map((group) => group.dedupeKey));
-          const paging = pageOnce(buffer).filter((alert) =>
-            deliverKeys.has(`${alert.key}|${alert.entity ?? ""}`),
-          );
-          const hasEmailSeverity = deliverGroups.some((group) => group.severity !== "low");
-          if (hasEmailSeverity) {
-            yield* deliverWithCompensatingRetry(
-              ledger,
-              deliveryKey("email", deliverDigest, nowMs),
-              sink.email(deliverDigest),
-            ).pipe(
-              Effect.catch(() => Effect.die("alert email sink failed after compensating retry")),
-            );
-          } else if (sink.digest !== undefined) {
-            yield* deliverWithCompensatingRetry(
-              ledger,
-              deliveryKey("digest", deliverDigest, nowMs),
-              sink.digest(deliverDigest),
-            ).pipe(
-              Effect.catch(() => Effect.die("alert digest sink failed after compensating retry")),
-            );
-          }
-          if (deliverGroups.some((group) => group.severity === "high")) {
-            yield* deliverWithCompensatingRetry(
-              ledger,
-              deliveryKey("webhook", deliverDigest, nowMs),
-              sink.webhook(paging),
-            ).pipe(
-              Effect.catch(() => Effect.die("alert webhook sink failed after compensating retry")),
-            );
-          }
-          if (suppression !== undefined) {
-            for (const state of pendingStates) yield* suppression.put(state);
-          }
-        }).pipe(Effect.catchCause(() => Effect.die("api-next alert finalizer failed"))),
+        }).pipe(
+          Effect.catchCause(() =>
+            Effect.sync(() => {
+              reportAlertDiagnostic("api-next alert finalizer unavailable");
+            }),
+          ),
+        ),
       );
       return yield* Effect.provide(body, collector) as EffectType.Effect<A, E, R>;
     }),

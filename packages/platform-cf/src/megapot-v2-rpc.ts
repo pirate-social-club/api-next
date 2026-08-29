@@ -29,6 +29,7 @@ import {
   type MegapotV2DrawingState,
   validateMegapotV2DeploymentAttestation,
 } from "./megapot-v2.ts";
+import { readNativeBalance as readNativeBalanceRpc } from "./native-balance.ts";
 
 export const MEGAPOT_V2_RPC_TIMEOUT_MS = 8_000;
 export const MEGAPOT_V2_RPC_MAX_RESPONSE_BYTES = 512 * 1024;
@@ -448,8 +449,7 @@ export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): Mega
       decodeMegapotUsdcBalance(
         await ethCall(attestation.usdcAddress, encodeMegapotUsdcBalance(account), blockNumber),
       ),
-    readNativeBalance: async (account) =>
-      quantity(await rpc("eth_getBalance", [canonicalAddress(account), "latest"])),
+    readNativeBalance: (account) => readNativeBalanceRpc(rpc, canonicalAddress(account)),
     readUsdcAllowance: async (owner, spender) =>
       decodeMegapotUsdcAllowance(
         await ethCall(attestation.usdcAddress, encodeMegapotUsdcAllowance(owner, spender)),
