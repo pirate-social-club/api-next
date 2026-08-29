@@ -1,8 +1,8 @@
 import { Data, Effect } from "effect";
+import { Clock } from "./ports.ts";
 
 export const STUDY_LANGUAGE_PROFILE_PROMPT_V1 = "song_study_language_profile_prompt_v1" as const;
-export const STUDY_LANGUAGE_PROFILE_VALIDATOR_V1 =
-  "study_language_profile_validator_v1" as const;
+export const STUDY_LANGUAGE_PROFILE_VALIDATOR_V1 = "study_language_profile_validator_v1" as const;
 
 export const STUDY_LANGUAGE_PROFILE_SYSTEM_PROMPT_V1 = `You analyze the source languages used in one complete song for an English-learning product.
 
@@ -90,3 +90,49 @@ export const makeStudyLanguageProfileAnalyzer = (transport: StudyLanguageProfile
 export const disabledStudyLanguageProfileTransport: StudyLanguageProfileTransport = {
   analyze: () => Effect.fail(new StudyLanguageProfileUnavailable({ reason: "disabled" })),
 };
+
+export type StudyLanguageProfileOutcome = Readonly<{
+  communityId: string;
+  postId: string;
+  lyricsRevision: number;
+  languageProfileRevision: number;
+  state: "ready";
+}>;
+
+export type StudyLanguageProfileResolution =
+  | Readonly<{ state: "ready"; outcome: StudyLanguageProfileOutcome }>
+  | Readonly<{ state: "generate"; request: StudyLanguageProfileRequest }>;
+
+export class StudyLanguageProfileStoreFailed extends Data.TaggedError(
+  "StudyLanguageProfileStoreFailed",
+)<{ readonly reason: "constraint" | "outcome-unknown" | "stale" | "unavailable" }> {}
+
+export interface StudyLanguageProfileStore {
+  readonly resolve: (input: {
+    readonly communityId: string;
+    readonly postId: string;
+  }) => Effect.Effect<StudyLanguageProfileResolution, StudyLanguageProfileStoreFailed>;
+  readonly accept: (input: {
+    readonly request: StudyLanguageProfileRequest;
+    readonly analysis: StudyLanguageProfileAnalysis;
+    readonly acceptedAt: string;
+  }) => Effect.Effect<StudyLanguageProfileOutcome, StudyLanguageProfileStoreFailed>;
+}
+
+export const makeStudyLanguageProfileService = (
+  store: StudyLanguageProfileStore,
+  analyzer: ReturnType<typeof makeStudyLanguageProfileAnalyzer>,
+) => ({
+  generate: (input: { readonly communityId: string; readonly postId: string }) =>
+    Effect.gen(function* () {
+      const resolution = yield* store.resolve(input);
+      if (resolution.state === "ready") return resolution.outcome;
+      const analysis = yield* analyzer.analyze(resolution.request);
+      const clock = yield* Clock;
+      return yield* store.accept({
+        request: resolution.request,
+        analysis,
+        acceptedAt: new Date(yield* clock.now).toISOString(),
+      });
+    }),
+});
