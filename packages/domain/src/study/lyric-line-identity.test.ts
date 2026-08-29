@@ -116,4 +116,43 @@ describe("lyric line identity normalization v1", () => {
     expect(result.lines.every(({ carried }) => !carried)).toBe(true);
     expect(result.retired.every(({ ambiguous }) => ambiguous)).toBe(true);
   });
+
+  test("does not transfer occurrence identity across line splits or merges", () => {
+    const prior = (lines: readonly string[]): readonly PriorLyricOccurrence[] =>
+      lines.map((canonicalText, index) => ({
+        canonicalText,
+        lineId: `old-${index + 1}`,
+        lineVersion: 1,
+        normalizedText: normalizeLyricLineIdentityV1(canonicalText),
+        ordinal: index + 1,
+        sourceHash: `hash-${index + 1}`,
+        studyUnitId: `unit-${index + 1}`,
+      }));
+    let sequence = 0;
+    const split = reconcileLyricLineIdentities({
+      lyrics: "We run\nfast\nStay",
+      previous: prior(["We run fast", "Stay"]),
+      nextLineId: () => `split-${++sequence}`,
+      nextStudyUnitId: () => `split-unit-${sequence}`,
+    });
+    expect(split.lines.map(({ carried, lineId }) => ({ carried, lineId }))).toEqual([
+      { carried: false, lineId: "split-1" },
+      { carried: false, lineId: "split-2" },
+      { carried: true, lineId: "old-2" },
+    ]);
+    expect(split.retired.map(({ lineId }) => lineId)).toEqual(["old-1"]);
+
+    sequence = 0;
+    const merged = reconcileLyricLineIdentities({
+      lyrics: "We run\nStay",
+      previous: prior(["We", "run", "Stay"]),
+      nextLineId: () => `merge-${++sequence}`,
+      nextStudyUnitId: () => `merge-unit-${sequence}`,
+    });
+    expect(merged.lines.map(({ carried, lineId }) => ({ carried, lineId }))).toEqual([
+      { carried: false, lineId: "merge-1" },
+      { carried: true, lineId: "old-3" },
+    ]);
+    expect(merged.retired.map(({ lineId }) => lineId)).toEqual(["old-1", "old-2"]);
+  });
 });

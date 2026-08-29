@@ -81,4 +81,24 @@ describe("Karaoke readiness payload", () => {
       }),
     ).toBeNull();
   });
+
+  test("keeps occurrence ids across realignment and rejects stale lyric text", () => {
+    const align = (offset: number, lastWord = "잡아") =>
+      buildKaraokePayloadLines({
+        catalogLines,
+        artifact: {
+          version: "media-timed-lyrics-artifact-v1",
+          mode: "word",
+          segments: [
+            { text: "Hold", start_ms: offset, end_ms: offset + 300 },
+            { text: "on", start_ms: offset + 350, end_ms: offset + 600 },
+            { text: "날", start_ms: offset + 700, end_ms: offset + 900 },
+            { text: lastWord, start_ms: offset + 950, end_ms: offset + 1_200 },
+          ],
+        },
+      });
+    expect(align(0)?.map(({ id }) => id)).toEqual(["line-1", "line-2"]);
+    expect(align(5_000)?.map(({ id }) => id)).toEqual(["line-1", "line-2"]);
+    expect(align(0, "놓아")).toBeNull();
+  });
 });
