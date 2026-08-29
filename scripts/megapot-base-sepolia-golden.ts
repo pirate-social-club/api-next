@@ -3,6 +3,7 @@ import {
   GetMegapotPoolFunding,
   GetSongMegapotPool,
   GetStudySession,
+  GetStudySessionV2,
   ObserveMegapotPoolFunding,
   OpenSongRewardOffer,
   SONG_LYRICS_TEXT_MAX_LENGTH,
@@ -225,22 +226,30 @@ async function assertParticipantReady(
     );
   }
 
-  const session = await requestJson(
-    dependencies,
-    participantOptions(options),
-    `/communities/${encodeURIComponent(input.community_id)}/posts/${encodeURIComponent(input.post_id)}/study/v2/sessions`,
-    StartStudySessionV2.response,
-    {
-      method: "POST",
-      body: {
-        idempotency_key: `megapot-golden-${input.run_id}-study-v2-preflight`,
-        persona_id: input.study_participant.persona_id,
-        target_language: null,
-        learner_band: null,
-        timezone: input.study_participant.timezone,
-      },
-    },
-  );
+  const session =
+    artifact.study_session_id === undefined
+      ? await requestJson(
+          dependencies,
+          participantOptions(options),
+          `/communities/${encodeURIComponent(input.community_id)}/posts/${encodeURIComponent(input.post_id)}/study/v2/sessions`,
+          StartStudySessionV2.response,
+          {
+            method: "POST",
+            body: {
+              idempotency_key: `megapot-golden-${input.run_id}-study-v2-preflight`,
+              persona_id: input.study_participant.persona_id,
+              target_language: null,
+              learner_band: null,
+              timezone: input.study_participant.timezone,
+            },
+          },
+        )
+      : await requestJson(
+          dependencies,
+          participantOptions(options),
+          `/communities/${encodeURIComponent(input.community_id)}/study/v2/sessions/${encodeURIComponent(artifact.study_session_id)}`,
+          GetStudySessionV2.response,
+        );
   if (!studySessionMatchesParticipantPreflight(session, artifact)) {
     throw new MegapotBaseSepoliaGoldenFailed(
       "request-failed",

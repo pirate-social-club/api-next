@@ -41,6 +41,7 @@ const ParticipantPreflight = Schema.Struct({
   personhood_assertion_id: EvidenceIdentifier,
   subject_unique_assertion_id: EvidenceIdentifier,
   evidence_expires_at: Schema.NullOr(CanonicalInstant),
+  study_session_id: Schema.optional(Identifier),
 });
 
 export type MegapotParticipantPreflight = Schema.Schema.Type<typeof ParticipantPreflight>;
