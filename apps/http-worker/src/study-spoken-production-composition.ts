@@ -9,6 +9,7 @@ type StudyAudioArchive = ReturnType<typeof makeR2StudyAudioArchive>;
 type StudyBatchTranscriber = ReturnType<typeof makeElevenLabsStudyBatchTranscriber>;
 
 export interface StudySpokenProductionBindings {
+  readonly API_NEXT_ENV?: string;
   readonly ELEVENLABS_API_KEY?: string;
   readonly LEARNER_AUDIO?: StudyAudioBucket;
 }
@@ -41,6 +42,7 @@ export function makeProductionStudySpokenServices(
   return {
     transcriber: makeElevenLabsStudyBatchTranscriber({
       apiKey,
+      enableLogging: bindings.API_NEXT_ENV === "staging",
       ...(dependencies.study_batch_fetch === undefined
         ? {}
         : { fetch: dependencies.study_batch_fetch }),

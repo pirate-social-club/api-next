@@ -8,6 +8,8 @@ import { Effect } from "effect";
 
 export const ELEVENLABS_STUDY_BATCH_ENDPOINT =
   "https://api.elevenlabs.io/v1/speech-to-text?enable_logging=false" as const;
+export const ELEVENLABS_STUDY_BATCH_LOGGED_ENDPOINT =
+  "https://api.elevenlabs.io/v1/speech-to-text" as const;
 export const ELEVENLABS_STUDY_BATCH_MODEL = "scribe_v2" as const;
 export const ELEVENLABS_STUDY_BATCH_ADAPTER_REVISION =
   "elevenlabs_study_batch_scribe_v2@1" as const;
@@ -85,12 +87,17 @@ function decodeTranscript(value: unknown): StudyBatchTranscript {
 export function makeElevenLabsStudyBatchTranscriber(
   options: Readonly<{
     apiKey: string;
+    enableLogging?: boolean;
     fetch?: StudyBatchFetch;
     timeoutMs?: number;
   }>,
 ): StudyBatchTranscriber {
   const fetchImpl = options.fetch ?? fetch;
   const apiKey = options.apiKey;
+  const endpoint =
+    options.enableLogging === true
+      ? ELEVENLABS_STUDY_BATCH_LOGGED_ENDPOINT
+      : ELEVENLABS_STUDY_BATCH_ENDPOINT;
   const timeoutMs = options.timeoutMs ?? TIMEOUT_MS;
   return {
     transcribe: ({ audio, contentType, languageHint }) =>
@@ -109,7 +116,7 @@ export function makeElevenLabsStudyBatchTranscriber(
           const timeout = setTimeout(() => controller.abort(), timeoutMs);
           let response: Response;
           try {
-            response = await fetchImpl(ELEVENLABS_STUDY_BATCH_ENDPOINT, {
+            response = await fetchImpl(endpoint, {
               method: "POST",
               headers: { "xi-api-key": apiKey },
               body: form,
