@@ -79,6 +79,7 @@
     "0076_study_v2_idempotency_fencing.sql": "69586d61e0e22b9e3e13fa0be4de7fc2dd4c87133c30e1e136850cea78151b38",
     "0077_reserved_ordinal.sql": "fa1134d6f90385b18b73473e891edfa8d8112aaa2a52a8e1b20ef0d0d23f5f97",
     "0078_study_runtime_amendment.sql": "3af2be51ad26c344347a99c5bda3732b008160a0989ce16d30447f1c00893fb0",
-    "0079_karaoke_readiness_policy_v2.sql": "0cfd96ba9106bb2ac46931b91bb0da7ca034e0d646b215a42cb987019b3e0953"
+    "0079_karaoke_readiness_policy_v2.sql": "0cfd96ba9106bb2ac46931b91bb0da7ca034e0d646b215a42cb987019b3e0953",
+    "0080_study_lesson_engine.sql": "91030aebbbbccbabec6cf198dfff9ad7abbe9a81074ea5a43187103e215e7f52"
   }
 }

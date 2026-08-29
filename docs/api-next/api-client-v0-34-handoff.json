@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.34.0",
+  "releaseType": "study-lesson-orchestration-v2",
+  "wireContract": "spec-019-section-4",
+  "sourceCommit": "pending-review",
+  "supersedes": "0.33.0; adds server-directed Study lesson presentation and completion state.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.34.0.tgz",
+    "sha256": "7326775993f8581bde2f607a595410b6e48a411e5c39b3b989bd2e992d1ba7ad",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@4ae39b4778bc9ebdbb36f35b9ca70faff47e0282470828fd2e4acfe51b1d61cd",
+    "openapiSha256": "4ae39b4778bc9ebdbb36f35b9ca70faff47e0282470828fd2e4acfe51b1d61cd",
+    "clientSha256": "7277b94a1a8f93de67f6e38b35dfdccb991ca769a51809b4baa5748cb149b0bb"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "authorized",
+      "baselineCommit": "372d5b3",
+      "reason": "Ratified spec 019 adds authoritative Study lesson orchestration to every Study v2 session response."
+    },
+    "focusedPostgresSuites": "2 passed on disposable local PostgreSQL 17: the Study v2 foundation and accepted-lyrics source materialization fixture",
+    "fullUnitSuite": "2109 passed, 305 database-gated tests skipped, 0 failed",
+    "fullWorkerdSuite": "92 passed, 0 failed",
+    "packageVerifier": "passed",
+    "repositoryCheck": "passed"
+  }
+}

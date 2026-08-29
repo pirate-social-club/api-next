@@ -3124,11 +3124,14 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
                (SELECT count(*)::text FROM localization_lyrics_revision_lines
                  WHERE community_id=$1 AND post_id=$2 AND lyrics_revision=1) AS occurrences,
                (SELECT count(*)::text FROM localization_study_units
-                 WHERE community_id=$1 AND post_id=$2) AS study_units`,
+                 WHERE community_id=$1 AND post_id=$2) AS study_units,
+               (SELECT count(*)::text FROM study_exercise_versions
+                 WHERE community_id=$1 AND post_id=$2
+                   AND exercise_type='say_it_back') AS source_exercises`,
             [community, postId],
           )
         ).rows[0],
-      ).toEqual({ occurrences: "3", study_units: "2" });
+      ).toEqual({ occurrences: "3", source_exercises: "2", study_units: "2" });
       const timedLyricsArtifact = {
         version: "media-timed-lyrics-artifact-v1",
         mode: "word",

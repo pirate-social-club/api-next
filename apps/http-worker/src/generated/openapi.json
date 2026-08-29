@@ -81533,6 +81533,115 @@
                       ],
                       "additionalProperties": false
                     },
+                    "lesson": {
+                      "type": "object",
+                      "properties": {
+                        "current": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "session_item_id": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "maxLength": 128
+                                    }
+                                  ]
+                                },
+                                "presentation_number": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 3
+                                    }
+                                  ]
+                                },
+                                "is_reappearance": {
+                                  "type": "boolean"
+                                },
+                                "presented_at": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "session_item_id",
+                                "presentation_number",
+                                "is_reappearance",
+                                "presented_at"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "resolved_card_count": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 10
+                            }
+                          ]
+                        },
+                        "total_card_count": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 4,
+                              "maximum": 10
+                            }
+                          ]
+                        },
+                        "presentation_count": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 20
+                            }
+                          ]
+                        },
+                        "presentation_cap": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 12,
+                              "maximum": 20
+                            }
+                          ]
+                        },
+                        "completion_reason": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "enum": [
+                                "all_resolved",
+                                "presentation_budget"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "current",
+                        "resolved_card_count",
+                        "total_card_count",
+                        "presentation_count",
+                        "presentation_cap",
+                        "completion_reason"
+                      ],
+                      "additionalProperties": false
+                    },
                     "created_at": {
                       "type": "string"
                     },
@@ -81566,6 +81675,7 @@
                     "status",
                     "items",
                     "progress",
+                    "lesson",
                     "created_at",
                     "completed_at"
                   ],
@@ -82611,6 +82721,115 @@
                       ],
                       "additionalProperties": false
                     },
+                    "lesson": {
+                      "type": "object",
+                      "properties": {
+                        "current": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "session_item_id": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "maxLength": 128
+                                    }
+                                  ]
+                                },
+                                "presentation_number": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 3
+                                    }
+                                  ]
+                                },
+                                "is_reappearance": {
+                                  "type": "boolean"
+                                },
+                                "presented_at": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "session_item_id",
+                                "presentation_number",
+                                "is_reappearance",
+                                "presented_at"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "resolved_card_count": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 10
+                            }
+                          ]
+                        },
+                        "total_card_count": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 4,
+                              "maximum": 10
+                            }
+                          ]
+                        },
+                        "presentation_count": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 20
+                            }
+                          ]
+                        },
+                        "presentation_cap": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 12,
+                              "maximum": 20
+                            }
+                          ]
+                        },
+                        "completion_reason": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "enum": [
+                                "all_resolved",
+                                "presentation_budget"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "current",
+                        "resolved_card_count",
+                        "total_card_count",
+                        "presentation_count",
+                        "presentation_cap",
+                        "completion_reason"
+                      ],
+                      "additionalProperties": false
+                    },
                     "created_at": {
                       "type": "string"
                     },
@@ -82644,6 +82863,7 @@
                     "status",
                     "items",
                     "progress",
+                    "lesson",
                     "created_at",
                     "completed_at"
                   ],
@@ -83966,6 +84186,115 @@
                           ],
                           "additionalProperties": false
                         },
+                        "lesson": {
+                          "type": "object",
+                          "properties": {
+                            "current": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "session_item_id": {
+                                      "type": "string",
+                                      "allOf": [
+                                        {
+                                          "minLength": 1
+                                        },
+                                        {
+                                          "maxLength": 128
+                                        }
+                                      ]
+                                    },
+                                    "presentation_number": {
+                                      "type": "integer",
+                                      "allOf": [
+                                        {
+                                          "minimum": 1,
+                                          "maximum": 3
+                                        }
+                                      ]
+                                    },
+                                    "is_reappearance": {
+                                      "type": "boolean"
+                                    },
+                                    "presented_at": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "session_item_id",
+                                    "presentation_number",
+                                    "is_reappearance",
+                                    "presented_at"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "resolved_card_count": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 0,
+                                  "maximum": 10
+                                }
+                              ]
+                            },
+                            "total_card_count": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 4,
+                                  "maximum": 10
+                                }
+                              ]
+                            },
+                            "presentation_count": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 0,
+                                  "maximum": 20
+                                }
+                              ]
+                            },
+                            "presentation_cap": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 12,
+                                  "maximum": 20
+                                }
+                              ]
+                            },
+                            "completion_reason": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "enum": [
+                                    "all_resolved",
+                                    "presentation_budget"
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "current",
+                            "resolved_card_count",
+                            "total_card_count",
+                            "presentation_count",
+                            "presentation_cap",
+                            "completion_reason"
+                          ],
+                          "additionalProperties": false
+                        },
                         "created_at": {
                           "type": "string"
                         },
@@ -83999,6 +84328,7 @@
                         "status",
                         "items",
                         "progress",
+                        "lesson",
                         "created_at",
                         "completed_at"
                       ],

@@ -38,6 +38,7 @@ export * from "./rewards/song-reward-offers.ts";
 export * from "./route-revalidation/index.ts";
 export * from "./study-item-source.ts";
 export * from "./study-item-source-v2.ts";
+export * from "./study-language-profile.ts";
 export * from "./study-v2-lifecycle.ts";
 export * from "./study-v2-service.ts";
 export * from "./text-moderation-runtime.ts";
