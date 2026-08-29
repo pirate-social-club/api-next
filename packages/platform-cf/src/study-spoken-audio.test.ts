@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { Effect } from "effect";
 import {
   ELEVENLABS_STUDY_BATCH_ENDPOINT,
+  ELEVENLABS_STUDY_BATCH_LOGGED_ENDPOINT,
   makeElevenLabsStudyBatchTranscriber,
   makeR2StudyAudioArchive,
   type StudyAudioBucket,
@@ -60,6 +61,26 @@ describe("Study spoken-audio adapters", () => {
         }),
       ),
     ).rejects.toMatchObject({ reason: "rate-limited" });
+  });
+
+  test("uses provider logging only when explicitly enabled", async () => {
+    const requests: string[] = [];
+    const transcriber = makeElevenLabsStudyBatchTranscriber({
+      apiKey: "fixture-key",
+      enableLogging: true,
+      fetch: async (url) => {
+        requests.push(url);
+        return Response.json({ text: "Hold on", language_code: "en", language_probability: 1 });
+      },
+    });
+    await Effect.runPromise(
+      transcriber.transcribe({
+        audio: new Uint8Array([1]),
+        contentType: "audio/wav",
+        languageHint: "en",
+      }),
+    );
+    expect(requests).toEqual([ELEVENLABS_STUDY_BATCH_LOGGED_ENDPOINT]);
   });
 
   test("makes archival failure data instead of a grading failure", async () => {
