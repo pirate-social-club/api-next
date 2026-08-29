@@ -11,6 +11,7 @@ import {
   type MegapotReservedPurchase,
 } from "@pirate/application";
 import { Effect, type Layer } from "effect";
+import { sha256, toBytes } from "viem";
 
 type Row = Readonly<Record<string, unknown>>;
 
@@ -76,6 +77,10 @@ function instantMillis(row: Row, field: string): number {
   const millis = value instanceof Date ? value.getTime() : Date.parse(String(value));
   if (!Number.isFinite(millis)) throw new Error(`invalid ${field}`);
   return millis;
+}
+
+function hashDocument(value: unknown): string {
+  return sha256(toBytes(JSON.stringify(value))).slice(2);
 }
 
 function nullableText(row: Row, field: string): string | null {
@@ -215,7 +220,6 @@ function loadCandidateIn(
                 AND drawing.status='committed'
                 AND leg.status='active' AND leg.kind='megapot_pool'
                 AND attestation.status='active'
-                AND observation.expires_at > clock_timestamp()
                 AND observation.ticket_price_atomic=drawing.reserved_ticket_cost_atomic
                 AND observation.ticket_price_atomic <= drawing.ticket_price_ceiling_atomic
                 AND (leg.funding_source='shared_sponsor_budget'
@@ -491,6 +495,154 @@ export function makeControlPlaneMegapotPurchaseRepository() {
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
         return yield* findProgressIn(db, effectId);
+      }).pipe(mapped),
+    closePreBroadcast: (input: Parameters<MegapotPurchaseStore["closePreBroadcast"]>[0]) =>
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        yield* db.withTransaction((transaction) =>
+          Effect.gen(function* () {
+            const candidate = yield* loadCandidateIn(transaction, {
+              poolLegId: input.candidate.poolLegId,
+              drawingId: input.candidate.drawingId,
+              lock: true,
+            });
+            if (!sameCandidate(candidate, input.candidate))
+              return yield* rejected("effect-conflict");
+            const context = yield* transaction.execute<Row>({
+              label: "megapot-purchase.prebroadcast-close.read",
+              text: `SELECT leg.funding_source, leg.funder_account_id,
+                            drawing.reserved_ticket_cost_atomic,
+                            drawing.fallback_beneficiary,
+                            to_char(drawing.cutoff_frozen_at AT TIME ZONE 'UTC','YYYY-MM-DD')
+                              AS sponsor_day
+                       FROM megapot_pool_drawings drawing
+                       JOIN song_reward_offer_legs leg ON leg.leg_id=drawing.pool_leg_id
+                      WHERE drawing.pool_leg_id=$1 AND drawing.drawing_id=$2
+                        AND drawing.status='committed' AND drawing.version=$3
+                      FOR UPDATE OF drawing,leg`,
+              values: [
+                candidate.poolLegId,
+                candidate.drawingId.toString(),
+                candidate.drawingVersion,
+              ],
+              readonly: false,
+            });
+            if (context.rows.length !== 1) return yield* rejected("effect-conflict");
+            const row = context.rows[0] as Row;
+            const amount = bigint(row, "reserved_ticket_cost_atomic");
+            const fundingSource = text(row, "funding_source");
+            const sponsorAccountId = text(row, "funder_account_id");
+            if (fundingSource === "leg_budget") {
+              const released = yield* transaction.execute({
+                label: "megapot-purchase.prebroadcast-leg-budget.release",
+                text: `UPDATE song_reward_offer_legs
+                          SET reserved_atomic=reserved_atomic-$2,
+                              updated_at=clock_timestamp()
+                        WHERE leg_id=$1 AND reserved_atomic >= $2`,
+                values: [candidate.poolLegId, amount.toString()],
+                readonly: false,
+              });
+              if (released.rowCount !== 1) return yield* rejected("insufficient-budget");
+            } else if (fundingSource === "shared_sponsor_budget") {
+              const released = yield* transaction.execute<Row>({
+                label: "megapot-purchase.prebroadcast-sponsorship-budget.release",
+                text: `UPDATE platform_sponsorship_budgets
+                          SET reserved_atomic=reserved_atomic-$2,
+                              updated_at=clock_timestamp()
+                        WHERE sponsor_account_id=$1 AND reserved_atomic >= $2
+                    RETURNING funded_atomic, winnings_credited_atomic, reserved_atomic,
+                              spent_atomic, withdrawn_atomic`,
+                values: [sponsorAccountId, amount.toString()],
+                readonly: false,
+              });
+              if (released.rows.length !== 1) return yield* rejected("insufficient-budget");
+              const budget = released.rows[0] as Row;
+              yield* transaction.execute({
+                label: "megapot-purchase.prebroadcast-sponsorship-entry.create",
+                text: `INSERT INTO platform_sponsorship_budget_entries (
+                         budget_entry_id, sponsor_account_id, entry_kind,
+                         amount_atomic, source_reference, balance_hash
+                       ) VALUES ($1,$2,'purchase_released',$3,$4,$5)`,
+                values: [
+                  `sponsor_release_${hashDocument({
+                    pool_leg_id: candidate.poolLegId,
+                    drawing_id: candidate.drawingId.toString(),
+                  })}`,
+                  sponsorAccountId,
+                  amount.toString(),
+                  `${candidate.poolLegId}:${candidate.drawingId}`,
+                  hashDocument({
+                    funded: bigint(budget, "funded_atomic").toString(),
+                    winnings: bigint(budget, "winnings_credited_atomic").toString(),
+                    reserved: bigint(budget, "reserved_atomic").toString(),
+                    spent: bigint(budget, "spent_atomic").toString(),
+                    withdrawn: bigint(budget, "withdrawn_atomic").toString(),
+                  }),
+                ],
+                readonly: false,
+              });
+            } else {
+              return yield* rejected("effect-conflict");
+            }
+            const dailyKind =
+              fundingSource === "shared_sponsor_budget"
+                ? "shared_platform"
+                : row.fallback_beneficiary === true
+                  ? "external_fallback"
+                  : null;
+            if (dailyKind !== null) {
+              const dailyReleased = yield* transaction.execute({
+                label: "megapot-purchase.prebroadcast-daily-total.release",
+                text: `UPDATE sponsor_daily_ticket_totals
+                          SET released_ticket_count=released_ticket_count+1,
+                              released_spend_atomic=released_spend_atomic+$4,
+                              updated_at=clock_timestamp()
+                        WHERE sponsor_account_id=$1 AND sponsor_day=$2::date
+                          AND sponsor_kind=$3
+                          AND reserved_ticket_count-released_ticket_count >= 1
+                          AND reserved_spend_atomic-released_spend_atomic >= $4`,
+                values: [sponsorAccountId, text(row, "sponsor_day"), dailyKind, amount.toString()],
+                readonly: false,
+              });
+              if (dailyReleased.rowCount !== 1) return yield* rejected("effect-conflict");
+            }
+            const nextVersion = candidate.drawingVersion + 1;
+            yield* transaction.execute({
+              label: "megapot-purchase.prebroadcast-close-transition.create",
+              text: `INSERT INTO megapot_pool_drawing_transitions (
+                       pool_leg_id, drawing_id, target_version, event_type, event
+                     ) VALUES ($1,$2,$3,'closed_purchase_unavailable',jsonb_build_object(
+                       'reason',$4::text,'failed_at',$5::timestamptz
+                     ))`,
+              values: [
+                candidate.poolLegId,
+                candidate.drawingId.toString(),
+                nextVersion,
+                input.reason,
+                input.failedAt,
+              ],
+              readonly: false,
+            });
+            const closed = yield* transaction.execute({
+              label: "megapot-purchase.prebroadcast-close.record",
+              text: `UPDATE megapot_pool_drawings
+                        SET status='closed_purchase_unavailable', version=$3,
+                            terminal_reason=$4, terminal_at=$5::timestamptz,
+                            updated_at=clock_timestamp()
+                      WHERE pool_leg_id=$1 AND drawing_id=$2
+                        AND status='committed' AND version=$3-1`,
+              values: [
+                candidate.poolLegId,
+                candidate.drawingId.toString(),
+                nextVersion,
+                input.reason,
+                input.failedAt,
+              ],
+              readonly: false,
+            });
+            if (closed.rowCount !== 1) return yield* rejected("effect-conflict");
+          }),
+        );
       }).pipe(mapped),
     loadCandidate: (input: Parameters<MegapotPurchaseStore["loadCandidate"]>[0]) =>
       Effect.gen(function* () {
@@ -989,6 +1141,7 @@ export const makeControlPlaneMegapotPurchaseStore = (
   return {
     findProgress: (effectId) => provide(repository.findProgress(effectId)),
     loadCandidate: (input) => provide(repository.loadCandidate(input)),
+    closePreBroadcast: (input) => provide(repository.closePreBroadcast(input)),
     reserveNonce: (input) => provide(repository.reserveNonce(input)),
     prepare: (input) => provide(repository.prepare(input)),
     recordSubmission: (input) => provide(repository.recordSubmission(input)),

@@ -355,6 +355,7 @@ export type MegapotPoolDrawingStatus =
   | "closed_fallback_ineligible"
   | "closed_fallback_unavailable"
   | "closed_fallback_ceiling"
+  | "closed_purchase_unavailable"
   | "operational_hold";
 
 export type MegapotPoolDrawing = Readonly<{
@@ -395,6 +396,10 @@ export type MegapotPoolDrawingEvent =
       type: "purchase_reserved";
       expectedVersion: number;
       purchaseEffectId: string;
+    }>
+  | Readonly<{
+      type: "purchase_unavailable";
+      expectedVersion: number;
     }>
   | Readonly<{
       type: "purchase_confirmed";
@@ -457,7 +462,7 @@ const transitions: Readonly<Record<MegapotPoolDrawingStatus, readonly MegapotPoo
       "operational_hold",
     ],
     cutoff_frozen: ["committed", "operational_hold"],
-    committed: ["purchase_pending", "operational_hold"],
+    committed: ["purchase_pending", "closed_purchase_unavailable", "operational_hold"],
     purchase_pending: ["tickets_confirmed", "operational_hold"],
     tickets_confirmed: ["drawing_pending", "operational_hold"],
     drawing_pending: ["no_win", "winnings_detected", "operational_hold"],
@@ -472,6 +477,7 @@ const transitions: Readonly<Record<MegapotPoolDrawingStatus, readonly MegapotPoo
     closed_fallback_ineligible: [],
     closed_fallback_unavailable: [],
     closed_fallback_ceiling: [],
+    closed_purchase_unavailable: [],
     operational_hold: [],
   };
 
@@ -497,6 +503,7 @@ function assertDrawingInvariants(state: MegapotPoolDrawing): void {
     "closed_fallback_ineligible",
     "closed_fallback_unavailable",
     "closed_fallback_ceiling",
+    "closed_purchase_unavailable",
   ].includes(state.status);
   if (afterFreeze && (state.snapshotHash === null || state.beneficiaryCount < 1)) {
     throw new MegapotPoolInvariantError("invalid-state");
@@ -504,6 +511,7 @@ function assertDrawingInvariants(state: MegapotPoolDrawing): void {
   if (
     [
       "committed",
+      "closed_purchase_unavailable",
       "purchase_pending",
       "tickets_confirmed",
       "drawing_pending",
@@ -627,6 +635,16 @@ const megapotPoolDrawingMachine = defineMoneyFlowMachine<
         version: state.version + 1,
         status: "purchase_pending",
         purchaseEffectId: event.purchaseEffectId,
+      };
+    }
+    if (event.type === "purchase_unavailable") {
+      if (state.status !== "committed") {
+        return rejectTransition("purchase_not_allowed");
+      }
+      return {
+        ...state,
+        version: state.version + 1,
+        status: "closed_purchase_unavailable",
       };
     }
     if (event.type === "purchase_confirmed") {

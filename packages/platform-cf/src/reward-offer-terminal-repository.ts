@@ -54,6 +54,7 @@ const TERMINAL_DRAWING_STATUSES = [
   "closed_fallback_ineligible",
   "closed_fallback_unavailable",
   "closed_fallback_ceiling",
+  "closed_purchase_unavailable",
 ] as const;
 
 export function makeControlPlaneRewardOfferTerminalRepository() {

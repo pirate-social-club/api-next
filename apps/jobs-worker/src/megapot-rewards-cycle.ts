@@ -31,7 +31,9 @@ export interface MegapotRewardsRuntime {
   readonly approve: (
     work: MegapotDrawingWork,
   ) => Effect.Effect<Readonly<{ readonly kind: string }>, unknown>;
-  readonly purchase: (work: MegapotDrawingWork) => Effect.Effect<unknown, unknown>;
+  readonly purchase: (
+    work: MegapotDrawingWork,
+  ) => Effect.Effect<Readonly<{ readonly kind: string }>, unknown>;
   readonly sweep: (work: MegapotDrawingWork) => Effect.Effect<unknown, unknown>;
   readonly claim: (work: MegapotDrawingWork) => Effect.Effect<unknown, unknown>;
   readonly allocate: (work: MegapotDrawingWork) => Effect.Effect<unknown, unknown>;
@@ -104,8 +106,8 @@ export function runMegapotRewardsCycle(input: {
       Effect.gen(function* () {
         const approval = yield* input.runtime.approve(work);
         if (approval.kind !== "not_required" && approval.kind !== "confirmed") return false;
-        yield* input.runtime.purchase(work);
-        return true;
+        const purchase = yield* input.runtime.purchase(work);
+        return purchase.kind !== "closed";
       }),
     );
     recordFailures(purchaseFailures);

@@ -1,5 +1,6 @@
 import type {
   MegapotConfirmedPurchase,
+  MegapotPreBroadcastCloseReason,
   MegapotPreparedPurchase,
   MegapotPurchaseCandidate,
   MegapotPurchaseFailure,
@@ -43,6 +44,10 @@ export class MegapotPurchaseCoordinatorFailed extends Data.TaggedError(
 }> {}
 
 export type MegapotPurchaseCoordinatorResult =
+  | Readonly<{
+      kind: "closed";
+      reason: MegapotPreBroadcastCloseReason;
+    }>
   | Readonly<{
       kind: "submitted";
       effectId: string;
@@ -534,7 +539,27 @@ export function makeMegapotPurchaseCoordinator(input: {
     const existing = yield* store.findProgress(effectId);
     if (existing !== null) return yield* resume(existing);
     const candidate = yield* store.loadCandidate(command);
-    yield* assertLivePurchase(candidate);
+    const preflight = yield* assertLivePurchase(candidate).pipe(
+      Effect.as({ ok: true as const }),
+      Effect.catch((error) => Effect.succeed({ ok: false as const, error })),
+    );
+    if (!preflight.ok) {
+      const terminalReasons = new Set<MegapotPreBroadcastCloseReason>([
+        "cutoff_safety_margin",
+        "drawing_locked",
+        "drawing_rolled_over",
+      ]);
+      if (terminalReasons.has(preflight.error.reason as MegapotPreBroadcastCloseReason)) {
+        const reason = preflight.error.reason as MegapotPreBroadcastCloseReason;
+        yield* store.closePreBroadcast({
+          candidate,
+          reason,
+          failedAt: new Date(now()).toISOString(),
+        });
+        return { kind: "closed", reason } as const;
+      }
+      return yield* preflight.error;
+    }
     const ticket = deriveMegapotTicket({
       effectId,
       drawingId: candidate.drawingId,

@@ -23,6 +23,11 @@ export class MegapotPurchaseRejected extends Data.TaggedError("MegapotPurchaseRe
 
 export type MegapotPurchaseFailure = MegapotPurchaseRejected | MegapotPurchaseStorageFailed;
 
+export type MegapotPreBroadcastCloseReason =
+  | "cutoff_safety_margin"
+  | "drawing_locked"
+  | "drawing_rolled_over";
+
 export type MegapotPurchaseCandidate = Readonly<{
   poolLegId: string;
   drawingId: bigint;
@@ -90,6 +95,11 @@ export interface MegapotPurchaseStore {
     readonly poolLegId: string;
     readonly drawingId: bigint;
   }) => Effect.Effect<MegapotPurchaseCandidate, MegapotPurchaseFailure>;
+  readonly closePreBroadcast: (input: {
+    readonly candidate: MegapotPurchaseCandidate;
+    readonly reason: MegapotPreBroadcastCloseReason;
+    readonly failedAt: string;
+  }) => Effect.Effect<void, MegapotPurchaseFailure>;
   readonly reserveNonce: (input: {
     readonly candidate: MegapotPurchaseCandidate;
     readonly effectId: string;
