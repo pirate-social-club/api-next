@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.35.0",
+  "releaseType": "karaoke-realtime-runtime-v1",
+  "wireContract": "spec-019-sections-6-and-7",
+  "sourceCommit": "pending-review",
+  "supersedes": "0.34.0; adds the enabled ElevenLabs Karaoke session policy, private audio retention split, recording state, transcript-free scoring diagnostics, and bounded client context.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.35.0.tgz",
+    "sha256": "e98ea8ff32153a143b85b1d5e0ba600520d444c96b99ccce07d1cb17b0831efb",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@48727dd58ddbfc35fbe76cca06eede69456953aa46221733fca99c4fde014d02",
+    "openapiSha256": "48727dd58ddbfc35fbe76cca06eede69456953aa46221733fca99c4fde014d02",
+    "clientSha256": "fd668508c9af46443a63ae3d1443929b632d4ea7a7f8880533f78e66c0f55e77"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "authorized",
+      "baselineCommit": "78c773c",
+      "reason": "Ratified spec 019 replaces the dormant Karaoke session shape with its enabled realtime scoring and private recording contract."
+    },
+    "focusedPostgresSuites": "pending PostgreSQL 17 CI; no local CONTROL_PLANE_POSTGRES_TEST_URL was available",
+    "fullUnitSuite": "2207 passed, 305 database-gated tests skipped, 0 failed",
+    "fullWorkerdSuite": "96 passed, 0 failed, including single-use token, reconnect epoch, accepted-frame archive binding, R2 multipart completion and abort, terminal evidence scrubbing, and outbox retry rearming",
+    "packageVerifier": "passed",
+    "repositoryCheck": "passed, including Effect diagnostics, both direct TypeScript 7 projects, formatting, binding contract, dependency boundaries, migration integrity, contract freshness, and package verification"
+  }
+}

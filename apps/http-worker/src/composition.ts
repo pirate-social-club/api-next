@@ -13,6 +13,12 @@ import {
   type StudyItemSource,
   StudyItemSourceError,
 } from "@pirate/application/use-cases/rewards/activity-qualification";
+import {
+  Clock,
+  IdGen,
+  type KaraokeFailure,
+  makeKaraokeService,
+} from "@pirate/application/use-cases/rewards/karaoke";
 import type {
   StudyAudioArchive,
   StudyBatchTranscriber,
@@ -27,7 +33,14 @@ import {
   makeSessionIdentityStore,
 } from "@pirate/application/use-cases/session-exchange";
 import type { VerificationIntentResolver } from "@pirate/application/verification";
-import { AuthError } from "@pirate/contracts";
+import {
+  AuthError,
+  BadRequest,
+  Conflict,
+  InternalError,
+  NotFound,
+  ProviderUnavailable,
+} from "@pirate/contracts";
 import { makeControlPlaneActivityQualificationStore } from "@pirate/platform-cf/activity-qualification-repository";
 import { makeControlPlaneAgeAccessStore } from "@pirate/platform-cf/age-access-repository";
 import { makeControlPlaneCommunityCreationIntentResolver } from "@pirate/platform-cf/community-creation-intent-resolver";
@@ -61,7 +74,12 @@ import {
   makeControlPlanePrivySessionCredentialStore,
   makeControlPlaneSessionProductReadiness,
 } from "@pirate/platform-cf/identity-repository";
+import {
+  type KaraokeAttemptDoNamespace,
+  makeDurableObjectKaraokeRuntimeGateway,
+} from "@pirate/platform-cf/karaoke-attempt-do";
 import { makeControlPlaneKaraokeReadinessStore } from "@pirate/platform-cf/karaoke-readiness-repository";
+import { makeControlPlaneKaraokeStore } from "@pirate/platform-cf/karaoke-repository";
 import { makeR2MediaIngressPresigner } from "@pirate/platform-cf/media-ingress-presigner";
 import {
   type MediaSealBuckets,
@@ -147,7 +165,7 @@ import {
 import { makeHandleSalesHandlers } from "./handle-sales-handlers.ts";
 import { makeProductionHnsCommunityAppApiComposition } from "./hns-community-app-api-production-composition.ts";
 import { makeHnsOwnershipComposition } from "./hns-ownership-composition.ts";
-import { makeKaraokeReadinessHandlers } from "./karaoke-handlers.ts";
+import { makeKaraokeHandlers, makeKaraokeReadinessHandlers } from "./karaoke-handlers.ts";
 import { makeMediaUploadHandlers } from "./media-upload-handlers.ts";
 import { makeNamespaceOwnershipHandlers } from "./namespace-ownership-handlers.ts";
 import { makePersonaHandlers } from "./persona-handlers.ts";
@@ -201,6 +219,7 @@ export interface HttpWorkerBindings {
   readonly HNS_OWNERSHIP_CONFIGURATION_REFERENCE?: string;
   readonly HNS_OWNERSHIP_CONFIGURATION_VERSION?: string;
   readonly HNS_COMMUNITY_APP_API_REPLAY?: HnsForwarderReplayStoreNamespace;
+  readonly KARAOKE_ATTEMPT?: KaraokeAttemptDoNamespace;
   readonly HNS_COMMUNITY_APP_API_ENABLED?: string;
   readonly HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN?: string;
   readonly HNS_COMMUNITY_APP_API_ACCESS_ISSUER?: string;
@@ -232,6 +251,7 @@ export interface HttpWorkerBindings {
   readonly OPENAI_MODERATION_MODEL?: string;
   readonly OPENAI_MODERATION_BASE_URL?: string;
   readonly OPENAI_MODERATION_TIMEOUT_MS?: string;
+  readonly ELEVENLABS_API_KEY?: string;
   readonly MEGAPOT_REWARDS_ENABLED?: string;
   readonly MEGAPOT_CHAIN_ID?: string;
   readonly MEGAPOT_V2_RPC_URL?: string;
@@ -872,6 +892,70 @@ export async function createProductionHttpWorker(
   const karaokeReadinessHandlers = makeKaraokeReadinessHandlers(
     makeControlPlaneKaraokeReadinessStore(controlPlane),
   );
+  const karaokeHandlers = (() => {
+    if (bindings.KARAOKE_ATTEMPT === undefined) return {};
+    const service = makeKaraokeService({
+      publicOrigin: config.PIRATE_API_PUBLIC_ORIGIN,
+      runtime: makeDurableObjectKaraokeRuntimeGateway(bindings.KARAOKE_ATTEMPT),
+      store: makeControlPlaneKaraokeStore(controlPlane),
+    });
+    const run = <A>(effect: Effect.Effect<A, KaraokeFailure, Clock | IdGen>) =>
+      Effect.runPromise(
+        effect.pipe(
+          Effect.provideService(Clock, { now: Effect.sync(() => Date.now()) }),
+          Effect.provideService(IdGen, {
+            next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")),
+          }),
+          Effect.mapError((failure) => {
+            if (failure._tag === "KaraokeStoreFailed") {
+              return new InternalError({ message: "Karaoke operation failed" });
+            }
+            switch (failure.reason) {
+              case "not-found":
+                return new NotFound({ message: "Karaoke target is unavailable" });
+              case "idempotency-conflict":
+                return new Conflict({ message: "Karaoke command conflicts" });
+              case "provider-unavailable":
+                return new ProviderUnavailable({ message: "Karaoke scoring is unavailable" });
+              case "invalid-input":
+              case "session-expired":
+                return new BadRequest({ message: "Karaoke command is invalid" });
+            }
+          }),
+        ),
+      );
+    return makeKaraokeHandlers({
+      createAttempt: (input) =>
+        run(
+          service.createAttempt({
+            accountId: input.userId,
+            clientContext: input.clientContext,
+            communityId: input.communityId,
+            idempotencyKey: input.idempotencyKey,
+            personaId: input.personaId,
+            postId: input.postId,
+            timezone: input.timezone,
+          }),
+        ),
+      getAttempt: (input) =>
+        run(
+          service.getAttempt({
+            accountId: input.userId,
+            attemptId: input.attemptId,
+            communityId: input.communityId,
+          }),
+        ),
+      getLeaderboard: (input) =>
+        run(
+          service.getLeaderboard({
+            accountId: input.userId,
+            communityId: input.communityId,
+            limit: input.limit ?? 50,
+            postId: input.postId,
+          }),
+        ),
+    });
+  })();
   const handleSalesHandlers = makeHandleSalesHandlers({
     store: makeControlPlaneHandleSalesStore(controlPlane),
     ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
@@ -983,6 +1067,7 @@ export async function createProductionHttpWorker(
       ...personaHandlers,
       ...activityQualificationHandlers,
       ...karaokeReadinessHandlers,
+      ...karaokeHandlers,
       ...studyV2Handlers,
       ...handleSalesHandlers,
       ...platformPirateHandleHandlers,

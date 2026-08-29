@@ -12,12 +12,7 @@ import {
 } from "./errors.ts";
 import { PersonaIdV1 } from "./personas.ts";
 
-export const KaraokeScoringProvider = Schema.Literals([
-  "assistant",
-  "elevenlabs",
-  "mistral",
-  "openai",
-]);
+export const KaraokeScoringProvider = Schema.Literal("elevenlabs");
 
 export const KaraokeTimingTrend = Schema.Literals(["early", "late", "mixed", "on_time"]);
 export const KaraokeCompletionReason = Schema.Literals([
@@ -33,7 +28,8 @@ export const KaraokeScoringPolicy = Schema.Union([
     kind: Schema.Literal("enabled"),
     provider: KaraokeScoringProvider,
     model: Schema.String,
-    retention: Schema.Literal("not_stored"),
+    provider_retention: Schema.Literal("not_stored"),
+    platform_retention: Schema.Literal("private_learning"),
     voice_coach_enabled: Schema.optional(Schema.Boolean),
   }),
 ]);
@@ -82,10 +78,15 @@ export const KaraokeLineDiagnostic = Schema.Struct({
   timing_score: Schema.NullOr(Schema.Number),
   confidence_score: Schema.NullOr(Schema.Number),
   median_signed_delta_ms: Schema.NullOr(Schema.Number),
+  expected_word_count: Schema.Number,
+  recognized_expected_word_positions: Schema.Array(Schema.Number),
+  missed_expected_word_positions: Schema.Array(Schema.Number),
 });
 
 /** Derived scoring evidence only. It never contains transcript, words, or audio. */
 export const KaraokeScoringDiagnostics = Schema.Struct({
+  schema_version: Schema.Literal(1),
+  scoring_version: Schema.Number,
   timing_calibration: KaraokeTimingCalibration,
   line_diagnostics: Schema.Array(KaraokeLineDiagnostic),
 });
@@ -116,14 +117,26 @@ export const KaraokeAttempt = Schema.Struct({
   activity_date: Schema.String,
   completed_at: Schema.String,
   created_at: Schema.String,
+  recording_state: Schema.Literals(["pending", "stored", "failed", "deleted"]),
   scoring_diagnostics: Schema.optional(Schema.NullOr(KaraokeScoringDiagnostics)),
 });
 
 export type KaraokeAttempt = Schema.Schema.Type<typeof KaraokeAttempt>;
 
+export const KaraokeClientContext = Schema.Struct({
+  headphones: Schema.optional(Schema.Boolean),
+  input_device_kind: Schema.optional(
+    Schema.Literals(["bluetooth", "built_in", "unknown", "usb", "wired"]),
+  ),
+  platform: Schema.optional(
+    Schema.Literals(["android", "ios", "linux", "macos", "web", "windows"]),
+  ),
+});
+
 export const KaraokeAttemptCreate = Schema.Struct({
   persona_id: Schema.optional(PersonaIdV1),
   timezone: Schema.optional(Schema.NullOr(Schema.String)),
+  client_context: Schema.optional(KaraokeClientContext),
 });
 
 export const KaraokeAttemptCreateHeaders = Schema.Struct({

@@ -9,6 +9,7 @@ import type { ExecutionContext } from "@cloudflare/workers-types";
 import { createProductionHttpWorker, type HttpWorkerBindings } from "./composition.ts";
 
 export { HnsForwarderReplayStoreDO } from "@pirate/platform-cf/hns-forwarder-replay-store-do";
+export { KaraokeAttemptDO } from "@pirate/platform-cf/karaoke-attempt-do";
 export {
   RegistrationApplicationRateLimiterDO,
   RegistrationIpRateLimiterDO,
@@ -56,6 +57,20 @@ let cachedProductionApp: ReturnType<typeof createProductionHttpWorker> | undefin
  */
 export const app = {
   async fetch(request: Request, bindings: HttpWorkerBindings, ctx: ExecutionContext) {
+    const realtimeMatch = new URL(request.url).pathname.match(/^\/karaoke\/realtime\/([^/]+)$/u);
+    if (realtimeMatch !== null) {
+      const encodedSessionId = realtimeMatch[1];
+      if (encodedSessionId === undefined || bindings.KARAOKE_ATTEMPT === undefined) {
+        return new Response("Not found", { status: 404 });
+      }
+      let sessionId: string;
+      try {
+        sessionId = decodeURIComponent(encodedSessionId);
+      } catch {
+        return new Response("Bad request", { status: 400 });
+      }
+      return bindings.KARAOKE_ATTEMPT.getByName(sessionId).fetch(request);
+    }
     cachedProductionApp ??= createProductionHttpWorker(bindings);
     const worker = await cachedProductionApp;
     return worker.fetch(request, bindings, ctx);

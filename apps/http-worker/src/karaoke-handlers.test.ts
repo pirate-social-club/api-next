@@ -59,6 +59,7 @@ const attempt: KaraokeAttempt = {
   timing_score: 8800,
   timing_trend: "on_time",
   uncertain_line_count: 0,
+  recording_state: "pending",
 };
 
 const request = (overrides: Partial<DecodedRequest> = {}): DecodedRequest => ({
@@ -86,6 +87,7 @@ describe("karaoke HTTP handlers", () => {
     expect(calls).toEqual([
       {
         communityId: "community-1",
+        clientContext: undefined,
         idempotencyKey: "idem-1",
         postId: "post-1",
         personaId: "persona-1",

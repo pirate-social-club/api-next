@@ -2,12 +2,20 @@
   "name": "pirate-http-worker-test",
   "main": "./entry.ts",
   "compatibility_date": "2026-08-01",
+  "hyperdrive": [
+    {
+      "binding": "CONTROL_PLANE",
+      "id": "00000000-0000-0000-0000-000000000000",
+      "localConnectionString": "postgres://postgres:postgres@127.0.0.1:1/postgres"
+    }
+  ],
   "vars": {
     "CORS_ORIGIN": "https://solid.test",
     "REGISTRATION_IP_LIMIT": "5",
     "REGISTRATION_IP_WINDOW_SECONDS": "900",
     "REGISTRATION_APPLICATION_LIMIT": "100",
-    "REGISTRATION_APPLICATION_WINDOW_SECONDS": "60"
+    "REGISTRATION_APPLICATION_WINDOW_SECONDS": "60",
+    "ELEVENLABS_API_KEY": "workerd-test-key"
   },
   "durable_objects": {
     "bindings": [
@@ -22,6 +30,10 @@
       {
         "name": "HNS_COMMUNITY_APP_API_REPLAY",
         "class_name": "HnsForwarderReplayStoreDO"
+      },
+      {
+        "name": "KARAOKE_ATTEMPT",
+        "class_name": "KaraokeAttemptDO"
       }
     ]
   },
@@ -36,6 +48,16 @@
     {
       "tag": "v2",
       "new_sqlite_classes": ["HnsForwarderReplayStoreDO"]
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": ["KaraokeAttemptDO"]
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "LEARNER_AUDIO",
+      "bucket_name": "learner-audio-workerd"
     }
   ]
 }

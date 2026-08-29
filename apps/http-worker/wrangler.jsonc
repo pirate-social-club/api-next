@@ -38,6 +38,10 @@
       {
         "name": "HNS_COMMUNITY_APP_API_REPLAY",
         "class_name": "HnsForwarderReplayStoreDO"
+      },
+      {
+        "name": "KARAOKE_ATTEMPT",
+        "class_name": "KaraokeAttemptDO"
       }
     ]
   },
@@ -62,6 +66,16 @@
     {
       "tag": "v4",
       "new_sqlite_classes": ["HnsForwarderReplayStoreDO"]
+    },
+    {
+      "tag": "v5",
+      "new_sqlite_classes": ["KaraokeAttemptDO"]
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "LEARNER_AUDIO",
+      "bucket_name": "pirate-learner-audio-development"
     }
   ],
   "vars": {
@@ -151,6 +165,10 @@
           {
             "name": "HNS_COMMUNITY_APP_API_REPLAY",
             "class_name": "HnsForwarderReplayStoreDO"
+          },
+          {
+            "name": "KARAOKE_ATTEMPT",
+            "class_name": "KaraokeAttemptDO"
           }
         ]
       },
@@ -170,6 +188,10 @@
         {
           "binding": "MEDIA_IMMUTABLE_ORIGINALS",
           "bucket_name": "pirate-media-immutable-staging"
+        },
+        {
+          "binding": "LEARNER_AUDIO",
+          "bucket_name": "pirate-learner-audio-staging"
         }
       ],
       "vars": {
@@ -294,6 +316,10 @@
           {
             "name": "HNS_COMMUNITY_APP_API_REPLAY",
             "class_name": "HnsForwarderReplayStoreDO"
+          },
+          {
+            "name": "KARAOKE_ATTEMPT",
+            "class_name": "KaraokeAttemptDO"
           }
         ]
       },
@@ -304,6 +330,12 @@
           // credential selects only the api_next schema.
           "id": "884b68c5a7904982a86620ed90032b77",
           "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
+        }
+      ],
+      "r2_buckets": [
+        {
+          "binding": "LEARNER_AUDIO",
+          "bucket_name": "pirate-learner-audio-production"
         }
       ],
       "vars": {
