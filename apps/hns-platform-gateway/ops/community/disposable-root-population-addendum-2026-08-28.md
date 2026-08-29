@@ -2,6 +2,15 @@
 
 Status: owner-nominated, publicly observed, non-executable, 2026-08-28.
 
+Disposition update — 2026-08-29. `11qx` is the isolated staging fallback, not
+the root used by the accepted public community-app rehearsal. That accepted
+and deliberately retained stack used `jazleeuw`. The remaining handle pilot
+must evaluate `jazleeuw` reuse first, including current deployed-handle-runtime
+proof and explicit acceptance of production Postgres pilot rows. Resume this
+addendum's staging Access and fresh-gateway preparation only if the workspace
+owner declines those production writes or the read-only reuse preflight rejects
+the standing stack. This update authorizes no live operation.
+
 This addendum records the first read-only population of the combined community
 and `hosted_persona_v1` handle rehearsal plan. It authorizes no wallet access,
 credential access, signing prompt, Handshake transaction, DNS or HNS update,
