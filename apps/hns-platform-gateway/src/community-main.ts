@@ -191,7 +191,7 @@ function credentialReader(directory: string) {
   };
 }
 
-export async function runHnsCommunityAppGateway(arguments_: readonly string[]): Promise<void> {
+async function runHnsCommunityAppGateway(arguments_: readonly string[]): Promise<void> {
   const argumentsValue = parseHnsCommunityAppGatewayArguments(arguments_);
   await verifyHnsCommunityAppInteractiveGatewayProfileV2();
   const credentialsDirectory = process.env.CREDENTIALS_DIRECTORY;

@@ -68,4 +68,29 @@ describe("Study spoken production composition", () => {
     ).resolves.toMatchObject({ state: "stored" });
     expect(storedObjects).toHaveLength(1);
   });
+
+  test("allows provider retention only in staging", async () => {
+    const urls: string[] = [];
+    for (const API_NEXT_ENV of ["staging", "production"] as const) {
+      const study = makeProductionStudySpokenServices(
+        { API_NEXT_ENV, ELEVENLABS_API_KEY: "fixture-elevenlabs-key" },
+        {
+          study_batch_fetch: async (url) => {
+            urls.push(url);
+            return Response.json({ text: "Hold on", language_code: "en", language_probability: 1 });
+          },
+        },
+      );
+      if (study === undefined) throw new Error("Study speech must be enabled in this fixture");
+      await Effect.runPromise(
+        study.transcriber.transcribe({
+          audio: new Uint8Array([1]),
+          contentType: "audio/wav",
+          languageHint: "en",
+        }),
+      );
+    }
+    expect(urls[0]).not.toContain("enable_logging=false");
+    expect(urls[1]).toContain("enable_logging=false");
+  });
 });

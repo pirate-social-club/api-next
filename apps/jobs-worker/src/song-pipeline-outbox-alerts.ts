@@ -43,7 +43,7 @@ export type SongPipelineOutboxAlertOptions = Readonly<{
   readonly compensateSnapshot?: (key: string) => EffectType.Effect<void, unknown, never>;
 }>;
 
-export const SONG_PIPELINE_HEALTH_INTERVAL_MS = 5 * 60 * 1000;
+const SONG_PIPELINE_HEALTH_INTERVAL_MS = 5 * 60 * 1000;
 export const SONG_PIPELINE_PENDING_DEGRADED_AGE_SECONDS = 10 * 60;
 
 const MEDIA_LIVE_SUBMISSION_STATES = "('processing','action_required','manual_review')";

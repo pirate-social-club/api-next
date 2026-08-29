@@ -23,7 +23,7 @@ import type {
 
 const identifierPattern = /^\S(?:.*\S)?$/u;
 
-export const isMediaProcessingIdentifier = (value: unknown): value is string =>
+const isMediaProcessingIdentifier = (value: unknown): value is string =>
   typeof value === "string" &&
   value.length > 0 &&
   value.length <= 512 &&
@@ -101,7 +101,7 @@ export type MediaProcessingOutboxRecord = Readonly<{
   readonly claimOwner: string | null;
 }>;
 
-export type MediaProcessingLyrics = Readonly<{
+type MediaProcessingLyrics = Readonly<{
   readonly lyricsRevision: number;
   readonly audioRevision: number;
   readonly canonicalAudioSha256: string;
@@ -312,7 +312,7 @@ export type MediaProcessingAttemptLease = Readonly<{
   readonly priorResult?: MediaProcessingAttemptResult;
 }>;
 
-export type MediaProcessingAttemptStart =
+type MediaProcessingAttemptStart =
   | Readonly<{ readonly kind: "run"; readonly lease: MediaProcessingAttemptLease }>
   | Readonly<{ readonly kind: "replay"; readonly result: MediaProcessingAttemptResult }>
   | Readonly<{ readonly kind: "busy" | "exhausted" }>;
