@@ -72,7 +72,8 @@ function timestamp(value: unknown): string | null {
 
 function isHealthSnapshotBoundary(scheduledTime: number): boolean {
   return (
-    Number.isSafeInteger(scheduledTime) && scheduledTime % SONG_PIPELINE_HEALTH_INTERVAL_MS === 0
+    Number.isSafeInteger(scheduledTime) &&
+    Math.floor(scheduledTime / 60_000) % (SONG_PIPELINE_HEALTH_INTERVAL_MS / 60_000) === 0
   );
 }
 

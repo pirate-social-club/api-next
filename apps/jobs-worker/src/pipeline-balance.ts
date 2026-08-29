@@ -41,7 +41,10 @@ export type MegapotBalanceReader = (
 ) => Promise<bigint>;
 
 export function isPipelineSnapshotBoundary(scheduledTime: number): boolean {
-  return Number.isSafeInteger(scheduledTime) && scheduledTime % PIPELINE_SNAPSHOT_INTERVAL_MS === 0;
+  return (
+    Number.isSafeInteger(scheduledTime) &&
+    Math.floor(scheduledTime / 60_000) % (PIPELINE_SNAPSHOT_INTERVAL_MS / 60_000) === 0
+  );
 }
 
 async function claimSnapshot(sink: AlertSink, role: "data" | "megapot", scheduledTime: number) {

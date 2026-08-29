@@ -66,7 +66,7 @@ describe("pipeline operational balance snapshots", () => {
     });
   });
 
-  test("emits one durable-window DATA record with the low and blocked boundaries", async () => {
+  test("emits one durable-window DATA record despite cron delivery seconds", async () => {
     const { logs, sink } = recordingSink();
     const data = {
       rpcUrl: "https://aeneid.storyrpc.io/",
@@ -83,7 +83,7 @@ describe("pipeline operational balance snapshots", () => {
       runtime,
       sink,
       environment: "staging",
-      scheduledTime: 5 * 60 * 1000,
+      scheduledTime: 5 * 60 * 1000 + 14_000,
       data,
       megapot: null,
       readDataBalance: lowRead,
@@ -96,7 +96,7 @@ describe("pipeline operational balance snapshots", () => {
       {
         event: "operations.balance.snapshot",
         schema_version: 1,
-        emitted_at: "1970-01-01T00:05:00.000Z",
+        emitted_at: "1970-01-01T00:05:14.000Z",
         environment: "staging",
         wallet_role: "data_registration_signer",
         chain_id: 1315,

@@ -83,7 +83,7 @@ describe("song pipeline outbox alerts", () => {
     expect(messages).toEqual(["song-pipeline outbox alert collection unavailable"]);
   });
 
-  test("emits one exact five-minute health snapshot from enabled authoritative state", async () => {
+  test("emits one five-minute health snapshot despite cron delivery seconds", async () => {
     const labels: string[] = [];
     const logs: PipelineLogFields[] = [];
     const controlPlane = runtime((statement) => {
@@ -113,7 +113,7 @@ describe("song pipeline outbox alerts", () => {
           controlPlane,
           { media: true, data: false },
           {
-            scheduledTime: 5 * 60 * 1000,
+            scheduledTime: 5 * 60 * 1000 + 14_000,
             environment: "staging",
             log: (_event, fields) => logs.push(fields),
             claimSnapshot: () => Effect.succeed(true),
@@ -127,7 +127,7 @@ describe("song pipeline outbox alerts", () => {
       {
         event: "pipeline.health.snapshot",
         schema_version: 1,
-        emitted_at: "1970-01-01T00:05:00.000Z",
+        emitted_at: "1970-01-01T00:05:14.000Z",
         environment: "staging",
         subsystem: "media",
         operation: "media-analysis",
