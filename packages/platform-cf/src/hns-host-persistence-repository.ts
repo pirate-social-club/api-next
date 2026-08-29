@@ -1,6 +1,7 @@
 import {
   ControlPlaneDb,
   type ControlPlaneError,
+  type HnsAuthoritySuccessorGenerationSnapshotV1,
   type HnsCommunityAppHostActivationOutcomeV1,
   type HnsCommunityAppHostAuthorityStateV1,
   type HnsDnsZoneActivationOutcomeV1,
@@ -25,6 +26,27 @@ function positiveInteger(value: unknown): number | null {
   return typeof normalized === "number" && Number.isSafeInteger(normalized) && normalized > 0
     ? normalized
     : null;
+}
+
+function nonnegativeInteger(value: unknown): number | null {
+  const normalized = typeof value === "string" && /^[0-9]+$/u.test(value) ? Number(value) : value;
+  return typeof normalized === "number" && Number.isSafeInteger(normalized) && normalized >= 0
+    ? normalized
+    : null;
+}
+
+function decodeGenerationSnapshot(row: Row): HnsAuthoritySuccessorGenerationSnapshotV1 {
+  const dns = positiveInteger(row.dns_current_generation);
+  const app = positiveInteger(row.app_host_current_generation);
+  const health = nonnegativeInteger(row.successor_dns_latest_health_generation);
+  if (dns === null || app === null || health === null) {
+    throw new Error("HNS successor generation snapshot returned an invalid row");
+  }
+  return {
+    dns_current_generation: dns,
+    app_host_current_generation: app,
+    successor_dns_latest_health_generation: health,
+  };
 }
 
 function optionalPositiveInteger(value: unknown): number | null | undefined {
@@ -241,6 +263,12 @@ function decodeAuthority(row: Row): HnsCommunityAppHostAuthorityStateV1 {
 
 export interface HnsFirstPartyHostPersistenceRepositoryV1 {
   readonly store: HnsFirstPartyHostPersistenceStoreV1;
+  readonly readSuccessorGenerationSnapshot: (
+    input: Readonly<{
+      dns_zone_activation_id: string;
+      app_host_activation_id: string;
+    }>,
+  ) => Effect.Effect<HnsAuthoritySuccessorGenerationSnapshotV1, ControlPlaneError>;
   readonly resolveCommunityAppHost: (
     normalizedHost: string,
   ) => Effect.Effect<HnsCommunityAppHostAuthorityStateV1 | null, ControlPlaneError>;
@@ -421,6 +449,27 @@ export function makeControlPlaneHnsFirstPartyHostPersistenceRepository(
 
   return {
     store,
+    readSuccessorGenerationSnapshot: (input) =>
+      execute(
+        {
+          label: "hns.hosts.successor-generations.read",
+          text: `SELECT dns.current_generation AS dns_current_generation,
+                        app.current_generation AS app_host_current_generation,
+                        COALESCE((
+                          SELECT max(health.health_generation)
+                            FROM hns_dns_zone_health_observations AS health
+                           WHERE health.dns_zone_activation_id = dns.dns_zone_activation_id
+                             AND health.activation_generation = dns.current_generation + 1
+                        ), 0) AS successor_dns_latest_health_generation
+                   FROM hns_dns_zone_activation_current AS dns
+                   JOIN hns_community_app_host_activation_current AS app ON TRUE
+                  WHERE dns.dns_zone_activation_id = $1
+                    AND app.app_host_activation_id = $2`,
+          values: [input.dns_zone_activation_id, input.app_host_activation_id],
+          readonly: true,
+        },
+        decodeGenerationSnapshot,
+      ),
     resolveCommunityAppHost: (normalizedHost) =>
       Effect.provide(runtime)(
         Effect.gen(function* () {

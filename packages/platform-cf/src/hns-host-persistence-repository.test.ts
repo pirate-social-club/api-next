@@ -68,6 +68,42 @@ test("closes DNS activation endpoint authority over the repository", async () =>
   ]);
 });
 
+test("reads successor generation fences without reserving or writing", async () => {
+  const calls: ControlPlaneStatement[] = [];
+  const repository = makeControlPlaneHnsFirstPartyHostPersistenceRepository(
+    runtime(
+      [
+        {
+          dns_current_generation: "5",
+          app_host_current_generation: "9",
+          successor_dns_latest_health_generation: "0",
+        },
+      ],
+      calls,
+    ),
+  );
+
+  await expect(
+    Effect.runPromise(
+      repository.readSuccessorGenerationSnapshot({
+        dns_zone_activation_id: "hns-rehearsal-dns-zone-v1",
+        app_host_activation_id: "hns-rehearsal-app-host-v1",
+      }),
+    ),
+  ).resolves.toEqual({
+    dns_current_generation: 5,
+    app_host_current_generation: 9,
+    successor_dns_latest_health_generation: 0,
+  });
+  expect(calls).toHaveLength(1);
+  expect(calls[0]).toMatchObject({
+    label: "hns.hosts.successor-generations.read",
+    readonly: true,
+  });
+  expect(calls[0]?.text).not.toContain("reserve_hns");
+  expect(calls[0]?.values).toEqual(["hns-rehearsal-dns-zone-v1", "hns-rehearsal-app-host-v1"]);
+});
+
 test("resolves only by normalized host and decodes current database authority", async () => {
   const calls: ControlPlaneStatement[] = [];
   const source = makeControlPlaneHnsCommunityAppHostAuthoritySource(

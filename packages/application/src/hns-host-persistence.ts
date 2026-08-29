@@ -6,6 +6,46 @@ export type HnsDnsZoneActivationLifecycleStatusV1 = "active" | "suspended" | "re
 export const HNS_DNS_ZONE_ACTIVATION_DOCUMENT_VERSION =
   "pirate-hns-dns-zone-activation-document-v1" as const;
 
+export type HnsAuthoritySuccessorGenerationSnapshotV1 = Readonly<{
+  dns_current_generation: number;
+  app_host_current_generation: number;
+  successor_dns_latest_health_generation: number;
+}>;
+
+export type HnsAuthoritySuccessorGenerationsV1 = Readonly<{
+  dns_activation_generation: number;
+  app_host_activation_generation: number;
+  health_generation: number;
+}>;
+
+function nonnegativeSafeInteger(value: number, label: string): number {
+  if (!Number.isSafeInteger(value) || value < 0 || value >= Number.MAX_SAFE_INTEGER) {
+    throw new Error(`${label} must be a nonnegative incrementable safe integer`);
+  }
+  return value;
+}
+
+/**
+ * Predicts the exact generations that the fenced persistence functions will
+ * derive from a read-only snapshot. This function never reserves or writes.
+ */
+export function deriveHnsAuthoritySuccessorGenerationsV1(
+  snapshot: HnsAuthoritySuccessorGenerationSnapshotV1,
+): HnsAuthoritySuccessorGenerationsV1 {
+  return {
+    dns_activation_generation:
+      nonnegativeSafeInteger(snapshot.dns_current_generation, "DNS current generation") + 1,
+    app_host_activation_generation:
+      nonnegativeSafeInteger(snapshot.app_host_current_generation, "app-host current generation") +
+      1,
+    health_generation:
+      nonnegativeSafeInteger(
+        snapshot.successor_dns_latest_health_generation,
+        "successor DNS latest health generation",
+      ) + 1,
+  };
+}
+
 export type HnsDnsZoneActivationDocumentPayloadV1 = Readonly<{
   version: typeof HNS_DNS_ZONE_ACTIVATION_DOCUMENT_VERSION;
   dns_zone_activation_id: string;
@@ -22,6 +62,54 @@ export function encodeHnsDnsZoneActivationDocumentV1(
   payload: HnsDnsZoneActivationDocumentPayloadV1,
 ): Uint8Array {
   return new TextEncoder().encode(JSON.stringify(payload));
+}
+
+function hex(bytes: Uint8Array): string {
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** Builds the exact document consumed by both emit-only review and persistence. */
+export async function prepareHnsDnsZoneActivationDocumentV1(
+  input: Readonly<{
+    payload: Omit<HnsDnsZoneActivationDocumentPayloadV1, "zone"> & {
+      zone_revision: number;
+    };
+    zone_bytes: Uint8Array;
+  }>,
+): Promise<HnsDnsZoneActivationDocumentV1> {
+  const zoneBytes = new Uint8Array(input.zone_bytes);
+  const zoneDigest = hex(new Uint8Array(await crypto.subtle.digest("SHA-256", zoneBytes)));
+  const payload: HnsDnsZoneActivationDocumentPayloadV1 = {
+    version: input.payload.version,
+    dns_zone_activation_id: input.payload.dns_zone_activation_id,
+    canonical_root: input.payload.canonical_root,
+    dns_authority: input.payload.dns_authority,
+    pirate_dns_authority_inventory: input.payload.pirate_dns_authority_inventory,
+    zone: [input.payload.zone_revision, zoneDigest],
+    dnssec_keyset: input.payload.dnssec_keyset,
+    gateway: input.payload.gateway,
+    stable_chain_delegation_snapshot: input.payload.stable_chain_delegation_snapshot,
+  };
+  return {
+    activation_document_bytes: encodeHnsDnsZoneActivationDocumentV1(payload),
+    dns_zone_activation_id: payload.dns_zone_activation_id,
+    canonical_root: payload.canonical_root,
+    dns_authority_kind: payload.dns_authority[0],
+    dns_authority_reference: payload.dns_authority[1],
+    dns_authority_generation: payload.dns_authority[2],
+    pirate_dns_authority_inventory_reference: payload.pirate_dns_authority_inventory[0],
+    pirate_dns_authority_inventory_version: payload.pirate_dns_authority_inventory[1],
+    pirate_dns_authority_inventory_digest: payload.pirate_dns_authority_inventory[2],
+    zone_revision: payload.zone[0],
+    zone_bytes: zoneBytes,
+    zone_bytes_digest: payload.zone[1],
+    dnssec_keyset_reference: payload.dnssec_keyset[0],
+    dnssec_keyset_version: payload.dnssec_keyset[1],
+    gateway_deployment_reference: payload.gateway[0],
+    gateway_certificate_spki_sha256: payload.gateway[1],
+    stable_chain_delegation_snapshot_reference: payload.stable_chain_delegation_snapshot[0],
+    stable_chain_delegation_snapshot_digest: payload.stable_chain_delegation_snapshot[1],
+  };
 }
 
 export type HnsDnsZoneActivationDocumentV1 = Readonly<{
