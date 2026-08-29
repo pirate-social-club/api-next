@@ -218,6 +218,7 @@ export async function prepareHnsAuthoritySuccessorCandidateV1(
     root_label: input.root_label,
     observed_at: input.observed_at,
     chain_authority_digest: chainAuthorityDigest,
+    chain_authority_records: chainAuthorityRecords,
     generation_snapshot: input.generation_snapshot,
     generations,
     expected_authority_addresses: input.expected_authority_addresses,
@@ -263,6 +264,7 @@ function requireHnsAuthorityCandidateArtifactSemanticsV1(
     root_label: string;
     observed_at: string;
     chain_authority_digest: string;
+    chain_authority_records: ReadonlyArray<HnsChainAuthorityRecord>;
     generation_snapshot: HnsAuthoritySuccessorGenerationSnapshotV1;
     generations: HnsAuthoritySuccessorGenerationsV1;
     expected_authority_addresses: readonly [string, string];
@@ -287,6 +289,38 @@ function requireHnsAuthorityCandidateArtifactSemanticsV1(
       .filter((entry) => entry.active)
       .map((entry) => entry.authority_address),
   );
+  const activeAuthorityGlue = inventory.authoritative_nameserver_glue.filter(
+    (entry) => entry.active,
+  );
+  const chainNameservers = new Set(
+    input.chain_authority_records.flatMap((record) => (record[0] === "NS" ? [record[1]] : [])),
+  );
+  const chainGlue = new Set(
+    input.chain_authority_records.flatMap((record) =>
+      record[0] === "GLUE4" || record[0] === "GLUE6"
+        ? [JSON.stringify([record[1], record[0], record[2]])]
+        : [],
+    ),
+  );
+  const expectedAuthorityAddresses = new Set(input.expected_authority_addresses);
+  const chainAuthorityMatchesInventory =
+    expectedAuthorityAddresses.size === input.expected_authority_addresses.length &&
+    activeAuthorityGlue.length === input.expected_authority_addresses.length &&
+    chainNameservers.size ===
+      new Set(activeAuthorityGlue.map((entry) => entry.authority_nameserver)).size &&
+    chainGlue.size === activeAuthorityGlue.length &&
+    activeAuthorityGlue.every(
+      (entry) =>
+        expectedAuthorityAddresses.has(entry.authority_address) &&
+        chainNameservers.has(entry.authority_nameserver) &&
+        chainGlue.has(
+          JSON.stringify([
+            entry.authority_nameserver,
+            entry.authority_address_family,
+            entry.authority_address,
+          ]),
+        ),
+    );
   const inventoryCoversRoot = inventory.dns_write_capabilities.some(
     (entry) =>
       entry.active && entry.scope_kind === "exact_root" && entry.root_label === input.root_label,
@@ -310,6 +344,7 @@ function requireHnsAuthorityCandidateArtifactSemanticsV1(
     input.observer_evidence.chain_anchor_median_time < 0 ||
     observedAt < anchorMedianTime ||
     inventory.environment !== input.observer_evidence.environment ||
+    !chainAuthorityMatchesInventory ||
     input.expected_authority_addresses.some((address) => !activeAuthorityAddresses.has(address)) ||
     dns.canonical_root !== input.root_label ||
     dns.dns_zone_activation_id !== input.generation_snapshot.dns_zone_activation_id ||
@@ -910,14 +945,8 @@ export function decodeHnsDnsHealthDocumentV1(bytes: Uint8Array): HnsDnsZoneHealt
 
 export type HnsFirstPartyHostPersistenceStoreV1 = Readonly<{
   reserveDnsZoneActivation: (
-    input: Readonly<{
-      operation_id: string;
-      idempotency_key: string;
-      activation_document_digest: string;
-      dns_zone_activation_id: string;
-      expected_activation_generation: number;
-      lease_seconds: number;
-    }>,
+    reviewed_document_bytes: Uint8Array,
+    lease_seconds: number,
   ) => Effect.Effect<HnsDnsZoneActivationReservationV1, ControlPlaneError>;
   finalizeDnsZoneActivation: (
     input: Readonly<{
@@ -925,37 +954,9 @@ export type HnsFirstPartyHostPersistenceStoreV1 = Readonly<{
       reviewed_document_bytes: Uint8Array;
     }>,
   ) => Effect.Effect<HnsDnsZoneActivationOutcomeV1, ControlPlaneError>;
-  changeDnsZoneStatus: (
-    input: Readonly<{
-      operation_id: string;
-      idempotency_key: string;
-      request_hash: string;
-      dns_zone_activation_id: string;
-      expected_activation_generation: number;
-      target_status: HnsDnsZoneActivationLifecycleStatusV1;
-      reason_code: string;
-    }>,
-  ) => Effect.Effect<HnsLifecycleOutcomeV1, ControlPlaneError>;
   recordDnsZoneHealth: (
     reviewed_document_bytes: Uint8Array,
   ) => Effect.Effect<HnsDnsZoneHealthOutcomeV1, ControlPlaneError>;
-  activateCommunityAppHost: (
-    input: Readonly<{
-      operation_id: string;
-      idempotency_key: string;
-      request_hash: string;
-      app_host_activation_id: string;
-      community_id: string;
-      canonical_root: string;
-      route_binding_id: string;
-      route_authority_kind: "verified_namespace_v1" | "operator_managed_route_v1";
-      route_authority_reference: string;
-      route_authority_generation: number;
-      dns_zone_activation_id: string;
-      dns_zone_activation_generation: number;
-      gateway_deployment_reference: string;
-    }>,
-  ) => Effect.Effect<HnsCommunityAppHostActivationOutcomeV1, ControlPlaneError>;
   changeCommunityAppHostStatus: (
     reviewed_document_bytes: Uint8Array,
   ) => Effect.Effect<HnsCommunityAppHostActivationOutcomeV1, ControlPlaneError>;

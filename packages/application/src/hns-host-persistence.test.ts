@@ -19,7 +19,10 @@ import {
   hnsAuthorityCapabilitySetDigest,
 } from "./namespace-ownership/hns-authority-inventory.ts";
 import { hnsChainAuthorityDigest } from "./namespace-ownership/hns-control-observer.ts";
-import { encodeHnsControlObservationResultV2 } from "./namespace-ownership/hns-control-observer-v2.ts";
+import {
+  decodeHnsControlObservationResultV2Bytes,
+  encodeHnsControlObservationResultV2,
+} from "./namespace-ownership/hns-control-observer-v2.ts";
 
 describe("HNS authority successor generation preparation", () => {
   test("predicts the fenced jazleeuw successor generations without a reservation", () => {
@@ -646,6 +649,62 @@ test("refuses every divergent semantic join between canonical review artifacts",
     await expect(
       prepareHnsAuthoritySuccessorCandidateV1(await mutate(input)),
       label,
+    ).rejects.toMatchObject({ reason: "artifact_semantics_mismatch" });
+  }
+});
+
+test("binds digest-authenticated chain NS and glue exactly to the active inventory", async () => {
+  const mutations = [
+    chainAuthorityRecords.map((record) =>
+      record[0] === "NS" && record[1] === "ns1.pirate"
+        ? (["NS", "ns3.pirate"] as const)
+        : record[0] === "GLUE4" && record[1] === "ns1.pirate"
+          ? (["GLUE4", "ns3.pirate", record[2]] as const)
+          : record,
+    ),
+    chainAuthorityRecords.map((record) =>
+      record[0] === "GLUE4" && record[1] === "ns1.pirate"
+        ? (["GLUE4", record[1], "203.0.113.53"] as const)
+        : record,
+    ),
+  ] as const;
+
+  for (const chain_authority_records of mutations) {
+    const input = await canonicalCandidateInput();
+    const chainAuthorityDigest = await hnsChainAuthorityDigest({
+      chain_network: "main",
+      chain_genesis_block_hash: "6".repeat(64),
+      root_label: "jazleeuw",
+      ownership_source: "owner_authoritative_dns_txt",
+      authority_records: chain_authority_records,
+    });
+    const observer = await decodeHnsControlObservationResultV2Bytes(
+      input.artifacts.observer_evidence,
+    );
+    if (observer.result.status !== "verified") throw new Error("expected verified fixture");
+    const observerEvidence = await encodeHnsControlObservationResultV2({
+      ...observer.result,
+      chain_authority_digest: chainAuthorityDigest,
+    });
+    const dnsZone = await rewriteDnsArtifact(input.artifacts.dns_zone_activation, (document) => ({
+      ...document,
+      stable_chain_delegation_snapshot_digest: chainAuthorityDigest,
+    }));
+    const health = rewriteHealthArtifact(input.artifacts.health_observation, {
+      stable_chain_delegation_snapshot_digest: chainAuthorityDigest,
+    });
+
+    await expect(
+      prepareHnsAuthoritySuccessorCandidateV1({
+        ...input,
+        chain_authority_records,
+        artifacts: {
+          ...input.artifacts,
+          dns_zone_activation: dnsZone,
+          health_observation: health,
+          observer_evidence: observerEvidence,
+        },
+      }),
     ).rejects.toMatchObject({ reason: "artifact_semantics_mismatch" });
   }
 });

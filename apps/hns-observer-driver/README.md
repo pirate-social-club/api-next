@@ -1,36 +1,38 @@
 # HNS observer driver
 
-The authority-successor emitter is the operator-facing, stdout-only adapter for
-turning one complete read-only observation package into exact candidate bytes.
-It does not contact a database, HSD, DNS authority, provider, or credential
-source itself. A separately authorized observer ceremony must produce the
-input document and the five referenced canonical artifacts first.
+The authority-successor observation harness owns acquisition of every live
+fact. Its source port returns the retained owner-authoritative observer
+snapshot, complete chain record set, both DNS views, active inventory, exact
+host row identities and generations, and the five canonical artifacts. The
+harness accepts no operator arguments and emits one bounded canonical
+observation document. Candidate preparation runs before that document is
+emitted and performs no reservation or persistence.
+
+The authority-successor emitter is the stdout-only second stage. It accepts
+only the canonical observation document produced by the harness, rechecks the
+retained observer snapshot reference and digest, rechecks the generation tuple
+digest, and reruns complete candidate preparation before writing exact
+candidate bytes. It does not accept separate paths or operator-entered chain,
+DNS-view, inventory, row-identity, or generation fields.
 
 Run it from the repository root with one explicit absolute input path:
 
 ```sh
-bun run hns:emit-authority-successor -- --input /absolute/path/emission-input.json
+bun run hns:emit-authority-successor -- --input /absolute/path/observation.json
 ```
 
-The input must be compact canonical JSON in this exact member order:
-`version`, `source_commit`, `root_label`, `observed_at`, `chain_height`,
-`expected_chain_network`, `chain_authority_records`, `generation_snapshot`,
-`expected_authority_addresses`, `authority_views`, and `artifact_paths`.
-`chain_authority_records` must be the exact NS, glue, and DS records from the
-stable chain observation. The reviewed observer evidence must use
-`owner_authoritative_dns_txt`, whose chain-authority digest binds those
-records; the parent-chain TXT mode deliberately does not. The generation
-snapshot contains the exact DNS and app-host row identifiers as well as their
-generation numbers. `artifact_paths` must name distinct absolute paths for
-`authority_inventory`, `dns_zone_activation`, `app_host_activation`,
-`health_observation`, and `observer_evidence`, in that order. No root, network,
-authority address, database, credential, artifact, or output path has a
-default.
+The input is compact canonical JSON. It embeds all five exact artifacts rather
+than referring to mutable files. Its source provenance binds the observer
+evidence to the retained snapshot reference and snapshot SHA-256. A separate
+digest binds the exact DNS and app-host activation identifiers, their current
+generations, the successor health generation, and the database observation
+time. The reviewed observer evidence must use `owner_authoritative_dns_txt`;
+the parent-chain TXT mode deliberately cannot produce a successor package.
 
-The adapter bounds every read, strictly decodes the input, reads each artifact
-once, and delegates all canonical and semantic parity checks to the application
-gate. It writes exact candidate JSON bytes to stdout only after the complete
-package passes. Any argument, read, decode, canonicality, observation, parity,
-or semantic failure produces no candidate bytes. Redirecting stdout to a new
-review file is an operator action; the adapter never reserves a generation or
+The adapter bounds its one read, strictly decodes the document, and delegates
+all canonical and semantic parity checks to the application gate. It writes
+exact candidate JSON bytes to stdout only after the complete package passes.
+Any argument, read, decode, provenance, canonicality, observation, parity, or
+semantic failure produces no candidate bytes. Redirecting stdout to a new
+review file is an operator action; neither stage reserves a generation or
 persists authority state.

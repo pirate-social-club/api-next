@@ -1,11 +1,26 @@
 export {
-  decodeHnsAuthoritySuccessorEmissionInputV1,
-  HNS_AUTHORITY_SUCCESSOR_EMISSION_INPUT_VERSION,
-  type HnsAuthoritySuccessorEmissionInputV1,
   HnsAuthoritySuccessorEmitterError,
   type HnsAuthoritySuccessorEmitterIoV1,
   runHnsAuthoritySuccessorEmitterV1,
 } from "./authority-successor-emitter.ts";
+export {
+  decodeHnsAuthoritySuccessorObservationDocumentV1,
+  HNS_AUTHORITY_SUCCESSOR_OBSERVATION_MAX_BYTES,
+  HNS_AUTHORITY_SUCCESSOR_OBSERVATION_VERSION,
+  HNS_JAZLEEUW_AUTHORITY_ROOT_LABEL,
+  type HnsAuthoritySuccessorArtifactNameV1,
+  type HnsAuthoritySuccessorGenerationReaderV1,
+  type HnsAuthoritySuccessorLiveAuthorityObservationV1,
+  type HnsAuthoritySuccessorLiveAuthorityPortV1,
+  type HnsAuthoritySuccessorObservationDocumentV1,
+  HnsAuthoritySuccessorObservationHarnessError,
+  type HnsAuthoritySuccessorObservationHarnessIoV1,
+  type HnsAuthoritySuccessorObservationSourceV1,
+  type HnsAuthoritySuccessorSourceObservationV1,
+  makeHnsAuthoritySuccessorObservationSourceV1,
+  prepareCandidateFromHnsAuthoritySuccessorObservationV1,
+  runHnsAuthoritySuccessorObservationHarnessV1,
+} from "./authority-successor-observation-harness.ts";
 export {
   exchangeDirectHnsDnsTcp,
   type HnsDnsTcpConnectInput,
