@@ -229,4 +229,41 @@ describe("pipeline operational balance snapshots", () => {
       }),
     ]);
   });
+
+  test("compensates a claimed window when snapshot input is invalid", async () => {
+    const { logs, sink } = recordingSink();
+    const diagnostics: string[] = [];
+    const original = console.error;
+    let reads = 0;
+    console.error = (message?: unknown) => diagnostics.push(String(message));
+    try {
+      const options = {
+        runtime,
+        sink,
+        environment: "staging",
+        scheduledTime: 5 * 60 * 1000,
+        data: {
+          rpcUrl: "https://aeneid.storyrpc.io/",
+          publicAddress: dataAddress,
+          reserveFloorWei: 0n,
+        },
+        megapot: null,
+        readDataBalance: async () => {
+          reads += 1;
+          return 1n;
+        },
+      } as const;
+      await runPipelineBalanceSnapshots(options);
+      await runPipelineBalanceSnapshots(options);
+    } finally {
+      console.error = original;
+    }
+
+    expect(reads).toBe(2);
+    expect(logs).toEqual([]);
+    expect(diagnostics).toEqual([
+      "pipeline balance snapshot input invalid",
+      "pipeline balance snapshot input invalid",
+    ]);
+  });
 });

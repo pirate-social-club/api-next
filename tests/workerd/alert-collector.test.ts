@@ -1,7 +1,15 @@
 /// <reference types="@cloudflare/vitest-pool-workers/types" />
 
+import { env as testEnv } from "cloudflare:test";
 import { type Alert, AlertCollector } from "@pirate/application";
-import { type AlertLogFields, alertTick, type PipelineLogFields } from "@pirate/platform-cf";
+import {
+  type AlertLogFields,
+  type AlertSuppressionObservationFields,
+  alertTick,
+  makeAlertDeliveryLedger,
+  type PipelineLogFields,
+  type ScheduledCronLockDO,
+} from "@pirate/platform-cf";
 import { Effect, type Exit } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -24,6 +32,7 @@ function recordingSink() {
 }
 
 const emit = (alert: Alert) => AlertCollector.use((service) => service.emit(alert));
+const env = testEnv as unknown as { CRON_LOCK: DurableObjectNamespace<ScheduledCronLockDO> };
 
 describe("AlertCollector tick-finalizer aggregation (workerd)", () => {
   it("persists one structured log per tick: deduped, severity-excluded from the key, capped per family", async () => {
@@ -93,5 +102,46 @@ describe("AlertCollector tick-finalizer aggregation (workerd)", () => {
     // single delivery — alerts before a cancellation are never lost.
     expect(logs).toHaveLength(1);
     expect(logs[0]?.key).toBe("job:stuck");
+  });
+
+  it("emits one transition and one bounded suppression proof across overlapping ticks", async () => {
+    const logs: PipelineLogFields[] = [];
+    const delivery = makeAlertDeliveryLedger(
+      env.CRON_LOCK.getByName("cron-lock:alert-finalizer-atomic"),
+    );
+    const run = () =>
+      Effect.runPromise(
+        alertTick(
+          {
+            environment: "staging",
+            delivery,
+            log: (_event, fields) => logs.push(fields),
+          },
+          emit({
+            key: "song-pipeline:media-launch-exhausted",
+            severity: "high",
+            body: "fixed",
+            entity: "media:operation-1:r1:outbox-1",
+          }),
+          { now: () => 30_000 },
+        ),
+      );
+
+    await Promise.all([run(), run()]);
+    expect(
+      logs.filter((entry): entry is AlertLogFields => entry.event === "pipeline.alert"),
+    ).toHaveLength(1);
+    expect(
+      logs.filter(
+        (entry): entry is AlertSuppressionObservationFields =>
+          entry.event === "pipeline.alert.suppression",
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        key: "song-pipeline:media-launch-exhausted",
+        alert_severity: "high",
+        suppression: "suppressed",
+      }),
+    ]);
   });
 });

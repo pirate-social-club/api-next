@@ -57,8 +57,32 @@ async function claimSnapshot(sink: AlertSink, role: "data" | "megapot", schedule
       ),
     );
   } catch {
+    console.error("pipeline balance snapshot claim unavailable");
     return false;
   }
+}
+
+async function compensateSnapshot(sink: AlertSink, key: string): Promise<void> {
+  if (sink.delivery === undefined) return;
+  try {
+    await Effect.runPromise(sink.delivery.compensate(key));
+  } catch {
+    console.error("pipeline balance snapshot compensation unavailable");
+  }
+}
+
+async function runClaimedSnapshot(
+  sink: AlertSink,
+  key: string,
+  emit: () => Promise<boolean>,
+): Promise<void> {
+  try {
+    if (await emit()) return;
+    console.error("pipeline balance snapshot input invalid");
+  } catch {
+    console.error("pipeline balance snapshot log unavailable");
+  }
+  await compensateSnapshot(sink, key);
 }
 
 function requiredString(value: string | undefined, name: string): string {
@@ -128,14 +152,14 @@ async function emitDataBalance(
   scheduledTime: number,
   writer: (event: PipelineLogEvent, fields: PipelineLogFields) => void,
   reader: DataBalanceReader,
-): Promise<void> {
+): Promise<boolean> {
   let balance: bigint | null = null;
   try {
     balance = await reader(config);
   } catch {
     // Balance observation is diagnostic and must not reject DATA maintenance.
   }
-  writeOperationsBalanceSnapshot(
+  return writeOperationsBalanceSnapshot(
     {
       environment,
       emitted_at: new Date(scheduledTime).toISOString(),
@@ -158,7 +182,7 @@ async function emitMegapotBalance(
   writer: (event: PipelineLogEvent, fields: PipelineLogFields) => void,
   loadDeployment: MegapotDeploymentLoader,
   readBalance: MegapotBalanceReader,
-): Promise<void> {
+): Promise<boolean> {
   const unavailable = () =>
     writeOperationsBalanceSnapshot(
       {
@@ -176,8 +200,7 @@ async function emitMegapotBalance(
   try {
     const deployment = await loadDeployment(runtime, config.attestationId);
     if (deployment.environment !== environment || deployment.chainId !== config.chainId) {
-      unavailable();
-      return;
+      return unavailable();
     }
     let balance: bigint | null = null;
     try {
@@ -185,7 +208,7 @@ async function emitMegapotBalance(
     } catch {
       // Balance observation is diagnostic and must not reject rewards work.
     }
-    writeOperationsBalanceSnapshot(
+    return writeOperationsBalanceSnapshot(
       {
         environment,
         emitted_at: new Date(scheduledTime).toISOString(),
@@ -199,7 +222,7 @@ async function emitMegapotBalance(
       writer,
     );
   } catch {
-    unavailable();
+    return unavailable();
   }
 }
 
@@ -219,45 +242,51 @@ export async function runPipelineBalanceSnapshots(
   if (!isPipelineSnapshotBoundary(options.scheduledTime)) return;
   const writer = writerFor(options.sink);
   const observations: Promise<void>[] = [];
-  if (options.data !== null && (await claimSnapshot(options.sink, "data", options.scheduledTime))) {
+  const dataKey = `pipeline-balance:data:window-${Math.floor(
+    options.scheduledTime / PIPELINE_SNAPSHOT_INTERVAL_MS,
+  )}`;
+  const data = options.data;
+  if (data !== null && (await claimSnapshot(options.sink, "data", options.scheduledTime))) {
     observations.push(
-      emitDataBalance(
-        options.data,
-        options.environment,
-        options.scheduledTime,
-        writer,
-        options.readDataBalance ??
-          ((config) =>
-            readNativeBalance(makeJsonRpcTransport(config.rpcUrl), config.publicAddress)),
+      runClaimedSnapshot(options.sink, dataKey, () =>
+        emitDataBalance(
+          data,
+          options.environment,
+          options.scheduledTime,
+          writer,
+          options.readDataBalance ??
+            ((config) =>
+              readNativeBalance(makeJsonRpcTransport(config.rpcUrl), config.publicAddress)),
+        ),
       ),
     );
   }
-  if (
-    options.megapot !== null &&
-    (await claimSnapshot(options.sink, "megapot", options.scheduledTime))
-  ) {
+  const megapotKey = `pipeline-balance:megapot:window-${Math.floor(
+    options.scheduledTime / PIPELINE_SNAPSHOT_INTERVAL_MS,
+  )}`;
+  const megapot = options.megapot;
+  if (megapot !== null && (await claimSnapshot(options.sink, "megapot", options.scheduledTime))) {
     observations.push(
-      emitMegapotBalance(
-        options.runtime,
-        {
-          attestationId: options.megapot.attestationId,
-          rpcUrl: options.megapot.rpcUrl,
-          chainId: options.megapot.chainId,
-          reserveFloorWei: options.megapot.reserveFloorWei,
-        },
-        options.environment,
-        options.scheduledTime,
-        writer,
-        options.loadMegapotDeployment ??
-          ((runtime, attestationId) =>
-            Effect.runPromise(
-              makeControlPlaneMegapotDrawingObservationStore(runtime).loadCandidate(attestationId),
-            )),
-        options.readMegapotBalance ??
-          ((rpcUrl, deployment) =>
-            makeMegapotV2RpcClient({ rpcUrl, attestation: deployment }).readNativeBalance(
-              deployment.custodyAddress,
-            )),
+      runClaimedSnapshot(options.sink, megapotKey, () =>
+        emitMegapotBalance(
+          options.runtime,
+          megapot,
+          options.environment,
+          options.scheduledTime,
+          writer,
+          options.loadMegapotDeployment ??
+            ((runtime, attestationId) =>
+              Effect.runPromise(
+                makeControlPlaneMegapotDrawingObservationStore(runtime).loadCandidate(
+                  attestationId,
+                ),
+              )),
+          options.readMegapotBalance ??
+            ((rpcUrl, deployment) =>
+              makeMegapotV2RpcClient({ rpcUrl, attestation: deployment }).readNativeBalance(
+                deployment.custodyAddress,
+              )),
+        ),
       ),
     );
   }

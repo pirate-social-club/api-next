@@ -148,6 +148,19 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
         context,
       ),
     ).rejects.toThrow("Jobs worker configuration is incomplete or invalid");
+    await expect(
+      jobsWorker.scheduled(
+        scheduledEvent,
+        scheduledWorkerEnv({
+          MEGAPOT_REWARDS_ENABLED: "true",
+          MEGAPOT_COMMITMENTS: {} as R2Bucket,
+          MEGAPOT_CUSTODY_PRIVATE_KEY: `0x${"1".repeat(64)}`,
+          MEGAPOT_COMMITMENT_PUBLIC_ORIGIN: "https://commitments.test/",
+          MEGAPOT_NATIVE_GAS_RESERVE_FLOOR_WEI: "0",
+        }),
+        context,
+      ),
+    ).rejects.toThrow("Jobs worker configuration is incomplete or invalid");
   });
 
   it("keeps HNS disabled when scheduled without HNS configuration or a verifier binding", async () => {

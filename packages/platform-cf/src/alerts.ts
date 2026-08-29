@@ -13,8 +13,9 @@ export interface AlertDeliveryLedger {
 export interface AlertDeliveryStore {
   readonly markAlertSent: (deliveryKey: string) => Promise<boolean>;
   readonly compensateAlert: (deliveryKey: string) => Promise<void>;
-  readonly getAlertSuppression: (conditionKey: string) => Promise<AlertSuppressionState | null>;
-  readonly saveAlertSuppression: (state: AlertSuppressionState) => Promise<void>;
+  readonly decideAlertSuppression: (
+    input: AlertSuppressionInput,
+  ) => Promise<AlertSuppressionDecision>;
 }
 
 export interface AlertSuppressionState {
@@ -33,9 +34,17 @@ export interface AlertSuppressionDecision {
   readonly state: AlertSuppressionState;
 }
 
+export interface AlertSuppressionInput {
+  readonly conditionKey: string;
+  readonly severity: AlertSeverity;
+  readonly nowMs: number;
+  readonly activeWindowMs?: number;
+}
+
 export interface AlertSuppressionLedger {
-  readonly get: (conditionKey: string) => EffectType.Effect<AlertSuppressionState | null, unknown>;
-  readonly put: (state: AlertSuppressionState) => EffectType.Effect<void, unknown>;
+  readonly decide: (
+    input: AlertSuppressionInput,
+  ) => EffectType.Effect<AlertSuppressionDecision, unknown>;
 }
 
 export interface AlertTickOptions {
@@ -43,7 +52,7 @@ export interface AlertTickOptions {
   readonly now?: () => number;
   readonly activeWindowMs?: number;
   /** Injectable Workers Logs writer for focused tests. */
-  readonly log?: (event: string, fields: AlertLogFields) => void;
+  readonly log?: (event: PipelineLogEvent, fields: PipelineLogFields) => void;
 }
 
 /** Transition immediately, then remind after 1h, 4h, 12h, 24h, 3d, 7d. */
@@ -135,6 +144,17 @@ export interface AlertLogFields extends AlertCorrelationFields {
   readonly sampled: false;
 }
 
+export interface AlertSuppressionObservationFields extends AlertCorrelationFields {
+  readonly event: "pipeline.alert.suppression";
+  readonly schema_version: 1;
+  readonly emitted_at: string;
+  readonly environment: string;
+  readonly key: string;
+  readonly alert_severity: AlertSeverity;
+  readonly suppression: "suppressed";
+  readonly sampled: false;
+}
+
 export type PipelineHealthSnapshotFields = Readonly<{
   readonly event: "pipeline.health.snapshot";
   readonly schema_version: 1;
@@ -143,6 +163,7 @@ export type PipelineHealthSnapshotFields = Readonly<{
   readonly subsystem: "media" | "data";
   readonly operation: "media-analysis" | "data-registration";
   readonly pending_count: number;
+  readonly in_flight_count: number;
   readonly retrying_count: number;
   readonly exhausted_count: number;
   readonly terminal_count: number;
@@ -169,6 +190,7 @@ export type OperationsBalanceSnapshotFields = Readonly<{
 
 export type PipelineLogFields =
   | AlertLogFields
+  | AlertSuppressionObservationFields
   | PipelineHealthSnapshotFields
   | OperationsBalanceSnapshotFields;
 export type PipelineLogEvent = PipelineLogFields["event"];
@@ -178,6 +200,7 @@ export type PipelineHealthSnapshotInput = Readonly<{
   readonly emitted_at: string;
   readonly subsystem: "media" | "data";
   readonly pending_count: number;
+  readonly in_flight_count: number;
   readonly retrying_count: number;
   readonly exhausted_count: number;
   readonly terminal_count: number;
@@ -189,9 +212,10 @@ export type PipelineHealthSnapshotInput = Readonly<{
 export function writePipelineHealthSnapshot(
   input: PipelineHealthSnapshotInput,
   writer: (event: PipelineLogEvent, fields: PipelineLogFields) => void,
-): void {
+): boolean {
   const counts = [
     input.pending_count,
+    input.in_flight_count,
     input.retrying_count,
     input.exhausted_count,
     input.terminal_count,
@@ -203,7 +227,7 @@ export function writePipelineHealthSnapshot(
         input.oldest_pending_age_seconds < 0)) ||
     (input.last_success_at !== null && !Number.isFinite(Date.parse(input.last_success_at)))
   ) {
-    return;
+    return false;
   }
   writer("pipeline.health.snapshot", {
     event: "pipeline.health.snapshot",
@@ -213,6 +237,7 @@ export function writePipelineHealthSnapshot(
     subsystem: input.subsystem,
     operation: input.subsystem === "media" ? "media-analysis" : "data-registration",
     pending_count: input.pending_count,
+    in_flight_count: input.in_flight_count,
     retrying_count: input.retrying_count,
     exhausted_count: input.exhausted_count,
     terminal_count: input.terminal_count,
@@ -221,6 +246,7 @@ export function writePipelineHealthSnapshot(
     health: input.health,
     sampled: false,
   });
+  return true;
 }
 
 export type OperationsBalanceSnapshotInput = Readonly<{
@@ -243,7 +269,7 @@ function balanceRatioBps(balance: bigint, floor: bigint): number {
 export function writeOperationsBalanceSnapshot(
   input: OperationsBalanceSnapshotInput,
   writer: (event: PipelineLogEvent, fields: PipelineLogFields) => void,
-): void {
+): boolean {
   const address = input.public_address?.toLowerCase() ?? null;
   const identityUnavailable = input.chain_id === null && address === null;
   if (
@@ -259,7 +285,7 @@ export function writeOperationsBalanceSnapshot(
     input.blocked_floor_wei > input.reserve_floor_wei ||
     (input.balance_wei !== null && input.balance_wei < 0n)
   ) {
-    return;
+    return false;
   }
   const balance = input.balance_wei;
   const ratio = balance === null ? null : balanceRatioBps(balance, input.reserve_floor_wei);
@@ -287,6 +313,7 @@ export function writeOperationsBalanceSnapshot(
     reserve_status: reserveStatus,
     sampled: false,
   });
+  return true;
 }
 
 /**
@@ -331,6 +358,7 @@ const SEVERITY_RANK: Record<AlertSeverity, number> = { low: 0, medium: 1, high: 
 
 const MAX_KEYS_PER_FAMILY = 5;
 const MAX_GROUPS_PER_TICK = 50;
+export const ALERT_SUPPRESSION_OBSERVATION_INTERVAL_MS = 5 * 60 * 1000;
 
 const SAFE_CORRELATION_VALUE = /^[A-Za-z0-9._:/-]{1,256}$/u;
 
@@ -433,8 +461,16 @@ const memoryDeliveryLedger = (): AlertDeliveryLedger => {
       }),
     compensate: (deliveryKey) => Effect.sync(() => void marked.delete(deliveryKey)),
     suppression: {
-      get: (conditionKey) => Effect.sync(() => states.get(conditionKey) ?? null),
-      put: (state) => Effect.sync(() => void states.set(state.conditionKey, state)),
+      decide: (input) =>
+        Effect.sync(() => {
+          const previous = states.get(input.conditionKey);
+          const decision = decideAlertSuppression({
+            ...input,
+            ...(previous === undefined ? {} : { previous }),
+          });
+          states.set(input.conditionKey, decision.state);
+          return decision;
+        }),
     },
   };
 };
@@ -445,9 +481,7 @@ export function makeAlertDeliveryLedger(store: AlertDeliveryStore): AlertDeliver
     compensate: (deliveryKey) =>
       Effect.tryPromise(() => store.compensateAlert(deliveryKey)).pipe(Effect.asVoid),
     suppression: {
-      get: (conditionKey) => Effect.tryPromise(() => store.getAlertSuppression(conditionKey)),
-      put: (state) =>
-        Effect.tryPromise(() => store.saveAlertSuppression(state)).pipe(Effect.asVoid),
+      decide: (input) => Effect.tryPromise(() => store.decideAlertSuppression(input)),
     },
   };
 }
@@ -468,7 +502,7 @@ function writeAlertLog(
   suppression: AlertLogFields["suppression"],
   emittedAt: string,
   environment: string,
-  writer: (event: string, fields: AlertLogFields) => void,
+  writer: (event: PipelineLogEvent, fields: PipelineLogFields) => void,
 ): void {
   writer("pipeline.alert", {
     event: "pipeline.alert",
@@ -503,12 +537,47 @@ function safelyWriteAlertLog(
   suppression: AlertLogFields["suppression"],
   emittedAt: string,
   environment: string,
-  writer: (event: string, fields: AlertLogFields) => void,
-): void {
+  writer: (event: PipelineLogEvent, fields: PipelineLogFields) => void,
+): boolean {
   try {
     writeAlertLog(group, overflow, suppression, emittedAt, environment, writer);
+    return true;
   } catch {
     reportAlertDiagnostic("api-next alert log unavailable");
+    return false;
+  }
+}
+
+function safelyWriteSuppressionObservation(
+  group: AlertGroup,
+  emittedAt: string,
+  environment: string,
+  writer: (event: PipelineLogEvent, fields: PipelineLogFields) => void,
+): boolean {
+  try {
+    writer("pipeline.alert.suppression", {
+      event: "pipeline.alert.suppression",
+      schema_version: 1,
+      emitted_at: emittedAt,
+      environment,
+      key: group.key,
+      alert_severity: group.severity,
+      suppression: "suppressed",
+      sampled: false,
+      ...(group.operation_id === undefined ? {} : { operation_id: group.operation_id }),
+      ...(group.outbox_id === undefined ? {} : { outbox_id: group.outbox_id }),
+      ...(group.workflow_revision === undefined
+        ? {}
+        : { workflow_revision: group.workflow_revision }),
+      ...(group.subsystem === undefined ? {} : { subsystem: group.subsystem }),
+      operation: group.operation ?? "maintenance",
+      ...(group.failure_class === undefined ? {} : { failure_class: group.failure_class }),
+      ...(group.outcome === undefined ? {} : { outcome: group.outcome }),
+    });
+    return true;
+  } catch {
+    reportAlertDiagnostic("api-next alert suppression observation unavailable");
+    return false;
   }
 }
 
@@ -541,10 +610,10 @@ export function alertTick<A, E, R>(
           const emittedAt = new Date(nowMs).toISOString();
           const environment = safeCorrelationValue(sink.environment) ?? "unknown";
           const suppression = ledger.suppression;
-          const log: (event: string, fields: AlertLogFields) => void =
+          const log: (event: PipelineLogEvent, fields: PipelineLogFields) => void =
             options.log ??
             ((event, fields) => {
-              if (sink.log !== undefined) sink.log("pipeline.alert", fields);
+              if (sink.log !== undefined) sink.log(event, fields);
               else console.info(event, fields);
             });
           if (suppression === undefined) {
@@ -560,23 +629,30 @@ export function alertTick<A, E, R>(
             }
           } else {
             for (const group of digest.groups) {
-              const previous = yield* suppression.get(group.dedupeKey).pipe(
-                Effect.catchCause(() =>
-                  Effect.sync(() => {
-                    reportAlertDiagnostic("api-next alert suppression read unavailable");
-                    return null;
-                  }),
-                ),
-              );
-              const decision = decideAlertSuppression({
-                conditionKey: group.dedupeKey,
-                severity: group.severity,
-                nowMs,
-                ...(options.activeWindowMs === undefined
-                  ? {}
-                  : { activeWindowMs: options.activeWindowMs }),
-                ...(previous === null ? {} : { previous }),
-              });
+              const decision = yield* suppression
+                .decide({
+                  conditionKey: group.dedupeKey,
+                  severity: group.severity,
+                  nowMs,
+                  ...(options.activeWindowMs === undefined
+                    ? {}
+                    : { activeWindowMs: options.activeWindowMs }),
+                })
+                .pipe(
+                  Effect.catchCause(() =>
+                    Effect.sync(() => {
+                      reportAlertDiagnostic("api-next alert suppression decision unavailable");
+                      return decideAlertSuppression({
+                        conditionKey: group.dedupeKey,
+                        severity: group.severity,
+                        nowMs,
+                        ...(options.activeWindowMs === undefined
+                          ? {}
+                          : { activeWindowMs: options.activeWindowMs }),
+                      });
+                    }),
+                  ),
+                );
               if (decision.deliver) {
                 safelyWriteAlertLog(
                   group,
@@ -586,11 +662,28 @@ export function alertTick<A, E, R>(
                   environment,
                   log,
                 );
+                continue;
               }
-              yield* suppression.put(decision.state).pipe(
+              const proofWindow = Math.floor(nowMs / ALERT_SUPPRESSION_OBSERVATION_INTERVAL_MS);
+              const proofKey = `pipeline-alert-suppression:${group.dedupeKey}:window-${proofWindow}`;
+              const claimed = yield* ledger.markSent(proofKey).pipe(
                 Effect.catchCause(() =>
                   Effect.sync(() => {
-                    reportAlertDiagnostic("api-next alert suppression write unavailable");
+                    reportAlertDiagnostic(
+                      "api-next alert suppression observation claim unavailable",
+                    );
+                    return false;
+                  }),
+                ),
+              );
+              if (!claimed) continue;
+              if (safelyWriteSuppressionObservation(group, emittedAt, environment, log)) continue;
+              yield* ledger.compensate(proofKey).pipe(
+                Effect.catchCause(() =>
+                  Effect.sync(() => {
+                    reportAlertDiagnostic(
+                      "api-next alert suppression observation compensation unavailable",
+                    );
                   }),
                 ),
               );

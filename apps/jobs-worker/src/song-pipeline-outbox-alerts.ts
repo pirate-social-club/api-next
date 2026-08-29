@@ -9,6 +9,7 @@ import {
   type PipelineLogFields,
   writePipelineHealthSnapshot,
 } from "../../../packages/platform-cf/src/alerts.ts";
+import { SONG_WORKFLOW_MAX_REVISION } from "./song-workflow-recovery-policy";
 
 type ExhaustedLaunch = Readonly<{
   subsystem: "media" | "data";
@@ -16,11 +17,12 @@ type ExhaustedLaunch = Readonly<{
   outbox_id: string;
   workflow_revision: string;
   failure_code: string | null;
-  outcome: "exhausted" | "queue_dlq" | "replacement_limit";
+  outcome: "exhausted" | "replacement_limit";
 }>;
 
 type PipelineHealthRow = Readonly<{
   pending_count: number | string;
+  in_flight_count: number | string;
   retrying_count: number | string;
   exhausted_count: number | string;
   terminal_count: number | string;
@@ -38,6 +40,7 @@ export type SongPipelineOutboxAlertOptions = Readonly<{
   readonly environment?: string;
   readonly log?: (event: PipelineLogEvent, fields: PipelineLogFields) => void;
   readonly claimSnapshot?: (key: string) => EffectType.Effect<boolean, unknown, never>;
+  readonly compensateSnapshot?: (key: string) => EffectType.Effect<void, unknown, never>;
 }>;
 
 export const SONG_PIPELINE_HEALTH_INTERVAL_MS = 5 * 60 * 1000;
@@ -50,7 +53,10 @@ const healthSql = (subsystem: "media" | "data"): string =>
   subsystem === "media"
     ? `SELECT COUNT(*) FILTER (WHERE outbox.state='pending'
                                 AND submission.status IN ${MEDIA_LIVE_SUBMISSION_STATES})::int AS pending_count,
-              COUNT(*) FILTER (WHERE outbox.state IN ('running','failed')
+              COUNT(*) FILTER (WHERE outbox.state='running'
+                                AND submission.status IN ${MEDIA_LIVE_SUBMISSION_STATES})::int AS in_flight_count,
+              COUNT(*) FILTER (WHERE (outbox.state='failed'
+                                      OR (outbox.state='running' AND outbox.delivery_attempts>1))
                                 AND submission.status IN ${MEDIA_LIVE_SUBMISSION_STATES})::int AS retrying_count,
               COUNT(*) FILTER (WHERE outbox.state='exhausted'
                                 AND submission.status IN ${MEDIA_LIVE_SUBMISSION_STATES})::int AS exhausted_count,
@@ -67,7 +73,10 @@ const healthSql = (subsystem: "media" | "data"): string =>
           AND submission.workflow_revision=outbox.workflow_revision`
     : `SELECT COUNT(*) FILTER (WHERE outbox.state='pending'
                                 AND operation.state NOT IN ${DATA_TERMINAL_OPERATION_STATES})::int AS pending_count,
-              COUNT(*) FILTER (WHERE outbox.state IN ('running','failed')
+              COUNT(*) FILTER (WHERE outbox.state='running'
+                                AND operation.state NOT IN ${DATA_TERMINAL_OPERATION_STATES})::int AS in_flight_count,
+              COUNT(*) FILTER (WHERE (outbox.state='failed'
+                                      OR (outbox.state='running' AND outbox.delivery_attempts>1))
                                 AND operation.state NOT IN ${DATA_TERMINAL_OPERATION_STATES})::int AS retrying_count,
               COUNT(*) FILTER (WHERE outbox.state='exhausted'
                                 AND operation.state NOT IN ${DATA_TERMINAL_OPERATION_STATES})::int AS exhausted_count,
@@ -84,7 +93,7 @@ const healthSql = (subsystem: "media" | "data"): string =>
 
 function integer(value: unknown): number {
   const parsed = typeof value === "number" ? value : Number(value);
-  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : Number.NaN;
 }
 
 function timestamp(value: unknown): string | null {
@@ -115,11 +124,7 @@ function healthStatus(row: PipelineHealthRow): PipelineHealthSnapshotFields["hea
 
 export const exhaustedLaunchAlert = (row: ExhaustedLaunch) => ({
   key: `song-pipeline:${row.subsystem}-${
-    row.outcome === "exhausted"
-      ? "launch-exhausted"
-      : row.outcome === "queue_dlq"
-        ? "queue_dlq"
-        : "replacement-limit-reached"
+    row.outcome === "replacement_limit" ? "replacement-limit-reached" : "launch-exhausted"
   }`,
   severity: "high" as const,
   body: "A current song-pipeline launch exhausted and requires recovery observation.",
@@ -147,30 +152,28 @@ export function collectSongPipelineOutboxAlerts(
                       outbox.outbox_event_id AS outbox_id,
                       outbox.workflow_revision::text AS workflow_revision,
                       outbox.failure_code,
-                      CASE WHEN outbox.workflow_revision>=4 THEN 'replacement_limit'
-                           WHEN outbox.state='exhausted' THEN 'exhausted'
-                           ELSE 'queue_dlq' END AS outcome
+                      CASE WHEN outbox.workflow_revision>=${SONG_WORKFLOW_MAX_REVISION}
+                           THEN 'replacement_limit'
+                           ELSE 'exhausted' END AS outcome
                  FROM media_submission_outbox outbox
                  JOIN media_post_submissions submission
                    ON submission.submission_id=outbox.submission_id
                   AND submission.operation_id=outbox.operation_id
                   AND submission.workflow_revision=outbox.workflow_revision
-                WHERE (outbox.state='exhausted'
-                       OR (outbox.state='failed' AND outbox.next_eligible_at IS NULL))
+                WHERE outbox.state='exhausted'
                   AND submission.status IN ('processing','action_required','manual_review')`);
       }
       if (enabled.data) {
         queries.push(`SELECT 'data'::text AS subsystem,outbox.registration_operation_id AS operation_id,
                       outbox.outbox_id,outbox.workflow_revision::text,outbox.failure_code,
-                      CASE WHEN outbox.workflow_revision>=4 THEN 'replacement_limit'
-                           WHEN outbox.state='exhausted' THEN 'exhausted'
-                           ELSE 'queue_dlq' END AS outcome
+                      CASE WHEN outbox.workflow_revision>=${SONG_WORKFLOW_MAX_REVISION}
+                           THEN 'replacement_limit'
+                           ELSE 'exhausted' END AS outcome
                  FROM data_registration_outbox outbox
                  JOIN data_registration_operations operation
                    ON operation.registration_operation_id=outbox.registration_operation_id
                   AND operation.workflow_revision=outbox.workflow_revision
-                WHERE (outbox.state='exhausted'
-                       OR (outbox.state='failed' AND outbox.next_eligible_at IS NULL))
+                WHERE outbox.state='exhausted'
                   AND operation.state NOT IN ('registered','failed','reconciliation_required')`);
       }
       if (queries.length === 0) return 0;
@@ -178,15 +181,33 @@ export function collectSongPipelineOutboxAlerts(
       const log =
         options.log ??
         ((event: PipelineLogEvent, fields: PipelineLogFields) => console.info(event, fields));
+      const compensateSnapshot = (claimKey: string) =>
+        options.compensateSnapshot === undefined
+          ? Effect.void
+          : options.compensateSnapshot(claimKey).pipe(
+              Effect.catchCause(() =>
+                Effect.sync(() => {
+                  console.error("song-pipeline health snapshot compensation unavailable");
+                }),
+              ),
+            );
       if (options.scheduledTime !== undefined) {
         for (const subsystem of ["media", "data"] as const) {
           if (!enabled[subsystem] || !isHealthSnapshotBoundary(options.scheduledTime)) continue;
+          const window = Math.floor(options.scheduledTime / SONG_PIPELINE_HEALTH_INTERVAL_MS);
+          const claimKey = `pipeline-health:${subsystem}:window-${window}`;
+          let snapshotClaimed = false;
           if (options.claimSnapshot !== undefined) {
-            const window = Math.floor(options.scheduledTime / SONG_PIPELINE_HEALTH_INTERVAL_MS);
-            const claimed = yield* options
-              .claimSnapshot(`pipeline-health:${subsystem}:window-${window}`)
-              .pipe(Effect.catchCause(() => Effect.succeed(false)));
+            const claimed = yield* options.claimSnapshot(claimKey).pipe(
+              Effect.catchCause(() =>
+                Effect.sync(() => {
+                  console.error("song-pipeline health snapshot claim unavailable");
+                  return false;
+                }),
+              ),
+            );
             if (!claimed) continue;
+            snapshotClaimed = true;
           }
           const health = yield* db
             .execute<PipelineHealthRow>({
@@ -195,11 +216,20 @@ export function collectSongPipelineOutboxAlerts(
               values: [],
               readonly: true,
             })
-            .pipe(Effect.catchCause(() => Effect.succeed(null)));
+            .pipe(
+              Effect.catchCause(() =>
+                Effect.gen(function* () {
+                  console.error("song-pipeline health snapshot query unavailable");
+                  if (snapshotClaimed) yield* compensateSnapshot(claimKey);
+                  return null;
+                }),
+              ),
+            );
           if (health === null) continue;
           const row = health.rows[0];
           const snapshot = row ?? {
             pending_count: 0,
+            in_flight_count: 0,
             retrying_count: 0,
             exhausted_count: 0,
             terminal_count: 0,
@@ -207,12 +237,13 @@ export function collectSongPipelineOutboxAlerts(
             last_success_at: null,
           };
           try {
-            writePipelineHealthSnapshot(
+            const written = writePipelineHealthSnapshot(
               {
                 environment: options.environment ?? "unknown",
                 emitted_at: new Date(options.scheduledTime).toISOString(),
                 subsystem,
                 pending_count: integer(snapshot.pending_count),
+                in_flight_count: integer(snapshot.in_flight_count),
                 retrying_count: integer(snapshot.retrying_count),
                 exhausted_count: integer(snapshot.exhausted_count),
                 terminal_count: integer(snapshot.terminal_count),
@@ -225,8 +256,13 @@ export function collectSongPipelineOutboxAlerts(
               },
               log,
             );
+            if (!written) {
+              console.error("song-pipeline health snapshot input invalid");
+              if (snapshotClaimed) yield* compensateSnapshot(claimKey);
+            }
           } catch {
-            // A logging adapter must not fail alert collection or maintenance.
+            console.error("song-pipeline health snapshot log unavailable");
+            if (snapshotClaimed) yield* compensateSnapshot(claimKey);
           }
         }
       }

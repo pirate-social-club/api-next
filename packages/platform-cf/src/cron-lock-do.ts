@@ -1,6 +1,11 @@
 /// <reference types="@cloudflare/workers-types" />
 import { DurableObject } from "cloudflare:workers";
-import type { AlertSuppressionState } from "./alerts";
+import {
+  type AlertSuppressionDecision,
+  type AlertSuppressionInput,
+  type AlertSuppressionState,
+  decideAlertSuppression as decideSuppression,
+} from "./alerts";
 import { evaluateFencedLease, type FencedLeaseRecord, type LeaseRecord } from "./cron-lock";
 
 const ALERT_DELIVERY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -132,7 +137,35 @@ export class ScheduledCronLockDO extends DurableObject {
     this.ctx.storage.sql.exec("DELETE FROM alert_delivery WHERE delivery_key = ?", deliveryKey);
   }
 
-  getAlertSuppression(conditionKey: string): AlertSuppressionState | null {
+  /** Atomically decides and persists one alert observation. */
+  decideAlertSuppression(input: AlertSuppressionInput): AlertSuppressionDecision {
+    if (
+      input.conditionKey.length < 1 ||
+      input.conditionKey.length > 1_024 ||
+      (input.severity !== "low" && input.severity !== "medium" && input.severity !== "high") ||
+      !Number.isSafeInteger(input.nowMs) ||
+      input.nowMs < 0 ||
+      (input.activeWindowMs !== undefined &&
+        (!Number.isSafeInteger(input.activeWindowMs) || input.activeWindowMs < 1))
+    ) {
+      throw new TypeError("invalid alert suppression input");
+    }
+    return this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec(
+        "DELETE FROM alert_suppression WHERE last_seen_at < ?",
+        input.nowMs - ALERT_SUPPRESSION_RETENTION_MS,
+      );
+      const previous = this.readAlertSuppression(input.conditionKey);
+      const decision = decideSuppression({
+        ...input,
+        ...(previous === null ? {} : { previous }),
+      });
+      this.writeAlertSuppression(decision.state);
+      return decision;
+    });
+  }
+
+  private readAlertSuppression(conditionKey: string): AlertSuppressionState | null {
     const rows = this.ctx.storage.sql
       .exec<{
         condition_key: string;
@@ -162,12 +195,7 @@ export class ScheduledCronLockDO extends DurableObject {
     };
   }
 
-  saveAlertSuppression(state: AlertSuppressionState): void {
-    const now = Date.now();
-    this.ctx.storage.sql.exec(
-      "DELETE FROM alert_suppression WHERE last_seen_at < ?",
-      now - ALERT_SUPPRESSION_RETENTION_MS,
-    );
+  private writeAlertSuppression(state: AlertSuppressionState): void {
     this.ctx.storage.sql.exec(
       "INSERT INTO alert_suppression (condition_key, severity, first_seen_at, last_seen_at, last_delivered_at, reminder_index) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(condition_key) DO UPDATE SET severity = excluded.severity, first_seen_at = excluded.first_seen_at, last_seen_at = excluded.last_seen_at, last_delivered_at = excluded.last_delivered_at, reminder_index = excluded.reminder_index",
       state.conditionKey,
