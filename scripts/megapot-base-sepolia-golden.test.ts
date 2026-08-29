@@ -343,6 +343,39 @@ describe("Base Sepolia Megapot golden flow", () => {
     ]);
   });
 
+  test("authenticates and reuses a preflight-created Study v2 session", async () => {
+    const requests: Array<{ readonly url: string; readonly init?: RequestInit }> = [];
+    const replayedPreflight = {
+      ...participantPreflight,
+      study_session_id: participantStudyV2Session.session_id,
+    } as const;
+    const responses = [
+      json(participantStudyV2Session),
+      json({ offer, replayed: false }, 201),
+      json({ leg, funding, replayed: false }, 201),
+    ];
+    await runMegapotBaseSepoliaGolden(
+      input,
+      { ...options, participantPreflight: replayedPreflight },
+      {
+        fetcher: async (url, init) => {
+          requests.push({ url, init });
+          const response = responses.shift();
+          if (response === undefined) throw new Error("unexpected request");
+          return response;
+        },
+        sleep: async () => {},
+        now,
+      },
+    );
+
+    expect(new URL(requests[0]?.url ?? "").pathname).toEndWith(
+      `/study/v2/sessions/${participantStudyV2Session.session_id}`,
+    );
+    expect(requests[0]?.init?.method).toBe("GET");
+    expect(new URL(requests[1]?.url ?? "").pathname).toEndWith("/reward-offers");
+  });
+
   test("opens the offer and returns exact user-authorized funding instructions", async () => {
     const requests: Array<{ readonly url: string; readonly init?: RequestInit }> = [];
     const responses = [
