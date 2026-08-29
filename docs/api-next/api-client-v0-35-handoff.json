@@ -31,7 +31,7 @@
     },
     "focusedPostgresSuites": "pending PostgreSQL 17 CI; no local CONTROL_PLANE_POSTGRES_TEST_URL was available",
     "fullUnitSuite": "2207 passed, 305 database-gated tests skipped, 0 failed",
-    "fullWorkerdSuite": "95 passed before the final alarm-recovery fixture; the focused Karaoke workerd suite then passed 4 of 4, including single-use token, reconnect epoch, R2 multipart completion and abort, and outbox retry rearming",
+    "fullWorkerdSuite": "96 passed, 0 failed, including single-use token, reconnect epoch, accepted-frame archive binding, R2 multipart completion and abort, terminal evidence scrubbing, and outbox retry rearming",
     "packageVerifier": "passed",
     "repositoryCheck": "Effect diagnostics, formatting, binding contract, dependency boundaries, migration integrity, contract freshness, and package verification passed; the direct TypeScript 7 check remains blocked by the existing repository-wide Bun and DOM ambient mismatch"
   }
