@@ -30,6 +30,32 @@ https://<handle-label>.<root> public hosted persona origin
 The production `pirate` root, `app.pirate`, its certificate, its DNSSEC keys,
 and its gateway release are preservation targets, not rehearsal inputs.
 
+## Current root disposition — 2026-08-29
+
+This dated document contains two later efforts that must no longer be read as
+one greenfield build. The public application acceptance below used disposable
+root `jazleeuw` on the production tuple and the owner elected to leave that
+accepted host running. The separately nominated `11qx` root was not used by
+that execution and retains its registration-default parking records.
+
+The next pilot should reuse `jazleeuw` only if a bounded read-only preflight
+proves the standing delegation, signed zone, DANE certificate, gateway, Access
+boundaries, authority generations, deployment references, and rollback
+evidence remain current. The same preflight must prove that the deployed
+api-next and Solid revisions contain the accepted handle-sales and
+`hosted_persona_v1` runtimes and support a seller-narrowed 8–15-character broad
+offering. A required redeployment is a separate reviewed and authorized
+operation; it is not implied by reuse.
+
+Reuse also writes the pilot namespace activation, offering, quote,
+reservation, claim, and grant rows to production Postgres and exercises the
+production Privy application. No such write may occur until the workspace
+owner explicitly accepts that production-data-plane consequence. If the owner
+declines it, or the preflight rejects the standing stack, `11qx` remains the
+isolated staging fallback described below. That fallback requires a stated
+reason and separately authorized Access, gateway, DNS, custody, and Handshake
+ceremonies. Until this fork is accepted, neither path is executable.
+
 ## Staged acceptance amendment — 2026-08-28
 
 The first live pilot uses Handshake mainnet and the disposable `11qx` root,
@@ -243,13 +269,11 @@ mainnet pilot. That stage deliberately excludes the canonical route at
 `pirate.sc`; proving that route is a separate production-tuple acceptance run
 that cannot be inferred from stage one or performed under its authorization.
 
-No disposable root is proposed yet. The read-only HSD observer proved public
-chain state for several names, but no wallet or owner-account source was
-available and every inspected name already has on-chain records and an
-authoritative zone. Naming one as unused would therefore contradict the root
-selection gate. The workspace owner must perform the read-only owner-account
-ceremony in this plan and nominate exactly one root before the plan can be
-populated or accepted.
+At this dated checkpoint no disposable root had yet been proposed. That stop
+was later superseded twice: `jazleeuw` completed the public community-app
+acceptance recorded at the end of this document, while `11qx` was separately
+nominated as an unused staging fallback in the population addendum. Neither
+later event authorizes the remaining handle lifecycle.
 
 External work remains stopped for these reasons:
 
@@ -1814,7 +1838,9 @@ The one-off signing program and its local and VPS outputs were removed after
 the redacted evidence was recorded.
 
 This completes public application acceptance for the selected disposable
-root. Suspension, recovery with a new generation, revocation, and final
+root, `jazleeuw`. It does not claim namespace activation, offering publication,
+handle claim or grant, or `<handle-label>.jazleeuw` persona resolution.
+Suspension, recovery with a new generation, revocation, and final
 destruction were not executed because the owner elected to leave the accepted
 host running. Those lifecycle actions require a separately accepted teardown
 or recovery ceremony; this acceptance record does not claim they occurred.
