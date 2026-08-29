@@ -14,6 +14,10 @@ import {
 import { LanguageTagV1 } from "./language.ts";
 
 const Identifier = Schema.NonEmptyString.check(Schema.isMaxLength(128));
+export const STUDY_EXERCISE_REVIEW_KEY_MAX_LENGTH = 256;
+const ReviewKey = Schema.NonEmptyString.check(
+  Schema.isMaxLength(STUDY_EXERCISE_REVIEW_KEY_MAX_LENGTH),
+);
 const Text = Schema.NonEmptyString.check(Schema.isMaxLength(4_096));
 const BoundedTranscript = Schema.String.check(Schema.isMaxLength(4_096));
 const PositiveInteger = Schema.Int.check(
@@ -86,7 +90,7 @@ export const StudySessionItemV2 = Schema.Struct({
   object: Schema.Literal("study_session_item_v2"),
   session_item_id: Identifier,
   ordinal: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 9 })),
-  exercise_review_key: Identifier,
+  exercise_review_key: ReviewKey,
   exercise_version_id: Identifier,
   exercise_type: StudyExerciseTypeV2,
   exercise_variant: Identifier,

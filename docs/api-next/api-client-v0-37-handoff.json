@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.37.0",
+  "releaseType": "study-review-key-bound-repair",
+  "wireContract": "migration-0074-study-v2-foundation",
+  "sourceCommit": "pending-review",
+  "supersedes": "0.36.0; widens only exercise_review_key from 128 to 256 characters so the Study v2 wire contract matches its persisted column constraint.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.37.0.tgz",
+    "sha256": "84b52131d8dd1d78abbcdf263a563d74cf26f476490d5f047dac76842cccbd73",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@831ef5d12a3e55daa0a5afffb0016cf26e66ba09f3fdc2a9b6bec90684f230d1",
+    "openapiSha256": "831ef5d12a3e55daa0a5afffb0016cf26e66ba09f3fdc2a9b6bec90684f230d1",
+    "clientSha256": "ee7358506920b24e2f277ab3c03083298316bfaabe08c015068070c1a88c4a08"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "passed",
+      "baselineCommit": "cc3edd2c497d45cf8700b9368360214348bea388",
+      "reason": "The field-specific response bound is widened without changing required fields or narrowing accepted data."
+    },
+    "focusedContractSuites": "10 passed, 0 failed; covers 129 and 256 character review keys, rejects 257, retains the 128-character general identifier bound, and asserts migration 0074 agrees with the contract constant",
+    "fullUnitSuite": "2237 passed, 308 database-gated tests skipped, 0 failed",
+    "fullWorkerdSuite": "96 passed, 0 failed before rebase; CI is authoritative for the combined main contract",
+    "packageVerifier": "passed",
+    "repositoryCheck": "passed, including Effect diagnostics, both direct TypeScript 7 projects, formatting, binding contract, dependency boundaries, migration integrity, contract freshness, and package verification"
+  }
+}

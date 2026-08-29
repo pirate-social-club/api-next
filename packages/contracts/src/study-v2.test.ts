@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Schema } from "effect";
 import {
+  STUDY_EXERCISE_REVIEW_KEY_MAX_LENGTH,
   StudyAnswerSubmissionV2,
   StudySessionItemV2,
   StudySessionV2,
@@ -9,6 +10,8 @@ import {
 
 const decode = <S extends Schema.ConstraintDecoder<unknown>>(schema: S, value: unknown) =>
   Schema.decodeUnknownSync(schema, { onExcessProperty: "error" })(value);
+const encode = <S extends Schema.ConstraintEncoder<unknown>>(schema: S, value: S["Type"]) =>
+  Schema.encodeSync(schema)(value);
 
 const spokenItem = (ordinal: number) => ({
   object: "study_session_item_v2" as const,
@@ -46,6 +49,27 @@ const spokenItem = (ordinal: number) => ({
 describe("Study v2 contracts after spec 019", () => {
   test("keeps spoken practice source-only with a shared Study unit", () => {
     expect(decode(StudySessionItemV2, spokenItem(0)).line.study_unit_id).toBe("unit-0");
+  });
+
+  test("matches the persisted review-key bound without widening other identifiers", () => {
+    for (const length of [129, STUDY_EXERCISE_REVIEW_KEY_MAX_LENGTH]) {
+      const item = { ...spokenItem(0), exercise_review_key: "r".repeat(length) };
+      expect(decode(StudySessionItemV2, item).exercise_review_key).toHaveLength(length);
+      expect(encode(StudySessionItemV2, item).exercise_review_key).toHaveLength(length);
+    }
+
+    expect(() =>
+      decode(StudySessionItemV2, {
+        ...spokenItem(0),
+        exercise_review_key: "r".repeat(STUDY_EXERCISE_REVIEW_KEY_MAX_LENGTH + 1),
+      }),
+    ).toThrow();
+    expect(() =>
+      decode(StudySessionItemV2, {
+        ...spokenItem(0),
+        exercise_version_id: "v".repeat(129),
+      }),
+    ).toThrow();
   });
 
   test("allows only four through ten cards", () => {
