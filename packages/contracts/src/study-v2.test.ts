@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Schema } from "effect";
 import {
+  RequestStudyGenerationV2,
   STUDY_EXERCISE_REVIEW_KEY_MAX_LENGTH,
   StudyAnswerSubmissionV2,
   StudySessionItemV2,
@@ -134,5 +135,22 @@ describe("Study v2 contracts after spec 019", () => {
     expect(errors.map((ErrorType) => new ErrorType({} as never).code)).toContain(
       "provider_unavailable",
     );
+  });
+
+  test("reports demand-driven translation generation as processing", () => {
+    expect(RequestStudyGenerationV2.method).toBe("POST");
+    expect(RequestStudyGenerationV2.path).toBe(
+      "/communities/:communityId/posts/:postId/study/v2/generations",
+    );
+    expect(RequestStudyGenerationV2.successStatus).toBe(202);
+    expect(
+      decode(RequestStudyGenerationV2.response, {
+        state: "processing",
+        target_language: "es",
+        learner_band: "B1",
+        available_exercise_types: ["say_it_back"],
+        pending_exercise_types: ["translation_choice"],
+      }),
+    ).toBeDefined();
   });
 });

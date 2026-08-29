@@ -17,6 +17,14 @@ export type StudyLanguageProfileUnitInput = Readonly<{
   sourceText: string;
 }>;
 
+export type StudyLanguageProfileContextLine = Readonly<{
+  ordinal: number;
+  lyricLineId: string;
+  lineVersion: number;
+  studyUnitId: string;
+  sourceText: string;
+}>;
+
 export type StudyLanguageProfileRequest = Readonly<{
   communityId: string;
   postId: string;
@@ -24,6 +32,7 @@ export type StudyLanguageProfileRequest = Readonly<{
   sourceHash: string;
   primaryLanguageHint: string | null;
   secondaryLanguageHint: string | null;
+  contextLines: readonly StudyLanguageProfileContextLine[];
   units: readonly StudyLanguageProfileUnitInput[];
 }>;
 
@@ -64,9 +73,14 @@ export const validateStudyLanguageProfile = (
   const expected = new Set(request.units.map(({ studyUnitId }) => studyUnitId));
   const actual = new Set(analysis.units.map(({ studyUnitId }) => studyUnitId));
   const valid =
+    analysis.promptRevision === STUDY_LANGUAGE_PROFILE_PROMPT_V1 &&
+    analysis.validatorRevision === STUDY_LANGUAGE_PROFILE_VALIDATOR_V1 &&
     analysis.units.length === expected.size &&
     actual.size === expected.size &&
     [...expected].every((id) => actual.has(id)) &&
+    request.units.every(
+      ({ studyUnitId }, index) => analysis.units[index]?.studyUnitId === studyUnitId,
+    ) &&
     analysis.units.every(
       (unit) =>
         unit.detectedLanguages.every((language) => bcp47.test(language)) &&
@@ -95,6 +109,7 @@ export type StudyLanguageProfileOutcome = Readonly<{
   communityId: string;
   postId: string;
   lyricsRevision: number;
+  sourceHash: string;
   languageProfileRevision: number;
   state: "ready";
 }>;

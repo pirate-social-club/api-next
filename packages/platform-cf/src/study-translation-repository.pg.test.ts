@@ -201,6 +201,9 @@ suite("Study translation generation", () => {
       );
       if (profileResolution.state !== "generate") throw new Error("expected profile generation");
       expect(profileResolution.request.units.map(({ sourceText }) => sourceText)).toEqual(lines);
+      expect(profileResolution.request.contextLines.map(({ sourceText }) => sourceText)).toEqual(
+        lines,
+      );
       const profileOutcome = await Effect.runPromise(
         Effect.scoped(
           profiles
@@ -254,6 +257,7 @@ suite("Study translation generation", () => {
       );
       if (reservation.state !== "leased") throw new Error("expected leased generation");
       expect(reservation.request.units.map(({ sourceText }) => sourceText)).toEqual(lines);
+      expect(reservation.request.contextLines.map(({ sourceText }) => sourceText)).toEqual(lines);
       const rawProposal = {
         generation_run_id: "translation-run-1",
         provider_id: "fake-study-translator",

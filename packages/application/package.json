@@ -67,6 +67,7 @@
     "./use-cases/rewards/activity-qualification": "./src/use-cases/rewards/activity-qualification.ts",
     "./use-cases/rewards/karaoke": "./src/use-cases/rewards/karaoke.ts",
     "./use-cases/rewards/study-v2": "./src/use-cases/rewards/study-v2.ts",
+    "./use-cases/rewards/study-generation": "./src/use-cases/rewards/study-generation.ts",
     "./use-cases/session-authentication": "./src/use-cases/session-authentication.ts",
     "./use-cases/session-exchange": "./src/use-cases/session-exchange.ts",
     "./use-cases/identity-registration-handler": "./src/use-cases/identity-registration-handler.ts"

@@ -309,6 +309,15 @@ export const StudyAvailabilityV2 = Schema.Union([
 ]);
 export type StudyAvailabilityV2 = Schema.Schema.Type<typeof StudyAvailabilityV2>;
 
+export const StudyGenerationStatusV2 = Schema.Struct({
+  state: Schema.Literal("processing"),
+  target_language: LanguageTagV1,
+  learner_band: StudyLearnerBandV2,
+  available_exercise_types: Schema.Tuple([Schema.Literal("say_it_back")]),
+  pending_exercise_types: Schema.Tuple([Schema.Literal("translation_choice")]),
+});
+export type StudyGenerationStatusV2 = Schema.Schema.Type<typeof StudyGenerationStatusV2>;
+
 const CommunityPostPath = Schema.Struct({ communityId: Identifier, postId: Identifier });
 const StudySessionPath = Schema.Struct({ communityId: Identifier, sessionId: Identifier });
 const StudySessionItemPath = Schema.Struct({
@@ -324,6 +333,22 @@ export const GetStudyAvailabilityV2 = endpoint({
   request: { path: CommunityPostPath },
   response: StudyAvailabilityV2,
   errors: [AuthError, BadRequest, NotFound, InternalError],
+});
+
+export const RequestStudyGenerationV2 = endpoint({
+  method: "POST",
+  path: "/communities/:communityId/posts/:postId/study/v2/generations",
+  auth: Auth.userOrAdmin(),
+  request: {
+    path: CommunityPostPath,
+    body: Schema.Struct({
+      target_language: LanguageTagV1,
+      learner_band: StudyLearnerBandV2,
+    }),
+  },
+  response: StudyGenerationStatusV2,
+  successStatus: 202,
+  errors: [AuthError, BadRequest, NotFound, ProviderUnavailable, RateLimited, InternalError],
 });
 
 export const StartStudySessionV2 = endpoint({

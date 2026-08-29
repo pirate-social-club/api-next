@@ -37,6 +37,14 @@ export type StudyTranslationUnitInput = Readonly<{
   language: StudyTranslationLanguageFact;
 }>;
 
+export type StudyTranslationContextLine = Readonly<{
+  ordinal: number;
+  lyricLineId: string;
+  lineVersion: number;
+  studyUnitId: string;
+  sourceText: string;
+}>;
+
 export type StudyTranslationGenerationRequest = Readonly<{
   generationRunId: string;
   communityId: string;
@@ -50,6 +58,7 @@ export type StudyTranslationGenerationRequest = Readonly<{
   promptRevision: typeof STUDY_TRANSLATION_PROMPT_V1;
   qualityPolicyRevision: string;
   rightsPolicyRevision: string;
+  contextLines: readonly StudyTranslationContextLine[];
   units: readonly StudyTranslationUnitInput[];
 }>;
 
@@ -261,6 +270,15 @@ export const disabledStudyTranslationGeneratorTransport: StudyTranslationGenerat
 
 export const disabledStudyTranslationSemanticReviewer: StudyTranslationSemanticReviewer = {
   review: () => Effect.fail(new StudyTranslationGenerationUnavailable({ reason: "disabled" })),
+};
+
+/**
+ * Runtime generation is already gated by an immutable active quality-policy
+ * row. This reviewer acknowledges that independently recorded human decision;
+ * it does not ask a second model to grade the current proposal.
+ */
+export const acceptedQualityPolicyStudyTranslationReviewer: StudyTranslationSemanticReviewer = {
+  review: () => Effect.succeed("accepted"),
 };
 
 export type StudyTranslationGenerationOutcome = Readonly<{

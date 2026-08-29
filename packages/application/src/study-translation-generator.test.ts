@@ -25,6 +25,22 @@ const request: StudyTranslationGenerationRequest = {
   promptRevision: STUDY_TRANSLATION_PROMPT_V1,
   qualityPolicyRevision: "study-translation-quality-es-v1",
   rightsPolicyRevision: "translated-lyrics-acr-original-v1",
+  contextLines: [
+    {
+      ordinal: 0,
+      lyricLineId: "line-1",
+      lineVersion: 1,
+      studyUnitId: "unit-1",
+      sourceText: "Seoul nights, we go higher",
+    },
+    {
+      ordinal: 1,
+      lyricLineId: "line-2",
+      lineVersion: 1,
+      studyUnitId: "unit-2",
+      sourceText: "끝까지 run with me",
+    },
+  ],
   units: [
     {
       studyUnitId: "unit-1",

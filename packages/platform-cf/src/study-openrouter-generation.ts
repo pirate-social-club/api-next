@@ -9,8 +9,8 @@ import {
   type StudyLanguageProfileTransport,
   StudyLanguageProfileUnavailable,
   type StudyTranslationGenerationRequest,
-  type StudyTranslationGeneratorTransport,
   StudyTranslationGenerationUnavailable,
+  type StudyTranslationGeneratorTransport,
 } from "@pirate/application";
 import { LanguageTagV1 } from "@pirate/contracts";
 import { Effect, Option, Schema } from "effect";
@@ -27,10 +27,7 @@ export type StudyOpenRouterProviderPolicy = Readonly<{
   only: readonly string[];
 }>;
 
-export type StudyOpenRouterFetch = (
-  input: string,
-  init: RequestInit,
-) => Promise<Response>;
+export type StudyOpenRouterFetch = (input: string, init: RequestInit) => Promise<Response>;
 
 export type StudyOpenRouterLimits = Readonly<{
   maxRequestBytes: number;
@@ -60,9 +57,7 @@ const textDecoder = new TextDecoder("utf-8", { fatal: true });
 
 const BoundedText = Schema.NonEmptyString.check(Schema.isMaxLength(4_096));
 const Identifier = Schema.NonEmptyString.check(Schema.isMaxLength(256));
-const Confidence = Schema.NullOr(
-  Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 1 })),
-);
+const Confidence = Schema.NullOr(Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 1 })));
 const LanguageUnit = Schema.Struct({
   study_unit_id: Identifier,
   detected_languages: Schema.Array(LanguageTagV1).check(Schema.isMaxLength(8)),
@@ -82,10 +77,9 @@ const ProviderEnvelope = Schema.StructWithRest(
     choices: Schema.Array(
       Schema.StructWithRest(
         Schema.Struct({
-          message: Schema.StructWithRest(
-            Schema.Struct({ content: BoundedText }),
-            [Schema.Record(Schema.String, Schema.Unknown)],
-          ),
+          message: Schema.StructWithRest(Schema.Struct({ content: BoundedText }), [
+            Schema.Record(Schema.String, Schema.Unknown),
+          ]),
         }),
         [Schema.Record(Schema.String, Schema.Unknown)],
       ),
@@ -168,7 +162,10 @@ const requestBody = (
       JSON.stringify({
         model: options.model,
         messages: [
-          { role: "system", content: `${systemPrompt}\nOutput JSON Schema: ${JSON.stringify(schema)}` },
+          {
+            role: "system",
+            content: `${systemPrompt}\nOutput JSON Schema: ${JSON.stringify(schema)}`,
+          },
           { role: "user", content: [{ type: "text", text: JSON.stringify(payload) }] },
         ],
         stream: false,
@@ -253,7 +250,9 @@ const invoke = (
         if (response.status !== 200) throw new Error("provider_status");
         const envelopeJson = JSON.parse(textDecoder.decode(bytes)) as unknown;
         const envelope = Option.getOrThrow(
-          Schema.decodeUnknownOption(ProviderEnvelope, { onExcessProperty: "ignore" })(envelopeJson),
+          Schema.decodeUnknownOption(ProviderEnvelope, { onExcessProperty: "ignore" })(
+            envelopeJson,
+          ),
         );
         const choice = envelope.choices[0];
         if (choice === undefined) throw new Error("missing_choice");
@@ -287,6 +286,13 @@ const languagePayload = (request: StudyLanguageProfileRequest) => ({
     primary: request.primaryLanguageHint,
     secondary: request.secondaryLanguageHint,
   },
+  ordered_song_lines: request.contextLines.map((line) => ({
+    ordinal: line.ordinal,
+    lyric_line_id: line.lyricLineId,
+    line_version: line.lineVersion,
+    study_unit_id: line.studyUnitId,
+    source_text: line.sourceText,
+  })),
   ordered_study_units: request.units.map((unit) => ({
     study_unit_id: unit.studyUnitId,
     source_text: unit.sourceText,
@@ -306,6 +312,13 @@ const translationPayload = (request: StudyTranslationGenerationRequest) => ({
   learning_language: request.learningLanguage,
   target_language: request.targetLanguage,
   learner_band: request.learnerBand,
+  ordered_song_lines: request.contextLines.map((line) => ({
+    ordinal: line.ordinal,
+    lyric_line_id: line.lyricLineId,
+    line_version: line.lineVersion,
+    study_unit_id: line.studyUnitId,
+    source_text: line.sourceText,
+  })),
   ordered_study_units: request.units.map((unit) => ({
     study_unit_id: unit.studyUnitId,
     lyric_line_id: unit.lyricLineId,
@@ -402,9 +415,7 @@ export const makeOpenRouterStudyTranslationTransport = (
             ? (result.output as { readonly units: unknown }).units
             : null,
       })),
-      Effect.mapError(
-        (reason) => new StudyTranslationGenerationUnavailable({ reason }),
-      ),
+      Effect.mapError((reason) => new StudyTranslationGenerationUnavailable({ reason })),
     );
   },
 });

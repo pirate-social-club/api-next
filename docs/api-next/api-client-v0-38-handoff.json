@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.38.0",
+  "releaseType": "study-generation-processing-command",
+  "wireContract": "spec-019-study-generation-convergence",
+  "sourceCommit": "pending-review",
+  "supersedes": "0.37.0; adds the authenticated, source-bound Study generation request that reports translation choice as processing while say-it-back remains available.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.38.0.tgz",
+    "sha256": "9c2d2867f91640d7774b9e981b179b1fcf80a68c9889d7cf2a2b20d65b18f4a6",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@033d8dec9a39974f887e370fe987da30968bb6fe7213f9173ecb68ff5a9c712b",
+    "openapiSha256": "033d8dec9a39974f887e370fe987da30968bb6fe7213f9173ecb68ff5a9c712b",
+    "clientSha256": "863bec51f414ddf9ad2883e725c9a757a0be5985f785740a5b510d18a8c2970f"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "passed",
+      "baselineCommit": "27e5735f322ad5d980c450ab3f32294a583c60a8",
+      "reason": "The release adds one authenticated processing command without removing or narrowing an existing route."
+    },
+    "focusedContractSuites": "36 passed, 0 failed across prompt, multilingual validation, provider bounds, Workflow convergence, HTTP processing, corpus thresholds, Study v2 contracts, and binding classification; the PostgreSQL fixture was skipped locally without DATABASE_URL",
+    "fullUnitSuite": "pending CI",
+    "fullWorkerdSuite": "pending CI",
+    "packageVerifier": "passed",
+    "repositoryCheck": "not completed locally: the shared dependency tree exposes pre-existing TypeScript BufferSource failures, and Effect diagnostics was stopped after producing no output for 90 seconds; CI is authoritative"
+  }
+}

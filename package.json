@@ -31,6 +31,7 @@
     "db:generate:baseline": "bun scripts/generate-postgres-baseline.ts",
     "check:baseline:fresh": "bun scripts/check-postgres-baseline-fresh.ts",
     "db:seed:gates-age18": "bun scripts/seed-gates-v2-age18.ts",
+    "evaluate:study-translation-corpus": "bun scripts/evaluate-study-translation-corpus.ts",
     "db:preflight:m3": "bun scripts/m3-staging-preflight.ts",
     "db:preflight:megapot-base-sepolia": "bun scripts/megapot-base-sepolia-preflight.ts",
     "db:bootstrap:megapot-base-sepolia": "bun scripts/bootstrap-megapot-base-sepolia.ts",

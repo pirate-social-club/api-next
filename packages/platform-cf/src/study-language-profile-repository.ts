@@ -9,6 +9,7 @@ import {
   type StudyLanguageProfileRequest,
   type StudyLanguageProfileStore,
   StudyLanguageProfileStoreFailed,
+  validateStudyLanguageProfile,
 } from "@pirate/application";
 import { Effect, type Layer } from "effect";
 
@@ -27,6 +28,11 @@ const nullableText = (row: Row, key: string): string | null =>
 const positiveInteger = (row: Row, key: string): number => {
   const value = Number(row[key]);
   if (!Number.isSafeInteger(value) || value < 1) throw new TypeError(`invalid ${key}`);
+  return value;
+};
+const nonnegativeInteger = (row: Row, key: string): number => {
+  const value = Number(row[key]);
+  if (!Number.isSafeInteger(value) || value < 0) throw new TypeError(`invalid ${key}`);
   return value;
 };
 const sha256 = (value: string): string => createHash("sha256").update(value, "utf8").digest("hex");
@@ -108,18 +114,15 @@ const accepted = (
     readonly: false,
   });
 
-const unitRows = (
+const lineRows = (
   db: ControlPlaneTransaction,
   input: { readonly communityId: string; readonly postId: string; readonly lyricsRevision: number },
 ) =>
   db.execute<Row>({
-    label: "study-language-profile.units",
-    text: `WITH candidates AS (
-            SELECT membership.ordinal, unit.study_unit_id, version.canonical_text,
-                   row_number() OVER (
-                     PARTITION BY unit.study_unit_id ORDER BY membership.ordinal
-                   ) AS unit_rank
-              FROM localization_lyrics_revision_lines membership
+    label: "study-language-profile.lines",
+    text: `SELECT membership.ordinal, membership.lyric_line_id, membership.line_version,
+                  unit.study_unit_id, version.canonical_text
+             FROM localization_lyrics_revision_lines membership
               JOIN localization_lyric_line_versions version
                 ON version.community_id=membership.community_id
                AND version.post_id=membership.post_id
@@ -132,9 +135,7 @@ const unitRows = (
                AND unit.line_version=membership.line_version
              WHERE membership.community_id=$1 AND membership.post_id=$2
                AND membership.lyrics_revision=$3
-          )
-          SELECT study_unit_id, canonical_text
-            FROM candidates WHERE unit_rank=1 ORDER BY ordinal`,
+            ORDER BY membership.ordinal`,
     values: [input.communityId, input.postId, input.lyricsRevision],
     readonly: false,
   });
@@ -146,6 +147,7 @@ const outcome = (
   communityId: request.communityId,
   postId: request.postId,
   lyricsRevision: request.lyricsRevision,
+  sourceHash: request.sourceHash,
   languageProfileRevision,
   state: "ready",
 });
@@ -176,26 +178,39 @@ export const makeControlPlaneStudyLanguageProfileRepository = () => ({
                     ...requestIdentity,
                     primaryLanguageHint: nullableText(row, "primary_language_bcp47"),
                     secondaryLanguageHint: nullableText(row, "secondary_language_bcp47"),
+                    contextLines: [],
                     units: [],
                   },
                   positiveInteger(existingRow, "language_profile_revision"),
                 ),
               };
             }
-            const units = yield* unitRows(transaction, requestIdentity);
-            if (units.rows.length === 0 || units.rows.length > 256) {
+            const lines = yield* lineRows(transaction, requestIdentity);
+            if (lines.rows.length === 0 || lines.rows.length > 1_024) {
               return yield* failed("unavailable");
             }
+            const seen = new Set<string>();
+            const units = lines.rows.flatMap((unit) => {
+              const studyUnitId = text(unit, "study_unit_id");
+              if (seen.has(studyUnitId)) return [];
+              seen.add(studyUnitId);
+              return [{ studyUnitId, sourceText: text(unit, "canonical_text") }];
+            });
+            if (units.length > 256) return yield* failed("unavailable");
             return {
               state: "generate" as const,
               request: {
                 ...requestIdentity,
                 primaryLanguageHint: nullableText(row, "primary_language_bcp47"),
                 secondaryLanguageHint: nullableText(row, "secondary_language_bcp47"),
-                units: units.rows.map((unit) => ({
-                  studyUnitId: text(unit, "study_unit_id"),
-                  sourceText: text(unit, "canonical_text"),
+                contextLines: lines.rows.map((line) => ({
+                  ordinal: nonnegativeInteger(line, "ordinal"),
+                  lyricLineId: text(line, "lyric_line_id"),
+                  lineVersion: positiveInteger(line, "line_version"),
+                  studyUnitId: text(line, "study_unit_id"),
+                  sourceText: text(line, "canonical_text"),
                 })),
+                units,
               },
             };
           }),
@@ -206,6 +221,9 @@ export const makeControlPlaneStudyLanguageProfileRepository = () => ({
   accept: (input: Parameters<StudyLanguageProfileStore["accept"]>[0]) =>
     mapErrors(
       Effect.gen(function* () {
+        yield* validateStudyLanguageProfile(input.request, input.analysis).pipe(
+          Effect.mapError(() => failed("constraint")),
+        );
         const db = yield* ControlPlaneDb;
         return yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
