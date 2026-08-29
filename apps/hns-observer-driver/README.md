@@ -14,9 +14,15 @@ bun run hns:emit-authority-successor -- --input /absolute/path/emission-input.js
 
 The input must be compact canonical JSON in this exact member order:
 `version`, `source_commit`, `root_label`, `observed_at`, `chain_height`,
-`generation_snapshot`, `expected_authority_addresses`, `authority_views`,
-`chain_ds`, and `artifact_paths`. `artifact_paths` must name distinct absolute
-paths for `authority_inventory`, `dns_zone_activation`, `app_host_activation`,
+`expected_chain_network`, `chain_authority_records`, `generation_snapshot`,
+`expected_authority_addresses`, `authority_views`, and `artifact_paths`.
+`chain_authority_records` must be the exact NS, glue, and DS records from the
+stable chain observation. The reviewed observer evidence must use
+`owner_authoritative_dns_txt`, whose chain-authority digest binds those
+records; the parent-chain TXT mode deliberately does not. The generation
+snapshot contains the exact DNS and app-host row identifiers as well as their
+generation numbers. `artifact_paths` must name distinct absolute paths for
+`authority_inventory`, `dns_zone_activation`, `app_host_activation`,
 `health_observation`, and `observer_evidence`, in that order. No root, network,
 authority address, database, credential, artifact, or output path has a
 default.

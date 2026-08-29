@@ -82,7 +82,9 @@ test("reads successor generation fences without reserving or writing", async () 
     runtime(
       [
         {
+          dns_zone_activation_id: "hns-rehearsal-dns-zone-v1",
           dns_current_generation: "5",
+          app_host_activation_id: "hns-rehearsal-app-host-v1",
           app_host_current_generation: "9",
           successor_dns_latest_health_generation: "0",
         },
@@ -99,7 +101,9 @@ test("reads successor generation fences without reserving or writing", async () 
       }),
     ),
   ).resolves.toEqual({
+    dns_zone_activation_id: "hns-rehearsal-dns-zone-v1",
     dns_current_generation: 5,
+    app_host_activation_id: "hns-rehearsal-app-host-v1",
     app_host_current_generation: 9,
     successor_dns_latest_health_generation: 0,
   });
@@ -253,6 +257,121 @@ test("derives every authority-controlled DNS finalization value from reviewed by
     "b".repeat(64),
     "delegation:jazleeuw",
     "c".repeat(64),
+  ]);
+});
+
+test("production mutation entry points accept reviewed documents only", async () => {
+  const dnsCalls: ControlPlaneStatement[] = [];
+  const dnsRepository = makeControlPlaneHnsFirstPartyHostPersistenceRepository(
+    runtime(
+      [
+        {
+          outcome: "activated",
+          dns_zone_activation_id: "dns-zone",
+          activation_generation: 6,
+        },
+      ],
+      dnsCalls,
+    ),
+  );
+  const dnsDocument = await prepareHnsDnsZoneActivationDocumentV1({
+    payload: {
+      version: HNS_DNS_ZONE_ACTIVATION_DOCUMENT_VERSION,
+      dns_zone_activation_id: "dns-zone",
+      canonical_root: "jazleeuw",
+      dns_authority: ["pirate_managed_dns_v1", "authority:jazleeuw", 6],
+      pirate_dns_authority_inventory: ["inventory:jazleeuw", "v6", "a".repeat(64)],
+      zone_revision: 6,
+      dnssec_keyset: ["keyset:jazleeuw", "key-tag-10875"],
+      gateway: ["gateway:jazleeuw", "b".repeat(64)],
+      stable_chain_delegation_snapshot: ["delegation:jazleeuw", "c".repeat(64)],
+    },
+    zone_bytes: new TextEncoder().encode("$ORIGIN jazleeuw.\n"),
+  });
+  await Effect.runPromise(
+    dnsRepository.store.finalizeDnsZoneActivation({
+      reservation: {
+        outcome: "reserved",
+        operation_id: "dns-operation",
+        dns_zone_activation_id: "dns-zone",
+        fence_token: 42,
+        lease_expires_at: "2026-08-29T18:00:00.000Z",
+        activation_generation: null,
+      },
+      reviewed_document_bytes: encodeHnsDnsZonePersistenceDocumentV1(dnsDocument),
+    }),
+  );
+  expect(dnsCalls[0]?.values[2]).toEqual(dnsDocument.activation_document_bytes);
+
+  const healthCalls: ControlPlaneStatement[] = [];
+  const healthRepository = makeControlPlaneHnsFirstPartyHostPersistenceRepository(
+    runtime(
+      [
+        {
+          outcome: "recorded",
+          dns_zone_activation_id: "dns-zone",
+          activation_generation: 6,
+          health_generation: 1,
+        },
+      ],
+      healthCalls,
+    ),
+  );
+  const healthBytes = encodeHnsDnsHealthDocumentV1({
+    operation_id: "health-op",
+    idempotency_key: "health-key",
+    request_hash: "d".repeat(64),
+    dns_zone_activation_id: "dns-zone",
+    activation_generation: 6,
+    expected_health_generation: 0,
+    stable_chain_delegation_snapshot_reference: "delegation:jazleeuw",
+    stable_chain_delegation_snapshot_digest: "c".repeat(64),
+    observed_zone_bytes_digest: dnsDocument.zone_bytes_digest,
+    observed_dnssec_keyset_reference: "keyset:jazleeuw",
+    observed_dnssec_keyset_version: "key-tag-10875",
+    observed_gateway_deployment_reference: "gateway:jazleeuw",
+    observed_gateway_certificate_spki_sha256: "b".repeat(64),
+    delegation_matches: true,
+    ds_authenticates_zone: true,
+    retained_zone_digest_matches: true,
+    gateway_healthy: true,
+    valid_for_seconds: 3600,
+  });
+  await Effect.runPromise(healthRepository.store.recordDnsZoneHealth(healthBytes));
+  expect(healthCalls[0]?.values[0]).toBe("health-op");
+
+  const appCalls: ControlPlaneStatement[] = [];
+  const appRepository = makeControlPlaneHnsFirstPartyHostPersistenceRepository(
+    runtime(
+      [
+        {
+          outcome: "changed",
+          app_host_activation_id: "app-host",
+          app_host_activation_generation: 10,
+          status: "active",
+        },
+      ],
+      appCalls,
+    ),
+  );
+  const appBytes = encodeHnsAppHostTransitionDocumentV1({
+    operation_id: "app-op",
+    idempotency_key: "app-key",
+    request_hash: "e".repeat(64),
+    app_host_activation_id: "app-host",
+    expected_activation_generation: 9,
+    target_status: "active",
+    reason_code: "canonical-authority",
+  });
+  await Effect.runPromise(appRepository.store.changeCommunityAppHostStatus(appBytes));
+  expect(appCalls[0]?.values).toEqual([
+    "app-op",
+    "app-key",
+    "e".repeat(64),
+    "app-host",
+    9,
+    "active",
+    "canonical-authority",
   ]);
 });
 

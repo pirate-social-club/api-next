@@ -1,4 +1,5 @@
 import {
+  type HnsAuthorityEmitChainRecordV1,
   type HnsAuthorityEmitDsV1,
   type HnsAuthorityEmitViewV1,
   type HnsAuthoritySuccessorGenerationSnapshotV1,
@@ -24,10 +25,11 @@ export type HnsAuthoritySuccessorEmissionInputV1 = Readonly<{
   root_label: string;
   observed_at: string;
   chain_height: number;
+  expected_chain_network: string;
+  chain_authority_records: ReadonlyArray<HnsAuthorityEmitChainRecordV1>;
   generation_snapshot: HnsAuthoritySuccessorGenerationSnapshotV1;
   expected_authority_addresses: readonly [string, string];
   authority_views: readonly [HnsAuthorityEmitViewV1, HnsAuthorityEmitViewV1];
-  chain_ds: ReadonlyArray<HnsAuthorityEmitDsV1>;
   artifact_paths: Readonly<Record<ArtifactName, string>>;
 }>;
 
@@ -73,6 +75,22 @@ function validDs(value: unknown): value is HnsAuthorityEmitDsV1 {
     (digestType === 2 || digestType === 4) &&
     typeof digest === "string" &&
     new RegExp(digestType === 2 ? "^[0-9a-f]{64}$" : "^[0-9a-f]{96}$", "u").test(digest)
+  );
+}
+
+function validChainAuthorityRecord(value: unknown): value is HnsAuthorityEmitChainRecordV1 {
+  if (!Array.isArray(value)) return false;
+  if (value[0] === "NS") return value.length === 2 && typeof value[1] === "string";
+  if (value[0] === "GLUE4" || value[0] === "GLUE6") {
+    return value.length === 3 && typeof value[1] === "string" && typeof value[2] === "string";
+  }
+  return (
+    value[0] === "DS" &&
+    value.length === 5 &&
+    Number.isSafeInteger(value[1]) &&
+    Number.isSafeInteger(value[2]) &&
+    Number.isSafeInteger(value[3]) &&
+    typeof value[4] === "string"
   );
 }
 
@@ -137,10 +155,11 @@ export function decodeHnsAuthoritySuccessorEmissionInputV1(
       "root_label",
       "observed_at",
       "chain_height",
+      "expected_chain_network",
+      "chain_authority_records",
       "generation_snapshot",
       "expected_authority_addresses",
       "authority_views",
-      "chain_ds",
       "artifact_paths",
     ]) ||
     value.version !== HNS_AUTHORITY_SUCCESSOR_EMISSION_INPUT_VERSION ||
@@ -148,12 +167,19 @@ export function decodeHnsAuthoritySuccessorEmissionInputV1(
     typeof value.root_label !== "string" ||
     typeof value.observed_at !== "string" ||
     !Number.isSafeInteger(value.chain_height) ||
+    typeof value.expected_chain_network !== "string" ||
+    !Array.isArray(value.chain_authority_records) ||
+    !value.chain_authority_records.every(validChainAuthorityRecord) ||
     !exactObject(value.generation_snapshot, [
+      "dns_zone_activation_id",
       "dns_current_generation",
+      "app_host_activation_id",
       "app_host_current_generation",
       "successor_dns_latest_health_generation",
     ]) ||
+    typeof value.generation_snapshot.dns_zone_activation_id !== "string" ||
     !Number.isSafeInteger(value.generation_snapshot.dns_current_generation) ||
+    typeof value.generation_snapshot.app_host_activation_id !== "string" ||
     !Number.isSafeInteger(value.generation_snapshot.app_host_current_generation) ||
     !Number.isSafeInteger(value.generation_snapshot.successor_dns_latest_health_generation) ||
     !Array.isArray(value.expected_authority_addresses) ||
@@ -162,9 +188,6 @@ export function decodeHnsAuthoritySuccessorEmissionInputV1(
     !Array.isArray(value.authority_views) ||
     value.authority_views.length !== 2 ||
     !value.authority_views.every(validView) ||
-    !Array.isArray(value.chain_ds) ||
-    value.chain_ds.length === 0 ||
-    !value.chain_ds.every(validDs) ||
     !validArtifactPaths(value.artifact_paths)
   ) {
     throw new HnsAuthoritySuccessorEmitterError("invalid_input_document");
@@ -214,10 +237,11 @@ export async function runHnsAuthoritySuccessorEmitterV1(
     root_label: input.root_label,
     observed_at: input.observed_at,
     chain_height: input.chain_height,
+    expected_chain_network: input.expected_chain_network,
+    chain_authority_records: input.chain_authority_records,
     generation_snapshot: input.generation_snapshot,
     expected_authority_addresses: input.expected_authority_addresses,
     authority_views: input.authority_views,
-    chain_ds: input.chain_ds,
     artifacts,
   });
   await io.emit(result.candidate_bytes);

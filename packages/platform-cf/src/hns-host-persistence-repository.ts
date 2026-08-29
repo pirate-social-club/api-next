@@ -145,14 +145,24 @@ function nonnegativeInteger(value: unknown): number | null {
 }
 
 function decodeGenerationSnapshot(row: Row): HnsAuthoritySuccessorGenerationSnapshotV1 {
+  const dnsActivationId = identity(row.dns_zone_activation_id);
   const dns = positiveInteger(row.dns_current_generation);
+  const appActivationId = identity(row.app_host_activation_id);
   const app = positiveInteger(row.app_host_current_generation);
   const health = nonnegativeInteger(row.successor_dns_latest_health_generation);
-  if (dns === null || app === null || health === null) {
+  if (
+    dnsActivationId === null ||
+    dns === null ||
+    appActivationId === null ||
+    app === null ||
+    health === null
+  ) {
     throw new Error("HNS successor generation snapshot returned an invalid row");
   }
   return {
+    dns_zone_activation_id: dnsActivationId,
     dns_current_generation: dns,
+    app_host_activation_id: appActivationId,
     app_host_current_generation: app,
     successor_dns_latest_health_generation: health,
   };
@@ -426,8 +436,13 @@ export function makeControlPlaneHnsFirstPartyHostPersistenceRepository(
         },
         decodeReservation,
       ),
-    finalizeDnsZoneActivation: ({ reservation, document }) =>
-      execute(dnsZoneFinalizationStatement(reservation, document), decodeDnsOutcome),
+    finalizeDnsZoneActivation: ({ reservation, reviewed_document_bytes }) =>
+      Effect.flatMap(
+        Effect.promise(() =>
+          hnsDnsZoneFinalizationStatementFromReviewedDocument(reservation, reviewed_document_bytes),
+        ),
+        (statement) => execute(statement, decodeDnsOutcome),
+      ),
     changeDnsZoneStatus: (input) =>
       execute(
         {
@@ -446,7 +461,8 @@ export function makeControlPlaneHnsFirstPartyHostPersistenceRepository(
         },
         decodeLifecycle,
       ),
-    recordDnsZoneHealth: (input) => execute(dnsHealthStatement(input), decodeHealth),
+    recordDnsZoneHealth: (reviewedDocumentBytes) =>
+      execute(hnsDnsHealthStatementFromReviewedDocument(reviewedDocumentBytes), decodeHealth),
     activateCommunityAppHost: (input) =>
       execute(
         {
@@ -473,8 +489,11 @@ export function makeControlPlaneHnsFirstPartyHostPersistenceRepository(
         },
         decodeAppOutcome,
       ),
-    changeCommunityAppHostStatus: (input) =>
-      execute(appHostTransitionStatement(input), decodeAppOutcome),
+    changeCommunityAppHostStatus: (reviewedDocumentBytes) =>
+      execute(
+        hnsAppHostTransitionStatementFromReviewedDocument(reviewedDocumentBytes),
+        decodeAppOutcome,
+      ),
   };
 
   return {
@@ -483,7 +502,9 @@ export function makeControlPlaneHnsFirstPartyHostPersistenceRepository(
       execute(
         {
           label: "hns.hosts.successor-generations.read",
-          text: `SELECT dns.current_generation AS dns_current_generation,
+          text: `SELECT dns.dns_zone_activation_id,
+                        dns.current_generation AS dns_current_generation,
+                        app.app_host_activation_id,
                         app.current_generation AS app_host_current_generation,
                         COALESCE((
                           SELECT max(health.health_generation)

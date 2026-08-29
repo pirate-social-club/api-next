@@ -4,6 +4,11 @@ import {
   encodeHnsAuthorityInventory,
 } from "./namespace-ownership/hns-authority-inventory.ts";
 import {
+  type HnsChainAuthorityRecord,
+  hnsChainAuthorityDigest,
+  hnsChainAuthorityRecords,
+} from "./namespace-ownership/hns-control-observer.ts";
+import {
   decodeHnsControlObservationResultV2Bytes,
   encodeHnsControlObservationResultV2,
 } from "./namespace-ownership/hns-control-observer-v2.ts";
@@ -17,7 +22,9 @@ export const HNS_DNS_ZONE_PERSISTENCE_DOCUMENT_VERSION =
   "pirate-hns-dns-zone-persistence-document-v1" as const;
 
 export type HnsAuthoritySuccessorGenerationSnapshotV1 = Readonly<{
+  dns_zone_activation_id: string;
   dns_current_generation: number;
+  app_host_activation_id: string;
   app_host_current_generation: number;
   successor_dns_latest_health_generation: number;
 }>;
@@ -29,6 +36,7 @@ export type HnsAuthoritySuccessorGenerationsV1 = Readonly<{
 }>;
 
 export type HnsAuthorityEmitDsV1 = readonly [number, 13, 2 | 4, string];
+export type HnsAuthorityEmitChainRecordV1 = HnsChainAuthorityRecord;
 export type HnsAuthorityEmitViewV1 = Readonly<{
   authority_address: string;
   outcome: "observed" | "unavailable";
@@ -72,6 +80,10 @@ export type HnsAuthoritySuccessorCandidateV1 = Readonly<{
   root_label: string;
   observed_at: string;
   chain_height: number;
+  chain_network: string;
+  chain_genesis_block_hash: string;
+  chain_authority_digest: string;
+  chain_authority_records: ReadonlyArray<HnsChainAuthorityRecord>;
   generations: HnsAuthoritySuccessorGenerationsV1;
   dnskey_key_tag: number;
   authority_views: readonly [HnsAuthorityEmitViewV1, HnsAuthorityEmitViewV1];
@@ -96,10 +108,11 @@ export async function prepareHnsAuthoritySuccessorCandidateV1(
     root_label: string;
     observed_at: string;
     chain_height: number;
+    expected_chain_network: string;
+    chain_authority_records: ReadonlyArray<HnsChainAuthorityRecord>;
     generation_snapshot: HnsAuthoritySuccessorGenerationSnapshotV1;
     expected_authority_addresses: readonly [string, string];
     authority_views: ReadonlyArray<HnsAuthorityEmitViewV1>;
-    chain_ds: ReadonlyArray<HnsAuthorityEmitDsV1>;
     artifacts: Readonly<Record<HnsAuthorityCandidateArtifactName, Uint8Array>>;
   }>,
 ): Promise<
@@ -119,11 +132,6 @@ export async function prepareHnsAuthoritySuccessorCandidateV1(
   ) {
     throw new HnsAuthorityEmitRefusal("candidate_metadata_invalid");
   }
-  const views = requireHnsAuthorityEmitObservationV1({
-    expected_authority_addresses: input.expected_authority_addresses,
-    views: input.authority_views,
-    chain_ds: input.chain_ds,
-  });
   const artifactNames = [
     "authority_inventory",
     "dns_zone_activation",
@@ -154,10 +162,47 @@ export async function prepareHnsAuthoritySuccessorCandidateV1(
   }
   if (
     observation.result.root_label !== input.root_label ||
-    observation.result.chain_anchor_height !== input.chain_height
+    observation.result.chain_anchor_height !== input.chain_height ||
+    observation.result.chain_network !== input.expected_chain_network ||
+    observation.result.ownership_source !== "owner_authoritative_dns_txt"
   ) {
     throw new HnsAuthorityEmitRefusal("observer_evidence_mismatch");
   }
+  let chainAuthorityRecords: ReadonlyArray<HnsChainAuthorityRecord>;
+  let chainAuthorityDigest: string;
+  try {
+    chainAuthorityRecords = hnsChainAuthorityRecords(
+      observation.result.ownership_source,
+      input.chain_authority_records,
+    );
+    chainAuthorityDigest = await hnsChainAuthorityDigest({
+      chain_network: observation.result.chain_network,
+      chain_genesis_block_hash: observation.result.chain_genesis_block_hash,
+      root_label: observation.result.root_label,
+      ownership_source: observation.result.ownership_source,
+      authority_records: chainAuthorityRecords,
+    });
+  } catch {
+    throw new HnsAuthorityEmitRefusal("observer_evidence_mismatch");
+  }
+  if (chainAuthorityDigest !== observation.result.chain_authority_digest) {
+    throw new HnsAuthorityEmitRefusal("observer_evidence_mismatch");
+  }
+  const chainDs = chainAuthorityRecords
+    .filter(
+      (record): record is readonly ["DS", number, number, number, string] => record[0] === "DS",
+    )
+    .map(([, keyTag, algorithm, digestType, digest]) => [
+      keyTag,
+      algorithm,
+      digestType,
+      digest,
+    ]) as ReadonlyArray<HnsAuthorityEmitDsV1>;
+  const views = requireHnsAuthorityEmitObservationV1({
+    expected_authority_addresses: input.expected_authority_addresses,
+    views: input.authority_views,
+    chain_ds: chainDs,
+  });
   const canonicalObservation = await encodeHnsControlObservationResultV2(observation.result);
   if (
     !equalBytes(canonicalInventory, input.artifacts.authority_inventory) ||
@@ -172,6 +217,7 @@ export async function prepareHnsAuthoritySuccessorCandidateV1(
   requireHnsAuthorityCandidateArtifactSemanticsV1({
     root_label: input.root_label,
     observed_at: input.observed_at,
+    chain_authority_digest: chainAuthorityDigest,
     generation_snapshot: input.generation_snapshot,
     generations,
     expected_authority_addresses: input.expected_authority_addresses,
@@ -194,10 +240,14 @@ export async function prepareHnsAuthoritySuccessorCandidateV1(
     root_label: input.root_label,
     observed_at: input.observed_at,
     chain_height: input.chain_height,
+    chain_network: observation.result.chain_network,
+    chain_genesis_block_hash: observation.result.chain_genesis_block_hash,
+    chain_authority_digest: chainAuthorityDigest,
+    chain_authority_records: chainAuthorityRecords,
     generations,
     dnskey_key_tag: views[0].dnskey_key_tag as number,
     authority_views: views,
-    chain_ds: input.chain_ds,
+    chain_ds: chainDs,
     artifacts,
   };
   const candidateBytes = new TextEncoder().encode(JSON.stringify(candidate));
@@ -208,17 +258,11 @@ export async function prepareHnsAuthoritySuccessorCandidateV1(
   };
 }
 
-function dnsKeyTagFromVersion(value: string): number | null {
-  const match = /^key-tag-([1-9][0-9]{0,4})$/u.exec(value);
-  if (match === null) return null;
-  const keyTag = Number(match[1]);
-  return Number.isSafeInteger(keyTag) && keyTag <= 65_535 ? keyTag : null;
-}
-
 function requireHnsAuthorityCandidateArtifactSemanticsV1(
   input: Readonly<{
     root_label: string;
     observed_at: string;
+    chain_authority_digest: string;
     generation_snapshot: HnsAuthoritySuccessorGenerationSnapshotV1;
     generations: HnsAuthoritySuccessorGenerationsV1;
     expected_authority_addresses: readonly [string, string];
@@ -230,6 +274,7 @@ function requireHnsAuthorityCandidateArtifactSemanticsV1(
     observer_evidence: Readonly<{
       status: "verified";
       environment: string;
+      chain_anchor_median_time: number;
     }>;
   }>,
 ): void {
@@ -247,10 +292,11 @@ function requireHnsAuthorityCandidateArtifactSemanticsV1(
       entry.active && entry.scope_kind === "exact_root" && entry.root_label === input.root_label,
   );
   const observedAt = Date.parse(input.observed_at);
+  const anchorMedianTime = input.observer_evidence.chain_anchor_median_time * 1_000;
   const inventoryIsCurrent =
     Date.parse(inventory.published_at) <= observedAt &&
     observedAt < Date.parse(inventory.expires_at);
-  const dnsKeyTag = dnsKeyTagFromVersion(dns.dnssec_keyset_version);
+  const observedDnsKeyTag = input.views[0].dnskey_key_tag;
   const healthChecksPassed =
     health.delegation_matches &&
     health.ds_authenticates_zone &&
@@ -260,19 +306,27 @@ function requireHnsAuthorityCandidateArtifactSemanticsV1(
   if (
     !inventoryCoversRoot ||
     !inventoryIsCurrent ||
+    !Number.isSafeInteger(input.observer_evidence.chain_anchor_median_time) ||
+    input.observer_evidence.chain_anchor_median_time < 0 ||
+    observedAt < anchorMedianTime ||
     inventory.environment !== input.observer_evidence.environment ||
     input.expected_authority_addresses.some((address) => !activeAuthorityAddresses.has(address)) ||
     dns.canonical_root !== input.root_label ||
+    dns.dns_zone_activation_id !== input.generation_snapshot.dns_zone_activation_id ||
     dns.pirate_dns_authority_inventory_reference !== inventory.authority_inventory_reference ||
     dns.pirate_dns_authority_inventory_version !== inventory.authority_inventory_version ||
     dns.pirate_dns_authority_inventory_digest !== input.inventory.inventory_digest ||
     dns.dns_authority_generation !== input.generations.dns_activation_generation ||
-    dnsKeyTag === null ||
+    dns.zone_revision !== input.generations.dns_activation_generation ||
+    observedDnsKeyTag === null ||
+    dns.dnssec_keyset_version !== `key-tag-${observedDnsKeyTag}` ||
     input.views.some(
       (view) =>
-        view.zone_bytes_digest !== dns.zone_bytes_digest || view.dnskey_key_tag !== dnsKeyTag,
+        view.zone_bytes_digest !== dns.zone_bytes_digest ||
+        view.dnskey_key_tag !== observedDnsKeyTag,
     ) ||
     app.expected_activation_generation !== input.generation_snapshot.app_host_current_generation ||
+    app.app_host_activation_id !== input.generation_snapshot.app_host_activation_id ||
     app.expected_activation_generation + 1 !== input.generations.app_host_activation_generation ||
     app.target_status !== "active" ||
     health.dns_zone_activation_id !== dns.dns_zone_activation_id ||
@@ -284,6 +338,7 @@ function requireHnsAuthorityCandidateArtifactSemanticsV1(
       dns.stable_chain_delegation_snapshot_reference ||
     health.stable_chain_delegation_snapshot_digest !==
       dns.stable_chain_delegation_snapshot_digest ||
+    dns.stable_chain_delegation_snapshot_digest !== input.chain_authority_digest ||
     health.observed_zone_bytes_digest !== dns.zone_bytes_digest ||
     health.observed_dnssec_keyset_reference !== dns.dnssec_keyset_reference ||
     health.observed_dnssec_keyset_version !== dns.dnssec_keyset_version ||
@@ -322,7 +377,9 @@ export function requireReviewedHnsAuthorityCandidateV1(
   const current = input.current_snapshot;
   if (
     emitted.dns_current_generation !== current.dns_current_generation ||
+    emitted.dns_zone_activation_id !== current.dns_zone_activation_id ||
     emitted.app_host_current_generation !== current.app_host_current_generation ||
+    emitted.app_host_activation_id !== current.app_host_activation_id ||
     emitted.successor_dns_latest_health_generation !==
       current.successor_dns_latest_health_generation
   ) {
@@ -337,7 +394,13 @@ function sameDs(
   left: ReadonlyArray<HnsAuthorityEmitDsV1>,
   right: ReadonlyArray<HnsAuthorityEmitDsV1>,
 ) {
-  return JSON.stringify(left) === JSON.stringify(right);
+  const canonical = (records: ReadonlyArray<HnsAuthorityEmitDsV1>) =>
+    [...records].sort((first, second) => {
+      const encodedFirst = JSON.stringify(first);
+      const encodedSecond = JSON.stringify(second);
+      return encodedFirst < encodedSecond ? -1 : encodedFirst > encodedSecond ? 1 : 0;
+    });
+  return JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
 }
 
 function validDsForKeyTag(records: ReadonlyArray<HnsAuthorityEmitDsV1>, keyTag: number): boolean {
@@ -859,7 +922,7 @@ export type HnsFirstPartyHostPersistenceStoreV1 = Readonly<{
   finalizeDnsZoneActivation: (
     input: Readonly<{
       reservation: HnsDnsZoneActivationReservationV1;
-      document: HnsDnsZoneActivationDocumentV1;
+      reviewed_document_bytes: Uint8Array;
     }>,
   ) => Effect.Effect<HnsDnsZoneActivationOutcomeV1, ControlPlaneError>;
   changeDnsZoneStatus: (
@@ -874,7 +937,7 @@ export type HnsFirstPartyHostPersistenceStoreV1 = Readonly<{
     }>,
   ) => Effect.Effect<HnsLifecycleOutcomeV1, ControlPlaneError>;
   recordDnsZoneHealth: (
-    input: HnsDnsZoneHealthInputV1,
+    reviewed_document_bytes: Uint8Array,
   ) => Effect.Effect<HnsDnsZoneHealthOutcomeV1, ControlPlaneError>;
   activateCommunityAppHost: (
     input: Readonly<{
@@ -894,6 +957,6 @@ export type HnsFirstPartyHostPersistenceStoreV1 = Readonly<{
     }>,
   ) => Effect.Effect<HnsCommunityAppHostActivationOutcomeV1, ControlPlaneError>;
   changeCommunityAppHostStatus: (
-    input: HnsCommunityAppHostStatusChangeInputV1,
+    reviewed_document_bytes: Uint8Array,
   ) => Effect.Effect<HnsCommunityAppHostActivationOutcomeV1, ControlPlaneError>;
 }>;

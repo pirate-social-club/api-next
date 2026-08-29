@@ -17,6 +17,12 @@ const chainDs = [
   [10875, 13, 2, "a".repeat(64)],
   [10875, 13, 4, "b".repeat(96)],
 ] as const;
+const chainAuthorityRecords = [
+  ["NS", "ns1.pirate"],
+  ["NS", "ns2.pirate"],
+  ["DS", ...chainDs[0]],
+  ["DS", ...chainDs[1]],
+] as const;
 
 function emissionInput(): HnsAuthoritySuccessorEmissionInputV1 {
   const view = (authorityAddress: string) => ({
@@ -32,14 +38,17 @@ function emissionInput(): HnsAuthoritySuccessorEmissionInputV1 {
     root_label: "jazleeuw",
     observed_at: "2026-08-29T17:00:00.000Z",
     chain_height: 344_448,
+    expected_chain_network: "main",
+    chain_authority_records: chainAuthorityRecords,
     generation_snapshot: {
+      dns_zone_activation_id: "hns-rehearsal-dns-zone-v1",
       dns_current_generation: 5,
+      app_host_activation_id: "hns-rehearsal-app-host-v1",
       app_host_current_generation: 9,
       successor_dns_latest_health_generation: 0,
     },
     expected_authority_addresses: ["94.103.168.161", "81.15.150.159"],
     authority_views: [view("94.103.168.161"), view("81.15.150.159")],
-    chain_ds: chainDs,
     artifact_paths: {
       authority_inventory: "/evidence/authority-inventory.json",
       dns_zone_activation: "/evidence/dns-zone-activation.json",
@@ -65,6 +74,10 @@ function fakePreparer(calls: Parameters<CandidatePreparer>[0][]): CandidatePrepa
         root_label: input.root_label,
         observed_at: input.observed_at,
         chain_height: input.chain_height,
+        chain_network: input.expected_chain_network,
+        chain_genesis_block_hash: "6".repeat(64),
+        chain_authority_digest: "7".repeat(64),
+        chain_authority_records: input.chain_authority_records,
         generations: {
           dns_activation_generation: 6,
           app_host_activation_generation: 10,
@@ -72,7 +85,7 @@ function fakePreparer(calls: Parameters<CandidatePreparer>[0][]): CandidatePrepa
         },
         dnskey_key_tag: 10875,
         authority_views: [firstView, secondView],
-        chain_ds: input.chain_ds,
+        chain_ds: chainDs,
         artifacts: [],
       },
       candidate_bytes: candidateBytes,

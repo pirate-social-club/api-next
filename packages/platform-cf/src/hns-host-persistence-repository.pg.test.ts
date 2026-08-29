@@ -1,7 +1,9 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import {
   activateOperatorManagedRoute,
+  encodeHnsDnsHealthDocumentV1,
   encodeHnsDnsZoneActivationDocumentV1,
+  encodeHnsDnsZonePersistenceDocumentV1,
   HNS_DNS_ZONE_ACTIVATION_DOCUMENT_VERSION,
   isHnsCommunityAppHostAuthorityActive,
   revokeOperatorManagedRoute,
@@ -268,7 +270,10 @@ suite("HNS first-party host persistence on PostgreSQL 17", () => {
       );
       await expect(
         Effect.runPromise(
-          repository.store.finalizeDnsZoneActivation({ reservation, document: firstDocument }),
+          repository.store.finalizeDnsZoneActivation({
+            reservation,
+            reviewed_document_bytes: encodeHnsDnsZonePersistenceDocumentV1(firstDocument),
+          }),
         ),
       ).resolves.toEqual({
         outcome: "activated",
@@ -283,7 +288,7 @@ suite("HNS first-party host persistence on PostgreSQL 17", () => {
         Effect.runPromise(
           repository.store.finalizeDnsZoneActivation({
             reservation: replay,
-            document: firstDocument,
+            reviewed_document_bytes: encodeHnsDnsZonePersistenceDocumentV1(firstDocument),
           }),
         ),
       ).resolves.toMatchObject({ outcome: "replayed", activation_generation: 1 });
@@ -308,7 +313,9 @@ suite("HNS first-party host persistence on PostgreSQL 17", () => {
         gateway_healthy: true,
         valid_for_seconds: 3600,
       } as const;
-      await Effect.runPromise(repository.store.recordDnsZoneHealth(healthy));
+      await Effect.runPromise(
+        repository.store.recordDnsZoneHealth(encodeHnsDnsHealthDocumentV1(healthy)),
+      );
       await expect(
         Effect.runPromise(
           repository.store.activateCommunityAppHost({
@@ -361,15 +368,17 @@ suite("HNS first-party host persistence on PostgreSQL 17", () => {
       });
 
       await Effect.runPromise(
-        repository.store.recordDnsZoneHealth({
-          ...healthy,
-          operation_id: "dns-health-operation-2",
-          idempotency_key: "dns-health-key-2",
-          request_hash: "3".repeat(64),
-          expected_health_generation: 1,
-          delegation_matches: false,
-          ds_authenticates_zone: false,
-        }),
+        repository.store.recordDnsZoneHealth(
+          encodeHnsDnsHealthDocumentV1({
+            ...healthy,
+            operation_id: "dns-health-operation-2",
+            idempotency_key: "dns-health-key-2",
+            request_hash: "3".repeat(64),
+            expected_health_generation: 1,
+            delegation_matches: false,
+            ds_authenticates_zone: false,
+          }),
+        ),
       );
       const drifted = await Effect.runPromise(source.resolve("app.jazleeuw"));
       expect(drifted).toMatchObject({
@@ -396,7 +405,7 @@ suite("HNS first-party host persistence on PostgreSQL 17", () => {
       await Effect.runPromise(
         repository.store.finalizeDnsZoneActivation({
           reservation: secondReservation,
-          document: secondDocument,
+          reviewed_document_bytes: encodeHnsDnsZonePersistenceDocumentV1(secondDocument),
         }),
       );
       const staleGeneration = await Effect.runPromise(source.resolve("app.jazleeuw"));
@@ -483,20 +492,29 @@ suite("HNS first-party host persistence on PostgreSQL 17", () => {
       expect(current.fence_token).toBe(stale.fence_token + 1);
       await expect(
         Effect.runPromise(
-          repository.store.finalizeDnsZoneActivation({ reservation: stale, document }),
+          repository.store.finalizeDnsZoneActivation({
+            reservation: stale,
+            reviewed_document_bytes: encodeHnsDnsZonePersistenceDocumentV1(document),
+          }),
         ),
       ).rejects.toBeDefined();
       await expect(
         Effect.runPromise(
           repository.store.finalizeDnsZoneActivation({
             reservation: current,
-            document: { ...document, gateway_deployment_reference: "gateway-deployment:forged" },
+            reviewed_document_bytes: encodeHnsDnsZonePersistenceDocumentV1({
+              ...document,
+              gateway_deployment_reference: "gateway-deployment:forged",
+            }),
           }),
         ),
       ).rejects.toBeDefined();
       await expect(
         Effect.runPromise(
-          repository.store.finalizeDnsZoneActivation({ reservation: current, document }),
+          repository.store.finalizeDnsZoneActivation({
+            reservation: current,
+            reviewed_document_bytes: encodeHnsDnsZonePersistenceDocumentV1(document),
+          }),
         ),
       ).resolves.toMatchObject({ outcome: "activated", activation_generation: 1 });
       completedTestCount += 1;
