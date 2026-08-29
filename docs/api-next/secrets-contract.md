@@ -292,6 +292,68 @@ sentinels while disabled. Populating any environment requires the accepted
 single-environment operation plan and a separate credential ceremony; copying
 another environment's audience, registry, or key material is prohibited.
 
+### HNS Access consumer custody boundary — 2026-08-29
+
+Infisical is the canonical store for HNS Access client credentials. A password
+manager is not a runtime source and is not part of synchronization. Optional
+operator recovery escrow requires a separately accepted policy; absent that
+policy, the credential ceremony creates no password-manager copy.
+
+The staging ceremony uses the canonical Infisical project pinned by
+`api-next/.infisical.json`, but isolates values by consumer path and path-scoped
+access policy. The environment is selected as `staging`; neither path nor key
+name repeats the environment. Cloudflare resource names may retain their
+`-staging` suffix because those names identify provider resources rather than
+Infisical values.
+
+| Consumer | Infisical path | Exact admitted keys | Synchronization target |
+| --- | --- | --- | --- |
+| HNS community-app gateway | `/services/hns-community-app-gateway` | `hns-community-solid-access-client-id`, `hns-community-solid-access-client-secret` | the two identically named systemd credentials for the accepted staging gateway unit |
+| Solid HNS community composition | `/services/pirate-web-solid/hns-community-app` | `HNS_COMMUNITY_APP_API_ACCESS_CLIENT_ID`, `HNS_COMMUNITY_APP_API_ACCESS_CLIENT_SECRET`, `HNS_COMMUNITY_APP_AUTHORITY_ACCESS_CLIENT_ID`, `HNS_COMMUNITY_APP_AUTHORITY_ACCESS_CLIENT_SECRET` | only the identically named secrets on `pirate-web-solid-staging` |
+
+The gateway path contains only the client pair for the Cloudflare resource
+`hns-community-gateway-staging`. The Solid path contains the distinct client
+pairs for `hns-community-solid-api-staging` and
+`hns-community-solid-authority-staging`. Production tokens and values are
+never copied into either staging path. api-next receives none of these six
+values: it validates the Access JWT against the generated application audience,
+issuer, and JWKS URL, all of which are public Wrangler configuration.
+
+The credential ceremony uses a dedicated staging provisioner identity whose
+write authority is limited to these two paths. The gateway installer can read
+only the gateway path for the duration of an accepted installation, and the
+Solid deployment identity can read only the Solid path. The api-next Worker,
+api-next deployment identity, general audit identity, and either runtime
+consumer may not read the other consumer's path. Name-only drift auditing may
+enumerate both paths with `viewSecretValue: "false"` and
+`expandSecretReferences: "false"` but receives no value-read permission.
+
+Cloudflare exposes each service-token client secret once. The accepted
+ceremony must create one token at a time and pass the creation response through
+an approved in-memory helper directly into two Infisical writes. Shell tracing
+is disabled; standard output and error are redacted; neither value appears in
+a command argument, terminal rendering, repository file, transcript, clipboard
+history, process-surviving environment, or plaintext local file. The helper
+then performs a name-only Infisical read, records the Cloudflare token id and
+expiry plus Infisical secret versions, and discards all response bytes. A
+partial pair is revoked at Cloudflare and deleted from Infisical before retry;
+it is never completed piecemeal in a later session.
+
+Folder creation, the path-scoped identities, the in-memory transfer helper,
+the six values, and either synchronization target are live mutations and are
+not authorized by this contract. The existing drift auditor does not admit the
+two absent paths merely because they are documented here. Its policy and tests
+must be extended atomically with the separately authorized folder-creation
+ceremony, so an absent pre-provisioning path remains accepted while a created
+path immediately becomes exact-name enforced.
+
+Rotation creates a new provider token and new Infisical versions, synchronizes
+and proves the named consumer, and only then revokes the retired token. Failure
+before consumer proof restores the prior versions and revokes the candidate.
+Emergency revocation disables the exact provider token first and disables the
+affected HNS boundary until a fresh pair is installed; it never substitutes a
+production or sibling-consumer credential.
+
 ### Staging media-provider provisioning boundary — 2026-08-26
 
 The following names are allowed only in Infisical environment `staging` at
