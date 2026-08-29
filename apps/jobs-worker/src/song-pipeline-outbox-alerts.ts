@@ -41,23 +41,46 @@ export type SongPipelineOutboxAlertOptions = Readonly<{
 }>;
 
 export const SONG_PIPELINE_HEALTH_INTERVAL_MS = 5 * 60 * 1000;
+export const SONG_PIPELINE_PENDING_DEGRADED_AGE_SECONDS = 10 * 60;
+
+const MEDIA_LIVE_SUBMISSION_STATES = "('processing','action_required','manual_review')";
+const DATA_TERMINAL_OPERATION_STATES = "('registered','failed','reconciliation_required')";
 
 const healthSql = (subsystem: "media" | "data"): string =>
   subsystem === "media"
-    ? `SELECT COUNT(*) FILTER (WHERE state='pending')::int AS pending_count,
-              COUNT(*) FILTER (WHERE state IN ('running','failed'))::int AS retrying_count,
-              COUNT(*) FILTER (WHERE state='exhausted')::int AS exhausted_count,
-              COUNT(*) FILTER (WHERE state='delivered')::int AS terminal_count,
-              EXTRACT(EPOCH FROM (clock_timestamp()-MIN(created_at) FILTER (WHERE state='pending')))::bigint AS oldest_pending_age_seconds,
-              MAX(delivered_at) AS last_success_at
-         FROM media_submission_outbox`
-    : `SELECT COUNT(*) FILTER (WHERE state='pending')::int AS pending_count,
-              COUNT(*) FILTER (WHERE state IN ('running','failed'))::int AS retrying_count,
-              COUNT(*) FILTER (WHERE state='exhausted')::int AS exhausted_count,
-              COUNT(*) FILTER (WHERE state='delivered')::int AS terminal_count,
-              EXTRACT(EPOCH FROM (clock_timestamp()-MIN(created_at) FILTER (WHERE state='pending')))::bigint AS oldest_pending_age_seconds,
-              MAX(updated_at) FILTER (WHERE state='delivered') AS last_success_at
-         FROM data_registration_outbox`;
+    ? `SELECT COUNT(*) FILTER (WHERE outbox.state='pending'
+                                AND submission.status IN ${MEDIA_LIVE_SUBMISSION_STATES})::int AS pending_count,
+              COUNT(*) FILTER (WHERE outbox.state IN ('running','failed')
+                                AND submission.status IN ${MEDIA_LIVE_SUBMISSION_STATES})::int AS retrying_count,
+              COUNT(*) FILTER (WHERE outbox.state='exhausted'
+                                AND submission.status IN ${MEDIA_LIVE_SUBMISSION_STATES})::int AS exhausted_count,
+              COUNT(*) FILTER (WHERE outbox.state='delivered')::int AS terminal_count,
+              EXTRACT(EPOCH FROM (clock_timestamp()-MIN(outbox.created_at) FILTER (
+                WHERE outbox.state='pending'
+                  AND submission.status IN ${MEDIA_LIVE_SUBMISSION_STATES}
+              )))::bigint AS oldest_pending_age_seconds,
+              MAX(outbox.delivered_at) FILTER (WHERE outbox.state='delivered') AS last_success_at
+         FROM media_submission_outbox outbox
+         JOIN media_post_submissions submission
+           ON submission.submission_id=outbox.submission_id
+          AND submission.operation_id=outbox.operation_id
+          AND submission.workflow_revision=outbox.workflow_revision`
+    : `SELECT COUNT(*) FILTER (WHERE outbox.state='pending'
+                                AND operation.state NOT IN ${DATA_TERMINAL_OPERATION_STATES})::int AS pending_count,
+              COUNT(*) FILTER (WHERE outbox.state IN ('running','failed')
+                                AND operation.state NOT IN ${DATA_TERMINAL_OPERATION_STATES})::int AS retrying_count,
+              COUNT(*) FILTER (WHERE outbox.state='exhausted'
+                                AND operation.state NOT IN ${DATA_TERMINAL_OPERATION_STATES})::int AS exhausted_count,
+              COUNT(*) FILTER (WHERE outbox.state='delivered')::int AS terminal_count,
+              EXTRACT(EPOCH FROM (clock_timestamp()-MIN(outbox.created_at) FILTER (
+                WHERE outbox.state='pending'
+                  AND operation.state NOT IN ${DATA_TERMINAL_OPERATION_STATES}
+              )))::bigint AS oldest_pending_age_seconds,
+              MAX(outbox.updated_at) FILTER (WHERE outbox.state='delivered') AS last_success_at
+         FROM data_registration_outbox outbox
+         JOIN data_registration_operations operation
+           ON operation.registration_operation_id=outbox.registration_operation_id
+          AND operation.workflow_revision=outbox.workflow_revision`;
 
 function integer(value: unknown): number {
   const parsed = typeof value === "number" ? value : Number(value);
@@ -79,7 +102,14 @@ function isHealthSnapshotBoundary(scheduledTime: number): boolean {
 
 function healthStatus(row: PipelineHealthRow): PipelineHealthSnapshotFields["health"] {
   if (integer(row.exhausted_count) > 0) return "blocked";
-  if (integer(row.pending_count) > 0 || integer(row.retrying_count) > 0) return "degraded";
+  const oldestPendingAge =
+    row.oldest_pending_age_seconds === null ? null : integer(row.oldest_pending_age_seconds);
+  if (
+    integer(row.retrying_count) > 0 ||
+    (oldestPendingAge !== null && oldestPendingAge > SONG_PIPELINE_PENDING_DEGRADED_AGE_SECONDS)
+  ) {
+    return "degraded";
+  }
   return "healthy";
 }
 

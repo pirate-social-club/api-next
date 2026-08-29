@@ -1,11 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import { ControlPlaneDb, type ControlPlaneStatement } from "@pirate/application";
 import { Effect, Layer } from "effect";
-import { alertTick, type PipelineLogFields } from "../../../packages/platform-cf/src/alerts.ts";
+import {
+  alertTick,
+  type PipelineHealthSnapshotFields,
+} from "../../../packages/platform-cf/src/alerts.ts";
 import {
   collectSongPipelineOutboxAlerts,
   exhaustedLaunchAlert,
   runSongPipelineOutboxAlertTick,
+  SONG_PIPELINE_PENDING_DEGRADED_AGE_SECONDS,
 } from "./song-pipeline-outbox-alerts";
 
 function runtime(
@@ -85,7 +89,7 @@ describe("song pipeline outbox alerts", () => {
 
   test("emits one five-minute health snapshot despite cron delivery seconds", async () => {
     const labels: string[] = [];
-    const logs: PipelineLogFields[] = [];
+    const logs: PipelineHealthSnapshotFields[] = [];
     const controlPlane = runtime((statement) => {
       labels.push(statement.label);
       if (statement.label === "song-pipeline.health.media") {
@@ -115,7 +119,9 @@ describe("song pipeline outbox alerts", () => {
           {
             scheduledTime: 5 * 60 * 1000 + 14_000,
             environment: "staging",
-            log: (_event, fields) => logs.push(fields),
+            log: (_event, fields) => {
+              if (fields.event === "pipeline.health.snapshot") logs.push(fields);
+            },
             claimSnapshot: () => Effect.succeed(true),
           },
         ),
@@ -141,6 +147,123 @@ describe("song pipeline outbox alerts", () => {
         sampled: false,
       },
     ]);
+  });
+
+  test("projects current revisions and degrades only stale pending work", async () => {
+    const statements: ControlPlaneStatement[] = [];
+    const logs: PipelineHealthSnapshotFields[] = [];
+    const controlPlane = runtime((statement) => {
+      statements.push(statement);
+      if (statement.label === "song-pipeline.health.media") {
+        return Effect.succeed({
+          rows: [
+            {
+              pending_count: "1",
+              retrying_count: "0",
+              exhausted_count: "0",
+              terminal_count: "9",
+              oldest_pending_age_seconds: String(SONG_PIPELINE_PENDING_DEGRADED_AGE_SECONDS),
+              last_success_at: null,
+            },
+          ],
+          rowCount: 1,
+        });
+      }
+      if (statement.label === "song-pipeline.health.data") {
+        return Effect.succeed({
+          rows: [
+            {
+              pending_count: "1",
+              retrying_count: "0",
+              exhausted_count: "0",
+              terminal_count: "4",
+              oldest_pending_age_seconds: String(SONG_PIPELINE_PENDING_DEGRADED_AGE_SECONDS + 1),
+              last_success_at: null,
+            },
+          ],
+          rowCount: 1,
+        });
+      }
+      return Effect.succeed({ rows: [], rowCount: 0 });
+    });
+
+    await Effect.runPromise(
+      alertTick(
+        {},
+        collectSongPipelineOutboxAlerts(
+          controlPlane,
+          { media: true, data: true },
+          {
+            scheduledTime: 5 * 60 * 1000,
+            log: (_event, fields) => {
+              if (fields.event === "pipeline.health.snapshot") logs.push(fields);
+            },
+            claimSnapshot: () => Effect.succeed(true),
+          },
+        ),
+      ),
+    );
+
+    const mediaQuery = statements.find(
+      (statement) => statement.label === "song-pipeline.health.media",
+    )?.text;
+    expect(mediaQuery).toContain("JOIN media_post_submissions submission");
+    expect(mediaQuery).toContain("submission.workflow_revision=outbox.workflow_revision");
+    expect(mediaQuery).toContain(
+      "submission.status IN ('processing','action_required','manual_review')",
+    );
+
+    const dataQuery = statements.find(
+      (statement) => statement.label === "song-pipeline.health.data",
+    )?.text;
+    expect(dataQuery).toContain("JOIN data_registration_operations operation");
+    expect(dataQuery).toContain("operation.workflow_revision=outbox.workflow_revision");
+    expect(dataQuery).toContain(
+      "operation.state NOT IN ('registered','failed','reconciliation_required')",
+    );
+    expect(logs.map((fields) => fields.health)).toEqual(["healthy", "degraded"]);
+  });
+
+  test("retrying current work is degraded before it becomes stale", async () => {
+    const logs: PipelineHealthSnapshotFields[] = [];
+    const controlPlane = runtime((statement) =>
+      Effect.succeed(
+        statement.label === "song-pipeline.health.media"
+          ? {
+              rows: [
+                {
+                  pending_count: "0",
+                  retrying_count: "1",
+                  exhausted_count: "0",
+                  terminal_count: "0",
+                  oldest_pending_age_seconds: null,
+                  last_success_at: null,
+                },
+              ],
+              rowCount: 1,
+            }
+          : { rows: [], rowCount: 0 },
+      ),
+    );
+
+    await Effect.runPromise(
+      alertTick(
+        {},
+        collectSongPipelineOutboxAlerts(
+          controlPlane,
+          { media: true, data: false },
+          {
+            scheduledTime: 5 * 60 * 1000,
+            log: (_event, fields) => {
+              if (fields.event === "pipeline.health.snapshot") logs.push(fields);
+            },
+            claimSnapshot: () => Effect.succeed(true),
+          },
+        ),
+      ),
+    );
+
+    expect(logs.map((fields) => fields.health)).toEqual(["degraded"]);
   });
 
   test("disabled and non-boundary lanes make no health-snapshot query", async () => {
