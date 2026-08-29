@@ -73022,6 +73022,64 @@
                         "type": "null"
                       }
                     ]
+                  },
+                  "client_context": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "headphones": {
+                            "anyOf": [
+                              {
+                                "type": "boolean"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "input_device_kind": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "bluetooth",
+                                  "built_in",
+                                  "unknown",
+                                  "usb",
+                                  "wired"
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "platform": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "android",
+                                  "ios",
+                                  "linux",
+                                  "macos",
+                                  "web",
+                                  "windows"
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   }
                 },
                 "additionalProperties": false
@@ -73120,19 +73178,22 @@
                             "provider": {
                               "type": "string",
                               "enum": [
-                                "assistant",
-                                "elevenlabs",
-                                "mistral",
-                                "openai"
+                                "elevenlabs"
                               ]
                             },
                             "model": {
                               "type": "string"
                             },
-                            "retention": {
+                            "provider_retention": {
                               "type": "string",
                               "enum": [
                                 "not_stored"
+                              ]
+                            },
+                            "platform_retention": {
+                              "type": "string",
+                              "enum": [
+                                "private_learning"
                               ]
                             },
                             "voice_coach_enabled": {
@@ -73150,7 +73211,8 @@
                             "kind",
                             "provider",
                             "model",
-                            "retention"
+                            "provider_retention",
+                            "platform_retention"
                           ],
                           "additionalProperties": false
                         }
@@ -74103,6 +74165,15 @@
                     "created_at": {
                       "type": "string"
                     },
+                    "recording_state": {
+                      "type": "string",
+                      "enum": [
+                        "pending",
+                        "stored",
+                        "failed",
+                        "deleted"
+                      ]
+                    },
                     "scoring_diagnostics": {
                       "anyOf": [
                         {
@@ -74110,6 +74181,15 @@
                             {
                               "type": "object",
                               "properties": {
+                                "schema_version": {
+                                  "type": "number",
+                                  "enum": [
+                                    1
+                                  ]
+                                },
+                                "scoring_version": {
+                                  "$ref": "#/$defs/Union_"
+                                },
                                 "timing_calibration": {
                                   "type": "object",
                                   "properties": {
@@ -74219,6 +74299,21 @@
                                             "type": "null"
                                           }
                                         ]
+                                      },
+                                      "expected_word_count": {
+                                        "$ref": "#/$defs/Union_"
+                                      },
+                                      "recognized_expected_word_positions": {
+                                        "type": "array",
+                                        "items": {
+                                          "$ref": "#/$defs/Union_"
+                                        }
+                                      },
+                                      "missed_expected_word_positions": {
+                                        "type": "array",
+                                        "items": {
+                                          "$ref": "#/$defs/Union_"
+                                        }
                                       }
                                     },
                                     "required": [
@@ -74229,13 +74324,18 @@
                                       "text_score",
                                       "timing_score",
                                       "confidence_score",
-                                      "median_signed_delta_ms"
+                                      "median_signed_delta_ms",
+                                      "expected_word_count",
+                                      "recognized_expected_word_positions",
+                                      "missed_expected_word_positions"
                                     ],
                                     "additionalProperties": false
                                   }
                                 }
                               },
                               "required": [
+                                "schema_version",
+                                "scoring_version",
                                 "timing_calibration",
                                 "line_diagnostics"
                               ],
@@ -74277,7 +74377,8 @@
                     "rank_eligible",
                     "activity_date",
                     "completed_at",
-                    "created_at"
+                    "created_at",
+                    "recording_state"
                   ],
                   "additionalProperties": false,
                   "$defs": {
