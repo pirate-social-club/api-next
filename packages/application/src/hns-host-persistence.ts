@@ -34,10 +34,116 @@ export class HnsAuthorityEmitRefusal extends Error {
       | "incomplete_authority_views"
       | "unavailable_authority_view"
       | "authority_view_mismatch"
-      | "dnskey_ds_mismatch",
+      | "dnskey_ds_mismatch"
+      | "candidate_metadata_invalid"
+      | "incomplete_candidate_artifacts",
   ) {
     super(`HNS authority candidate emission refused: ${reason}`);
   }
+}
+
+export const HNS_AUTHORITY_SUCCESSOR_CANDIDATE_VERSION =
+  "pirate-hns-authority-successor-candidate-v1" as const;
+
+type HnsAuthorityCandidateArtifactName =
+  | "authority_inventory"
+  | "dns_zone_activation"
+  | "app_host_activation"
+  | "health_observation"
+  | "observer_evidence";
+
+export type HnsAuthoritySuccessorCandidateV1 = Readonly<{
+  version: typeof HNS_AUTHORITY_SUCCESSOR_CANDIDATE_VERSION;
+  source_commit: string;
+  root_label: string;
+  observed_at: string;
+  chain_height: number;
+  generations: HnsAuthoritySuccessorGenerationsV1;
+  dnskey_key_tag: number;
+  authority_views: readonly [HnsAuthorityEmitViewV1, HnsAuthorityEmitViewV1];
+  chain_ds: ReadonlyArray<HnsAuthorityEmitDsV1>;
+  artifacts: ReadonlyArray<
+    Readonly<{
+      name: HnsAuthorityCandidateArtifactName;
+      sha256: string;
+      bytes_hex: string;
+    }>
+  >;
+}>;
+
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  return hex(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)));
+}
+
+/** Produces one complete canonical review package or refuses without output. */
+export async function prepareHnsAuthoritySuccessorCandidateV1(
+  input: Readonly<{
+    source_commit: string;
+    root_label: string;
+    observed_at: string;
+    chain_height: number;
+    generation_snapshot: HnsAuthoritySuccessorGenerationSnapshotV1;
+    expected_authority_addresses: readonly [string, string];
+    authority_views: ReadonlyArray<HnsAuthorityEmitViewV1>;
+    chain_ds: ReadonlyArray<HnsAuthorityEmitDsV1>;
+    artifacts: Readonly<Record<HnsAuthorityCandidateArtifactName, Uint8Array>>;
+  }>,
+): Promise<
+  Readonly<{
+    candidate: HnsAuthoritySuccessorCandidateV1;
+    candidate_bytes: Uint8Array;
+    candidate_sha256: string;
+  }>
+> {
+  if (
+    !/^[0-9a-f]{40}$/u.test(input.source_commit) ||
+    !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(input.root_label) ||
+    !Number.isSafeInteger(input.chain_height) ||
+    input.chain_height <= 0 ||
+    !Number.isFinite(Date.parse(input.observed_at)) ||
+    new Date(Date.parse(input.observed_at)).toISOString() !== input.observed_at
+  ) {
+    throw new HnsAuthorityEmitRefusal("candidate_metadata_invalid");
+  }
+  const views = requireHnsAuthorityEmitObservationV1({
+    expected_authority_addresses: input.expected_authority_addresses,
+    views: input.authority_views,
+    chain_ds: input.chain_ds,
+  });
+  const artifactNames = [
+    "authority_inventory",
+    "dns_zone_activation",
+    "app_host_activation",
+    "health_observation",
+    "observer_evidence",
+  ] as const;
+  if (artifactNames.some((name) => input.artifacts[name].byteLength === 0)) {
+    throw new HnsAuthorityEmitRefusal("incomplete_candidate_artifacts");
+  }
+  const artifacts = await Promise.all(
+    artifactNames.map(async (name) => {
+      const bytes = new Uint8Array(input.artifacts[name]);
+      return { name, sha256: await sha256Hex(bytes), bytes_hex: hex(bytes) } as const;
+    }),
+  );
+  const candidate: HnsAuthoritySuccessorCandidateV1 = {
+    version: HNS_AUTHORITY_SUCCESSOR_CANDIDATE_VERSION,
+    source_commit: input.source_commit,
+    root_label: input.root_label,
+    observed_at: input.observed_at,
+    chain_height: input.chain_height,
+    generations: deriveHnsAuthoritySuccessorGenerationsV1(input.generation_snapshot),
+    dnskey_key_tag: views[0].dnskey_key_tag as number,
+    authority_views: views,
+    chain_ds: input.chain_ds,
+    artifacts,
+  };
+  const candidateBytes = new TextEncoder().encode(JSON.stringify(candidate));
+  return {
+    candidate,
+    candidate_bytes: candidateBytes,
+    candidate_sha256: await sha256Hex(candidateBytes),
+  };
 }
 
 export class HnsAuthorityCandidateCommitRefusal extends Error {

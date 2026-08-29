@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   deriveHnsAuthoritySuccessorGenerationsV1,
   HNS_DNS_ZONE_ACTIVATION_DOCUMENT_VERSION,
+  prepareHnsAuthoritySuccessorCandidateV1,
   prepareHnsDnsZoneActivationDocumentV1,
   requireHnsAuthorityEmitObservationV1,
   requireReviewedHnsAuthorityCandidateV1,
@@ -174,4 +175,61 @@ test("admits only unchanged pointers and byte-identical recomputation", () => {
       recomputed_candidate_bytes: new Uint8Array(bytes),
     }),
   ).not.toThrow();
+});
+
+test("emits one canonical all-or-nothing 6/10/1 review package", async () => {
+  const artifact = (name: string) => new TextEncoder().encode(`exact-${name}-bytes`);
+  const result = await prepareHnsAuthoritySuccessorCandidateV1({
+    source_commit: "1".repeat(40),
+    root_label: "jazleeuw",
+    observed_at: "2026-08-29T17:00:00.000Z",
+    chain_height: 344_448,
+    generation_snapshot: emittedSnapshot,
+    expected_authority_addresses: ["94.103.168.161", "81.15.150.159"],
+    authority_views: [observedView("94.103.168.161"), observedView("81.15.150.159")],
+    chain_ds: chainDs,
+    artifacts: {
+      authority_inventory: artifact("inventory"),
+      dns_zone_activation: artifact("dns6"),
+      app_host_activation: artifact("app10"),
+      health_observation: artifact("health1"),
+      observer_evidence: artifact("observer"),
+    },
+  });
+  expect(result.candidate.generations).toEqual({
+    dns_activation_generation: 6,
+    app_host_activation_generation: 10,
+    health_generation: 1,
+  });
+  expect(result.candidate.dnskey_key_tag).toBe(10875);
+  expect(result.candidate.authority_views.map((view) => view.authority_address)).toEqual([
+    "94.103.168.161",
+    "81.15.150.159",
+  ]);
+  expect(result.candidate.artifacts).toHaveLength(5);
+  expect(result.candidate_sha256).toMatch(/^[0-9a-f]{64}$/u);
+  expect(JSON.parse(new TextDecoder().decode(result.candidate_bytes))).toEqual(result.candidate);
+});
+
+test("refuses the entire package when any required artifact is empty", async () => {
+  const artifact = new TextEncoder().encode("exact-bytes");
+  await expect(
+    prepareHnsAuthoritySuccessorCandidateV1({
+      source_commit: "1".repeat(40),
+      root_label: "jazleeuw",
+      observed_at: "2026-08-29T17:00:00.000Z",
+      chain_height: 344_448,
+      generation_snapshot: emittedSnapshot,
+      expected_authority_addresses: ["94.103.168.161", "81.15.150.159"],
+      authority_views: [observedView("94.103.168.161"), observedView("81.15.150.159")],
+      chain_ds: chainDs,
+      artifacts: {
+        authority_inventory: artifact,
+        dns_zone_activation: artifact,
+        app_host_activation: new Uint8Array(),
+        health_observation: artifact,
+        observer_evidence: artifact,
+      },
+    }),
+  ).rejects.toThrow("incomplete_candidate_artifacts");
 });
