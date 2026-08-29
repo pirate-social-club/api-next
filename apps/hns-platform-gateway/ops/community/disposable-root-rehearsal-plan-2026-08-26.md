@@ -1870,10 +1870,15 @@ authorized and run.
 
 A neutral Cloudflare-edge TCP/53 probe subsequently reached both custom
 authority IPs directly and received matching authoritative, signed SOA answers
-with serial `2026080805`. This proves unrelated-network TCP reachability. A
-neutral UDP vantage remains an execution preflight requirement because the
-browser tool cannot originate UDP and the operator workstation blocks outbound
-port 53.
+with serial `2026080805`. This proves unrelated-network TCP reachability.
+
+A second neutral diagnostic service then ran standard `dig` SOA queries without
+TCP mode directly against `94.103.168.161` and `81.15.150.159`. Both UDP queries
+returned the same authoritative `jazleeuw` SOA with serial `2026080805`. The
+result closes the public UDP/53 reachability gate from an unrelated network;
+the operator workstation's port-53 refusal remains only a limitation of that
+workstation path. Execution must still repeat independent TCP and UDP views as
+a freshness preflight rather than treating this observation as permanent.
 
 The accepted gateway source `b0a61b31ad8a660047ee1ac517b6d595709cc4f2`
 descends from handle-sales merge `bc9f27c` and handle-host runtime merge
