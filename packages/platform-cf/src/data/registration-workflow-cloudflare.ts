@@ -45,7 +45,12 @@ export function makeCloudflareDataRegistrationWorkflowLauncher(
   const get: DataRegistrationWorkflowLauncher["get"] = async (instanceId) => {
     try {
       const instance = await binding.get(await cloudflareDataRegistrationWorkflowId(instanceId));
-      return (await instance.status()).status === "unknown" ? "missing" : "present";
+      const status = (await instance.status()).status;
+      return ["queued", "running", "paused", "waiting", "waitingForPause", "rollingBack"].includes(
+        status,
+      )
+        ? "present"
+        : "missing";
     } catch (error) {
       if (isMissing(error)) return "missing";
       throw error;

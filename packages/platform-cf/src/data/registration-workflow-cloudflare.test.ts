@@ -52,6 +52,33 @@ describe("Cloudflare DATA registration adapters", () => {
     await expect(launcher.create("workflow-1", payload)).rejects.toThrow("transport unavailable");
   });
 
+  test("projects active statuses as present and terminal statuses as replacement candidates", async () => {
+    for (const status of [
+      "queued",
+      "running",
+      "paused",
+      "waiting",
+      "waitingForPause",
+      "rollingBack",
+    ] as const) {
+      const binding: CloudflareDataRegistrationWorkflowBinding = {
+        get: async () => ({ status: async () => ({ status }) }),
+        createBatch: async () => [],
+      };
+      const launcher = makeCloudflareDataRegistrationWorkflowLauncher(binding, () => false);
+      expect(await launcher.get("workflow-1")).toBe("present");
+    }
+
+    for (const status of ["unknown", "errored", "terminated", "complete"] as const) {
+      const binding: CloudflareDataRegistrationWorkflowBinding = {
+        get: async () => ({ status: async () => ({ status }) }),
+        createBatch: async () => [],
+      };
+      const launcher = makeCloudflareDataRegistrationWorkflowLauncher(binding, () => false);
+      expect(await launcher.get("workflow-1")).toBe("missing");
+    }
+  });
+
   test("maps persisted queue dispositions to message ack and retry controls", () => {
     const calls: string[] = [];
     const message = {
