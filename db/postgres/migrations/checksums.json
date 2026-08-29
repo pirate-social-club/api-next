@@ -77,6 +77,7 @@
     "0074_study_v2_foundation.sql": "680b30cd8aeec54c931aa156cbedf88a6e23d929e97c22b646f8e063492acf5b",
     "0075_study_v2_identity_fencing.sql": "c5f62eee72522399510d2c3f04e861387cccc896d3a2e199c681c9009b83b3ea",
     "0076_study_v2_idempotency_fencing.sql": "69586d61e0e22b9e3e13fa0be4de7fc2dd4c87133c30e1e136850cea78151b38",
-    "0077_study_v2_transcript_evidence.sql": "f70c852406dd5bc9abf4eead835bee949926be9f21195d1bf62fee3682cf9aa1"
+    "0077_study_v2_transcript_evidence.sql": "f70c852406dd5bc9abf4eead835bee949926be9f21195d1bf62fee3682cf9aa1",
+    "0078_study_runtime_amendment.sql": "280201ee8582a1037bdb57f804ba5ac15e8a0caeabccfa3b06a61030cb8ebbbf"
   }
 }

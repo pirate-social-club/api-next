@@ -51,6 +51,19 @@ suite("Study v2 Postgres foundation", () => {
            ) VALUES ('community-1', 'post-1', 'line-1', 1, 'Hold on', 'en', $1)`,
           [hash],
         );
+        await admin.query(
+          `INSERT INTO localization_study_units (
+             community_id, post_id, study_unit_id, identity_normalization_revision,
+             normalized_source_hash
+           ) VALUES ('community-1', 'post-1', 'unit-1',
+             'lyric_line_identity_normalization_v1', $1)`,
+          [hash],
+        );
+        await admin.query(
+          `INSERT INTO localization_lyric_line_study_units (
+             community_id, post_id, lyric_line_id, line_version, study_unit_id
+           ) VALUES ('community-1', 'post-1', 'line-1', 1, 'unit-1')`,
+        );
       } finally {
         await admin.query("SET session_replication_role = origin");
       }
@@ -60,8 +73,8 @@ suite("Study v2 Postgres foundation", () => {
           `INSERT INTO study_exercise_versions (
              exercise_version_id, community_id, post_id, audio_revision, lyrics_revision,
              lyric_line_id, line_version, line_source_hash, exercise_review_key,
-             exercise_type, exercise_variant, learning_language, helper_language,
-             learner_band, content_revision, presentation, private_grader,
+             exercise_type, exercise_variant, learning_language, target_language,
+             learner_band, content_revision, presentation, private_grader, study_unit_id,
              answer_visibility, feedback_release, grader_policy_revision,
              feedback_policy_revision, generation_kind, generation_run_id, producer_id,
              provider_model, prompt_revision, request_hash, raw_result_digest,
@@ -70,9 +83,9 @@ suite("Study v2 Postgres foundation", () => {
              quality_policy_revision, generated_at, validated_at, accepted_at
            ) VALUES (
              $1, 'community-1', 'post-1', 1, 1, 'line-1', 1, $2, 'review-key-1',
-             'typed_cloze', 'vocabulary-v1', 'en', NULL, 'A2', $3,
-             '{"kind":"typed_cloze"}', '{"kind":"accepted_text_v1"}',
-             'secret_until_spent', 'spent_only', 'grader-v1', 'feedback-v1',
+             'say_it_back', 'spoken-recall-v1', 'en', NULL, NULL, $3,
+             '{"kind":"say_it_back"}', '{"kind":"source_token_diff_v1"}', 'unit-1',
+             'always_visible', 'every_graded_attempt', 'grader-v1', 'feedback-v1',
              'deterministic', $4, 'producer-v1', NULL, 'prompt-v1', $5, $6,
              'structure-v1', 'semantic-v1', 'safety-v1', 'quality-validator-v1',
              'quality-v1', clock_timestamp(), clock_timestamp(), clock_timestamp()
@@ -86,8 +99,8 @@ suite("Study v2 Postgres foundation", () => {
         `INSERT INTO study_exercise_versions (
            exercise_version_id, community_id, post_id, audio_revision, lyrics_revision,
            lyric_line_id, line_version, line_source_hash, exercise_review_key,
-           exercise_type, exercise_variant, learning_language, helper_language,
-           learner_band, content_revision, presentation, private_grader,
+           exercise_type, exercise_variant, learning_language, target_language,
+           learner_band, content_revision, presentation, private_grader, study_unit_id,
            answer_visibility, feedback_release, grader_policy_revision,
            feedback_policy_revision, generation_kind, generation_run_id, producer_id,
            provider_model, prompt_revision, request_hash, raw_result_digest,
@@ -96,8 +109,8 @@ suite("Study v2 Postgres foundation", () => {
            quality_policy_revision, generated_at, validated_at, accepted_at
          ) SELECT 'exercise-other-key', community_id, post_id, audio_revision, lyrics_revision,
            lyric_line_id, line_version, line_source_hash, 'review-key-other', exercise_type,
-           exercise_variant, learning_language, helper_language, learner_band, 1,
-           presentation, private_grader, answer_visibility, feedback_release,
+           exercise_variant, learning_language, target_language, learner_band, 1,
+           presentation, private_grader, study_unit_id, answer_visibility, feedback_release,
            grader_policy_revision, feedback_policy_revision, generation_kind, 'run-other',
            producer_id, provider_model, prompt_revision, $1, raw_result_digest,
            structural_validator_revision, semantic_validator_revision,
@@ -115,9 +128,11 @@ suite("Study v2 Postgres foundation", () => {
       await admin.query(
         `INSERT INTO study_review_items (
            review_item_id, account_id, exercise_review_key, current_exercise_version_id,
-           scheduler_policy_revision, scheduler_state
+           scheduler_policy_revision, scheduler_state, community_id, post_id,
+           study_unit_id, exercise_kind, learning_language, target_language, learner_band
          ) VALUES ('review-item-1', 'account-1', 'review-key-1', 'exercise-v1',
-           'scheduler-v1', '{}'::jsonb)`,
+           'study_review_schedule_v1', '{}'::jsonb, 'community-1', 'post-1',
+           'unit-1', 'say_it_back', 'en', NULL, NULL)`,
       );
       await admin.query(
         `UPDATE study_review_items
@@ -146,12 +161,12 @@ suite("Study v2 Postgres foundation", () => {
       await admin.query(
         `INSERT INTO study_sessions_v2 (
            session_id, account_id, persona_id, community_id, post_id,
-           audio_revision, lyrics_revision, learning_language, helper_language,
+           audio_revision, lyrics_revision, learning_language, target_language,
            learner_band, study_profile_revision, source_set_revision,
            selection_policy_revision, qualification_policy_revision, timezone,
            idempotency_key, request_hash
          ) VALUES ('session-1', 'account-1', 'persona-1', 'community-1', 'post-1',
-           1, 1, 'en', NULL, 'A2', 1, 1, 'selection-v1', 'qualification-v1', 'UTC',
+           1, 1, 'en', NULL, NULL, 1, 1, 'selection-v1', 'qualification-v1', 'UTC',
            'session-command-1', $1)`,
         ["d".repeat(64)],
       );
@@ -160,7 +175,7 @@ suite("Study v2 Postgres foundation", () => {
            session_item_id, session_id, ordinal, exercise_review_key,
            exercise_version_id, review_item_id, item_snapshot, maximum_attempts, account_id
          ) VALUES ('session-item-1', 'session-1', 0, 'review-key-1',
-           'exercise-v2', 'review-item-1', '{}'::jsonb, 2, 'account-1')`,
+           'exercise-v2', 'review-item-1', '{}'::jsonb, 3, 'account-1')`,
       );
       await expect(
         admin.query(
@@ -168,7 +183,7 @@ suite("Study v2 Postgres foundation", () => {
              session_item_id, session_id, ordinal, exercise_review_key,
              exercise_version_id, review_item_id, item_snapshot, maximum_attempts, account_id
            ) VALUES ('session-item-2', 'session-1', 1, 'review-key-1',
-             'exercise-v1', 'review-item-1', '{}'::jsonb, 2, 'account-1')`,
+             'exercise-v1', 'review-item-1', '{}'::jsonb, 3, 'account-1')`,
         ),
       ).rejects.toThrow();
       await expect(
@@ -185,28 +200,35 @@ suite("Study v2 Postgres foundation", () => {
         ),
       ).rejects.toThrow();
       await admin.query(
-        `INSERT INTO study_transcript_evidence_v2 (
-           transcript_evidence_id, account_id, session_item_id, transcript,
-           provider_id, provider_model, tokenizer_policy_revision, created_at, expires_at
-         ) VALUES ('transcript-1', 'account-1', 'session-item-1', 'Hold on',
-           'stt-provider', 'stt-model', 'english_words_v1',
-           '2026-08-29T10:00:00.000Z', '2026-08-29T10:05:00.000Z')`,
+        `INSERT INTO study_spoken_answer_commands (
+           command_id, account_id, session_id, session_item_id, attempt_number,
+           idempotency_key, request_hash, audio_digest, audio_content_type,
+           audio_byte_size, audio_duration_ms, state
+         ) VALUES ('spoken-1', 'account-1', 'session-1', 'session-item-1', 1,
+           'spoken-command-1', $1, $2, 'audio/webm', 100, 1000, 'reserved')`,
+        ["1".repeat(64), "2".repeat(64)],
       );
       await expect(
         admin.query(
-          "UPDATE study_transcript_evidence_v2 SET transcript='changed' WHERE transcript_evidence_id='transcript-1'",
+          `INSERT INTO study_spoken_answer_commands (
+             command_id, account_id, session_id, session_item_id, attempt_number,
+             idempotency_key, request_hash, audio_digest, audio_content_type,
+             audio_byte_size, audio_duration_ms, state
+           ) VALUES ('spoken-2', 'account-1', 'session-1', 'session-item-1', 1,
+             'spoken-command-2', $1, $2, 'audio/webm', 100, 1000, 'reserved')`,
+          ["3".repeat(64), "4".repeat(64)],
         ),
-      ).rejects.toThrow("study_transcript_evidence_v2 rows are immutable");
+      ).rejects.toThrow();
       await expect(
         admin.query(
           `INSERT INTO study_sessions_v2 (
              session_id, account_id, persona_id, community_id, post_id,
-             audio_revision, lyrics_revision, learning_language, helper_language,
+             audio_revision, lyrics_revision, learning_language, target_language,
              learner_band, study_profile_revision, source_set_revision,
              selection_policy_revision, qualification_policy_revision, timezone,
              idempotency_key, request_hash
            ) VALUES ('session-2', 'account-1', 'persona-1', 'community-1', 'post-1',
-             1, 1, 'en', NULL, 'A2', 1, 1, 'selection-v1', 'qualification-v1', 'UTC',
+             1, 1, 'en', NULL, NULL, 1, 1, 'selection-v1', 'qualification-v1', 'UTC',
              'session-command-1', $1)`,
           ["f".repeat(64)],
         ),
