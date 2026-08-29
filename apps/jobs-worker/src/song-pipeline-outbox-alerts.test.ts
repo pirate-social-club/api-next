@@ -47,20 +47,7 @@ describe("song pipeline outbox alerts", () => {
     });
   });
 
-  test("distinguishes a terminal Queue DLQ outcome", () => {
-    expect(
-      exhaustedLaunchAlert({
-        subsystem: "media",
-        operation_id: "media-operation-1",
-        outbox_id: "media-outbox-1",
-        workflow_revision: "3",
-        failure_code: "invalid_binding",
-        outcome: "queue_dlq",
-      }).key,
-    ).toBe("song-pipeline:media-queue_dlq");
-  });
-
-  test("uses a distinct key when automatic replacements stop", () => {
+  test("keeps the accepted key when an exhausted launch reaches the replacement ceiling", () => {
     expect(
       exhaustedLaunchAlert({
         subsystem: "data",
@@ -97,6 +84,7 @@ describe("song pipeline outbox alerts", () => {
           rows: [
             {
               pending_count: "2",
+              in_flight_count: "1",
               retrying_count: "1",
               exhausted_count: "1",
               terminal_count: "8",
@@ -138,6 +126,7 @@ describe("song pipeline outbox alerts", () => {
         subsystem: "media",
         operation: "media-analysis",
         pending_count: 2,
+        in_flight_count: 1,
         retrying_count: 1,
         exhausted_count: 1,
         terminal_count: 8,
@@ -159,6 +148,7 @@ describe("song pipeline outbox alerts", () => {
           rows: [
             {
               pending_count: "1",
+              in_flight_count: "1",
               retrying_count: "0",
               exhausted_count: "0",
               terminal_count: "9",
@@ -174,6 +164,7 @@ describe("song pipeline outbox alerts", () => {
           rows: [
             {
               pending_count: "1",
+              in_flight_count: "0",
               retrying_count: "0",
               exhausted_count: "0",
               terminal_count: "4",
@@ -209,6 +200,8 @@ describe("song pipeline outbox alerts", () => {
     )?.text;
     expect(mediaQuery).toContain("JOIN media_post_submissions submission");
     expect(mediaQuery).toContain("submission.workflow_revision=outbox.workflow_revision");
+    expect(mediaQuery).toContain("outbox.state='running'");
+    expect(mediaQuery).toContain("outbox.delivery_attempts>1");
     expect(mediaQuery).toContain(
       "submission.status IN ('processing','action_required','manual_review')",
     );
@@ -218,9 +211,17 @@ describe("song pipeline outbox alerts", () => {
     )?.text;
     expect(dataQuery).toContain("JOIN data_registration_operations operation");
     expect(dataQuery).toContain("operation.workflow_revision=outbox.workflow_revision");
+    expect(dataQuery).toContain("outbox.delivery_attempts>1");
     expect(dataQuery).toContain(
       "operation.state NOT IN ('registered','failed','reconciliation_required')",
     );
+    const alertQuery = statements.find(
+      (statement) => statement.label === "song-pipeline.outbox.exhausted-alerts",
+    )?.text;
+    expect(alertQuery).toContain("WHERE outbox.state='exhausted'");
+    expect(alertQuery).not.toContain("queue_dlq");
+    expect(alertQuery).toContain("outbox.workflow_revision>=4");
+    expect(alertQuery).toContain("replacement_limit");
     expect(logs.map((fields) => fields.health)).toEqual(["healthy", "degraded"]);
   });
 
@@ -233,6 +234,7 @@ describe("song pipeline outbox alerts", () => {
               rows: [
                 {
                   pending_count: "0",
+                  in_flight_count: "0",
                   retrying_count: "1",
                   exhausted_count: "0",
                   terminal_count: "0",
@@ -327,6 +329,9 @@ describe("song pipeline outbox alerts", () => {
 
   test("a failed health projection does not suppress exhausted-operation collection", async () => {
     const labels: string[] = [];
+    const compensated: string[] = [];
+    const diagnostics: string[] = [];
+    const original = console.error;
     const controlPlane = runtime((statement) => {
       labels.push(statement.label);
       if (statement.label === "song-pipeline.health.media") {
@@ -335,21 +340,121 @@ describe("song pipeline outbox alerts", () => {
       return Effect.succeed({ rows: [], rowCount: 0 });
     });
 
-    await expect(
-      Effect.runPromise(
-        alertTick(
-          {},
-          collectSongPipelineOutboxAlerts(
-            controlPlane,
-            { media: true, data: false },
-            {
-              scheduledTime: 5 * 60 * 1000,
-              claimSnapshot: () => Effect.succeed(true),
-            },
+    console.error = (message?: unknown) => diagnostics.push(String(message));
+    try {
+      await expect(
+        Effect.runPromise(
+          alertTick(
+            {},
+            collectSongPipelineOutboxAlerts(
+              controlPlane,
+              { media: true, data: false },
+              {
+                scheduledTime: 5 * 60 * 1000,
+                claimSnapshot: () => Effect.succeed(true),
+                compensateSnapshot: (key) =>
+                  Effect.sync(() => {
+                    compensated.push(key);
+                  }),
+              },
+            ),
           ),
         ),
-      ),
-    ).resolves.toBe(0);
+      ).resolves.toBe(0);
+    } finally {
+      console.error = original;
+    }
     expect(labels).toEqual(["song-pipeline.health.media", "song-pipeline.outbox.exhausted-alerts"]);
+    expect(compensated).toEqual(["pipeline-health:media:window-1"]);
+    expect(diagnostics).toEqual(["song-pipeline health snapshot query unavailable"]);
+  });
+
+  test("compensates a claimed window when the health log writer fails", async () => {
+    const compensated: string[] = [];
+    const diagnostics: string[] = [];
+    const original = console.error;
+    const controlPlane = runtime((statement) =>
+      Effect.succeed(
+        statement.label === "song-pipeline.health.media"
+          ? {
+              rows: [
+                {
+                  pending_count: "0",
+                  in_flight_count: "0",
+                  retrying_count: "0",
+                  exhausted_count: "0",
+                  terminal_count: "1",
+                  oldest_pending_age_seconds: null,
+                  last_success_at: "2026-08-29T00:04:00.000Z",
+                },
+              ],
+              rowCount: 1,
+            }
+          : { rows: [], rowCount: 0 },
+      ),
+    );
+
+    console.error = (message?: unknown) => diagnostics.push(String(message));
+    try {
+      await expect(
+        Effect.runPromise(
+          alertTick(
+            {},
+            collectSongPipelineOutboxAlerts(
+              controlPlane,
+              { media: true, data: false },
+              {
+                scheduledTime: 5 * 60 * 1000,
+                log: () => {
+                  throw new Error("fixture log unavailable");
+                },
+                claimSnapshot: () => Effect.succeed(true),
+                compensateSnapshot: (key) =>
+                  Effect.sync(() => {
+                    compensated.push(key);
+                  }),
+              },
+            ),
+          ),
+        ),
+      ).resolves.toBe(0);
+    } finally {
+      console.error = original;
+    }
+    expect(compensated).toEqual(["pipeline-health:media:window-1"]);
+    expect(diagnostics).toEqual(["song-pipeline health snapshot log unavailable"]);
+  });
+
+  test("diagnoses an unavailable snapshot ledger and keeps collecting alerts", async () => {
+    const labels: string[] = [];
+    const diagnostics: string[] = [];
+    const original = console.error;
+    const controlPlane = runtime((statement) => {
+      labels.push(statement.label);
+      return Effect.succeed({ rows: [], rowCount: 0 });
+    });
+
+    console.error = (message?: unknown) => diagnostics.push(String(message));
+    try {
+      await expect(
+        Effect.runPromise(
+          alertTick(
+            {},
+            collectSongPipelineOutboxAlerts(
+              controlPlane,
+              { media: true, data: false },
+              {
+                scheduledTime: 5 * 60 * 1000,
+                claimSnapshot: () => Effect.fail("fixture ledger unavailable"),
+              },
+            ),
+          ),
+        ),
+      ).resolves.toBe(0);
+    } finally {
+      console.error = original;
+    }
+    expect(labels).toEqual(["song-pipeline.outbox.exhausted-alerts"]);
+    expect(diagnostics).toEqual(["song-pipeline health snapshot claim unavailable"]);
   });
 });

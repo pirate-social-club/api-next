@@ -8,6 +8,7 @@ import {
   type AlertSink,
   alertTick,
   decideAlertSuppression,
+  type PipelineLogFields,
 } from "./alerts";
 
 const emit = (alert: Alert) => AlertCollector.use((service) => service.emit(alert));
@@ -24,7 +25,7 @@ describe("api-next alert delivery policy", () => {
       alertTick(sink, emit({ key: "routine:check", severity: "low", body: "fixed" }), {
         log: (event, fields) => {
           events.push(event);
-          logs.push(fields);
+          if (fields.event === "pipeline.alert") logs.push(fields);
         },
       }),
     );
@@ -64,7 +65,9 @@ describe("api-next alert delivery policy", () => {
     await Effect.runPromise(
       alertTick({ environment: "staging" }, emit(pipelineAlert), {
         now: () => 0,
-        log: (_event, fields) => logs.push(fields),
+        log: (_event, fields) => {
+          if (fields.event === "pipeline.alert") logs.push(fields);
+        },
       }),
     );
 
@@ -163,18 +166,32 @@ describe("api-next alert delivery policy", () => {
 
   test("persists state across repeated ticks and widens reminders", async () => {
     let nowMs = 0;
-    const logs: AlertLogFields[] = [];
+    const logs: PipelineLogFields[] = [];
+    const marks = new Set<string>();
     const states = new Map<string, ReturnType<typeof decideAlertSuppression>["state"]>();
     const sink: AlertSink = {
       log: (_event, fields) => {
-        if (fields.event === "pipeline.alert") logs.push(fields);
+        logs.push(fields);
       },
       delivery: {
-        markSent: () => Effect.succeed(true),
-        compensate: () => Effect.void,
+        markSent: (key) =>
+          Effect.sync(() => {
+            if (marks.has(key)) return false;
+            marks.add(key);
+            return true;
+          }),
+        compensate: (key) => Effect.sync(() => void marks.delete(key)),
         suppression: {
-          get: (key) => Effect.succeed(states.get(key) ?? null),
-          put: (state) => Effect.sync(() => void states.set(state.conditionKey, state)),
+          decide: (input) =>
+            Effect.sync(() => {
+              const previous = states.get(input.conditionKey);
+              const decision = decideAlertSuppression({
+                ...input,
+                ...(previous === undefined ? {} : { previous }),
+              });
+              states.set(input.conditionKey, decision.state);
+              return decision;
+            }),
         },
       },
     };
@@ -187,16 +204,25 @@ describe("api-next alert delivery policy", () => {
     await Effect.runPromise(tick);
     nowMs = 5 * 60 * 1000;
     await Effect.runPromise(tick);
+    nowMs = 6 * 60 * 1000;
+    await Effect.runPromise(tick);
 
     nowMs = 60 * 60 * 1000;
     await Effect.runPromise(tick);
 
     nowMs = 5 * 60 * 60 * 1000;
     await Effect.runPromise(tick);
-    expect(logs.map(({ suppression }) => suppression)).toEqual([
-      "transition",
-      "reminder",
-      "reminder",
+    expect(
+      logs
+        .filter((entry): entry is AlertLogFields => entry.event === "pipeline.alert")
+        .map(({ suppression }) => suppression),
+    ).toEqual(["transition", "reminder", "reminder"]);
+    expect(logs.filter((entry) => entry.event === "pipeline.alert.suppression")).toEqual([
+      expect.objectContaining({
+        key: "routing:integrity",
+        alert_severity: "high",
+        suppression: "suppressed",
+      }),
     ]);
     expect(states.get("routing:integrity|route:1")?.reminderIndex).toBe(2);
   });
@@ -216,8 +242,7 @@ describe("api-next alert delivery policy", () => {
               markSent: () => Effect.succeed(true),
               compensate: () => Effect.void,
               suppression: {
-                get: () => Effect.fail("fixture suppression read outage"),
-                put: () => Effect.fail("fixture suppression write outage"),
+                decide: () => Effect.fail("fixture suppression decision outage"),
               },
             },
           },
@@ -231,9 +256,8 @@ describe("api-next alert delivery policy", () => {
       console.error = original;
     }
     expect(diagnostics).toEqual([
-      "api-next alert suppression read unavailable",
+      "api-next alert suppression decision unavailable",
       "api-next alert log unavailable",
-      "api-next alert suppression write unavailable",
     ]);
   });
 });

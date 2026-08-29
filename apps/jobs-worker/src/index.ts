@@ -176,12 +176,12 @@ function loadJobsWorkerConfig(env: JobsWorkerEnv): JobsWorkerConfigValue {
 
 const UINT256_MAX = (1n << 256n) - 1n;
 
-function bigintSetting(value: string, allowZero = false): bigint {
+function parsePositiveBigintSetting(value: string): bigint {
   if (!/^(?:0|[1-9][0-9]*)$/u.test(value)) {
     throw new Error("Jobs worker configuration is incomplete or invalid");
   }
   const parsed = BigInt(value);
-  if (parsed > UINT256_MAX || (allowZero ? parsed < 0n : parsed < 1n)) {
+  if (parsed > UINT256_MAX || parsed < 1n) {
     throw new Error("Jobs worker configuration is incomplete or invalid");
   }
   return parsed;
@@ -234,16 +234,18 @@ function makeMegapotOptions(
     commitmentPublicOrigin,
     requiredConfirmations: config.MEGAPOT_REQUIRED_CONFIRMATIONS,
     observationTtlMs: config.MEGAPOT_OBSERVATION_TTL_SECONDS * 1_000,
-    approvedAllowanceAtomic: bigintSetting(config.MEGAPOT_APPROVED_ALLOWANCE_ATOMIC),
+    approvedAllowanceAtomic: parsePositiveBigintSetting(config.MEGAPOT_APPROVED_ALLOWANCE_ATOMIC),
     purchaseSafetyMarginSeconds: config.MEGAPOT_PURCHASE_SAFETY_MARGIN_SECONDS,
     gasLimitMultiplierBps: config.MEGAPOT_GAS_LIMIT_MULTIPLIER_BPS,
-    nativeGasReserveFloorWei: bigintSetting(config.MEGAPOT_NATIVE_GAS_RESERVE_FLOOR_WEI, true),
+    nativeGasReserveFloorWei: parsePositiveBigintSetting(
+      config.MEGAPOT_NATIVE_GAS_RESERVE_FLOOR_WEI,
+    ),
     externalSponsorDailyTicketCeiling: config.MEGAPOT_EXTERNAL_SPONSOR_DAILY_TICKET_CEILING,
-    externalSponsorDailySpendCeilingAtomic: bigintSetting(
+    externalSponsorDailySpendCeilingAtomic: parsePositiveBigintSetting(
       config.MEGAPOT_EXTERNAL_SPONSOR_DAILY_SPEND_CEILING_ATOMIC,
     ),
     sharedSponsorDailyTicketCeiling: config.MEGAPOT_SHARED_SPONSOR_DAILY_TICKET_CEILING,
-    sharedSponsorDailySpendCeilingAtomic: bigintSetting(
+    sharedSponsorDailySpendCeilingAtomic: parsePositiveBigintSetting(
       config.MEGAPOT_SHARED_SPONSOR_DAILY_SPEND_CEILING_ATOMIC,
     ),
   };
@@ -740,6 +742,9 @@ export default {
               environment: config.API_NEXT_ENV,
               ...(sink.log === undefined ? {} : { log: sink.log }),
               ...(sink.delivery === undefined ? {} : { claimSnapshot: sink.delivery.markSent }),
+              ...(sink.delivery === undefined
+                ? {}
+                : { compensateSnapshot: sink.delivery.compensate }),
             },
           ),
         ),

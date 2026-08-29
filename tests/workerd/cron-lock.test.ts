@@ -1,11 +1,7 @@
 /// <reference types="@cloudflare/vitest-pool-workers/types" />
 import { env as testEnv } from "cloudflare:test";
 
-import {
-  type AlertSuppressionState,
-  CRON_LOCK_NAME,
-  type ScheduledCronLockDO,
-} from "@pirate/platform-cf";
+import { CRON_LOCK_NAME, type ScheduledCronLockDO } from "@pirate/platform-cf";
 import { describe, expect, it } from "vitest";
 
 const env = testEnv as unknown as { CRON_LOCK: DurableObjectNamespace<ScheduledCronLockDO> };
@@ -61,18 +57,21 @@ describe("ScheduledCronLockDO lease semantics (workerd)", () => {
     await s.releaseWithFence("owner-b", next?.generation ?? -1);
   });
 
-  it("persists alert suppression state in the same DO ledger", async () => {
-    const s = env.CRON_LOCK.getByName(`${CRON_LOCK_NAME}:alert-suppression`);
-    const state: AlertSuppressionState = {
+  it("atomically decides overlapping alert observations", async () => {
+    const s = env.CRON_LOCK.getByName(`${CRON_LOCK_NAME}:alert-suppression-atomic`);
+    const input = {
       conditionKey: "routing:integrity|route:stuck",
-      severity: "medium",
-      firstSeenAt: 30_000,
-      lastSeenAt: 60_000,
-      lastDeliveredAt: 30_000,
-      reminderIndex: 0,
+      severity: "medium" as const,
+      nowMs: 30_000,
+      activeWindowMs: 10 * 60 * 1000,
     };
 
-    await s.saveAlertSuppression(state);
-    expect(await s.getAlertSuppression(state.conditionKey)).toEqual(state);
+    const decisions = await Promise.all([
+      s.decideAlertSuppression(input),
+      s.decideAlertSuppression(input),
+    ]);
+    expect(decisions.filter(({ deliver }) => deliver)).toHaveLength(1);
+    expect(decisions.map(({ reason }) => reason).sort()).toEqual(["suppressed", "transition"]);
+    expect(decisions.every(({ state }) => state.conditionKey === input.conditionKey)).toBe(true);
   });
 });
