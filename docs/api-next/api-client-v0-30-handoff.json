@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.30.0",
+  "releaseType": "localization-projection-cleanup-v1",
+  "wireContract": "spec-017-sections-2-5-and-8",
+  "sourceCommit": "pending-review",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.30.0.tgz",
+    "sha256": "c6b1139e2e498007559c946165dc4dbcc391d25e406dda75202466956a43e486",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@be8f331324155ae7717da65fd5da9f77a67cc150120ec1d614f609c9fa5c0427",
+    "openapiSha256": "be8f331324155ae7717da65fd5da9f77a67cc150120ec1d614f609c9fa5c0427",
+    "clientSha256": "e8e569a01ac63676bf10f5d23535892b5b56ae67d6aaa9f559f061bae7763128"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "authorized",
+      "baselineCommit": "d5b24bb",
+      "reason": "Ratified spec 017 requires canonical locale tags and truthful fail-closed projections."
+    },
+    "focusedPostgresSuites": "No migration change; the local Postgres 17 test endpoint was unavailable for this contract-only slice",
+    "fullUnitSuite": "2065 passed, 302 database-gated tests skipped, 0 failed",
+    "fullWorkerdSuite": "92 passed, 0 failed",
+    "packageVerifier": "passed",
+    "repositoryCheck": "passed"
+  }
+}

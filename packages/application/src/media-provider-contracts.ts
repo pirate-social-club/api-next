@@ -1,4 +1,4 @@
-import { SONG_LYRICS_TEXT_MAX_LENGTH } from "@pirate/contracts";
+import { LanguageTagV1, SONG_LYRICS_TEXT_MAX_LENGTH } from "@pirate/contracts";
 import { Context, type Effect, Schema } from "effect";
 
 /**
@@ -50,12 +50,7 @@ const PositiveTimeout = Schema.Int.check(
 const Sha256Hex = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u));
 
 /** Canonical language tags accepted by the public song projection. */
-export const MediaBcp47LanguageTag = Schema.String.check(
-  Schema.isMaxLength(35),
-  Schema.isPattern(
-    /^(?:[a-z]{2,3})(?:-[A-Z][a-z]{3})?(?:-(?:[A-Z]{2}|[0-9]{3}))?(?:-[a-z0-9]{5,8}|-[0-9][a-z0-9]{3})*$/u,
-  ),
-);
+export const MediaBcp47LanguageTag = LanguageTagV1;
 export type MediaBcp47LanguageTag = Schema.Schema.Type<typeof MediaBcp47LanguageTag>;
 
 const Confidence = Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 1 }));

@@ -139,7 +139,11 @@ describe("public community threads Postgres repository", () => {
     expect(Exit.isSuccess(result)).toBe(true);
     if (Exit.isSuccess(result)) {
       expect(result.value?.community.id).toBe("community-a");
-      expect(result.value?.items[0]).toMatchObject({ resolved_locale: "ka" });
+      expect(result.value?.items[0]).toMatchObject({
+        resolved_locale: "ka",
+        translation_state: "policy_blocked",
+        source_hash: null,
+      });
     }
     expect(calls[1]?.values).toEqual(["alpha-community"]);
   });

@@ -13,6 +13,7 @@ export * from "./errors.ts";
 export * from "./handle-sales.ts";
 export * from "./hns-owner-recovery.ts";
 export * from "./karaoke.ts";
+export * from "./language.ts";
 export * from "./money.ts";
 export * from "./namespace-ownership.ts";
 export * from "./openapi-diff.ts";

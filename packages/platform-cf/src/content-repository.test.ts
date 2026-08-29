@@ -189,6 +189,113 @@ describe("M2 content repository row and lock defenses", () => {
     }
   });
 
+  test.each([
+    [
+      "missing source identity",
+      [],
+      {
+        resolved_locale: "es",
+        translation_state: "policy_blocked",
+        machine_translated: false,
+        translated_body: null,
+        source_hash: null,
+      },
+    ],
+    [
+      "same-language source",
+      [{ source_language: "es", source_hash: "b".repeat(64) }],
+      {
+        resolved_locale: "es",
+        translation_state: "same_language",
+        machine_translated: false,
+        translated_body: null,
+        source_hash: "b".repeat(64),
+      },
+    ],
+    [
+      "selected machine translation",
+      [
+        {
+          source_language: "en",
+          source_hash: "c".repeat(64),
+          translated_value: "Hola",
+          translation_origin: "machine",
+        },
+      ],
+      {
+        resolved_locale: "es",
+        translation_state: "ready",
+        machine_translated: true,
+        translated_body: "Hola",
+        source_hash: "c".repeat(64),
+      },
+    ],
+    [
+      "leased translation job",
+      [{ source_language: "en", source_hash: "d".repeat(64), job_status: "leased" }],
+      {
+        resolved_locale: "es",
+        translation_state: "pending",
+        machine_translated: false,
+        translated_body: null,
+        source_hash: "d".repeat(64),
+      },
+    ],
+    [
+      "stale translation job",
+      [{ source_language: "en", source_hash: "e".repeat(64), job_status: "stale" }],
+      {
+        resolved_locale: "es",
+        translation_state: "failed",
+        machine_translated: false,
+        translated_body: null,
+        source_hash: "e".repeat(64),
+      },
+    ],
+  ] as const)(
+    "returns a truthful localization projection for %s",
+    async (_label, rows, expected) => {
+      const fake = fakeDb([
+        [resolvedPost],
+        [{ ...validPost, body: "Hello" }],
+        rows,
+        validCounts,
+        [],
+      ]);
+      const result = await runWith(
+        makeControlPlaneContentRepository().getPost({
+          communityId: "community_1",
+          postId: "post_1",
+          viewerUserId: "usr_alice",
+          locale: "es",
+        }),
+        fake.db,
+      );
+      expect(result).toMatchObject({ _tag: "Success", value: expected });
+      expect(
+        fake.calls.find((call) => call.label === "content.posts.localization")?.values,
+      ).toEqual(["post_1", "es", "Hello", "translation-policy-v1"]);
+    },
+  );
+
+  test("rejects malformed persisted localization identity", async () => {
+    const fake = fakeDb([
+      [resolvedPost],
+      [{ ...validPost, body: "Hello" }],
+      [{ source_language: "en", source_hash: "not-a-hash" }],
+    ]);
+    const result = await runWith(
+      makeControlPlaneContentRepository().getPost({
+        communityId: "community_1",
+        postId: "post_1",
+        viewerUserId: "usr_alice",
+        locale: "es",
+      }),
+      fake.db,
+    );
+    expect(failureOf(result)).toMatchObject({ operation: "get-post", reason: "invalid-row" });
+  });
+
   test("rejects orphan posts and comments as invalid rows", async () => {
     const repository = makeControlPlaneContentRepository();
     const orphanPost = await runWith(
