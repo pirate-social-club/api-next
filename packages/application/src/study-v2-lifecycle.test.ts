@@ -3,10 +3,10 @@ import type { StudySessionItemV2 } from "@pirate/contracts";
 import { Effect } from "effect";
 import {
   deriveStudyProgressV2,
+  prepareStudyAttemptV2,
   resolveTranscriptEvidenceV2,
   StudyV2InfrastructureFailed,
   selectProductionStudyItemsV2,
-  validateStudySubmissionKindV2,
 } from "./study-v2-lifecycle.ts";
 
 const item = (ordinal: number): StudySessionItemV2 => ({
@@ -46,14 +46,29 @@ const item = (ordinal: number): StudySessionItemV2 => ({
 
 describe("Study v2 presentation lifecycle", () => {
   test("rejects the wrong submission kind before an attempt can be accepted", async () => {
+    let reservationCalls = 0;
     await expect(
       Effect.runPromise(
-        validateStudySubmissionKindV2("say_it_back", {
-          kind: "text_response",
-          text: "client transcript",
+        prepareStudyAttemptV2({
+          accountId: "account-1",
+          attemptNumber: 1,
+          exerciseType: "say_it_back",
+          idempotencyKey: "answer-1",
+          now: 1_000,
+          requestHash: "request-hash-1",
+          sessionItemId: "item-1",
+          submission: { kind: "text_response", text: "client transcript" },
+          evidenceStore: { load: () => Effect.succeed(null) },
+          reservationStore: {
+            reserve: () => {
+              reservationCalls += 1;
+              return Effect.succeed({ kind: "ready", attemptId: "attempt-1", transcript: null });
+            },
+          },
         }),
       ),
     ).rejects.toMatchObject({ reason: "submission-kind-mismatch" });
+    expect(reservationCalls).toBe(0);
   });
 
   test("requires transcript evidence owned by the account and session item", async () => {
@@ -110,5 +125,34 @@ describe("Study v2 presentation lifecycle", () => {
     expect(
       deriveStudyProgressV2(["correct", "correct", "incorrect", "incorrect"], 4).qualified,
     ).toBe(false);
+  });
+
+  test("returns the stored result for an idempotent attempt replay", async () => {
+    const replay = {
+      object: "study_answer_result_v2",
+      session_item_id: "item-1",
+      attempt_number: 1,
+      exercise_type: "typed_cloze",
+      outcome: "correct",
+      first_pass: true,
+      attempt_state: "spent",
+      feedback: { kind: "text_reveal", accepted_answer: "on" },
+    } as const;
+    await expect(
+      Effect.runPromise(
+        prepareStudyAttemptV2({
+          accountId: "account-1",
+          attemptNumber: 1,
+          exerciseType: "typed_cloze",
+          idempotencyKey: "answer-1",
+          now: 1_000,
+          requestHash: "request-hash-1",
+          sessionItemId: "item-1",
+          submission: { kind: "text_response", text: "on" },
+          evidenceStore: { load: () => Effect.succeed(null) },
+          reservationStore: { reserve: () => Effect.succeed({ kind: "replayed", result: replay }) },
+        }),
+      ),
+    ).resolves.toEqual({ kind: "replayed", result: replay });
   });
 });

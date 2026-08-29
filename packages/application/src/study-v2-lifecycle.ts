@@ -1,4 +1,5 @@
 import type {
+  StudyAnswerResultV2,
   StudyAnswerSubmissionV2,
   StudyExerciseTypeV2,
   StudySessionItemV2,
@@ -30,6 +31,20 @@ export interface TranscriptEvidenceStoreV2 {
   readonly load: (
     evidenceId: string,
   ) => Effect.Effect<TranscriptEvidenceV2 | null, StudyV2InfrastructureFailed>;
+}
+
+export type StudyAttemptReservationV2 =
+  | Readonly<{ kind: "ready"; attemptId: string; transcript: string | null }>
+  | Readonly<{ kind: "replayed"; result: StudyAnswerResultV2 }>;
+
+export interface StudyAttemptReservationStoreV2 {
+  readonly reserve: (input: {
+    readonly accountId: string;
+    readonly attemptNumber: number;
+    readonly idempotencyKey: string;
+    readonly requestHash: string;
+    readonly sessionItemId: string;
+  }) => Effect.Effect<StudyAttemptReservationV2, StudyV2InfrastructureFailed>;
 }
 
 const submissionKindFor = (exerciseType: StudyExerciseTypeV2): StudyAnswerSubmissionV2["kind"] => {
@@ -71,6 +86,41 @@ export const resolveTranscriptEvidenceV2 = Effect.fn("resolveTranscriptEvidenceV
     return yield* new StudyV2Rejected({ reason: "transcript-evidence-expired" });
   }
   return evidence;
+});
+
+export const prepareStudyAttemptV2 = Effect.fn("prepareStudyAttemptV2")(function* (input: {
+  readonly accountId: string;
+  readonly attemptNumber: number;
+  readonly exerciseType: StudyExerciseTypeV2;
+  readonly idempotencyKey: string;
+  readonly now: number;
+  readonly requestHash: string;
+  readonly sessionItemId: string;
+  readonly submission: StudyAnswerSubmissionV2;
+  readonly evidenceStore: TranscriptEvidenceStoreV2;
+  readonly reservationStore: StudyAttemptReservationStoreV2;
+}) {
+  yield* validateStudySubmissionKindV2(input.exerciseType, input.submission);
+  const transcript =
+    input.submission.kind === "transcript_response"
+      ? (yield* resolveTranscriptEvidenceV2(
+          {
+            accountId: input.accountId,
+            evidenceId: input.submission.transcript_evidence_id,
+            now: input.now,
+            sessionItemId: input.sessionItemId,
+          },
+          input.evidenceStore,
+        )).transcript
+      : null;
+  const reservation = yield* input.reservationStore.reserve({
+    accountId: input.accountId,
+    attemptNumber: input.attemptNumber,
+    idempotencyKey: input.idempotencyKey,
+    requestHash: input.requestHash,
+    sessionItemId: input.sessionItemId,
+  });
+  return reservation.kind === "replayed" ? reservation : { ...reservation, transcript };
 });
 
 export const selectProductionStudyItemsV2 = (
