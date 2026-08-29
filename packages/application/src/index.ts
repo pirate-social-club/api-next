@@ -11,6 +11,7 @@ export * from "./hns-static-platform-app-gateway.ts";
 export * from "./karaoke-diagnostics.ts";
 export * from "./karaoke-runtime/index.ts";
 export * from "./karaoke-service.ts";
+export * from "./learner-audio-deletion.ts";
 export * from "./localization-source-hash.ts";
 export * from "./localization-translation-commit.ts";
 export * from "./money/community-purchase-funding.ts";
