@@ -1894,8 +1894,87 @@ audience unset, and omits dormant production handle-authority credentials from
 the required-secret gate. The selected gateway and `jazleeuw` zone were
 accepted for `community_app_v1`, not for a wildcard hosted-persona surface.
 
-Reuse remains the preferred path, but it requires a separately reviewed
-refresh-and-enable ceremony. That ceremony must, in order:
+The separately authorized credentialed preflight then called
+`api_next.resolve_hns_community_app_host_authority_v1` exactly once through the
+gateway's installed read-only database credential. It returned one
+`app.jazleeuw` row. The app-host activation and DNS-zone activation were
+`active`, the route binding was current and effective, and the activation and
+DNS deployment references matched. The four freshness results were negative:
+stable chain delegation did not match, DS did not authenticate the retained
+zone, the retained-zone digest did not match, and gateway health was
+`unavailable`. No credential value was rendered and no row, fixture,
+generation, provider configuration, DNS record, or host state was changed.
+
+A subsequent read-only DNSSEC comparison proved that the public DNS and chain
+are internally consistent. Both authorities serve the same active ECDSA P-256
+DNSKEY with key tag `10875` and algorithm
+`13`. PowerDNS derives SHA-256 DS
+`ba5d84ad6e3e7ec452a569ee2e6c447ba2b9b533de65c58e59f2f0b7f0773045`
+and SHA-384 DS
+`fde2c7af467092476b5572f9ac43fbbbbe82f63f7c785af984dc5884a2dae0384519dea6982fdbd19c375756b4ebaf70`
+from that key. Those bytes exactly match the two DS records retained on the
+Handshake chain. No DNSKEY rotation or Handshake DS update is required now.
+
+The retained production generation is nevertheless materially stale rather
+than merely past its expiry time. DNS-zone generation 5 still records DNSSEC
+keyset version `key-tag-39280`, while the served and on-chain key tag is
+`10875`; its retained zone digest and health observation also predate the
+current bytes. Recovery therefore requires a new authority inventory, DNS-zone
+generation, app-host generation, and bound health observation carrying the
+current keyset and zone evidence. Re-recording only health would be invalid.
+
+Public chain history identifies the provenance. Update 1 at block `341741` on
+2026-08-08 published key tag `10875`. Update 2, transaction
+`368ac02ccfb561116bce7ed47b5eaa3b7f284afd1018fb9e17ea197bc8d3dc15`
+at block `344373` on 2026-08-26, temporarily published key tag `39280`.
+Update 3, transaction
+`89a9b8b3c6fc68aea97f35e80b45b9369b09cad3643a1ad7adda7044c8b19fca`
+at block `344414` on 2026-08-27, restored key tag `10875`; it became effective
+at block `344448`, before the 2026-08-28 public acceptance. This is not an
+unexplained post-acceptance wallet action.
+
+The retained production row instead exposes a snapshot-provenance defect. Its
+inventory, DNS authority, keyset, and delegation references are all named
+`loopback-fixture-v1`, its environment is `production-loopback-fixture`, and it
+captured the transient Update 2 key after Update 3 was already effective. The
+successor may not rename or replay those fixture bytes as current evidence. It
+must be generated from a canonical observer run against the real current chain
+and both authoritative views, with exact encoded inventory and zone bytes
+reviewed before any production write.
+
+The 2026-08-28 public acceptance therefore remains evidence for the deployed
+gateway, DNS, DNSSEC, DANE, Access, replay, application-serving, and canonical-
+route surfaces it exercised. It is not evidence that `jazleeuw` served under a
+canonical mainnet authority observation. Generation 6 is the first such test:
+the observer produces candidate documents without writing production, the
+exact bytes receive review, and only then may the already authorized atomic
+6/10/1 successor transaction run. Atomicity covers effectiveness as well as
+insertion: the same transaction must advance every canonical current selector,
+route binding, or equivalent activation mechanism so the resolver and gateway
+actually select DNS-zone generation 6, app-host generation 10, and their bound
+health generation 1. The transaction must prove those effective selections
+before commit rather than assume that higher generation numbers supersede the
+retained fixture automatically.
+
+The authority store is append-only, so this transaction has no delete or
+rollback path. A post-transaction resolver read and public application probe
+must pass before any wildcard or handle lifecycle work. If either fails, the
+committed 6/10/1 rows remain permanent audit evidence: execution stops for
+diagnosis and reopens the isolated `11qx` path instead of un-writing the
+successors or repairing them in flight. Human review of the exact candidate
+bytes is therefore the final reversible checkpoint.
+
+The earlier loopback 421 alone did not identify those failures. Gateway source
+inspection confirmed that public inbound requests do not require a Cloudflare
+Access assertion: the gateway resolves authority from its read-only database
+first, then adds its installed Access service token only to the outbound Solid
+request. The schema-qualified resolver result above, rather than the redacted
+421, is the freshness evidence.
+
+The key and delegation comparison restores `jazleeuw` reuse as the lower-work
+candidate, subject to the owner's separate acceptance of production observation
+and pilot rows. Reuse requires a separately reviewed refresh-and-enable
+ceremony. That ceremony must, in order:
 
 1. retain an independent DNS vantage because the operator workstation cannot
    directly reach authoritative port 53;
@@ -1914,7 +1993,15 @@ refresh-and-enable ceremony. That ceremony must, in order:
    the exact selected 8–15-character test label before executing the handle
    lifecycle.
 
-This preflight performed no provider or credential access, deployment,
-database read or write, DNS/HNS mutation, wallet operation, signing, or other
-live-state change. The `11qx` staging build remains parked as the fallback if
-the owner declines production rows or the recovery plan rejects `jazleeuw`.
+Whichever root is selected, its wildcard exists only in authoritative DNS and
+gateway routing. Handle hosts are public, read-only persona surfaces and do not
+initialize Privy, authenticate users, provision wallets, or initiate OAuth.
+Privy authentication and wallet operations remain on fixed `pirate.sc`
+origins. No Privy allowed-origin wildcard is part of either pilot path.
+
+This preflight performed one credentialed read-only database query. It
+performed no provider mutation, deployment, database write, DNS/HNS mutation,
+wallet operation, signing, or other live-state change. The `11qx` staging build
+remains parked as the isolation fallback if the owner declines production
+observation or pilot rows, or if the reviewed successor ceremony finds a new
+mismatch.
