@@ -1199,9 +1199,8 @@ const leaderboard = (
                  SELECT streak.account_id, streak.current_count, streak.best_count,
                         streak.started_day, streak.last_day, streak.total_days,
                         presentation.persona_id,
-                        row_number() OVER (
-                          ORDER BY streak.current_count DESC, streak.best_count DESC,
-                                   streak.started_day, presentation.persona_id
+                        rank() OVER (
+                          ORDER BY streak.current_count DESC, streak.best_count DESC
                         ) AS rank
                    FROM ${postId === null ? "community_streaks" : "song_streaks"} AS streak
                    JOIN persona_activity_presentations AS presentation
@@ -1228,7 +1227,8 @@ const leaderboard = (
                  ) AS handle ON true
                 WHERE ranked.rank <= $${postId === null ? "3" : "4"}
                    OR ranked.account_id=$${postId === null ? "4" : "5"}
-                ORDER BY ranked.rank`,
+                ORDER BY ranked.rank, ranked.current_count DESC, ranked.best_count DESC,
+                         ranked.started_day, ranked.persona_id`,
         values:
           postId === null
             ? [input.communityId, input.readAt, input.limit, input.accountId]

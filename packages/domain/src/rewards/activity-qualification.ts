@@ -28,6 +28,8 @@ export type KaraokeQualificationInput = Readonly<{
   scoredLineCount: number;
   lineCount: number;
   finalScoreBps: number;
+  playbackKind?: "full_mix" | "instrumental";
+  eligiblePlaybackKinds?: readonly ("full_mix" | "instrumental")[];
 }>;
 
 export type KaraokeQualificationEvaluation = Readonly<{
@@ -140,7 +142,10 @@ export function evaluateKaraokeQualification(
       input.completionReason === "completed" &&
       input.scoredLineCount >= 5 &&
       coverageBps >= 8_500 &&
-      input.finalScoreBps >= 7_000,
+      input.finalScoreBps >= 7_000 &&
+      (input.eligiblePlaybackKinds === undefined ||
+        (input.playbackKind !== undefined &&
+          input.eligiblePlaybackKinds.includes(input.playbackKind))),
   };
 }
 
