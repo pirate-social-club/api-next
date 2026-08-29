@@ -1,8 +1,8 @@
 /// <reference types="@cloudflare/vitest-pool-workers/types" />
 
 import { env as testEnv } from "cloudflare:test";
-import { type Alert, ControlPlaneDb } from "@pirate/application";
-import type { AlertDigest } from "@pirate/platform-cf";
+import { ControlPlaneDb } from "@pirate/application";
+import type { PipelineLogFields } from "@pirate/platform-cf";
 import { Cause, Effect, Exit, Layer, Option, Schedule } from "effect";
 import { describe, expect, it } from "vitest";
 import {
@@ -68,7 +68,7 @@ function recordingContext(waits: Promise<unknown>[]): ExecutionContext {
 
 describe("scheduled lane holding a DO lease (workerd)", () => {
   it("registers the bounded funding reconciler as the only writer for its tables", () => {
-    const sink = { email: () => Effect.void, webhook: () => Effect.void };
+    const sink = {};
     const declarations = makeJobsWorkerDeclarations(sink, "https://rpc.test/");
     const funding = declarations.find(
       (declaration) => declaration.name === COMMUNITY_PURCHASE_FUNDING_RECONCILIATION_JOB,
@@ -86,7 +86,7 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
   });
 
   it("registers the Megapot custody machine as one exclusive writer lane", async () => {
-    const sink = { email: () => Effect.void, webhook: () => Effect.void };
+    const sink = {};
     const declarations = makeJobsWorkerDeclarations(
       sink,
       "https://rpc.test/",
@@ -160,7 +160,7 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
 
     const hns = makeHnsRouteRevalidationComposition(workerEnv);
     expect(hns).toEqual({ enabled: false });
-    const sink = { email: () => Effect.void, webhook: () => Effect.void };
+    const sink = {};
     const declarations = makeJobsWorkerDeclarations(
       sink,
       "https://rpc.invalid/",
@@ -202,7 +202,7 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
       HNS_OWNERSHIP_CONFIGURATION_VERSION: "hns-owner-config-v1",
     });
     expect(hns.enabled).toBe(true);
-    const sink = { email: () => Effect.void, webhook: () => Effect.void };
+    const sink = {};
     const declarations = makeJobsWorkerDeclarations(
       sink,
       "https://rpc.invalid/",
@@ -423,8 +423,7 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
 
   it("runs the real routing audit, renews its lease, and aggregates alerts", async () => {
     const statements: Array<{ readonly readonly: boolean; readonly text: string }> = [];
-    const emails: AlertDigest[] = [];
-    const webhooks: Array<readonly Alert[]> = [];
+    const logs: PipelineLogFields[] = [];
     const rows = [
       { violation: "blank_display_name", violation_count: 2 },
       { violation: "updated_before_created", violation_count: 1 },
@@ -439,10 +438,7 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
       },
       withTransaction: () => Effect.die("routing audit must remain read-only"),
     } as unknown as ControlPlaneDb["Service"];
-    const sink = {
-      email: (digest: AlertDigest) => Effect.sync(() => emails.push(digest)),
-      webhook: (alerts: readonly Alert[]) => Effect.sync(() => void webhooks.push([...alerts])),
-    };
+    const sink = { log: (_event: string, fields: PipelineLogFields) => logs.push(fields) };
     const job = {
       ...makeCommunityCatalogIntegrityJob(sink, { timeout: 5_000 }),
       // Workerd test files share the DO namespace and can run concurrently.
@@ -465,10 +461,11 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
     expect(statements[0]?.text).toContain("FROM communities");
     expect(statements[0]?.text).not.toContain("community_database_routing");
     expect(statements[0]?.text).not.toContain("backend = 'd1'");
-    expect(emails).toHaveLength(1);
-    expect(webhooks).toHaveLength(1);
-    expect(webhooks[0]?.every((alert) => alert.severity === "high")).toBe(true);
-    expect(webhooks[0]?.every((alert) => !alert.body.includes("$1"))).toBe(true);
+    expect(logs).toHaveLength(2);
+    expect(logs.every((fields) => fields.event === "pipeline.alert")).toBe(true);
+    expect(
+      logs.every((fields) => fields.event !== "pipeline.alert" || fields.severity === "high"),
+    ).toBe(true);
   });
 
   it("interrupts in-flight work and refuses release when lease renewal is lost", async () => {
@@ -531,13 +528,8 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
   });
 
   it("routes expected failures, defects, and runner timeouts through declared severity", async () => {
-    const emails: AlertDigest[] = [];
-    const digests: AlertDigest[] = [];
-    const sink = {
-      email: (digest: AlertDigest) => Effect.sync(() => emails.push(digest)),
-      digest: (digest: AlertDigest) => Effect.sync(() => digests.push(digest)),
-      webhook: () => Effect.void,
-    };
+    const logs: PipelineLogFields[] = [];
+    const sink = { log: (_event: string, fields: PipelineLogFields) => logs.push(fields) };
     const severity = {
       expectedFailure: {
         ControlPlaneOperationTimedOut: "medium" as const,
@@ -562,11 +554,8 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
       run: Effect.fail({ _tag: "ControlPlaneOperationTimedOut" }),
     };
     await expect(handleScheduled(env, expectedFailure.lane, expectedFailure)).rejects.toBeDefined();
-    expect(emails).toHaveLength(1);
-    expect(emails[0]?.groups).toHaveLength(1);
-    expect(emails[0]?.groups[0]?.severity).toBe("medium");
+    expect(logs.at(-1)).toMatchObject({ event: "pipeline.alert", severity: "medium" });
 
-    emails.length = 0;
     const ambiguous: JobDefinition = {
       ...expectedFailure,
       name: "severity.transaction-ambiguity",
@@ -579,10 +568,7 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
       run: Effect.fail({ _tag: "ControlPlaneOperationTimedOut", outcomeCertainty: "unknown" }),
     };
     await expect(handleScheduled(env, ambiguous.lane, ambiguous)).rejects.toBeDefined();
-    expect(emails).toHaveLength(1);
-    expect(emails[0]?.groups[0]?.severity).toBe("high");
-
-    emails.length = 0;
+    expect(logs.at(-1)).toMatchObject({ event: "pipeline.alert", severity: "high" });
     const expectedHigh: JobDefinition = {
       ...expectedFailure,
       name: "severity.expected-high",
@@ -591,11 +577,7 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
       run: Effect.fail({ _tag: "ControlPlaneStatementFailed" }),
     };
     await expect(handleScheduled(env, expectedHigh.lane, expectedHigh)).rejects.toBeDefined();
-    expect(emails).toHaveLength(1);
-    expect(emails[0]?.groups).toHaveLength(1);
-    expect(emails[0]?.groups[0]?.severity).toBe("high");
-
-    emails.length = 0;
+    expect(logs.at(-1)).toMatchObject({ event: "pipeline.alert", severity: "high" });
     const expectedLow: JobDefinition = {
       ...expectedFailure,
       name: "severity.expected-low",
@@ -604,12 +586,8 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
       run: Effect.fail({ _tag: "LowExpectedFailure" }),
     };
     await expect(handleScheduled(env, expectedLow.lane, expectedLow)).rejects.toBeDefined();
-    expect(emails).toHaveLength(0);
-    expect(digests).toHaveLength(1);
-    expect(digests[0]?.groups).toHaveLength(1);
-    expect(digests[0]?.groups[0]?.severity).toBe("low");
+    expect(logs.at(-1)).toMatchObject({ event: "pipeline.alert", severity: "low" });
 
-    digests.length = 0;
     const defect: JobDefinition = {
       name: "severity.defect",
       lane: "severity-defect",
@@ -624,11 +602,7 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
       run: Effect.die("test defect"),
     };
     await expect(handleScheduled(env, defect.lane, defect)).rejects.toBeDefined();
-    expect(emails).toHaveLength(1);
-    expect(emails[0]?.groups).toHaveLength(1);
-    expect(emails[0]?.groups[0]?.severity).toBe("high");
-
-    emails.length = 0;
+    expect(logs.at(-1)).toMatchObject({ event: "pipeline.alert", severity: "high" });
     const timeout: JobDefinition = {
       name: "severity.runner-timeout",
       lane: "severity-runner-timeout",
@@ -644,8 +618,6 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
     };
     const timeoutResult = await handleScheduled(env, timeout.lane, timeout);
     expect(timeoutResult.timedOut).toBe(true);
-    expect(emails).toHaveLength(1);
-    expect(emails[0]?.groups).toHaveLength(1);
-    expect(emails[0]?.groups[0]?.severity).toBe("medium");
+    expect(logs.at(-1)).toMatchObject({ event: "pipeline.alert", severity: "medium" });
   });
 });

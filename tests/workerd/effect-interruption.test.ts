@@ -101,10 +101,7 @@ describe("Effect.timeout real interruption (workerd)", () => {
         ),
       withTransaction: () => Effect.die("routing audit must remain read-only"),
     } as unknown as ControlPlaneDb["Service"];
-    const sink = {
-      email: () => Effect.void,
-      webhook: () => Effect.void,
-    };
+    const sink = {};
     const job = makeCommunityCatalogIntegrityJob(sink, { timeout: 50 });
 
     const result = await handleScheduled(env, job.lane, job, Date.now(), {

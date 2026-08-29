@@ -20,12 +20,13 @@ export {
 export {
   ALERT_CONDITION_ACTIVE_WINDOW_MS,
   ALERT_REMINDER_DELAYS_MS,
+  type AlertCorrelationFields,
   type AlertDeliveryLedger,
   type AlertDeliveryStore,
   type AlertDigest,
   type AlertGroup,
+  type AlertLogFields,
   type AlertSink,
-  AlertSinkDeliveryFailed,
   type AlertSuppressionDecision,
   type AlertSuppressionLedger,
   type AlertSuppressionState,
@@ -34,8 +35,15 @@ export {
   alertTick,
   decideAlertSuppression,
   makeAlertDeliveryLedger,
-  makeHttpAlertSink,
   makeLocalAlertSink,
+  type OperationsBalanceSnapshotFields,
+  type OperationsBalanceSnapshotInput,
+  type PipelineHealthSnapshotFields,
+  type PipelineHealthSnapshotInput,
+  type PipelineLogEvent,
+  type PipelineLogFields,
+  writeOperationsBalanceSnapshot,
+  writePipelineHealthSnapshot,
 } from "./alerts";
 export {
   ACCESS_JWKS_CACHE_MAX_SECONDS,
@@ -196,6 +204,7 @@ export {
   makeControlPlaneNamespaceOwnershipStartRepository,
   makeControlPlaneNamespaceOwnershipStartStore,
 } from "./namespace-ownership-start-repository";
+export { type NativeBalanceJsonRpc, readNativeBalance } from "./native-balance.ts";
 export {
   makeControlPlaneOperatorManagedRouteRepository,
   makeControlPlaneOperatorManagedRouteStore,

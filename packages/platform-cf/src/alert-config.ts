@@ -1,67 +1,18 @@
-import { Data, Redacted } from "effect";
+import { Data } from "effect";
 
-import {
-  type AlertDeliveryLedger,
-  type AlertSink,
-  makeHttpAlertSink,
-  makeLocalAlertSink,
-} from "./alerts";
+import { type AlertDeliveryLedger, type AlertSink, makeLocalAlertSink } from "./alerts";
 
 export interface AlertSinkBindings {
   readonly API_NEXT_ENV?: string;
-  readonly API_NEXT_ALERT_EMAIL_URL?: string;
-  readonly API_NEXT_ALERT_WEBHOOK_URL?: string;
-  readonly API_NEXT_ALERT_EMAIL_TOKEN?: string;
-  readonly API_NEXT_ALERT_WEBHOOK_TOKEN?: string;
 }
 
 export class AlertSinkConfigurationError extends Data.TaggedError("AlertSinkConfigurationError")<{
-  readonly field:
-    | "API_NEXT_ENV"
-    | "API_NEXT_ALERT_EMAIL_URL"
-    | "API_NEXT_ALERT_WEBHOOK_URL"
-    | "API_NEXT_ALERT_EMAIL_TOKEN"
-    | "API_NEXT_ALERT_WEBHOOK_TOKEN";
+  readonly field: "API_NEXT_ENV";
 }> {}
 
-function requiredUrl(
-  bindings: AlertSinkBindings,
-  field: "API_NEXT_ALERT_EMAIL_URL" | "API_NEXT_ALERT_WEBHOOK_URL",
-): string {
-  const value = bindings[field]?.trim();
-  let parsed: URL | undefined;
-  try {
-    parsed = value === undefined ? undefined : new URL(value);
-  } catch {
-    parsed = undefined;
-  }
-  if (
-    value === undefined ||
-    value.length === 0 ||
-    parsed?.protocol !== "https:" ||
-    parsed.hostname.endsWith(".invalid") ||
-    value.includes("replace-with")
-  ) {
-    throw new AlertSinkConfigurationError({ field });
-  }
-  return value;
-}
-
-function requiredSecret(
-  bindings: AlertSinkBindings,
-  field: "API_NEXT_ALERT_EMAIL_TOKEN" | "API_NEXT_ALERT_WEBHOOK_TOKEN",
-): Redacted.Redacted<string> {
-  const value = bindings[field]?.trim();
-  if (value === undefined || value.length === 0) {
-    throw new AlertSinkConfigurationError({ field });
-  }
-  return Redacted.make(value);
-}
-
 /**
- * Production requires both endpoint URLs and both Wrangler-provisioned
- * secrets. Development and tests use a local sink and never contact a
- * provider, even when a shell happens to contain production variables.
+ * All environments use the structured local Workers Logs adapter. Construction
+ * remains eager at the Worker boundary so invalid environment names fail fast.
  */
 export function makeConfiguredAlertSink(
   bindings: AlertSinkBindings,
@@ -75,14 +26,7 @@ export function makeConfiguredAlertSink(
   ) {
     throw new AlertSinkConfigurationError({ field: "API_NEXT_ENV" });
   }
-  if (bindings.API_NEXT_ENV !== "production") {
-    return makeLocalAlertSink();
-  }
-  return makeHttpAlertSink({
-    emailUrl: requiredUrl(bindings, "API_NEXT_ALERT_EMAIL_URL"),
-    webhookUrl: requiredUrl(bindings, "API_NEXT_ALERT_WEBHOOK_URL"),
-    emailToken: requiredSecret(bindings, "API_NEXT_ALERT_EMAIL_TOKEN"),
-    webhookToken: requiredSecret(bindings, "API_NEXT_ALERT_WEBHOOK_TOKEN"),
-    ...(delivery === undefined ? {} : { delivery }),
-  });
+  const sink = makeLocalAlertSink(bindings.API_NEXT_ENV ?? "development");
+  if (delivery === undefined) return sink;
+  return { ...sink, delivery };
 }

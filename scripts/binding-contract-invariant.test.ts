@@ -104,10 +104,6 @@ const HTTP_BINDING_KINDS = {
 
 const ALERT_BINDING_KINDS = {
   API_NEXT_ENV: "var",
-  API_NEXT_ALERT_EMAIL_URL: "var",
-  API_NEXT_ALERT_WEBHOOK_URL: "var",
-  API_NEXT_ALERT_EMAIL_TOKEN: "secret",
-  API_NEXT_ALERT_WEBHOOK_TOKEN: "secret",
 } as const satisfies BindingManifest<AlertSinkBindings>;
 
 const JOBS_BINDING_KINDS = {
@@ -116,10 +112,6 @@ const JOBS_BINDING_KINDS = {
   MEGAPOT_COMMITMENTS: "platform",
   HNS_OWNER_VERIFIER: "platform",
   API_NEXT_ENV: "var",
-  API_NEXT_ALERT_EMAIL_URL: "var",
-  API_NEXT_ALERT_WEBHOOK_URL: "var",
-  API_NEXT_ALERT_EMAIL_TOKEN: "secret",
-  API_NEXT_ALERT_WEBHOOK_TOKEN: "secret",
   COMMUNITY_PURCHASE_FUNDING_RPC_URL: "secret",
   MEGAPOT_REWARDS_ENABLED: "var",
   MEGAPOT_CHAIN_ID: "var",
@@ -146,6 +138,9 @@ const JOBS_BINDING_KINDS = {
   MEDIA_PROCESSING_QUEUE: "platform",
   MEDIA_PROCESSING_WORKFLOW: "platform",
   DATA_REGISTRATION_ENABLED: "var",
+  DATA_REGISTRATION_RPC_URL: "var",
+  DATA_REGISTRATION_SIGNER_ADDRESS: "var",
+  DATA_REGISTRATION_NATIVE_BALANCE_FLOOR_WEI: "var",
   DATA_REGISTRATION_QUEUE: "platform",
   DATA_REGISTRATION_WORKFLOW: "platform",
 } as const satisfies BindingManifest<JobsWorkerEnv>;
@@ -211,6 +206,20 @@ const DATA_CONFIG_PATH = new URL(
 interface RawWranglerEnvironment {
   readonly vars?: Record<string, unknown>;
   readonly secrets?: { readonly required?: readonly unknown[] };
+  readonly observability?: {
+    readonly enabled?: unknown;
+    readonly logs?: {
+      readonly enabled?: unknown;
+      readonly head_sampling_rate?: unknown;
+      readonly invocation_logs?: unknown;
+      readonly persist?: unknown;
+    };
+    readonly traces?: {
+      readonly enabled?: unknown;
+      readonly head_sampling_rate?: unknown;
+      readonly persist?: unknown;
+    };
+  };
 }
 
 interface RawWranglerConfig extends RawWranglerEnvironment {
@@ -257,6 +266,12 @@ const declaredEnvironment = (
   };
 };
 
+const rawEnvironment = (
+  config: RawWranglerConfig,
+  environment: EnvironmentName,
+): RawWranglerEnvironment =>
+  environment === "development" ? config : (config.env?.[environment] ?? {});
+
 const declaredNames = (environment: DeclaredEnvironment): readonly string[] => [
   ...Object.keys(environment.vars),
   ...environment.secrets,
@@ -264,20 +279,6 @@ const declaredNames = (environment: DeclaredEnvironment): readonly string[] => [
 
 const isNonEmptyString = (value: unknown): value is string =>
   typeof value === "string" && value.trim().length > 0;
-
-const isUsableAlertUrl = (value: unknown): boolean => {
-  if (!isNonEmptyString(value)) return false;
-  try {
-    const parsed = new URL(value);
-    return (
-      parsed.protocol === "https:" &&
-      !parsed.hostname.endsWith(".invalid") &&
-      !value.includes("REPLACE_WITH")
-    );
-  } catch {
-    return false;
-  }
-};
 
 const HTTP_ALWAYS_REQUIRED = [
   "API_NEXT_ENV",
@@ -395,11 +396,10 @@ const JOBS_HNS_REQUIRED = [
   "HNS_OWNERSHIP_CONFIGURATION_VERSION",
 ] as const;
 
-const JOBS_PRODUCTION_ALERT_REQUIRED = [
-  "API_NEXT_ALERT_EMAIL_URL",
-  "API_NEXT_ALERT_WEBHOOK_URL",
-  "API_NEXT_ALERT_EMAIL_TOKEN",
-  "API_NEXT_ALERT_WEBHOOK_TOKEN",
+const JOBS_DATA_BALANCE_REQUIRED = [
+  "DATA_REGISTRATION_RPC_URL",
+  "DATA_REGISTRATION_SIGNER_ADDRESS",
+  "DATA_REGISTRATION_NATIVE_BALANCE_FLOOR_WEI",
 ] as const;
 
 const MEDIA_ENABLED_REQUIRED = [
@@ -452,12 +452,13 @@ const requiredNamesFor = (
       : ["MEDIA_PROCESSING_ENABLED"];
   }
   if (worker === "jobs") {
-    const apiEnvironment = environment.vars.API_NEXT_ENV;
     const required: string[] = [...JOBS_ALWAYS_REQUIRED];
-    if (apiEnvironment === "production") required.push(...JOBS_PRODUCTION_ALERT_REQUIRED);
     if (environment.vars.HNS_OWNERSHIP_ENABLED === "true") required.push(...JOBS_HNS_REQUIRED);
     if (environment.vars.MEGAPOT_REWARDS_ENABLED === "true") {
       required.push(...JOBS_MEGAPOT_REQUIRED);
+    }
+    if (environment.vars.DATA_REGISTRATION_ENABLED === "true") {
+      required.push(...JOBS_DATA_BALANCE_REQUIRED);
     }
     return required;
   }
@@ -553,13 +554,6 @@ const auditRequiredBindings = (): readonly string[] => {
         if (manifest[name] === "var" && !isNonEmptyString(environment.vars[name])) {
           violations.push(`${worker}/${environmentName}: required var ${name} is empty`);
         }
-        if (
-          worker === "jobs" &&
-          (name === "API_NEXT_ALERT_EMAIL_URL" || name === "API_NEXT_ALERT_WEBHOOK_URL") &&
-          !isUsableAlertUrl(environment.vars[name])
-        ) {
-          violations.push(`${worker}/${environmentName}: required alert URL ${name} is invalid`);
-        }
       }
       if (worker === "http" && environment.vars.ZKPASSPORT_ENABLED === "true") {
         for (const name of HTTP_ZKPASSPORT_ROTATION_DECLARATIONS) {
@@ -603,10 +597,6 @@ describe("source-to-Wrangler binding contract", () => {
     // Blocked: no development Privy application has been provisioned.
     "http/development: required PRIVY_JWKS_URL is undeclared",
     "http/development: required PRIVY_JWT_AUDIENCE is undeclared",
-    // Blocked: production alert endpoints are unresolved placeholders and no
-    // production jobs Worker is deployed.
-    "jobs/production: required API_NEXT_ALERT_EMAIL_URL is undeclared",
-    "jobs/production: required API_NEXT_ALERT_WEBHOOK_URL is undeclared",
   ] as const;
 
   const ratchet = (actual: readonly string[], known: readonly string[]) => ({
@@ -646,6 +636,27 @@ describe("source-to-Wrangler binding contract", () => {
       }
     }
     expect(violations).toEqual([]);
+  });
+
+  test("pipeline observability keeps custom logs unsampled and traces deliberate", () => {
+    for (const worker of ["jobs", "media", "data"] as const) {
+      for (const environmentName of ENVIRONMENTS) {
+        const observability = rawEnvironment(configs[worker], environmentName).observability;
+        expect(observability).toMatchObject({
+          enabled: true,
+          logs: { enabled: true, head_sampling_rate: 1, persist: true },
+          traces: { enabled: true, head_sampling_rate: 0.1, persist: true },
+        });
+      }
+    }
+    for (const environmentName of ENVIRONMENTS) {
+      const observability = rawEnvironment(configs.http, environmentName).observability;
+      expect(observability).toMatchObject({
+        enabled: true,
+        logs: { enabled: true, head_sampling_rate: 1, invocation_logs: false, persist: true },
+      });
+      expect(observability?.traces).toBeUndefined();
+    }
   });
 
   test("legacy names are absent and Very web names are explicitly namespaced", () => {

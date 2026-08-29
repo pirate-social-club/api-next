@@ -52,6 +52,7 @@ import {
 import { type MediaJobsBindings, makeMediaMaintenance } from "./media-runtime";
 import { handleMegapotPublicCommitment } from "./megapot-commitment-public";
 import { type MegapotRewardsJobOptions, makeMegapotRewardsJob } from "./megapot-rewards";
+import { makeDataRegistrationBalanceConfig, runPipelineBalanceSnapshots } from "./pipeline-balance";
 import { buildJobRegistry, groupDueJobsByLane, JobContext, type JobDeclaration } from "./registry";
 import { makeCommunityCatalogIntegrityJob } from "./routing-integrity";
 import {
@@ -696,14 +697,15 @@ export default {
       throw new Error("CONTROL_PLANE Hyperdrive binding is required for jobs-worker");
     }
     const config = loadJobsWorkerConfig(env);
+    const deliveryStub = env.CRON_LOCK.getByName(`${CRON_LOCK_NAME}:alerts`);
+    const sink = makeConfiguredAlertSink(env, makeAlertDeliveryLedger(deliveryStub));
+    const dataBalance = makeDataRegistrationBalanceConfig(env);
     const hns = makeHnsRouteRevalidationComposition(env);
     const megapot = makeMegapotOptions(env, config);
     const rpcUrl = fundingRpcUrl(
       Redacted.value(config.COMMUNITY_PURCHASE_FUNDING_RPC_URL),
       config.API_NEXT_ENV,
     );
-    const deliveryStub = env.CRON_LOCK.getByName(`${CRON_LOCK_NAME}:alerts`);
-    const sink = makeConfiguredAlertSink(env, makeAlertDeliveryLedger(deliveryStub));
     const declarations = makeJobsWorkerDeclarations(
       sink,
       rpcUrl,
@@ -725,9 +727,42 @@ export default {
     }
     if (mediaMaintenance !== null || dataRegistrationMaintenance !== null) {
       scheduledWork.push(
-        runSongPipelineOutboxAlertTick(sink, collectSongPipelineOutboxAlerts(runtime)),
+        runSongPipelineOutboxAlertTick(
+          sink,
+          collectSongPipelineOutboxAlerts(
+            runtime,
+            {
+              media: mediaMaintenance !== null,
+              data: dataRegistrationMaintenance !== null,
+            },
+            {
+              scheduledTime: event.scheduledTime,
+              environment: config.API_NEXT_ENV,
+              ...(sink.log === undefined ? {} : { log: sink.log }),
+              ...(sink.delivery === undefined ? {} : { claimSnapshot: sink.delivery.markSent }),
+            },
+          ),
+        ),
       );
     }
+    scheduledWork.push(
+      runPipelineBalanceSnapshots({
+        runtime,
+        sink,
+        environment: config.API_NEXT_ENV,
+        scheduledTime: event.scheduledTime,
+        data: dataBalance,
+        megapot:
+          megapot === null
+            ? null
+            : {
+                attestationId: megapot.attestationId,
+                rpcUrl: megapot.rpcUrl,
+                chainId: config.MEGAPOT_CHAIN_ID,
+                reserveFloorWei: megapot.nativeGasReserveFloorWei,
+              },
+      }),
+    );
     await ctx.waitUntil(Promise.all(scheduledWork));
   },
 };

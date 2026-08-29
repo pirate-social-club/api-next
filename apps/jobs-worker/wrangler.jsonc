@@ -4,6 +4,23 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-08-01",
   "compatibility_flags": ["nodejs_compat"],
+  // The scheduler emits low-volume operational events; persist all custom
+  // logs. Traces are sampled deliberately because one operation can span
+  // multiple invocations and no automatic cross-invocation propagation is
+  // assumed by this configuration.
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "persist": true
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 0.1,
+      "persist": true
+    }
+  },
   "triggers": {
     "crons": ["* * * * *"]
   },
@@ -46,6 +63,9 @@
     "API_NEXT_ENV": "development",
     "MEDIA_PROCESSING_ENABLED": "false",
     "DATA_REGISTRATION_ENABLED": "false",
+    "DATA_REGISTRATION_RPC_URL": "",
+    "DATA_REGISTRATION_SIGNER_ADDRESS": "",
+    "DATA_REGISTRATION_NATIVE_BALANCE_FLOOR_WEI": "200000000000000000",
     "HNS_OWNERSHIP_ENABLED": "false",
     "MEGAPOT_REWARDS_ENABLED": "false",
     "MEGAPOT_CHAIN_ID": "84532",
@@ -67,6 +87,19 @@
   "env": {
     "staging": {
       "name": "pirate-jobs-worker-staging",
+      "observability": {
+        "enabled": true,
+        "logs": {
+          "enabled": true,
+          "head_sampling_rate": 1,
+          "persist": true
+        },
+        "traces": {
+          "enabled": true,
+          "head_sampling_rate": 0.1,
+          "persist": true
+        }
+      },
       "durable_objects": {
         "bindings": [
           {
@@ -116,6 +149,9 @@
         "API_NEXT_ENV": "staging",
         "MEDIA_PROCESSING_ENABLED": "true",
         "DATA_REGISTRATION_ENABLED": "true",
+        "DATA_REGISTRATION_RPC_URL": "https://aeneid.storyrpc.io",
+        "DATA_REGISTRATION_SIGNER_ADDRESS": "0xE128f4da57540962FF788d5462aE76671499F05E",
+        "DATA_REGISTRATION_NATIVE_BALANCE_FLOOR_WEI": "200000000000000000",
         "HNS_OWNERSHIP_ENABLED": "false",
         "HNS_OWNERSHIP_CONFIGURATION_REFERENCE": "hns-owner-staging",
         "HNS_OWNERSHIP_CONFIGURATION_VERSION": "hns-owner-config-v1",
@@ -132,8 +168,6 @@
         "MEGAPOT_EXTERNAL_SPONSOR_DAILY_SPEND_CEILING_ATOMIC": "50000000",
         "MEGAPOT_SHARED_SPONSOR_DAILY_TICKET_CEILING": "50",
         "MEGAPOT_SHARED_SPONSOR_DAILY_SPEND_CEILING_ATOMIC": "500000000"
-        // Staging uses the local alert sink. If external delivery is enabled,
-        // inject endpoint URLs and tokens from the staging secret environment.
       },
       "r2_buckets": [
         {
@@ -153,6 +187,19 @@
     },
     "production": {
       "name": "pirate-jobs-worker-production",
+      "observability": {
+        "enabled": true,
+        "logs": {
+          "enabled": true,
+          "head_sampling_rate": 1,
+          "persist": true
+        },
+        "traces": {
+          "enabled": true,
+          "head_sampling_rate": 0.1,
+          "persist": true
+        }
+      },
       "durable_objects": {
         "bindings": [
           {
@@ -203,6 +250,9 @@
         "API_NEXT_ENV": "production",
         "MEDIA_PROCESSING_ENABLED": "false",
         "DATA_REGISTRATION_ENABLED": "false",
+        "DATA_REGISTRATION_RPC_URL": "",
+        "DATA_REGISTRATION_SIGNER_ADDRESS": "",
+        "DATA_REGISTRATION_NATIVE_BALANCE_FLOOR_WEI": "200000000000000000",
         "HNS_OWNERSHIP_ENABLED": "false",
         "MEGAPOT_REWARDS_ENABLED": "false",
         "MEGAPOT_CHAIN_ID": "8453",
@@ -221,9 +271,7 @@
       "secrets": {
         "required": [
           "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
-          "MEGAPOT_V2_RPC_URL",
-          "API_NEXT_ALERT_EMAIL_TOKEN",
-          "API_NEXT_ALERT_WEBHOOK_TOKEN"
+          "MEGAPOT_V2_RPC_URL"
         ]
       }
     }

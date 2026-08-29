@@ -3,9 +3,9 @@ import { type Alert, AlertCollector } from "@pirate/application";
 import { Effect } from "effect";
 
 import {
-  type AlertDigest,
+  type AlertCorrelationFields,
+  type AlertLogFields,
   type AlertSink,
-  AlertSinkDeliveryFailed,
   alertTick,
   decideAlertSuppression,
 } from "./alerts";
@@ -13,55 +13,82 @@ import {
 const emit = (alert: Alert) => AlertCollector.use((service) => service.emit(alert));
 
 describe("api-next alert delivery policy", () => {
-  test("low severity uses the digest path and never the email sink", async () => {
-    const emails: AlertDigest[] = [];
-    const digests: AlertDigest[] = [];
+  test("low severity persists a structured log and never pages", async () => {
+    const logs: AlertLogFields[] = [];
+    const events: string[] = [];
     const sink: AlertSink = {
-      email: (digest) => Effect.sync(() => emails.push(digest)),
-      digest: (digest) => Effect.sync(() => digests.push(digest)),
-      webhook: () => Effect.void,
+      environment: "staging",
     };
 
     await Effect.runPromise(
-      alertTick(sink, emit({ key: "routine:check", severity: "low", body: "fixed" })),
+      alertTick(sink, emit({ key: "routine:check", severity: "low", body: "fixed" }), {
+        log: (event, fields) => {
+          events.push(event);
+          logs.push(fields);
+        },
+      }),
     );
 
-    expect(emails).toHaveLength(0);
-    expect(digests).toHaveLength(1);
+    expect(logs).toHaveLength(1);
+    expect(events).toEqual(["pipeline.alert"]);
+    expect(logs[0]).toMatchObject({
+      event: "pipeline.alert",
+      schema_version: 1,
+      environment: "staging",
+      key: "routine:check",
+      severity: "low",
+      count: 1,
+      suppression: "transition",
+      sampled: false,
+      operation: "maintenance",
+    });
+    expect(logs[0]).not.toHaveProperty("entity");
   });
 
-  test("a failing sink gets one compensating retry and no resend storm", async () => {
-    let emailCalls = 0;
-    let marks = 0;
-    let compensations = 0;
-    const sink: AlertSink = {
-      email: () =>
-        Effect.gen(function* () {
-          emailCalls += 1;
-          return yield* Effect.fail(new AlertSinkDeliveryFailed({ sink: "email" }));
-        }),
-      webhook: () => Effect.void,
-      delivery: {
-        markSent: () =>
-          Effect.sync(() => {
-            marks += 1;
-            return true;
-          }),
-        compensate: () =>
-          Effect.sync(() => {
-            compensations += 1;
-          }),
-      },
+  test("persists the exact allowlisted pipeline correlation shape", async () => {
+    const logs: AlertLogFields[] = [];
+    const pipelineAlert: Alert & AlertCorrelationFields = {
+      key: "song-pipeline:data-launch-exhausted",
+      severity: "high",
+      body: "fixed",
+      entity: "data:registration-1:r2:outbox-1",
+      subsystem: "data",
+      operation: "data-registration",
+      operation_id: "registration-1",
+      outbox_id: "outbox-1",
+      workflow_revision: 2,
+      failure_class: "workflow_unavailable",
+      outcome: "terminal",
     };
 
-    const exit = await Effect.runPromiseExit(
-      alertTick(sink, emit({ key: "failure:email", severity: "high", body: "fixed" })),
+    await Effect.runPromise(
+      alertTick({ environment: "staging" }, emit(pipelineAlert), {
+        now: () => 0,
+        log: (_event, fields) => logs.push(fields),
+      }),
     );
 
-    expect(exit._tag).toBe("Failure");
-    expect(emailCalls).toBe(2);
-    expect(marks).toBe(2);
-    expect(compensations).toBe(2);
+    expect(logs).toEqual([
+      {
+        event: "pipeline.alert",
+        schema_version: 1,
+        emitted_at: "1970-01-01T00:00:00.000Z",
+        environment: "staging",
+        key: "song-pipeline:data-launch-exhausted",
+        severity: "high",
+        count: 1,
+        overflow: 0,
+        suppression: "transition",
+        sampled: false,
+        subsystem: "data",
+        operation: "data-registration",
+        operation_id: "registration-1",
+        outbox_id: "outbox-1",
+        workflow_revision: 2,
+        failure_class: "workflow_unavailable",
+        outcome: "terminal",
+      },
+    ]);
   });
 
   test("alerts on transition, then follows widening reminders", () => {
@@ -136,11 +163,12 @@ describe("api-next alert delivery policy", () => {
 
   test("persists state across repeated ticks and widens reminders", async () => {
     let nowMs = 0;
+    const logs: AlertLogFields[] = [];
     const states = new Map<string, ReturnType<typeof decideAlertSuppression>["state"]>();
-    const emails: AlertDigest[] = [];
     const sink: AlertSink = {
-      email: (digest) => Effect.sync(() => emails.push(digest)),
-      webhook: () => Effect.void,
+      log: (_event, fields) => {
+        if (fields.event === "pipeline.alert") logs.push(fields);
+      },
       delivery: {
         markSent: () => Effect.succeed(true),
         compensate: () => Effect.void,
@@ -159,15 +187,53 @@ describe("api-next alert delivery policy", () => {
     await Effect.runPromise(tick);
     nowMs = 5 * 60 * 1000;
     await Effect.runPromise(tick);
-    expect(emails).toHaveLength(1);
 
     nowMs = 60 * 60 * 1000;
     await Effect.runPromise(tick);
-    expect(emails).toHaveLength(2);
 
     nowMs = 5 * 60 * 60 * 1000;
     await Effect.runPromise(tick);
-    expect(emails).toHaveLength(3);
+    expect(logs.map(({ suppression }) => suppression)).toEqual([
+      "transition",
+      "reminder",
+      "reminder",
+    ]);
     expect(states.get("routing:integrity|route:1")?.reminderIndex).toBe(2);
+  });
+
+  test("isolates logging and suppression outages from successful work", async () => {
+    const diagnostics: string[] = [];
+    const original = console.error;
+    console.error = (message?: unknown) => diagnostics.push(String(message));
+    try {
+      const result = await Effect.runPromise(
+        alertTick(
+          {
+            log: () => {
+              throw new Error("fixture logging outage");
+            },
+            delivery: {
+              markSent: () => Effect.succeed(true),
+              compensate: () => Effect.void,
+              suppression: {
+                get: () => Effect.fail("fixture suppression read outage"),
+                put: () => Effect.fail("fixture suppression write outage"),
+              },
+            },
+          },
+          emit({ key: "routing:integrity", severity: "high", body: "fixed" }).pipe(
+            Effect.as("work-completed"),
+          ),
+        ),
+      );
+      expect(result).toBe("work-completed");
+    } finally {
+      console.error = original;
+    }
+    expect(diagnostics).toEqual([
+      "api-next alert suppression read unavailable",
+      "api-next alert log unavailable",
+      "api-next alert suppression write unavailable",
+    ]);
   });
 });

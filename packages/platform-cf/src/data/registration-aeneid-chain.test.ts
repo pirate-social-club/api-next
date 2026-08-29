@@ -198,6 +198,28 @@ describe("Aeneid DATA registration chain", () => {
     expect(redirect).toBe("manual");
   });
 
+  test("cancels an oversized chunked RPC response before buffering it", async () => {
+    const chunk = new Uint8Array(600_000);
+    const rpc = makeJsonRpcTransport(
+      "https://aeneid.invalid",
+      (async (_input, _init) =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(chunk);
+              controller.enqueue(chunk);
+              controller.close();
+            },
+          }),
+          { status: 200 },
+        )) as typeof fetch,
+    );
+
+    await expect(rpc("eth_getBalance", [`0x${"1".repeat(40)}`, "latest"])).rejects.toThrow(
+      "Aeneid RPC response too large",
+    );
+  });
+
   test("keeps mined evidence schema-safe until final confirmations arrive", async () => {
     const tokenContract = "0x3333333333333333333333333333333333333333";
     let head = "0xa";

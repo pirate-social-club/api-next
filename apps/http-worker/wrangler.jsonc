@@ -4,6 +4,18 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-08-01",
   "compatibility_flags": ["nodejs_compat"],
+  // HTTP invocation logs are noisy; retain application/error logs in Workers
+  // Logs at a deliberate rate. Traces stay disabled until a request trace
+  // contract exists.
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "invocation_logs": false,
+      "persist": true
+    }
+  },
   "hyperdrive": [
     {
       "binding": "CONTROL_PLANE",
@@ -107,6 +119,15 @@
   "env": {
     "staging": {
       "name": "pirate-http-worker-staging",
+      "observability": {
+        "enabled": true,
+        "logs": {
+          "enabled": true,
+          "head_sampling_rate": 1,
+          "invocation_logs": false,
+          "persist": true
+        }
+      },
       // Keep workers.dev as an operator fallback while the canonical custom
       // domain is the public staging origin.
       "workers_dev": true,
@@ -237,6 +258,15 @@
     },
     "production": {
       "name": "pirate-http-worker-production",
+      "observability": {
+        "enabled": true,
+        "logs": {
+          "enabled": true,
+          "head_sampling_rate": 1,
+          "invocation_logs": false,
+          "persist": true
+        }
+      },
       // Keep workers.dev as a rollback probe while the canonical custom
       // domain is the public production origin.
       "workers_dev": true,

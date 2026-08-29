@@ -14,6 +14,9 @@ type DataRegistrationDispatchQueue = Readonly<{
 
 export type DataRegistrationJobsBindings = Readonly<{
   DATA_REGISTRATION_ENABLED?: string;
+  DATA_REGISTRATION_RPC_URL?: string;
+  DATA_REGISTRATION_SIGNER_ADDRESS?: string;
+  DATA_REGISTRATION_NATIVE_BALANCE_FLOOR_WEI?: string;
   DATA_REGISTRATION_QUEUE?: DataRegistrationDispatchQueue;
   DATA_REGISTRATION_WORKFLOW?: CloudflareDataRegistrationWorkflowBinding;
 }>;
