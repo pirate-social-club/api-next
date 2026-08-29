@@ -84,9 +84,15 @@ describe("Study spoken answer command", () => {
       submitAnswer: unused,
       loadSpokenAnswerContext: () =>
         Effect.succeed({ item: item(0), referenceText: "Hold on", dominantLanguage: null }),
-      reserveSpokenAnswer: () =>
+      reserveSpokenAnswer: (input) =>
         completed === null
-          ? Effect.succeed({ state: "reserved", commandId: "command-1" })
+          ? Effect.succeed({
+              state: "reserved",
+              commandId: "command-1",
+              leaseToken: input.leaseToken,
+              attemptId: input.attemptId,
+              artifactId: input.artifactId,
+            })
           : Effect.succeed({ state: "completed", result: completed }),
       failSpokenAnswer: () => Effect.void,
       completeSpokenAnswer: (input) => {

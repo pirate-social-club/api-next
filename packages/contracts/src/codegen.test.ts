@@ -191,10 +191,10 @@ describe("codegen pipeline", () => {
     expect(client).toContain('bodyEncoding === "raw-text"');
     expect(client).toContain("headers.set(key, String(value))");
     expect(client).toContain(
-      'body: bodyEncoding === "raw-bytes" ? requestInput.body as Exclude<RequestInit["body"], undefined> : bodyEncoding === "raw-text" ? requestInput.body as string',
+      'body: rawBody || bodyEncoding === "raw-bytes" ? requestInput.body as Exclude<RequestInit["body"], undefined> : bodyEncoding === "raw-text" ? requestInput.body as string',
     );
     expect(client).toContain(
-      'request("post_callbacksRaw", "POST", "/callbacks/raw", input, options, "raw-text")',
+      'request("post_callbacksRaw", "POST", "/callbacks/raw", input, options, "raw-text", [], [])',
     );
   });
 
@@ -204,14 +204,41 @@ describe("codegen pipeline", () => {
       'bodyEncoding !== "raw-bytes") headers.set("content-type", bodyEncoding === "raw-text" ? "text/plain" : "application/json")',
     );
     expect(client).toContain(
-      'body: bodyEncoding === "raw-bytes" ? requestInput.body as Exclude<RequestInit["body"], undefined> : bodyEncoding === "raw-text" ? requestInput.body as string : bodyEncoding === "exact-json" ? serializeExactJsonBody(requestInput.body, exactJsonMembers) : JSON.stringify(requestInput.body)',
+      'body: rawBody || bodyEncoding === "raw-bytes" ? requestInput.body as Exclude<RequestInit["body"], undefined> : bodyEncoding === "raw-text" ? requestInput.body as string : bodyEncoding === "exact-json" ? serializeExactJsonBody(requestInput.body, exactJsonMembers) : JSON.stringify(requestInput.body)',
     );
     expect(client).toContain(
-      'request("post_echoMessage", "POST", "/echo/:message", input, options),',
+      'request("post_echoMessage", "POST", "/echo/:message", input, options, "json", [], []),',
     );
     expect(generateOpenApi([fixture]).paths["/echo/{message}"]?.post).toMatchObject({
       requestBody: { content: { "application/json": { schema: { type: "object" } } } },
     });
+  });
+
+  test("represents content-negotiated JSON and raw bodies on one operation", () => {
+    const mixed = endpoint({
+      method: "POST",
+      path: "/mixed",
+      auth: Auth.public(),
+      request: {
+        body: Schema.Struct({ choice_key: Schema.String }),
+        rawBodyContentTypes: ["audio/webm"],
+        rawBodyMaxBytes: 4,
+      },
+      response: Schema.Struct({ ok: Schema.Boolean }),
+    });
+    const operation = generateOpenApi([mixed]).paths["/mixed"]?.post as {
+      requestBody: { content: Record<string, { schema: Record<string, unknown> }> };
+    };
+    expect(operation.requestBody.content["application/json"]?.schema).toMatchObject({
+      type: "object",
+    });
+    expect(operation.requestBody.content["audio/webm"]?.schema).toEqual({
+      type: "string",
+      format: "binary",
+    });
+    const client = generateClient({ Mixed: mixed });
+    expect(client).toContain("| ArrayBuffer | ArrayBufferView | Blob");
+    expect(client).toContain('["audio/webm"]');
   });
 
   test("canonicalizes and fail-closes generated exact JSON bodies", () => {
@@ -227,7 +254,7 @@ describe("codegen pipeline", () => {
     });
     const client = generateClient({ Exact: exact });
     expect(client).toContain(
-      'request("post_exact", "POST", "/exact", input, options, "exact-json", ["first","second"])',
+      'request("post_exact", "POST", "/exact", input, options, "exact-json", ["first","second"], [])',
     );
     expect(client).toContain("serializeExactJsonBody(requestInput.body, exactJsonMembers)");
 

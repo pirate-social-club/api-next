@@ -809,6 +809,46 @@ describe("contracts-generated HTTP worker", () => {
     expect(decoded?.body).toEqual(new Uint8Array([0, 255, 1, 2]));
   });
 
+  it("dispatches one content-negotiated contract between JSON and bounded raw bytes", async () => {
+    const callback = endpoint({
+      method: "POST",
+      path: "/test/mixed-body",
+      auth: Auth.public(),
+      request: {
+        body: Schema.Struct({ choice_key: Schema.String }),
+        maxBodyBytes: 128,
+        rawBodyContentTypes: ["audio/webm"],
+        rawBodyMaxBytes: 4,
+      },
+      response: Schema.Struct({ ok: Schema.Boolean }),
+    });
+    const app = new Hono();
+    const bodies: unknown[] = [];
+    app.post("/test/mixed-body", async (context) => {
+      bodies.push((await decodeInput(callback, context as never, null)).body);
+      return new Response("ok");
+    });
+    expect(
+      (
+        await app.request("http://worker.test/test/mixed-body", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ choice_key: "choice-1" }),
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await app.request("http://worker.test/test/mixed-body", {
+          method: "POST",
+          headers: { "content-type": "audio/webm" },
+          body: new Uint8Array([0, 255, 1, 2]),
+        })
+      ).status,
+    ).toBe(200);
+    expect(bodies).toEqual([{ choice_key: "choice-1" }, new Uint8Array([0, 255, 1, 2])]);
+  });
+
   it("rejects an oversized streamed body before schema decoding", async () => {
     const callback = endpoint({
       method: "POST",

@@ -4,7 +4,7 @@ import {
   StudyAnswerSubmissionV2,
   StudySessionItemV2,
   StudySessionV2,
-  SubmitStudySpokenAnswerV2,
+  SubmitStudyAnswerV2,
 } from "./study-v2.ts";
 
 const decode = <S extends Schema.ConstraintDecoder<unknown>>(schema: S, value: unknown) =>
@@ -40,7 +40,7 @@ const spokenItem = (ordinal: number) => ({
   grader_policy_revision: "script-aware-token-diff-v1",
   feedback_policy_revision: "spoken-feedback-v1",
   quality_policy_revision: "study-quality-v1",
-  maximum_attempts: 3,
+  maximum_attempts: 1,
 });
 
 describe("Study v2 contracts after spec 019", () => {
@@ -91,7 +91,11 @@ describe("Study v2 contracts after spec 019", () => {
   });
 
   test("declares a bounded raw-audio command", () => {
-    expect(SubmitStudySpokenAnswerV2.request?.bodyEncoding).toBe("raw-bytes");
-    expect(SubmitStudySpokenAnswerV2.request?.maxBodyBytes).toBe(524_288);
+    expect(SubmitStudyAnswerV2.request?.rawBodyMaxBytes).toBe(524_288);
+    expect(SubmitStudyAnswerV2.request?.rawBodyContentTypes).toContain("audio/webm");
+    const errors = SubmitStudyAnswerV2.errors ?? [];
+    expect(errors.map((ErrorType) => new ErrorType({} as never).code)).toContain(
+      "provider_unavailable",
+    );
   });
 });

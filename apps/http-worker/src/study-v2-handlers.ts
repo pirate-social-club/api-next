@@ -15,6 +15,7 @@ import {
   NotFound,
   ProviderUnavailable,
   RetryableConflict,
+  type StudyAnswerSubmissionV2,
 } from "@pirate/contracts";
 import { Effect } from "effect";
 import type { EndpointHandler, Principal } from "./transport.ts";
@@ -24,7 +25,7 @@ export type StudyV2Handlers = Readonly<{
   GetStudyAvailabilityV2: EndpointHandler;
   StartStudySessionV2: EndpointHandler;
   GetStudySessionV2: EndpointHandler;
-  SubmitStudySpokenAnswerV2: EndpointHandler;
+  SubmitStudyAnswerV2: EndpointHandler;
 }>;
 
 const accountId = (principal: Principal | null): string => {
@@ -121,7 +122,7 @@ export const makeStudyV2Handlers = (services: {
         }),
       );
     },
-    SubmitStudySpokenAnswerV2: (request) => {
+    SubmitStudyAnswerV2: (request) => {
       const path = request.params as {
         communityId: string;
         sessionId: string;
@@ -130,16 +131,34 @@ export const makeStudyV2Handlers = (services: {
       const headers = request.headers as {
         readonly "content-type": string;
         readonly "idempotency-key": string;
-        readonly "x-audio-duration-ms": string;
+        readonly "x-audio-duration-ms"?: string;
         readonly "x-study-attempt-number": string;
       };
+      const attemptNumber = Number(headers["x-study-attempt-number"]);
+      if (request.body instanceof Uint8Array) {
+        const duration = headers["x-audio-duration-ms"];
+        if (duration === undefined) {
+          return Promise.reject(new BadRequest({ message: "Study audio duration is required" }));
+        }
+        return run(
+          study.submitSpokenAnswer({
+            accountId: accountId(request.principal),
+            attemptNumber,
+            audio: request.body,
+            audioContentType: headers["content-type"],
+            audioDurationMs: Number(duration),
+            communityId: path.communityId,
+            idempotencyKey: headers["idempotency-key"],
+            sessionId: path.sessionId,
+            sessionItemId: path.sessionItemId,
+          }),
+        );
+      }
       return run(
-        study.submitSpokenAnswer({
+        study.submitAnswer({
           accountId: accountId(request.principal),
-          attemptNumber: Number(headers["x-study-attempt-number"]),
-          audio: request.body as Uint8Array,
-          audioContentType: headers["content-type"],
-          audioDurationMs: Number(headers["x-audio-duration-ms"]),
+          answer: request.body as StudyAnswerSubmissionV2,
+          attemptNumber,
           communityId: path.communityId,
           idempotencyKey: headers["idempotency-key"],
           sessionId: path.sessionId,

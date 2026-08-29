@@ -229,18 +229,28 @@ export function generateOpenApi(
         ? {
             requestBody: {
               required: request.bodyRequired !== false,
-              content: {
-                [request.bodyEncoding === "raw-text"
-                  ? "text/plain"
-                  : request.bodyEncoding === "raw-bytes"
-                    ? "audio/*"
-                    : "application/json"]: {
-                  schema:
-                    request.bodyEncoding === "raw-bytes"
-                      ? { type: "string", format: "binary" }
-                      : schemaToOpenApi(request.body),
-                },
-              },
+              content: request.rawBodyContentTypes
+                ? {
+                    "application/json": { schema: schemaToOpenApi(request.body) },
+                    ...Object.fromEntries(
+                      request.rawBodyContentTypes.map((contentType) => [
+                        contentType,
+                        { schema: { type: "string", format: "binary" } },
+                      ]),
+                    ),
+                  }
+                : {
+                    [request.bodyEncoding === "raw-text"
+                      ? "text/plain"
+                      : request.bodyEncoding === "raw-bytes"
+                        ? "audio/*"
+                        : "application/json"]: {
+                      schema:
+                        request.bodyEncoding === "raw-bytes"
+                          ? { type: "string", format: "binary" }
+                          : schemaToOpenApi(request.body),
+                    },
+                  },
               ...(request.maxBodyBytes === undefined
                 ? {}
                 : { "x-max-body-bytes": request.maxBodyBytes }),
@@ -422,7 +432,7 @@ function clientInputType(endpoint: EndpointDefinition): string {
   const fields: string[] = [];
   if (request.body !== undefined) {
     fields.push(
-      `readonly body${request.bodyRequired === false ? "?" : ""}: ${request.bodyEncoding === "raw-bytes" ? "ArrayBuffer | ArrayBufferView | Blob" : jsonSchemaToType(schemaToOpenApi(request.body))}`,
+      `readonly body${request.bodyRequired === false ? "?" : ""}: ${request.bodyEncoding === "raw-bytes" ? "ArrayBuffer | ArrayBufferView | Blob" : `${jsonSchemaToType(schemaToOpenApi(request.body))}${request.rawBodyContentTypes === undefined ? "" : " | ArrayBuffer | ArrayBufferView | Blob"}`}`,
     );
   }
   if (request.headers !== undefined) {
@@ -532,6 +542,7 @@ export function generateClient(registry: Record<string, EndpointDefinition>): st
     path: endpoint.path,
     responseSchema: schemaToOpenApi(endpoint.response),
     bodyEncoding: requestSchemas(endpoint)?.bodyEncoding ?? "json",
+    rawBodyContentTypes: requestSchemas(endpoint)?.rawBodyContentTypes ?? [],
     exactJsonMembers:
       requestSchemas(endpoint)?.bodyEncoding === "exact-json"
         ? exactJsonBodyMembers(endpoint)
@@ -552,8 +563,8 @@ export function generateClient(registry: Record<string, EndpointDefinition>): st
     .join("\n");
   const bodies = methods
     .map(
-      ({ operationId, method, path, bodyEncoding, exactJsonMembers }) =>
-        `  ${operationId}: (input, options) => request(${JSON.stringify(operationId)}, ${JSON.stringify(method)}, ${JSON.stringify(path)}, input, options${bodyEncoding === "json" ? "" : `, ${JSON.stringify(bodyEncoding)}${bodyEncoding === "exact-json" ? `, ${JSON.stringify(exactJsonMembers)}` : ""}`}),`,
+      ({ operationId, method, path, bodyEncoding, exactJsonMembers, rawBodyContentTypes }) =>
+        `  ${operationId}: (input, options) => request(${JSON.stringify(operationId)}, ${JSON.stringify(method)}, ${JSON.stringify(path)}, input, options, ${JSON.stringify(bodyEncoding)}, ${JSON.stringify(exactJsonMembers ?? [])}, ${JSON.stringify(rawBodyContentTypes)}),`,
     )
     .join("\n");
   const responseSchemas = methods
@@ -814,7 +825,7 @@ export function createPirateApiClient(baseUrl: string, optionsOrFetch: PirateApi
   const config: PirateApiClientOptions =
     typeof optionsOrFetch === "function" ? { fetchImpl: optionsOrFetch } : optionsOrFetch;
   const fetchImpl = config.fetchImpl ?? fetch;
-  const request = async <T>(operation: string, method: string, path: string, input: unknown, options?: PirateApiRequestOptions, bodyEncoding: "json" | "exact-json" | "raw-bytes" | "raw-text" = "json", exactJsonMembers: readonly string[] = []): Promise<T> => {
+  const request = async <T>(operation: string, method: string, path: string, input: unknown, options?: PirateApiRequestOptions, bodyEncoding: "json" | "exact-json" | "raw-bytes" | "raw-text" = "json", exactJsonMembers: readonly string[] = [], rawBodyContentTypes: readonly string[] = []): Promise<T> => {
     const requestInput = (input ?? {}) as { body?: unknown; headers?: Record<string, unknown>; path?: Record<string, unknown>; query?: Record<string, unknown> };
     const pathValue = Object.entries(requestInput.path ?? {}).reduce((urlPath, [key, value]) => urlPath.split(":" + key).join(encodeURIComponent(String(value))), path);
     const url = new URL(pathValue, baseUrl);
@@ -833,13 +844,15 @@ export function createPirateApiClient(baseUrl: string, optionsOrFetch: PirateApi
     addHeaders(config.headers);
     addHeaders(options?.headers);
     if (requestInput.body !== undefined && !headers.has("content-type") && bodyEncoding !== "raw-bytes") headers.set("content-type", bodyEncoding === "raw-text" ? "text/plain" : "application/json");
+    const requestMediaType = headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+    const rawBody = requestMediaType !== undefined && rawBodyContentTypes.includes(requestMediaType);
     const signal = options?.signal ?? config.signal;
     const credentials = options?.credentials ?? config.credentials;
     const response = await fetchImpl(url, {
       method,
       headers,
       ...(credentials === undefined ? {} : { credentials }),
-      ...(requestInput.body === undefined ? {} : { body: bodyEncoding === "raw-bytes" ? requestInput.body as Exclude<RequestInit["body"], undefined> : bodyEncoding === "raw-text" ? requestInput.body as string : bodyEncoding === "exact-json" ? serializeExactJsonBody(requestInput.body, exactJsonMembers) : JSON.stringify(requestInput.body) }),
+      ...(requestInput.body === undefined ? {} : { body: rawBody || bodyEncoding === "raw-bytes" ? requestInput.body as Exclude<RequestInit["body"], undefined> : bodyEncoding === "raw-text" ? requestInput.body as string : bodyEncoding === "exact-json" ? serializeExactJsonBody(requestInput.body, exactJsonMembers) : JSON.stringify(requestInput.body) }),
       ...(signal === undefined ? {} : { signal }),
     });
     let payload: unknown;

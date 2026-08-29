@@ -51,6 +51,10 @@ export interface EndpointRequest {
   readonly bodyEncoding?: EndpointBodyEncoding;
   /** Maximum request-body size in UTF-8 bytes; defaults to the transport cap. */
   readonly maxBodyBytes?: number;
+  /** Exact media types that carry raw bytes on an otherwise JSON endpoint. */
+  readonly rawBodyContentTypes?: readonly string[];
+  /** Raw-variant ceiling; defaults to maxBodyBytes. */
+  readonly rawBodyMaxBytes?: number;
   /** Schema for the subset of incoming headers exposed to the handler. */
   readonly headers?: Schema.Schema<unknown>;
   readonly path?: Schema.Schema<unknown>;

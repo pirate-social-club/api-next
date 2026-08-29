@@ -81349,7 +81349,6 @@
               }
             },
             "x-error-codes": [
-              "conflict",
               "conflict"
             ]
           },
@@ -81458,59 +81457,6 @@
             "x-error-codes": [
               "internal_error"
             ]
-          },
-          "502": {
-            "description": "api-next error envelope v2",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "properties": {
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "retryable": {
-                          "type": "boolean"
-                        },
-                        "details": {
-                          "anyOf": [
-                            {
-                              "type": "object",
-                              "additionalProperties": true
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message",
-                        "retryable"
-                      ],
-                      "additionalProperties": false
-                    },
-                    "request_id": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            },
-            "x-error-codes": [
-              "provider_unavailable"
-            ]
           }
         },
         "x-auth": {
@@ -81522,9 +81468,7 @@
           "AuthError",
           "BadRequest",
           "Conflict",
-          "RetryableConflict",
           "NotFound",
-          "ProviderUnavailable",
           "RateLimited",
           "InternalError"
         ]
@@ -82559,6 +82503,7 @@
             "schema": {
               "type": "string",
               "enum": [
+                "application/json",
                 "audio/webm",
                 "audio/ogg",
                 "audio/mp4",
@@ -82590,7 +82535,7 @@
               "type": "string",
               "allOf": [
                 {
-                  "pattern": "^[1-9][0-9]?$"
+                  "pattern": "^[1-3]$"
                 }
               ]
             }
@@ -82598,12 +82543,19 @@
           {
             "name": "x-audio-duration-ms",
             "in": "header",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": "string",
-              "allOf": [
+              "anyOf": [
                 {
-                  "pattern": "^[1-9][0-9]{0,4}$"
+                  "type": "string",
+                  "allOf": [
+                    {
+                      "pattern": "^(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|60000)$"
+                    }
+                  ]
+                },
+                {
+                  "type": "null"
                 }
               ]
             }
@@ -82612,14 +82564,65 @@
         "requestBody": {
           "required": true,
           "content": {
-            "audio/*": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "single_select"
+                        ]
+                      },
+                      "choice_key": {
+                        "type": "string",
+                        "allOf": [
+                          {
+                            "minLength": 1
+                          },
+                          {
+                            "maxLength": 128
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "choice_key"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              }
+            },
+            "audio/webm": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            },
+            "audio/ogg": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            },
+            "audio/mp4": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            },
+            "audio/wav": {
               "schema": {
                 "type": "string",
                 "format": "binary"
               }
             }
           },
-          "x-max-body-bytes": 524288
+          "x-max-body-bytes": 4096
         },
         "responses": {
           "200": {
@@ -83823,6 +83826,7 @@
               }
             },
             "x-error-codes": [
+              "conflict",
               "conflict"
             ]
           },
@@ -83931,6 +83935,59 @@
             "x-error-codes": [
               "internal_error"
             ]
+          },
+          "502": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "provider_unavailable"
+            ]
           }
         },
         "x-auth": {
@@ -83942,7 +83999,9 @@
           "AuthError",
           "BadRequest",
           "Conflict",
+          "RetryableConflict",
           "NotFound",
+          "ProviderUnavailable",
           "RateLimited",
           "InternalError"
         ]

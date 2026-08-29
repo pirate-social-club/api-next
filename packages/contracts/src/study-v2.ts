@@ -305,16 +305,7 @@ export const StartStudySessionV2 = endpoint({
   },
   response: StudySessionV2,
   successStatus: 201,
-  errors: [
-    AuthError,
-    BadRequest,
-    Conflict,
-    RetryableConflict,
-    NotFound,
-    ProviderUnavailable,
-    RateLimited,
-    InternalError,
-  ],
+  errors: [AuthError, BadRequest, Conflict, NotFound, RateLimited, InternalError],
 });
 
 export const GetStudySessionV2 = endpoint({
@@ -326,22 +317,40 @@ export const GetStudySessionV2 = endpoint({
   errors: [AuthError, BadRequest, NotFound, InternalError],
 });
 
-export const SubmitStudySpokenAnswerV2 = endpoint({
+export const SubmitStudyAnswerV2 = endpoint({
   method: "POST",
   path: "/communities/:communityId/study/v2/sessions/:sessionId/items/:sessionItemId/answers",
   auth: Auth.userOrAdmin(),
   request: {
     path: StudySessionItemPath,
     headers: Schema.Struct({
-      "content-type": Schema.Literals(["audio/webm", "audio/ogg", "audio/mp4", "audio/wav"]),
+      "content-type": Schema.Literals([
+        "application/json",
+        "audio/webm",
+        "audio/ogg",
+        "audio/mp4",
+        "audio/wav",
+      ]),
       "idempotency-key": Identifier,
-      "x-study-attempt-number": Schema.String.check(Schema.isPattern(/^[1-9][0-9]?$/)),
-      "x-audio-duration-ms": Schema.String.check(Schema.isPattern(/^[1-9][0-9]{0,4}$/)),
+      "x-study-attempt-number": Schema.String.check(Schema.isPattern(/^[1-3]$/)),
+      "x-audio-duration-ms": Schema.optional(
+        Schema.String.check(Schema.isPattern(/^(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|60000)$/)),
+      ),
     }),
-    body: Schema.Unknown,
-    bodyEncoding: "raw-bytes",
-    maxBodyBytes: 524_288,
+    body: StudyAnswerSubmissionV2,
+    maxBodyBytes: 4_096,
+    rawBodyContentTypes: ["audio/webm", "audio/ogg", "audio/mp4", "audio/wav"],
+    rawBodyMaxBytes: 524_288,
   },
   response: StudyAnswerResultV2,
-  errors: [AuthError, BadRequest, Conflict, NotFound, RateLimited, InternalError],
+  errors: [
+    AuthError,
+    BadRequest,
+    Conflict,
+    RetryableConflict,
+    NotFound,
+    ProviderUnavailable,
+    RateLimited,
+    InternalError,
+  ],
 });

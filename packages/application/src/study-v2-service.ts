@@ -39,7 +39,13 @@ export type StudySpokenAnswerContext = Readonly<{
 }>;
 
 export type StudySpokenAnswerReservation =
-  | Readonly<{ state: "reserved"; commandId: string }>
+  | Readonly<{
+      state: "reserved";
+      commandId: string;
+      leaseToken: string;
+      attemptId: string;
+      artifactId: string;
+    }>
   | Readonly<{ state: "completed"; result: StudyAnswerResultV2 }>;
 
 export type StudyBatchTranscript = Readonly<{
@@ -132,14 +138,18 @@ export interface StudyV2Store {
     readonly audioDigest: string;
     readonly audioDurationMs: number;
     readonly commandId: string;
+    readonly attemptId: string;
+    readonly artifactId: string;
     readonly idempotencyKey: string;
     readonly requestHash: string;
+    readonly leaseToken: string;
     readonly sessionId: string;
     readonly sessionItemId: string;
   }) => Effect.Effect<StudySpokenAnswerReservation, StudyV2Failure>;
   readonly failSpokenAnswer: (input: {
     readonly accountId: string;
     readonly commandId: string;
+    readonly leaseToken: string;
     readonly failedAt: string;
     readonly providerFailureKind: string;
   }) => Effect.Effect<void, StudyV2Failure>;
@@ -155,6 +165,7 @@ export interface StudyV2Store {
     readonly audioDigest: string;
     readonly audioDurationMs: number;
     readonly commandId: string;
+    readonly leaseToken: string;
     readonly communityId: string;
     readonly grade: StudyTranscriptGradeV2;
     readonly providerDetectedLanguage: string | null;
@@ -263,15 +274,22 @@ export const makeStudyV2Service = (
       const ids = yield* IdGen;
       const clock = yield* Clock;
       const commandId = `study_spoken_${yield* ids.next}`;
+      const attemptId = `study_attempt_v2_${yield* ids.next}`;
+      const artifactId = `learner_audio_${yield* ids.next}`;
+      const leaseToken = `study_spoken_lease_${yield* ids.next}`;
       const reservation = yield* store.reserveSpokenAnswer({
         ...input,
         audioByteSize: input.audio.byteLength,
         commandId,
+        attemptId,
+        artifactId,
+        leaseToken,
         requestHash,
         audioDigest,
       });
       if (reservation.state === "completed") return reservation.result;
       const reservedCommandId = reservation.commandId;
+      const reservedLeaseToken = reservation.leaseToken;
 
       const transcript = yield* spoken.transcriber
         .transcribe({
@@ -288,6 +306,7 @@ export const makeStudyV2Service = (
               yield* store.failSpokenAnswer({
                 accountId: input.accountId,
                 commandId: reservedCommandId,
+                leaseToken: reservedLeaseToken,
                 failedAt: instant(yield* clock.now),
                 providerFailureKind: failure.reason,
               });
@@ -295,10 +314,9 @@ export const makeStudyV2Service = (
             }),
           ),
         );
-      const attemptId = `study_attempt_v2_${yield* ids.next}`;
       const archive = yield* spoken.archive.store({
         accountId: input.accountId,
-        attemptRef: attemptId,
+        attemptRef: reservation.attemptId,
         audio: input.audio,
         contentType: input.audioContentType,
         contentDigest: audioDigest,
@@ -308,11 +326,12 @@ export const makeStudyV2Service = (
         ...input,
         acceptedAt,
         archive,
-        artifactId: `learner_audio_${yield* ids.next}`,
-        attemptId,
+        artifactId: reservation.artifactId,
+        attemptId: reservation.attemptId,
         audioByteSize: input.audio.byteLength,
         audioDigest,
         commandId: reservedCommandId,
+        leaseToken: reservedLeaseToken,
         grade: gradeTranscriptV2(
           context.referenceText,
           transcript.transcript,

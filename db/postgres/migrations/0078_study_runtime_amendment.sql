@@ -229,6 +229,10 @@ CREATE TABLE study_spoken_answer_commands (
   ),
   audio_byte_size BIGINT NOT NULL CHECK (audio_byte_size BETWEEN 1 AND 524288),
   audio_duration_ms BIGINT NOT NULL CHECK (audio_duration_ms BETWEEN 1 AND 60000),
+  attempt_id TEXT NOT NULL,
+  learner_audio_artifact_id TEXT NOT NULL,
+  lease_token TEXT NOT NULL,
+  lease_expires_at TIMESTAMPTZ NOT NULL,
   state TEXT NOT NULL CHECK (state IN ('reserved', 'completed', 'retryable_failed')),
   provider_failure_kind TEXT,
   result_snapshot JSONB,
@@ -236,6 +240,9 @@ CREATE TABLE study_spoken_answer_commands (
   completed_at TIMESTAMPTZ,
   UNIQUE (session_id, session_item_id, attempt_number),
   UNIQUE (session_id, idempotency_key),
+  UNIQUE (attempt_id),
+  UNIQUE (learner_audio_artifact_id),
+  CHECK (lease_expires_at > reserved_at),
   CHECK (result_snapshot IS NULL OR (
     jsonb_typeof(result_snapshot) = 'object' AND octet_length(result_snapshot::text) <= 131072
   )),
@@ -251,6 +258,7 @@ CREATE TABLE learner_audio_artifacts (
   account_id TEXT NOT NULL REFERENCES users (user_id),
   source_kind TEXT NOT NULL CHECK (source_kind IN ('study', 'karaoke')),
   attempt_ref TEXT NOT NULL,
+  expected_object_ref TEXT NOT NULL,
   object_ref TEXT,
   content_digest TEXT NOT NULL CHECK (content_digest ~ '^[0-9a-f]{64}$'),
   content_type TEXT NOT NULL,
@@ -274,6 +282,12 @@ ALTER TABLE study_attempts_v2
   ADD CONSTRAINT study_attempt_audio_artifact_shape CHECK (
     (submission_kind = 'raw_audio') = (learner_audio_artifact_id IS NOT NULL)
   );
+
+ALTER TABLE study_spoken_answer_commands
+  ADD CONSTRAINT study_spoken_command_audio_artifact_fk
+    FOREIGN KEY (learner_audio_artifact_id)
+    REFERENCES learner_audio_artifacts (learner_audio_artifact_id)
+    DEFERRABLE INITIALLY DEFERRED;
 
 CREATE TRIGGER study_presentations_v2_immutable
   BEFORE UPDATE OR DELETE ON study_presentations_v2

@@ -146,6 +146,40 @@ suite("Study v2 Postgres foundation", () => {
             WHERE review_item_id = 'review-item-1'`,
         ),
       ).rejects.toThrow();
+      await admin.query(
+        `UPDATE study_spoken_answer_commands
+            SET lease_expires_at=clock_timestamp() - interval '1 second'
+          WHERE command_id='spoken-1'`,
+      );
+      const reclaimed = await admin.query(
+        `UPDATE study_spoken_answer_commands
+            SET lease_token='lease-2',
+                lease_expires_at=clock_timestamp() + interval '1 minute',
+                reserved_at=clock_timestamp()
+          WHERE command_id='spoken-1' AND lease_expires_at <= clock_timestamp()
+        RETURNING command_id`,
+      );
+      expect(reclaimed.rows).toEqual([{ command_id: "spoken-1" }]);
+      const staleFinalizer = await admin.query(
+        `UPDATE study_spoken_answer_commands
+            SET state='retryable_failed', provider_failure_kind='timeout',
+                completed_at=clock_timestamp()
+          WHERE command_id='spoken-1' AND lease_token='lease-1'
+            AND lease_expires_at > clock_timestamp()
+        RETURNING command_id`,
+      );
+      expect(staleFinalizer.rows).toEqual([]);
+      const pendingArtifact = await admin.query(
+        `SELECT expected_object_ref, recording_state
+           FROM learner_audio_artifacts
+          WHERE learner_audio_artifact_id='audio-command-1'`,
+      );
+      expect(pendingArtifact.rows).toEqual([
+        {
+          expected_object_ref: "learner-audio/study/spoken-attempt-1/audio",
+          recording_state: "pending",
+        },
+      ]);
       const review = await admin.query(
         `SELECT review_item_id, exercise_review_key, current_exercise_version_id
            FROM study_review_items`,
@@ -188,12 +222,12 @@ suite("Study v2 Postgres foundation", () => {
       ).rejects.toThrow();
       await admin.query(
         `INSERT INTO learner_audio_artifacts (
-           learner_audio_artifact_id, account_id, source_kind, attempt_ref, object_ref,
-           content_digest, content_type, byte_size, duration_ms, platform_retention,
-           provider_retention, recording_state, expires_at
+           learner_audio_artifact_id, account_id, source_kind, attempt_ref,
+           expected_object_ref, object_ref, content_digest, content_type, byte_size,
+           duration_ms, platform_retention, provider_retention, recording_state, expires_at
          ) VALUES ('audio-1', 'account-1', 'study', 'attempt-2', 'private/audio-1',
-           $1, 'audio/webm', 100, 1000, 'private_learning', 'not_stored', 'stored',
-           clock_timestamp() + interval '24 months')`,
+           'private/audio-1', $1, 'audio/webm', 100, 1000, 'private_learning',
+           'not_stored', 'stored', clock_timestamp() + interval '24 months')`,
         ["5".repeat(64)],
       );
       await admin.query(
@@ -236,12 +270,26 @@ suite("Study v2 Postgres foundation", () => {
         ),
       ).rejects.toThrow();
       await admin.query(
+        `INSERT INTO learner_audio_artifacts (
+           learner_audio_artifact_id, account_id, source_kind, attempt_ref,
+           expected_object_ref, object_ref, content_digest, content_type, byte_size,
+           duration_ms, platform_retention, provider_retention, recording_state, expires_at
+         ) VALUES ('audio-command-1', 'account-1', 'study', 'spoken-attempt-1',
+           'learner-audio/study/spoken-attempt-1/audio', NULL, $1, 'audio/webm',
+           100, 1000, 'private_learning', 'not_stored', 'pending',
+           clock_timestamp() + interval '24 months')`,
+        ["2".repeat(64)],
+      );
+      await admin.query(
         `INSERT INTO study_spoken_answer_commands (
            command_id, account_id, session_id, session_item_id, attempt_number,
            idempotency_key, request_hash, audio_digest, audio_content_type,
-           audio_byte_size, audio_duration_ms, state
+           audio_byte_size, audio_duration_ms, attempt_id, learner_audio_artifact_id,
+           lease_token, lease_expires_at, state
          ) VALUES ('spoken-1', 'account-1', 'session-1', 'session-item-1', 1,
-           'spoken-command-1', $1, $2, 'audio/webm', 100, 1000, 'reserved')`,
+           'spoken-command-1', $1, $2, 'audio/webm', 100, 1000, 'spoken-attempt-1',
+           'audio-command-1', 'lease-1', clock_timestamp() + interval '1 minute',
+           'reserved')`,
         ["1".repeat(64), "2".repeat(64)],
       );
       await expect(
@@ -249,9 +297,12 @@ suite("Study v2 Postgres foundation", () => {
           `INSERT INTO study_spoken_answer_commands (
              command_id, account_id, session_id, session_item_id, attempt_number,
              idempotency_key, request_hash, audio_digest, audio_content_type,
-             audio_byte_size, audio_duration_ms, state
+             audio_byte_size, audio_duration_ms, attempt_id, learner_audio_artifact_id,
+             lease_token, lease_expires_at, state
            ) VALUES ('spoken-2', 'account-1', 'session-1', 'session-item-1', 1,
-             'spoken-command-2', $1, $2, 'audio/webm', 100, 1000, 'reserved')`,
+             'spoken-command-2', $1, $2, 'audio/webm', 100, 1000, 'spoken-attempt-1',
+             'audio-command-1', 'lease-2', clock_timestamp() + interval '1 minute',
+             'reserved')`,
           ["3".repeat(64), "4".repeat(64)],
         ),
       ).rejects.toThrow();

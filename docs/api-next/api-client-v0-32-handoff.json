@@ -9,7 +9,7 @@
   "supersedes": "Unpublished 0.31.0 Study draft; clients must not consume its transcript-evidence or cloze shapes.",
   "artifact": {
     "path": "artifacts/api-client/pirate-api-client-0.32.0.tgz",
-    "sha256": "d37311ea843c12d9f6b4eef5d371ff996349c91ee73e04ea6f2f279c0940fdb1",
+    "sha256": "e60b7b58377cda324a0fa262161c99669877afb7edd2d2b387bb1069cc9e604d",
     "contents": [
       "package/package.json",
       "package/src/generated/client.ts",
@@ -18,9 +18,9 @@
     ]
   },
   "provenance": {
-    "sourceIdentifier": "api-next-contracts@769e10ce6b7ce692ad2885880fa9d3e986788f567419f0069cf2b7409ce487f5",
-    "openapiSha256": "769e10ce6b7ce692ad2885880fa9d3e986788f567419f0069cf2b7409ce487f5",
-    "clientSha256": "77d1ec40a6ca205055edcc5bf17c1caa0e1024cc2a86f71613e9adaf0764a45d"
+    "sourceIdentifier": "api-next-contracts@3bcb7c8fddc2dd404982dac70e1a047192d2f45f9e2b0724fe54101c580e2920",
+    "openapiSha256": "3bcb7c8fddc2dd404982dac70e1a047192d2f45f9e2b0724fe54101c580e2920",
+    "clientSha256": "f6200af2b80bbfd61fbf2ea59e7bbb97aed7d25f46d1f515a8dbaecc4b1bc4e1"
   },
   "verification": {
     "checkFresh": "passed",
@@ -30,7 +30,7 @@
       "reason": "Ratified spec 019 replaces the unpublished transcript-evidence and cloze draft with shared Study units and raw audio."
     },
     "focusedPostgresSuites": "All 78 migrations applied transactionally on local Postgres 17; the test process could not reach the disposable container TCP endpoint, so required postgres17 CI remains the authoritative fixture gate.",
-    "fullUnitSuite": "2090 passed, 303 database-gated tests skipped, 0 failed",
+    "fullUnitSuite": "2093 passed, 303 database-gated tests skipped, 0 failed",
     "fullWorkerdSuite": "92 passed, 0 failed",
     "packageVerifier": "passed",
     "repositoryCheck": "passed"

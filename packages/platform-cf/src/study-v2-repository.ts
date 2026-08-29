@@ -223,7 +223,7 @@ const itemFromExercise = (row: Row, sessionId: string, ordinal: number): StudySe
     grader_policy_revision: text(row, "grader_policy_revision"),
     feedback_policy_revision: text(row, "feedback_policy_revision"),
     quality_policy_revision: text(row, "quality_policy_revision"),
-    maximum_attempts: 3,
+    maximum_attempts: text(row, "exercise_type") === "say_it_back" ? 1 : 3,
   });
 
 export const makeControlPlaneStudyV2Repository = () => ({
@@ -507,7 +507,9 @@ export const makeControlPlaneStudyV2Repository = () => ({
             }
             const replay = yield* transaction.execute<Row>({
               label: "study-v2.spoken.reserve-existing",
-              text: `SELECT command_id, request_hash, audio_digest, state, result_snapshot
+              text: `SELECT command_id, request_hash, audio_digest, state, result_snapshot,
+                            attempt_id, learner_audio_artifact_id,
+                            lease_expires_at > clock_timestamp() AS lease_live
                        FROM study_spoken_answer_commands
                       WHERE session_id=$1 AND (
                         idempotency_key=$2 OR (session_item_id=$3 AND attempt_number=$4)
@@ -535,7 +537,7 @@ export const makeControlPlaneStudyV2Repository = () => ({
                   result: decode(StudyAnswerResultV2, json(replayRow.result_snapshot)),
                 };
               }
-              if (text(replayRow, "state") === "reserved") {
+              if (text(replayRow, "state") === "reserved" && replayRow.lease_live === true) {
                 return yield* rejected("command-in-flight");
               }
             }
@@ -551,23 +553,47 @@ export const makeControlPlaneStudyV2Repository = () => ({
             }
             if (replayRow !== undefined) {
               const commandId = text(replayRow, "command_id");
-              yield* transaction.execute({
+              const reclaimed = yield* transaction.execute<Row>({
                 label: "study-v2.spoken.reserve-retry",
                 text: `UPDATE study_spoken_answer_commands
-                          SET state='reserved', provider_failure_kind=NULL, completed_at=NULL
-                        WHERE command_id=$1 AND account_id=$2 AND state='retryable_failed'`,
-                values: [commandId, input.accountId],
+                          SET state='reserved', provider_failure_kind=NULL, completed_at=NULL,
+                              lease_token=$3,
+                              lease_expires_at=clock_timestamp() + interval '60 seconds',
+                              reserved_at=clock_timestamp()
+                        WHERE command_id=$1 AND account_id=$2
+                          AND (state='retryable_failed' OR
+                            (state='reserved' AND lease_expires_at <= clock_timestamp()))
+                    RETURNING command_id`,
+                values: [commandId, input.accountId, input.leaseToken],
                 readonly: false,
               });
-              return { state: "reserved" as const, commandId };
+              if (reclaimed.rows.length !== 1) return yield* rejected("command-in-flight");
+              yield* transaction.execute({
+                label: "study-v2.spoken.reserve-artifact-retry",
+                text: `UPDATE learner_audio_artifacts
+                          SET recording_state='pending', object_ref=NULL, deleted_at=NULL
+                        WHERE learner_audio_artifact_id=$1 AND account_id=$2
+                          AND recording_state='failed'`,
+                values: [text(replayRow, "learner_audio_artifact_id"), input.accountId],
+                readonly: false,
+              });
+              return {
+                state: "reserved" as const,
+                commandId,
+                leaseToken: input.leaseToken,
+                attemptId: text(replayRow, "attempt_id"),
+                artifactId: text(replayRow, "learner_audio_artifact_id"),
+              };
             }
             const inserted = yield* transaction.execute<Row>({
               label: "study-v2.spoken.reserve-insert",
               text: `INSERT INTO study_spoken_answer_commands (
                        command_id, account_id, session_id, session_item_id, attempt_number,
                        idempotency_key, request_hash, audio_digest, audio_content_type,
-                       audio_byte_size, audio_duration_ms, state
-                     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'reserved')
+                       audio_byte_size, audio_duration_ms, attempt_id,
+                       learner_audio_artifact_id, lease_token, lease_expires_at, state
+                     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,
+                       clock_timestamp() + interval '60 seconds','reserved')
                      ON CONFLICT DO NOTHING RETURNING command_id`,
               values: [
                 input.commandId,
@@ -581,15 +607,49 @@ export const makeControlPlaneStudyV2Repository = () => ({
                 input.audioContentType,
                 input.audioByteSize,
                 input.audioDurationMs,
+                input.attemptId,
+                input.artifactId,
+                input.leaseToken,
               ],
               readonly: false,
             });
             if (inserted.rows.length === 1) {
-              return { state: "reserved" as const, commandId: input.commandId };
+              const expectedObjectRef = `learner-audio/study/${input.attemptId}/${input.audioDigest}`;
+              yield* transaction.execute({
+                label: "study-v2.spoken.reserve-artifact",
+                text: `INSERT INTO learner_audio_artifacts (
+                         learner_audio_artifact_id, account_id, source_kind, attempt_ref,
+                         expected_object_ref, object_ref, content_digest, content_type,
+                         byte_size, duration_ms, platform_retention, provider_retention,
+                         recording_state, expires_at
+                       ) VALUES ($1,$2,'study',$3,$4,NULL,$5,$6,$7,$8,
+                         'private_learning','not_stored','pending',
+                         clock_timestamp() + interval '24 months')`,
+                values: [
+                  input.artifactId,
+                  input.accountId,
+                  input.attemptId,
+                  expectedObjectRef,
+                  input.audioDigest,
+                  input.audioContentType,
+                  input.audioByteSize,
+                  input.audioDurationMs,
+                ],
+                readonly: false,
+              });
+              return {
+                state: "reserved" as const,
+                commandId: input.commandId,
+                leaseToken: input.leaseToken,
+                attemptId: input.attemptId,
+                artifactId: input.artifactId,
+              };
             }
             const existing = yield* transaction.execute<Row>({
               label: "study-v2.spoken.reserve-replay",
-              text: `SELECT command_id, request_hash, audio_digest, state, result_snapshot
+              text: `SELECT command_id, request_hash, audio_digest, state, result_snapshot,
+                            attempt_id, learner_audio_artifact_id,
+                            lease_expires_at > clock_timestamp() AS lease_live
                        FROM study_spoken_answer_commands
                       WHERE session_id=$1 AND (
                         idempotency_key=$2 OR (session_item_id=$3 AND attempt_number=$4)
@@ -618,16 +678,39 @@ export const makeControlPlaneStudyV2Repository = () => ({
                 result: decode(StudyAnswerResultV2, json(row.result_snapshot)),
               };
             }
-            if (state === "reserved") return yield* rejected("command-in-flight");
-            yield* transaction.execute({
+            if (state === "reserved" && row.lease_live === true)
+              return yield* rejected("command-in-flight");
+            const reclaimed = yield* transaction.execute<Row>({
               label: "study-v2.spoken.reserve-retry",
               text: `UPDATE study_spoken_answer_commands
-                        SET state='reserved', provider_failure_kind=NULL, completed_at=NULL
-                      WHERE command_id=$1 AND account_id=$2 AND state='retryable_failed'`,
-              values: [commandId, input.accountId],
+                        SET state='reserved', provider_failure_kind=NULL, completed_at=NULL,
+                            lease_token=$3,
+                            lease_expires_at=clock_timestamp() + interval '60 seconds',
+                            reserved_at=clock_timestamp()
+                      WHERE command_id=$1 AND account_id=$2
+                        AND (state='retryable_failed' OR
+                          (state='reserved' AND lease_expires_at <= clock_timestamp()))
+                  RETURNING command_id`,
+              values: [commandId, input.accountId, input.leaseToken],
               readonly: false,
             });
-            return { state: "reserved" as const, commandId };
+            if (reclaimed.rows.length !== 1) return yield* rejected("command-in-flight");
+            yield* transaction.execute({
+              label: "study-v2.spoken.reserve-artifact-retry",
+              text: `UPDATE learner_audio_artifacts
+                        SET recording_state='pending', object_ref=NULL, deleted_at=NULL
+                      WHERE learner_audio_artifact_id=$1 AND account_id=$2
+                        AND recording_state='failed'`,
+              values: [text(row, "learner_audio_artifact_id"), input.accountId],
+              readonly: false,
+            });
+            return {
+              state: "reserved" as const,
+              commandId,
+              leaseToken: input.leaseToken,
+              attemptId: text(row, "attempt_id"),
+              artifactId: text(row, "learner_audio_artifact_id"),
+            };
           }),
         );
       }),
@@ -641,11 +724,29 @@ export const makeControlPlaneStudyV2Repository = () => ({
           text: `UPDATE study_spoken_answer_commands
                     SET state='retryable_failed', provider_failure_kind=$3,
                         completed_at=$4::timestamptz
-                  WHERE command_id=$1 AND account_id=$2 AND state='reserved'`,
-          values: [input.commandId, input.accountId, input.providerFailureKind, input.failedAt],
+                  WHERE command_id=$1 AND account_id=$2 AND lease_token=$5
+                    AND state='reserved' AND lease_expires_at > clock_timestamp()`,
+          values: [
+            input.commandId,
+            input.accountId,
+            input.providerFailureKind,
+            input.failedAt,
+            input.leaseToken,
+          ],
           readonly: false,
         });
         if (updated.rowCount !== 1) return yield* rejected("command-in-flight");
+        yield* db.execute({
+          label: "study-v2.spoken.fail-artifact",
+          text: `UPDATE learner_audio_artifacts artifact
+                    SET recording_state='failed'
+                   FROM study_spoken_answer_commands command
+                  WHERE command.command_id=$1 AND command.account_id=$2
+                    AND artifact.learner_audio_artifact_id=command.learner_audio_artifact_id
+                    AND artifact.recording_state='pending'`,
+          values: [input.commandId, input.accountId],
+          readonly: false,
+        });
       }),
     ),
   completeSpokenAnswer: (input: Parameters<StudyV2Store["completeSpokenAnswer"]>[0]) =>
@@ -656,7 +757,8 @@ export const makeControlPlaneStudyV2Repository = () => ({
           Effect.gen(function* () {
             const command = yield* transaction.execute<Row>({
               label: "study-v2.spoken.complete-command",
-              text: `SELECT request_hash, state, result_snapshot
+              text: `SELECT request_hash, state, result_snapshot, lease_token,
+                            lease_expires_at > clock_timestamp() AS lease_live
                        FROM study_spoken_answer_commands
                       WHERE command_id=$1 AND account_id=$2 FOR UPDATE`,
               values: [input.commandId, input.accountId],
@@ -671,6 +773,12 @@ export const makeControlPlaneStudyV2Repository = () => ({
               return decode(StudyAnswerResultV2, json(commandRow.result_snapshot));
             }
             if (text(commandRow, "state") !== "reserved") {
+              return yield* rejected("command-in-flight");
+            }
+            if (text(commandRow, "lease_token") !== input.leaseToken) {
+              return yield* rejected("command-in-flight");
+            }
+            if (commandRow.lease_live !== true) {
               return yield* rejected("command-in-flight");
             }
             const selected = yield* transaction.execute<Row>({
@@ -689,30 +797,24 @@ export const makeControlPlaneStudyV2Repository = () => ({
             if (item.exercise_type !== "say_it_back") {
               return yield* rejected("submission-kind-mismatch");
             }
-            const expiresAt = new Date(input.acceptedAt);
-            expiresAt.setUTCMonth(expiresAt.getUTCMonth() + 24);
-            yield* transaction.execute({
+            const artifact = yield* transaction.execute<Row>({
               label: "study-v2.spoken.artifact",
-              text: `INSERT INTO learner_audio_artifacts (
-                       learner_audio_artifact_id, account_id, source_kind, attempt_ref,
-                       object_ref, content_digest, content_type, byte_size, duration_ms,
-                       platform_retention, provider_retention, recording_state, expires_at
-                     ) VALUES ($1,$2,'study',$3,$4,$5,$6,$7,$8,
-                       'private_learning','not_stored',$9,$10::timestamptz)`,
+              text: `UPDATE learner_audio_artifacts
+                        SET object_ref=$3, recording_state=$4
+                      WHERE learner_audio_artifact_id=$1 AND account_id=$2
+                        AND recording_state='pending'
+                        AND (($4='stored' AND $3=expected_object_ref)
+                          OR ($4='failed' AND $3 IS NULL))
+                    RETURNING learner_audio_artifact_id`,
               values: [
                 input.artifactId,
                 input.accountId,
-                input.attemptId,
                 input.archive.objectRef,
-                input.audioDigest,
-                input.audioContentType,
-                input.audioByteSize,
-                input.audioDurationMs,
                 input.archive.state,
-                expiresAt.toISOString(),
               ],
               readonly: false,
             });
+            if (artifact.rows.length !== 1) return yield* rejected("command-in-flight");
             const feedback = {
               kind: "transcript_diff" as const,
               heard_transcript: input.grade.heardTranscript,
@@ -883,8 +985,15 @@ export const makeControlPlaneStudyV2Repository = () => ({
               text: `UPDATE study_spoken_answer_commands
                         SET state='completed', result_snapshot=$3::jsonb,
                             completed_at=$4::timestamptz
-                      WHERE command_id=$1 AND account_id=$2 AND state='reserved'`,
-              values: [input.commandId, input.accountId, JSON.stringify(result), input.acceptedAt],
+                      WHERE command_id=$1 AND account_id=$2 AND state='reserved'
+                        AND lease_token=$5`,
+              values: [
+                input.commandId,
+                input.accountId,
+                JSON.stringify(result),
+                input.acceptedAt,
+                input.leaseToken,
+              ],
               readonly: false,
             });
             return result;
