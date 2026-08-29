@@ -366,7 +366,7 @@ adapters remain disabled and runtime composition is absent.
 | `TRANSLOADIT_AUTH_SECRET` | Transloadit assembly signing secret |
 | `ACRCLOUD_ACCESS_KEY` | ACRCloud identification access key |
 | `ACRCLOUD_ACCESS_SECRET` | ACRCloud identification signing secret |
-| `ELEVENLABS_API_KEY` | Platform-funded forced-alignment key; v1 has no ASR |
+| `ELEVENLABS_API_KEY` | Platform-funded forced alignment, Karaoke realtime STT, and Study batch STT key |
 | `FILEBASE_IPFS_TOKEN` | Filebase bucket-scoped IPFS bearer token |
 | `DATA_REGISTRATION_STAGING_PRIVATE_KEY` | Staging-only Aeneid DATA registration EOA; never shared with Megapot or production |
 | `OPENROUTER_API_KEY` | OpenRouter API credential used by the lyrics classifier |
@@ -386,19 +386,22 @@ adapter is independently reviewed. It must correspond to the checked staging
 `data_registration` namespace, and may sign only the persisted zero-value
 transaction envelope. Production custody remains separately gated.
 
-Checked-in name declarations assign Transloadit, ACRCloud and ElevenLabs only
-to the disabled media-processor Worker, and assign Filebase plus the staging
-DATA signer only to the disabled DATA-registration Worker. They do not install
-or read values. The two ingress names remain invalid `PENDING` sentinels and
-are absent from every checked-in Worker secret declaration while ingress is
-disabled. Synchronization must select only the names consumed by the exact
-Worker whose reviewed composition enables that adapter; blanket
-synchronization of `/services/api-next` is forbidden. The HTTP and jobs
-Workers must not receive provider-runtime names. ElevenLabs may be synchronized
-only to the exact forced-alignment consumer when enabled. Filebase and the
-classifier likewise follow their owning roles. Any future assignment must
-update the destination Worker's binding contract and Wrangler declaration in
-the same reviewed tranche.
+Checked-in name declarations assign Transloadit and ACRCloud only to the
+disabled media-processor Worker, and assign Filebase plus the staging DATA
+signer only to the disabled DATA-registration Worker. They do not install or
+read values. ElevenLabs is an allowed name for the media-processor alignment
+consumer and the HTTP Worker's Karaoke and Study speech consumers. The HTTP
+composition still fails closed while that Worker's exact secret is absent; no
+HTTP Wrangler environment declares or installs it in this tranche. The two
+ingress names remain invalid `PENDING` sentinels and are absent from every
+checked-in Worker secret declaration while ingress is disabled.
+Synchronization must select only the names consumed by the exact Worker whose
+reviewed composition enables that adapter; blanket synchronization of
+`/services/api-next` is forbidden. ElevenLabs may be synchronized only to an
+exact alignment or speech consumer when separately authorized. Filebase and
+the classifier likewise follow their owning roles. Any future assignment must
+update the destination Worker's Wrangler declaration in the same reviewed
+tranche.
 
 `OPENROUTER_API_KEY` names the actual credential boundary. A reviewed model
 change within OpenRouter does not require a new secret. Replacing OpenRouter
