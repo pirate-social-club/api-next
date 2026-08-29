@@ -1,8 +1,8 @@
 import { LanguageTagV1, StudyLearnerBandV2 } from "@pirate/contracts";
 import { Option, Schema } from "effect";
 import {
-  STUDY_TRANSLATION_PROMPT_V1,
-  STUDY_TRANSLATION_VALIDATOR_V1,
+  STUDY_TRANSLATION_PROMPT_V2,
+  STUDY_TRANSLATION_VALIDATOR_V2,
 } from "./study-translation-generator.ts";
 
 export const STUDY_TRANSLATION_CORPUS_V1 = "study_translation_corpus_v1" as const;
@@ -65,8 +65,8 @@ export const StudyTranslationCorpusV1 = Schema.Struct({
   corpus_revision: Identifier,
   target_language: LanguageTagV1,
   learner_band: StudyLearnerBandV2,
-  prompt_revision: Schema.Literal(STUDY_TRANSLATION_PROMPT_V1),
-  validator_revision: Schema.Literal(STUDY_TRANSLATION_VALIDATOR_V1),
+  prompt_revision: Schema.Literal(STUDY_TRANSLATION_PROMPT_V2),
+  validator_revision: Schema.Literal(STUDY_TRANSLATION_VALIDATOR_V2),
   reviewer_role: Identifier,
   reviewed_at: Schema.NonEmptyString.check(Schema.isMaxLength(64)),
   items: Schema.Array(StudyTranslationCorpusItemV1).check(Schema.isMaxLength(10_000)),

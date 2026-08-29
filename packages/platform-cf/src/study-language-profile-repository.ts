@@ -3,8 +3,8 @@ import {
   ControlPlaneDb,
   type ControlPlaneError,
   type ControlPlaneTransaction,
-  STUDY_LANGUAGE_PROFILE_PROMPT_V1,
-  STUDY_LANGUAGE_PROFILE_VALIDATOR_V1,
+  STUDY_LANGUAGE_PROFILE_PROMPT_V2,
+  STUDY_LANGUAGE_PROFILE_VALIDATOR_V2,
   type StudyLanguageProfileOutcome,
   type StudyLanguageProfileRequest,
   type StudyLanguageProfileStore,
@@ -108,8 +108,8 @@ const accepted = (
       input.postId,
       input.lyricsRevision,
       input.sourceHash,
-      STUDY_LANGUAGE_PROFILE_PROMPT_V1,
-      STUDY_LANGUAGE_PROFILE_VALIDATOR_V1,
+      STUDY_LANGUAGE_PROFILE_PROMPT_V2,
+      STUDY_LANGUAGE_PROFILE_VALIDATOR_V2,
     ],
     readonly: false,
   });
@@ -292,8 +292,8 @@ export const makeControlPlaneStudyLanguageProfileRepository = () => ({
                 text: `INSERT INTO study_language_profile_units (
                        community_id, post_id, lyrics_revision, language_profile_revision,
                        study_unit_id, detected_languages, dominant_language, mixed,
-                       vocable_only, confidence
-                     ) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10)`,
+                       vocable_only, proper_name_only, confidence
+                     ) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10,$11)`,
                 values: [
                   input.request.communityId,
                   input.request.postId,
@@ -304,6 +304,7 @@ export const makeControlPlaneStudyLanguageProfileRepository = () => ({
                   unit.dominantLanguage,
                   unit.mixed,
                   unit.vocableOnly,
+                  unit.properNameOnly,
                   unit.confidence,
                 ],
                 readonly: false,

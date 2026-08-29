@@ -1,9 +1,9 @@
 import {
-  STUDY_LANGUAGE_PROFILE_PROMPT_V1,
-  STUDY_LANGUAGE_PROFILE_SYSTEM_PROMPT_V1,
-  STUDY_LANGUAGE_PROFILE_VALIDATOR_V1,
-  STUDY_TRANSLATION_PROMPT_V1,
-  STUDY_TRANSLATION_SYSTEM_PROMPT_V1,
+  STUDY_LANGUAGE_PROFILE_PROMPT_V2,
+  STUDY_LANGUAGE_PROFILE_SYSTEM_PROMPT_V2,
+  STUDY_LANGUAGE_PROFILE_VALIDATOR_V2,
+  STUDY_TRANSLATION_PROMPT_V2,
+  STUDY_TRANSLATION_SYSTEM_PROMPT_V2,
   type StudyLanguageProfileAnalysis,
   type StudyLanguageProfileRequest,
   type StudyLanguageProfileTransport,
@@ -64,6 +64,7 @@ const LanguageUnit = Schema.Struct({
   dominant_language: Schema.NullOr(LanguageTagV1),
   mixed: Schema.Boolean,
   vocable_only: Schema.Boolean,
+  proper_name_only: Schema.Boolean,
   confidence: Confidence,
 });
 const LanguageOutput = Schema.Struct({
@@ -105,6 +106,7 @@ const languageOutputSchema = {
           "dominant_language",
           "mixed",
           "vocable_only",
+          "proper_name_only",
           "confidence",
         ],
         properties: {
@@ -113,6 +115,7 @@ const languageOutputSchema = {
           dominant_language: { type: ["string", "null"] },
           mixed: { type: "boolean" },
           vocable_only: { type: "boolean" },
+          proper_name_only: { type: "boolean" },
           confidence: { type: ["number", "null"], minimum: 0, maximum: 1 },
         },
       },
@@ -343,7 +346,7 @@ export const makeOpenRouterStudyLanguageProfileTransport = (
     }
     const body = requestBody(
       options,
-      STUDY_LANGUAGE_PROFILE_SYSTEM_PROMPT_V1,
+      STUDY_LANGUAGE_PROFILE_SYSTEM_PROMPT_V2,
       languageOutputSchema,
       languagePayload(request),
     );
@@ -361,14 +364,15 @@ export const makeOpenRouterStudyLanguageProfileTransport = (
         const analysis: StudyLanguageProfileAnalysis = {
           providerId: result.providerId,
           providerModel: result.providerModel,
-          promptRevision: STUDY_LANGUAGE_PROFILE_PROMPT_V1,
-          validatorRevision: STUDY_LANGUAGE_PROFILE_VALIDATOR_V1,
+          promptRevision: STUDY_LANGUAGE_PROFILE_PROMPT_V2,
+          validatorRevision: STUDY_LANGUAGE_PROFILE_VALIDATOR_V2,
           units: output.value.units.map((unit) => ({
             studyUnitId: unit.study_unit_id,
             detectedLanguages: unit.detected_languages,
             dominantLanguage: unit.dominant_language,
             mixed: unit.mixed,
             vocableOnly: unit.vocable_only,
+            properNameOnly: unit.proper_name_only,
             confidence: unit.confidence,
           })),
         };
@@ -397,7 +401,7 @@ export const makeOpenRouterStudyTranslationTransport = (
     }
     const body = requestBody(
       options,
-      STUDY_TRANSLATION_SYSTEM_PROMPT_V1,
+      STUDY_TRANSLATION_SYSTEM_PROMPT_V2,
       translationOutputSchema,
       translationPayload(request),
     );
@@ -409,7 +413,7 @@ export const makeOpenRouterStudyTranslationTransport = (
         generation_run_id: request.generationRunId,
         provider_id: result.providerId,
         provider_model: result.providerModel,
-        prompt_revision: STUDY_TRANSLATION_PROMPT_V1,
+        prompt_revision: STUDY_TRANSLATION_PROMPT_V2,
         units:
           result.output !== null && typeof result.output === "object" && "units" in result.output
             ? (result.output as { readonly units: unknown }).units

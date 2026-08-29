@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
-  STUDY_LANGUAGE_PROFILE_PROMPT_V1,
-  STUDY_LANGUAGE_PROFILE_VALIDATOR_V1,
-  STUDY_TRANSLATION_PROMPT_V1,
+  STUDY_LANGUAGE_PROFILE_PROMPT_V2,
+  STUDY_LANGUAGE_PROFILE_VALIDATOR_V2,
+  STUDY_TRANSLATION_PROMPT_V2,
   validateStudyTranslationProposal,
 } from "@pirate/application";
 import { Effect } from "effect";
@@ -212,14 +212,15 @@ suite("Study translation generation", () => {
               analysis: {
                 providerId: "fake-language-profile",
                 providerModel: "fake-model",
-                promptRevision: STUDY_LANGUAGE_PROFILE_PROMPT_V1,
-                validatorRevision: STUDY_LANGUAGE_PROFILE_VALIDATOR_V1,
+                promptRevision: STUDY_LANGUAGE_PROFILE_PROMPT_V2,
+                validatorRevision: STUDY_LANGUAGE_PROFILE_VALIDATOR_V2,
                 units: profileResolution.request.units.map((unit) => ({
                   studyUnitId: unit.studyUnitId,
                   detectedLanguages: ["en"],
                   dominantLanguage: "en",
                   mixed: false,
                   vocableOnly: false,
+                  properNameOnly: false,
                   confidence: 0.99,
                 })),
               },
@@ -262,7 +263,7 @@ suite("Study translation generation", () => {
         generation_run_id: "translation-run-1",
         provider_id: "fake-study-translator",
         provider_model: "fake-model-v1",
-        prompt_revision: STUDY_TRANSLATION_PROMPT_V1,
+        prompt_revision: STUDY_TRANSLATION_PROMPT_V2,
         units: reservation.request.units.map((unit, index) => ({
           status: "ready" as const,
           study_unit_id: unit.studyUnitId,
@@ -276,6 +277,7 @@ suite("Study translation generation", () => {
           dominant_language: "en",
           mixed: false,
           vocable_only: false,
+          proper_name_only: false,
           question: "¿Qué significa esta línea?",
           translation: `Traducción correcta número ${index + 1}`,
           distractors: [

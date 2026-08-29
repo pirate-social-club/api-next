@@ -3,8 +3,8 @@ import {
   ControlPlaneDb,
   type ControlPlaneError,
   type ControlPlaneTransaction,
-  STUDY_TRANSLATION_PROMPT_V1,
-  STUDY_TRANSLATION_VALIDATOR_V1,
+  STUDY_TRANSLATION_PROMPT_V2,
+  STUDY_TRANSLATION_VALIDATOR_V2,
   type StudyTranslationGenerationOutcome,
   type StudyTranslationGenerationRequest,
   type StudyTranslationGenerationStore,
@@ -160,7 +160,7 @@ const unitRows = (
               FROM ordered
           )
           SELECT representative.*, fact.detected_languages, fact.dominant_language,
-                 fact.mixed, fact.vocable_only
+                 fact.mixed, fact.vocable_only, fact.proper_name_only
             FROM representative
             JOIN study_language_profile_units fact
               ON fact.community_id=$1 AND fact.post_id=$2
@@ -252,7 +252,7 @@ export const makeControlPlaneStudyTranslationRepository = () => ({
                 input.targetLanguage,
                 input.learnerBand,
                 GENERATOR_POLICY_REVISION,
-                STUDY_TRANSLATION_PROMPT_V1,
+                STUDY_TRANSLATION_PROMPT_V2,
                 text(row, "quality_policy_revision"),
               ],
               readonly: false,
@@ -307,7 +307,7 @@ export const makeControlPlaneStudyTranslationRepository = () => ({
               learningLanguage: "en",
               targetLanguage: input.targetLanguage,
               learnerBand: input.learnerBand,
-              promptRevision: STUDY_TRANSLATION_PROMPT_V1,
+              promptRevision: STUDY_TRANSLATION_PROMPT_V2,
               qualityPolicyRevision: text(row, "quality_policy_revision"),
               rightsPolicyRevision: RIGHTS_POLICY_REVISION,
               contextLines: context.rows.map((line) => ({
@@ -330,6 +330,7 @@ export const makeControlPlaneStudyTranslationRepository = () => ({
                   dominantLanguage: nullableText(unit, "dominant_language"),
                   mixed: unit.mixed === true,
                   vocableOnly: unit.vocable_only === true,
+                  properNameOnly: unit.proper_name_only === true,
                 },
               })),
             };
@@ -360,8 +361,8 @@ export const makeControlPlaneStudyTranslationRepository = () => ({
                 input.targetLanguage,
                 input.learnerBand,
                 GENERATOR_POLICY_REVISION,
-                STUDY_TRANSLATION_PROMPT_V1,
-                STUDY_TRANSLATION_VALIDATOR_V1,
+                STUDY_TRANSLATION_PROMPT_V2,
+                STUDY_TRANSLATION_VALIDATOR_V2,
                 SEMANTIC_VALIDATOR_REVISION,
                 SAFETY_VALIDATOR_REVISION,
                 request.qualityPolicyRevision,
@@ -632,10 +633,10 @@ export const makeControlPlaneStudyTranslationRepository = () => ({
                   input.proposal.prompt_revision,
                   text(run, "request_hash"),
                   resultDigest,
-                  STUDY_TRANSLATION_VALIDATOR_V1,
+                  STUDY_TRANSLATION_VALIDATOR_V2,
                   SEMANTIC_VALIDATOR_REVISION,
                   SAFETY_VALIDATOR_REVISION,
-                  STUDY_TRANSLATION_VALIDATOR_V1,
+                  STUDY_TRANSLATION_VALIDATOR_V2,
                   input.request.qualityPolicyRevision,
                   input.acceptedAt,
                 ],
