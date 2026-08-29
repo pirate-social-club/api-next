@@ -47,6 +47,12 @@ import {
   ObserveMegapotPoolFunding,
   OpenSongRewardOffer,
 } from "./rewards-song-offers.ts";
+import {
+  GetStudyAvailabilityV2,
+  GetStudySessionV2,
+  StartStudySessionV2,
+  SubmitStudyAnswerV2,
+} from "./study-v2.ts";
 /** Named registry; the client generator references these exports by name. */
 import { v1Registry } from "./v1.ts";
 import * as verification from "./verification.ts";
@@ -82,6 +88,10 @@ export const registry = {
   SetActivityPresentationPersona,
   GetSongActivityLeaderboard,
   GetCommunityActivityLeaderboard,
+  GetStudyAvailabilityV2,
+  StartStudySessionV2,
+  GetStudySessionV2,
+  SubmitStudyAnswerV2,
   OpenSongRewardOffer,
   AddMegapotPoolLeg,
   ObserveMegapotPoolFunding,

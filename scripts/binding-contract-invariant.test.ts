@@ -99,6 +99,7 @@ const HTTP_BINDING_KINDS = {
   MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY: "secret",
   MEDIA_INGRESS: "platform",
   MEDIA_IMMUTABLE_ORIGINALS: "platform",
+  LEARNER_AUDIO: "platform",
 } as const satisfies BindingManifest<HttpWorkerBindings>;
 
 const ALERT_BINDING_KINDS = {

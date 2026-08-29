@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.32.0",
+  "releaseType": "study-runtime-amendment-v1",
+  "wireContract": "spec-019-sections-2-5",
+  "sourceCommit": "pending-review",
+  "supersedes": "Unpublished 0.31.0 Study draft; clients must not consume its transcript-evidence or cloze shapes.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.32.0.tgz",
+    "sha256": "e60b7b58377cda324a0fa262161c99669877afb7edd2d2b387bb1069cc9e604d",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@3bcb7c8fddc2dd404982dac70e1a047192d2f45f9e2b0724fe54101c580e2920",
+    "openapiSha256": "3bcb7c8fddc2dd404982dac70e1a047192d2f45f9e2b0724fe54101c580e2920",
+    "clientSha256": "f6200af2b80bbfd61fbf2ea59e7bbb97aed7d25f46d1f515a8dbaecc4b1bc4e1"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "authorized",
+      "baselineCommit": "64593c1",
+      "reason": "Ratified spec 019 replaces the unpublished transcript-evidence and cloze draft with shared Study units and raw audio."
+    },
+    "focusedPostgresSuites": "All 78 migrations applied transactionally on local Postgres 17; the test process could not reach the disposable container TCP endpoint, so required postgres17 CI remains the authoritative fixture gate.",
+    "fullUnitSuite": "2093 passed, 303 database-gated tests skipped, 0 failed",
+    "fullWorkerdSuite": "92 passed, 0 failed",
+    "packageVerifier": "passed",
+    "repositoryCheck": "passed"
+  }
+}

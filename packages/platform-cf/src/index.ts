@@ -301,6 +301,10 @@ export {
 } from "./session-tokens";
 export * from "./song-reward-offer-repository.ts";
 export {
+  makeControlPlaneStudyV2Repository,
+  makeControlPlaneStudyV2Store,
+} from "./study-v2-repository.ts";
+export {
   makeControlPlaneTextPostRepository,
   makeControlPlaneTextSubmissionRepository,
   makeControlPlaneTextSubmissionStore,

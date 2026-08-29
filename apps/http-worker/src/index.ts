@@ -43,6 +43,7 @@ export {
   makeHnsHostServingComposition,
 } from "./hns-host-serving-composition.ts";
 export { makePlatformPirateHandleHandlers } from "./platform-pirate-handle-handlers.ts";
+export { makeStudyV2Handlers } from "./study-v2-handlers.ts";
 export { createHttpWorker, withEndpointResult } from "./transport.ts";
 
 let cachedProductionApp: ReturnType<typeof createProductionHttpWorker> | undefined;

@@ -80,5 +80,8 @@ export * from "./rewards/activity-qualification.ts";
 export * from "./rewards/capacity-freshness.ts";
 export * from "./rewards/megapot-pool.ts";
 export * from "./rewards/payout-fairness.ts";
+export * from "./rewards/study-v2-grading.ts";
 export * from "./rewards/vault-revert.ts";
 export * from "./story/story-settlement-step-state-machine.ts";
+export * from "./study/lyric-line-identity.ts";
+export * from "./study/review-schedule.ts";

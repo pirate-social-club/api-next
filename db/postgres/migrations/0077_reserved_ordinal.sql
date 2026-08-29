@@ -1,0 +1,3 @@
+-- Reserved before publication. Specification 019 replaced the unpublished
+-- two-call transcript-evidence draft with the one-call raw-audio command in
+-- 0078, so this ordinal intentionally makes no schema change.

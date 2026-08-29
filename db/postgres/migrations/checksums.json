@@ -73,6 +73,11 @@
     "0070_localization_content_foundation.sql": "efd415fde354fa2e46c4aef53e8a7be0fef3f0f731495d1f265f5d08870e7905",
     "0071_canonical_lyric_line_lifecycle.sql": "9e8e11f14384f8ff5eeaccdb8ff55de60917c6103de205f921aa0b75fc9601b5",
     "0072_private_language_preferences.sql": "fcb1f6a349a1db0a7f6e67056c3c9269cec4e69c0bba1f1557c12f8d285b7af6",
-    "0073_immutable_lyrics_revision_line_anchor.sql": "0e8ddf6480c3fdb81c2d72a205c7add48dbed7e979e5bb03fef8f41afefd5eae"
+    "0073_immutable_lyrics_revision_line_anchor.sql": "0e8ddf6480c3fdb81c2d72a205c7add48dbed7e979e5bb03fef8f41afefd5eae",
+    "0074_study_v2_foundation.sql": "680b30cd8aeec54c931aa156cbedf88a6e23d929e97c22b646f8e063492acf5b",
+    "0075_study_v2_identity_fencing.sql": "c5f62eee72522399510d2c3f04e861387cccc896d3a2e199c681c9009b83b3ea",
+    "0076_study_v2_idempotency_fencing.sql": "69586d61e0e22b9e3e13fa0be4de7fc2dd4c87133c30e1e136850cea78151b38",
+    "0077_reserved_ordinal.sql": "fa1134d6f90385b18b73473e891edfa8d8112aaa2a52a8e1b20ef0d0d23f5f97",
+    "0078_study_runtime_amendment.sql": "3af2be51ad26c344347a99c5bda3732b008160a0989ce16d30447f1c00893fb0"
   }
 }

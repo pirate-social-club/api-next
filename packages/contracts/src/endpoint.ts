@@ -15,7 +15,7 @@ import type { ApiError } from "./errors.ts";
 export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
 /** Wire representation used when an endpoint carries a request body. */
-export type EndpointBodyEncoding = "json" | "exact-json" | "raw-text";
+export type EndpointBodyEncoding = "json" | "exact-json" | "raw-bytes" | "raw-text";
 
 /** Closed response-header contract carried by a declared retryable error. */
 export interface RetryAfterHeaderContract {
@@ -47,10 +47,14 @@ export type ApiErrorCtor = (new (
 export interface EndpointRequest {
   readonly body?: Schema.Schema<unknown>;
   readonly bodyRequired?: boolean;
-  /** Defaults to JSON; raw-text bodies are passed to handlers byte-for-byte. */
+  /** Defaults to JSON; raw encodings are passed to handlers without JSON parsing. */
   readonly bodyEncoding?: EndpointBodyEncoding;
   /** Maximum request-body size in UTF-8 bytes; defaults to the transport cap. */
   readonly maxBodyBytes?: number;
+  /** Exact media types that carry raw bytes on an otherwise JSON endpoint. */
+  readonly rawBodyContentTypes?: readonly string[];
+  /** Raw-variant ceiling; defaults to maxBodyBytes. */
+  readonly rawBodyMaxBytes?: number;
   /** Schema for the subset of incoming headers exposed to the handler. */
   readonly headers?: Schema.Schema<unknown>;
   readonly path?: Schema.Schema<unknown>;
