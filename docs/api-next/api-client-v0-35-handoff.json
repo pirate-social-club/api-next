@@ -29,10 +29,10 @@
       "baselineCommit": "78c773c",
       "reason": "Ratified spec 019 replaces the dormant Karaoke session shape with its enabled realtime scoring and private recording contract."
     },
-    "focusedPostgresSuites": "pending PostgreSQL 17 CI",
-    "fullUnitSuite": "pending",
-    "fullWorkerdSuite": "pending",
-    "packageVerifier": "pending",
-    "repositoryCheck": "pending"
+    "focusedPostgresSuites": "pending PostgreSQL 17 CI; no local CONTROL_PLANE_POSTGRES_TEST_URL was available",
+    "fullUnitSuite": "2207 passed, 305 database-gated tests skipped, 0 failed",
+    "fullWorkerdSuite": "95 passed, 0 failed, including single-use token, reconnect epoch, R2 multipart completion, and multipart abort fixtures",
+    "packageVerifier": "passed",
+    "repositoryCheck": "Effect diagnostics, formatting, binding contract, dependency boundaries, migration integrity, contract freshness, and package verification passed; the direct TypeScript 7 check remains blocked by the existing repository-wide Bun and DOM ambient mismatch"
   }
 }
