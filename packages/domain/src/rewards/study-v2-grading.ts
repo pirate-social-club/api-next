@@ -16,7 +16,8 @@ export type StudyTranscriptGradeV2 = Readonly<{
 
 const normalizeText = (value: string): string =>
   value
-    .normalize("NFKC")
+    .normalize("NFKD")
+    .replaceAll(/\p{Diacritic}/gu, "")
     .toLocaleLowerCase("und")
     .replaceAll(/[‘’‛′`´]/gu, "'")
     .replaceAll(/[^\p{L}\p{N}'\s]/gu, " ")
@@ -36,24 +37,39 @@ export const gradeAcceptedTextV2 = (
 export const gradeExactChoiceV2 = (submittedChoiceKey: string, correctChoiceKey: string): boolean =>
   submittedChoiceKey === correctChoiceKey;
 
-const contractions: Readonly<Record<string, readonly string[]>> = {
-  "can't": ["can", "not"],
-  "don't": ["do", "not"],
-  "i'm": ["i", "am"],
-  "it's": ["it", "is"],
-  "we're": ["we", "are"],
-  "won't": ["will", "not"],
-  "you're": ["you", "are"],
+const ignoredEnglishRecallTokens = new Set(["a", "an", "the"]);
+
+const expandEnglishContractions = (value: string): string =>
+  value
+    .replace(/\b(can)'t\b/giu, "$1 not")
+    .replace(/\b(won)'t\b/giu, "will not")
+    .replace(/\b(i)'m\b/giu, "$1 am")
+    .replace(/\b([a-z]+)'re\b/giu, "$1 are")
+    .replace(/\b([a-z]+)'ve\b/giu, "$1 have")
+    .replace(/\b([a-z]+)'ll\b/giu, "$1 will")
+    .replace(/\b([a-z]+)'d\b/giu, "$1 would")
+    .replace(/\b([a-z]+)'s\b/giu, "$1 is");
+
+const normalizeEnglishRecallToken = (token: string): string => {
+  const compact = token.replaceAll("'", "");
+  if (compact.length > 4 && compact.endsWith("ies")) return `${compact.slice(0, -3)}y`;
+  if (compact.length > 4 && /(ches|shes|xes|zes|ses)$/u.test(compact)) {
+    return compact.slice(0, -2);
+  }
+  return compact.length > 3 && compact.endsWith("s") ? compact.slice(0, -1) : compact;
 };
 
 const tokens = (value: string, dominantLanguage: string | null): string[] => {
-  const normalized = normalizeText(value);
+  const english = dominantLanguage?.split("-", 1)[0] === "en";
+  const normalized = normalizeText(english ? expandEnglishContractions(value) : value);
   if (normalized.length === 0) return [];
   const segmented = [...new Intl.Segmenter(undefined, { granularity: "word" }).segment(normalized)]
     .filter(({ isWordLike }) => isWordLike === true)
     .map(({ segment }) => segment);
-  if (dominantLanguage?.split("-", 1)[0] !== "en") return segmented;
-  return segmented.flatMap((token) => contractions[token] ?? [token]);
+  if (!english) return segmented;
+  return segmented
+    .map(normalizeEnglishRecallToken)
+    .filter((token) => token.length > 0 && !ignoredEnglishRecallTokens.has(token));
 };
 
 export const gradeTranscriptV2 = (
@@ -123,7 +139,7 @@ export const gradeTranscriptV2 = (
   extra.reverse();
   substituted.reverse();
   return {
-    correct: missing.length === 0 && extra.length === 0,
+    correct: missing.length === 0 && extra.length === 0 && substituted.length === 0,
     heardTranscript,
     matched,
     missing,

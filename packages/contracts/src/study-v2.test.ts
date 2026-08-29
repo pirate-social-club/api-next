@@ -74,6 +74,19 @@ describe("Study v2 contracts after spec 019", () => {
         required_correct: Math.max(1, Math.ceil((7 * count) / 10)),
         score_bps: null,
       },
+      lesson: {
+        current: {
+          session_item_id: "item-0",
+          presentation_number: 1,
+          is_reappearance: false,
+          presented_at: "2026-08-29T10:00:00.000Z",
+        },
+        resolved_card_count: 0,
+        total_card_count: count,
+        presentation_count: 0,
+        presentation_cap: Math.min(20, 3 * count),
+        completion_reason: null,
+      },
       created_at: "2026-08-29T10:00:00.000Z",
       completed_at: null,
     });

@@ -141,6 +141,23 @@ const StudyProgressV2 = Schema.Struct({
   score_bps: Schema.NullOr(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 10_000 }))),
 });
 
+export const StudyLessonV2 = Schema.Struct({
+  current: Schema.NullOr(
+    Schema.Struct({
+      session_item_id: Identifier,
+      presentation_number: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 3 })),
+      is_reappearance: Schema.Boolean,
+      presented_at: CanonicalInstant,
+    }),
+  ),
+  resolved_card_count: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 10 })),
+  total_card_count: Schema.Int.check(Schema.isBetween({ minimum: 4, maximum: 10 })),
+  presentation_count: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 20 })),
+  presentation_cap: Schema.Int.check(Schema.isBetween({ minimum: 12, maximum: 20 })),
+  completion_reason: Schema.NullOr(Schema.Literals(["all_resolved", "presentation_budget"])),
+});
+export type StudyLessonV2 = Schema.Schema.Type<typeof StudyLessonV2>;
+
 export const StudySessionV2 = Schema.Struct({
   object: Schema.Literal("study_session_v2"),
   session_id: Identifier,
@@ -160,6 +177,7 @@ export const StudySessionV2 = Schema.Struct({
   status: Schema.Literals(["active", "completed"]),
   items: Schema.Array(StudySessionItemV2).check(Schema.isMinLength(4), Schema.isMaxLength(10)),
   progress: StudyProgressV2,
+  lesson: StudyLessonV2,
   created_at: CanonicalInstant,
   completed_at: Schema.NullOr(CanonicalInstant),
 }).check(
@@ -179,6 +197,21 @@ export const StudySessionV2 = Schema.Struct({
       session.progress.required_correct !== Math.max(1, Math.ceil((7 * count) / 10))
     ) {
       return "Study session progress must use the frozen qualification arithmetic";
+    }
+    if (
+      session.lesson.total_card_count !== count ||
+      session.lesson.resolved_card_count > count ||
+      session.lesson.presentation_cap !== Math.min(20, 3 * count) ||
+      session.lesson.presentation_count > session.lesson.presentation_cap
+    ) {
+      return "Study lesson state must respect card and presentation bounds";
+    }
+    if (
+      session.status === "active"
+        ? session.lesson.current === null || session.lesson.completion_reason !== null
+        : session.lesson.current !== null || session.lesson.completion_reason === null
+    ) {
+      return "Study lesson current card must match session completion";
     }
     return (session.status === "active") === (session.completed_at === null)
       ? undefined

@@ -3078,6 +3078,7 @@ export function makeControlPlaneMediaSubmissionRepository(
           if (current.lyrics !== null) {
             yield* materializeAcceptedLyricLineCatalog(tx, {
               actorUserId: current.actorId,
+              audioRevision: current.audio.audioRevision,
               communityId: current.communityId,
               lyrics: current.lyrics.text,
               lyricsRevision: current.lyrics.lyricsRevision,

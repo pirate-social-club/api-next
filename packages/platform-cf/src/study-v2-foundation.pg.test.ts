@@ -158,16 +158,17 @@ suite("Study v2 Postgres foundation", () => {
         },
       ]);
 
+      await admin.query("BEGIN");
       await admin.query(
         `INSERT INTO study_sessions_v2 (
            session_id, account_id, persona_id, community_id, post_id,
            audio_revision, lyrics_revision, learning_language, target_language,
            learner_band, study_profile_revision, source_set_revision,
            selection_policy_revision, qualification_policy_revision, timezone,
-           idempotency_key, request_hash
+           idempotency_key, request_hash, current_session_item_id, current_presented_at
          ) VALUES ('session-1', 'account-1', 'persona-1', 'community-1', 'post-1',
            1, 1, 'en', NULL, NULL, 1, 1, 'selection-v1', 'qualification-v1', 'UTC',
-           'session-command-1', $1)`,
+           'session-command-1', $1, 'session-item-1', clock_timestamp())`,
         ["d".repeat(64)],
       );
       await admin.query(
@@ -177,6 +178,12 @@ suite("Study v2 Postgres foundation", () => {
          ) VALUES ('session-item-1', 'session-1', 0, 'review-key-1',
            'exercise-v2', 'review-item-1', '{}'::jsonb, 3, 'account-1')`,
       );
+      await admin.query(
+        `INSERT INTO study_lesson_item_state_v2 (
+           session_item_id, session_id, original_ordinal
+         ) VALUES ('session-item-1', 'session-1', 0)`,
+      );
+      await admin.query("COMMIT");
       await expect(
         admin.query(
           `INSERT INTO study_session_items_v2 (

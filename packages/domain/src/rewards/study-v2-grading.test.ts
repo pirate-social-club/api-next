@@ -3,6 +3,7 @@ import {
   gradeAcceptedTextV2,
   gradeEnglishTranscriptV2,
   gradeExactChoiceV2,
+  gradeTranscriptV2,
 } from "./study-v2-grading.ts";
 
 describe("Study v2 graders", () => {
@@ -22,14 +23,28 @@ describe("Study v2 graders", () => {
       heardTranscript: "hold to bright night",
       matched: [
         { token: "hold", position: 0 },
-        { token: "to", position: 2 },
-        { token: "night", position: 4 },
+        { token: "night", position: 3 },
       ],
-      missing: [{ token: "on", position: 1 }],
+      missing: [],
       extra: [],
-      substituted: [{ expected: { token: "the", position: 3 }, heard: "bright" }],
+      substituted: [
+        { expected: { token: "on", position: 1 }, heard: "to" },
+        { expected: { token: "to", position: 2 }, heard: "bright" },
+      ],
       policyRevision: "script_aware_token_diff_v1",
     });
+  });
+
+  test("ports English contraction, article, diacritic, and plural handling", () => {
+    expect(gradeEnglishTranscriptV2("The cafés won't stay", "cafe will not stays").correct).toBe(
+      true,
+    );
+  });
+
+  test("does not accept a substitution as a correct transcript", () => {
+    const grade = gradeTranscriptV2("hold on", "hold up", "en");
+    expect(grade.correct).toBe(false);
+    expect(grade.substituted).toHaveLength(1);
   });
 
   test("does not claim pronunciation quality from matching transcript text", () => {

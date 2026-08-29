@@ -66,6 +66,19 @@ const session: StudySessionV2 = {
     required_correct: 3,
     score_bps: null,
   },
+  lesson: {
+    current: {
+      session_item_id: "item-0",
+      presentation_number: 1,
+      is_reappearance: false,
+      presented_at: "2026-08-29T10:00:00.000Z",
+    },
+    resolved_card_count: 0,
+    total_card_count: 4,
+    presentation_count: 0,
+    presentation_cap: 12,
+    completion_reason: null,
+  },
   created_at: "2026-08-29T00:00:00.000Z",
   completed_at: null,
 };

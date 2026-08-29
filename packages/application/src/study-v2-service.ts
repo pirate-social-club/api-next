@@ -127,6 +127,7 @@ export interface StudyV2Store {
   readonly loadSpokenAnswerContext: (input: {
     readonly accountId: string;
     readonly communityId: string;
+    readonly idempotencyKey: string;
     readonly sessionId: string;
     readonly sessionItemId: string;
   }) => Effect.Effect<StudySpokenAnswerContext, StudyV2Failure>;

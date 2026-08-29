@@ -9,7 +9,10 @@ import { makeRandomIdentityRegistrationCandidateSource } from "@pirate/applicati
 import { PERSONA_WALLET_SETUP_SESSION_SCOPE } from "@pirate/application/use-cases/identity-registration-handler";
 import { getMyProfile } from "@pirate/application/use-cases/profile";
 import { makePublicProfileHandler } from "@pirate/application/use-cases/public-profile";
-import type { StudyItemSource } from "@pirate/application/use-cases/rewards/activity-qualification";
+import {
+  type StudyItemSource,
+  StudyItemSourceError,
+} from "@pirate/application/use-cases/rewards/activity-qualification";
 import type {
   StudyAudioArchive,
   StudyBatchTranscriber,
@@ -25,7 +28,6 @@ import {
 } from "@pirate/application/use-cases/session-exchange";
 import type { VerificationIntentResolver } from "@pirate/application/verification";
 import { AuthError } from "@pirate/contracts";
-import { makeControlPlaneAcceptedLyricsStudyItemSource } from "@pirate/platform-cf/accepted-lyrics-study-item-source";
 import { makeControlPlaneActivityQualificationStore } from "@pirate/platform-cf/activity-qualification-repository";
 import { makeControlPlaneAgeAccessStore } from "@pirate/platform-cf/age-access-repository";
 import { makeControlPlaneCommunityCreationIntentResolver } from "@pirate/platform-cf/community-creation-intent-resolver";
@@ -848,8 +850,10 @@ export async function createProductionHttpWorker(
     clock: { now: Effect.sync(() => Date.now()) },
     ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
     store: makeControlPlaneActivityQualificationStore(controlPlane),
-    studyItemSource:
-      dependencies.study_item_source ?? makeControlPlaneAcceptedLyricsStudyItemSource(controlPlane),
+    studyItemSource: dependencies.study_item_source ?? {
+      getForAcceptedSongRevision: () =>
+        Effect.fail(new StudyItemSourceError({ reason: "unavailable" })),
+    },
   });
   const studyV2Handlers = makeStudyV2Handlers({
     clock: { now: Effect.sync(() => Date.now()) },
