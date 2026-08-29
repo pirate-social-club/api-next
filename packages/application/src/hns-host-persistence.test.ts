@@ -4,6 +4,7 @@ import {
   HNS_DNS_ZONE_ACTIVATION_DOCUMENT_VERSION,
   prepareHnsDnsZoneActivationDocumentV1,
   requireHnsAuthorityEmitObservationV1,
+  requireReviewedHnsAuthorityCandidateV1,
 } from "./hns-host-persistence.ts";
 
 describe("HNS authority successor generation preparation", () => {
@@ -132,4 +133,45 @@ test("refuses authority disagreement and DNSKEY-to-chain DS mismatch", () => {
       chain_ds: [[39280, 13, 2, "d".repeat(64)]],
     }),
   ).toThrow("dnskey_ds_mismatch");
+});
+
+const emittedSnapshot = {
+  dns_current_generation: 5,
+  app_host_current_generation: 9,
+  successor_dns_latest_health_generation: 0,
+} as const;
+
+test("refuses pointer drift independently of candidate byte identity", () => {
+  const bytes = new TextEncoder().encode("reviewed-6-10-1");
+  expect(() =>
+    requireReviewedHnsAuthorityCandidateV1({
+      emitted_snapshot: emittedSnapshot,
+      current_snapshot: { ...emittedSnapshot, dns_current_generation: 6 },
+      reviewed_candidate_bytes: bytes,
+      recomputed_candidate_bytes: bytes,
+    }),
+  ).toThrow("generation_fence_changed");
+});
+
+test("refuses altered reviewed bytes while generation pointers remain unchanged", () => {
+  expect(() =>
+    requireReviewedHnsAuthorityCandidateV1({
+      emitted_snapshot: emittedSnapshot,
+      current_snapshot: emittedSnapshot,
+      reviewed_candidate_bytes: new TextEncoder().encode("reviewed-6-10-1"),
+      recomputed_candidate_bytes: new TextEncoder().encode("changed-6-10-1"),
+    }),
+  ).toThrow("candidate_bytes_mismatch");
+});
+
+test("admits only unchanged pointers and byte-identical recomputation", () => {
+  const bytes = new TextEncoder().encode("reviewed-6-10-1");
+  expect(() =>
+    requireReviewedHnsAuthorityCandidateV1({
+      emitted_snapshot: emittedSnapshot,
+      current_snapshot: emittedSnapshot,
+      reviewed_candidate_bytes: bytes,
+      recomputed_candidate_bytes: new Uint8Array(bytes),
+    }),
+  ).not.toThrow();
 });

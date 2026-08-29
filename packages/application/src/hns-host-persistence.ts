@@ -40,6 +40,44 @@ export class HnsAuthorityEmitRefusal extends Error {
   }
 }
 
+export class HnsAuthorityCandidateCommitRefusal extends Error {
+  readonly name = "HnsAuthorityCandidateCommitRefusal";
+  constructor(readonly reason: "generation_fence_changed" | "candidate_bytes_mismatch") {
+    super(`HNS authority candidate commit refused: ${reason}`);
+  }
+}
+
+function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
+  return left.byteLength === right.byteLength && left.every((byte, index) => byte === right[index]);
+}
+
+/**
+ * Final reversible gate before the fenced append-only transaction. The caller
+ * must supply a freshly read snapshot and freshly recomputed candidate bytes.
+ */
+export function requireReviewedHnsAuthorityCandidateV1(
+  input: Readonly<{
+    emitted_snapshot: HnsAuthoritySuccessorGenerationSnapshotV1;
+    current_snapshot: HnsAuthoritySuccessorGenerationSnapshotV1;
+    reviewed_candidate_bytes: Uint8Array;
+    recomputed_candidate_bytes: Uint8Array;
+  }>,
+): void {
+  const emitted = input.emitted_snapshot;
+  const current = input.current_snapshot;
+  if (
+    emitted.dns_current_generation !== current.dns_current_generation ||
+    emitted.app_host_current_generation !== current.app_host_current_generation ||
+    emitted.successor_dns_latest_health_generation !==
+      current.successor_dns_latest_health_generation
+  ) {
+    throw new HnsAuthorityCandidateCommitRefusal("generation_fence_changed");
+  }
+  if (!equalBytes(input.reviewed_candidate_bytes, input.recomputed_candidate_bytes)) {
+    throw new HnsAuthorityCandidateCommitRefusal("candidate_bytes_mismatch");
+  }
+}
+
 function sameDs(
   left: ReadonlyArray<HnsAuthorityEmitDsV1>,
   right: ReadonlyArray<HnsAuthorityEmitDsV1>,
