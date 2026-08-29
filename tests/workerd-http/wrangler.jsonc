@@ -2,6 +2,13 @@
   "name": "pirate-http-worker-test",
   "main": "./entry.ts",
   "compatibility_date": "2026-08-01",
+  "hyperdrive": [
+    {
+      "binding": "CONTROL_PLANE",
+      "id": "00000000-0000-0000-0000-000000000000",
+      "localConnectionString": "postgres://postgres:postgres@127.0.0.1:1/postgres"
+    }
+  ],
   "vars": {
     "CORS_ORIGIN": "https://solid.test",
     "REGISTRATION_IP_LIMIT": "5",

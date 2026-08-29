@@ -2,6 +2,7 @@
 
 import { runInDurableObject, env as testEnv } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
+import type { KaraokeSessionSummary } from "../../packages/application/src/karaoke-runtime/scoring.ts";
 import type {
   KaraokeRecordingResult,
   KaraokeSessionAuthority,
@@ -16,6 +17,33 @@ const env = testEnv as unknown as {
 type ArchiveHarness = {
   archiveFrame(chunkId: number, pcm: ArrayBuffer, songEndMs: number): Promise<void>;
   finishArchive(): Promise<KaraokeRecordingResult>;
+};
+
+const abandonedSummary: KaraokeSessionSummary = {
+  confidenceMean: null,
+  finalScore: 0,
+  lineCount: 1,
+  lineDiagnostics: [],
+  lowConfidenceLineCount: 0,
+  lyricsScore: 0,
+  missedWords: [],
+  noRecognitionLineCount: 1,
+  phoneticUnavailableLineCount: 1,
+  scoredLineCount: 0,
+  strongestLines: [],
+  timingCalibration: {
+    matchedWordCount: 0,
+    measuredLineCount: 0,
+    offsetMs: 0,
+    rawOffsetMs: 0,
+    reason: "insufficient_evidence",
+    residualSpreadMs: 0,
+    state: "uncalibrated",
+  },
+  timingScore: null,
+  timingTrend: "on_time",
+  uncertainLineCount: 1,
+  weakestLines: [],
 };
 
 const authority = (sessionId: string): KaraokeSessionAuthority => ({
@@ -127,5 +155,23 @@ describe("Karaoke attempt Durable Object", () => {
     expect(
       await env.LEARNER_AUDIO.get(`karaoke/account-workerd/attempt-${sessionId}.pcm`),
     ).toBeNull();
+  });
+
+  it("keeps both outbox legs pending and rearms the alarm when Postgres is unavailable", async () => {
+    const sessionId = `karaoke-alarm-${crypto.randomUUID()}`;
+    const stub = env.KARAOKE_ATTEMPT.getByName(sessionId);
+    await stub.initialize(authority(sessionId));
+
+    await runInDurableObject(stub, async (instance, state) => {
+      await instance.enqueueFinalization("abandoned", abandonedSummary);
+      await instance.alarm();
+      const row = state.storage.sql
+        .exec<{ recording_state: string; score_state: string }>(
+          "SELECT recording_state,score_state FROM karaoke_outbox WHERE id=1",
+        )
+        .one();
+      expect(row).toEqual({ recording_state: "pending", score_state: "pending" });
+      expect(await state.storage.getAlarm()).toBeGreaterThan(Date.now());
+    });
   });
 });
