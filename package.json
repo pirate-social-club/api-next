@@ -9,7 +9,8 @@
     "apps/*"
   ],
   "scripts": {
-    "check": "bun run check:effect && bun run check:effect-diagnostics && biome check . && tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.workers.json && bun run check:binding-contract && bun run check:community-creator-activation && bun run lint:deps && bun run lint:http-boundary && bun run check:migrations:worktree && bun run check:fresh && bun run verify:api-client",
+    "check": "bun run check:knip && bun run check:effect && bun run check:effect-diagnostics && biome check . && tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.workers.json && bun run check:binding-contract && bun run check:community-creator-activation && bun run lint:deps && bun run lint:http-boundary && bun run check:migrations:worktree && bun run check:fresh && bun run verify:api-client",
+    "check:knip": "bun test scripts/knip-ratchet.test.mjs && node scripts/knip-ratchet.mjs",
     "check:binding-contract": "tsc --noEmit -p tsconfig.binding-contract.json",
     "check:community-creator-activation": "bun scripts/community-creator-activation-invariant.ts",
     "audit:secrets": "bun scripts/secret-drift-audit.ts",
