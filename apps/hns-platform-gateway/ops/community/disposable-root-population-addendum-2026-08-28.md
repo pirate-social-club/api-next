@@ -263,3 +263,49 @@ fee and confirmation threshold, signed-transaction digest, and rollback UPDATE
 bytes. Those values depend on an accepted fresh gateway/DNS host and custody
 ceremony. No transaction can be assembled, signed, or broadcast before they
 exist and receive separate authorization.
+
+## Owner-supplied Access application inventory
+
+On 2026-08-28 the workspace owner supplied the rendered Cloudflare Zero Trust
+Applications list. It contains exactly two self-hosted applications:
+
+```text
+hns-community-api     hns-community-api.pirate.sc     policy solid-only
+hns-community-ingress hns-community-ingress.pirate.sc policy gateway-only
+```
+
+These are the production protected origins and are not stage-one targets. The
+inventory showed no application for either proposed staging hostname,
+`hns-community-api-staging.pirate.sc` or
+`hns-community-ingress-staging.pirate.sc`. This closes the application-name
+collision question only for the rendered list; it does not establish the team
+domain, application AUDs, policy rule bytes, service-token inventory, or
+custom-domain availability.
+
+Stage one therefore requires two new staging-only self-hosted Access
+applications and must leave both existing production applications and policies
+unchanged. No application, policy, token, DNS record, custom domain, or secret
+was created or changed by this inventory.
+
+On 2026-08-29 the workspace owner supplied the team domain
+`piratesocialclub.cloudflareaccess.com` and the rendered Service Tokens list.
+It contains exactly three enabled production tokens:
+
+```text
+hns-community-gateway-production          displayed expiry 2027-08-27 09:02 AM
+hns-community-solid-api-production        displayed expiry 2027-08-27 09:20 AM
+hns-community-solid-authority-production  displayed expiry 2027-08-27 09:21 AM
+```
+
+No staging token appears in the rendered list. The production tokens remain
+out of scope and may not be reused, edited, rotated, disabled, or disclosed by
+stage one. The list did not expose a client id or client secret.
+
+Credential generation remains stopped pending a consumer-scoped Infisical
+contract amendment. The gateway token belongs under a gateway-owned staging
+path, and the two Solid tokens belong under a Solid-owned staging path.
+api-next receives neither client secret; it validates the generated Access
+audience as public configuration. Infisical environment selection carries the
+`staging` distinction, so environment suffixes belong on Cloudflare resource
+names but not on Infisical secret keys. No password manager is the canonical
+runtime-secret store.
