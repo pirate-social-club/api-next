@@ -61,6 +61,7 @@ type ArchiveState = Readonly<{
   parts: readonly R2UploadedPart[];
   byteSize: number;
   durationMs: number;
+  result: Extract<KaraokeRecordingResult, { state: "stored" }> | null;
   state: "pending" | "stored" | "failed";
 }>;
 
@@ -127,6 +128,16 @@ const zeroSummary = (
   lineDiagnostics: [],
 });
 
+const transcriptFreeSummary = (
+  summary: NonNullable<KaraokeSessionState["summary"]>,
+): NonNullable<KaraokeSessionState["summary"]> => ({
+  ...summary,
+  strongestLines: [],
+  weakestLines: [],
+  missedWords: [],
+  lineDiagnostics: [],
+});
+
 class RuntimeEffects implements KaraokeEffectRunner {
   constructor(private readonly owner: KaraokeAttemptDO) {}
 
@@ -186,7 +197,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
       this.sql.exec(`CREATE TABLE IF NOT EXISTS karaoke_archive (
         id INTEGER PRIMARY KEY CHECK (id=1), upload_id TEXT, object_key TEXT NOT NULL,
         next_part INTEGER NOT NULL, parts_json TEXT NOT NULL, byte_size INTEGER NOT NULL,
-        duration_ms INTEGER NOT NULL, state TEXT NOT NULL
+        duration_ms INTEGER NOT NULL, state TEXT NOT NULL, result_json TEXT
       )`);
       this.sql.exec(`CREATE TABLE IF NOT EXISTS karaoke_outbox (
         id INTEGER PRIMARY KEY CHECK (id=1), payload_json TEXT NOT NULL,
@@ -418,7 +429,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
     const payload: Outbox = {
       completedAt: new Date().toISOString(),
       completionReason,
-      summary,
+      summary: transcriptFreeSummary(summary),
       diagnostics: buildKaraokeScoringDiagnostics(authority, summary, scores),
       qualificationId: `qualification_${crypto.randomUUID()}`,
     };
@@ -427,6 +438,9 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
         (id,payload_json,score_state,recording_state) VALUES (1,?,'pending','pending')`,
       JSON.stringify(payload),
     );
+    this.sql.exec("DELETE FROM karaoke_token");
+    this.sql.exec("UPDATE karaoke_session SET snapshot_json='{}',terminal=1 WHERE id=1");
+    this.host = null;
     await this.ctx.storage.setAlarm(Date.now());
   }
 
@@ -482,6 +496,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
       parts: sqlJson(row.parts_json),
       byteSize: Number(row.byte_size),
       durationMs: Number(row.duration_ms),
+      result: row.result_json === null ? null : sqlJson(row.result_json),
       state: String(row.state) as ArchiveState["state"],
     };
   }
@@ -561,7 +576,9 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
         }
         return { state: "failed", failureKind: "multipart_failed" };
       }
-      if (previous.state === "stored") return await this.storedArchiveResult(bucket, previous);
+      if (previous.state === "stored" && previous.result !== null) return previous.result;
+      if (previous.state === "stored")
+        return await this.persistStoredArchiveResult(bucket, previous);
       await this.uploadPending(true);
       const archive = this.archive();
       if (archive.uploadId === null || archive.parts.length === 0) {
@@ -570,10 +587,18 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
       await bucket
         .resumeMultipartUpload(archive.objectKey, archive.uploadId)
         .complete([...archive.parts]);
-      this.sql.exec("UPDATE karaoke_archive SET state='stored' WHERE id=1");
-      return await this.storedArchiveResult(bucket, archive);
+      return await this.persistStoredArchiveResult(bucket, archive);
     } catch {
       const archive = this.archive();
+      try {
+        const recovered = await this.storedArchiveResult(bucket, archive);
+        if (recovered.state === "stored") {
+          this.storeArchiveResult(recovered);
+          return recovered;
+        }
+      } catch {
+        // If R2 cannot confirm the object, the open multipart upload is aborted below.
+      }
       if (archive.uploadId !== null) {
         try {
           await bucket.resumeMultipartUpload(archive.objectKey, archive.uploadId).abort();
@@ -606,6 +631,22 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
       byteSize: stored.size,
       durationMs: Math.max(1, archive.durationMs),
     };
+  }
+
+  private storeArchiveResult(result: Extract<KaraokeRecordingResult, { state: "stored" }>): void {
+    this.sql.exec(
+      "UPDATE karaoke_archive SET state='stored',result_json=? WHERE id=1",
+      JSON.stringify(result),
+    );
+  }
+
+  private async persistStoredArchiveResult(
+    bucket: R2Bucket,
+    archive: ArchiveState,
+  ): Promise<KaraokeRecordingResult> {
+    const result = await this.storedArchiveResult(bucket, archive);
+    if (result.state === "stored") this.storeArchiveResult(result);
+    return result;
   }
 
   private transportFacts() {
@@ -682,9 +723,6 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
     );
     if (current?.score_state === "stored" && current.recording_state === "stored") {
       this.sql.exec("DELETE FROM karaoke_audio_chunk");
-      this.sql.exec("DELETE FROM karaoke_token");
-      this.sql.exec("UPDATE karaoke_session SET snapshot_json='{}',terminal=1 WHERE id=1");
-      this.host = null;
       return;
     }
     if (retry) await this.ctx.storage.setAlarm(Date.now() + 30_000);

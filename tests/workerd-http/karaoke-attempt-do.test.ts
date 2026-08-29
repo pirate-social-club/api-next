@@ -134,6 +134,12 @@ describe("Karaoke attempt Durable Object", () => {
     });
     const stored = await env.LEARNER_AUDIO.get(`karaoke/account-workerd/attempt-${sessionId}.pcm`);
     expect(stored?.size).toBe(chunk.byteLength * 20 + tail.byteLength);
+    await env.LEARNER_AUDIO.delete(`karaoke/account-workerd/attempt-${sessionId}.pcm`);
+    const cached = await runInDurableObject(
+      stub,
+      async (instance) => await (instance as unknown as ArchiveHarness).finishArchive(),
+    );
+    expect(cached).toEqual(result);
   });
 
   it("aborts an open multipart upload after archival fails", async () => {
@@ -172,6 +178,16 @@ describe("Karaoke attempt Durable Object", () => {
         .one();
       expect(row).toEqual({ recording_state: "pending", score_state: "pending" });
       expect(await state.storage.getAlarm()).toBeGreaterThan(Date.now());
+      const terminal = state.storage.sql
+        .exec<{ payload_json: string; snapshot_json: string; terminal: number }>(
+          `SELECT outbox.payload_json,session.snapshot_json,session.terminal
+             FROM karaoke_outbox AS outbox CROSS JOIN karaoke_session AS session
+            WHERE outbox.id=1 AND session.id=1`,
+        )
+        .one();
+      expect(terminal.snapshot_json).toBe("{}");
+      expect(terminal.terminal).toBe(1);
+      expect(terminal.payload_json).not.toContain("hold on");
     });
   });
 });
