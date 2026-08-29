@@ -69,6 +69,11 @@ const iso = (value: unknown): string => {
   if (!Number.isFinite(parsed.getTime())) throw new Error("invalid instant");
   return parsed.toISOString();
 };
+const date = (value: unknown): string => {
+  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/u.test(value)) return value;
+  if (value instanceof Date) return value.toISOString().slice(0, 10);
+  throw new Error("invalid date");
+};
 const json = (value: unknown): unknown =>
   typeof value === "string" ? (JSON.parse(value) as unknown) : value;
 const decode = <S extends Schema.ConstraintDecoder<unknown>>(
@@ -1164,7 +1169,7 @@ export const makeControlPlaneStudyV2Repository = () => ({
                       Math.floor((10_000 * firstPassCorrect) / exerciseCount),
                       text(terminal, "qualification_policy_revision"),
                       input.acceptedAt,
-                      text(terminal, "streak_day"),
+                      date(terminal.streak_day),
                       JSON.stringify({
                         kind: "study_session_first_pass_v2",
                         qualifying_exercise_count: exerciseCount,
@@ -1182,7 +1187,7 @@ export const makeControlPlaneStudyV2Repository = () => ({
                     activity: "study",
                     qualificationId: input.qualificationId,
                     qualifiedAt: input.acceptedAt,
-                    streakDay: text(terminal, "streak_day"),
+                    streakDay: date(terminal.streak_day),
                     timezone: text(terminal, "timezone"),
                   }).pipe(Effect.mapError(() => failed("constraint")));
                 }
@@ -1287,10 +1292,18 @@ export const makeControlPlaneStudyV2Repository = () => ({
             }
             const selected = yield* transaction.execute<Row>({
               label: "study-v2.answer.item",
-              text: `SELECT i.item_snapshot, i.maximum_attempts, e.private_grader
+              text: `SELECT i.item_snapshot, i.maximum_attempts, i.review_item_id,
+                            e.private_grader, e.content_revision,
+                            s.current_session_item_id, s.current_presented_at,
+                            s.presentation_count AS session_presentation_count,
+                            state.presentation_count AS item_presentation_count,
+                            review.difficulty, review.lapses, review.repetitions, review.stability
                        FROM study_session_items_v2 i
                        JOIN study_sessions_v2 s ON s.session_id=i.session_id AND s.account_id=i.account_id
                        JOIN study_exercise_versions e ON e.exercise_version_id=i.exercise_version_id
+                       JOIN study_lesson_item_state_v2 state
+                         ON state.session_item_id=i.session_item_id
+                       JOIN study_review_items review ON review.review_item_id=i.review_item_id
                       WHERE i.session_item_id=$1 AND i.session_id=$2 AND i.account_id=$3
                         AND s.community_id=$4 AND s.status='active' FOR UPDATE OF i, s`,
               values: [input.sessionItemId, input.sessionId, input.accountId, input.communityId],
@@ -1303,13 +1316,10 @@ export const makeControlPlaneStudyV2Repository = () => ({
             if (item.exercise_type !== "translation_choice") {
               return yield* rejected("submission-kind-mismatch");
             }
-            const attempts = yield* transaction.execute<Row>({
-              label: "study-v2.answer.count",
-              text: "SELECT count(*)::bigint AS count FROM study_attempts_v2 WHERE session_item_id=$1",
-              values: [input.sessionItemId],
-              readonly: false,
-            });
-            if (input.attemptNumber !== integer(attempts.rows[0] as Row, "count") + 1) {
+            if (text(row, "current_session_item_id") !== input.sessionItemId) {
+              return yield* rejected("attempt-conflict");
+            }
+            if (input.attemptNumber !== integer(row, "item_presentation_count") + 1) {
               return yield* rejected("attempt-conflict");
             }
             const correct = gradeExactChoiceV2(
@@ -1333,8 +1343,13 @@ export const makeControlPlaneStudyV2Repository = () => ({
                 attempt_id, session_item_id, attempt_number, submission_kind, submission_evidence,
                 outcome, first_pass, attempt_state, feedback_kind, feedback_evidence,
                 grader_policy_revision, feedback_policy_revision, accepted_at,
-                idempotency_key, request_hash
-              ) VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10::jsonb,$11,$12,$13::timestamptz,$14,$15)`,
+                idempotency_key, request_hash, study_unit_id, exercise_kind,
+                learning_language, target_language, learner_band, source_line_revision,
+                language_profile_revision, localization_revision, grading_revision,
+                review_schedule_version, presented_at, answered_at
+              ) VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10::jsonb,$11,$12,
+                $13::timestamptz,$14,$15,$16,'translation_choice',$17,$18,$19,$20,$21,$22,
+                $23,'study_review_schedule_v1',$24::timestamptz,$13::timestamptz)`,
               values: [
                 input.attemptId,
                 input.sessionItemId,
@@ -1351,33 +1366,131 @@ export const makeControlPlaneStudyV2Repository = () => ({
                 input.acceptedAt,
                 input.idempotencyKey,
                 input.requestHash,
+                item.line.study_unit_id,
+                item.languages.learning_language,
+                item.languages.target_language,
+                item.learner_band,
+                item.line.line_version,
+                item.language_profile_revision,
+                integer(row, "content_revision"),
+                item.grader_policy_revision,
+                iso(row.current_presented_at),
+              ],
+              readonly: false,
+            });
+            const queueOrdinal = integer(row, "session_presentation_count");
+            yield* transaction.execute({
+              label: "study-v2.answer.presentation",
+              text: `INSERT INTO study_presentations_v2 (
+                       presentation_id, session_id, session_item_id, presentation_number,
+                       queue_ordinal, presented_at, answered_at, outcome
+                     ) VALUES ($1,$2,$3,$4,$5,$6::timestamptz,$7::timestamptz,$8)`,
+              values: [
+                `study-presentation-${input.attemptId}`,
+                input.sessionId,
+                input.sessionItemId,
+                input.attemptNumber,
+                queueOrdinal,
+                iso(row.current_presented_at),
+                input.acceptedAt,
+                correct ? "correct" : "incorrect",
+              ],
+              readonly: false,
+            });
+            const review = scheduleStudyReviewV1(
+              {
+                difficulty: number(row, "difficulty"),
+                lapses: integer(row, "lapses"),
+                repetitions: integer(row, "repetitions"),
+                reviewedAt: Date.parse(input.acceptedAt),
+                stability: number(row, "stability"),
+              },
+              correct ? (input.attemptNumber === 1 ? "good" : "hard") : "again",
+            );
+            yield* transaction.execute({
+              label: "study-v2.answer.review",
+              text: `UPDATE study_review_items
+                        SET difficulty=$2, due_at=$3::timestamptz, lapses=$4,
+                            repetitions=$5, stability=$6, review_state=$7,
+                            last_reviewed_at=$8::timestamptz, updated_at=$8::timestamptz,
+                            scheduler_state=$9::jsonb
+                      WHERE review_item_id=$1`,
+              values: [
+                text(row, "review_item_id"),
+                review.difficulty,
+                new Date(review.dueAt).toISOString(),
+                review.lapses,
+                review.repetitions,
+                review.stability,
+                review.state,
+                input.acceptedAt,
+                JSON.stringify({
+                  difficulty: review.difficulty,
+                  due_at: new Date(review.dueAt).toISOString(),
+                  lapses: review.lapses,
+                  repetitions: review.repetitions,
+                  stability: review.stability,
+                  state: review.state,
+                }),
+              ],
+              readonly: false,
+            });
+            yield* transaction.execute({
+              label: "study-v2.answer.lesson-item",
+              text: `UPDATE study_lesson_item_state_v2
+                        SET presentation_count=$2, last_queue_ordinal=$3, mastered=$4,
+                            lesson_resolved=$5, updated_at=$6::timestamptz
+                      WHERE session_item_id=$1 AND presentation_count=$2-1`,
+              values: [
+                input.sessionItemId,
+                input.attemptNumber,
+                queueOrdinal,
+                correct,
+                spent,
+                input.acceptedAt,
               ],
               readonly: false,
             });
             const remaining = yield* transaction.execute<Row>({
-              label: "study-v2.completion.check",
-              text: `SELECT count(*)::bigint AS count FROM study_session_items_v2 i
-                      WHERE i.session_id=$1 AND NOT EXISTS (
-                        SELECT 1 FROM study_attempts_v2 a
-                         WHERE a.session_item_id=i.session_item_id AND a.attempt_state='spent')`,
+              label: "study-v2.answer.completion-check",
+              text: `SELECT count(*) FILTER (WHERE NOT lesson_resolved)::bigint AS count,
+                            count(*)::bigint AS total
+                       FROM study_lesson_item_state_v2 WHERE session_id=$1`,
               values: [input.sessionId],
               readonly: false,
             });
-            if (integer(remaining.rows[0] as Row, "count") === 0) {
+            const remainingRow = remaining.rows[0] as Row;
+            const nextPresentationCount = queueOrdinal + 1;
+            const presentationCap = Math.min(20, 3 * integer(remainingRow, "total"));
+            const complete =
+              integer(remainingRow, "count") === 0 || nextPresentationCount >= presentationCap;
+            if (complete) {
               const completed = yield* transaction.execute<Row>({
-                label: "study-v2.session.complete",
-                text: `UPDATE study_sessions_v2 SET status='completed', completed_at=$2::timestamptz
+                label: "study-v2.answer.session-complete",
+                text: `UPDATE study_sessions_v2 SET status='completed',
+                        completed_at=$2::timestamptz, presentation_count=$3,
+                        completion_reason=$4, current_session_item_id=NULL,
+                        current_presented_at=NULL
                         WHERE session_id=$1 AND status='active'
                     RETURNING persona_id, community_id, post_id, audio_revision,
                               qualification_policy_revision, timezone,
                               ($2::timestamptz AT TIME ZONE timezone)::date AS streak_day`,
-                values: [input.sessionId, input.acceptedAt],
+                values: [
+                  input.sessionId,
+                  input.acceptedAt,
+                  nextPresentationCount,
+                  integer(remainingRow, "count") === 0 ? "all_resolved" : "presentation_budget",
+                ],
                 readonly: false,
               });
               if (completed.rows.length === 1) {
                 const progress = yield* transaction.execute<Row>({
-                  label: "study-v2.qualification.progress",
+                  label: "study-v2.answer.qualification-progress",
                   text: `SELECT count(*)::bigint AS exercise_count,
+                                count(*) FILTER (WHERE EXISTS (
+                                  SELECT 1 FROM study_attempts_v2 presented
+                                   WHERE presented.session_item_id=item.session_item_id
+                                ))::bigint AS presented_count,
                                 count(*) FILTER (WHERE EXISTS (
                                   SELECT 1 FROM study_attempts_v2 attempt
                                    WHERE attempt.session_item_id=item.session_item_id
@@ -1389,12 +1502,13 @@ export const makeControlPlaneStudyV2Repository = () => ({
                 });
                 const progressRow = progress.rows[0] as Row;
                 const exerciseCount = integer(progressRow, "exercise_count");
+                const presentedCount = integer(progressRow, "presented_count");
                 const firstPassCorrect = integer(progressRow, "first_pass_correct");
                 const requiredCorrect = Math.max(1, Math.ceil((7 * exerciseCount) / 10));
-                if (firstPassCorrect >= requiredCorrect) {
+                if (presentedCount === exerciseCount && firstPassCorrect >= requiredCorrect) {
                   const terminal = completed.rows[0] as Row;
                   yield* transaction.execute({
-                    label: "study-v2.qualification.insert",
+                    label: "study-v2.answer.qualification-insert",
                     text: `INSERT INTO activity_qualifications (
                              qualification_id, account_id, persona_id, community_id, post_id,
                              audio_revision, activity_key, study_session_id, score_bps,
@@ -1413,7 +1527,7 @@ export const makeControlPlaneStudyV2Repository = () => ({
                       Math.floor((10_000 * firstPassCorrect) / exerciseCount),
                       text(terminal, "qualification_policy_revision"),
                       input.acceptedAt,
-                      text(terminal, "streak_day"),
+                      date(terminal.streak_day),
                       JSON.stringify({
                         kind: "study_session_first_pass_v2",
                         qualifying_exercise_count: exerciseCount,
@@ -1431,11 +1545,38 @@ export const makeControlPlaneStudyV2Repository = () => ({
                     activity: "study",
                     qualificationId: input.qualificationId,
                     qualifiedAt: input.acceptedAt,
-                    streakDay: text(terminal, "streak_day"),
+                    streakDay: date(terminal.streak_day),
                     timezone: text(terminal, "timezone"),
                   }).pipe(Effect.mapError(() => failed("constraint")));
                 }
               }
+            } else {
+              const next = yield* transaction.execute<Row>({
+                label: "study-v2.answer.next-item",
+                text: `SELECT session_item_id
+                         FROM study_lesson_item_state_v2
+                        WHERE session_id=$1 AND NOT lesson_resolved
+                     ORDER BY CASE WHEN presentation_count=0 THEN 0 ELSE 1 END,
+                              last_queue_ordinal NULLS FIRST, original_ordinal
+                        LIMIT 1`,
+                values: [input.sessionId],
+                readonly: false,
+              });
+              if (next.rows.length !== 1) return yield* Effect.fail(failed("invalid-row"));
+              yield* transaction.execute({
+                label: "study-v2.answer.session-advance",
+                text: `UPDATE study_sessions_v2
+                          SET current_session_item_id=$2, current_presented_at=$3::timestamptz,
+                              presentation_count=$4
+                        WHERE session_id=$1 AND status='active'`,
+                values: [
+                  input.sessionId,
+                  text(next.rows[0] as Row, "session_item_id"),
+                  input.acceptedAt,
+                  nextPresentationCount,
+                ],
+                readonly: false,
+              });
             }
             const session = yield* readSession(transaction, input);
             if (session === null) return yield* rejected("not-found");
