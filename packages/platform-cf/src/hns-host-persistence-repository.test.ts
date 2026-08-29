@@ -5,11 +5,15 @@ import {
   type ControlPlaneStatement,
   encodeHnsAppHostTransitionDocumentV1,
   encodeHnsDnsHealthDocumentV1,
+  encodeHnsDnsZonePersistenceDocumentV1,
+  HNS_DNS_ZONE_ACTIVATION_DOCUMENT_VERSION,
+  prepareHnsDnsZoneActivationDocumentV1,
 } from "@pirate/application";
 import { Effect, Layer } from "effect";
 import {
   hnsAppHostTransitionStatementFromReviewedDocument,
   hnsDnsHealthStatementFromReviewedDocument,
+  hnsDnsZoneFinalizationStatementFromReviewedDocument,
   makeControlPlaneHnsCommunityAppHostAuthoritySource,
   makeControlPlaneHnsFirstPartyHostPersistenceRepository,
 } from "./hns-host-persistence-repository.ts";
@@ -200,6 +204,56 @@ test("derives every app-host and health SQL parameter only from reviewed bytes",
         encodeHnsDnsHealthDocumentV1(changed as typeof health),
       ).values,
   );
+});
+
+test("derives every authority-controlled DNS finalization value from reviewed bytes", async () => {
+  const document = await prepareHnsDnsZoneActivationDocumentV1({
+    payload: {
+      version: HNS_DNS_ZONE_ACTIVATION_DOCUMENT_VERSION,
+      dns_zone_activation_id: "dns-zone",
+      canonical_root: "jazleeuw",
+      dns_authority: ["pirate_managed_dns_v1", "authority:jazleeuw", 6],
+      pirate_dns_authority_inventory: ["inventory:jazleeuw", "v6", "a".repeat(64)],
+      zone_revision: 6,
+      dnssec_keyset: ["keyset:jazleeuw", "key-tag-10875"],
+      gateway: ["gateway:jazleeuw", "b".repeat(64)],
+      stable_chain_delegation_snapshot: ["delegation:jazleeuw", "c".repeat(64)],
+    },
+    zone_bytes: new TextEncoder().encode("$ORIGIN jazleeuw.\n"),
+  });
+  const statement = await hnsDnsZoneFinalizationStatementFromReviewedDocument(
+    {
+      outcome: "reserved",
+      operation_id: "dns-operation",
+      dns_zone_activation_id: "dns-zone",
+      fence_token: 42,
+      lease_expires_at: "2026-08-29T18:00:00.000Z",
+      activation_generation: null,
+    },
+    encodeHnsDnsZonePersistenceDocumentV1(document),
+  );
+  expect(statement.values).toEqual([
+    "dns-operation",
+    42,
+    document.activation_document_bytes,
+    "dns-zone",
+    "jazleeuw",
+    "pirate_managed_dns_v1",
+    "authority:jazleeuw",
+    6,
+    "inventory:jazleeuw",
+    "v6",
+    "a".repeat(64),
+    6,
+    document.zone_bytes,
+    document.zone_bytes_digest,
+    "keyset:jazleeuw",
+    "key-tag-10875",
+    "gateway:jazleeuw",
+    "b".repeat(64),
+    "delegation:jazleeuw",
+    "c".repeat(64),
+  ]);
 });
 
 test("resolves only by normalized host and decodes current database authority", async () => {

@@ -3,10 +3,12 @@ import {
   type ControlPlaneError,
   decodeHnsAppHostTransitionDocumentV1,
   decodeHnsDnsHealthDocumentV1,
+  decodeHnsDnsZonePersistenceDocumentV1,
   type HnsAuthoritySuccessorGenerationSnapshotV1,
   type HnsCommunityAppHostActivationOutcomeV1,
   type HnsCommunityAppHostAuthorityStateV1,
   type HnsCommunityAppHostStatusChangeInputV1,
+  type HnsDnsZoneActivationDocumentV1,
   type HnsDnsZoneActivationOutcomeV1,
   type HnsDnsZoneActivationReservationV1,
   type HnsDnsZoneHealthInputV1,
@@ -70,6 +72,53 @@ function appHostTransitionStatement(input: HnsCommunityAppHostStatusChangeInputV
     ],
     readonly: false,
   } as const;
+}
+
+function dnsZoneFinalizationStatement(
+  reservation: HnsDnsZoneActivationReservationV1,
+  document: HnsDnsZoneActivationDocumentV1,
+) {
+  return {
+    label: "hns.hosts.dns-zone.finalize",
+    text: `SELECT * FROM finalize_hns_dns_zone_activation_v1(
+      $1, $2::bigint, $3::bytea, $4, $5, $6, $7, $8::bigint, $9, $10,
+      $11, $12::bigint, $13::bytea, $14, $15, $16, $17, $18, $19, $20
+    )`,
+    values: [
+      reservation.operation_id,
+      reservation.fence_token,
+      document.activation_document_bytes,
+      document.dns_zone_activation_id,
+      document.canonical_root,
+      document.dns_authority_kind,
+      document.dns_authority_reference,
+      document.dns_authority_generation,
+      document.pirate_dns_authority_inventory_reference,
+      document.pirate_dns_authority_inventory_version,
+      document.pirate_dns_authority_inventory_digest,
+      document.zone_revision,
+      document.zone_bytes,
+      document.zone_bytes_digest,
+      document.dnssec_keyset_reference,
+      document.dnssec_keyset_version,
+      document.gateway_deployment_reference,
+      document.gateway_certificate_spki_sha256,
+      document.stable_chain_delegation_snapshot_reference,
+      document.stable_chain_delegation_snapshot_digest,
+    ],
+    readonly: false,
+  } as const;
+}
+
+/** Derives every authority-controlled finalization value from reviewed canonical bytes. */
+export async function hnsDnsZoneFinalizationStatementFromReviewedDocument(
+  reservation: HnsDnsZoneActivationReservationV1,
+  bytes: Uint8Array,
+) {
+  return dnsZoneFinalizationStatement(
+    reservation,
+    await decodeHnsDnsZonePersistenceDocumentV1(bytes),
+  );
 }
 
 export function hnsAppHostTransitionStatementFromReviewedDocument(bytes: Uint8Array) {
@@ -378,39 +427,7 @@ export function makeControlPlaneHnsFirstPartyHostPersistenceRepository(
         decodeReservation,
       ),
     finalizeDnsZoneActivation: ({ reservation, document }) =>
-      execute(
-        {
-          label: "hns.hosts.dns-zone.finalize",
-          text: `SELECT * FROM finalize_hns_dns_zone_activation_v1(
-            $1, $2::bigint, $3::bytea, $4, $5, $6, $7, $8::bigint, $9, $10,
-            $11, $12::bigint, $13::bytea, $14, $15, $16, $17, $18, $19, $20
-          )`,
-          values: [
-            reservation.operation_id,
-            reservation.fence_token,
-            document.activation_document_bytes,
-            document.dns_zone_activation_id,
-            document.canonical_root,
-            document.dns_authority_kind,
-            document.dns_authority_reference,
-            document.dns_authority_generation,
-            document.pirate_dns_authority_inventory_reference,
-            document.pirate_dns_authority_inventory_version,
-            document.pirate_dns_authority_inventory_digest,
-            document.zone_revision,
-            document.zone_bytes,
-            document.zone_bytes_digest,
-            document.dnssec_keyset_reference,
-            document.dnssec_keyset_version,
-            document.gateway_deployment_reference,
-            document.gateway_certificate_spki_sha256,
-            document.stable_chain_delegation_snapshot_reference,
-            document.stable_chain_delegation_snapshot_digest,
-          ],
-          readonly: false,
-        },
-        decodeDnsOutcome,
-      ),
+      execute(dnsZoneFinalizationStatement(reservation, document), decodeDnsOutcome),
     changeDnsZoneStatus: (input) =>
       execute(
         {
