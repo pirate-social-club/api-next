@@ -220,7 +220,7 @@ describe("Infisical secret drift audit", () => {
     ]);
   });
 
-  test("allows the production Aeneid signer name without requiring it before ceremony", () => {
+  test("allows production DATA secret names without requiring them before ceremony", () => {
     const prodBase = emptySnapshot("prod");
     const requiredRuntimeNames = [
       "PIRATE_APP_JWT_PRIVATE_KEY",
@@ -248,6 +248,7 @@ describe("Infisical secret drift audit", () => {
         "/services/api-next": [
           ...requiredRuntimeNames,
           "DATA_REGISTRATION_PRODUCTION_AENEID_PRIVATE_KEY",
+          "FILEBASE_IPFS_TOKEN",
         ],
       },
     };

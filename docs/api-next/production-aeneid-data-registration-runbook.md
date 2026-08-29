@@ -85,9 +85,9 @@ all of the following from redacted evidence:
    recorded public address. The check exposes only the address and a pass/fail
    result.
 5. The balance snapshot is fresh and `sufficient`, with at least `0.2 IP`.
-6. The production secret name exists only at the approved Infisical path and
-   only the data-registration Worker receives it. The staging secret is absent
-   from the production Worker's bindings.
+6. The production signer and Filebase secret names exist only at the approved
+   Infisical path and only the data-registration Worker receives them. Their
+   staging counterparts are absent from the production Worker's bindings.
 7. Focused signer, composition, binding, and balance tests pass, followed by the
    repository check and complete test gates required by the owning task.
 8. The disabled deployment and maintenance observation tasks have recorded

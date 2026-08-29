@@ -178,7 +178,10 @@
         "DATA_REGISTRATION_PUBLIC_ORIGIN": "https://pirate.sc"
       },
       "secrets": {
-        "required": ["DATA_REGISTRATION_PRODUCTION_AENEID_PRIVATE_KEY"]
+        "required": [
+          "DATA_REGISTRATION_PRODUCTION_AENEID_PRIVATE_KEY",
+          "FILEBASE_IPFS_TOKEN"
+        ]
       }
     }
   }

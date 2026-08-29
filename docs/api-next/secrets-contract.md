@@ -425,6 +425,13 @@ to separately authorized ceremony and infrastructure tasks. Infisical is the
 delivery boundary, not the signer-security decision. Story mainnet and Lit
 integration remain outside this contract.
 
+`FILEBASE_IPFS_TOKEN` is also allowed in production at
+`/services/api-next` for the DATA-registration Worker. Production activation
+requires a production-scoped Filebase token as well as the signer key; neither
+secret may fall back to its staging value. Provisioning and synchronizing the
+exact Filebase token belongs to the production infrastructure ceremony, and
+its presence does not authorize provider traffic or DATA activation.
+
 `OPENROUTER_API_KEY` names the actual credential boundary. A reviewed model
 change within OpenRouter does not require a new secret. Replacing OpenRouter
 with another classifier provider requires a separately reviewed binding.

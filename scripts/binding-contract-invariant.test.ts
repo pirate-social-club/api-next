@@ -644,6 +644,15 @@ describe("source-to-Wrangler binding contract", () => {
     expect(resolved).toEqual([]);
   });
 
+  test("disabled production DATA predeclares its exact activation secret boundary", () => {
+    const production = declaredEnvironment(configs.data, "production");
+    expect(production.vars.DATA_REGISTRATION_ENABLED).toBe("false");
+    expect([...production.secrets].sort()).toEqual([
+      "DATA_REGISTRATION_PRODUCTION_AENEID_PRIVATE_KEY",
+      "FILEBASE_IPFS_TOKEN",
+    ]);
+  });
+
   test("API_NEXT_ENV is explicit and uses the canonical vocabulary", () => {
     const violations: string[] = [];
     for (const worker of ["http", "jobs"] as const) {
