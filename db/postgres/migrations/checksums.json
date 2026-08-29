@@ -81,6 +81,7 @@
     "0078_study_runtime_amendment.sql": "3af2be51ad26c344347a99c5bda3732b008160a0989ce16d30447f1c00893fb0",
     "0079_karaoke_readiness_policy_v2.sql": "0cfd96ba9106bb2ac46931b91bb0da7ca034e0d646b215a42cb987019b3e0953",
     "0080_study_lesson_engine.sql": "91030aebbbbccbabec6cf198dfff9ad7abbe9a81074ea5a43187103e215e7f52",
-    "0081_karaoke_realtime_runtime.sql": "59e41e7ee44ccbed70057bc1edd694a67ecfdde6726b46ca9b8254a4d4344f52"
+    "0081_karaoke_realtime_runtime.sql": "59e41e7ee44ccbed70057bc1edd694a67ecfdde6726b46ca9b8254a4d4344f52",
+    "0082_study_translation_exercises.sql": "f21cb37b7f83dccf085906a69104e915f0142ff0a29e944c87cd2d0b266d4f69"
   }
 }
