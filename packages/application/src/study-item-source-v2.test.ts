@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { Schema } from "effect";
-import { StudySourceItemV2, studySourcePromptV2 } from "./study-item-source-v2.ts";
+import {
+  StudySourceItemV2,
+  StudySourceSetV2,
+  studySourcePromptV2,
+} from "./study-item-source-v2.ts";
 
 const item = {
   source_item_key: "line-1-choice-A2-zh",
@@ -82,6 +86,26 @@ describe("Study source item v2", () => {
       Schema.decodeUnknownSync(StudySourceItemV2)({
         ...item,
         provenance: { ...item.provenance, kind: "deterministic" },
+      }),
+    ).toThrow();
+  });
+
+  test("rejects two versions of one review key in a source set", () => {
+    expect(() =>
+      Schema.decodeUnknownSync(StudySourceSetV2)({
+        version: "study_item_source_v2",
+        community_id: "community-1",
+        source_set_revision: 1,
+        learning_language: "en",
+        selection_policy_revision: "selection-v1",
+        items: [
+          item,
+          {
+            ...item,
+            source_item_key: "line-1-choice-A2-zh-v2",
+            exercise_version_id: "exercise-version-2",
+          },
+        ],
       }),
     ).toThrow();
   });

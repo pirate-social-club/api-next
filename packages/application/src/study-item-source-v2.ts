@@ -129,9 +129,12 @@ export const StudySourceSetV2 = Schema.Struct({
     Schema.makeFilter((items) => {
       const sourceKeys = new Set(items.map(({ source_item_key }) => source_item_key));
       const versions = new Set(items.map(({ exercise_version_id }) => exercise_version_id));
-      return sourceKeys.size === items.length && versions.size === items.length
+      const reviewKeys = new Set(items.map(({ exercise_review_key }) => exercise_review_key));
+      return sourceKeys.size === items.length &&
+        versions.size === items.length &&
+        reviewKeys.size === items.length
         ? undefined
-        : "Study source and exercise-version identities must be unique within a set";
+        : "Study source, exercise-version, and review identities must be unique within a set";
     }),
   ),
 });
