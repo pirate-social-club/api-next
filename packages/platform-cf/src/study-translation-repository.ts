@@ -172,6 +172,32 @@ const unitRows = (
     readonly: false,
   });
 
+const contextRows = (
+  db: ControlPlaneTransaction,
+  input: { communityId: string; postId: string; lyricsRevision: number },
+) =>
+  db.execute<Row>({
+    label: "study-translation.context-lines",
+    text: `SELECT membership.ordinal, membership.lyric_line_id, membership.line_version,
+                  unit.study_unit_id, version.canonical_text
+             FROM localization_lyrics_revision_lines membership
+             JOIN localization_lyric_line_versions version
+               ON version.community_id=membership.community_id
+              AND version.post_id=membership.post_id
+              AND version.lyric_line_id=membership.lyric_line_id
+              AND version.line_version=membership.line_version
+             JOIN localization_lyric_line_study_units unit
+               ON unit.community_id=membership.community_id
+              AND unit.post_id=membership.post_id
+              AND unit.lyric_line_id=membership.lyric_line_id
+              AND unit.line_version=membership.line_version
+            WHERE membership.community_id=$1 AND membership.post_id=$2
+              AND membership.lyrics_revision=$3
+            ORDER BY membership.ordinal`,
+    values: [input.communityId, input.postId, input.lyricsRevision],
+    readonly: false,
+  });
+
 const outcomeFor = (
   generationRunId: string,
   status: StudyTranslationGenerationOutcome["status"],
@@ -263,6 +289,14 @@ export const makeControlPlaneStudyTranslationRepository = () => ({
             if (units.rows.length === 0 || units.rows.length > 256) {
               return yield* failed("invalid-row");
             }
+            const context = yield* contextRows(transaction, {
+              communityId: input.communityId,
+              postId: input.postId,
+              lyricsRevision,
+            });
+            if (context.rows.length === 0 || context.rows.length > 1_024) {
+              return yield* failed("invalid-row");
+            }
             const request: StudyTranslationGenerationRequest = {
               generationRunId: input.generationRunId,
               communityId: input.communityId,
@@ -276,6 +310,13 @@ export const makeControlPlaneStudyTranslationRepository = () => ({
               promptRevision: STUDY_TRANSLATION_PROMPT_V1,
               qualityPolicyRevision: text(row, "quality_policy_revision"),
               rightsPolicyRevision: RIGHTS_POLICY_REVISION,
+              contextLines: context.rows.map((line) => ({
+                ordinal: integer(line, "ordinal"),
+                lyricLineId: text(line, "lyric_line_id"),
+                lineVersion: integer(line, "line_version"),
+                studyUnitId: text(line, "study_unit_id"),
+                sourceText: text(line, "canonical_text"),
+              })),
               units: units.rows.map((unit) => ({
                 studyUnitId: text(unit, "study_unit_id"),
                 lyricLineId: text(unit, "lyric_line_id"),

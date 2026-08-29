@@ -1,9 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import { STUDY_TRANSLATION_PROMPT_V1, validateStudyTranslationProposal } from "@pirate/application";
+import {
+  STUDY_LANGUAGE_PROFILE_PROMPT_V1,
+  STUDY_LANGUAGE_PROFILE_VALIDATOR_V1,
+  STUDY_TRANSLATION_PROMPT_V1,
+  validateStudyTranslationProposal,
+} from "@pirate/application";
 import { Effect } from "effect";
 import { Client } from "pg";
 import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import { makeControlPlaneStudyLanguageProfileRepository } from "./study-language-profile-repository.ts";
 import { makeControlPlaneStudyTranslationRepository } from "./study-translation-repository.ts";
 import { makeControlPlaneStudyV2Repository } from "./study-v2-repository.ts";
 
@@ -167,27 +173,6 @@ suite("Study translation generation", () => {
           );
         }
         await admin.query(
-          `INSERT INTO study_language_profiles (
-               community_id, post_id, lyrics_revision, language_profile_revision, source_hash,
-               provider_id, provider_model, prompt_revision, validator_revision, request_hash,
-               accepted_at
-             ) VALUES ('study-community','study-post',1,1,$1,'fake-language-profile',
-               'fake-model','study-language-profile-v1','study_language_profile_validator_v1',
-               $2,clock_timestamp())`,
-          [lyricsHash, "4".repeat(64)],
-        );
-        for (const index of lines.keys()) {
-          await admin.query(
-            `INSERT INTO study_language_profile_units (
-                 community_id, post_id, lyrics_revision, language_profile_revision,
-                 study_unit_id, detected_languages, dominant_language, mixed, vocable_only,
-                 confidence
-               ) VALUES ('study-community','study-post',1,1,$1,'["en"]'::jsonb,'en',
-                 FALSE,FALSE,0.99)`,
-            [`unit-${index + 1}`],
-          );
-        }
-        await admin.query(
           `INSERT INTO study_translation_quality_policies (
                target_language, quality_policy_revision, release_state, corpus_sample_count,
                source_binding_bps, meaning_preservation_bps, bilingual_rubric_bps,
@@ -206,6 +191,53 @@ suite("Study translation generation", () => {
       }
 
       const runtime = makeDirectPostgresControlPlaneLayer(scoped);
+      const profiles = makeControlPlaneStudyLanguageProfileRepository();
+      const profileResolution = await Effect.runPromise(
+        Effect.scoped(
+          profiles
+            .resolve({ communityId: "study-community", postId: "study-post" })
+            .pipe(Effect.provide(runtime)),
+        ),
+      );
+      if (profileResolution.state !== "generate") throw new Error("expected profile generation");
+      expect(profileResolution.request.units.map(({ sourceText }) => sourceText)).toEqual(lines);
+      expect(profileResolution.request.contextLines.map(({ sourceText }) => sourceText)).toEqual(
+        lines,
+      );
+      const profileOutcome = await Effect.runPromise(
+        Effect.scoped(
+          profiles
+            .accept({
+              request: profileResolution.request,
+              analysis: {
+                providerId: "fake-language-profile",
+                providerModel: "fake-model",
+                promptRevision: STUDY_LANGUAGE_PROFILE_PROMPT_V1,
+                validatorRevision: STUDY_LANGUAGE_PROFILE_VALIDATOR_V1,
+                units: profileResolution.request.units.map((unit) => ({
+                  studyUnitId: unit.studyUnitId,
+                  detectedLanguages: ["en"],
+                  dominantLanguage: "en",
+                  mixed: false,
+                  vocableOnly: false,
+                  confidence: 0.99,
+                })),
+              },
+              acceptedAt: "2026-08-29T11:59:00.000Z",
+            })
+            .pipe(Effect.provide(runtime)),
+        ),
+      );
+      expect(profileOutcome.languageProfileRevision).toBe(1);
+      const profileReplay = await Effect.runPromise(
+        Effect.scoped(
+          profiles
+            .resolve({ communityId: "study-community", postId: "study-post" })
+            .pipe(Effect.provide(runtime)),
+        ),
+      );
+      expect(profileReplay).toEqual({ state: "ready", outcome: profileOutcome });
+
       const repository = makeControlPlaneStudyTranslationRepository();
       const reservation = await Effect.runPromise(
         Effect.scoped(
@@ -225,6 +257,7 @@ suite("Study translation generation", () => {
       );
       if (reservation.state !== "leased") throw new Error("expected leased generation");
       expect(reservation.request.units.map(({ sourceText }) => sourceText)).toEqual(lines);
+      expect(reservation.request.contextLines.map(({ sourceText }) => sourceText)).toEqual(lines);
       const rawProposal = {
         generation_run_id: "translation-run-1",
         provider_id: "fake-study-translator",

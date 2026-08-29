@@ -25,6 +25,13 @@
       "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
     }
   ],
+  "workflows": [
+    {
+      "binding": "STUDY_GENERATION_WORKFLOW",
+      "name": "pirate-study-generation-development",
+      "class_name": "StudyGenerationWorkflow"
+    }
+  ],
   "durable_objects": {
     "bindings": [
       {
@@ -80,6 +87,8 @@
   ],
   "vars": {
     "API_NEXT_ENV": "development",
+    "STUDY_GENERATION_ENABLED": "false",
+    "STUDY_GENERATION_OPENROUTER_MODEL": "",
     "MEGAPOT_REWARDS_ENABLED": "false",
     "MEGAPOT_CHAIN_ID": "84532",
     "MEGAPOT_ATTESTATION_ID": "megapot-base-sepolia-v2",
@@ -180,6 +189,13 @@
           "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
         }
       ],
+      "workflows": [
+        {
+          "binding": "STUDY_GENERATION_WORKFLOW",
+          "name": "pirate-study-generation-staging",
+          "class_name": "StudyGenerationWorkflow"
+        }
+      ],
       "r2_buckets": [
         {
           "binding": "MEDIA_INGRESS",
@@ -196,6 +212,8 @@
       ],
       "vars": {
         "API_NEXT_ENV": "staging",
+        "STUDY_GENERATION_ENABLED": "false",
+        "STUDY_GENERATION_OPENROUTER_MODEL": "",
         "MEGAPOT_REWARDS_ENABLED": "true",
         "MEGAPOT_CHAIN_ID": "84532",
         "MEGAPOT_ATTESTATION_ID": "megapot-base-sepolia-v2",
@@ -332,6 +350,13 @@
           "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
         }
       ],
+      "workflows": [
+        {
+          "binding": "STUDY_GENERATION_WORKFLOW",
+          "name": "pirate-study-generation-production",
+          "class_name": "StudyGenerationWorkflow"
+        }
+      ],
       "r2_buckets": [
         {
           "binding": "LEARNER_AUDIO",
@@ -340,6 +365,8 @@
       ],
       "vars": {
         "API_NEXT_ENV": "production",
+        "STUDY_GENERATION_ENABLED": "false",
+        "STUDY_GENERATION_OPENROUTER_MODEL": "",
         "MEGAPOT_REWARDS_ENABLED": "false",
         "MEGAPOT_CHAIN_ID": "8453",
         "MEGAPOT_ATTESTATION_ID": "megapot-base-sepolia-v2",

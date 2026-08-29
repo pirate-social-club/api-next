@@ -56,6 +56,7 @@ import {
 import {
   GetStudyAvailabilityV2,
   GetStudySessionV2,
+  RequestStudyGenerationV2,
   StartStudySessionV2,
   SubmitStudyAnswerV2,
 } from "./study-v2.ts";
@@ -97,6 +98,7 @@ export const registry = {
   GetSongActivityLeaderboard,
   GetCommunityActivityLeaderboard,
   GetStudyAvailabilityV2,
+  RequestStudyGenerationV2,
   StartStudySessionV2,
   GetStudySessionV2,
   SubmitStudyAnswerV2,

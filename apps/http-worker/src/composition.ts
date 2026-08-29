@@ -19,6 +19,7 @@ import {
   type KaraokeFailure,
   makeKaraokeService,
 } from "@pirate/application/use-cases/rewards/karaoke";
+import type { StudyLanguageProfileResolution } from "@pirate/application/use-cases/rewards/study-generation";
 import type {
   StudyAudioArchive,
   StudyBatchTranscriber,
@@ -137,6 +138,11 @@ import {
   makeRs256SessionTokenVerifier,
 } from "@pirate/platform-cf/session-tokens";
 import { makeControlPlaneSongRewardOfferStore } from "@pirate/platform-cf/song-reward-offer-repository";
+import {
+  type CloudflareStudyGenerationWorkflowBinding,
+  makeCloudflareStudyGenerationWorkflowLauncher,
+} from "@pirate/platform-cf/study-generation-workflow-cloudflare";
+import { makeControlPlaneStudyLanguageProfileStore } from "@pirate/platform-cf/study-language-profile-repository";
 import type { StudyAudioBucket, StudyBatchFetch } from "@pirate/platform-cf/study-spoken-audio";
 import { makeControlPlaneStudyV2Store } from "@pirate/platform-cf/study-v2-repository";
 import { makeControlPlaneTextSubmissionStore } from "@pirate/platform-cf/text-submission-repository";
@@ -174,6 +180,8 @@ import { makePersonaHandlers } from "./persona-handlers.ts";
 import { makePlatformPirateHandleHandlers } from "./platform-pirate-handle-handlers.ts";
 import { makeProductHandlers } from "./product-handlers.ts";
 import { makeSongRewardOfferHandlers } from "./rewards-song-offer-handlers.ts";
+import { makeStudyGenerationHandlers } from "./study-generation-handlers.ts";
+import type { StudyGenerationWorkflowPayload } from "./study-generation-workflow.ts";
 import { makeProductionStudySpokenServices } from "./study-spoken-production-composition.ts";
 import { makeStudyV2Handlers } from "./study-v2-handlers.ts";
 import { createHttpWorker, type EndpointHandler, type Principal } from "./transport.ts";
@@ -181,6 +189,10 @@ import { makeVerificationHandlers } from "./verification-handlers.ts";
 
 export interface HttpWorkerBindings {
   readonly CONTROL_PLANE?: unknown;
+  readonly STUDY_GENERATION_ENABLED?: string;
+  readonly STUDY_GENERATION_OPENROUTER_MODEL?: string;
+  readonly OPENROUTER_API_KEY?: string;
+  readonly STUDY_GENERATION_WORKFLOW?: CloudflareStudyGenerationWorkflowBinding<StudyGenerationWorkflowPayload>;
   readonly HNS_OWNER_VERIFIER?: HnsOwnerServiceBinding;
   readonly REGISTRATION_IP_LIMITER?: RegistrationRateLimiterNamespaces["ip"];
   readonly REGISTRATION_APPLICATION_LIMITER?: RegistrationRateLimiterNamespaces["application"];
@@ -887,6 +899,30 @@ export async function createProductionHttpWorker(
     store: makeControlPlaneStudyV2Store(controlPlane),
     ...(studySpokenServices === undefined ? {} : { spoken: studySpokenServices }),
   });
+  const studyGenerationHandlers = (() => {
+    const apiKey = bindings.OPENROUTER_API_KEY;
+    const model = bindings.STUDY_GENERATION_OPENROUTER_MODEL;
+    const workflow = bindings.STUDY_GENERATION_WORKFLOW;
+    if (
+      bindings.STUDY_GENERATION_ENABLED !== "true" ||
+      apiKey === undefined ||
+      apiKey.length === 0 ||
+      apiKey !== apiKey.trim() ||
+      model === undefined ||
+      model.length === 0 ||
+      model !== model.trim() ||
+      workflow === undefined
+    ) {
+      return {};
+    }
+    const profiles = makeControlPlaneStudyLanguageProfileStore(controlPlane);
+    const launcher = makeCloudflareStudyGenerationWorkflowLauncher(workflow);
+    return makeStudyGenerationHandlers({
+      resolveProfile: (input) =>
+        Effect.runPromise(profiles.resolve(input)) as Promise<StudyLanguageProfileResolution>,
+      launch: launcher.create,
+    });
+  })();
   const learnerAudioHandlers =
     bindings.LEARNER_AUDIO === undefined
       ? {}
@@ -1074,6 +1110,7 @@ export async function createProductionHttpWorker(
       ...karaokeReadinessHandlers,
       ...karaokeHandlers,
       ...studyV2Handlers,
+      ...studyGenerationHandlers,
       ...learnerAudioHandlers,
       ...handleSalesHandlers,
       ...platformPirateHandleHandlers,
