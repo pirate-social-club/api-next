@@ -133,10 +133,7 @@ import {
   makeRs256SessionTokenVerifier,
 } from "@pirate/platform-cf/session-tokens";
 import { makeControlPlaneSongRewardOfferStore } from "@pirate/platform-cf/song-reward-offer-repository";
-import {
-  makeR2StudyAudioArchive,
-  type StudyAudioBucket,
-} from "@pirate/platform-cf/study-spoken-audio";
+import type { StudyAudioBucket, StudyBatchFetch } from "@pirate/platform-cf/study-spoken-audio";
 import { makeControlPlaneStudyV2Store } from "@pirate/platform-cf/study-v2-repository";
 import { makeControlPlaneTextSubmissionStore } from "@pirate/platform-cf/text-submission-repository";
 import {
@@ -172,6 +169,7 @@ import { makePersonaHandlers } from "./persona-handlers.ts";
 import { makePlatformPirateHandleHandlers } from "./platform-pirate-handle-handlers.ts";
 import { makeProductHandlers } from "./product-handlers.ts";
 import { makeSongRewardOfferHandlers } from "./rewards-song-offer-handlers.ts";
+import { makeProductionStudySpokenServices } from "./study-spoken-production-composition.ts";
 import { makeStudyV2Handlers } from "./study-v2-handlers.ts";
 import { createHttpWorker, type EndpointHandler, type Principal } from "./transport.ts";
 import { makeVerificationHandlers } from "./verification-handlers.ts";
@@ -273,8 +271,10 @@ export interface HttpWorkerCompositionDependencies {
   }>;
   /** Server-owned producer supplied by the Study content-generation composition. */
   readonly study_item_source?: StudyItemSource["Service"];
-  /** Explicit provider enablement is external to composition; tests and staged callers inject it. */
+  /** Test override; production enables the adapter only from exact secret authority. */
   readonly study_batch_transcriber?: StudyBatchTranscriber;
+  /** Provider-free request transport for composition tests. Production uses global fetch. */
+  readonly study_batch_fetch?: StudyBatchFetch;
   readonly study_audio_archive?: StudyAudioArchive;
   /** Test/review injection. Production constructs this only when media is explicitly enabled. */
   readonly media_services?: MediaSubmissionServices;
@@ -875,19 +875,12 @@ export async function createProductionHttpWorker(
         Effect.fail(new StudyItemSourceError({ reason: "unavailable" })),
     },
   });
+  const studySpokenServices = makeProductionStudySpokenServices(bindings, dependencies);
   const studyV2Handlers = makeStudyV2Handlers({
     clock: { now: Effect.sync(() => Date.now()) },
     ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
     store: makeControlPlaneStudyV2Store(controlPlane),
-    ...(dependencies.study_batch_transcriber === undefined
-      ? {}
-      : {
-          spoken: {
-            transcriber: dependencies.study_batch_transcriber,
-            archive:
-              dependencies.study_audio_archive ?? makeR2StudyAudioArchive(bindings.LEARNER_AUDIO),
-          },
-        }),
+    ...(studySpokenServices === undefined ? {} : { spoken: studySpokenServices }),
   });
   const karaokeReadinessHandlers = makeKaraokeReadinessHandlers(
     makeControlPlaneKaraokeReadinessStore(controlPlane),

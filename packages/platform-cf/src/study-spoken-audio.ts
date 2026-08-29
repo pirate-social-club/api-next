@@ -16,7 +16,7 @@ const MAX_RESPONSE_BYTES = 65_536;
 const MAX_TRANSCRIPT_LENGTH = 4_096;
 const TIMEOUT_MS = 20_000;
 
-type StudyBatchFetch = (input: string, init: RequestInit) => Promise<Response>;
+export type StudyBatchFetch = (input: string, init: RequestInit) => Promise<Response>;
 
 const failure = (reason: StudyBatchTranscriptionFailed["reason"]) =>
   new StudyBatchTranscriptionFailed({ reason });
