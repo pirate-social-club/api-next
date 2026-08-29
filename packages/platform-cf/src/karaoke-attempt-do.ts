@@ -192,7 +192,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
         digest TEXT PRIMARY KEY, expires_at INTEGER NOT NULL, used INTEGER NOT NULL DEFAULT 0
       )`);
       this.sql.exec(`CREATE TABLE IF NOT EXISTS karaoke_audio_chunk (
-        chunk_id INTEGER PRIMARY KEY, payload BLOB NOT NULL, byte_size INTEGER NOT NULL
+        frame_sequence INTEGER PRIMARY KEY, payload BLOB NOT NULL, byte_size INTEGER NOT NULL
       )`);
       this.sql.exec(`CREATE TABLE IF NOT EXISTS karaoke_archive (
         id INTEGER PRIMARY KEY CHECK (id=1), upload_id TEXT, object_key TEXT NOT NULL,
@@ -346,7 +346,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
     if (error === null) {
       try {
         await this.archiveFrame(
-          decoded.frame.chunkId,
+          decoded.frame.sequence,
           decoded.frame.pcm16,
           decoded.frame.songEndMs,
         );
@@ -501,12 +501,16 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
     };
   }
 
-  private async archiveFrame(chunkId: number, pcm: ArrayBuffer, songEndMs: number): Promise<void> {
+  private async archiveFrame(
+    frameSequence: number,
+    pcm: ArrayBuffer,
+    songEndMs: number,
+  ): Promise<void> {
     const archive = this.archive();
     if (archive.state !== "pending") return;
     const inserted = this.sql.exec(
-      "INSERT OR IGNORE INTO karaoke_audio_chunk (chunk_id,payload,byte_size) VALUES (?,?,?) RETURNING chunk_id",
-      chunkId,
+      "INSERT OR IGNORE INTO karaoke_audio_chunk (frame_sequence,payload,byte_size) VALUES (?,?,?) RETURNING frame_sequence",
+      frameSequence,
       pcm,
       pcm.byteLength,
     );
@@ -528,8 +532,8 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
     if (bucket === undefined) throw new Error("karaoke_archive_bucket_unavailable");
     let archive = this.archive();
     const chunks = this.sql
-      .exec<{ chunk_id: number; payload: ArrayBuffer }>(
-        "SELECT chunk_id,payload FROM karaoke_audio_chunk ORDER BY chunk_id",
+      .exec<{ frame_sequence: number; payload: ArrayBuffer }>(
+        "SELECT frame_sequence,payload FROM karaoke_audio_chunk ORDER BY frame_sequence",
       )
       .toArray();
     const total = chunks.reduce((sum, chunk) => sum + chunk.payload.byteLength, 0);

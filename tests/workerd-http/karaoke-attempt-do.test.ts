@@ -15,7 +15,7 @@ const env = testEnv as unknown as {
 };
 
 type ArchiveHarness = {
-  archiveFrame(chunkId: number, pcm: ArrayBuffer, songEndMs: number): Promise<void>;
+  archiveFrame(frameSequence: number, pcm: ArrayBuffer, songEndMs: number): Promise<void>;
   finishArchive(): Promise<KaraokeRecordingResult>;
 };
 
@@ -110,7 +110,7 @@ describe("Karaoke attempt Durable Object", () => {
     });
   });
 
-  it("completes accepted PCM as a multipart R2 object", async () => {
+  it("orders and deduplicates accepted PCM by validated frame sequence", async () => {
     const sessionId = `karaoke-stored-${crypto.randomUUID()}`;
     const stub = env.KARAOKE_ATTEMPT.getByName(sessionId);
     await stub.initialize(authority(sessionId));
@@ -124,6 +124,7 @@ describe("Karaoke attempt Durable Object", () => {
         await archive.archiveFrame(index, chunk.buffer, index * 500);
       }
       await archive.archiveFrame(21, tail.buffer, 10_001);
+      await archive.archiveFrame(21, new Uint8Array([9, 9]).buffer, 20_000);
       return await archive.finishArchive();
     });
 
