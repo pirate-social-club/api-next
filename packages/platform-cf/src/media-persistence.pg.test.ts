@@ -13,6 +13,7 @@ import type {
   SongTerms,
   TrustedSongAnalysis,
 } from "../../domain/src/media-submission.ts";
+import { makeControlPlaneKaraokeReadinessStore } from "./karaoke-readiness-repository";
 import { makeControlPlaneMediaOutboxRepository } from "./media-outbox-repository";
 import { makeMediaProcessingStore } from "./media-processing-store";
 import { makeControlPlaneMediaSubmissionRepository } from "./media-submission-repository";
@@ -3053,7 +3054,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
   }, 40_000);
   test("publishes explicit classified lyrics with their truthful label", async () => {
     await withSchema(async (admin, connection) => {
-      const explicitLyrics = "explicit fixture lyrics";
+      const explicitLyrics = "Hold on!\nExplicit fixture verse\nHold on!";
       const explicitAnalysis: TrustedSongAnalysis = {
         ...analysis,
         lyricsAnalysis: {
@@ -3116,6 +3117,71 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           )
         ).rows[0],
       ).toEqual({ lyrics_explicitness: "explicit", lyrics_revision: "1" });
+      expect(
+        (
+          await admin.query(
+            `SELECT
+               (SELECT count(*)::text FROM localization_lyrics_revision_lines
+                 WHERE community_id=$1 AND post_id=$2 AND lyrics_revision=1) AS occurrences,
+               (SELECT count(*)::text FROM localization_study_units
+                 WHERE community_id=$1 AND post_id=$2) AS study_units`,
+            [community, postId],
+          )
+        ).rows[0],
+      ).toEqual({ occurrences: "3", study_units: "2" });
+      const timedLyricsArtifact = {
+        version: "media-timed-lyrics-artifact-v1",
+        mode: "word",
+        segments: [
+          { text: "Hold", start_ms: 0, end_ms: 300 },
+          { text: "on!", start_ms: 310, end_ms: 600 },
+          { text: "Explicit", start_ms: 700, end_ms: 1_000 },
+          { text: "fixture", start_ms: 1_010, end_ms: 1_300 },
+          { text: "verse", start_ms: 1_310, end_ms: 1_600 },
+          { text: "Hold", start_ms: 1_700, end_ms: 2_000 },
+          { text: "on!", start_ms: 2_010, end_ms: 2_300 },
+        ],
+      };
+      await admin.query(
+        `INSERT INTO media_timed_lyrics_artifacts (
+           artifact_ref,community_id,actor_user_id,submission_id,operation_id,post_id,
+           audio_revision,analysis_revision,artifact_revision,canonical_audio_sha256,
+           artifact_sha256,artifact,author_persona_id,lyrics_revision
+         ) VALUES (
+           'ready-lyrics-artifact',$1,$2,$3,$4,$5,1,1,1,$6,
+           encode(sha256(convert_to($7::jsonb::text,'UTF8')),'hex'),$7::jsonb,$8,1
+         )`,
+        [
+          community,
+          actor,
+          submission,
+          operation,
+          postId,
+          audioSha256,
+          JSON.stringify(timedLyricsArtifact),
+          personaFor(connection),
+        ],
+      );
+      await admin.query(
+        `UPDATE media_alignment_projections
+            SET alignment_revision=1,status='ready',current_artifact_ref='ready-lyrics-artifact',
+                current_artifact_revision=1,updated_at=clock_timestamp()
+          WHERE submission_id=$1`,
+        [submission],
+      );
+      const readiness = await makeControlPlaneKaraokeReadinessStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      ).get({ communityId: community, postId });
+      expect(readiness.state).toBe("ready");
+      if (readiness.state === "ready") {
+        expect(readiness.karaoke_lines.map(({ text }) => text)).toEqual([
+          "Hold on!",
+          "Explicit fixture verse",
+          "Hold on!",
+        ]);
+        expect(readiness.karaoke_lines[0]?.id).not.toBe(readiness.karaoke_lines[2]?.id);
+        expect(readiness.playback_kind).toBe("full_mix");
+      }
       await admin.query("BEGIN");
       await expect(
         admin.query(
