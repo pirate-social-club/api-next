@@ -358,7 +358,7 @@ const SEVERITY_RANK: Record<AlertSeverity, number> = { low: 0, medium: 1, high: 
 
 const MAX_KEYS_PER_FAMILY = 5;
 const MAX_GROUPS_PER_TICK = 50;
-export const ALERT_SUPPRESSION_OBSERVATION_INTERVAL_MS = 5 * 60 * 1000;
+const ALERT_SUPPRESSION_OBSERVATION_INTERVAL_MS = 5 * 60 * 1000;
 
 const SAFE_CORRELATION_VALUE = /^[A-Za-z0-9._:/-]{1,256}$/u;
 

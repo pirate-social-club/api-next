@@ -1,6 +1,6 @@
 const COMMITMENT_PATH = /^\/megapot\/commitments\/(megapot_commitment_[0-9a-f]{64}\.json)$/u;
 
-export interface MegapotPublicCommitmentObject {
+interface MegapotPublicCommitmentObject {
   readonly body: ReadableStream;
   readonly httpEtag?: string;
 }

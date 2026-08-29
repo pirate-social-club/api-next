@@ -134,15 +134,13 @@ const StagingDeploymentManifestV1 = Schema.Struct({
   ...commonDeploymentManifestFields,
 });
 
-export type HnsCommunityAppGatewayDeploymentManifestV1 = Schema.Schema.Type<
-  typeof DeploymentManifestV1
->;
+type HnsCommunityAppGatewayDeploymentManifestV1 = Schema.Schema.Type<typeof DeploymentManifestV1>;
 
-export type HnsCommunityAppGatewayStagingDeploymentManifestV1 = Schema.Schema.Type<
+type HnsCommunityAppGatewayStagingDeploymentManifestV1 = Schema.Schema.Type<
   typeof StagingDeploymentManifestV1
 >;
 
-export type HnsCommunityAppGatewayDeploymentManifest =
+type HnsCommunityAppGatewayDeploymentManifest =
   | HnsCommunityAppGatewayDeploymentManifestV1
   | HnsCommunityAppGatewayStagingDeploymentManifestV1;
 

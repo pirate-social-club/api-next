@@ -13,7 +13,7 @@ import { makeMegapotV2RpcClient } from "../../../packages/platform-cf/src/megapo
 import { readNativeBalance } from "../../../packages/platform-cf/src/native-balance.ts";
 import type { JobsWorkerEnv } from "./index";
 
-export const PIPELINE_SNAPSHOT_INTERVAL_MS = 5 * 60 * 1000;
+const PIPELINE_SNAPSHOT_INTERVAL_MS = 5 * 60 * 1000;
 export const DATA_REGISTRATION_BLOCKED_BALANCE_WEI = 7_500_000_000_000_000n;
 export const DATA_REGISTRATION_RESERVE_FLOOR_WEI = 200_000_000_000_000_000n;
 
@@ -40,7 +40,7 @@ export type MegapotBalanceReader = (
   deployment: MegapotV2DeploymentAttestation,
 ) => Promise<bigint>;
 
-export function isPipelineSnapshotBoundary(scheduledTime: number): boolean {
+function isPipelineSnapshotBoundary(scheduledTime: number): boolean {
   return (
     Number.isSafeInteger(scheduledTime) &&
     Math.floor(scheduledTime / 60_000) % (PIPELINE_SNAPSHOT_INTERVAL_MS / 60_000) === 0
