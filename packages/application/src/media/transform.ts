@@ -16,7 +16,7 @@ export type MediaTransformBinding = Readonly<{
   readonly requestId: string;
 }>;
 
-export type MediaTransformSource = Readonly<{
+type MediaTransformSource = Readonly<{
   /** Private, server-owned object key. URLs are deliberately unrepresentable. */
   readonly objectKey: string;
 }>;
@@ -110,7 +110,7 @@ export type MediaTransformSampleArtifact = Readonly<{
   readonly retainedObjectVerification: "required";
 }>;
 
-export type MediaTransformRetryableReason =
+type MediaTransformRetryableReason =
   | "cancelled"
   | "provider"
   | "throttled"
@@ -137,7 +137,7 @@ export type MediaTransformMalformedReason =
   | "unsupported_shape"
   | "wrong_content_type";
 
-export type MediaTransformProgress =
+type MediaTransformProgress =
   | Readonly<{
       readonly status: "submitted" | "processing";
       readonly attempt: MediaTransformAcceptedAttempt;

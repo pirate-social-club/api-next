@@ -43,7 +43,7 @@ export type MediaProcessingWorkflowResult =
         | "inert";
     }>;
 
-export type MediaProcessingWorkflowOptions = Readonly<{
+type MediaProcessingWorkflowOptions = Readonly<{
   readonly enabled: boolean;
   readonly workerId: string;
   readonly now: () => number;
@@ -811,7 +811,7 @@ async function buildAnalysis(
   };
 }
 
-export function decideMediaPublication(
+function decideMediaPublication(
   authority: MediaProcessingAuthority,
 ): MediaProcessingDecision | "waiting_for_terms" {
   if (authority.audio === null || authority.analysis === null || authority.termsRevision === null) {

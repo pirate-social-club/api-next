@@ -1,9 +1,9 @@
 # Knip hygiene baseline
 
-Knip runs as `bun run knip`. It is advisory, not part of `bun run check` or the
-required CI gates, and it exits nonzero while findings remain. This document
-records the reviewed baseline and the rationale for every class of retained
-finding, so a later ratchet has something to measure against and does not treat
+Raw Knip runs as `bun run knip` and exits nonzero while reviewed findings
+remain. The enforcing `bun run check:knip` ratchets the tracked categories and
+is part of `bun run check`. This document records the reviewed baseline and the
+rationale for every class of retained finding, so the gate does not treat
 static unreachability as a product-deletion signal.
 
 ## Status
@@ -13,6 +13,13 @@ exported types, and 8 duplicate-export groups. The hygiene lane reduced that to
 0 unused files, 62 unused exports, 81 unused exported types, and 0 duplicate
 groups. The remaining findings are intentional package and future-lane surface,
 described below.
+
+The 2026-08-29 ratchet lane reproduced 0/71/90/0 at pinned audit commit
+`6bca114194f7ac3bae95a2a94ed5c1138d166f3d` and again at implementation base
+`0208464`. It removed or de-exported only proven-unowned or file-internal
+surface, reducing the current baseline to 0/58/80/0. The machine-readable
+counterpart is `knip-hygiene-baseline.json`; `bun run check:knip` requires the
+two records to agree and rejects increases.
 
 ## Retained findings and rationale
 
@@ -51,6 +58,48 @@ test scaffold exports `ADAPTER_ABORT_CASES` and its two companion types. The
 scaffold manifest is future adapter-test input; the generated file is codegen
 output. Neither is a hand-editable deletion candidate.
 
+## 2026-08-29 regression classification
+
+Every finding added after the reviewed `c0df014` baseline was compared by file
+and symbol rather than inferred from the net count. Later implementation work
+had added 27 export findings and 22 type findings while consuming 18 and 13
+older findings respectively.
+
+The following exports were file-internal and lost only an unnecessary export
+modifier: `runHnsCommunityAppGateway`; `PIPELINE_SNAPSHOT_INTERVAL_MS`;
+`isPipelineSnapshotBoundary`; `SONG_PIPELINE_HEALTH_INTERVAL_MS`;
+`ALERT_SUPPRESSION_OBSERVATION_INTERVAL_MS`; `isMediaProcessingIdentifier`;
+`decideMediaPublication`; and fixture-local `attempt`. Five otherwise-unused
+fixture values were removed: `classifierResult`, `classifierFailureResults`,
+`malformedBcp47Tags`, `hostileAuthorityFields`, and `hostileTranscript`.
+
+The following added types were likewise implementation-local and were
+de-exported: `HnsCommunityAppGatewayDeploymentManifestV1`,
+`HnsCommunityAppGatewayStagingDeploymentManifestV1`,
+`HnsCommunityAppGatewayDeploymentManifest`, `MegapotPublicCommitmentObject`,
+`MediaProcessingLyrics`, `MediaProcessingAttemptStart`,
+`MediaProcessingWorkflowOptions`, `MediaTransformSource`,
+`MediaTransformRetryableReason`, and `MediaTransformProgress`.
+
+The retained added export findings are intentional DATA or media processing
+seams: `IPFS_GATEWAY_VERIFICATION_VERSION`; `MEDIA_LYRICS_MAX_LENGTH`;
+`MediaLyricsIdentity`; `MediaTransform`; `readMp3FrameWindow`; the five
+`TRANSLOADIT_ADAPTER_HARD_MAX_*` bounds; and `parseTransloaditAssembly`,
+`readBoundedTransloaditJson`, `TransloaditBodyAborted`, and
+`TransloaditBodyTooLarge`. They define versioned provider limits, pure parsing
+helpers, or adapter contracts retained for the owned media/DATA pipeline; none
+is made reachable by widening Knip entry points or ignores.
+
+The retained added type findings are the domain `LyricsAnalysis` state,
+repository workflow inputs `AuthorLyricsSnapshot`, `BeginFinalizeInput`,
+`BeginFinalizeOutcome`, `LyricsInput`, `ProcessingAttemptDeferInput`,
+`ProcessingAttemptLookupInput`, and `WorkflowReplacementInput`, plus adapter
+configuration types `DisabledTransloaditOptions`, `TransloaditClock`,
+`TransloaditCredentials`, and `TransloaditTemplates`. These are structural
+inputs to the staged media processor and Transloadit adapter, covered by the
+existing media-lane rationale above. No added finding was classified as a
+Knip configuration false positive, and `knip.json` gained no ignore.
+
 ## Ratchet rule
 
 Findings may decrease, never increase without a new documented rationale here.
@@ -61,5 +110,5 @@ only exemption is the compile-only fixture, which the dependency gate requires.
 
 ## Baseline numbers
 
-Unused exports: 62. Unused exported types: 81. Unused files: 0. Duplicate
+Unused exports: 58. Unused exported types: 80. Unused files: 0. Duplicate
 exports: 0.
