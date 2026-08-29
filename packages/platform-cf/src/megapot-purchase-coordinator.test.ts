@@ -147,7 +147,13 @@ function receiptFor(purchase: MegapotPreparedPurchase): MegapotTransactionReceip
   };
 }
 
-function harness(input: Readonly<{ allowance?: bigint; uncertainSend?: boolean }> = {}) {
+function harness(
+  input: Readonly<{
+    allowance?: bigint;
+    currentDrawingId?: bigint;
+    uncertainSend?: boolean;
+  }> = {},
+) {
   let progress: MegapotPurchaseProgress | null = null;
   let prepared: MegapotPreparedPurchase | null = null;
   let sendCalls = 0;
@@ -155,6 +161,10 @@ function harness(input: Readonly<{ allowance?: bigint; uncertainSend?: boolean }
   const store = {
     findProgress: () => Effect.succeed(progress),
     loadCandidate: () => Effect.succeed(candidate),
+    closePreBroadcast: (request) => {
+      events.push(`close:${request.reason}`);
+      return Effect.void;
+    },
     reserveNonce: (request) => {
       events.push("reserve");
       const reservation = {
@@ -227,7 +237,7 @@ function harness(input: Readonly<{ allowance?: bigint; uncertainSend?: boolean }
     }),
     readTicketPurchasesAllowed: async () => true,
     readCurrentDrawing: async () => ({
-      drawingId: 101n,
+      drawingId: input.currentDrawingId ?? 101n,
       state: {
         prizePool: 1_000_000n,
         ticketPrice: 10_000n,
@@ -330,6 +340,16 @@ describe("Megapot purchase coordinator", () => {
       ),
     ).rejects.toMatchObject({ reason: "allowance_insufficient", phase: "preflight" });
     expect(fixture.events).toEqual([]);
+  });
+
+  test("closes a rolled-over drawing before reserving a nonce", async () => {
+    const fixture = harness({ currentDrawingId: 102n });
+    await expect(
+      Effect.runPromise(
+        fixture.coordinator.purchase({ poolLegId: candidate.poolLegId, drawingId: 101n }),
+      ),
+    ).resolves.toEqual({ kind: "closed", reason: "drawing_rolled_over" });
+    expect(fixture.events).toEqual(["close:drawing_rolled_over"]);
   });
 
   test("an uncertain broadcast retains transaction identity and is never sent twice", async () => {

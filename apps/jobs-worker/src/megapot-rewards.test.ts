@@ -37,7 +37,7 @@ function fixture(approvalKind: "submitted" | "confirmed") {
     freezeDue: () => call("cutoff").pipe(Effect.as([{}])),
     publishCommitment: () => call("commitment"),
     approve: () => call("approval").pipe(Effect.as({ kind: approvalKind })),
-    purchase: () => call("purchase"),
+    purchase: () => call("purchase").pipe(Effect.as({ kind: "submitted" })),
     sweep: () => call("sweep"),
     claim: () => call("claim"),
     allocate: () => call("allocate"),
@@ -91,6 +91,20 @@ describe("Megapot rewards scheduled cycle", () => {
     const result = await Effect.runPromise(runMegapotRewardsCycle({ work, runtime }));
     expect(calls).toContain("approval");
     expect(calls).not.toContain("purchase");
+    expect(result.purchased).toBe(0);
+  });
+
+  test("does not count a pre-broadcast terminal closure as a purchase", async () => {
+    const { runtime, work } = fixture("confirmed");
+    const result = await Effect.runPromise(
+      runMegapotRewardsCycle({
+        work,
+        runtime: {
+          ...runtime,
+          purchase: () => Effect.succeed({ kind: "closed" }),
+        },
+      }),
+    );
     expect(result.purchased).toBe(0);
   });
 

@@ -17,6 +17,9 @@ import {
 import { Effect, type Layer } from "effect";
 
 type Row = Readonly<Record<string, unknown>>;
+type InternalMegapotDrawingLifecycleStatus =
+  | MegapotDrawingLifecycleStatus
+  | "closed_purchase_unavailable";
 
 const storage = (reason: RewardProjectionStorageFailed["reason"]) =>
   new RewardProjectionStorageFailed({ reason });
@@ -90,7 +93,7 @@ function nullableIso(row: Row, field: string): string | null {
   return row[field] === null || row[field] === undefined ? null : iso(row, field);
 }
 
-const drawingStatuses = new Set<MegapotDrawingLifecycleStatus>([
+const drawingStatuses = new Set<InternalMegapotDrawingLifecycleStatus>([
   "entry_open",
   "cutoff_frozen",
   "committed",
@@ -108,6 +111,7 @@ const drawingStatuses = new Set<MegapotDrawingLifecycleStatus>([
   "closed_fallback_ineligible",
   "closed_fallback_unavailable",
   "closed_fallback_ceiling",
+  "closed_purchase_unavailable",
   "operational_hold",
 ]);
 
@@ -119,8 +123,8 @@ const creditStates = new Set<RewardCreditState>([
   "reconciliation_required",
 ]);
 
-function drawingStatus(row: Row): MegapotDrawingLifecycleStatus {
-  const value = text(row, "drawing_status") as MegapotDrawingLifecycleStatus;
+function drawingStatus(row: Row): InternalMegapotDrawingLifecycleStatus {
+  const value = text(row, "drawing_status") as InternalMegapotDrawingLifecycleStatus;
   if (!drawingStatuses.has(value)) throw new Error("invalid drawing status");
   return value;
 }
@@ -131,7 +135,7 @@ function creditState(row: Row): RewardCreditState | null {
   return value;
 }
 
-function publicState(status: MegapotDrawingLifecycleStatus): MegapotPoolProjectionState {
+function publicState(status: InternalMegapotDrawingLifecycleStatus): MegapotPoolProjectionState {
   if (status === "entry_open") return "entry_open";
   if (
     status === "cutoff_frozen" ||
@@ -139,7 +143,8 @@ function publicState(status: MegapotDrawingLifecycleStatus): MegapotPoolProjecti
     status === "closed_unfunded" ||
     status === "closed_fallback_ineligible" ||
     status === "closed_fallback_unavailable" ||
-    status === "closed_fallback_ceiling"
+    status === "closed_fallback_ceiling" ||
+    status === "closed_purchase_unavailable"
   ) {
     return "entry_closed";
   }
@@ -164,7 +169,8 @@ function drawingFromRow(row: Row): PublicMegapotDrawingProjection | null {
   const lifecycleStatus = drawingStatus(row);
   return {
     drawingId: bigint(row, "drawing_id"),
-    lifecycleStatus,
+    lifecycleStatus:
+      lifecycleStatus === "closed_purchase_unavailable" ? "operational_hold" : lifecycleStatus,
     state: publicState(lifecycleStatus),
     entryCutoffAt: iso(row, "entry_cutoff_at"),
     beneficiaryCount: integer(row, "beneficiary_count"),
@@ -223,7 +229,7 @@ function publicPoolFromRow(row: Row): PublicSongMegapotPoolProjection {
 }
 
 function participantState(input: {
-  readonly lifecycleStatus: MegapotDrawingLifecycleStatus | null;
+  readonly lifecycleStatus: InternalMegapotDrawingLifecycleStatus | null;
   readonly shareHeld: boolean;
   readonly allocationAmountAtomic: bigint | null;
   readonly creditState: RewardCreditState | null;
@@ -264,7 +270,7 @@ function participantState(input: {
 
 function sponsorState(input: {
   readonly sponsor: boolean;
-  readonly lifecycleStatus: MegapotDrawingLifecycleStatus | null;
+  readonly lifecycleStatus: InternalMegapotDrawingLifecycleStatus | null;
   readonly beneficiaryCount: number;
   readonly fallbackBeneficiary: boolean | null;
   readonly allocationAmountAtomic: bigint | null;
@@ -286,6 +292,7 @@ function sponsorState(input: {
   if (
     input.lifecycleStatus === "closed_fallback_ineligible" ||
     input.lifecycleStatus === "closed_fallback_unavailable" ||
+    input.lifecycleStatus === "closed_purchase_unavailable" ||
     input.lifecycleStatus === "operational_hold"
   ) {
     return "fallback_unavailable";

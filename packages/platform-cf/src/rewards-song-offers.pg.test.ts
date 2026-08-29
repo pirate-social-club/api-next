@@ -37,7 +37,7 @@ const sentinelPath =
   "/tmp/api-next-control-plane-postgres-rewards-song-offers-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-rewards-song-offers-suite-complete\n";
 const migrations = await loadPostgresMigrations();
-const testCount = 12;
+const testCount = 13;
 let completedTestCount = 0;
 
 const address = (byte: string): string => `0x${byte.repeat(40)}`;
@@ -1538,6 +1538,136 @@ suite("Postgres 17 Megapot rewards persistence", () => {
     });
     completedTestCount += 1;
   }, 10_000);
+
+  test("closes a stale committed purchase before broadcast and releases its reservation", async () => {
+    await withSchema(async (admin, scopedConnection) => {
+      const identity = await seedSong(admin, "purchase-prebroadcast-close", address("e"));
+      await seedMegapotAuthority(admin);
+      const { legId, offerId } = await seedActivePoolLeg(admin, identity, {
+        fallback: false,
+        suffix: "purchase-prebroadcast-close",
+        expired: true,
+      });
+      await admin.query(
+        `INSERT INTO megapot_drawing_observations (
+           observation_id, attestation_id, chain_id, drawing_id,
+           ticket_price_atomic, drawing_time, ball_max, bonusball_max,
+           drawing_locked, referral_fee_wei, referral_win_share_wei,
+           block_number, block_hash, block_timestamp, confirmations,
+           observed_at, expires_at, raw_state_hash
+         ) VALUES (
+           'drawing-observation-prebroadcast-close', 'megapot-base-sepolia-v2', 84532, 101,
+           10000, clock_timestamp() - interval '10 minutes', 25, 13, false,
+           100000000000000000, 100000000000000000, 110, $1,
+           clock_timestamp() - interval '20 minutes', 3,
+           clock_timestamp() - interval '15 minutes',
+           clock_timestamp() - interval '10 minutes', $2
+         )`,
+        [bytes32("6"), hash("6")],
+      );
+      await admin.query("SET session_replication_role = replica");
+      try {
+        await admin.query(
+          `INSERT INTO megapot_pool_drawings (
+             pool_leg_id, drawing_id, observation_id, status, version,
+             entry_cutoff_at, ticket_price_ceiling_atomic,
+             reserved_ticket_cost_atomic, actual_ticket_cost_atomic,
+             frozen_share_count, fallback_beneficiary, snapshot_id,
+             commitment_effect_id, cutoff_frozen_at, created_at, updated_at
+           ) VALUES (
+             $1, 101, 'drawing-observation-prebroadcast-close', 'committed', 3,
+             clock_timestamp() - interval '15 minutes', 10000, 10000, 0,
+             1, false, 'snapshot-prebroadcast-close',
+             'commitment-prebroadcast-close', clock_timestamp() - interval '20 minutes',
+             clock_timestamp() - interval '25 minutes',
+             clock_timestamp() - interval '17 minutes'
+           )`,
+          [legId],
+        );
+        await admin.query(
+          `INSERT INTO megapot_pool_beneficiary_snapshots (
+             snapshot_id, pool_leg_id, drawing_id, domain, terms_hash,
+             algorithm_version, fallback, leaf_count, snapshot_hash,
+             published_artifact, frozen_at
+           ) VALUES (
+             'snapshot-prebroadcast-close', $1, 101,
+             'pirate.megapot-pool-beneficiary-snapshot.v2', $2,
+             'equal_v1', false, 1, $3, '{}'::jsonb,
+             clock_timestamp() - interval '20 minutes'
+           )`,
+          [legId, bytes32("b"), bytes32("7")],
+        );
+        await admin.query(
+          `INSERT INTO megapot_pool_commitment_effects (
+             commitment_effect_id, snapshot_id, payload_hash, signing_key_id,
+             signature, state, prepared_at, published_at, public_reference
+           ) VALUES (
+             'commitment-prebroadcast-close', 'snapshot-prebroadcast-close', $1,
+             'test-commitment-key', 'test-signature', 'published',
+             clock_timestamp() - interval '18 minutes',
+             clock_timestamp() - interval '17 minutes',
+             'urn:pirate:test:commitment-prebroadcast-close'
+           )`,
+          [hash("7")],
+        );
+      } finally {
+        await admin.query("SET session_replication_role = origin");
+      }
+      await admin.query(`UPDATE song_reward_offer_legs SET reserved_atomic=10000 WHERE leg_id=$1`, [
+        legId,
+      ]);
+      const layer = makeDirectPostgresControlPlaneLayer(scopedConnection);
+      const store = makeControlPlaneMegapotPurchaseStore(layer);
+      const candidate = await Effect.runPromise(
+        store.loadCandidate({ poolLegId: legId, drawingId: 101n }),
+      );
+      await Effect.runPromise(
+        store.closePreBroadcast({
+          candidate,
+          reason: "drawing_rolled_over",
+          failedAt: new Date().toISOString(),
+        }),
+      );
+      const closed = await admin.query<{
+        readonly drawing_status: string;
+        readonly terminal_reason: string;
+        readonly reserved_atomic: string;
+      }>(
+        `SELECT drawing.status AS drawing_status, drawing.terminal_reason,
+                leg.reserved_atomic::text
+           FROM megapot_pool_drawings drawing
+           JOIN song_reward_offer_legs leg ON leg.leg_id=drawing.pool_leg_id
+          WHERE drawing.pool_leg_id=$1 AND drawing.drawing_id=101`,
+        [legId],
+      );
+      expect(closed.rows).toEqual([
+        {
+          drawing_status: "closed_purchase_unavailable",
+          terminal_reason: "drawing_rolled_over",
+          reserved_atomic: "0",
+        },
+      ]);
+      const projections = makeControlPlaneRewardProjectionStore(layer);
+      await expect(
+        Effect.runPromise(
+          projections.findPublicSongPool({
+            communityId: identity.communityId,
+            postId: identity.postId,
+          }),
+        ),
+      ).resolves.toMatchObject({
+        drawing: {
+          lifecycleStatus: "operational_hold",
+          state: "entry_closed",
+        },
+      });
+      const terminal = makeControlPlaneRewardOfferTerminalStore(layer);
+      await expect(Effect.runPromise(terminal.closeExpired(50))).resolves.toEqual([
+        expect.objectContaining({ offerId, status: "expired", legIds: [legId] }),
+      ]);
+    });
+    completedTestCount += 1;
+  });
 
   test("atomically holds custody-integrity failures and removes them from retry work", async () => {
     await withSchema(async (admin, scopedConnection) => {

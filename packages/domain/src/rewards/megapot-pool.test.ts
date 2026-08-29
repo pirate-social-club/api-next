@@ -291,6 +291,31 @@ describe("Megapot pool drawing reducer", () => {
     });
   });
 
+  test("closes a committed drawing when purchase becomes unavailable before broadcast", () => {
+    const frozen = accepted(createMegapotPoolDrawing({ poolLegId: "pool", drawingId: 4n }), {
+      type: "cutoff",
+      expectedVersion: 1,
+      shareCount: 1,
+      emptyPoolPolicy: "no_purchase",
+      fallbackEligible: false,
+      activitiesAvailable: true,
+      ceilingReserved: true,
+      budgetReserved: true,
+      snapshotHash,
+    });
+    const committed = accepted(frozen, {
+      type: "commitment_published",
+      expectedVersion: 2,
+      commitmentRef: "urn:pirate:test:commitment",
+    });
+    expect(
+      transitionMegapotPoolDrawing(committed, {
+        type: "purchase_unavailable",
+        expectedVersion: 3,
+      }),
+    ).toMatchObject({ status: "closed_purchase_unavailable", version: 4 });
+  });
+
   test("rejects stale, premature, and malformed economic transitions", () => {
     const state = createMegapotPoolDrawing({ poolLegId: "pool", drawingId: 4n });
     expect(
