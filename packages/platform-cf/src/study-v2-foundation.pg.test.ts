@@ -82,6 +82,30 @@ suite("Study v2 Postgres foundation", () => {
 
       await insertExercise("exercise-v1", 1);
       await insertExercise("exercise-v2", 2);
+      await admin.query(
+        `INSERT INTO study_exercise_versions (
+           exercise_version_id, community_id, post_id, audio_revision, lyrics_revision,
+           lyric_line_id, line_version, line_source_hash, exercise_review_key,
+           exercise_type, exercise_variant, learning_language, helper_language,
+           learner_band, content_revision, presentation, private_grader,
+           answer_visibility, feedback_release, grader_policy_revision,
+           feedback_policy_revision, generation_kind, generation_run_id, producer_id,
+           provider_model, prompt_revision, request_hash, raw_result_digest,
+           structural_validator_revision, semantic_validator_revision,
+           safety_validator_revision, quality_validator_revision,
+           quality_policy_revision, generated_at, validated_at, accepted_at
+         ) SELECT 'exercise-other-key', community_id, post_id, audio_revision, lyrics_revision,
+           lyric_line_id, line_version, line_source_hash, 'review-key-other', exercise_type,
+           exercise_variant, learning_language, helper_language, learner_band, 1,
+           presentation, private_grader, answer_visibility, feedback_release,
+           grader_policy_revision, feedback_policy_revision, generation_kind, 'run-other',
+           producer_id, provider_model, prompt_revision, $1, raw_result_digest,
+           structural_validator_revision, semantic_validator_revision,
+           safety_validator_revision, quality_validator_revision, quality_policy_revision,
+           generated_at, validated_at, accepted_at
+         FROM study_exercise_versions WHERE exercise_version_id = 'exercise-v1'`,
+        ["c".repeat(64)],
+      );
       await expect(
         admin.query(
           "UPDATE study_exercise_versions SET exercise_variant = 'changed' WHERE exercise_version_id = 'exercise-v1'",
@@ -100,6 +124,13 @@ suite("Study v2 Postgres foundation", () => {
             SET current_exercise_version_id = 'exercise-v2', updated_at = clock_timestamp()
           WHERE review_item_id = 'review-item-1'`,
       );
+      await expect(
+        admin.query(
+          `UPDATE study_review_items
+              SET current_exercise_version_id = 'exercise-other-key'
+            WHERE review_item_id = 'review-item-1'`,
+        ),
+      ).rejects.toThrow();
       const review = await admin.query(
         `SELECT review_item_id, exercise_review_key, current_exercise_version_id
            FROM study_review_items`,
@@ -124,17 +155,17 @@ suite("Study v2 Postgres foundation", () => {
       await admin.query(
         `INSERT INTO study_session_items_v2 (
            session_item_id, session_id, ordinal, exercise_review_key,
-           exercise_version_id, review_item_id, item_snapshot, maximum_attempts
+           exercise_version_id, review_item_id, item_snapshot, maximum_attempts, account_id
          ) VALUES ('session-item-1', 'session-1', 0, 'review-key-1',
-           'exercise-v2', 'review-item-1', '{}'::jsonb, 2)`,
+           'exercise-v2', 'review-item-1', '{}'::jsonb, 2, 'account-1')`,
       );
       await expect(
         admin.query(
           `INSERT INTO study_session_items_v2 (
              session_item_id, session_id, ordinal, exercise_review_key,
-             exercise_version_id, review_item_id, item_snapshot, maximum_attempts
+             exercise_version_id, review_item_id, item_snapshot, maximum_attempts, account_id
            ) VALUES ('session-item-2', 'session-1', 1, 'review-key-1',
-             'exercise-v1', 'review-item-1', '{}'::jsonb, 2)`,
+             'exercise-v1', 'review-item-1', '{}'::jsonb, 2, 'account-1')`,
         ),
       ).rejects.toThrow();
       await expect(
