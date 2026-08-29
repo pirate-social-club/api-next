@@ -28,6 +28,8 @@
     "./karaoke-readiness-repository": "./src/karaoke-readiness-repository.ts",
     "./karaoke-repository": "./src/karaoke-repository.ts",
     "./karaoke-attempt-do": "./src/karaoke-attempt-do.ts",
+    "./learner-audio-account-lock": "./src/learner-audio-account-lock.ts",
+    "./learner-audio-deletion-repository": "./src/learner-audio-deletion-repository.ts",
     "./elevenlabs-karaoke-stt": "./src/elevenlabs-karaoke-stt.ts",
     "./study-v2-repository": "./src/study-v2-repository.ts",
     "./study-spoken-audio": "./src/study-spoken-audio.ts",

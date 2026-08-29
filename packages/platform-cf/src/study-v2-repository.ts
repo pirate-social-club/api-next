@@ -15,6 +15,7 @@ import {
 import { gradeExactChoiceV2, scheduleStudyReviewV1 } from "@pirate/domain";
 import { Effect, type Layer, Schema } from "effect";
 import { recordQualificationProjections } from "./activity-qualification-repository.ts";
+import { lockLearnerAudioAccount } from "./learner-audio-account-lock.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 
@@ -596,6 +597,7 @@ export const makeControlPlaneStudyV2Repository = () => ({
         const db = yield* ControlPlaneDb;
         return yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
+            yield* lockLearnerAudioAccount(transaction, input.accountId);
             const selected = yield* transaction.execute<Row>({
               label: "study-v2.spoken.reserve-item",
               text: `SELECT i.item_snapshot, state.presentation_count

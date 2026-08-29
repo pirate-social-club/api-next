@@ -25,6 +25,7 @@ import {
   GetKaraokeLeaderboard,
   GetKaraokeReadiness,
 } from "./karaoke.ts";
+import { DeleteMyLearnerAudio } from "./learner-audio.ts";
 import { PollNamespaceOwnership, StartNamespaceOwnership } from "./namespace-ownership.ts";
 import {
   ConfirmPersonaEvmWallet,
@@ -87,6 +88,7 @@ export const registry = {
   GetKaraokeReadiness,
   GetKaraokeAttempt,
   GetKaraokeLeaderboard,
+  DeleteMyLearnerAudio,
   StartStudySession,
   GetStudySession,
   SubmitStudyAnswer,

@@ -18,6 +18,7 @@ import { canonicalJson } from "@pirate/domain";
 import { Effect, type Layer, Schema } from "effect";
 import { recordQualificationProjections } from "./activity-qualification-repository.ts";
 import { buildKaraokePayloadLines } from "./karaoke-readiness-repository.ts";
+import { lockLearnerAudioAccount } from "./learner-audio-account-lock.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 
@@ -236,6 +237,7 @@ export const makeControlPlaneKaraokeRepository = () => ({
         const source = yield* sessionSource(input.communityId, input.postId);
         return yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
+            yield* lockLearnerAudioAccount(transaction, input.accountId);
             const identity = yield* transaction.execute<Row>({
               label: "karaoke.session.identity",
               text: `SELECT persona.persona_id,

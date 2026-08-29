@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.36.0",
+  "releaseType": "learner-audio-deletion-v1",
+  "wireContract": "spec-019-section-5.2",
+  "sourceCommit": "pending-review",
+  "supersedes": "0.35.0; adds the authenticated account-scoped learner-audio deletion command and bounded continuation result.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.36.0.tgz",
+    "sha256": "84cedecb0eef00aa8fb84de0630ef2dc5381e38dbf9fb0d1be83e9656b6de229",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@432603c684a074c68e01ef44cae6996af07208819592189b377902f95dc17b86",
+    "openapiSha256": "432603c684a074c68e01ef44cae6996af07208819592189b377902f95dc17b86",
+    "clientSha256": "987b4eb74900f8cb0b3ff9bd4162dcb9a5fbf97f2d5543536459c4b5b5b828a7"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "not-breaking",
+      "baselineCommit": "6bca114",
+      "reason": "The release adds one authenticated endpoint without changing an existing response shape."
+    },
+    "focusedPostgresSuites": "pending PostgreSQL 17 CI; no local CONTROL_PLANE_POSTGRES_TEST_URL was available",
+    "fullUnitSuite": "2233 passed, 308 database-gated tests skipped, 0 failed",
+    "fullWorkerdSuite": "39 passed in the first partition; the aggregate local command reached its execution-window SIGTERM during the HTTP partition, so CI is authoritative for the complete matrix",
+    "packageVerifier": "passed",
+    "repositoryCheck": "passed, including Effect diagnostics, both TypeScript projects, formatting, binding contract, dependency boundaries, migration integrity, contract freshness, and package verification"
+  }
+}

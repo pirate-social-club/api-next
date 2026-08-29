@@ -80,6 +80,10 @@ import {
 } from "@pirate/platform-cf/karaoke-attempt-do";
 import { makeControlPlaneKaraokeReadinessStore } from "@pirate/platform-cf/karaoke-readiness-repository";
 import { makeControlPlaneKaraokeStore } from "@pirate/platform-cf/karaoke-repository";
+import {
+  type LearnerAudioDeletionBucket,
+  makeControlPlaneLearnerAudioDeletionStore,
+} from "@pirate/platform-cf/learner-audio-deletion-repository";
 import { makeR2MediaIngressPresigner } from "@pirate/platform-cf/media-ingress-presigner";
 import {
   type MediaSealBuckets,
@@ -163,6 +167,7 @@ import { makeHandleSalesHandlers } from "./handle-sales-handlers.ts";
 import { makeProductionHnsCommunityAppApiComposition } from "./hns-community-app-api-production-composition.ts";
 import { makeHnsOwnershipComposition } from "./hns-ownership-composition.ts";
 import { makeKaraokeHandlers, makeKaraokeReadinessHandlers } from "./karaoke-handlers.ts";
+import { makeLearnerAudioHandlers } from "./learner-audio-handlers.ts";
 import { makeMediaUploadHandlers } from "./media-upload-handlers.ts";
 import { makeNamespaceOwnershipHandlers } from "./namespace-ownership-handlers.ts";
 import { makePersonaHandlers } from "./persona-handlers.ts";
@@ -262,7 +267,7 @@ export interface HttpWorkerBindings {
   readonly MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY?: string;
   readonly MEDIA_INGRESS?: MediaSealBuckets["ingress"];
   readonly MEDIA_IMMUTABLE_ORIGINALS?: MediaSealBuckets["immutableOriginals"];
-  readonly LEARNER_AUDIO?: StudyAudioBucket;
+  readonly LEARNER_AUDIO?: StudyAudioBucket & LearnerAudioDeletionBucket;
 }
 
 export interface HttpWorkerCompositionDependencies {
@@ -882,6 +887,13 @@ export async function createProductionHttpWorker(
     store: makeControlPlaneStudyV2Store(controlPlane),
     ...(studySpokenServices === undefined ? {} : { spoken: studySpokenServices }),
   });
+  const learnerAudioHandlers =
+    bindings.LEARNER_AUDIO === undefined
+      ? {}
+      : makeLearnerAudioHandlers({
+          clock: { now: Effect.sync(() => Date.now()) },
+          store: makeControlPlaneLearnerAudioDeletionStore(controlPlane, bindings.LEARNER_AUDIO),
+        });
   const karaokeReadinessHandlers = makeKaraokeReadinessHandlers(
     makeControlPlaneKaraokeReadinessStore(controlPlane),
   );
@@ -1062,6 +1074,7 @@ export async function createProductionHttpWorker(
       ...karaokeReadinessHandlers,
       ...karaokeHandlers,
       ...studyV2Handlers,
+      ...learnerAudioHandlers,
       ...handleSalesHandlers,
       ...platformPirateHandleHandlers,
       ...songRewardOfferHandlers,
