@@ -33,6 +33,7 @@
     "check:baseline:fresh": "bun scripts/check-postgres-baseline-fresh.ts",
     "db:seed:gates-age18": "bun scripts/seed-gates-v2-age18.ts",
     "db:preflight:m3": "bun scripts/m3-staging-preflight.ts",
+    "hns:emit-authority-successor": "bun apps/hns-observer-driver/src/authority-successor-main.ts",
     "db:preflight:megapot-base-sepolia": "bun scripts/megapot-base-sepolia-preflight.ts",
     "db:bootstrap:megapot-base-sepolia": "bun scripts/bootstrap-megapot-base-sepolia.ts",
     "staging:golden:megapot-base-sepolia": "bun scripts/megapot-base-sepolia-golden.ts",

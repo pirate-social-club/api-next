@@ -1,4 +1,12 @@
 export {
+  decodeHnsAuthoritySuccessorEmissionInputV1,
+  HNS_AUTHORITY_SUCCESSOR_EMISSION_INPUT_VERSION,
+  type HnsAuthoritySuccessorEmissionInputV1,
+  HnsAuthoritySuccessorEmitterError,
+  type HnsAuthoritySuccessorEmitterIoV1,
+  runHnsAuthoritySuccessorEmitterV1,
+} from "./authority-successor-emitter.ts";
+export {
   exchangeDirectHnsDnsTcp,
   type HnsDnsTcpConnectInput,
   type HnsDnsTcpConnector,
