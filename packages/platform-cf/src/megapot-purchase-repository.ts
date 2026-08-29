@@ -882,6 +882,7 @@ export function makeControlPlaneMegapotPurchaseRepository() {
                             purchase.drawing_id, purchase.attestation_id,
                             attestation.custody_address,
                             drawing.reserved_ticket_cost_atomic,
+                            observation.ticket_price_atomic,
                             drawing.fallback_beneficiary,
                             leg.funding_source, leg.fallback_beneficiary_account_id,
                             leg.referral_allocation_version,
@@ -894,6 +895,8 @@ export function makeControlPlaneMegapotPurchaseRepository() {
                          ON drawing.pool_leg_id=purchase.pool_leg_id
                         AND drawing.drawing_id=purchase.drawing_id
                        JOIN song_reward_offer_legs leg ON leg.leg_id=purchase.pool_leg_id
+                       JOIN megapot_drawing_observations observation
+                         ON observation.observation_id=drawing.observation_id
                        JOIN megapot_deployment_attestations attestation
                          ON attestation.attestation_id=purchase.attestation_id
                        LEFT JOIN megapot_fallback_cutoff_evidence fallback
@@ -913,9 +916,7 @@ export function makeControlPlaneMegapotPurchaseRepository() {
             ) {
               return yield* rejected("effect-conflict");
             }
-            if (
-              bigint(row, "reserved_amount_atomic") !== bigint(row, "reserved_ticket_cost_atomic")
-            ) {
+            if (bigint(row, "reserved_amount_atomic") !== bigint(row, "ticket_price_atomic")) {
               return yield* rejected("effect-conflict");
             }
             const effectVersion = integer(row, "version") + 1;
@@ -1027,16 +1028,17 @@ export function makeControlPlaneMegapotPurchaseRepository() {
               });
             }
             const amount = bigint(row, "reserved_amount_atomic");
+            const reservationAmount = bigint(row, "reserved_ticket_cost_atomic");
             const fundingSource = text(row, "funding_source");
             if (fundingSource === "leg_budget") {
               const budget = yield* transaction.execute({
                 label: "megapot-purchase.leg-budget.confirm",
                 text: `UPDATE song_reward_offer_legs
                           SET reserved_atomic=reserved_atomic-$2,
-                              spent_atomic=spent_atomic+$2,
+                              spent_atomic=spent_atomic+$3,
                               updated_at=clock_timestamp()
                         WHERE leg_id=$1 AND reserved_atomic >= $2`,
-                values: [text(row, "pool_leg_id"), amount.toString()],
+                values: [text(row, "pool_leg_id"), reservationAmount.toString(), amount.toString()],
                 readonly: false,
               });
               if (budget.rowCount !== 1) return yield* rejected("insufficient-budget");
@@ -1046,10 +1048,10 @@ export function makeControlPlaneMegapotPurchaseRepository() {
                 label: "megapot-purchase.sponsorship-budget.confirm",
                 text: `UPDATE platform_sponsorship_budgets
                           SET reserved_atomic=reserved_atomic-$2,
-                              spent_atomic=spent_atomic+$2,
+                              spent_atomic=spent_atomic+$3,
                               updated_at=clock_timestamp()
                         WHERE sponsor_account_id=$1 AND reserved_atomic >= $2`,
-                values: [sponsorAccountId, amount.toString()],
+                values: [sponsorAccountId, reservationAmount.toString(), amount.toString()],
                 readonly: false,
               });
               if (budget.rowCount !== 1) return yield* rejected("insufficient-budget");
@@ -1064,17 +1066,18 @@ export function makeControlPlaneMegapotPurchaseRepository() {
                           SET confirmed_ticket_count=confirmed_ticket_count+1,
                               released_ticket_count=released_ticket_count+1,
                               confirmed_spend_atomic=confirmed_spend_atomic+$4,
-                              released_spend_atomic=released_spend_atomic+$4,
+                              released_spend_atomic=released_spend_atomic+$5,
                               updated_at=clock_timestamp()
                         WHERE sponsor_account_id=$1 AND sponsor_day=$2
                           AND sponsor_kind=$3
                           AND reserved_ticket_count-released_ticket_count >= 1
-                          AND reserved_spend_atomic-released_spend_atomic >= $4`,
+                          AND reserved_spend_atomic-released_spend_atomic >= $5`,
                 values: [
                   sponsorAccountId,
                   text(row, "sponsor_day"),
                   text(row, "sponsor_kind"),
                   amount.toString(),
+                  reservationAmount.toString(),
                 ],
                 readonly: false,
               });
@@ -1115,13 +1118,14 @@ export function makeControlPlaneMegapotPurchaseRepository() {
               label: "megapot-purchase.drawing.confirm",
               text: `UPDATE megapot_pool_drawings
                         SET status='tickets_confirmed', version=$3,
-                            actual_ticket_cost_atomic=reserved_ticket_cost_atomic,
+                            actual_ticket_cost_atomic=$4,
                             updated_at=clock_timestamp()
                       WHERE pool_leg_id=$1 AND drawing_id=$2`,
               values: [
                 text(row, "pool_leg_id"),
                 bigint(row, "drawing_id").toString(),
                 drawingVersion,
+                amount.toString(),
               ],
               readonly: false,
             });
