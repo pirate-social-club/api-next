@@ -342,11 +342,12 @@ suite("Postgres 17 activity qualification persistence", () => {
       await admin.query(
         `INSERT INTO karaoke_sessions (
            session_id, attempt_id, account_id, persona_id, community_id, post_id,
-           audio_revision, karaoke_revision_id, qualification_policy_version_id,
+           audio_revision, lyrics_revision, line_snapshot,
+           karaoke_revision_id, qualification_policy_version_id,
            idempotency_key, request_hash, timezone, created_at, expires_at
          ) VALUES (
            'karaoke-session-1', 'karaoke-attempt-1', $1, $2, $3, $4,
-           3, 'karaoke-revision-1', 'karaoke_qualification_v1@1',
+           3, 1, '[{}]'::jsonb, 'karaoke-revision-1', 'karaoke_qualification_v1@1',
            'karaoke-start-1', $5, 'UTC', $6, $6::timestamptz + interval '10 minutes'
          )`,
         [
@@ -372,10 +373,16 @@ suite("Postgres 17 activity qualification persistence", () => {
         `INSERT INTO karaoke_attempts (
            attempt_id, session_id, completion_reason, scoring_version,
            scoring_provider, scoring_model, final_score_bps,
-           scored_line_count, line_count, evidence_summary, completed_at, created_at
+           scored_line_count, line_count, evidence_summary, completed_at, created_at,
+           lyrics_score_bps, timing_score_bps, timing_trend, uncertain_line_count,
+           no_recognition_line_count, low_confidence_line_count,
+           scoring_diagnostics, transport_facts
          ) VALUES (
            'karaoke-attempt-1', 'karaoke-session-1', 'completed', 1,
-           'provider-v1', 'model-v1', 8000, 5, 5, $1::jsonb, $2, $3
+           'provider-v1', 'model-v1', 8000, 5, 5, $1::jsonb, $2, $3,
+           8000, 8000, 'on_time', 0, 0, 0,
+           '{"schema_version":1,"scoring_version":1,"line_diagnostics":[]}'::jsonb,
+           '{"schema_version":1}'::jsonb
          )`,
         [JSON.stringify(evidence), completedAt, createdAt],
       );
@@ -442,9 +449,10 @@ suite("Postgres 17 activity qualification persistence", () => {
         await admin.query(
           `INSERT INTO karaoke_sessions (
              session_id, attempt_id, account_id, persona_id, community_id, post_id,
-             audio_revision, karaoke_revision_id, qualification_policy_version_id,
+             audio_revision, lyrics_revision, line_snapshot,
+             karaoke_revision_id, qualification_policy_version_id,
              idempotency_key, request_hash, timezone, playback_kind, created_at, expires_at
-           ) VALUES ($1,$2,$3,$4,$5,$6,1,$7,$8,$9,$10,'UTC','full_mix',$11,$11::timestamptz + interval '10 minutes')`,
+           ) VALUES ($1,$2,$3,$4,$5,$6,1,1,'[{}]'::jsonb,$7,$8,$9,$10,'UTC','full_mix',$11,$11::timestamptz + interval '10 minutes')`,
           [
             sessionId,
             attemptId,
@@ -474,8 +482,14 @@ suite("Postgres 17 activity qualification persistence", () => {
           `INSERT INTO karaoke_attempts (
              attempt_id, session_id, completion_reason, scoring_version,
              scoring_provider, scoring_model, final_score_bps, scored_line_count,
-             line_count, evidence_summary, completed_at, created_at
-           ) VALUES ($1,$2,'completed',1,'provider-v1','model-v1',8000,5,5,$3::jsonb,$4,$5)`,
+             line_count, evidence_summary, completed_at, created_at,
+             lyrics_score_bps, timing_score_bps, timing_trend, uncertain_line_count,
+             no_recognition_line_count, low_confidence_line_count,
+             scoring_diagnostics, transport_facts
+           ) VALUES ($1,$2,'completed',1,'provider-v1','model-v1',8000,5,5,$3::jsonb,$4,$5,
+             8000,8000,'on_time',0,0,0,
+             '{"schema_version":1,"scoring_version":1,"line_diagnostics":[]}'::jsonb,
+             '{"schema_version":1}'::jsonb)`,
           [attemptId, sessionId, JSON.stringify(evidence), completedAt, createdAt],
         );
         await admin.query(

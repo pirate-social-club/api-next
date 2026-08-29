@@ -12,9 +12,11 @@ browser-specific capture lifecycle is deliberately owned by the standalone
 tranche. The capture implementation and its lifecycle tests are Step 2 work;
 this document therefore has no dependency on the dead legacy path.
 
-Retention is fixed to `not_stored`. No persisted attempt or HTTP contract in
-this tranche contains a PCM payload, transcript payload, or recognized-word
-persistence field. The ephemeral WebSocket transcript/word events remain in
-the protocol because they are part of the runtime source contract. Binary audio
-is an out-of-band WebSocket frame; only its validated header metadata belongs
-to the api-next contract boundary.
+Spec 019 supersedes the original retention note. Provider retention remains
+`not_stored`, while the exact server-accepted PCM is archived privately for the
+learner under `platform_retention: private_learning`. Archive reconciliation is
+independent from scoring and qualification. No transcript, partial provider
+payload, recognized text, voiceprint, or speaker identity is retained. The
+ephemeral WebSocket transcript and word events remain available during the
+session, while persisted diagnostics reference only expected lyric-word
+positions. Binary audio remains an out-of-band WebSocket frame.

@@ -33,7 +33,7 @@ export interface KaraokeSttCommitAck {
  */
 export interface KaraokeSttAdapterMessage {
   event: KaraokeStreamingSttEvent;
-  commit?: KaraokeSttCommitAck;
+  commit?: KaraokeSttCommitAck | undefined;
 }
 
 export interface KaraokeStreamingSttAdapter {
@@ -121,6 +121,10 @@ export interface KaraokeSessionHostOptions {
    * structured event per rejection.
    */
   onTransportGuardFailure?: (diagnostic: KaraokeTransportGuardDiagnostic) => void | Promise<void>;
+  /** Called when the bounded reconnect buffer evicts its oldest audio frame. */
+  onReconnectBufferDrop?: () => void | Promise<void>;
+  /** Called when the provider acknowledges an explicit commit. */
+  onCommitSettled?: (latencyMs: number) => void | Promise<void>;
   /** Epoch ms source (default Date.now). */
   now?: () => number;
   /** Timer hooks (default global setTimeout/clearTimeout) — injectable for tests. */
@@ -211,9 +215,11 @@ export class KaraokeSessionHost {
   private readonly setTimer: (callback: () => void, ms: number) => unknown;
   private readonly clearTimer: (handle: unknown) => void;
   private readonly persist: () => Promise<void>;
-  private readonly onTransportGuardFailure?: (
-    diagnostic: KaraokeTransportGuardDiagnostic,
-  ) => void | Promise<void>;
+  private readonly onTransportGuardFailure:
+    | ((diagnostic: KaraokeTransportGuardDiagnostic) => void | Promise<void>)
+    | undefined;
+  private readonly onReconnectBufferDrop: (() => void | Promise<void>) | undefined;
+  private readonly onCommitSettled: ((latencyMs: number) => void | Promise<void>) | undefined;
   private readonly commitAckTimeoutMs: number;
 
   constructor(
@@ -231,6 +237,8 @@ export class KaraokeSessionHost {
       options.clearTimer ?? ((handle) => clearTimeout(handle as ReturnType<typeof setTimeout>));
     this.persist = options.persist ?? (async () => undefined);
     this.onTransportGuardFailure = options.onTransportGuardFailure;
+    this.onReconnectBufferDrop = options.onReconnectBufferDrop;
+    this.onCommitSettled = options.onCommitSettled;
     this.commitAckTimeoutMs = options.commitAckTimeoutMs ?? DEFAULT_COMMIT_ACK_TIMEOUT_MS;
   }
 
@@ -458,7 +466,8 @@ export class KaraokeSessionHost {
    */
   private async flushReconnectBuffer(): Promise<void> {
     while (this.reconnectBuffer.length > 0) {
-      const frame = this.reconnectBuffer.shift()!;
+      const frame = this.reconnectBuffer.shift();
+      if (frame === undefined) break;
       await this.sttAdapter.sendPcm16(frame);
     }
   }
@@ -500,6 +509,7 @@ export class KaraokeSessionHost {
       this.reconnectBuffer.push(frame);
       if (this.reconnectBuffer.length > MAX_RECONNECT_BUFFER_FRAMES) {
         this.reconnectBuffer.shift();
+        await this.onReconnectBufferDrop?.();
       }
       return null;
     }
@@ -632,8 +642,16 @@ export class KaraokeSessionHost {
   }
 
   private async processAdapterMessage(message: KaraokeSttAdapterMessage): Promise<void> {
+    const pending = this.state.pendingCommit;
     await this.handleSttMessage(message);
     if (message.commit) {
+      if (
+        pending !== null &&
+        pending.commitId === message.commit.commitId &&
+        pending.streamGeneration === message.commit.streamGeneration
+      ) {
+        await this.onCommitSettled?.(Math.max(0, this.now() - pending.requestedAtEpochMs));
+      }
       // A commit was acknowledged (or dropped as stale) — cancel its timer and
       // settle any finish that was waiting on it.
       this.clearCommitTimer();

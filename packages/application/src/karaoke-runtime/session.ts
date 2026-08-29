@@ -208,13 +208,15 @@ function scoreLineFromState(
   line: ScorableKaraokeLine,
   finalizedReason: Parameters<typeof bucketRecognizedWordsIntoLines>[0]["finalizedReason"],
 ): KaraokeLineScore {
-  const bucket = bucketRecognizedWordsIntoLines({
+  const buckets = bucketRecognizedWordsIntoLines({
     assignmentLocks: state.assignmentLocks,
-    finalizedReason,
     lines: [line],
     nowMs: state.currentTimeMs,
     words: state.recognizedWords,
-  })[0];
+    ...(finalizedReason === undefined ? {} : { finalizedReason }),
+  });
+  const bucket = buckets[0];
+  if (bucket === undefined) throw new Error("Karaoke line bucket is missing");
 
   return scoreKaraokeLine({ bucket });
 }

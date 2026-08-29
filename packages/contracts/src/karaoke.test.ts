@@ -11,18 +11,31 @@ import {
 } from "./karaoke.ts";
 
 describe("karaoke contracts", () => {
-  it("requires the not_stored retention policy for enabled scoring", () => {
+  it("splits provider and platform retention for ElevenLabs scoring", () => {
     const decode = Schema.decodeUnknownSync(KaraokeScoringPolicy);
     expect(
-      decode({ kind: "enabled", model: "model", provider: "openai", retention: "not_stored" }),
+      decode({
+        kind: "enabled",
+        model: "scribe_v2_realtime",
+        provider: "elevenlabs",
+        provider_retention: "not_stored",
+        platform_retention: "private_learning",
+      }),
     ).toEqual({
       kind: "enabled",
-      model: "model",
-      provider: "openai",
-      retention: "not_stored",
+      model: "scribe_v2_realtime",
+      provider: "elevenlabs",
+      provider_retention: "not_stored",
+      platform_retention: "private_learning",
     });
     expect(() =>
-      decode({ kind: "enabled", model: "model", provider: "openai", retention: "stored" }),
+      decode({
+        kind: "enabled",
+        model: "model",
+        provider: "elevenlabs",
+        provider_retention: "stored",
+        platform_retention: "private_learning",
+      }),
     ).toThrow();
   });
 
@@ -77,6 +90,7 @@ describe("karaoke contracts", () => {
         timing_score: 8800,
         timing_trend: "on_time",
         uncertain_line_count: 0,
+        recording_state: "pending",
       }).object,
     ).toBe("karaoke_attempt");
     expect(

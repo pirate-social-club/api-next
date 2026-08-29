@@ -323,14 +323,14 @@ function levenshteinDistance<T>(left: T[], right: T[]): number {
     curr[0] = i;
     for (let j = 1; j <= right.length; j += 1) {
       const cost = left[i - 1] === right[j - 1] ? 0 : 1;
-      curr[j] = Math.min(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
+      curr[j] = Math.min((curr[j - 1] ?? 0) + 1, (prev[j] ?? 0) + 1, (prev[j - 1] ?? 0) + cost);
     }
     for (let j = 0; j <= right.length; j += 1) {
-      prev[j] = curr[j];
+      prev[j] = curr[j] ?? 0;
     }
   }
 
-  return prev[right.length];
+  return prev[right.length] ?? 0;
 }
 
 function keywordCoverage(expectedTokens: string[], transcriptTokens: string[]): number {
@@ -812,10 +812,10 @@ function wordToApproxArpabet(raw: string): string[] {
   let i = 0;
 
   while (i < word.length) {
-    const ch = word[i];
+    const ch = word[i] ?? "";
     const isLast = i === word.length - 1;
-    const prev = i > 0 ? word[i - 1] : "";
-    const next = i + 1 < word.length ? word[i + 1] : "";
+    const prev = i > 0 ? (word[i - 1] ?? "") : "";
+    const next = i + 1 < word.length ? (word[i + 1] ?? "") : "";
 
     if (!isLast && next === "r" && /[aeiou]/u.test(ch)) {
       if (ch === "a") {
@@ -862,12 +862,12 @@ function wordToApproxArpabet(raw: string): string[] {
       i += 1;
       continue;
     }
-    if (ch === "c" && i + 1 < word.length && /[eiy]/u.test(word[i + 1])) {
+    if (ch === "c" && i + 1 < word.length && /[eiy]/u.test(word[i + 1] ?? "")) {
       phones.push("S");
       i += 1;
       continue;
     }
-    if (ch === "g" && i + 1 < word.length && /[eiy]/u.test(word[i + 1])) {
+    if (ch === "g" && i + 1 < word.length && /[eiy]/u.test(word[i + 1] ?? "")) {
       phones.push("JH");
       i += 1;
       continue;
@@ -908,18 +908,18 @@ function phonemeDistance(left: string[], right: string[]): number {
   for (let i = 1; i <= left.length; i += 1) {
     curr[0] = i;
     for (let j = 1; j <= right.length; j += 1) {
-      const l = left[i - 1];
-      const r = right[j - 1];
+      const l = left[i - 1] ?? "";
+      const r = right[j - 1] ?? "";
       const similar = SIMILAR_PHONEME_MAP.get(l)?.has(r) === true;
       const subCost = l === r ? 0 : similar ? 0.35 : 1;
-      curr[j] = Math.min(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + subCost);
+      curr[j] = Math.min((curr[j - 1] ?? 0) + 1, (prev[j] ?? 0) + 1, (prev[j - 1] ?? 0) + subCost);
     }
     for (let j = 0; j <= right.length; j += 1) {
-      prev[j] = curr[j];
+      prev[j] = curr[j] ?? 0;
     }
   }
 
-  return prev[right.length];
+  return prev[right.length] ?? 0;
 }
 
 function phonemeSimilarity(expectedRaw: string, transcriptRaw: string): number {
@@ -1525,7 +1525,9 @@ function median(values: readonly number[]): number {
   if (values.length === 0) return 0;
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+  return sorted.length % 2 === 0
+    ? ((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2
+    : (sorted[mid] ?? 0);
 }
 
 /**

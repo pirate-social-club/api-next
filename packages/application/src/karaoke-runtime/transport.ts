@@ -81,7 +81,7 @@ export type KaraokeTransportErrorCode =
 export interface KaraokeTransportError {
   code: KaraokeTransportErrorCode;
   message: string;
-  sequence?: number;
+  sequence?: number | undefined;
 }
 
 function invalidPayload(message: string, sequence?: number): KaraokeTransportError {

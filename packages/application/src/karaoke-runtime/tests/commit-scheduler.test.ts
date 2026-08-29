@@ -53,6 +53,9 @@ class FakeTimers {
   clearTimer = (handle: unknown): void => {
     this.timers.delete(handle as number);
   };
+  advance(ms: number): void {
+    this.now += ms;
+  }
   fireAll(): void {
     for (const [id, timer] of [...this.timers]) {
       this.timers.delete(id);
@@ -173,7 +176,11 @@ function audioFrame(songEndMs: number): KaraokeClientBinaryFrame {
   };
 }
 
-function setup(adapter: ControllableSttAdapter, timers: FakeTimers) {
+function setup(
+  adapter: ControllableSttAdapter,
+  timers: FakeTimers,
+  onCommitSettled?: (latencyMs: number) => void,
+) {
   const effectRunner = new FakeKaraokeEffectRunner();
   const host = new KaraokeSessionHost(
     createKaraokeSessionState({
@@ -188,6 +195,7 @@ function setup(adapter: ControllableSttAdapter, timers: FakeTimers) {
       clearTimer: timers.clearTimer,
       commitAckTimeoutMs: 5_000,
       now: () => timers.now,
+      onCommitSettled,
       setTimer: timers.setTimer,
     },
   );
@@ -198,7 +206,7 @@ function setup(adapter: ControllableSttAdapter, timers: FakeTimers) {
 // scheduler issues a commit.
 async function reachPendingCommit(
   host: KaraokeSessionHost,
-  adapter: ControllableSttAdapter,
+  _adapter: ControllableSttAdapter,
 ): Promise<void> {
   clientSeq = 0;
   await host.handleClientEvent(client({ postId: "p", startedAtAudioMs: 0, type: "start" }));
@@ -222,6 +230,18 @@ describe("karaoke commit scheduler (host)", () => {
     expect(scores).toHaveLength(1);
     expect(scores[0]?.finalizedReason).toBe("asr_final");
     expect(host.snapshot().state.pendingCommit).toBeNull();
+  });
+
+  test("reports provider commit acknowledgement latency", async () => {
+    const adapter = new ControllableSttAdapter();
+    const timers = new FakeTimers();
+    const latencies: number[] = [];
+    const { host } = setup(adapter, timers, (latencyMs) => latencies.push(latencyMs));
+    await reachPendingCommit(host, adapter);
+    timers.advance(275);
+    await adapter.ack(L1_WORDS);
+    await host.drainCommitChain();
+    expect(latencies).toEqual([275]);
   });
 
   test("duplicate request_stt_commit effects produce one adapter call", async () => {

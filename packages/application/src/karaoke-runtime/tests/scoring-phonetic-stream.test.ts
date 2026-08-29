@@ -31,6 +31,7 @@ describe("phoneticStreamSimilarity", () => {
       ["study", "studied"],
       ["carry", "carried"],
     ]) {
+      if (base === undefined || past === undefined) throw new Error("fixture pair is incomplete");
       const result = phoneticStreamSimilarity([base], [past]);
       expect(result.available).toBe(true);
       expect(result.distance).toBe(1);

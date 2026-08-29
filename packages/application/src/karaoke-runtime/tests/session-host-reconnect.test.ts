@@ -210,7 +210,7 @@ function audioFrame(songEndMs: number): KaraokeClientBinaryFrame {
 function setup(
   adapter: ReconnectAdapter,
   clock: FakeClock,
-  options: { commitAckTimeoutMs?: number } = {},
+  options: { commitAckTimeoutMs?: number; onReconnectBufferDrop?: () => void } = {},
 ) {
   const effectRunner = new FakeKaraokeEffectRunner();
   const host = new KaraokeSessionHost(
@@ -226,6 +226,7 @@ function setup(
       clearTimer: clock.clearTimer,
       commitAckTimeoutMs: options.commitAckTimeoutMs ?? 5_000,
       now: () => clock.now,
+      onReconnectBufferDrop: options.onReconnectBufferDrop,
       setTimer: clock.setTimer,
     },
   );
@@ -342,6 +343,27 @@ describe("KaraokeSessionHost reconnect", () => {
     // Buffered frames are replayed onto the new stream, in order.
     const replayed = adapter.frames.slice(preDropFrames).map((f) => f.songEndMs);
     expect(replayed).toEqual([700, 900]);
+  });
+
+  test("reports each audio frame evicted from the bounded reconnect buffer", async () => {
+    const adapter = new ReconnectAdapter();
+    const clock = new FakeClock();
+    let dropped = 0;
+    const { host } = setup(adapter, clock, {
+      onReconnectBufferDrop: () => {
+        dropped += 1;
+      },
+    });
+
+    await host.handleClientEvent(client({ startedAtAudioMs: 0, type: "start" }));
+    adapter.triggerUnexpectedClose();
+    await flush();
+    for (let index = 0; index < 603; index += 1) {
+      await host.handleAudioFrame(audioFrame(index + 1));
+    }
+    expect(dropped).toBe(3);
+
+    await pumpReconnect(clock, host);
   });
 
   test("finalizes the dead stream's orphaned pending commit as provider_failed", async () => {

@@ -20,6 +20,7 @@ export interface KaraokeHandlerServices {
     readonly userId: string;
     readonly idempotencyKey: string;
     readonly timezone: string | null;
+    readonly clientContext: KaraokeAttemptCreateRequest["client_context"];
   }) => Promise<KaraokeSession>;
   readonly getAttempt: (input: {
     readonly attemptId: string;
@@ -75,6 +76,7 @@ const createAttempt: (services: KaraokeHandlerServices) => EndpointHandler =
 
     const result = await services.createAttempt({
       communityId: path.communityId,
+      clientContext: body.client_context,
       idempotencyKey: headers["idempotency-key"],
       postId: path.postId,
       personaId: body.persona_id ?? null,

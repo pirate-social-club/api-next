@@ -110,6 +110,7 @@ export {
 export { ScheduledCronLockDO } from "./cron-lock-do";
 export * from "./custody-solvency-coordinator.ts";
 export * from "./custody-solvency-repository.ts";
+export * from "./elevenlabs-karaoke-stt.ts";
 export {
   type FeedRepository,
   type FeedRepositoryOptions,
@@ -144,7 +145,9 @@ export {
   makeControlPlaneIdentityRepository,
   makeControlPlaneIdentityStore,
 } from "./identity-repository";
+export * from "./karaoke-attempt-do.ts";
 export * from "./karaoke-readiness-repository.ts";
+export * from "./karaoke-repository.ts";
 export * from "./megapot-allocation-coordinator.ts";
 export * from "./megapot-allocation-repository.ts";
 export * from "./megapot-approval-coordinator.ts";
