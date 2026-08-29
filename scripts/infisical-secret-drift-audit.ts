@@ -38,6 +38,10 @@ const PRODUCTION_RUNTIME_SECRET_NAMES = [
   "MEGAPOT_V2_RPC_URL",
 ] as const;
 
+const PRODUCTION_PROVISIONABLE_DATA_RUNTIME_SECRET_NAMES = [
+  "DATA_REGISTRATION_PRODUCTION_AENEID_PRIVATE_KEY",
+] as const;
+
 const STAGING_MEGAPOT_RUNTIME_SECRET_NAMES = [
   "MEGAPOT_COMMITMENT_PUBLIC_ORIGIN",
   "MEGAPOT_CUSTODY_PRIVATE_KEY",
@@ -114,7 +118,10 @@ export const INFISICAL_POLICIES: readonly InfisicalPolicy[] = [
     environment: "prod",
     path: "/services/api-next",
     requiredNames: requiredWhenRuntimeEnabled("prod", PRODUCTION_RUNTIME_SECRET_NAMES),
-    allowedNames: [...PRODUCTION_RUNTIME_SECRET_NAMES],
+    allowedNames: [
+      ...PRODUCTION_RUNTIME_SECRET_NAMES,
+      ...PRODUCTION_PROVISIONABLE_DATA_RUNTIME_SECRET_NAMES,
+    ],
   },
   {
     environment: "prod",

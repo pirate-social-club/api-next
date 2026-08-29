@@ -42,7 +42,7 @@
     "./data-registration-repository": "./src/data-registration-repository.ts",
     "./data/registration-aeneid-chain": "./src/data/registration-aeneid-chain.ts",
     "./data/registration-artifact-pipeline": "./src/data/registration-artifact-pipeline.ts",
-    "./data/registration-staging-signer": "./src/data/registration-staging-signer.ts",
+    "./data/registration-aeneid-direct-key-signer": "./src/data/registration-aeneid-direct-key-signer.ts",
     "./data/registration-workflow-cloudflare": "./src/data/registration-workflow-cloudflare.ts",
     "./data/registration-workflow-entrypoint": "./src/data/registration-workflow-entrypoint.ts",
     "./data/registration-workflow-reader": "./src/data/registration-workflow-reader.ts",

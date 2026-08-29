@@ -6,7 +6,7 @@ import {
 import { Effect } from "effect";
 import { bytesToHex, keccak256 } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { makeDataRegistrationStagingSigner } from "./registration-staging-signer";
+import { makeDataRegistrationAeneidDirectKeySigner } from "./registration-aeneid-direct-key-signer";
 
 const PRIVATE_KEY = generatePrivateKey();
 const account = privateKeyToAccount(PRIVATE_KEY);
@@ -38,14 +38,14 @@ const request = async (): Promise<DataRegistrationSigningRequest> => ({
 });
 
 const signer = () =>
-  makeDataRegistrationStagingSigner({
+  makeDataRegistrationAeneidDirectKeySigner({
     privateKey: PRIVATE_KEY,
     expectedAddress: account.address,
     chainId: 1315n,
     signerNamespace: "data_registration",
   });
 
-describe("staging DATA registration signer", () => {
+describe("Aeneid direct-key DATA registration signer", () => {
   test("signs only the exact typed zero-value Aeneid envelope", async () => {
     const result = await Effect.runPromise(signer().sign(await request()));
     expect(result.signedTransaction.byteLength).toBeGreaterThan(0);
@@ -67,7 +67,7 @@ describe("staging DATA registration signer", () => {
 
   test("fails construction when the key does not own the configured address", () => {
     expect(() =>
-      makeDataRegistrationStagingSigner({
+      makeDataRegistrationAeneidDirectKeySigner({
         privateKey: PRIVATE_KEY,
         expectedAddress: "0x3333333333333333333333333333333333333333",
         chainId: 1315n,

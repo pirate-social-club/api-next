@@ -12,7 +12,7 @@ const PRIVATE_KEY = /^0x[0-9a-f]{64}$/u;
 const HASH = /^[0-9a-f]{64}$/u;
 const SELECTOR = /^0x[0-9a-f]{8}$/u;
 
-export type DataRegistrationStagingSignerOptions = Readonly<{
+export type DataRegistrationAeneidDirectKeySignerOptions = Readonly<{
   privateKey: string;
   expectedAddress: string;
   chainId: bigint;
@@ -23,7 +23,7 @@ const rejected = () => new DataRegistrationSigningFailed({ reason: "rejected" })
 
 function requestMatches(
   request: DataRegistrationSigningRequest,
-  options: DataRegistrationStagingSignerOptions,
+  options: DataRegistrationAeneidDirectKeySignerOptions,
 ): boolean {
   return (
     request.version === DATA_REGISTRATION_SIGNING_PORT_VERSION &&
@@ -47,9 +47,9 @@ function requestMatches(
   );
 }
 
-/** Staging-only offline EIP-1559 signer. It cannot broadcast or choose a transaction. */
-export function makeDataRegistrationStagingSigner(
-  options: DataRegistrationStagingSignerOptions,
+/** Aeneid-only offline EIP-1559 signer. It cannot broadcast or choose a transaction. */
+export function makeDataRegistrationAeneidDirectKeySigner(
+  options: DataRegistrationAeneidDirectKeySignerOptions,
 ): DataRegistrationTransactionSigner["Service"] {
   if (
     !PRIVATE_KEY.test(options.privateKey) ||
@@ -57,11 +57,11 @@ export function makeDataRegistrationStagingSigner(
     options.chainId !== 1315n ||
     options.signerNamespace !== "data_registration"
   ) {
-    throw new TypeError("invalid staging DATA signer configuration");
+    throw new TypeError("invalid Aeneid DATA signer configuration");
   }
   const account = privateKeyToAccount(options.privateKey as `0x${string}`);
   if (account.address.toLowerCase() !== options.expectedAddress.toLowerCase()) {
-    throw new TypeError("staging DATA signer address mismatch");
+    throw new TypeError("Aeneid DATA signer address mismatch");
   }
 
   return DataRegistrationTransactionSigner.of({
@@ -107,6 +107,10 @@ export function makeDataRegistrationStagingSigner(
   });
 }
 
-export const makeDataRegistrationStagingSignerLayer = (
-  options: DataRegistrationStagingSignerOptions,
-) => Layer.succeed(DataRegistrationTransactionSigner, makeDataRegistrationStagingSigner(options));
+export const makeDataRegistrationAeneidDirectKeySignerLayer = (
+  options: DataRegistrationAeneidDirectKeySignerOptions,
+) =>
+  Layer.succeed(
+    DataRegistrationTransactionSigner,
+    makeDataRegistrationAeneidDirectKeySigner(options),
+  );
