@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { STUDY_EXERCISE_REVIEW_KEY_MAX_LENGTH } from "@pirate/contracts";
 
 import {
   formatMigrationPlan,
@@ -36,6 +37,14 @@ describe("Postgres migration runner", () => {
       await Bun.file(new URL("../db/postgres/migrations/checksums.json", import.meta.url)).text(),
     ) as { readonly migrations: Readonly<Record<string, string>> };
     expect(output.plan).toHaveLength(Object.keys(manifest.migrations).length);
+  });
+
+  test("keeps the Study review-key wire and storage bounds equal", async () => {
+    const migrations = await loadPostgresMigrations();
+    const foundation = migrations.find(({ version }) => version === "0074_study_v2_foundation.sql");
+    expect(foundation?.sql).toContain(
+      `exercise_review_key TEXT NOT NULL CHECK (char_length(exercise_review_key) BETWEEN 1 AND ${STUDY_EXERCISE_REVIEW_KEY_MAX_LENGTH})`,
+    );
   });
 
   test("normalizes psql's system sslrootcert value for node pg", () => {
