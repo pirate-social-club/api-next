@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   decodeHnsAppHostTransitionDocumentV1,
   decodeHnsDnsHealthDocumentV1,
+  decodeHnsDnsZonePersistenceDocumentV1,
   deriveHnsAuthoritySuccessorGenerationsV1,
   encodeHnsAppHostTransitionDocumentV1,
   encodeHnsDnsHealthDocumentV1,
@@ -13,6 +14,7 @@ import {
   requireReviewedHnsAuthorityCandidateV1,
 } from "./hns-host-persistence.ts";
 import {
+  decodeHnsAuthorityInventoryBytes,
   encodeHnsAuthorityInventory,
   hnsAuthorityCapabilitySetDigest,
 } from "./namespace-ownership/hns-authority-inventory.ts";
@@ -83,10 +85,12 @@ const chainDs = [
   [10875, 13, 2, "a".repeat(64)],
   [10875, 13, 4, "b".repeat(96)],
 ] as const;
+const canonicalZoneBytes = new TextEncoder().encode("$ORIGIN jazleeuw.\n; canonical observation\n");
+const canonicalZoneDigest = "907702901595a5d159cf4d855a8a3c907cfda15cb96f2fa8888cde954d324bb6";
 const observedView = (authorityAddress: string) => ({
   authority_address: authorityAddress,
   outcome: "observed" as const,
-  zone_bytes_digest: "c".repeat(64),
+  zone_bytes_digest: canonicalZoneDigest,
   dnskey_key_tag: 10875,
   derived_ds: chainDs,
 });
@@ -144,6 +148,17 @@ test("refuses authority disagreement and DNSKEY-to-chain DS mismatch", () => {
       chain_ds: [[39280, 13, 2, "d".repeat(64)]],
     }),
   ).toThrow("dnskey_ds_mismatch");
+  const wrongTagDs = [[39280, 13, 2, "d".repeat(64)]] as const;
+  expect(() =>
+    requireHnsAuthorityEmitObservationV1({
+      expected_authority_addresses: expected,
+      views: [
+        { ...observedView(expected[0]), derived_ds: wrongTagDs },
+        { ...observedView(expected[1]), derived_ds: wrongTagDs },
+      ],
+      chain_ds: wrongTagDs,
+    }),
+  ).toThrow("dnskey_ds_mismatch");
 });
 
 const emittedSnapshot = {
@@ -158,6 +173,12 @@ async function canonicalCandidateArtifacts() {
       authority_nameserver: "ns1.pirate",
       authority_address_family: "GLUE4" as const,
       authority_address: "94.103.168.161",
+      active: true,
+    },
+    {
+      authority_nameserver: "ns2.pirate",
+      authority_address_family: "GLUE4" as const,
+      authority_address: "81.15.150.159",
       active: true,
     },
   ];
@@ -185,6 +206,11 @@ async function canonicalCandidateArtifacts() {
     authoritative_nameserver_glue: authoritativeNameserverGlue,
     dns_write_capabilities: dnsWriteCapabilities,
   });
+  const authorityInventoryDigest = [
+    ...new Uint8Array(await crypto.subtle.digest("SHA-256", authorityInventory)),
+  ]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
   const observerEvidence = await encodeHnsControlObservationResultV2({
     version: "pirate-hns-control-observation-result-v2",
     observation_id: "observer-jazleeuw-verified-01",
@@ -200,7 +226,7 @@ async function canonicalCandidateArtifacts() {
     txt_name: "jazleeuw",
     expected_txt_value_sha256: "3".repeat(64),
     control_identity_digest: "4".repeat(64),
-    chain_authority_digest: "5".repeat(64),
+    chain_authority_digest: "3".repeat(64),
     root_exists: true,
     root_control_verified: true,
     expiry_horizon_sufficient: true,
@@ -219,13 +245,17 @@ async function canonicalCandidateArtifacts() {
       dns_zone_activation_id: "hns-rehearsal-dns-zone-v1",
       canonical_root: "jazleeuw",
       dns_authority: ["pirate_managed_dns_v1", "dns-authority:jazleeuw", 6],
-      pirate_dns_authority_inventory: ["authority-inventory:jazleeuw", "v6", "9".repeat(64)],
+      pirate_dns_authority_inventory: [
+        "authority-inventory:jazleeuw",
+        "v6",
+        authorityInventoryDigest,
+      ],
       zone_revision: 6,
       dnssec_keyset: ["dnssec-keyset:jazleeuw", "key-tag-10875"],
       gateway: ["gateway:jazleeuw", "2".repeat(64)],
       stable_chain_delegation_snapshot: ["delegation:jazleeuw:344448", "3".repeat(64)],
     },
-    zone_bytes: new TextEncoder().encode("$ORIGIN jazleeuw.\n; canonical observation\n"),
+    zone_bytes: canonicalZoneBytes,
   });
   const appHostActivation = encodeHnsAppHostTransitionDocumentV1({
     operation_id: "app-operation-10",
@@ -244,12 +274,12 @@ async function canonicalCandidateArtifacts() {
     activation_generation: 6,
     expected_health_generation: 0,
     stable_chain_delegation_snapshot_reference: "delegation:jazleeuw:344448",
-    stable_chain_delegation_snapshot_digest: "c".repeat(64),
-    observed_zone_bytes_digest: "d".repeat(64),
+    stable_chain_delegation_snapshot_digest: "3".repeat(64),
+    observed_zone_bytes_digest: canonicalZoneDigest,
     observed_dnssec_keyset_reference: "dnssec-keyset:jazleeuw",
     observed_dnssec_keyset_version: "key-tag-10875",
     observed_gateway_deployment_reference: "gateway:jazleeuw",
-    observed_gateway_certificate_spki_sha256: "e".repeat(64),
+    observed_gateway_certificate_spki_sha256: "2".repeat(64),
     delegation_matches: true,
     ds_authenticates_zone: true,
     retained_zone_digest_matches: true,
@@ -264,6 +294,286 @@ async function canonicalCandidateArtifacts() {
     observer_evidence: observerEvidence,
   } as const;
 }
+
+type CandidatePreparationInput = Parameters<typeof prepareHnsAuthoritySuccessorCandidateV1>[0];
+type DecodedDnsDocument = Awaited<ReturnType<typeof decodeHnsDnsZonePersistenceDocumentV1>>;
+
+async function canonicalCandidateInput(): Promise<CandidatePreparationInput> {
+  return {
+    source_commit: "1".repeat(40),
+    root_label: "jazleeuw",
+    observed_at: "2026-08-29T17:00:00.000Z",
+    chain_height: 344_448,
+    generation_snapshot: emittedSnapshot,
+    expected_authority_addresses: ["94.103.168.161", "81.15.150.159"],
+    authority_views: [observedView("94.103.168.161"), observedView("81.15.150.159")],
+    chain_ds: chainDs,
+    artifacts: await canonicalCandidateArtifacts(),
+  };
+}
+
+async function rewriteDnsArtifact(
+  bytes: Uint8Array,
+  transform: (document: DecodedDnsDocument) => DecodedDnsDocument,
+): Promise<Uint8Array> {
+  const document = transform(await decodeHnsDnsZonePersistenceDocumentV1(bytes));
+  const prepared = await prepareHnsDnsZoneActivationDocumentV1({
+    payload: {
+      version: HNS_DNS_ZONE_ACTIVATION_DOCUMENT_VERSION,
+      dns_zone_activation_id: document.dns_zone_activation_id,
+      canonical_root: document.canonical_root,
+      dns_authority: [
+        document.dns_authority_kind,
+        document.dns_authority_reference,
+        document.dns_authority_generation,
+      ],
+      pirate_dns_authority_inventory: [
+        document.pirate_dns_authority_inventory_reference,
+        document.pirate_dns_authority_inventory_version,
+        document.pirate_dns_authority_inventory_digest,
+      ],
+      zone_revision: document.zone_revision,
+      dnssec_keyset: [document.dnssec_keyset_reference, document.dnssec_keyset_version],
+      gateway: [document.gateway_deployment_reference, document.gateway_certificate_spki_sha256],
+      stable_chain_delegation_snapshot: [
+        document.stable_chain_delegation_snapshot_reference,
+        document.stable_chain_delegation_snapshot_digest,
+      ],
+    },
+    zone_bytes: document.zone_bytes,
+  });
+  return encodeHnsDnsZonePersistenceDocumentV1(prepared);
+}
+
+function rewriteHealthArtifact(
+  bytes: Uint8Array,
+  patch: Partial<ReturnType<typeof decodeHnsDnsHealthDocumentV1>>,
+): Uint8Array {
+  return encodeHnsDnsHealthDocumentV1({ ...decodeHnsDnsHealthDocumentV1(bytes), ...patch });
+}
+
+function rewriteAppArtifact(
+  bytes: Uint8Array,
+  patch: Partial<ReturnType<typeof decodeHnsAppHostTransitionDocumentV1>>,
+): Uint8Array {
+  return encodeHnsAppHostTransitionDocumentV1({
+    ...decodeHnsAppHostTransitionDocumentV1(bytes),
+    ...patch,
+  });
+}
+
+test("refuses every divergent semantic join between canonical review artifacts", async () => {
+  const cases: ReadonlyArray<
+    readonly [
+      string,
+      (
+        input: CandidatePreparationInput,
+      ) => CandidatePreparationInput | Promise<CandidatePreparationInput>,
+    ]
+  > = [
+    [
+      "inventory reference",
+      async (input) => {
+        const decoded = await decodeHnsAuthorityInventoryBytes(input.artifacts.authority_inventory);
+        return {
+          ...input,
+          artifacts: {
+            ...input.artifacts,
+            authority_inventory: await encodeHnsAuthorityInventory({
+              ...decoded.inventory,
+              authority_inventory_reference: "authority-inventory:elsewhere",
+            }),
+          },
+        };
+      },
+    ],
+    [
+      "inventory version",
+      async (input) => ({
+        ...input,
+        artifacts: {
+          ...input.artifacts,
+          dns_zone_activation: await rewriteDnsArtifact(
+            input.artifacts.dns_zone_activation,
+            (document) => ({ ...document, pirate_dns_authority_inventory_version: "v7" }),
+          ),
+        },
+      }),
+    ],
+    [
+      "inventory digest",
+      async (input) => ({
+        ...input,
+        artifacts: {
+          ...input.artifacts,
+          dns_zone_activation: await rewriteDnsArtifact(
+            input.artifacts.dns_zone_activation,
+            (document) => ({ ...document, pirate_dns_authority_inventory_digest: "f".repeat(64) }),
+          ),
+        },
+      }),
+    ],
+    [
+      "inventory freshness",
+      async (input) => {
+        const decoded = await decodeHnsAuthorityInventoryBytes(input.artifacts.authority_inventory);
+        return {
+          ...input,
+          artifacts: {
+            ...input.artifacts,
+            authority_inventory: await encodeHnsAuthorityInventory({
+              ...decoded.inventory,
+              published_at: "2026-08-29T15:00:00.000Z",
+              expires_at: "2026-08-29T16:00:00.000Z",
+            }),
+          },
+        };
+      },
+    ],
+    [
+      "inventory environment",
+      (input) => ({
+        ...input,
+        artifacts: {
+          ...input.artifacts,
+          observer_evidence: new TextEncoder().encode(
+            new TextDecoder()
+              .decode(input.artifacts.observer_evidence)
+              .replace('"environment":"production"', '"environment":"staging"'),
+          ),
+        },
+      }),
+    ],
+    [
+      "authority address inventory",
+      (input) => ({
+        ...input,
+        expected_authority_addresses: ["94.103.168.161", "203.0.113.53"],
+        authority_views: [observedView("94.103.168.161"), observedView("203.0.113.53")],
+      }),
+    ],
+    [
+      "DNS root",
+      async (input) => ({
+        ...input,
+        artifacts: {
+          ...input.artifacts,
+          dns_zone_activation: await rewriteDnsArtifact(
+            input.artifacts.dns_zone_activation,
+            (document) => ({ ...document, canonical_root: "elsewhere" }),
+          ),
+        },
+      }),
+    ],
+    [
+      "DNS generation",
+      async (input) => ({
+        ...input,
+        artifacts: {
+          ...input.artifacts,
+          dns_zone_activation: await rewriteDnsArtifact(
+            input.artifacts.dns_zone_activation,
+            (document) => ({ ...document, dns_authority_generation: 7 }),
+          ),
+        },
+      }),
+    ],
+    [
+      "DNS key tag",
+      async (input) => ({
+        ...input,
+        artifacts: {
+          ...input.artifacts,
+          dns_zone_activation: await rewriteDnsArtifact(
+            input.artifacts.dns_zone_activation,
+            (document) => ({ ...document, dnssec_keyset_version: "key-tag-39280" }),
+          ),
+        },
+      }),
+    ],
+    [
+      "authority zone digest",
+      (input) => ({
+        ...input,
+        authority_views: [
+          { ...observedView("94.103.168.161"), zone_bytes_digest: "f".repeat(64) },
+          { ...observedView("81.15.150.159"), zone_bytes_digest: "f".repeat(64) },
+        ],
+      }),
+    ],
+    [
+      "app current generation",
+      (input) => ({
+        ...input,
+        artifacts: {
+          ...input.artifacts,
+          app_host_activation: rewriteAppArtifact(input.artifacts.app_host_activation, {
+            expected_activation_generation: 8,
+          }),
+        },
+      }),
+    ],
+    [
+      "app target status",
+      (input) => ({
+        ...input,
+        artifacts: {
+          ...input.artifacts,
+          app_host_activation: rewriteAppArtifact(input.artifacts.app_host_activation, {
+            target_status: "suspended",
+          }),
+        },
+      }),
+    ],
+    ...(
+      [
+        ["health activation id", { dns_zone_activation_id: "dns-zone:elsewhere" }],
+        ["health DNS generation", { activation_generation: 7 }],
+        ["health prior generation", { expected_health_generation: 1 }],
+        [
+          "health delegation reference",
+          { stable_chain_delegation_snapshot_reference: "delegation:elsewhere" },
+        ],
+        ["health delegation digest", { stable_chain_delegation_snapshot_digest: "f".repeat(64) }],
+        ["health zone digest", { observed_zone_bytes_digest: "f".repeat(64) }],
+        [
+          "health keyset reference",
+          { observed_dnssec_keyset_reference: "dnssec-keyset:elsewhere" },
+        ],
+        ["health keyset version", { observed_dnssec_keyset_version: "key-tag-39280" }],
+        [
+          "health gateway reference",
+          { observed_gateway_deployment_reference: "gateway:elsewhere" },
+        ],
+        ["health gateway SPKI", { observed_gateway_certificate_spki_sha256: "f".repeat(64) }],
+        ["health delegation gate", { delegation_matches: false }],
+        ["health DS gate", { ds_authenticates_zone: false }],
+        ["health retained-zone gate", { retained_zone_digest_matches: false }],
+        ["health gateway gate", { gateway_healthy: false }],
+      ] as const
+    ).map(
+      ([label, patch]) =>
+        [
+          label,
+          (input: CandidatePreparationInput) => ({
+            ...input,
+            artifacts: {
+              ...input.artifacts,
+              health_observation: rewriteHealthArtifact(input.artifacts.health_observation, patch),
+            },
+          }),
+        ] as const,
+    ),
+  ];
+
+  for (const [label, mutate] of cases) {
+    const input = await canonicalCandidateInput();
+    await expect(
+      prepareHnsAuthoritySuccessorCandidateV1(await mutate(input)),
+      label,
+    ).rejects.toMatchObject({ reason: "artifact_semantics_mismatch" });
+  }
+});
 
 test("refuses pointer drift independently of candidate byte identity", () => {
   const bytes = new TextEncoder().encode("reviewed-6-10-1");

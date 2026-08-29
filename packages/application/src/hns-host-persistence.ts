@@ -49,7 +49,8 @@ export class HnsAuthorityEmitRefusal extends Error {
       | "incomplete_candidate_artifacts"
       | "noncanonical_candidate_artifact"
       | "observer_evidence_not_verified"
-      | "observer_evidence_mismatch",
+      | "observer_evidence_mismatch"
+      | "artifact_semantics_mismatch",
   ) {
     super(`HNS authority candidate emission refused: ${reason}`);
   }
@@ -167,6 +168,20 @@ export async function prepareHnsAuthoritySuccessorCandidateV1(
   ) {
     throw new HnsAuthorityEmitRefusal("noncanonical_candidate_artifact");
   }
+  const generations = deriveHnsAuthoritySuccessorGenerationsV1(input.generation_snapshot);
+  requireHnsAuthorityCandidateArtifactSemanticsV1({
+    root_label: input.root_label,
+    observed_at: input.observed_at,
+    generation_snapshot: input.generation_snapshot,
+    generations,
+    expected_authority_addresses: input.expected_authority_addresses,
+    views,
+    inventory,
+    dns_zone_activation: dnsZoneActivation,
+    app_host_transition: appHostTransition,
+    health_observation: healthObservation,
+    observer_evidence: observation.result,
+  });
   const artifacts = await Promise.all(
     artifactNames.map(async (name) => {
       const bytes = new Uint8Array(input.artifacts[name]);
@@ -179,7 +194,7 @@ export async function prepareHnsAuthoritySuccessorCandidateV1(
     root_label: input.root_label,
     observed_at: input.observed_at,
     chain_height: input.chain_height,
-    generations: deriveHnsAuthoritySuccessorGenerationsV1(input.generation_snapshot),
+    generations,
     dnskey_key_tag: views[0].dnskey_key_tag as number,
     authority_views: views,
     chain_ds: input.chain_ds,
@@ -191,6 +206,93 @@ export async function prepareHnsAuthoritySuccessorCandidateV1(
     candidate_bytes: candidateBytes,
     candidate_sha256: await sha256Hex(candidateBytes),
   };
+}
+
+function dnsKeyTagFromVersion(value: string): number | null {
+  const match = /^key-tag-([1-9][0-9]{0,4})$/u.exec(value);
+  if (match === null) return null;
+  const keyTag = Number(match[1]);
+  return Number.isSafeInteger(keyTag) && keyTag <= 65_535 ? keyTag : null;
+}
+
+function requireHnsAuthorityCandidateArtifactSemanticsV1(
+  input: Readonly<{
+    root_label: string;
+    observed_at: string;
+    generation_snapshot: HnsAuthoritySuccessorGenerationSnapshotV1;
+    generations: HnsAuthoritySuccessorGenerationsV1;
+    expected_authority_addresses: readonly [string, string];
+    views: readonly [HnsAuthorityEmitViewV1, HnsAuthorityEmitViewV1];
+    inventory: Awaited<ReturnType<typeof decodeHnsAuthorityInventoryBytes>>;
+    dns_zone_activation: HnsDnsZoneActivationDocumentV1;
+    app_host_transition: HnsCommunityAppHostStatusChangeInputV1;
+    health_observation: HnsDnsZoneHealthInputV1;
+    observer_evidence: Readonly<{
+      status: "verified";
+      environment: string;
+    }>;
+  }>,
+): void {
+  const inventory = input.inventory.inventory;
+  const dns = input.dns_zone_activation;
+  const app = input.app_host_transition;
+  const health = input.health_observation;
+  const activeAuthorityAddresses = new Set(
+    inventory.authoritative_nameserver_glue
+      .filter((entry) => entry.active)
+      .map((entry) => entry.authority_address),
+  );
+  const inventoryCoversRoot = inventory.dns_write_capabilities.some(
+    (entry) =>
+      entry.active && entry.scope_kind === "exact_root" && entry.root_label === input.root_label,
+  );
+  const observedAt = Date.parse(input.observed_at);
+  const inventoryIsCurrent =
+    Date.parse(inventory.published_at) <= observedAt &&
+    observedAt < Date.parse(inventory.expires_at);
+  const dnsKeyTag = dnsKeyTagFromVersion(dns.dnssec_keyset_version);
+  const healthChecksPassed =
+    health.delegation_matches &&
+    health.ds_authenticates_zone &&
+    health.retained_zone_digest_matches &&
+    health.gateway_healthy;
+
+  if (
+    !inventoryCoversRoot ||
+    !inventoryIsCurrent ||
+    inventory.environment !== input.observer_evidence.environment ||
+    input.expected_authority_addresses.some((address) => !activeAuthorityAddresses.has(address)) ||
+    dns.canonical_root !== input.root_label ||
+    dns.pirate_dns_authority_inventory_reference !== inventory.authority_inventory_reference ||
+    dns.pirate_dns_authority_inventory_version !== inventory.authority_inventory_version ||
+    dns.pirate_dns_authority_inventory_digest !== input.inventory.inventory_digest ||
+    dns.dns_authority_generation !== input.generations.dns_activation_generation ||
+    dnsKeyTag === null ||
+    input.views.some(
+      (view) =>
+        view.zone_bytes_digest !== dns.zone_bytes_digest || view.dnskey_key_tag !== dnsKeyTag,
+    ) ||
+    app.expected_activation_generation !== input.generation_snapshot.app_host_current_generation ||
+    app.expected_activation_generation + 1 !== input.generations.app_host_activation_generation ||
+    app.target_status !== "active" ||
+    health.dns_zone_activation_id !== dns.dns_zone_activation_id ||
+    health.activation_generation !== input.generations.dns_activation_generation ||
+    health.expected_health_generation !==
+      input.generation_snapshot.successor_dns_latest_health_generation ||
+    health.expected_health_generation + 1 !== input.generations.health_generation ||
+    health.stable_chain_delegation_snapshot_reference !==
+      dns.stable_chain_delegation_snapshot_reference ||
+    health.stable_chain_delegation_snapshot_digest !==
+      dns.stable_chain_delegation_snapshot_digest ||
+    health.observed_zone_bytes_digest !== dns.zone_bytes_digest ||
+    health.observed_dnssec_keyset_reference !== dns.dnssec_keyset_reference ||
+    health.observed_dnssec_keyset_version !== dns.dnssec_keyset_version ||
+    health.observed_gateway_deployment_reference !== dns.gateway_deployment_reference ||
+    health.observed_gateway_certificate_spki_sha256 !== dns.gateway_certificate_spki_sha256 ||
+    !healthChecksPassed
+  ) {
+    throw new HnsAuthorityEmitRefusal("artifact_semantics_mismatch");
+  }
 }
 
 export class HnsAuthorityCandidateCommitRefusal extends Error {
@@ -238,6 +340,24 @@ function sameDs(
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+function validDsForKeyTag(records: ReadonlyArray<HnsAuthorityEmitDsV1>, keyTag: number): boolean {
+  const digestTypes = new Set<number>();
+  return (
+    records.length > 0 &&
+    records.every(([recordKeyTag, algorithm, digestType, digest]) => {
+      if (digestTypes.has(digestType)) return false;
+      digestTypes.add(digestType);
+      return (
+        recordKeyTag === keyTag &&
+        algorithm === 13 &&
+        (digestType === 2
+          ? /^[0-9a-f]{64}$/u.test(digest)
+          : digestType === 4 && /^[0-9a-f]{96}$/u.test(digest))
+      );
+    })
+  );
+}
+
 /** Requires a complete, internally consistent two-authority DNSSEC observation. */
 export function requireHnsAuthorityEmitObservationV1(
   input: Readonly<{
@@ -276,6 +396,12 @@ export function requireHnsAuthorityEmitObservationV1(
     throw new HnsAuthorityEmitRefusal("authority_view_mismatch");
   }
   if (!sameDs(first.derived_ds, input.chain_ds)) {
+    throw new HnsAuthorityEmitRefusal("dnskey_ds_mismatch");
+  }
+  if (
+    !validDsForKeyTag(first.derived_ds, first.dnskey_key_tag) ||
+    !validDsForKeyTag(input.chain_ds, first.dnskey_key_tag)
+  ) {
     throw new HnsAuthorityEmitRefusal("dnskey_ds_mismatch");
   }
   return [first, second];
