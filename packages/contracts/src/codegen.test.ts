@@ -190,7 +190,9 @@ describe("codegen pipeline", () => {
     );
     expect(client).toContain('bodyEncoding === "raw-text"');
     expect(client).toContain("headers.set(key, String(value))");
-    expect(client).toContain('body: bodyEncoding === "raw-text" ? requestInput.body as string');
+    expect(client).toContain(
+      'body: bodyEncoding === "raw-bytes" ? requestInput.body as Exclude<RequestInit["body"], undefined> : bodyEncoding === "raw-text" ? requestInput.body as string',
+    );
     expect(client).toContain(
       'request("post_callbacksRaw", "POST", "/callbacks/raw", input, options, "raw-text")',
     );
@@ -199,10 +201,10 @@ describe("codegen pipeline", () => {
   test("JSON remains the default request body encoding", () => {
     const client = generateClient({ Json: fixture });
     expect(client).toContain(
-      'headers.set("content-type", bodyEncoding === "raw-text" ? "text/plain" : "application/json")',
+      'bodyEncoding !== "raw-bytes") headers.set("content-type", bodyEncoding === "raw-text" ? "text/plain" : "application/json")',
     );
     expect(client).toContain(
-      'body: bodyEncoding === "raw-text" ? requestInput.body as string : bodyEncoding === "exact-json" ? serializeExactJsonBody(requestInput.body, exactJsonMembers) : JSON.stringify(requestInput.body)',
+      'body: bodyEncoding === "raw-bytes" ? requestInput.body as Exclude<RequestInit["body"], undefined> : bodyEncoding === "raw-text" ? requestInput.body as string : bodyEncoding === "exact-json" ? serializeExactJsonBody(requestInput.body, exactJsonMembers) : JSON.stringify(requestInput.body)',
     );
     expect(client).toContain(
       'request("post_echoMessage", "POST", "/echo/:message", input, options),',

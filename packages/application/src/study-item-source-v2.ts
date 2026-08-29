@@ -13,13 +13,6 @@ const PositiveInteger = Schema.Int.check(
   Schema.isBetween({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
 );
 
-const AcceptedAnswers = Schema.NonEmptyArray(Text).check(
-  Schema.isMaxLength(12),
-  Schema.makeFilter((answers) =>
-    new Set(answers).size === answers.length ? undefined : "Accepted answers must be unique",
-  ),
-);
-
 export const StudyPrivateGraderV2 = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("source_token_diff_v1"),
@@ -30,13 +23,6 @@ export const StudyPrivateGraderV2 = Schema.Union([
     kind: Schema.Literal("exact_choice_v1"),
     correct_choice_key: Identifier,
     correct_text: Text,
-    explanation: Schema.optional(Text),
-  }),
-  Schema.Struct({
-    kind: Schema.Literal("accepted_text_v1"),
-    canonical_answer: Text,
-    accepted_answers: AcceptedAnswers,
-    normalization_policy_revision: Identifier,
     explanation: Schema.optional(Text),
   }),
 ]);
@@ -69,7 +55,8 @@ export const StudySourceItemV2 = Schema.Struct({
   exercise_variant: Identifier,
   line: StudyLineBindingV2,
   languages: StudyLanguageRolesV2,
-  learner_band: StudyLearnerBandV2,
+  learner_band: Schema.NullOr(StudyLearnerBandV2),
+  language_profile_revision: Schema.NullOr(PositiveInteger),
   presentation: StudyPresentationV2,
   private_grader: StudyPrivateGraderV2,
   answer_visibility: Schema.Literals(["always_visible", "secret_until_spent"]),
@@ -83,11 +70,7 @@ export const StudySourceItemV2 = Schema.Struct({
       return "Exercise and presentation kinds must match";
     }
     const graderKind =
-      item.exercise_type === "say_it_back"
-        ? "source_token_diff_v1"
-        : item.exercise_type === "translation_choice"
-          ? "exact_choice_v1"
-          : "accepted_text_v1";
+      item.exercise_type === "say_it_back" ? "source_token_diff_v1" : "exact_choice_v1";
     if (item.private_grader.kind !== graderKind) {
       return "Exercise and private grader kinds must match";
     }
@@ -106,13 +89,6 @@ export const StudySourceItemV2 = Schema.Struct({
         return "The private correct choice must exactly match one presented choice";
       }
     }
-    if (
-      item.exercise_type === "typed_cloze" &&
-      item.private_grader.kind === "accepted_text_v1" &&
-      !item.private_grader.accepted_answers.includes(item.private_grader.canonical_answer)
-    ) {
-      return "The canonical cloze answer must be accepted";
-    }
     return undefined;
   }),
 );
@@ -125,7 +101,7 @@ export const StudySourceSetV2 = Schema.Struct({
   learning_language: Schema.Literal("en"),
   selection_policy_revision: Identifier,
   items: Schema.NonEmptyArray(StudySourceItemV2).check(
-    Schema.isMaxLength(64),
+    Schema.isMaxLength(10),
     Schema.makeFilter((items) => {
       const sourceKeys = new Set(items.map(({ source_item_key }) => source_item_key));
       const versions = new Set(items.map(({ exercise_version_id }) => exercise_version_id));
@@ -149,7 +125,8 @@ export const StudySourcePromptV2 = Schema.Struct({
   exercise_variant: Identifier,
   line: StudyLineBindingV2,
   languages: StudyLanguageRolesV2,
-  learner_band: StudyLearnerBandV2,
+  learner_band: Schema.NullOr(StudyLearnerBandV2),
+  language_profile_revision: Schema.NullOr(PositiveInteger),
   presentation: StudyPresentationV2,
   answer_visibility: Schema.Literals(["always_visible", "secret_until_spent"]),
   feedback_release: Schema.Literals(["every_graded_attempt", "spent_only"]),
@@ -173,6 +150,7 @@ export const studySourcePromptV2 = (item: StudySourceItemV2): StudySourcePromptV
   line: item.line,
   languages: item.languages,
   learner_band: item.learner_band,
+  language_profile_revision: item.language_profile_revision,
   presentation: item.presentation,
   answer_visibility: item.answer_visibility,
   feedback_release: item.feedback_release,

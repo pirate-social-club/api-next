@@ -16,21 +16,19 @@ describe("Study v2 graders", () => {
     expect(gradeExactChoiceV2("Choice-A", "choice-a")).toBe(false);
   });
 
-  test("returns deterministic matched, missing, and extra transcript spans", () => {
+  test("returns deterministic expected positions and substitutions", () => {
     expect(gradeEnglishTranscriptV2("Hold on to the night", "hold to bright night")).toEqual({
       correct: false,
-      transcript: "hold to bright night",
+      heardTranscript: "hold to bright night",
       matched: [
-        { text: "hold", start: 0, end: 4 },
-        { text: "to", start: 5, end: 7 },
-        { text: "night", start: 15, end: 20 },
+        { token: "hold", position: 0 },
+        { token: "to", position: 2 },
+        { token: "night", position: 4 },
       ],
-      missing: [
-        { text: "on", start: 5, end: 7 },
-        { text: "the", start: 11, end: 14 },
-      ],
-      extra: [{ text: "bright", start: 8, end: 14 }],
-      policyRevision: "source_token_diff_en_v1",
+      missing: [{ token: "on", position: 1 }],
+      extra: [],
+      substituted: [{ expected: { token: "the", position: 3 }, heard: "bright" }],
+      policyRevision: "script_aware_token_diff_v1",
     });
   });
 

@@ -27,3 +27,9 @@ payloads, answer secrecy, transcript evidence, feedback, and identity.
 The opaque `study_capability` post field is retired. Clients must use the typed
 Study v2 availability endpoint and its explicit unavailable, processing,
 policy-blocked, and ready states.
+
+Spec 019 subsequently superseded the unpublished v2 transcript-evidence and
+typed-cloze draft. The accepted first spoken boundary is bounded raw audio;
+the browser cannot author a transcript. Sessions contain four through ten
+cards, repeated normalized lyric occurrences share a post-scoped Study unit,
+and both cloze variants remain deferred.

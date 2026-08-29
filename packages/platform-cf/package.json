@@ -26,6 +26,7 @@
     "./custody-solvency-repository": "./src/custody-solvency-repository.ts",
     "./activity-qualification-repository": "./src/activity-qualification-repository.ts",
     "./study-v2-repository": "./src/study-v2-repository.ts",
+    "./study-spoken-audio": "./src/study-spoken-audio.ts",
     "./accepted-lyrics-study-item-source": "./src/accepted-lyrics-study-item-source.ts",
     "./data-registration-repository": "./src/data-registration-repository.ts",
     "./data/registration-aeneid-chain": "./src/data/registration-aeneid-chain.ts",

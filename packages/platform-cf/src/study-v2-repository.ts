@@ -7,12 +7,12 @@ import {
   StudyV2StoreFailed,
 } from "@pirate/application";
 import {
-  type StudyAnswerResultV2,
+  StudyAnswerResultV2,
   StudyAvailabilityV2,
   StudySessionItemV2,
   StudySessionV2,
 } from "@pirate/contracts";
-import { gradeAcceptedTextV2, gradeEnglishTranscriptV2, gradeExactChoiceV2 } from "@pirate/domain";
+import { gradeExactChoiceV2 } from "@pirate/domain";
 import { Effect, type Layer, Schema } from "effect";
 import { recordQualificationProjections } from "./activity-qualification-repository.ts";
 
@@ -78,7 +78,8 @@ const readSession = Effect.fn("readStudyV2Session")(function* (
   const sessions = yield* db.execute<Row>({
     label: "study-v2.session.read",
     text: `SELECT session_id, persona_id, community_id, post_id, audio_revision,
-                  lyrics_revision, learning_language, helper_language, learner_band,
+                  lyrics_revision, learning_language, target_language, learner_band,
+                  language_profile_revision,
                   study_profile_revision, source_set_revision, selection_policy_revision,
                   qualification_policy_revision, timezone, status, created_at, completed_at
              FROM study_sessions_v2
@@ -129,10 +130,12 @@ const readSession = Effect.fn("readStudyV2Session")(function* (
         lyrics_revision: integer(row, "lyrics_revision"),
         languages: {
           learning_language: text(row, "learning_language"),
-          helper_language: nullableText(row, "helper_language"),
+          target_language: nullableText(row, "target_language"),
         },
-        learner_band: text(row, "learner_band"),
+        learner_band: nullableText(row, "learner_band"),
         study_profile_revision: integer(row, "study_profile_revision"),
+        language_profile_revision:
+          row.language_profile_revision === null ? null : integer(row, "language_profile_revision"),
         source_set_revision: integer(row, "source_set_revision"),
         selection_policy_revision: text(row, "selection_policy_revision"),
         qualification_policy_revision: text(row, "qualification_policy_revision"),
@@ -158,8 +161,8 @@ const exerciseRows = (
   input: {
     communityId: string;
     postId: string;
-    helperLanguage: string | null;
-    learnerBand: string;
+    targetLanguage: string | null;
+    learnerBand: string | null;
   },
 ) =>
   db.execute<Row>({
@@ -167,7 +170,8 @@ const exerciseRows = (
     text: `SELECT DISTINCT ON (exercise_review_key)
              exercise_version_id, exercise_review_key, exercise_type, exercise_variant,
              post_id, audio_revision, lyrics_revision, lyric_line_id, line_version,
-             line_source_hash, learning_language, helper_language, learner_band,
+             line_source_hash, study_unit_id, learning_language, target_language, learner_band,
+             language_profile_revision,
              presentation, answer_visibility, feedback_release, grader_policy_revision,
              feedback_policy_revision, quality_policy_revision
            FROM study_exercise_versions exercise
@@ -179,12 +183,12 @@ const exerciseRows = (
             AND submission.audio_revision=exercise.audio_revision
             AND submission.current_lyrics_revision=exercise.lyrics_revision
           WHERE exercise.community_id=$1 AND exercise.post_id=$2
-            AND exercise.learner_band=$3 AND exercise.retired_at IS NULL
-            AND ((exercise.exercise_type='translation_choice' AND exercise.helper_language=$4)
-              OR (exercise.exercise_type<>'translation_choice' AND exercise.helper_language IS NULL))
+            AND exercise.learner_band IS NOT DISTINCT FROM $3 AND exercise.retired_at IS NULL
+            AND ((exercise.exercise_type='translation_choice' AND exercise.target_language=$4)
+              OR (exercise.exercise_type='say_it_back' AND exercise.target_language IS NULL))
           ORDER BY exercise_review_key, content_revision DESC
-          LIMIT 64`,
-    values: [input.communityId, input.postId, input.learnerBand, input.helperLanguage],
+          LIMIT 10`,
+    values: [input.communityId, input.postId, input.learnerBand, input.targetLanguage],
     readonly: false,
   });
 
@@ -202,21 +206,24 @@ const itemFromExercise = (row: Row, sessionId: string, ordinal: number): StudySe
       audio_revision: integer(row, "audio_revision"),
       lyrics_revision: integer(row, "lyrics_revision"),
       lyric_line_id: text(row, "lyric_line_id"),
+      study_unit_id: text(row, "study_unit_id"),
       line_version: integer(row, "line_version"),
       line_source_hash: text(row, "line_source_hash"),
     },
     languages: {
       learning_language: text(row, "learning_language"),
-      helper_language: nullableText(row, "helper_language"),
+      target_language: nullableText(row, "target_language"),
     },
-    learner_band: text(row, "learner_band"),
+    learner_band: nullableText(row, "learner_band"),
+    language_profile_revision:
+      row.language_profile_revision === null ? null : integer(row, "language_profile_revision"),
     presentation: json(row.presentation),
     answer_visibility: text(row, "answer_visibility"),
     feedback_release: text(row, "feedback_release"),
     grader_policy_revision: text(row, "grader_policy_revision"),
     feedback_policy_revision: text(row, "feedback_policy_revision"),
     quality_policy_revision: text(row, "quality_policy_revision"),
-    maximum_attempts: 2,
+    maximum_attempts: 3,
   });
 
 export const makeControlPlaneStudyV2Repository = () => ({
@@ -226,7 +233,7 @@ export const makeControlPlaneStudyV2Repository = () => ({
         const db = yield* ControlPlaneDb;
         const rows = yield* db.execute<Row>({
           label: "study-v2.availability",
-          text: `SELECT exercise.exercise_type, exercise.helper_language,
+          text: `SELECT exercise.exercise_type, exercise.target_language,
                         exercise.learner_band, count(DISTINCT exercise.exercise_review_key)::bigint AS count
                    FROM study_exercise_versions exercise
                    JOIN media_publication_projections publication
@@ -238,16 +245,16 @@ export const makeControlPlaneStudyV2Repository = () => ({
                     AND submission.current_lyrics_revision=exercise.lyrics_revision
                   WHERE exercise.community_id=$1 AND exercise.post_id=$2
                     AND exercise.retired_at IS NULL
-                  GROUP BY exercise.exercise_type, exercise.helper_language, exercise.learner_band`,
+                  GROUP BY exercise.exercise_type, exercise.target_language, exercise.learner_band`,
           values: [input.communityId, input.postId],
           readonly: true,
         });
         const sourceByBand = new Map<string, number>();
         const translatedByBandAndHelper = new Map<string, number>();
         for (const row of rows.rows) {
-          const band = text(row, "learner_band");
+          const band = nullableText(row, "learner_band") ?? "source";
           const count = integer(row, "count");
-          const helper = nullableText(row, "helper_language");
+          const helper = nullableText(row, "target_language");
           if (helper === null) sourceByBand.set(band, (sourceByBand.get(band) ?? 0) + count);
           else {
             const key = `${band}\u0000${helper}`;
@@ -281,15 +288,22 @@ export const makeControlPlaneStudyV2Repository = () => ({
             ...new Set(rows.rows.map((row) => text(row, "exercise_type"))),
           ],
           learning_language: "en",
-          helper_languages: [
+          target_languages: [
             ...new Set(
               rows.rows.flatMap((row) => {
-                const value = nullableText(row, "helper_language");
+                const value = nullableText(row, "target_language");
                 return value === null ? [] : [value];
               }),
             ),
           ],
-          learner_bands: [...new Set(rows.rows.map((row) => text(row, "learner_band")))],
+          learner_bands: [
+            ...new Set(
+              rows.rows.flatMap((row) => {
+                const value = nullableText(row, "learner_band");
+                return value === null ? [] : [value];
+              }),
+            ),
+          ],
         });
       }),
     ),
@@ -321,7 +335,7 @@ export const makeControlPlaneStudyV2Repository = () => ({
             const exercises = yield* exerciseRows(transaction, {
               communityId: input.communityId,
               postId: input.postId,
-              helperLanguage: input.helperLanguage,
+              targetLanguage: input.targetLanguage,
               learnerBand: input.learnerBand,
             });
             if (exercises.rows.length < 4) return yield* rejected("insufficient-exercises");
@@ -333,7 +347,7 @@ export const makeControlPlaneStudyV2Repository = () => ({
               label: "study-v2.start.insert",
               text: `INSERT INTO study_sessions_v2 (
                 session_id, account_id, persona_id, community_id, post_id, audio_revision,
-                lyrics_revision, learning_language, helper_language, learner_band,
+                lyrics_revision, learning_language, target_language, learner_band,
                 study_profile_revision, source_set_revision, selection_policy_revision,
                 qualification_policy_revision, timezone, idempotency_key, request_hash, created_at
               ) VALUES ($1,$2,$3,$4,$5,$6,$7,'en',$8,$9,1,1,
@@ -346,7 +360,7 @@ export const makeControlPlaneStudyV2Repository = () => ({
                 input.postId,
                 integer(first, "audio_revision"),
                 integer(first, "lyrics_revision"),
-                input.helperLanguage,
+                input.targetLanguage,
                 input.learnerBand,
                 input.timezone,
                 input.idempotencyKey,
@@ -363,8 +377,10 @@ export const makeControlPlaneStudyV2Repository = () => ({
                 label: "study-v2.review.upsert",
                 text: `INSERT INTO study_review_items (
                   review_item_id, account_id, exercise_review_key, current_exercise_version_id,
-                  scheduler_policy_revision, scheduler_state
-                ) VALUES ($1,$2,$3,$4,'study_scheduler_v1','{}'::jsonb)
+                  scheduler_policy_revision, scheduler_state, community_id, post_id,
+                  study_unit_id, exercise_kind, learning_language, target_language, learner_band
+                ) VALUES ($1,$2,$3,$4,'study_review_schedule_v1','{}'::jsonb,
+                  $5,$6,$7,$8,$9,$10,$11)
                 ON CONFLICT (account_id, exercise_review_key) DO UPDATE SET
                   current_exercise_version_id=excluded.current_exercise_version_id,
                   updated_at=clock_timestamp()`,
@@ -373,6 +389,13 @@ export const makeControlPlaneStudyV2Repository = () => ({
                   input.accountId,
                   item.exercise_review_key,
                   item.exercise_version_id,
+                  input.communityId,
+                  input.postId,
+                  item.line.study_unit_id,
+                  item.exercise_type,
+                  item.languages.learning_language,
+                  item.languages.target_language,
+                  item.learner_band,
                 ],
                 readonly: false,
               });
@@ -388,7 +411,7 @@ export const makeControlPlaneStudyV2Repository = () => ({
                 text: `INSERT INTO study_session_items_v2 (
                   session_item_id, session_id, ordinal, exercise_review_key,
                   exercise_version_id, review_item_id, item_snapshot, maximum_attempts, account_id
-                ) VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,2,$8)`,
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,3,$8)`,
                 values: [
                   item.session_item_id,
                   input.sessionId,
@@ -416,6 +439,457 @@ export const makeControlPlaneStudyV2Repository = () => ({
     mapErrors(
       Effect.gen(function* () {
         return yield* readSession(yield* ControlPlaneDb, input);
+      }),
+    ),
+  loadSpokenAnswerContext: (input: Parameters<StudyV2Store["loadSpokenAnswerContext"]>[0]) =>
+    mapErrors(
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        const selected = yield* db.execute<Row>({
+          label: "study-v2.spoken.context",
+          text: `SELECT i.item_snapshot, e.private_grader, profile.dominant_language,
+                        profile.mixed, profile.confidence
+                   FROM study_session_items_v2 i
+                   JOIN study_sessions_v2 s ON s.session_id=i.session_id AND s.account_id=i.account_id
+                   JOIN study_exercise_versions e ON e.exercise_version_id=i.exercise_version_id
+              LEFT JOIN study_language_profile_units profile
+                     ON profile.community_id=s.community_id AND profile.post_id=s.post_id
+                    AND profile.lyrics_revision=s.lyrics_revision
+                    AND profile.language_profile_revision=s.language_profile_revision
+                    AND profile.study_unit_id=e.study_unit_id
+                  WHERE i.session_item_id=$1 AND i.session_id=$2 AND i.account_id=$3
+                    AND s.community_id=$4 AND s.status='active'`,
+          values: [input.sessionItemId, input.sessionId, input.accountId, input.communityId],
+          readonly: true,
+        });
+        if (selected.rows.length !== 1) return yield* rejected("not-found");
+        const row = selected.rows[0] as Row;
+        const item = decode(StudySessionItemV2, json(row.item_snapshot));
+        const grader = json(row.private_grader) as Record<string, unknown>;
+        if (
+          item.exercise_type !== "say_it_back" ||
+          grader.kind !== "source_token_diff_v1" ||
+          typeof grader.reference_text !== "string"
+        ) {
+          return yield* rejected("submission-kind-mismatch");
+        }
+        return {
+          item,
+          referenceText: grader.reference_text,
+          dominantLanguage:
+            row.mixed === false && row.confidence !== null
+              ? nullableText(row, "dominant_language")
+              : null,
+        };
+      }),
+    ),
+  reserveSpokenAnswer: (input: Parameters<StudyV2Store["reserveSpokenAnswer"]>[0]) =>
+    mapErrors(
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        return yield* db.withTransaction((transaction) =>
+          Effect.gen(function* () {
+            const selected = yield* transaction.execute<Row>({
+              label: "study-v2.spoken.reserve-item",
+              text: `SELECT i.item_snapshot
+                       FROM study_session_items_v2 i
+                       JOIN study_sessions_v2 s
+                         ON s.session_id=i.session_id AND s.account_id=i.account_id
+                      WHERE i.session_item_id=$1 AND i.session_id=$2 AND i.account_id=$3
+                        AND s.status='active' FOR UPDATE OF i, s`,
+              values: [input.sessionItemId, input.sessionId, input.accountId],
+              readonly: false,
+            });
+            if (selected.rows.length !== 1) return yield* rejected("not-found");
+            const item = decode(StudySessionItemV2, json((selected.rows[0] as Row).item_snapshot));
+            if (item.exercise_type !== "say_it_back") {
+              return yield* rejected("submission-kind-mismatch");
+            }
+            const replay = yield* transaction.execute<Row>({
+              label: "study-v2.spoken.reserve-existing",
+              text: `SELECT command_id, request_hash, audio_digest, state, result_snapshot
+                       FROM study_spoken_answer_commands
+                      WHERE session_id=$1 AND (
+                        idempotency_key=$2 OR (session_item_id=$3 AND attempt_number=$4)
+                      ) FOR UPDATE`,
+              values: [
+                input.sessionId,
+                input.idempotencyKey,
+                input.sessionItemId,
+                input.attemptNumber,
+              ],
+              readonly: false,
+            });
+            if (replay.rows.length > 1) return yield* rejected("idempotency-conflict");
+            const replayRow = replay.rows[0] as Row | undefined;
+            if (replayRow !== undefined) {
+              if (
+                text(replayRow, "request_hash") !== input.requestHash ||
+                text(replayRow, "audio_digest") !== input.audioDigest
+              ) {
+                return yield* rejected("idempotency-conflict");
+              }
+              if (text(replayRow, "state") === "completed") {
+                return {
+                  state: "completed" as const,
+                  result: decode(StudyAnswerResultV2, json(replayRow.result_snapshot)),
+                };
+              }
+              if (text(replayRow, "state") === "reserved") {
+                return yield* rejected("command-in-flight");
+              }
+            }
+            const attempts = yield* transaction.execute<Row>({
+              label: "study-v2.spoken.reserve-attempt",
+              text: `SELECT count(*)::bigint AS count FROM study_attempts_v2
+                      WHERE session_item_id=$1`,
+              values: [input.sessionItemId],
+              readonly: false,
+            });
+            if (input.attemptNumber !== integer(attempts.rows[0] as Row, "count") + 1) {
+              return yield* rejected("attempt-conflict");
+            }
+            if (replayRow !== undefined) {
+              const commandId = text(replayRow, "command_id");
+              yield* transaction.execute({
+                label: "study-v2.spoken.reserve-retry",
+                text: `UPDATE study_spoken_answer_commands
+                          SET state='reserved', provider_failure_kind=NULL, completed_at=NULL
+                        WHERE command_id=$1 AND account_id=$2 AND state='retryable_failed'`,
+                values: [commandId, input.accountId],
+                readonly: false,
+              });
+              return { state: "reserved" as const, commandId };
+            }
+            const inserted = yield* transaction.execute<Row>({
+              label: "study-v2.spoken.reserve-insert",
+              text: `INSERT INTO study_spoken_answer_commands (
+                       command_id, account_id, session_id, session_item_id, attempt_number,
+                       idempotency_key, request_hash, audio_digest, audio_content_type,
+                       audio_byte_size, audio_duration_ms, state
+                     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'reserved')
+                     ON CONFLICT DO NOTHING RETURNING command_id`,
+              values: [
+                input.commandId,
+                input.accountId,
+                input.sessionId,
+                input.sessionItemId,
+                input.attemptNumber,
+                input.idempotencyKey,
+                input.requestHash,
+                input.audioDigest,
+                input.audioContentType,
+                input.audioByteSize,
+                input.audioDurationMs,
+              ],
+              readonly: false,
+            });
+            if (inserted.rows.length === 1) {
+              return { state: "reserved" as const, commandId: input.commandId };
+            }
+            const existing = yield* transaction.execute<Row>({
+              label: "study-v2.spoken.reserve-replay",
+              text: `SELECT command_id, request_hash, audio_digest, state, result_snapshot
+                       FROM study_spoken_answer_commands
+                      WHERE session_id=$1 AND (
+                        idempotency_key=$2 OR (session_item_id=$3 AND attempt_number=$4)
+                      ) FOR UPDATE`,
+              values: [
+                input.sessionId,
+                input.idempotencyKey,
+                input.sessionItemId,
+                input.attemptNumber,
+              ],
+              readonly: false,
+            });
+            if (existing.rows.length !== 1) return yield* rejected("idempotency-conflict");
+            const row = existing.rows[0] as Row;
+            if (
+              text(row, "request_hash") !== input.requestHash ||
+              text(row, "audio_digest") !== input.audioDigest
+            ) {
+              return yield* rejected("idempotency-conflict");
+            }
+            const commandId = text(row, "command_id");
+            const state = text(row, "state");
+            if (state === "completed") {
+              return {
+                state: "completed" as const,
+                result: decode(StudyAnswerResultV2, json(row.result_snapshot)),
+              };
+            }
+            if (state === "reserved") return yield* rejected("command-in-flight");
+            yield* transaction.execute({
+              label: "study-v2.spoken.reserve-retry",
+              text: `UPDATE study_spoken_answer_commands
+                        SET state='reserved', provider_failure_kind=NULL, completed_at=NULL
+                      WHERE command_id=$1 AND account_id=$2 AND state='retryable_failed'`,
+              values: [commandId, input.accountId],
+              readonly: false,
+            });
+            return { state: "reserved" as const, commandId };
+          }),
+        );
+      }),
+    ),
+  failSpokenAnswer: (input: Parameters<StudyV2Store["failSpokenAnswer"]>[0]) =>
+    mapErrors(
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        const updated = yield* db.execute({
+          label: "study-v2.spoken.fail",
+          text: `UPDATE study_spoken_answer_commands
+                    SET state='retryable_failed', provider_failure_kind=$3,
+                        completed_at=$4::timestamptz
+                  WHERE command_id=$1 AND account_id=$2 AND state='reserved'`,
+          values: [input.commandId, input.accountId, input.providerFailureKind, input.failedAt],
+          readonly: false,
+        });
+        if (updated.rowCount !== 1) return yield* rejected("command-in-flight");
+      }),
+    ),
+  completeSpokenAnswer: (input: Parameters<StudyV2Store["completeSpokenAnswer"]>[0]) =>
+    mapErrors(
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        return yield* db.withTransaction((transaction) =>
+          Effect.gen(function* () {
+            const command = yield* transaction.execute<Row>({
+              label: "study-v2.spoken.complete-command",
+              text: `SELECT request_hash, state, result_snapshot
+                       FROM study_spoken_answer_commands
+                      WHERE command_id=$1 AND account_id=$2 FOR UPDATE`,
+              values: [input.commandId, input.accountId],
+              readonly: false,
+            });
+            if (command.rows.length !== 1) return yield* rejected("not-found");
+            const commandRow = command.rows[0] as Row;
+            if (text(commandRow, "request_hash") !== input.requestHash) {
+              return yield* rejected("idempotency-conflict");
+            }
+            if (text(commandRow, "state") === "completed") {
+              return decode(StudyAnswerResultV2, json(commandRow.result_snapshot));
+            }
+            if (text(commandRow, "state") !== "reserved") {
+              return yield* rejected("command-in-flight");
+            }
+            const selected = yield* transaction.execute<Row>({
+              label: "study-v2.spoken.complete-item",
+              text: `SELECT i.item_snapshot, s.post_id
+                       FROM study_session_items_v2 i
+                       JOIN study_sessions_v2 s
+                         ON s.session_id=i.session_id AND s.account_id=i.account_id
+                      WHERE i.session_item_id=$1 AND i.session_id=$2 AND i.account_id=$3
+                        AND s.community_id=$4 AND s.status='active' FOR UPDATE OF i, s`,
+              values: [input.sessionItemId, input.sessionId, input.accountId, input.communityId],
+              readonly: false,
+            });
+            if (selected.rows.length !== 1) return yield* rejected("not-found");
+            const item = decode(StudySessionItemV2, json((selected.rows[0] as Row).item_snapshot));
+            if (item.exercise_type !== "say_it_back") {
+              return yield* rejected("submission-kind-mismatch");
+            }
+            const expiresAt = new Date(input.acceptedAt);
+            expiresAt.setUTCMonth(expiresAt.getUTCMonth() + 24);
+            yield* transaction.execute({
+              label: "study-v2.spoken.artifact",
+              text: `INSERT INTO learner_audio_artifacts (
+                       learner_audio_artifact_id, account_id, source_kind, attempt_ref,
+                       object_ref, content_digest, content_type, byte_size, duration_ms,
+                       platform_retention, provider_retention, recording_state, expires_at
+                     ) VALUES ($1,$2,'study',$3,$4,$5,$6,$7,$8,
+                       'private_learning','not_stored',$9,$10::timestamptz)`,
+              values: [
+                input.artifactId,
+                input.accountId,
+                input.attemptId,
+                input.archive.objectRef,
+                input.audioDigest,
+                input.audioContentType,
+                input.audioByteSize,
+                input.audioDurationMs,
+                input.archive.state,
+                expiresAt.toISOString(),
+              ],
+              readonly: false,
+            });
+            const feedback = {
+              kind: "transcript_diff" as const,
+              heard_transcript: input.grade.heardTranscript,
+              matched: input.grade.matched,
+              missing: input.grade.missing,
+              extra: input.grade.extra,
+              substituted: input.grade.substituted.map(({ expected, heard }) => ({
+                expected,
+                heard,
+              })),
+              policy_revision: input.grade.policyRevision,
+            };
+            const tokenDiff = {
+              matched: input.grade.matched.map(({ position }) => position),
+              missing: input.grade.missing.map(({ position }) => position),
+              extra: input.grade.extra,
+              substituted: input.grade.substituted.map(({ expected, heard }) => ({
+                expected_position: expected.position,
+                heard,
+              })),
+            };
+            yield* transaction.execute({
+              label: "study-v2.spoken.attempt",
+              text: `INSERT INTO study_attempts_v2 (
+                       attempt_id, session_item_id, attempt_number, submission_kind,
+                       submission_evidence, outcome, first_pass, attempt_state, feedback_kind,
+                       feedback_evidence, grader_policy_revision, feedback_policy_revision,
+                       accepted_at, idempotency_key, request_hash, study_unit_id, exercise_kind,
+                       learning_language, target_language, learner_band, source_line_revision,
+                       language_profile_revision, localization_revision, grading_revision,
+                       review_schedule_version, presented_at, answered_at, audio_byte_size,
+                       audio_duration_ms, provider_detected_language,
+                       provider_detected_language_confidence, token_diff,
+                       learner_audio_artifact_id
+                     ) VALUES ($1,$2,$3,'raw_audio',$4::jsonb,$5,$6,'spent',
+                       'transcript_diff',$7::jsonb,$8,$9,$10::timestamptz,$11,$12,$13,
+                       'say_it_back',$14,NULL,NULL,$15,$16,NULL,$17,'study_review_schedule_v1',
+                       $10::timestamptz,$10::timestamptz,$18,$19,$20,$21,$22::jsonb,$23)`,
+              values: [
+                input.attemptId,
+                input.sessionItemId,
+                input.attemptNumber,
+                JSON.stringify({
+                  audio_digest: input.audioDigest,
+                  learner_audio_artifact_id: input.artifactId,
+                }),
+                input.grade.correct ? "correct" : "incorrect",
+                input.attemptNumber === 1,
+                JSON.stringify(feedback),
+                item.grader_policy_revision,
+                item.feedback_policy_revision,
+                input.acceptedAt,
+                input.commandId,
+                input.requestHash,
+                item.line.study_unit_id,
+                item.languages.learning_language,
+                item.line.line_version,
+                item.language_profile_revision,
+                item.grader_policy_revision,
+                input.audioByteSize,
+                input.audioDurationMs,
+                input.providerDetectedLanguage,
+                input.providerDetectedLanguageConfidence,
+                JSON.stringify(tokenDiff),
+                input.artifactId,
+              ],
+              readonly: false,
+            });
+            const remaining = yield* transaction.execute<Row>({
+              label: "study-v2.spoken.completion-check",
+              text: `SELECT count(*)::bigint AS count FROM study_session_items_v2 i
+                      WHERE i.session_id=$1 AND NOT EXISTS (
+                        SELECT 1 FROM study_attempts_v2 a
+                         WHERE a.session_item_id=i.session_item_id AND a.attempt_state='spent'
+                      )`,
+              values: [input.sessionId],
+              readonly: false,
+            });
+            if (integer(remaining.rows[0] as Row, "count") === 0) {
+              const completed = yield* transaction.execute<Row>({
+                label: "study-v2.spoken.session-complete",
+                text: `UPDATE study_sessions_v2 SET status='completed', completed_at=$2::timestamptz
+                        WHERE session_id=$1 AND status='active'
+                    RETURNING persona_id, community_id, post_id, audio_revision,
+                              qualification_policy_revision, timezone,
+                              ($2::timestamptz AT TIME ZONE timezone)::date AS streak_day`,
+                values: [input.sessionId, input.acceptedAt],
+                readonly: false,
+              });
+              if (completed.rows.length === 1) {
+                const progress = yield* transaction.execute<Row>({
+                  label: "study-v2.spoken.qualification-progress",
+                  text: `SELECT count(*)::bigint AS exercise_count,
+                                count(*) FILTER (WHERE EXISTS (
+                                  SELECT 1 FROM study_attempts_v2 attempt
+                                   WHERE attempt.session_item_id=item.session_item_id
+                                     AND attempt.attempt_number=1 AND attempt.outcome='correct'
+                                ))::bigint AS first_pass_correct
+                           FROM study_session_items_v2 item WHERE item.session_id=$1`,
+                  values: [input.sessionId],
+                  readonly: false,
+                });
+                const progressRow = progress.rows[0] as Row;
+                const exerciseCount = integer(progressRow, "exercise_count");
+                const firstPassCorrect = integer(progressRow, "first_pass_correct");
+                const requiredCorrect = Math.max(1, Math.ceil((7 * exerciseCount) / 10));
+                if (firstPassCorrect >= requiredCorrect) {
+                  const terminal = completed.rows[0] as Row;
+                  yield* transaction.execute({
+                    label: "study-v2.spoken.qualification-insert",
+                    text: `INSERT INTO activity_qualifications (
+                             qualification_id, account_id, persona_id, community_id, post_id,
+                             audio_revision, activity_key, study_session_id, score_bps,
+                             qualification_policy_version_id, qualified_at, streak_day,
+                             evidence_summary, created_at
+                           ) VALUES ($1,$2,$3,$4,$5,$6,'study',$7,$8,$9,$10::timestamptz,
+                             $11::date,$12::jsonb,$10::timestamptz)`,
+                    values: [
+                      input.qualificationId,
+                      input.accountId,
+                      text(terminal, "persona_id"),
+                      text(terminal, "community_id"),
+                      text(terminal, "post_id"),
+                      integer(terminal, "audio_revision"),
+                      input.sessionId,
+                      Math.floor((10_000 * firstPassCorrect) / exerciseCount),
+                      text(terminal, "qualification_policy_revision"),
+                      input.acceptedAt,
+                      text(terminal, "streak_day"),
+                      JSON.stringify({
+                        kind: "study_session_first_pass_v2",
+                        qualifying_exercise_count: exerciseCount,
+                        first_pass_correct: firstPassCorrect,
+                        required_correct: requiredCorrect,
+                      }),
+                    ],
+                    readonly: false,
+                  });
+                  yield* recordQualificationProjections(transaction, {
+                    accountId: input.accountId,
+                    communityId: text(terminal, "community_id"),
+                    personaId: text(terminal, "persona_id"),
+                    postId: text(terminal, "post_id"),
+                    activity: "study",
+                    qualificationId: input.qualificationId,
+                    qualifiedAt: input.acceptedAt,
+                    streakDay: text(terminal, "streak_day"),
+                    timezone: text(terminal, "timezone"),
+                  }).pipe(Effect.mapError(() => failed("constraint")));
+                }
+              }
+            }
+            const session = yield* readSession(transaction, input);
+            if (session === null) return yield* rejected("not-found");
+            const result = decode(StudyAnswerResultV2, {
+              object: "study_answer_result_v2",
+              session_item_id: input.sessionItemId,
+              attempt_number: input.attemptNumber,
+              exercise_type: "say_it_back",
+              outcome: input.grade.correct ? "correct" : "incorrect",
+              first_pass: input.attemptNumber === 1,
+              attempt_state: "spent",
+              feedback,
+              session,
+            });
+            yield* transaction.execute({
+              label: "study-v2.spoken.command-complete",
+              text: `UPDATE study_spoken_answer_commands
+                        SET state='completed', result_snapshot=$3::jsonb,
+                            completed_at=$4::timestamptz
+                      WHERE command_id=$1 AND account_id=$2 AND state='reserved'`,
+              values: [input.commandId, input.accountId, JSON.stringify(result), input.acceptedAt],
+              readonly: false,
+            });
+            return result;
+          }),
+        );
       }),
     ),
   submitAnswer: (input: Parameters<StudyV2Store["submitAnswer"]>[0]) =>
@@ -469,13 +943,9 @@ export const makeControlPlaneStudyV2Repository = () => ({
             const row = selected.rows[0] as Row;
             const item = json(row.item_snapshot) as StudySessionItemV2;
             const grader = json(row.private_grader) as Record<string, unknown>;
-            const expected =
-              item.exercise_type === "say_it_back"
-                ? "transcript_response"
-                : item.exercise_type === "translation_choice"
-                  ? "single_select"
-                  : "text_response";
-            if (input.answer.kind !== expected) return yield* rejected("submission-kind-mismatch");
+            if (item.exercise_type !== "translation_choice") {
+              return yield* rejected("submission-kind-mismatch");
+            }
             const attempts = yield* transaction.execute<Row>({
               label: "study-v2.answer.count",
               text: "SELECT count(*)::bigint AS count FROM study_attempts_v2 WHERE session_item_id=$1",
@@ -485,69 +955,21 @@ export const makeControlPlaneStudyV2Repository = () => ({
             if (input.attemptNumber !== integer(attempts.rows[0] as Row, "count") + 1) {
               return yield* rejected("attempt-conflict");
             }
-            let correct = false;
-            let transcriptGrade: ReturnType<typeof gradeEnglishTranscriptV2> | null = null;
-            if (input.answer.kind === "single_select") {
-              correct = gradeExactChoiceV2(
-                input.answer.choice_key,
-                String(grader.correct_choice_key),
-              );
-            } else if (input.answer.kind === "text_response") {
-              const accepted = Array.isArray(grader.accepted_answers)
-                ? grader.accepted_answers.filter(
-                    (value): value is string => typeof value === "string",
-                  )
-                : [];
-              correct = gradeAcceptedTextV2(input.answer.text, accepted);
-            } else {
-              const evidence = yield* transaction.execute<Row>({
-                label: "study-v2.transcript.read",
-                text: `SELECT transcript, expires_at FROM study_transcript_evidence_v2
-                        WHERE transcript_evidence_id=$1 AND account_id=$2 AND session_item_id=$3`,
-                values: [input.answer.transcript_evidence_id, input.accountId, input.sessionItemId],
-                readonly: false,
-              });
-              if (evidence.rows.length === 0)
-                return yield* rejected("transcript-evidence-mismatch");
-              const evidenceRow = evidence.rows[0] as Row;
-              if (Date.parse(iso(evidenceRow.expires_at)) <= Date.parse(input.acceptedAt)) {
-                return yield* rejected("transcript-evidence-expired");
-              }
-              transcriptGrade = gradeEnglishTranscriptV2(
-                String(grader.reference_text),
-                text(evidenceRow, "transcript"),
-              );
-              correct = transcriptGrade.correct;
-            }
+            const correct = gradeExactChoiceV2(
+              input.answer.choice_key,
+              String(grader.correct_choice_key),
+            );
             const spent = correct || input.attemptNumber >= integer(row, "maximum_attempts");
-            const feedback =
-              item.exercise_type === "say_it_back" && transcriptGrade !== null
-                ? {
-                    kind: "transcript_diff" as const,
-                    transcript: transcriptGrade.transcript,
-                    matched: transcriptGrade.matched,
-                    missing: transcriptGrade.missing,
-                    extra: transcriptGrade.extra,
-                    policy_revision: transcriptGrade.policyRevision,
-                  }
-                : !spent
-                  ? { kind: "none" as const }
-                  : item.exercise_type === "translation_choice"
-                    ? {
-                        kind: "choice_reveal" as const,
-                        correct_choice_key: String(grader.correct_choice_key),
-                        correct_text: String(grader.correct_text),
-                        ...(typeof grader.explanation === "string"
-                          ? { explanation: grader.explanation }
-                          : {}),
-                      }
-                    : {
-                        kind: "text_reveal" as const,
-                        accepted_answer: String(grader.canonical_answer),
-                        ...(typeof grader.explanation === "string"
-                          ? { explanation: grader.explanation }
-                          : {}),
-                      };
+            const feedback = !spent
+              ? { kind: "none" as const }
+              : {
+                  kind: "choice_reveal" as const,
+                  correct_choice_key: String(grader.correct_choice_key),
+                  correct_text: String(grader.correct_text),
+                  ...(typeof grader.explanation === "string"
+                    ? { explanation: grader.explanation }
+                    : {}),
+                };
             yield* transaction.execute({
               label: "study-v2.answer.insert",
               text: `INSERT INTO study_attempts_v2 (
@@ -688,5 +1110,9 @@ export const makeControlPlaneStudyV2Store = (
     startSession: (input) => provide(repository.startSession(input)),
     getSession: (input) => provide(repository.getSession(input)),
     submitAnswer: (input) => provide(repository.submitAnswer(input)),
+    loadSpokenAnswerContext: (input) => provide(repository.loadSpokenAnswerContext(input)),
+    reserveSpokenAnswer: (input) => provide(repository.reserveSpokenAnswer(input)),
+    failSpokenAnswer: (input) => provide(repository.failSpokenAnswer(input)),
+    completeSpokenAnswer: (input) => provide(repository.completeSpokenAnswer(input)),
   };
 };

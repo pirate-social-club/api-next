@@ -80045,7 +80045,7 @@
                         "learning_language": {
                           "type": "string"
                         },
-                        "helper_languages": {
+                        "target_languages": {
                           "type": "array",
                           "items": {
                             "type": "string"
@@ -80053,14 +80053,16 @@
                         },
                         "learner_bands": {
                           "type": "array",
-                          "prefixItems": [
-                            {
-                              "$ref": "#/$defs/Union_1"
-                            }
-                          ],
-                          "minItems": 1,
                           "items": {
-                            "$ref": "#/$defs/Union_1"
+                            "type": "string",
+                            "enum": [
+                              "A1",
+                              "A2",
+                              "B1",
+                              "B2",
+                              "C1",
+                              "C2"
+                            ]
                           }
                         }
                       },
@@ -80068,7 +80070,7 @@
                         "state",
                         "available_exercise_types",
                         "learning_language",
-                        "helper_languages",
+                        "target_languages",
                         "learner_bands"
                       ],
                       "additionalProperties": false
@@ -80079,19 +80081,7 @@
                       "type": "string",
                       "enum": [
                         "say_it_back",
-                        "translation_choice",
-                        "typed_cloze"
-                      ]
-                    },
-                    "Union_1": {
-                      "type": "string",
-                      "enum": [
-                        "A1",
-                        "A2",
-                        "B1",
-                        "B2",
-                        "C1",
-                        "C2"
+                        "translation_choice"
                       ]
                     }
                   }
@@ -80391,7 +80381,7 @@
                       }
                     ]
                   },
-                  "helper_language": {
+                  "target_language": {
                     "anyOf": [
                       {
                         "type": "string"
@@ -80402,14 +80392,21 @@
                     ]
                   },
                   "learner_band": {
-                    "type": "string",
-                    "enum": [
-                      "A1",
-                      "A2",
-                      "B1",
-                      "B2",
-                      "C1",
-                      "C2"
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "enum": [
+                          "A1",
+                          "A2",
+                          "B1",
+                          "B2",
+                          "C1",
+                          "C2"
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
                     ]
                   },
                   "timezone": {
@@ -80427,7 +80424,7 @@
                 "required": [
                   "idempotency_key",
                   "persona_id",
-                  "helper_language",
+                  "target_language",
                   "learner_band",
                   "timezone"
                 ],
@@ -80516,7 +80513,14 @@
                       "$ref": "#/$defs/Objects_"
                     },
                     "learner_band": {
-                      "$ref": "#/$defs/Union_"
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/Union_"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     },
                     "study_profile_revision": {
                       "type": "integer",
@@ -80524,6 +80528,22 @@
                         {
                           "minimum": 1,
                           "maximum": 9007199254740991
+                        }
+                      ]
+                    },
+                    "language_profile_revision": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        {
+                          "type": "null"
                         }
                       ]
                     },
@@ -80603,7 +80623,7 @@
                             "allOf": [
                               {
                                 "minimum": 0,
-                                "maximum": 63
+                                "maximum": 9
                               }
                             ]
                           },
@@ -80633,8 +80653,7 @@
                             "type": "string",
                             "enum": [
                               "say_it_back",
-                              "translation_choice",
-                              "typed_cloze"
+                              "translation_choice"
                             ]
                           },
                           "exercise_variant": {
@@ -80691,6 +80710,17 @@
                                   }
                                 ]
                               },
+                              "study_unit_id": {
+                                "type": "string",
+                                "allOf": [
+                                  {
+                                    "minLength": 1
+                                  },
+                                  {
+                                    "maxLength": 128
+                                  }
+                                ]
+                              },
                               "line_version": {
                                 "type": "integer",
                                 "allOf": [
@@ -80717,6 +80747,7 @@
                               "audio_revision",
                               "lyrics_revision",
                               "lyric_line_id",
+                              "study_unit_id",
                               "line_version",
                               "line_source_hash"
                             ],
@@ -80726,7 +80757,30 @@
                             "$ref": "#/$defs/Objects_"
                           },
                           "learner_band": {
-                            "$ref": "#/$defs/Union_"
+                            "anyOf": [
+                              {
+                                "$ref": "#/$defs/Union_"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "language_profile_revision": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "allOf": [
+                                  {
+                                    "minimum": 1,
+                                    "maximum": 9007199254740991
+                                  }
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
                           },
                           "presentation": {
                             "anyOf": [
@@ -80853,107 +80907,6 @@
                                   "capture"
                                 ],
                                 "additionalProperties": false
-                              },
-                              {
-                                "type": "object",
-                                "properties": {
-                                  "kind": {
-                                    "type": "string",
-                                    "enum": [
-                                      "typed_cloze"
-                                    ]
-                                  },
-                                  "segments": {
-                                    "type": "array",
-                                    "items": {
-                                      "anyOf": [
-                                        {
-                                          "type": "object",
-                                          "properties": {
-                                            "kind": {
-                                              "type": "string",
-                                              "enum": [
-                                                "text"
-                                              ]
-                                            },
-                                            "text": {
-                                              "type": "string",
-                                              "allOf": [
-                                                {
-                                                  "minLength": 1
-                                                },
-                                                {
-                                                  "maxLength": 4096
-                                                }
-                                              ]
-                                            }
-                                          },
-                                          "required": [
-                                            "kind",
-                                            "text"
-                                          ],
-                                          "additionalProperties": false
-                                        },
-                                        {
-                                          "type": "object",
-                                          "properties": {
-                                            "kind": {
-                                              "type": "string",
-                                              "enum": [
-                                                "blank"
-                                              ]
-                                            },
-                                            "blank_id": {
-                                              "type": "string",
-                                              "allOf": [
-                                                {
-                                                  "minLength": 1
-                                                },
-                                                {
-                                                  "maxLength": 128
-                                                }
-                                              ]
-                                            }
-                                          },
-                                          "required": [
-                                            "kind",
-                                            "blank_id"
-                                          ],
-                                          "additionalProperties": false
-                                        }
-                                      ]
-                                    },
-                                    "allOf": [
-                                      {
-                                        "minItems": 2
-                                      }
-                                    ]
-                                  },
-                                  "accessible_text": {
-                                    "type": "string",
-                                    "allOf": [
-                                      {
-                                        "minLength": 1
-                                      },
-                                      {
-                                        "maxLength": 4096
-                                      }
-                                    ]
-                                  },
-                                  "capture": {
-                                    "type": "string",
-                                    "enum": [
-                                      "keyboard_text"
-                                    ]
-                                  }
-                                },
-                                "required": [
-                                  "kind",
-                                  "segments",
-                                  "accessible_text",
-                                  "capture"
-                                ],
-                                "additionalProperties": false
                               }
                             ]
                           },
@@ -81025,6 +80978,7 @@
                           "line",
                           "languages",
                           "learner_band",
+                          "language_profile_revision",
                           "presentation",
                           "answer_visibility",
                           "feedback_release",
@@ -81040,7 +80994,7 @@
                           "minItems": 4
                         },
                         {
-                          "maxItems": 64
+                          "maxItems": 10
                         }
                       ]
                     },
@@ -81134,6 +81088,7 @@
                     "languages",
                     "learner_band",
                     "study_profile_revision",
+                    "language_profile_revision",
                     "source_set_revision",
                     "selection_policy_revision",
                     "qualification_policy_revision",
@@ -81152,7 +81107,7 @@
                         "learning_language": {
                           "type": "string"
                         },
-                        "helper_language": {
+                        "target_language": {
                           "anyOf": [
                             {
                               "type": "string"
@@ -81165,7 +81120,7 @@
                       },
                       "required": [
                         "learning_language",
-                        "helper_language"
+                        "target_language"
                       ],
                       "additionalProperties": false
                     },
@@ -81394,6 +81349,7 @@
               }
             },
             "x-error-codes": [
+              "conflict",
               "conflict"
             ]
           },
@@ -81502,6 +81458,59 @@
             "x-error-codes": [
               "internal_error"
             ]
+          },
+          "502": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "provider_unavailable"
+            ]
           }
         },
         "x-auth": {
@@ -81513,7 +81522,9 @@
           "AuthError",
           "BadRequest",
           "Conflict",
+          "RetryableConflict",
           "NotFound",
+          "ProviderUnavailable",
           "RateLimited",
           "InternalError"
         ]
@@ -81636,7 +81647,14 @@
                       "$ref": "#/$defs/Objects_"
                     },
                     "learner_band": {
-                      "$ref": "#/$defs/Union_"
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/Union_"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     },
                     "study_profile_revision": {
                       "type": "integer",
@@ -81644,6 +81662,22 @@
                         {
                           "minimum": 1,
                           "maximum": 9007199254740991
+                        }
+                      ]
+                    },
+                    "language_profile_revision": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        {
+                          "type": "null"
                         }
                       ]
                     },
@@ -81723,7 +81757,7 @@
                             "allOf": [
                               {
                                 "minimum": 0,
-                                "maximum": 63
+                                "maximum": 9
                               }
                             ]
                           },
@@ -81753,8 +81787,7 @@
                             "type": "string",
                             "enum": [
                               "say_it_back",
-                              "translation_choice",
-                              "typed_cloze"
+                              "translation_choice"
                             ]
                           },
                           "exercise_variant": {
@@ -81811,6 +81844,17 @@
                                   }
                                 ]
                               },
+                              "study_unit_id": {
+                                "type": "string",
+                                "allOf": [
+                                  {
+                                    "minLength": 1
+                                  },
+                                  {
+                                    "maxLength": 128
+                                  }
+                                ]
+                              },
                               "line_version": {
                                 "type": "integer",
                                 "allOf": [
@@ -81837,6 +81881,7 @@
                               "audio_revision",
                               "lyrics_revision",
                               "lyric_line_id",
+                              "study_unit_id",
                               "line_version",
                               "line_source_hash"
                             ],
@@ -81846,7 +81891,30 @@
                             "$ref": "#/$defs/Objects_"
                           },
                           "learner_band": {
-                            "$ref": "#/$defs/Union_"
+                            "anyOf": [
+                              {
+                                "$ref": "#/$defs/Union_"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "language_profile_revision": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "allOf": [
+                                  {
+                                    "minimum": 1,
+                                    "maximum": 9007199254740991
+                                  }
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
                           },
                           "presentation": {
                             "anyOf": [
@@ -81973,107 +82041,6 @@
                                   "capture"
                                 ],
                                 "additionalProperties": false
-                              },
-                              {
-                                "type": "object",
-                                "properties": {
-                                  "kind": {
-                                    "type": "string",
-                                    "enum": [
-                                      "typed_cloze"
-                                    ]
-                                  },
-                                  "segments": {
-                                    "type": "array",
-                                    "items": {
-                                      "anyOf": [
-                                        {
-                                          "type": "object",
-                                          "properties": {
-                                            "kind": {
-                                              "type": "string",
-                                              "enum": [
-                                                "text"
-                                              ]
-                                            },
-                                            "text": {
-                                              "type": "string",
-                                              "allOf": [
-                                                {
-                                                  "minLength": 1
-                                                },
-                                                {
-                                                  "maxLength": 4096
-                                                }
-                                              ]
-                                            }
-                                          },
-                                          "required": [
-                                            "kind",
-                                            "text"
-                                          ],
-                                          "additionalProperties": false
-                                        },
-                                        {
-                                          "type": "object",
-                                          "properties": {
-                                            "kind": {
-                                              "type": "string",
-                                              "enum": [
-                                                "blank"
-                                              ]
-                                            },
-                                            "blank_id": {
-                                              "type": "string",
-                                              "allOf": [
-                                                {
-                                                  "minLength": 1
-                                                },
-                                                {
-                                                  "maxLength": 128
-                                                }
-                                              ]
-                                            }
-                                          },
-                                          "required": [
-                                            "kind",
-                                            "blank_id"
-                                          ],
-                                          "additionalProperties": false
-                                        }
-                                      ]
-                                    },
-                                    "allOf": [
-                                      {
-                                        "minItems": 2
-                                      }
-                                    ]
-                                  },
-                                  "accessible_text": {
-                                    "type": "string",
-                                    "allOf": [
-                                      {
-                                        "minLength": 1
-                                      },
-                                      {
-                                        "maxLength": 4096
-                                      }
-                                    ]
-                                  },
-                                  "capture": {
-                                    "type": "string",
-                                    "enum": [
-                                      "keyboard_text"
-                                    ]
-                                  }
-                                },
-                                "required": [
-                                  "kind",
-                                  "segments",
-                                  "accessible_text",
-                                  "capture"
-                                ],
-                                "additionalProperties": false
                               }
                             ]
                           },
@@ -82145,6 +82112,7 @@
                           "line",
                           "languages",
                           "learner_band",
+                          "language_profile_revision",
                           "presentation",
                           "answer_visibility",
                           "feedback_release",
@@ -82160,7 +82128,7 @@
                           "minItems": 4
                         },
                         {
-                          "maxItems": 64
+                          "maxItems": 10
                         }
                       ]
                     },
@@ -82254,6 +82222,7 @@
                     "languages",
                     "learner_band",
                     "study_profile_revision",
+                    "language_profile_revision",
                     "source_set_revision",
                     "selection_policy_revision",
                     "qualification_policy_revision",
@@ -82272,7 +82241,7 @@
                         "learning_language": {
                           "type": "string"
                         },
-                        "helper_language": {
+                        "target_language": {
                           "anyOf": [
                             {
                               "type": "string"
@@ -82285,7 +82254,7 @@
                       },
                       "required": [
                         "learning_language",
-                        "helper_language"
+                        "target_language"
                       ],
                       "additionalProperties": false
                     },
@@ -82582,130 +82551,75 @@
                 }
               ]
             }
+          },
+          {
+            "name": "content-type",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "audio/webm",
+                "audio/ogg",
+                "audio/mp4",
+                "audio/wav"
+              ]
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "allOf": [
+                {
+                  "minLength": 1
+                },
+                {
+                  "maxLength": 128
+                }
+              ]
+            }
+          },
+          {
+            "name": "x-study-attempt-number",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "allOf": [
+                {
+                  "pattern": "^[1-9][0-9]?$"
+                }
+              ]
+            }
+          },
+          {
+            "name": "x-audio-duration-ms",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "allOf": [
+                {
+                  "pattern": "^[1-9][0-9]{0,4}$"
+                }
+              ]
+            }
           }
         ],
         "requestBody": {
           "required": true,
           "content": {
-            "application/json": {
+            "audio/*": {
               "schema": {
-                "type": "object",
-                "properties": {
-                  "idempotency_key": {
-                    "type": "string",
-                    "allOf": [
-                      {
-                        "minLength": 1
-                      },
-                      {
-                        "maxLength": 128
-                      }
-                    ]
-                  },
-                  "attempt_number": {
-                    "type": "integer",
-                    "allOf": [
-                      {
-                        "minimum": 1,
-                        "maximum": 9007199254740991
-                      }
-                    ]
-                  },
-                  "answer": {
-                    "anyOf": [
-                      {
-                        "type": "object",
-                        "properties": {
-                          "kind": {
-                            "type": "string",
-                            "enum": [
-                              "single_select"
-                            ]
-                          },
-                          "choice_key": {
-                            "type": "string",
-                            "allOf": [
-                              {
-                                "minLength": 1
-                              },
-                              {
-                                "maxLength": 128
-                              }
-                            ]
-                          }
-                        },
-                        "required": [
-                          "kind",
-                          "choice_key"
-                        ],
-                        "additionalProperties": false
-                      },
-                      {
-                        "type": "object",
-                        "properties": {
-                          "kind": {
-                            "type": "string",
-                            "enum": [
-                              "text_response"
-                            ]
-                          },
-                          "text": {
-                            "type": "string",
-                            "allOf": [
-                              {
-                                "minLength": 1
-                              },
-                              {
-                                "maxLength": 4096
-                              }
-                            ]
-                          }
-                        },
-                        "required": [
-                          "kind",
-                          "text"
-                        ],
-                        "additionalProperties": false
-                      },
-                      {
-                        "type": "object",
-                        "properties": {
-                          "kind": {
-                            "type": "string",
-                            "enum": [
-                              "transcript_response"
-                            ]
-                          },
-                          "transcript_evidence_id": {
-                            "type": "string",
-                            "allOf": [
-                              {
-                                "minLength": 1
-                              },
-                              {
-                                "maxLength": 128
-                              }
-                            ]
-                          }
-                        },
-                        "required": [
-                          "kind",
-                          "transcript_evidence_id"
-                        ],
-                        "additionalProperties": false
-                      }
-                    ]
-                  }
-                },
-                "required": [
-                  "idempotency_key",
-                  "attempt_number",
-                  "answer"
-                ],
-                "additionalProperties": false
+                "type": "string",
+                "format": "binary"
               }
             }
-          }
+          },
+          "x-max-body-bytes": 524288
         },
         "responses": {
           "200": {
@@ -82742,7 +82656,11 @@
                       ]
                     },
                     "exercise_type": {
-                      "$ref": "#/$defs/Union_"
+                      "type": "string",
+                      "enum": [
+                        "say_it_back",
+                        "translation_choice"
+                      ]
                     },
                     "outcome": {
                       "type": "string",
@@ -82787,12 +82705,9 @@
                                 "transcript_diff"
                               ]
                             },
-                            "transcript": {
+                            "heard_transcript": {
                               "type": "string",
                               "allOf": [
-                                {
-                                  "minLength": 1
-                                },
                                 {
                                   "maxLength": 4096
                                 }
@@ -82802,19 +82717,74 @@
                               "type": "array",
                               "items": {
                                 "$ref": "#/$defs/Objects_"
-                              }
+                              },
+                              "allOf": [
+                                {
+                                  "maxItems": 256
+                                }
+                              ]
                             },
                             "missing": {
                               "type": "array",
                               "items": {
                                 "$ref": "#/$defs/Objects_"
-                              }
+                              },
+                              "allOf": [
+                                {
+                                  "maxItems": 256
+                                }
+                              ]
                             },
                             "extra": {
                               "type": "array",
                               "items": {
-                                "$ref": "#/$defs/Objects_"
-                              }
+                                "type": "string",
+                                "allOf": [
+                                  {
+                                    "minLength": 1
+                                  },
+                                  {
+                                    "maxLength": 4096
+                                  }
+                                ]
+                              },
+                              "allOf": [
+                                {
+                                  "maxItems": 256
+                                }
+                              ]
+                            },
+                            "substituted": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "expected": {
+                                    "$ref": "#/$defs/Objects_"
+                                  },
+                                  "heard": {
+                                    "type": "string",
+                                    "allOf": [
+                                      {
+                                        "minLength": 1
+                                      },
+                                      {
+                                        "maxLength": 4096
+                                      }
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "expected",
+                                  "heard"
+                                ],
+                                "additionalProperties": false
+                              },
+                              "allOf": [
+                                {
+                                  "maxItems": 256
+                                }
+                              ]
                             },
                             "policy_revision": {
                               "type": "string",
@@ -82830,10 +82800,11 @@
                           },
                           "required": [
                             "kind",
-                            "transcript",
+                            "heard_transcript",
                             "matched",
                             "missing",
                             "extra",
+                            "substituted",
                             "policy_revision"
                           ],
                           "additionalProperties": false
@@ -82892,51 +82863,6 @@
                             "kind",
                             "correct_choice_key",
                             "correct_text"
-                          ],
-                          "additionalProperties": false
-                        },
-                        {
-                          "type": "object",
-                          "properties": {
-                            "kind": {
-                              "type": "string",
-                              "enum": [
-                                "text_reveal"
-                              ]
-                            },
-                            "accepted_answer": {
-                              "type": "string",
-                              "allOf": [
-                                {
-                                  "minLength": 1
-                                },
-                                {
-                                  "maxLength": 4096
-                                }
-                              ]
-                            },
-                            "explanation": {
-                              "anyOf": [
-                                {
-                                  "type": "string",
-                                  "allOf": [
-                                    {
-                                      "minLength": 1
-                                    },
-                                    {
-                                      "maxLength": 4096
-                                    }
-                                  ]
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ]
-                            }
-                          },
-                          "required": [
-                            "kind",
-                            "accepted_answer"
                           ],
                           "additionalProperties": false
                         }
@@ -83017,7 +82943,14 @@
                           "$ref": "#/$defs/Objects_1"
                         },
                         "learner_band": {
-                          "$ref": "#/$defs/Union_1"
+                          "anyOf": [
+                            {
+                              "$ref": "#/$defs/Union_"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "study_profile_revision": {
                           "type": "integer",
@@ -83025,6 +82958,22 @@
                             {
                               "minimum": 1,
                               "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "language_profile_revision": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            {
+                              "type": "null"
                             }
                           ]
                         },
@@ -83104,7 +83053,7 @@
                                 "allOf": [
                                   {
                                     "minimum": 0,
-                                    "maximum": 63
+                                    "maximum": 9
                                   }
                                 ]
                               },
@@ -83131,7 +83080,11 @@
                                 ]
                               },
                               "exercise_type": {
-                                "$ref": "#/$defs/Union_"
+                                "type": "string",
+                                "enum": [
+                                  "say_it_back",
+                                  "translation_choice"
+                                ]
                               },
                               "exercise_variant": {
                                 "type": "string",
@@ -83187,6 +83140,17 @@
                                       }
                                     ]
                                   },
+                                  "study_unit_id": {
+                                    "type": "string",
+                                    "allOf": [
+                                      {
+                                        "minLength": 1
+                                      },
+                                      {
+                                        "maxLength": 128
+                                      }
+                                    ]
+                                  },
                                   "line_version": {
                                     "type": "integer",
                                     "allOf": [
@@ -83213,6 +83177,7 @@
                                   "audio_revision",
                                   "lyrics_revision",
                                   "lyric_line_id",
+                                  "study_unit_id",
                                   "line_version",
                                   "line_source_hash"
                                 ],
@@ -83222,7 +83187,30 @@
                                 "$ref": "#/$defs/Objects_1"
                               },
                               "learner_band": {
-                                "$ref": "#/$defs/Union_1"
+                                "anyOf": [
+                                  {
+                                    "$ref": "#/$defs/Union_"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "language_profile_revision": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer",
+                                    "allOf": [
+                                      {
+                                        "minimum": 1,
+                                        "maximum": 9007199254740991
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
                               },
                               "presentation": {
                                 "anyOf": [
@@ -83349,107 +83337,6 @@
                                       "capture"
                                     ],
                                     "additionalProperties": false
-                                  },
-                                  {
-                                    "type": "object",
-                                    "properties": {
-                                      "kind": {
-                                        "type": "string",
-                                        "enum": [
-                                          "typed_cloze"
-                                        ]
-                                      },
-                                      "segments": {
-                                        "type": "array",
-                                        "items": {
-                                          "anyOf": [
-                                            {
-                                              "type": "object",
-                                              "properties": {
-                                                "kind": {
-                                                  "type": "string",
-                                                  "enum": [
-                                                    "text"
-                                                  ]
-                                                },
-                                                "text": {
-                                                  "type": "string",
-                                                  "allOf": [
-                                                    {
-                                                      "minLength": 1
-                                                    },
-                                                    {
-                                                      "maxLength": 4096
-                                                    }
-                                                  ]
-                                                }
-                                              },
-                                              "required": [
-                                                "kind",
-                                                "text"
-                                              ],
-                                              "additionalProperties": false
-                                            },
-                                            {
-                                              "type": "object",
-                                              "properties": {
-                                                "kind": {
-                                                  "type": "string",
-                                                  "enum": [
-                                                    "blank"
-                                                  ]
-                                                },
-                                                "blank_id": {
-                                                  "type": "string",
-                                                  "allOf": [
-                                                    {
-                                                      "minLength": 1
-                                                    },
-                                                    {
-                                                      "maxLength": 128
-                                                    }
-                                                  ]
-                                                }
-                                              },
-                                              "required": [
-                                                "kind",
-                                                "blank_id"
-                                              ],
-                                              "additionalProperties": false
-                                            }
-                                          ]
-                                        },
-                                        "allOf": [
-                                          {
-                                            "minItems": 2
-                                          }
-                                        ]
-                                      },
-                                      "accessible_text": {
-                                        "type": "string",
-                                        "allOf": [
-                                          {
-                                            "minLength": 1
-                                          },
-                                          {
-                                            "maxLength": 4096
-                                          }
-                                        ]
-                                      },
-                                      "capture": {
-                                        "type": "string",
-                                        "enum": [
-                                          "keyboard_text"
-                                        ]
-                                      }
-                                    },
-                                    "required": [
-                                      "kind",
-                                      "segments",
-                                      "accessible_text",
-                                      "capture"
-                                    ],
-                                    "additionalProperties": false
                                   }
                                 ]
                               },
@@ -83521,6 +83408,7 @@
                               "line",
                               "languages",
                               "learner_band",
+                              "language_profile_revision",
                               "presentation",
                               "answer_visibility",
                               "feedback_release",
@@ -83536,7 +83424,7 @@
                               "minItems": 4
                             },
                             {
-                              "maxItems": 64
+                              "maxItems": 10
                             }
                           ]
                         },
@@ -83630,6 +83518,7 @@
                         "languages",
                         "learner_band",
                         "study_profile_revision",
+                        "language_profile_revision",
                         "source_set_revision",
                         "selection_policy_revision",
                         "qualification_policy_revision",
@@ -83656,18 +83545,10 @@
                   ],
                   "additionalProperties": false,
                   "$defs": {
-                    "Union_": {
-                      "type": "string",
-                      "enum": [
-                        "say_it_back",
-                        "translation_choice",
-                        "typed_cloze"
-                      ]
-                    },
                     "Objects_": {
                       "type": "object",
                       "properties": {
-                        "text": {
+                        "token": {
                           "type": "string",
                           "allOf": [
                             {
@@ -83678,7 +83559,7 @@
                             }
                           ]
                         },
-                        "start": {
+                        "position": {
                           "type": "integer",
                           "allOf": [
                             {
@@ -83686,21 +83567,11 @@
                               "maximum": 9007199254740991
                             }
                           ]
-                        },
-                        "end": {
-                          "type": "integer",
-                          "allOf": [
-                            {
-                              "minimum": 1,
-                              "maximum": 9007199254740991
-                            }
-                          ]
                         }
                       },
                       "required": [
-                        "text",
-                        "start",
-                        "end"
+                        "token",
+                        "position"
                       ],
                       "additionalProperties": false
                     },
@@ -83710,7 +83581,7 @@
                         "learning_language": {
                           "type": "string"
                         },
-                        "helper_language": {
+                        "target_language": {
                           "anyOf": [
                             {
                               "type": "string"
@@ -83723,11 +83594,11 @@
                       },
                       "required": [
                         "learning_language",
-                        "helper_language"
+                        "target_language"
                       ],
                       "additionalProperties": false
                     },
-                    "Union_1": {
+                    "Union_": {
                       "type": "string",
                       "enum": [
                         "A1",

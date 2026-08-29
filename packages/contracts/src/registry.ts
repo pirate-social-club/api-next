@@ -51,7 +51,7 @@ import {
   GetStudyAvailabilityV2,
   GetStudySessionV2,
   StartStudySessionV2,
-  SubmitStudyAnswerV2,
+  SubmitStudySpokenAnswerV2,
 } from "./study-v2.ts";
 /** Named registry; the client generator references these exports by name. */
 import { v1Registry } from "./v1.ts";
@@ -91,7 +91,7 @@ export const registry = {
   GetStudyAvailabilityV2,
   StartStudySessionV2,
   GetStudySessionV2,
-  SubmitStudyAnswerV2,
+  SubmitStudySpokenAnswerV2,
   OpenSongRewardOffer,
   AddMegapotPoolLeg,
   ObserveMegapotPoolFunding,

@@ -186,6 +186,42 @@ suite("Study v2 Postgres foundation", () => {
              'exercise-v1', 'review-item-1', '{}'::jsonb, 3, 'account-1')`,
         ),
       ).rejects.toThrow();
+      await admin.query(
+        `INSERT INTO learner_audio_artifacts (
+           learner_audio_artifact_id, account_id, source_kind, attempt_ref, object_ref,
+           content_digest, content_type, byte_size, duration_ms, platform_retention,
+           provider_retention, recording_state, expires_at
+         ) VALUES ('audio-1', 'account-1', 'study', 'attempt-2', 'private/audio-1',
+           $1, 'audio/webm', 100, 1000, 'private_learning', 'not_stored', 'stored',
+           clock_timestamp() + interval '24 months')`,
+        ["5".repeat(64)],
+      );
+      await admin.query(
+        `INSERT INTO study_attempts_v2 (
+           attempt_id, session_item_id, attempt_number, submission_kind,
+           submission_evidence, outcome, first_pass, attempt_state, feedback_kind,
+           feedback_evidence, grader_policy_revision, feedback_policy_revision,
+           idempotency_key, request_hash, study_unit_id, exercise_kind,
+           learning_language, target_language, learner_band, source_line_revision,
+           language_profile_revision, localization_revision, grading_revision,
+           review_schedule_version, audio_byte_size, audio_duration_ms,
+           provider_detected_language, provider_detected_language_confidence,
+           token_diff, learner_audio_artifact_id
+         ) VALUES ('attempt-2', 'session-item-1', 1, 'raw_audio', '{}'::jsonb,
+           'correct', TRUE, 'spent', 'transcript_diff', '{}'::jsonb,
+           'grader-v1', 'feedback-v1', 'answer-command-2', $1, 'unit-1',
+           'say_it_back', 'en', NULL, NULL, 1, NULL, NULL, 'grader-v1',
+           'study_review_schedule_v1', 100, 1000, 'en', 0.99, '{}'::jsonb, 'audio-1')`,
+        ["6".repeat(64)],
+      );
+      const retained = await admin.query(
+        `SELECT attempt.audio_byte_size, artifact.recording_state
+           FROM study_attempts_v2 attempt
+           JOIN learner_audio_artifacts artifact
+             ON artifact.learner_audio_artifact_id=attempt.learner_audio_artifact_id
+          WHERE attempt.attempt_id='attempt-2'`,
+      );
+      expect(retained.rows).toEqual([{ audio_byte_size: "100", recording_state: "stored" }]);
       await expect(
         admin.query(
           `INSERT INTO study_attempts_v2 (

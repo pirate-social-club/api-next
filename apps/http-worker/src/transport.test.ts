@@ -787,6 +787,28 @@ describe("contracts-generated HTTP worker", () => {
     expect(failure).toMatchObject({ details: { location: "headers" } });
   });
 
+  it("preserves raw bytes without UTF-8 or JSON interpretation", async () => {
+    const callback = endpoint({
+      method: "POST",
+      path: "/test/raw-bytes",
+      auth: Auth.public(),
+      request: { body: Schema.Unknown, bodyEncoding: "raw-bytes", maxBodyBytes: 4 },
+      response: Schema.Struct({ ok: Schema.Boolean }),
+    });
+    let decoded: DecodedRequest | undefined;
+    const app = new Hono();
+    app.post("/test/raw-bytes", async (context) => {
+      decoded = await decodeInput(callback, context as never, null);
+      return new Response("ok");
+    });
+    const response = await app.request("http://worker.test/test/raw-bytes", {
+      method: "POST",
+      body: new Uint8Array([0, 255, 1, 2]),
+    });
+    expect(response.status).toBe(200);
+    expect(decoded?.body).toEqual(new Uint8Array([0, 255, 1, 2]));
+  });
+
   it("rejects an oversized streamed body before schema decoding", async () => {
     const callback = endpoint({
       method: "POST",

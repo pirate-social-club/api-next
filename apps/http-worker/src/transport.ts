@@ -443,6 +443,13 @@ const readBoundedBodyText = async (
 
 const decodeBody = async (context: HttpContext, request: EndpointRequest): Promise<unknown> => {
   if (request.body === undefined) return undefined;
+  if (request.bodyEncoding === "raw-bytes") {
+    const bytes = await readBoundedBodyBytes(context, request.maxBodyBytes);
+    if (bytes.byteLength === 0 && request.bodyRequired !== false) {
+      throw new BadRequest({ message: "Invalid body request", details: { location: "body" } });
+    }
+    return bytes;
+  }
   if (request.bodyEncoding === "exact-json") {
     const mediaType = context.req.header("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
     if (mediaType !== "application/json") throw invalidBody();

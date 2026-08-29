@@ -10,6 +10,10 @@ import { PERSONA_WALLET_SETUP_SESSION_SCOPE } from "@pirate/application/use-case
 import { getMyProfile } from "@pirate/application/use-cases/profile";
 import { makePublicProfileHandler } from "@pirate/application/use-cases/public-profile";
 import type { StudyItemSource } from "@pirate/application/use-cases/rewards/activity-qualification";
+import type {
+  StudyAudioArchive,
+  StudyBatchTranscriber,
+} from "@pirate/application/use-cases/rewards/study-v2";
 import {
   type AuthenticatedSession,
   authenticateSession,
@@ -108,6 +112,10 @@ import {
   makeRs256SessionTokenVerifier,
 } from "@pirate/platform-cf/session-tokens";
 import { makeControlPlaneSongRewardOfferStore } from "@pirate/platform-cf/song-reward-offer-repository";
+import {
+  makeR2StudyAudioArchive,
+  type StudyAudioBucket,
+} from "@pirate/platform-cf/study-spoken-audio";
 import { makeControlPlaneStudyV2Store } from "@pirate/platform-cf/study-v2-repository";
 import { makeControlPlaneTextSubmissionStore } from "@pirate/platform-cf/text-submission-repository";
 import {
@@ -232,6 +240,7 @@ export interface HttpWorkerBindings {
   readonly MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY?: string;
   readonly MEDIA_INGRESS?: MediaSealBuckets["ingress"];
   readonly MEDIA_IMMUTABLE_ORIGINALS?: MediaSealBuckets["immutableOriginals"];
+  readonly LEARNER_AUDIO?: StudyAudioBucket;
 }
 
 export interface HttpWorkerCompositionDependencies {
@@ -240,6 +249,9 @@ export interface HttpWorkerCompositionDependencies {
   }>;
   /** Server-owned producer supplied by the Study content-generation composition. */
   readonly study_item_source?: StudyItemSource["Service"];
+  /** Explicit provider enablement is external to composition; tests and staged callers inject it. */
+  readonly study_batch_transcriber?: StudyBatchTranscriber;
+  readonly study_audio_archive?: StudyAudioArchive;
   /** Test/review injection. Production constructs this only when media is explicitly enabled. */
   readonly media_services?: MediaSubmissionServices;
   /** Fake transport for provider-free composition and request-path tests. */
@@ -841,6 +853,15 @@ export async function createProductionHttpWorker(
     clock: { now: Effect.sync(() => Date.now()) },
     ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
     store: makeControlPlaneStudyV2Store(controlPlane),
+    ...(dependencies.study_batch_transcriber === undefined
+      ? {}
+      : {
+          spoken: {
+            transcriber: dependencies.study_batch_transcriber,
+            archive:
+              dependencies.study_audio_archive ?? makeR2StudyAudioArchive(bindings.LEARNER_AUDIO),
+          },
+        }),
   });
   const handleSalesHandlers = makeHandleSalesHandlers({
     store: makeControlPlaneHandleSalesStore(controlPlane),

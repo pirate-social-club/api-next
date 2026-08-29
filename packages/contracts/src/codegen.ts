@@ -230,8 +230,15 @@ export function generateOpenApi(
             requestBody: {
               required: request.bodyRequired !== false,
               content: {
-                [request.bodyEncoding === "raw-text" ? "text/plain" : "application/json"]: {
-                  schema: schemaToOpenApi(request.body),
+                [request.bodyEncoding === "raw-text"
+                  ? "text/plain"
+                  : request.bodyEncoding === "raw-bytes"
+                    ? "audio/*"
+                    : "application/json"]: {
+                  schema:
+                    request.bodyEncoding === "raw-bytes"
+                      ? { type: "string", format: "binary" }
+                      : schemaToOpenApi(request.body),
                 },
               },
               ...(request.maxBodyBytes === undefined
@@ -414,9 +421,8 @@ function clientInputType(endpoint: EndpointDefinition): string {
   if (request === undefined) return "undefined";
   const fields: string[] = [];
   if (request.body !== undefined) {
-    const schema = schemaToOpenApi(request.body);
     fields.push(
-      `readonly body${request.bodyRequired === false ? "?" : ""}: ${jsonSchemaToType(schema)}`,
+      `readonly body${request.bodyRequired === false ? "?" : ""}: ${request.bodyEncoding === "raw-bytes" ? "ArrayBuffer | ArrayBufferView | Blob" : jsonSchemaToType(schemaToOpenApi(request.body))}`,
     );
   }
   if (request.headers !== undefined) {
@@ -808,7 +814,7 @@ export function createPirateApiClient(baseUrl: string, optionsOrFetch: PirateApi
   const config: PirateApiClientOptions =
     typeof optionsOrFetch === "function" ? { fetchImpl: optionsOrFetch } : optionsOrFetch;
   const fetchImpl = config.fetchImpl ?? fetch;
-  const request = async <T>(operation: string, method: string, path: string, input: unknown, options?: PirateApiRequestOptions, bodyEncoding: "json" | "exact-json" | "raw-text" = "json", exactJsonMembers: readonly string[] = []): Promise<T> => {
+  const request = async <T>(operation: string, method: string, path: string, input: unknown, options?: PirateApiRequestOptions, bodyEncoding: "json" | "exact-json" | "raw-bytes" | "raw-text" = "json", exactJsonMembers: readonly string[] = []): Promise<T> => {
     const requestInput = (input ?? {}) as { body?: unknown; headers?: Record<string, unknown>; path?: Record<string, unknown>; query?: Record<string, unknown> };
     const pathValue = Object.entries(requestInput.path ?? {}).reduce((urlPath, [key, value]) => urlPath.split(":" + key).join(encodeURIComponent(String(value))), path);
     const url = new URL(pathValue, baseUrl);
@@ -826,14 +832,14 @@ export function createPirateApiClient(baseUrl: string, optionsOrFetch: PirateApi
     };
     addHeaders(config.headers);
     addHeaders(options?.headers);
-    if (requestInput.body !== undefined && !headers.has("content-type")) headers.set("content-type", bodyEncoding === "raw-text" ? "text/plain" : "application/json");
+    if (requestInput.body !== undefined && !headers.has("content-type") && bodyEncoding !== "raw-bytes") headers.set("content-type", bodyEncoding === "raw-text" ? "text/plain" : "application/json");
     const signal = options?.signal ?? config.signal;
     const credentials = options?.credentials ?? config.credentials;
     const response = await fetchImpl(url, {
       method,
       headers,
       ...(credentials === undefined ? {} : { credentials }),
-      ...(requestInput.body === undefined ? {} : { body: bodyEncoding === "raw-text" ? requestInput.body as string : bodyEncoding === "exact-json" ? serializeExactJsonBody(requestInput.body, exactJsonMembers) : JSON.stringify(requestInput.body) }),
+      ...(requestInput.body === undefined ? {} : { body: bodyEncoding === "raw-bytes" ? requestInput.body as Exclude<RequestInit["body"], undefined> : bodyEncoding === "raw-text" ? requestInput.body as string : bodyEncoding === "exact-json" ? serializeExactJsonBody(requestInput.body, exactJsonMembers) : JSON.stringify(requestInput.body) }),
       ...(signal === undefined ? {} : { signal }),
     });
     let payload: unknown;

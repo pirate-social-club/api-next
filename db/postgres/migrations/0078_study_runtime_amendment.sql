@@ -161,8 +161,46 @@ ALTER TABLE study_session_items_v2
 
 ALTER TABLE study_attempts_v2
   DROP CONSTRAINT study_attempts_v2_submission_kind_check,
+  ADD COLUMN study_unit_id TEXT NOT NULL,
+  ADD COLUMN exercise_kind TEXT NOT NULL CHECK (
+    exercise_kind IN ('say_it_back', 'translation_choice')
+  ),
+  ADD COLUMN learning_language TEXT NOT NULL DEFAULT 'en' CHECK (learning_language = 'en'),
+  ADD COLUMN target_language TEXT,
+  ADD COLUMN learner_band TEXT CHECK (learner_band IN ('A1', 'A2', 'B1', 'B2', 'C1', 'C2')),
+  ADD COLUMN source_line_revision BIGINT NOT NULL CHECK (source_line_revision > 0),
+  ADD COLUMN language_profile_revision BIGINT CHECK (language_profile_revision > 0),
+  ADD COLUMN localization_revision BIGINT CHECK (localization_revision > 0),
+  ADD COLUMN grading_revision TEXT NOT NULL,
+  ADD COLUMN review_schedule_version TEXT NOT NULL DEFAULT 'study_review_schedule_v1' CHECK (
+    review_schedule_version = 'study_review_schedule_v1'
+  ),
+  ADD COLUMN presented_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  ADD COLUMN answered_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  ADD COLUMN audio_byte_size BIGINT CHECK (audio_byte_size BETWEEN 1 AND 524288),
+  ADD COLUMN audio_duration_ms BIGINT CHECK (audio_duration_ms BETWEEN 1 AND 60000),
+  ADD COLUMN provider_detected_language TEXT,
+  ADD COLUMN provider_detected_language_confidence NUMERIC(6,5) CHECK (
+    provider_detected_language_confidence BETWEEN 0 AND 1
+  ),
+  ADD COLUMN token_diff JSONB CHECK (
+    token_diff IS NULL OR (
+      jsonb_typeof(token_diff) = 'object' AND octet_length(token_diff::text) <= 32768
+    )
+  ),
   ADD CONSTRAINT study_attempts_v2_submission_kind_check CHECK (
     submission_kind IN ('raw_audio', 'single_select')
+  ),
+  ADD CONSTRAINT study_attempt_language_shape CHECK (
+    (exercise_kind = 'say_it_back' AND target_language IS NULL AND learner_band IS NULL)
+    OR (exercise_kind = 'translation_choice' AND target_language IS NOT NULL
+      AND target_language <> learning_language AND learner_band IS NOT NULL)
+  ),
+  ADD CONSTRAINT study_attempt_audio_shape CHECK (
+    (submission_kind = 'raw_audio' AND audio_byte_size IS NOT NULL
+      AND audio_duration_ms IS NOT NULL AND token_diff IS NOT NULL)
+    OR (submission_kind = 'single_select' AND audio_byte_size IS NULL
+      AND audio_duration_ms IS NULL AND token_diff IS NULL)
   );
 
 CREATE TABLE study_presentations_v2 (
@@ -200,6 +238,9 @@ CREATE TABLE study_spoken_answer_commands (
   completed_at TIMESTAMPTZ,
   UNIQUE (session_id, session_item_id, attempt_number),
   UNIQUE (session_id, idempotency_key),
+  CHECK (result_snapshot IS NULL OR (
+    jsonb_typeof(result_snapshot) = 'object' AND octet_length(result_snapshot::text) <= 131072
+  )),
   CHECK (
     (state = 'reserved' AND provider_failure_kind IS NULL AND result_snapshot IS NULL AND completed_at IS NULL)
     OR (state = 'completed' AND provider_failure_kind IS NULL AND result_snapshot IS NOT NULL AND completed_at IS NOT NULL)
@@ -227,6 +268,14 @@ CREATE TABLE learner_audio_artifacts (
   CHECK ((recording_state = 'deleted') = (deleted_at IS NOT NULL)),
   CHECK ((recording_state = 'stored') = (object_ref IS NOT NULL))
 );
+
+ALTER TABLE study_attempts_v2
+  ADD COLUMN learner_audio_artifact_id TEXT,
+  ADD CONSTRAINT study_attempt_audio_artifact_fk FOREIGN KEY (learner_audio_artifact_id)
+    REFERENCES learner_audio_artifacts (learner_audio_artifact_id),
+  ADD CONSTRAINT study_attempt_audio_artifact_shape CHECK (
+    (submission_kind = 'raw_audio') = (learner_audio_artifact_id IS NOT NULL)
+  );
 
 CREATE TRIGGER study_presentations_v2_immutable
   BEFORE UPDATE OR DELETE ON study_presentations_v2

@@ -2,10 +2,20 @@ import {
   Clock,
   IdGen,
   makeStudyV2Service,
+  type StudyAudioArchive,
+  type StudyBatchTranscriber,
   type StudyV2Failure,
   type StudyV2Store,
 } from "@pirate/application/use-cases/rewards/study-v2";
-import { AuthError, BadRequest, Conflict, InternalError, NotFound } from "@pirate/contracts";
+import {
+  AuthError,
+  BadRequest,
+  Conflict,
+  InternalError,
+  NotFound,
+  ProviderUnavailable,
+  RetryableConflict,
+} from "@pirate/contracts";
 import { Effect } from "effect";
 import type { EndpointHandler, Principal } from "./transport.ts";
 import { withEndpointResult } from "./transport.ts";
@@ -14,7 +24,7 @@ export type StudyV2Handlers = Readonly<{
   GetStudyAvailabilityV2: EndpointHandler;
   StartStudySessionV2: EndpointHandler;
   GetStudySessionV2: EndpointHandler;
-  SubmitStudyAnswerV2: EndpointHandler;
+  SubmitStudySpokenAnswerV2: EndpointHandler;
 }>;
 
 const accountId = (principal: Principal | null): string => {
@@ -35,6 +45,10 @@ const wireFailure = (failure: StudyV2Failure) => {
     case "attempt-conflict":
     case "idempotency-conflict":
       return new Conflict({ message: "Study command conflicts" });
+    case "command-in-flight":
+      return new RetryableConflict({ message: "Study command is already processing" });
+    case "provider-unavailable":
+      return new ProviderUnavailable({ message: "Study transcription is unavailable" });
     case "insufficient-exercises":
       return new Conflict({ message: "Study content is not ready" });
     case "invalid-input":
@@ -49,8 +63,12 @@ export const makeStudyV2Handlers = (services: {
   readonly clock: Clock["Service"];
   readonly ids: IdGen["Service"];
   readonly store: StudyV2Store;
+  readonly spoken?: Readonly<{
+    readonly archive: StudyAudioArchive;
+    readonly transcriber: StudyBatchTranscriber;
+  }>;
 }): StudyV2Handlers => {
-  const study = makeStudyV2Service(services.store);
+  const study = makeStudyV2Service(services.store, services.spoken);
   const run = <A, E>(effect: Effect.Effect<A, E, Clock | IdGen>) =>
     Effect.runPromise(
       effect.pipe(
@@ -73,17 +91,17 @@ export const makeStudyV2Handlers = (services: {
     StartStudySessionV2: async (request) => {
       const path = request.params as { communityId: string; postId: string };
       const body = request.body as {
-        helper_language: string | null;
         idempotency_key: string;
-        learner_band: "A1" | "A2" | "B1" | "B2" | "C1" | "C2";
+        learner_band: "A1" | "A2" | "B1" | "B2" | "C1" | "C2" | null;
         persona_id: string;
+        target_language: string | null;
         timezone: string;
       };
       const session = await run(
         study.startSession({
           accountId: accountId(request.principal),
           communityId: path.communityId,
-          helperLanguage: body.helper_language,
+          targetLanguage: body.target_language,
           idempotencyKey: body.idempotency_key,
           learnerBand: body.learner_band,
           personaId: body.persona_id,
@@ -103,24 +121,27 @@ export const makeStudyV2Handlers = (services: {
         }),
       );
     },
-    SubmitStudyAnswerV2: (request) => {
+    SubmitStudySpokenAnswerV2: (request) => {
       const path = request.params as {
         communityId: string;
         sessionId: string;
         sessionItemId: string;
       };
-      const body = request.body as {
-        answer: Parameters<typeof study.submitAnswer>[0]["answer"];
-        attempt_number: number;
-        idempotency_key: string;
+      const headers = request.headers as {
+        readonly "content-type": string;
+        readonly "idempotency-key": string;
+        readonly "x-audio-duration-ms": string;
+        readonly "x-study-attempt-number": string;
       };
       return run(
-        study.submitAnswer({
+        study.submitSpokenAnswer({
           accountId: accountId(request.principal),
-          answer: body.answer,
-          attemptNumber: body.attempt_number,
+          attemptNumber: Number(headers["x-study-attempt-number"]),
+          audio: request.body as Uint8Array,
+          audioContentType: headers["content-type"],
+          audioDurationMs: Number(headers["x-audio-duration-ms"]),
           communityId: path.communityId,
-          idempotencyKey: body.idempotency_key,
+          idempotencyKey: headers["idempotency-key"],
           sessionId: path.sessionId,
           sessionItemId: path.sessionItemId,
         }),
