@@ -148,9 +148,12 @@ suite("Study v2 Postgres foundation", () => {
            session_id, account_id, persona_id, community_id, post_id,
            audio_revision, lyrics_revision, learning_language, helper_language,
            learner_band, study_profile_revision, source_set_revision,
-           selection_policy_revision, qualification_policy_revision, timezone
+           selection_policy_revision, qualification_policy_revision, timezone,
+           idempotency_key, request_hash
          ) VALUES ('session-1', 'account-1', 'persona-1', 'community-1', 'post-1',
-           1, 1, 'en', NULL, 'A2', 1, 1, 'selection-v1', 'qualification-v1', 'UTC')`,
+           1, 1, 'en', NULL, 'A2', 1, 1, 'selection-v1', 'qualification-v1', 'UTC',
+           'session-command-1', $1)`,
+        ["d".repeat(64)],
       );
       await admin.query(
         `INSERT INTO study_session_items_v2 (
@@ -174,10 +177,38 @@ suite("Study v2 Postgres foundation", () => {
              attempt_id, session_item_id, attempt_number, submission_kind,
              submission_evidence, outcome, first_pass, attempt_state,
              feedback_kind, feedback_evidence, grader_policy_revision,
-             feedback_policy_revision
+             feedback_policy_revision, idempotency_key, request_hash
            ) VALUES ('attempt-1', 'session-item-1', 1, 'text_response', '{}'::jsonb,
              'incorrect', FALSE, 'retryable', 'text_reveal', '{}'::jsonb,
-             'grader-v1', 'feedback-v1')`,
+             'grader-v1', 'feedback-v1', 'answer-command-1', $1)`,
+          ["e".repeat(64)],
+        ),
+      ).rejects.toThrow();
+      await admin.query(
+        `INSERT INTO study_transcript_evidence_v2 (
+           transcript_evidence_id, account_id, session_item_id, transcript,
+           provider_id, provider_model, tokenizer_policy_revision, created_at, expires_at
+         ) VALUES ('transcript-1', 'account-1', 'session-item-1', 'Hold on',
+           'stt-provider', 'stt-model', 'english_words_v1',
+           '2026-08-29T10:00:00.000Z', '2026-08-29T10:05:00.000Z')`,
+      );
+      await expect(
+        admin.query(
+          "UPDATE study_transcript_evidence_v2 SET transcript='changed' WHERE transcript_evidence_id='transcript-1'",
+        ),
+      ).rejects.toThrow("study_transcript_evidence_v2 rows are immutable");
+      await expect(
+        admin.query(
+          `INSERT INTO study_sessions_v2 (
+             session_id, account_id, persona_id, community_id, post_id,
+             audio_revision, lyrics_revision, learning_language, helper_language,
+             learner_band, study_profile_revision, source_set_revision,
+             selection_policy_revision, qualification_policy_revision, timezone,
+             idempotency_key, request_hash
+           ) VALUES ('session-2', 'account-1', 'persona-1', 'community-1', 'post-1',
+             1, 1, 'en', NULL, 'A2', 1, 1, 'selection-v1', 'qualification-v1', 'UTC',
+             'session-command-1', $1)`,
+          ["f".repeat(64)],
         ),
       ).rejects.toThrow();
     } finally {

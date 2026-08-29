@@ -1,10 +1,21 @@
 import { Schema } from "effect";
+import { Auth } from "./auth.ts";
+import { endpoint } from "./endpoint.ts";
+import { AuthError, BadRequest, Conflict, InternalError, NotFound, RateLimited } from "./errors.ts";
 import { LanguageTagV1 } from "./language.ts";
 
 const Identifier = Schema.NonEmptyString.check(Schema.isMaxLength(128));
 const Text = Schema.NonEmptyString.check(Schema.isMaxLength(4_096));
 const PositiveInteger = Schema.Int.check(
   Schema.isBetween({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
+);
+const CanonicalInstant = Schema.String.check(
+  Schema.makeFilter((value) => {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) && new Date(parsed).toISOString() === value
+      ? undefined
+      : "Expected a canonical ISO instant";
+  }),
 );
 
 export const StudyExerciseTypeV2 = Schema.Literals([
@@ -138,6 +149,63 @@ export const StudyAnswerSubmissionV2 = Schema.Union([
 ]);
 export type StudyAnswerSubmissionV2 = Schema.Schema.Type<typeof StudyAnswerSubmissionV2>;
 
+const StudyProgressV2 = Schema.Struct({
+  qualifying_exercise_count: PositiveInteger,
+  answered_exercise_count: Schema.Int.check(
+    Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
+  ),
+  first_pass_correct: Schema.Int.check(
+    Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
+  ),
+  required_correct: PositiveInteger,
+  score_bps: Schema.NullOr(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 10_000 }))),
+});
+
+export const StudySessionV2 = Schema.Struct({
+  object: Schema.Literal("study_session_v2"),
+  session_id: Identifier,
+  persona_id: Identifier,
+  community_id: Identifier,
+  post_id: Identifier,
+  audio_revision: PositiveInteger,
+  lyrics_revision: PositiveInteger,
+  languages: StudyLanguageRolesV2,
+  learner_band: StudyLearnerBandV2,
+  study_profile_revision: PositiveInteger,
+  source_set_revision: PositiveInteger,
+  selection_policy_revision: Identifier,
+  qualification_policy_revision: Identifier,
+  timezone: Identifier,
+  status: Schema.Literals(["active", "completed"]),
+  items: Schema.Array(StudySessionItemV2).check(Schema.isMinLength(4), Schema.isMaxLength(64)),
+  progress: StudyProgressV2,
+  created_at: CanonicalInstant,
+  completed_at: Schema.NullOr(CanonicalInstant),
+}).check(
+  Schema.makeFilter((session) => {
+    const count = session.items.length;
+    const uniqueItems = new Set(session.items.map(({ session_item_id }) => session_item_id));
+    const uniqueReviews = new Set(
+      session.items.map(({ exercise_review_key }) => exercise_review_key),
+    );
+    if (uniqueItems.size !== count || uniqueReviews.size !== count) {
+      return "Study session item and review identities must be unique";
+    }
+    if (
+      session.progress.qualifying_exercise_count !== count ||
+      session.progress.answered_exercise_count > count ||
+      session.progress.first_pass_correct > session.progress.answered_exercise_count ||
+      session.progress.required_correct !== Math.max(1, Math.ceil((7 * count) / 10))
+    ) {
+      return "Study session progress must use the frozen qualification arithmetic";
+    }
+    return (session.status === "active") === (session.completed_at === null)
+      ? undefined
+      : "Study session completion fields must match status";
+  }),
+);
+export type StudySessionV2 = Schema.Schema.Type<typeof StudySessionV2>;
+
 const TokenSpan = Schema.Struct({
   text: Text,
   start: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER })),
@@ -177,6 +245,7 @@ export const StudyAnswerResultV2 = Schema.Struct({
   first_pass: Schema.Boolean,
   attempt_state: Schema.Literals(["retryable", "spent"]),
   feedback: StudyFeedbackV2,
+  session: StudySessionV2,
 }).check(
   Schema.makeFilter((result) => {
     if (result.exercise_type === "say_it_back") {
@@ -226,3 +295,64 @@ export const StudyAvailabilityV2 = Schema.Union([
   }),
 ]);
 export type StudyAvailabilityV2 = Schema.Schema.Type<typeof StudyAvailabilityV2>;
+
+const CommunityPostPath = Schema.Struct({ communityId: Identifier, postId: Identifier });
+const StudySessionPath = Schema.Struct({ communityId: Identifier, sessionId: Identifier });
+const StudySessionItemPath = Schema.Struct({
+  communityId: Identifier,
+  sessionId: Identifier,
+  sessionItemId: Identifier,
+});
+
+export const GetStudyAvailabilityV2 = endpoint({
+  method: "GET",
+  path: "/communities/:communityId/posts/:postId/study/v2",
+  auth: Auth.userOrAdmin(),
+  request: { path: CommunityPostPath },
+  response: StudyAvailabilityV2,
+  errors: [AuthError, BadRequest, NotFound, InternalError],
+});
+
+export const StartStudySessionV2 = endpoint({
+  method: "POST",
+  path: "/communities/:communityId/posts/:postId/study/v2/sessions",
+  auth: Auth.userOrAdmin(),
+  request: {
+    path: CommunityPostPath,
+    body: Schema.Struct({
+      idempotency_key: Identifier,
+      persona_id: Identifier,
+      helper_language: Schema.NullOr(LanguageTagV1),
+      learner_band: StudyLearnerBandV2,
+      timezone: Identifier,
+    }),
+  },
+  response: StudySessionV2,
+  successStatus: 201,
+  errors: [AuthError, BadRequest, Conflict, NotFound, RateLimited, InternalError],
+});
+
+export const GetStudySessionV2 = endpoint({
+  method: "GET",
+  path: "/communities/:communityId/study/v2/sessions/:sessionId",
+  auth: Auth.userOrAdmin(),
+  request: { path: StudySessionPath },
+  response: StudySessionV2,
+  errors: [AuthError, BadRequest, NotFound, InternalError],
+});
+
+export const SubmitStudyAnswerV2 = endpoint({
+  method: "POST",
+  path: "/communities/:communityId/study/v2/sessions/:sessionId/items/:sessionItemId/answers",
+  auth: Auth.userOrAdmin(),
+  request: {
+    path: StudySessionItemPath,
+    body: Schema.Struct({
+      idempotency_key: Identifier,
+      attempt_number: PositiveInteger,
+      answer: StudyAnswerSubmissionV2,
+    }),
+  },
+  response: StudyAnswerResultV2,
+  errors: [AuthError, BadRequest, Conflict, NotFound, RateLimited, InternalError],
+});

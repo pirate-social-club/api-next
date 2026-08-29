@@ -51518,23 +51518,6 @@
                             }
                           ]
                         },
-                        "study_capability": {
-                          "anyOf": [
-                            {
-                              "anyOf": [
-                                {
-                                  "$ref": "#/$defs/Objects_1"
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ]
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
                         "karaoke_capability": {
                           "anyOf": [
                             {
@@ -60293,23 +60276,6 @@
                                       }
                                     ]
                                   },
-                                  "study_capability": {
-                                    "anyOf": [
-                                      {
-                                        "anyOf": [
-                                          {
-                                            "$ref": "#/$defs/Objects_1"
-                                          },
-                                          {
-                                            "type": "null"
-                                          }
-                                        ]
-                                      },
-                                      {
-                                        "type": "null"
-                                      }
-                                    ]
-                                  },
                                   "karaoke_capability": {
                                     "anyOf": [
                                       {
@@ -62759,23 +62725,6 @@
                                 ]
                               },
                               "song_presentation": {
-                                "anyOf": [
-                                  {
-                                    "anyOf": [
-                                      {
-                                        "$ref": "#/$defs/Objects_1"
-                                      },
-                                      {
-                                        "type": "null"
-                                      }
-                                    ]
-                                  },
-                                  {
-                                    "type": "null"
-                                  }
-                                ]
-                              },
-                              "study_capability": {
                                 "anyOf": [
                                   {
                                     "anyOf": [
@@ -66679,23 +66628,6 @@
                                     ]
                                   },
                                   "song_presentation": {
-                                    "anyOf": [
-                                      {
-                                        "anyOf": [
-                                          {
-                                            "$ref": "#/$defs/Objects_1"
-                                          },
-                                          {
-                                            "type": "null"
-                                          }
-                                        ]
-                                      },
-                                      {
-                                        "type": "null"
-                                      }
-                                    ]
-                                  },
-                                  "study_capability": {
                                     "anyOf": [
                                       {
                                         "anyOf": [
@@ -79986,6 +79918,4161 @@
           "AuthError",
           "BadRequest",
           "NotFound",
+          "InternalError"
+        ]
+      }
+    },
+    "/communities/{communityId}/posts/{postId}/study/v2": {
+      "get": {
+        "operationId": "get_communitiesCommunityIdPostsPostIdStudyV2",
+        "parameters": [
+          {
+            "name": "communityId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "allOf": [
+                {
+                  "minLength": 1
+                },
+                {
+                  "maxLength": 128
+                }
+              ]
+            }
+          },
+          {
+            "name": "postId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "allOf": [
+                {
+                  "minLength": 1
+                },
+                {
+                  "maxLength": 128
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "unavailable"
+                          ]
+                        },
+                        "reason": {
+                          "type": "string",
+                          "enum": [
+                            "not_a_song",
+                            "lyrics_not_accepted",
+                            "learning_language_unsupported",
+                            "insufficient_exercises",
+                            "policy_blocked"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "state",
+                        "reason"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "processing"
+                          ]
+                        },
+                        "available_exercise_types": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/$defs/Union_"
+                          }
+                        },
+                        "pending_exercise_types": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/$defs/Union_"
+                          }
+                        }
+                      },
+                      "required": [
+                        "state",
+                        "available_exercise_types",
+                        "pending_exercise_types"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "ready"
+                          ]
+                        },
+                        "available_exercise_types": {
+                          "type": "array",
+                          "prefixItems": [
+                            {
+                              "$ref": "#/$defs/Union_"
+                            }
+                          ],
+                          "minItems": 1,
+                          "items": {
+                            "$ref": "#/$defs/Union_"
+                          }
+                        },
+                        "learning_language": {
+                          "type": "string"
+                        },
+                        "helper_languages": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "learner_bands": {
+                          "type": "array",
+                          "prefixItems": [
+                            {
+                              "$ref": "#/$defs/Union_1"
+                            }
+                          ],
+                          "minItems": 1,
+                          "items": {
+                            "$ref": "#/$defs/Union_1"
+                          }
+                        }
+                      },
+                      "required": [
+                        "state",
+                        "available_exercise_types",
+                        "learning_language",
+                        "helper_languages",
+                        "learner_bands"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ],
+                  "$defs": {
+                    "Union_": {
+                      "type": "string",
+                      "enum": [
+                        "say_it_back",
+                        "translation_choice",
+                        "typed_cloze"
+                      ]
+                    },
+                    "Union_1": {
+                      "type": "string",
+                      "enum": [
+                        "A1",
+                        "A2",
+                        "B1",
+                        "B2",
+                        "C1",
+                        "C2"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "404": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "not_found"
+            ]
+          },
+          "500": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "userOrAdmin"
+          }
+        },
+        "x-errors": [
+          "AuthError",
+          "BadRequest",
+          "NotFound",
+          "InternalError"
+        ]
+      }
+    },
+    "/communities/{communityId}/posts/{postId}/study/v2/sessions": {
+      "post": {
+        "operationId": "post_communitiesCommunityIdPostsPostIdStudyV2Sessions",
+        "parameters": [
+          {
+            "name": "communityId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "allOf": [
+                {
+                  "minLength": 1
+                },
+                {
+                  "maxLength": 128
+                }
+              ]
+            }
+          },
+          {
+            "name": "postId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "allOf": [
+                {
+                  "minLength": 1
+                },
+                {
+                  "maxLength": 128
+                }
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "idempotency_key": {
+                    "type": "string",
+                    "allOf": [
+                      {
+                        "minLength": 1
+                      },
+                      {
+                        "maxLength": 128
+                      }
+                    ]
+                  },
+                  "persona_id": {
+                    "type": "string",
+                    "allOf": [
+                      {
+                        "minLength": 1
+                      },
+                      {
+                        "maxLength": 128
+                      }
+                    ]
+                  },
+                  "helper_language": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "learner_band": {
+                    "type": "string",
+                    "enum": [
+                      "A1",
+                      "A2",
+                      "B1",
+                      "B2",
+                      "C1",
+                      "C2"
+                    ]
+                  },
+                  "timezone": {
+                    "type": "string",
+                    "allOf": [
+                      {
+                        "minLength": 1
+                      },
+                      {
+                        "maxLength": 128
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "idempotency_key",
+                  "persona_id",
+                  "helper_language",
+                  "learner_band",
+                  "timezone"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "object": {
+                      "type": "string",
+                      "enum": [
+                        "study_session_v2"
+                      ]
+                    },
+                    "session_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        },
+                        {
+                          "maxLength": 128
+                        }
+                      ]
+                    },
+                    "persona_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        },
+                        {
+                          "maxLength": 128
+                        }
+                      ]
+                    },
+                    "community_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        },
+                        {
+                          "maxLength": 128
+                        }
+                      ]
+                    },
+                    "post_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        },
+                        {
+                          "maxLength": 128
+                        }
+                      ]
+                    },
+                    "audio_revision": {
+                      "type": "integer",
+                      "allOf": [
+                        {
+                          "minimum": 1,
+                          "maximum": 9007199254740991
+                        }
+                      ]
+                    },
+                    "lyrics_revision": {
+                      "type": "integer",
+                      "allOf": [
+                        {
+                          "minimum": 1,
+                          "maximum": 9007199254740991
+                        }
+                      ]
+                    },
+                    "languages": {
+                      "$ref": "#/$defs/Objects_"
+                    },
+                    "learner_band": {
+                      "$ref": "#/$defs/Union_"
+                    },
+                    "study_profile_revision": {
+                      "type": "integer",
+                      "allOf": [
+                        {
+                          "minimum": 1,
+                          "maximum": 9007199254740991
+                        }
+                      ]
+                    },
+                    "source_set_revision": {
+                      "type": "integer",
+                      "allOf": [
+                        {
+                          "minimum": 1,
+                          "maximum": 9007199254740991
+                        }
+                      ]
+                    },
+                    "selection_policy_revision": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        },
+                        {
+                          "maxLength": 128
+                        }
+                      ]
+                    },
+                    "qualification_policy_revision": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        },
+                        {
+                          "maxLength": 128
+                        }
+                      ]
+                    },
+                    "timezone": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        },
+                        {
+                          "maxLength": 128
+                        }
+                      ]
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "active",
+                        "completed"
+                      ]
+                    },
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "object": {
+                            "type": "string",
+                            "enum": [
+                              "study_session_item_v2"
+                            ]
+                          },
+                          "session_item_id": {
+                            "type": "string",
+                            "allOf": [
+                              {
+                                "minLength": 1
+                              },
+                              {
+                                "maxLength": 128
+                              }
+                            ]
+                          },
+                          "ordinal": {
+                            "type": "integer",
+                            "allOf": [
+                              {
+                                "minimum": 0,
+                                "maximum": 63
+                              }
+                            ]
+                          },
+                          "exercise_review_key": {
+                            "type": "string",
+                            "allOf": [
+                              {
+                                "minLength": 1
+                              },
+                              {
+                                "maxLength": 128
+                              }
+                            ]
+                          },
+                          "exercise_version_id": {
+                            "type": "string",
+                            "allOf": [
+                              {
+                                "minLength": 1
+                              },
+                              {
+                                "maxLength": 128
+                              }
+                            ]
+                          },
+                          "exercise_type": {
+                            "type": "string",
+                            "enum": [
+                              "say_it_back",
+                              "translation_choice",
+                              "typed_cloze"
+                            ]
+                          },
+                          "exercise_variant": {
+                            "type": "string",
+                            "allOf": [
+                              {
+                                "minLength": 1
+                              },
+                              {
+                                "maxLength": 128
+                              }
+                            ]
+                          },
+                          "line": {
+                            "type": "object",
+                            "properties": {
+                              "post_id": {
+                                "type": "string",
+                                "allOf": [
+                                  {
+                                    "minLength": 1
+                                  },
+                                  {
+                                    "maxLength": 128
+                                  }
+                                ]
+                              },
+                              "audio_revision": {
+                                "type": "integer",
+                                "allOf": [
+                                  {
+                                    "minimum": 1,
+                                    "maximum": 9007199254740991
+                                  }
+                                ]
+                              },
+                              "lyrics_revision": {
+                                "type": "integer",
+                                "allOf": [
+                                  {
+                                    "minimum": 1,
+                                    "maximum": 9007199254740991
+                                  }
+                                ]
+                              },
+                              "lyric_line_id": {
+                                "type": "string",
+                                "allOf": [
+                                  {
+                                    "minLength": 1
+                                  },
+                                  {
+                                    "maxLength": 128
+                                  }
+                                ]
+                              },
+                              "line_version": {
+                                "type": "integer",
+                                "allOf": [
+                                  {
+                                    "minimum": 1,
+                                    "maximum": 9007199254740991
+                                  }
+                                ]
+                              },
+                              "line_source_hash": {
+                                "type": "string",
+                                "allOf": [
+                                  {
+                                    "minLength": 1
+                                  },
+                                  {
+                                    "maxLength": 128
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "post_id",
+                              "audio_revision",
+                              "lyrics_revision",
+                              "lyric_line_id",
+                              "line_version",
+                              "line_source_hash"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "languages": {
+                            "$ref": "#/$defs/Objects_"
+                          },
+                          "learner_band": {
+                            "$ref": "#/$defs/Union_"
+                          },
+                          "presentation": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "say_it_back"
+                                    ]
+                                  },
+                                  "reference_text": {
+                                    "type": "string",
+                                    "allOf": [
+                                      {
+                                        "minLength": 1
+                                      },
+                                      {
+                                        "maxLength": 4096
+                                      }
+                                    ]
+                                  },
+                                  "capture": {
+                                    "type": "string",
+                                    "enum": [
+                                      "microphone_audio"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "reference_text",
+                                  "capture"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "translation_choice"
+                                    ]
+                                  },
+                                  "source_text": {
+                                    "type": "string",
+                                    "allOf": [
+                                      {
+                                        "minLength": 1
+                                      },
+                                      {
+                                        "maxLength": 4096
+                                      }
+                                    ]
+                                  },
+                                  "question": {
+                                    "type": "string",
+                                    "allOf": [
+                                      {
+                                        "minLength": 1
+                                      },
+                                      {
+                                        "maxLength": 4096
+                                      }
+                                    ]
+                                  },
+                                  "choices": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "choice_key": {
+                                          "type": "string",
+                                          "allOf": [
+                                            {
+                                              "minLength": 1
+                                            },
+                                            {
+                                              "maxLength": 128
+                                            }
+                                          ]
+                                        },
+                                        "text": {
+                                          "type": "string",
+                                          "allOf": [
+                                            {
+                                              "minLength": 1
+                                            },
+                                            {
+                                              "maxLength": 4096
+                                            }
+                                          ]
+                                        }
+                                      },
+                                      "required": [
+                                        "choice_key",
+                                        "text"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    "allOf": [
+                                      {
+                                        "minItems": 4
+                                      },
+                                      {
+                                        "maxItems": 4
+                                      }
+                                    ]
+                                  },
+                                  "capture": {
+                                    "type": "string",
+                                    "enum": [
+                                      "choice_selection"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "source_text",
+                                  "question",
+                                  "choices",
+                                  "capture"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "typed_cloze"
+                                    ]
+                                  },
+                                  "segments": {
+                                    "type": "array",
+                                    "items": {
+                                      "anyOf": [
+                                        {
+                                          "type": "object",
+                                          "properties": {
+                                            "kind": {
+                                              "type": "string",
+                                              "enum": [
+                                                "text"
+                                              ]
+                                            },
+                                            "text": {
+                                              "type": "string",
+                                              "allOf": [
+                                                {
+                                                  "minLength": 1
+                                                },
+                                                {
+                                                  "maxLength": 4096
+                                                }
+                                              ]
+                                            }
+                                          },
+                                          "required": [
+                                            "kind",
+                                            "text"
+                                          ],
+                                          "additionalProperties": false
+                                        },
+                                        {
+                                          "type": "object",
+                                          "properties": {
+                                            "kind": {
+                                              "type": "string",
+                                              "enum": [
+                                                "blank"
+                                              ]
+                                            },
+                                            "blank_id": {
+                                              "type": "string",
+                                              "allOf": [
+                                                {
+                                                  "minLength": 1
+                                                },
+                                                {
+                                                  "maxLength": 128
+                                                }
+                                              ]
+                                            }
+                                          },
+                                          "required": [
+                                            "kind",
+                                            "blank_id"
+                                          ],
+                                          "additionalProperties": false
+                                        }
+                                      ]
+                                    },
+                                    "allOf": [
+                                      {
+                                        "minItems": 2
+                                      }
+                                    ]
+                                  },
+                                  "accessible_text": {
+                                    "type": "string",
+                                    "allOf": [
+                                      {
+                                        "minLength": 1
+                                      },
+                                      {
+                                        "maxLength": 4096
+                                      }
+                                    ]
+                                  },
+                                  "capture": {
+                                    "type": "string",
+                                    "enum": [
+                                      "keyboard_text"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "segments",
+                                  "accessible_text",
+                                  "capture"
+                                ],
+                                "additionalProperties": false
+                              }
+                            ]
+                          },
+                          "answer_visibility": {
+                            "type": "string",
+                            "enum": [
+                              "always_visible",
+                              "secret_until_spent"
+                            ]
+                          },
+                          "feedback_release": {
+                            "type": "string",
+                            "enum": [
+                              "every_graded_attempt",
+                              "spent_only"
+                            ]
+                          },
+                          "grader_policy_revision": {
+                            "type": "string",
+                            "allOf": [
+                              {
+                                "minLength": 1
+                              },
+                              {
+                                "maxLength": 128
+                              }
+                            ]
+                          },
+                          "feedback_policy_revision": {
+                            "type": "string",
+                            "allOf": [
+                              {
+                                "minLength": 1
+                              },
+                              {
+                                "maxLength": 128
+                              }
+                            ]
+                          },
+                          "quality_policy_revision": {
+                            "type": "string",
+                            "allOf": [
+                              {
+                                "minLength": 1
+                              },
+                              {
+                                "maxLength": 128
+                              }
+                            ]
+                          },
+                          "maximum_attempts": {
+                            "type": "integer",
+                            "allOf": [
+                              {
+                                "minimum": 1,
+                                "maximum": 9007199254740991
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "object",
+                          "session_item_id",
+                          "ordinal",
+                          "exercise_review_key",
+                          "exercise_version_id",
+                          "exercise_type",
+                          "exercise_variant",
+                          "line",
+                          "languages",
+                          "learner_band",
+                          "presentation",
+                          "answer_visibility",
+                          "feedback_release",
+                          "grader_policy_revision",
+                          "feedback_policy_revision",
+                          "quality_policy_revision",
+                          "maximum_attempts"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "allOf": [
+                        {
+                          "minItems": 4
+                        },
+                        {
+                          "maxItems": 64
+                        }
+                      ]
+                    },
+                    "progress": {
+                      "type": "object",
+                      "properties": {
+                        "qualifying_exercise_count": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "answered_exercise_count": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "first_pass_correct": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "required_correct": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "score_bps": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 0,
+                                  "maximum": 10000
+                                }
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "qualifying_exercise_count",
+                        "answered_exercise_count",
+                        "first_pass_correct",
+                        "required_correct",
+                        "score_bps"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "created_at": {
+                      "type": "string"
+                    },
+                    "completed_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "object",
+                    "session_id",
+                    "persona_id",
+                    "community_id",
+                    "post_id",
+                    "audio_revision",
+                    "lyrics_revision",
+                    "languages",
+                    "learner_band",
+                    "study_profile_revision",
+                    "source_set_revision",
+                    "selection_policy_revision",
+                    "qualification_policy_revision",
+                    "timezone",
+                    "status",
+                    "items",
+                    "progress",
+                    "created_at",
+                    "completed_at"
+                  ],
+                  "additionalProperties": false,
+                  "$defs": {
+                    "Objects_": {
+                      "type": "object",
+                      "properties": {
+                        "learning_language": {
+                          "type": "string"
+                        },
+                        "helper_language": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "learning_language",
+                        "helper_language"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "Union_": {
+                      "type": "string",
+                      "enum": [
+                        "A1",
+                        "A2",
+                        "B1",
+                        "B2",
+                        "C1",
+                        "C2"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "404": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "not_found"
+            ]
+          },
+          "409": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "conflict"
+            ]
+          },
+          "429": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "rate_limited"
+            ]
+          },
+          "500": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "userOrAdmin"
+          }
+        },
+        "x-errors": [
+          "AuthError",
+          "BadRequest",
+          "Conflict",
+          "NotFound",
+          "RateLimited",
+          "InternalError"
+        ]
+      }
+    },
+    "/communities/{communityId}/study/v2/sessions/{sessionId}": {
+      "get": {
+        "operationId": "get_communitiesCommunityIdStudyV2SessionsSessionId",
+        "parameters": [
+          {
+            "name": "communityId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "allOf": [
+                {
+                  "minLength": 1
+                },
+                {
+                  "maxLength": 128
+                }
+              ]
+            }
+          },
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "allOf": [
+                {
+                  "minLength": 1
+                },
+                {
+                  "maxLength": 128
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "object": {
+                      "type": "string",
+                      "enum": [
+                        "study_session_v2"
+                      ]
+                    },
+                    "session_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        },
+                        {
+                          "maxLength": 128
+                        }
+                      ]
+                    },
+                    "persona_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        },
+                        {
+                          "maxLength": 128
+                        }
+                      ]
+                    },
+                    "community_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        },
+                        {
+                          "maxLength": 128
+                        }
+                      ]
+                    },
+                    "post_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        },
+                        {
+                          "maxLength": 128
+                        }
+                      ]
+                    },
+                    "audio_revision": {
+                      "type": "integer",
+                      "allOf": [
+                        {
+                          "minimum": 1,
+                          "maximum": 9007199254740991
+                        }
+                      ]
+                    },
+                    "lyrics_revision": {
+                      "type": "integer",
+                      "allOf": [
+                        {
+                          "minimum": 1,
+                          "maximum": 9007199254740991
+                        }
+                      ]
+                    },
+                    "languages": {
+                      "$ref": "#/$defs/Objects_"
+                    },
+                    "learner_band": {
+                      "$ref": "#/$defs/Union_"
+                    },
+                    "study_profile_revision": {
+                      "type": "integer",
+                      "allOf": [
+                        {
+                          "minimum": 1,
+                          "maximum": 9007199254740991
+                        }
+                      ]
+                    },
+                    "source_set_revision": {
+                      "type": "integer",
+                      "allOf": [
+                        {
+                          "minimum": 1,
+                          "maximum": 9007199254740991
+                        }
+                      ]
+                    },
+                    "selection_policy_revision": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        },
+                        {
+                          "maxLength": 128
+                        }
+                      ]
+                    },
+                    "qualification_policy_revision": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        },
+                        {
+                          "maxLength": 128
+                        }
+                      ]
+                    },
+                    "timezone": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        },
+                        {
+                          "maxLength": 128
+                        }
+                      ]
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "active",
+                        "completed"
+                      ]
+                    },
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "object": {
+                            "type": "string",
+                            "enum": [
+                              "study_session_item_v2"
+                            ]
+                          },
+                          "session_item_id": {
+                            "type": "string",
+                            "allOf": [
+                              {
+                                "minLength": 1
+                              },
+                              {
+                                "maxLength": 128
+                              }
+                            ]
+                          },
+                          "ordinal": {
+                            "type": "integer",
+                            "allOf": [
+                              {
+                                "minimum": 0,
+                                "maximum": 63
+                              }
+                            ]
+                          },
+                          "exercise_review_key": {
+                            "type": "string",
+                            "allOf": [
+                              {
+                                "minLength": 1
+                              },
+                              {
+                                "maxLength": 128
+                              }
+                            ]
+                          },
+                          "exercise_version_id": {
+                            "type": "string",
+                            "allOf": [
+                              {
+                                "minLength": 1
+                              },
+                              {
+                                "maxLength": 128
+                              }
+                            ]
+                          },
+                          "exercise_type": {
+                            "type": "string",
+                            "enum": [
+                              "say_it_back",
+                              "translation_choice",
+                              "typed_cloze"
+                            ]
+                          },
+                          "exercise_variant": {
+                            "type": "string",
+                            "allOf": [
+                              {
+                                "minLength": 1
+                              },
+                              {
+                                "maxLength": 128
+                              }
+                            ]
+                          },
+                          "line": {
+                            "type": "object",
+                            "properties": {
+                              "post_id": {
+                                "type": "string",
+                                "allOf": [
+                                  {
+                                    "minLength": 1
+                                  },
+                                  {
+                                    "maxLength": 128
+                                  }
+                                ]
+                              },
+                              "audio_revision": {
+                                "type": "integer",
+                                "allOf": [
+                                  {
+                                    "minimum": 1,
+                                    "maximum": 9007199254740991
+                                  }
+                                ]
+                              },
+                              "lyrics_revision": {
+                                "type": "integer",
+                                "allOf": [
+                                  {
+                                    "minimum": 1,
+                                    "maximum": 9007199254740991
+                                  }
+                                ]
+                              },
+                              "lyric_line_id": {
+                                "type": "string",
+                                "allOf": [
+                                  {
+                                    "minLength": 1
+                                  },
+                                  {
+                                    "maxLength": 128
+                                  }
+                                ]
+                              },
+                              "line_version": {
+                                "type": "integer",
+                                "allOf": [
+                                  {
+                                    "minimum": 1,
+                                    "maximum": 9007199254740991
+                                  }
+                                ]
+                              },
+                              "line_source_hash": {
+                                "type": "string",
+                                "allOf": [
+                                  {
+                                    "minLength": 1
+                                  },
+                                  {
+                                    "maxLength": 128
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "post_id",
+                              "audio_revision",
+                              "lyrics_revision",
+                              "lyric_line_id",
+                              "line_version",
+                              "line_source_hash"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "languages": {
+                            "$ref": "#/$defs/Objects_"
+                          },
+                          "learner_band": {
+                            "$ref": "#/$defs/Union_"
+                          },
+                          "presentation": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "say_it_back"
+                                    ]
+                                  },
+                                  "reference_text": {
+                                    "type": "string",
+                                    "allOf": [
+                                      {
+                                        "minLength": 1
+                                      },
+                                      {
+                                        "maxLength": 4096
+                                      }
+                                    ]
+                                  },
+                                  "capture": {
+                                    "type": "string",
+                                    "enum": [
+                                      "microphone_audio"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "reference_text",
+                                  "capture"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "translation_choice"
+                                    ]
+                                  },
+                                  "source_text": {
+                                    "type": "string",
+                                    "allOf": [
+                                      {
+                                        "minLength": 1
+                                      },
+                                      {
+                                        "maxLength": 4096
+                                      }
+                                    ]
+                                  },
+                                  "question": {
+                                    "type": "string",
+                                    "allOf": [
+                                      {
+                                        "minLength": 1
+                                      },
+                                      {
+                                        "maxLength": 4096
+                                      }
+                                    ]
+                                  },
+                                  "choices": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "choice_key": {
+                                          "type": "string",
+                                          "allOf": [
+                                            {
+                                              "minLength": 1
+                                            },
+                                            {
+                                              "maxLength": 128
+                                            }
+                                          ]
+                                        },
+                                        "text": {
+                                          "type": "string",
+                                          "allOf": [
+                                            {
+                                              "minLength": 1
+                                            },
+                                            {
+                                              "maxLength": 4096
+                                            }
+                                          ]
+                                        }
+                                      },
+                                      "required": [
+                                        "choice_key",
+                                        "text"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    "allOf": [
+                                      {
+                                        "minItems": 4
+                                      },
+                                      {
+                                        "maxItems": 4
+                                      }
+                                    ]
+                                  },
+                                  "capture": {
+                                    "type": "string",
+                                    "enum": [
+                                      "choice_selection"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "source_text",
+                                  "question",
+                                  "choices",
+                                  "capture"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "typed_cloze"
+                                    ]
+                                  },
+                                  "segments": {
+                                    "type": "array",
+                                    "items": {
+                                      "anyOf": [
+                                        {
+                                          "type": "object",
+                                          "properties": {
+                                            "kind": {
+                                              "type": "string",
+                                              "enum": [
+                                                "text"
+                                              ]
+                                            },
+                                            "text": {
+                                              "type": "string",
+                                              "allOf": [
+                                                {
+                                                  "minLength": 1
+                                                },
+                                                {
+                                                  "maxLength": 4096
+                                                }
+                                              ]
+                                            }
+                                          },
+                                          "required": [
+                                            "kind",
+                                            "text"
+                                          ],
+                                          "additionalProperties": false
+                                        },
+                                        {
+                                          "type": "object",
+                                          "properties": {
+                                            "kind": {
+                                              "type": "string",
+                                              "enum": [
+                                                "blank"
+                                              ]
+                                            },
+                                            "blank_id": {
+                                              "type": "string",
+                                              "allOf": [
+                                                {
+                                                  "minLength": 1
+                                                },
+                                                {
+                                                  "maxLength": 128
+                                                }
+                                              ]
+                                            }
+                                          },
+                                          "required": [
+                                            "kind",
+                                            "blank_id"
+                                          ],
+                                          "additionalProperties": false
+                                        }
+                                      ]
+                                    },
+                                    "allOf": [
+                                      {
+                                        "minItems": 2
+                                      }
+                                    ]
+                                  },
+                                  "accessible_text": {
+                                    "type": "string",
+                                    "allOf": [
+                                      {
+                                        "minLength": 1
+                                      },
+                                      {
+                                        "maxLength": 4096
+                                      }
+                                    ]
+                                  },
+                                  "capture": {
+                                    "type": "string",
+                                    "enum": [
+                                      "keyboard_text"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "segments",
+                                  "accessible_text",
+                                  "capture"
+                                ],
+                                "additionalProperties": false
+                              }
+                            ]
+                          },
+                          "answer_visibility": {
+                            "type": "string",
+                            "enum": [
+                              "always_visible",
+                              "secret_until_spent"
+                            ]
+                          },
+                          "feedback_release": {
+                            "type": "string",
+                            "enum": [
+                              "every_graded_attempt",
+                              "spent_only"
+                            ]
+                          },
+                          "grader_policy_revision": {
+                            "type": "string",
+                            "allOf": [
+                              {
+                                "minLength": 1
+                              },
+                              {
+                                "maxLength": 128
+                              }
+                            ]
+                          },
+                          "feedback_policy_revision": {
+                            "type": "string",
+                            "allOf": [
+                              {
+                                "minLength": 1
+                              },
+                              {
+                                "maxLength": 128
+                              }
+                            ]
+                          },
+                          "quality_policy_revision": {
+                            "type": "string",
+                            "allOf": [
+                              {
+                                "minLength": 1
+                              },
+                              {
+                                "maxLength": 128
+                              }
+                            ]
+                          },
+                          "maximum_attempts": {
+                            "type": "integer",
+                            "allOf": [
+                              {
+                                "minimum": 1,
+                                "maximum": 9007199254740991
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "object",
+                          "session_item_id",
+                          "ordinal",
+                          "exercise_review_key",
+                          "exercise_version_id",
+                          "exercise_type",
+                          "exercise_variant",
+                          "line",
+                          "languages",
+                          "learner_band",
+                          "presentation",
+                          "answer_visibility",
+                          "feedback_release",
+                          "grader_policy_revision",
+                          "feedback_policy_revision",
+                          "quality_policy_revision",
+                          "maximum_attempts"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "allOf": [
+                        {
+                          "minItems": 4
+                        },
+                        {
+                          "maxItems": 64
+                        }
+                      ]
+                    },
+                    "progress": {
+                      "type": "object",
+                      "properties": {
+                        "qualifying_exercise_count": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "answered_exercise_count": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "first_pass_correct": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "required_correct": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "score_bps": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 0,
+                                  "maximum": 10000
+                                }
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "qualifying_exercise_count",
+                        "answered_exercise_count",
+                        "first_pass_correct",
+                        "required_correct",
+                        "score_bps"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "created_at": {
+                      "type": "string"
+                    },
+                    "completed_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "object",
+                    "session_id",
+                    "persona_id",
+                    "community_id",
+                    "post_id",
+                    "audio_revision",
+                    "lyrics_revision",
+                    "languages",
+                    "learner_band",
+                    "study_profile_revision",
+                    "source_set_revision",
+                    "selection_policy_revision",
+                    "qualification_policy_revision",
+                    "timezone",
+                    "status",
+                    "items",
+                    "progress",
+                    "created_at",
+                    "completed_at"
+                  ],
+                  "additionalProperties": false,
+                  "$defs": {
+                    "Objects_": {
+                      "type": "object",
+                      "properties": {
+                        "learning_language": {
+                          "type": "string"
+                        },
+                        "helper_language": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "learning_language",
+                        "helper_language"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "Union_": {
+                      "type": "string",
+                      "enum": [
+                        "A1",
+                        "A2",
+                        "B1",
+                        "B2",
+                        "C1",
+                        "C2"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "404": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "not_found"
+            ]
+          },
+          "500": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "userOrAdmin"
+          }
+        },
+        "x-errors": [
+          "AuthError",
+          "BadRequest",
+          "NotFound",
+          "InternalError"
+        ]
+      }
+    },
+    "/communities/{communityId}/study/v2/sessions/{sessionId}/items/{sessionItemId}/answers": {
+      "post": {
+        "operationId": "post_communitiesCommunityIdStudyV2SessionsSessionIdItemsSessionItemIdAnswers",
+        "parameters": [
+          {
+            "name": "communityId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "allOf": [
+                {
+                  "minLength": 1
+                },
+                {
+                  "maxLength": 128
+                }
+              ]
+            }
+          },
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "allOf": [
+                {
+                  "minLength": 1
+                },
+                {
+                  "maxLength": 128
+                }
+              ]
+            }
+          },
+          {
+            "name": "sessionItemId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "allOf": [
+                {
+                  "minLength": 1
+                },
+                {
+                  "maxLength": 128
+                }
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "idempotency_key": {
+                    "type": "string",
+                    "allOf": [
+                      {
+                        "minLength": 1
+                      },
+                      {
+                        "maxLength": 128
+                      }
+                    ]
+                  },
+                  "attempt_number": {
+                    "type": "integer",
+                    "allOf": [
+                      {
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      }
+                    ]
+                  },
+                  "answer": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "single_select"
+                            ]
+                          },
+                          "choice_key": {
+                            "type": "string",
+                            "allOf": [
+                              {
+                                "minLength": 1
+                              },
+                              {
+                                "maxLength": 128
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "choice_key"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "text_response"
+                            ]
+                          },
+                          "text": {
+                            "type": "string",
+                            "allOf": [
+                              {
+                                "minLength": 1
+                              },
+                              {
+                                "maxLength": 4096
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "text"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "transcript_response"
+                            ]
+                          },
+                          "transcript_evidence_id": {
+                            "type": "string",
+                            "allOf": [
+                              {
+                                "minLength": 1
+                              },
+                              {
+                                "maxLength": 128
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "transcript_evidence_id"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "idempotency_key",
+                  "attempt_number",
+                  "answer"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "object": {
+                      "type": "string",
+                      "enum": [
+                        "study_answer_result_v2"
+                      ]
+                    },
+                    "session_item_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        },
+                        {
+                          "maxLength": 128
+                        }
+                      ]
+                    },
+                    "attempt_number": {
+                      "type": "integer",
+                      "allOf": [
+                        {
+                          "minimum": 1,
+                          "maximum": 9007199254740991
+                        }
+                      ]
+                    },
+                    "exercise_type": {
+                      "$ref": "#/$defs/Union_"
+                    },
+                    "outcome": {
+                      "type": "string",
+                      "enum": [
+                        "correct",
+                        "incorrect"
+                      ]
+                    },
+                    "first_pass": {
+                      "type": "boolean"
+                    },
+                    "attempt_state": {
+                      "type": "string",
+                      "enum": [
+                        "retryable",
+                        "spent"
+                      ]
+                    },
+                    "feedback": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "none"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "transcript_diff"
+                              ]
+                            },
+                            "transcript": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                },
+                                {
+                                  "maxLength": 4096
+                                }
+                              ]
+                            },
+                            "matched": {
+                              "type": "array",
+                              "items": {
+                                "$ref": "#/$defs/Objects_"
+                              }
+                            },
+                            "missing": {
+                              "type": "array",
+                              "items": {
+                                "$ref": "#/$defs/Objects_"
+                              }
+                            },
+                            "extra": {
+                              "type": "array",
+                              "items": {
+                                "$ref": "#/$defs/Objects_"
+                              }
+                            },
+                            "policy_revision": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                },
+                                {
+                                  "maxLength": 128
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "transcript",
+                            "matched",
+                            "missing",
+                            "extra",
+                            "policy_revision"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "choice_reveal"
+                              ]
+                            },
+                            "correct_choice_key": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                },
+                                {
+                                  "maxLength": 128
+                                }
+                              ]
+                            },
+                            "correct_text": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                },
+                                {
+                                  "maxLength": 4096
+                                }
+                              ]
+                            },
+                            "explanation": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "maxLength": 4096
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "correct_choice_key",
+                            "correct_text"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "text_reveal"
+                              ]
+                            },
+                            "accepted_answer": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                },
+                                {
+                                  "maxLength": 4096
+                                }
+                              ]
+                            },
+                            "explanation": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "maxLength": 4096
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "accepted_answer"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    },
+                    "session": {
+                      "type": "object",
+                      "properties": {
+                        "object": {
+                          "type": "string",
+                          "enum": [
+                            "study_session_v2"
+                          ]
+                        },
+                        "session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            },
+                            {
+                              "maxLength": 128
+                            }
+                          ]
+                        },
+                        "persona_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            },
+                            {
+                              "maxLength": 128
+                            }
+                          ]
+                        },
+                        "community_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            },
+                            {
+                              "maxLength": 128
+                            }
+                          ]
+                        },
+                        "post_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            },
+                            {
+                              "maxLength": 128
+                            }
+                          ]
+                        },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "languages": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
+                        "learner_band": {
+                          "$ref": "#/$defs/Union_1"
+                        },
+                        "study_profile_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "source_set_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "selection_policy_revision": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            },
+                            {
+                              "maxLength": 128
+                            }
+                          ]
+                        },
+                        "qualification_policy_revision": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            },
+                            {
+                              "maxLength": 128
+                            }
+                          ]
+                        },
+                        "timezone": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            },
+                            {
+                              "maxLength": 128
+                            }
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "active",
+                            "completed"
+                          ]
+                        },
+                        "items": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "object": {
+                                "type": "string",
+                                "enum": [
+                                  "study_session_item_v2"
+                                ]
+                              },
+                              "session_item_id": {
+                                "type": "string",
+                                "allOf": [
+                                  {
+                                    "minLength": 1
+                                  },
+                                  {
+                                    "maxLength": 128
+                                  }
+                                ]
+                              },
+                              "ordinal": {
+                                "type": "integer",
+                                "allOf": [
+                                  {
+                                    "minimum": 0,
+                                    "maximum": 63
+                                  }
+                                ]
+                              },
+                              "exercise_review_key": {
+                                "type": "string",
+                                "allOf": [
+                                  {
+                                    "minLength": 1
+                                  },
+                                  {
+                                    "maxLength": 128
+                                  }
+                                ]
+                              },
+                              "exercise_version_id": {
+                                "type": "string",
+                                "allOf": [
+                                  {
+                                    "minLength": 1
+                                  },
+                                  {
+                                    "maxLength": 128
+                                  }
+                                ]
+                              },
+                              "exercise_type": {
+                                "$ref": "#/$defs/Union_"
+                              },
+                              "exercise_variant": {
+                                "type": "string",
+                                "allOf": [
+                                  {
+                                    "minLength": 1
+                                  },
+                                  {
+                                    "maxLength": 128
+                                  }
+                                ]
+                              },
+                              "line": {
+                                "type": "object",
+                                "properties": {
+                                  "post_id": {
+                                    "type": "string",
+                                    "allOf": [
+                                      {
+                                        "minLength": 1
+                                      },
+                                      {
+                                        "maxLength": 128
+                                      }
+                                    ]
+                                  },
+                                  "audio_revision": {
+                                    "type": "integer",
+                                    "allOf": [
+                                      {
+                                        "minimum": 1,
+                                        "maximum": 9007199254740991
+                                      }
+                                    ]
+                                  },
+                                  "lyrics_revision": {
+                                    "type": "integer",
+                                    "allOf": [
+                                      {
+                                        "minimum": 1,
+                                        "maximum": 9007199254740991
+                                      }
+                                    ]
+                                  },
+                                  "lyric_line_id": {
+                                    "type": "string",
+                                    "allOf": [
+                                      {
+                                        "minLength": 1
+                                      },
+                                      {
+                                        "maxLength": 128
+                                      }
+                                    ]
+                                  },
+                                  "line_version": {
+                                    "type": "integer",
+                                    "allOf": [
+                                      {
+                                        "minimum": 1,
+                                        "maximum": 9007199254740991
+                                      }
+                                    ]
+                                  },
+                                  "line_source_hash": {
+                                    "type": "string",
+                                    "allOf": [
+                                      {
+                                        "minLength": 1
+                                      },
+                                      {
+                                        "maxLength": 128
+                                      }
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "post_id",
+                                  "audio_revision",
+                                  "lyrics_revision",
+                                  "lyric_line_id",
+                                  "line_version",
+                                  "line_source_hash"
+                                ],
+                                "additionalProperties": false
+                              },
+                              "languages": {
+                                "$ref": "#/$defs/Objects_1"
+                              },
+                              "learner_band": {
+                                "$ref": "#/$defs/Union_1"
+                              },
+                              "presentation": {
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "enum": [
+                                          "say_it_back"
+                                        ]
+                                      },
+                                      "reference_text": {
+                                        "type": "string",
+                                        "allOf": [
+                                          {
+                                            "minLength": 1
+                                          },
+                                          {
+                                            "maxLength": 4096
+                                          }
+                                        ]
+                                      },
+                                      "capture": {
+                                        "type": "string",
+                                        "enum": [
+                                          "microphone_audio"
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "reference_text",
+                                      "capture"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "enum": [
+                                          "translation_choice"
+                                        ]
+                                      },
+                                      "source_text": {
+                                        "type": "string",
+                                        "allOf": [
+                                          {
+                                            "minLength": 1
+                                          },
+                                          {
+                                            "maxLength": 4096
+                                          }
+                                        ]
+                                      },
+                                      "question": {
+                                        "type": "string",
+                                        "allOf": [
+                                          {
+                                            "minLength": 1
+                                          },
+                                          {
+                                            "maxLength": 4096
+                                          }
+                                        ]
+                                      },
+                                      "choices": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "object",
+                                          "properties": {
+                                            "choice_key": {
+                                              "type": "string",
+                                              "allOf": [
+                                                {
+                                                  "minLength": 1
+                                                },
+                                                {
+                                                  "maxLength": 128
+                                                }
+                                              ]
+                                            },
+                                            "text": {
+                                              "type": "string",
+                                              "allOf": [
+                                                {
+                                                  "minLength": 1
+                                                },
+                                                {
+                                                  "maxLength": 4096
+                                                }
+                                              ]
+                                            }
+                                          },
+                                          "required": [
+                                            "choice_key",
+                                            "text"
+                                          ],
+                                          "additionalProperties": false
+                                        },
+                                        "allOf": [
+                                          {
+                                            "minItems": 4
+                                          },
+                                          {
+                                            "maxItems": 4
+                                          }
+                                        ]
+                                      },
+                                      "capture": {
+                                        "type": "string",
+                                        "enum": [
+                                          "choice_selection"
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "source_text",
+                                      "question",
+                                      "choices",
+                                      "capture"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "enum": [
+                                          "typed_cloze"
+                                        ]
+                                      },
+                                      "segments": {
+                                        "type": "array",
+                                        "items": {
+                                          "anyOf": [
+                                            {
+                                              "type": "object",
+                                              "properties": {
+                                                "kind": {
+                                                  "type": "string",
+                                                  "enum": [
+                                                    "text"
+                                                  ]
+                                                },
+                                                "text": {
+                                                  "type": "string",
+                                                  "allOf": [
+                                                    {
+                                                      "minLength": 1
+                                                    },
+                                                    {
+                                                      "maxLength": 4096
+                                                    }
+                                                  ]
+                                                }
+                                              },
+                                              "required": [
+                                                "kind",
+                                                "text"
+                                              ],
+                                              "additionalProperties": false
+                                            },
+                                            {
+                                              "type": "object",
+                                              "properties": {
+                                                "kind": {
+                                                  "type": "string",
+                                                  "enum": [
+                                                    "blank"
+                                                  ]
+                                                },
+                                                "blank_id": {
+                                                  "type": "string",
+                                                  "allOf": [
+                                                    {
+                                                      "minLength": 1
+                                                    },
+                                                    {
+                                                      "maxLength": 128
+                                                    }
+                                                  ]
+                                                }
+                                              },
+                                              "required": [
+                                                "kind",
+                                                "blank_id"
+                                              ],
+                                              "additionalProperties": false
+                                            }
+                                          ]
+                                        },
+                                        "allOf": [
+                                          {
+                                            "minItems": 2
+                                          }
+                                        ]
+                                      },
+                                      "accessible_text": {
+                                        "type": "string",
+                                        "allOf": [
+                                          {
+                                            "minLength": 1
+                                          },
+                                          {
+                                            "maxLength": 4096
+                                          }
+                                        ]
+                                      },
+                                      "capture": {
+                                        "type": "string",
+                                        "enum": [
+                                          "keyboard_text"
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "segments",
+                                      "accessible_text",
+                                      "capture"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                ]
+                              },
+                              "answer_visibility": {
+                                "type": "string",
+                                "enum": [
+                                  "always_visible",
+                                  "secret_until_spent"
+                                ]
+                              },
+                              "feedback_release": {
+                                "type": "string",
+                                "enum": [
+                                  "every_graded_attempt",
+                                  "spent_only"
+                                ]
+                              },
+                              "grader_policy_revision": {
+                                "type": "string",
+                                "allOf": [
+                                  {
+                                    "minLength": 1
+                                  },
+                                  {
+                                    "maxLength": 128
+                                  }
+                                ]
+                              },
+                              "feedback_policy_revision": {
+                                "type": "string",
+                                "allOf": [
+                                  {
+                                    "minLength": 1
+                                  },
+                                  {
+                                    "maxLength": 128
+                                  }
+                                ]
+                              },
+                              "quality_policy_revision": {
+                                "type": "string",
+                                "allOf": [
+                                  {
+                                    "minLength": 1
+                                  },
+                                  {
+                                    "maxLength": 128
+                                  }
+                                ]
+                              },
+                              "maximum_attempts": {
+                                "type": "integer",
+                                "allOf": [
+                                  {
+                                    "minimum": 1,
+                                    "maximum": 9007199254740991
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "object",
+                              "session_item_id",
+                              "ordinal",
+                              "exercise_review_key",
+                              "exercise_version_id",
+                              "exercise_type",
+                              "exercise_variant",
+                              "line",
+                              "languages",
+                              "learner_band",
+                              "presentation",
+                              "answer_visibility",
+                              "feedback_release",
+                              "grader_policy_revision",
+                              "feedback_policy_revision",
+                              "quality_policy_revision",
+                              "maximum_attempts"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "allOf": [
+                            {
+                              "minItems": 4
+                            },
+                            {
+                              "maxItems": 64
+                            }
+                          ]
+                        },
+                        "progress": {
+                          "type": "object",
+                          "properties": {
+                            "qualifying_exercise_count": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "answered_exercise_count": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "first_pass_correct": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "required_correct": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "score_bps": {
+                              "anyOf": [
+                                {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 0,
+                                      "maximum": 10000
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "qualifying_exercise_count",
+                            "answered_exercise_count",
+                            "first_pass_correct",
+                            "required_correct",
+                            "score_bps"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "created_at": {
+                          "type": "string"
+                        },
+                        "completed_at": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "object",
+                        "session_id",
+                        "persona_id",
+                        "community_id",
+                        "post_id",
+                        "audio_revision",
+                        "lyrics_revision",
+                        "languages",
+                        "learner_band",
+                        "study_profile_revision",
+                        "source_set_revision",
+                        "selection_policy_revision",
+                        "qualification_policy_revision",
+                        "timezone",
+                        "status",
+                        "items",
+                        "progress",
+                        "created_at",
+                        "completed_at"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "object",
+                    "session_item_id",
+                    "attempt_number",
+                    "exercise_type",
+                    "outcome",
+                    "first_pass",
+                    "attempt_state",
+                    "feedback",
+                    "session"
+                  ],
+                  "additionalProperties": false,
+                  "$defs": {
+                    "Union_": {
+                      "type": "string",
+                      "enum": [
+                        "say_it_back",
+                        "translation_choice",
+                        "typed_cloze"
+                      ]
+                    },
+                    "Objects_": {
+                      "type": "object",
+                      "properties": {
+                        "text": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            },
+                            {
+                              "maxLength": 4096
+                            }
+                          ]
+                        },
+                        "start": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "end": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "text",
+                        "start",
+                        "end"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "Objects_1": {
+                      "type": "object",
+                      "properties": {
+                        "learning_language": {
+                          "type": "string"
+                        },
+                        "helper_language": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "learning_language",
+                        "helper_language"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "Union_1": {
+                      "type": "string",
+                      "enum": [
+                        "A1",
+                        "A2",
+                        "B1",
+                        "B2",
+                        "C1",
+                        "C2"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "404": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "not_found"
+            ]
+          },
+          "409": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "conflict"
+            ]
+          },
+          "429": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "rate_limited"
+            ]
+          },
+          "500": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "userOrAdmin"
+          }
+        },
+        "x-errors": [
+          "AuthError",
+          "BadRequest",
+          "Conflict",
+          "NotFound",
+          "RateLimited",
           "InternalError"
         ]
       }

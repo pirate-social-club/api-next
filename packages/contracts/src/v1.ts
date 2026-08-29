@@ -611,7 +611,6 @@ const LocalizedPost = Schema.Struct({
   market_context: Schema.optional(Schema.NullOr(JsonObject)),
   label: Schema.optional(Schema.NullOr(JsonObject)),
   song_presentation: Schema.optional(Schema.NullOr(JsonObject)),
-  study_capability: Schema.optional(Schema.NullOr(JsonObject)),
   karaoke_capability: Schema.optional(Schema.NullOr(JsonObject)),
   streak_summary: Schema.optional(Schema.NullOr(JsonObject)),
   asset_story: Schema.optional(Schema.NullOr(JsonObject)),

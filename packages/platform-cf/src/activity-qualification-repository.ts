@@ -341,7 +341,7 @@ const recomputeProjection = (
     });
   });
 
-const recordQualificationProjections = (
+export const recordQualificationProjections = (
   transaction: ControlPlaneTransaction,
   input: {
     readonly accountId: string;

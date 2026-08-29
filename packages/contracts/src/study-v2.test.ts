@@ -26,6 +26,57 @@ const shared = {
   maximum_attempts: 2,
 } as const;
 
+const sessionItem = (ordinal: number) => ({
+  ...shared,
+  session_item_id: `session-item-${ordinal}`,
+  ordinal,
+  exercise_review_key: `review-key-${ordinal}`,
+  exercise_version_id: `exercise-version-${ordinal}`,
+  exercise_type: "typed_cloze" as const,
+  exercise_variant: "vocabulary-v1",
+  line: { ...line, lyric_line_id: `line-${ordinal}` },
+  languages: { learning_language: "en" as const, helper_language: null },
+  presentation: {
+    kind: "typed_cloze" as const,
+    segments: [
+      { kind: "text" as const, text: "Hold " },
+      { kind: "blank" as const, blank_id: "blank-1" },
+    ],
+    accessible_text: "Hold blank",
+    capture: "keyboard_text" as const,
+  },
+  answer_visibility: "secret_until_spent" as const,
+  feedback_release: "spent_only" as const,
+});
+
+const session = {
+  object: "study_session_v2",
+  session_id: "session-1",
+  persona_id: "persona-1",
+  community_id: "community-1",
+  post_id: "post-1",
+  audio_revision: 1,
+  lyrics_revision: 2,
+  languages: { learning_language: "en", helper_language: null },
+  learner_band: "A2",
+  study_profile_revision: 1,
+  source_set_revision: 1,
+  selection_policy_revision: "selection-v1",
+  qualification_policy_revision: "qualification-v1",
+  timezone: "UTC",
+  status: "active",
+  items: [sessionItem(0), sessionItem(1), sessionItem(2), sessionItem(3)],
+  progress: {
+    qualifying_exercise_count: 4,
+    answered_exercise_count: 0,
+    first_pass_correct: 0,
+    required_correct: 3,
+    score_bps: null,
+  },
+  created_at: "2026-08-29T10:00:00.000Z",
+  completed_at: null,
+} as const;
+
 describe("Study v2 contracts", () => {
   test("keeps say-it-back spoken and source-only", () => {
     const decoded = Schema.decodeUnknownSync(StudySessionItemV2)({
@@ -60,6 +111,7 @@ describe("Study v2 contracts", () => {
         first_pass: false,
         attempt_state: "retryable",
         feedback: { kind: "none" },
+        session,
       }).feedback.kind,
     ).toBe("none");
     expect(() =>
@@ -76,6 +128,7 @@ describe("Study v2 contracts", () => {
           correct_choice_key: "choice-a",
           correct_text: "Correct",
         },
+        session,
       }),
     ).toThrow();
   });
@@ -101,6 +154,7 @@ describe("Study v2 contracts", () => {
           correct_choice_key: "choice-a",
           correct_text: "Correct",
         },
+        session,
       }),
     ).toThrow();
   });

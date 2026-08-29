@@ -108,6 +108,7 @@ import {
   makeRs256SessionTokenVerifier,
 } from "@pirate/platform-cf/session-tokens";
 import { makeControlPlaneSongRewardOfferStore } from "@pirate/platform-cf/song-reward-offer-repository";
+import { makeControlPlaneStudyV2Store } from "@pirate/platform-cf/study-v2-repository";
 import { makeControlPlaneTextSubmissionStore } from "@pirate/platform-cf/text-submission-repository";
 import {
   makeControlPlaneVerificationCompletionStore,
@@ -141,6 +142,7 @@ import { makePersonaHandlers } from "./persona-handlers.ts";
 import { makePlatformPirateHandleHandlers } from "./platform-pirate-handle-handlers.ts";
 import { makeProductHandlers } from "./product-handlers.ts";
 import { makeSongRewardOfferHandlers } from "./rewards-song-offer-handlers.ts";
+import { makeStudyV2Handlers } from "./study-v2-handlers.ts";
 import { createHttpWorker, type EndpointHandler, type Principal } from "./transport.ts";
 import { makeVerificationHandlers } from "./verification-handlers.ts";
 
@@ -835,6 +837,11 @@ export async function createProductionHttpWorker(
     studyItemSource:
       dependencies.study_item_source ?? makeControlPlaneAcceptedLyricsStudyItemSource(controlPlane),
   });
+  const studyV2Handlers = makeStudyV2Handlers({
+    clock: { now: Effect.sync(() => Date.now()) },
+    ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
+    store: makeControlPlaneStudyV2Store(controlPlane),
+  });
   const handleSalesHandlers = makeHandleSalesHandlers({
     store: makeControlPlaneHandleSalesStore(controlPlane),
     ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
@@ -945,6 +952,7 @@ export async function createProductionHttpWorker(
       ...fundingHandlers,
       ...personaHandlers,
       ...activityQualificationHandlers,
+      ...studyV2Handlers,
       ...handleSalesHandlers,
       ...platformPirateHandleHandlers,
       ...songRewardOfferHandlers,

@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.31.0",
+  "releaseType": "study-v2-contracts-v1",
+  "wireContract": "spec-018-sections-2-9-and-11",
+  "sourceCommit": "pending-review",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.31.0.tgz",
+    "sha256": "81128f1373b0fb92dfabc2b512f0c093b2a86daf63e230b67afb0eb7e7669f05",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@11f53731b90070a53107d3b30f75fd3957d332bea0d73daa75fa4761f8f9853c",
+    "openapiSha256": "11f53731b90070a53107d3b30f75fd3957d332bea0d73daa75fa4761f8f9853c",
+    "clientSha256": "3d665f37f42711196fcf97bd645600a8cf1a30de8924c0e5c5573ad7b74390f2"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "authorized",
+      "baselineCommit": "07fe31c",
+      "reason": "Ratified spec 018 adds Study v2 and retires the opaque study_capability projection."
+    },
+    "focusedPostgresSuites": "Local Postgres 17 TCP endpoints reset connections; required postgres17 CI remains the authoritative live gate.",
+    "fullUnitSuite": "2083 passed, 303 database-gated tests skipped, 0 failed",
+    "fullWorkerdSuite": "92 passed, 0 failed",
+    "packageVerifier": "passed",
+    "repositoryCheck": "passed"
+  }
+}

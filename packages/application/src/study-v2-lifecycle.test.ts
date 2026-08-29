@@ -44,6 +44,34 @@ const item = (ordinal: number): StudySessionItemV2 => ({
   maximum_attempts: 2,
 });
 
+const session = {
+  object: "study_session_v2",
+  session_id: "session-1",
+  persona_id: "persona-1",
+  community_id: "community-1",
+  post_id: "post-1",
+  audio_revision: 1,
+  lyrics_revision: 1,
+  languages: { learning_language: "en", helper_language: null },
+  learner_band: "A2",
+  study_profile_revision: 1,
+  source_set_revision: 1,
+  selection_policy_revision: "selection-v1",
+  qualification_policy_revision: "qualification-v1",
+  timezone: "UTC",
+  status: "active",
+  items: [item(0), item(1), item(2), item(3)],
+  progress: {
+    qualifying_exercise_count: 4,
+    answered_exercise_count: 0,
+    first_pass_correct: 0,
+    required_correct: 3,
+    score_bps: null,
+  },
+  created_at: "2026-08-29T10:00:00.000Z",
+  completed_at: null,
+} as const;
+
 describe("Study v2 presentation lifecycle", () => {
   test("rejects the wrong submission kind before an attempt can be accepted", async () => {
     let reservationCalls = 0;
@@ -137,6 +165,7 @@ describe("Study v2 presentation lifecycle", () => {
       first_pass: true,
       attempt_state: "spent",
       feedback: { kind: "text_reveal", accepted_answer: "on" },
+      session,
     } as const;
     await expect(
       Effect.runPromise(
