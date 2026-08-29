@@ -53,7 +53,9 @@ export const connectElevenLabsKaraokeSocket: KaraokeSttSocketConnect = async (in
   }
   const websocketUrl = new URL(upgradeUrl);
   websocketUrl.searchParams.set("token", tokenDocument.token);
-  const response = await fetch(websocketUrl, { headers: { Upgrade: "websocket" } });
+  const response = (await fetch(websocketUrl, {
+    headers: { Upgrade: "websocket" },
+  })) as Response & { readonly webSocket: (WebSocket & { accept(): void }) | null };
   if (response.webSocket === null) {
     throw new Error(`elevenlabs_stt_upgrade_failed_${response.status}`);
   }

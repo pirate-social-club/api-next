@@ -1,5 +1,3 @@
-/// <reference types="@cloudflare/workers-types" />
-
 // biome-ignore lint/suspicious/noTsIgnore: cloudflare:workers exists only in the Workers runtime
 // @ts-ignore cloudflare:workers exists only in the Workers runtime
 import { DurableObject } from "cloudflare:workers";
@@ -32,13 +30,61 @@ const TOKEN_TTL_MS = 5 * 60 * 1_000;
 const R2_PART_BYTES = 5 * 1024 * 1024;
 const MAX_SESSION_MS = 30 * 60 * 1_000;
 
-type Row = Readonly<Record<string, SqlStorageValue>>;
-type Sql = DurableObjectStorage["sql"];
+type Row = Readonly<Record<string, unknown>>;
+type Sql = {
+  exec<A extends Row = Row>(
+    query: string,
+    ...bindings: readonly unknown[]
+  ): {
+    one(): A;
+    toArray(): A[];
+  };
+};
+type KaraokeWebSocket = WebSocket & {
+  serializeAttachment(value: unknown): void;
+};
+type KaraokeDurableObjectState = {
+  readonly storage: {
+    readonly sql: unknown;
+    setAlarm(scheduledTime: number | Date): Promise<void>;
+  };
+  acceptWebSocket(socket: WebSocket): void;
+  blockConcurrencyWhile<A>(callback: () => Promise<A>): void;
+  getWebSockets(): WebSocket[];
+};
+type KaraokeR2UploadedPart = Readonly<{
+  etag: string;
+  partNumber: number;
+}>;
+type KaraokeR2MultipartUpload = {
+  readonly uploadId: string;
+  abort(): Promise<void>;
+  complete(parts: KaraokeR2UploadedPart[]): Promise<unknown>;
+  uploadPart(partNumber: number, value: Uint8Array): Promise<KaraokeR2UploadedPart>;
+};
+type KaraokeR2Bucket = {
+  createMultipartUpload(
+    key: string,
+    options: Readonly<{
+      customMetadata: Readonly<Record<string, string>>;
+      httpMetadata: Readonly<{ contentType: string }>;
+    }>,
+  ): Promise<KaraokeR2MultipartUpload>;
+  get(key: string): Promise<Readonly<{
+    body: ReadableStream<Uint8Array>;
+    size: number;
+  }> | null>;
+  resumeMultipartUpload(key: string, uploadId: string): KaraokeR2MultipartUpload;
+};
+
+declare const WebSocketPair: {
+  new (): { readonly 0: KaraokeWebSocket; readonly 1: KaraokeWebSocket };
+};
 
 export interface KaraokeAttemptDoBindings {
   readonly CONTROL_PLANE: HyperdriveConnection;
   readonly ELEVENLABS_API_KEY?: string;
-  readonly LEARNER_AUDIO?: R2Bucket;
+  readonly LEARNER_AUDIO?: KaraokeR2Bucket;
 }
 
 export interface KaraokeAttemptDoStub {
@@ -58,7 +104,7 @@ type ArchiveState = Readonly<{
   uploadId: string | null;
   objectKey: string;
   nextPart: number;
-  parts: readonly R2UploadedPart[];
+  parts: readonly KaraokeR2UploadedPart[];
   byteSize: number;
   durationMs: number;
   result: Extract<KaraokeRecordingResult, { state: "stored" }> | null;
@@ -178,10 +224,14 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
   private adapter: KaraokeStreamingSttAdapter | null = null;
   private serverSequence = 0;
   private readonly sql: Sql;
+  private readonly runtimeCtx: KaraokeDurableObjectState;
+  private readonly runtimeEnv: KaraokeAttemptDoBindings;
 
-  constructor(ctx: DurableObjectState, env: KaraokeAttemptDoBindings) {
-    super(ctx, env);
-    this.sql = ctx.storage.sql;
+  constructor(ctx: KaraokeDurableObjectState, env: KaraokeAttemptDoBindings) {
+    super(ctx as never, env);
+    this.runtimeCtx = ctx;
+    this.runtimeEnv = env;
+    this.sql = ctx.storage.sql as Sql;
     ctx.blockConcurrencyWhile(async () => {
       this.sql.exec(`CREATE TABLE IF NOT EXISTS karaoke_session (
         id INTEGER PRIMARY KEY CHECK (id=1), authority_json TEXT NOT NULL,
@@ -216,7 +266,10 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
     token: string;
     tokenExpiresAt: number;
   }> {
-    if (this.env.ELEVENLABS_API_KEY === undefined || this.env.ELEVENLABS_API_KEY.trim() === "") {
+    if (
+      this.runtimeEnv.ELEVENLABS_API_KEY === undefined ||
+      this.runtimeEnv.ELEVENLABS_API_KEY.trim() === ""
+    ) {
       throw new Error("karaoke_provider_unavailable");
     }
     const existing = one(
@@ -265,7 +318,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
         `karaoke/${authority.accountId}/${authority.attemptId}.pcm`,
       );
       this.sql.exec("INSERT INTO karaoke_transport (id,epoch_count) VALUES (1,0)");
-      await this.ctx.storage.setAlarm(
+      await this.runtimeCtx.storage.setAlarm(
         Math.min(Date.parse(authority.expiresAt), Date.now() + MAX_SESSION_MS),
       );
     } else if (Number(existing.terminal) === 1) {
@@ -304,14 +357,17 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
     if (row === null) return new Response("Unauthorized", { status: 401 });
     const pair = new WebSocketPair();
     pair[1].serializeAttachment({ sessionId: authority.sessionId, epoch: Date.now() });
-    this.ctx.acceptWebSocket(pair[1]);
+    this.runtimeCtx.acceptWebSocket(pair[1]);
     const transport = one(this.sql, "SELECT epoch_count FROM karaoke_transport WHERE id=1");
     this.sql.exec(
       "UPDATE karaoke_transport SET reconnect_count=reconnect_count+?, epoch_count=epoch_count+1 WHERE id=1",
       Number(transport?.epoch_count ?? 0) > 0 ? 1 : 0,
     );
     await this.ensureHost();
-    return new Response(null, { status: 101, webSocket: pair[0] });
+    return new Response(null, {
+      status: 101,
+      webSocket: pair[0],
+    } as ResponseInit & { webSocket: WebSocket });
   }
 
   async webSocketMessage(_socket: WebSocket, message: string | ArrayBuffer): Promise<void> {
@@ -392,7 +448,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
       type,
       ...body,
     });
-    for (const socket of this.ctx.getWebSockets()) {
+    for (const socket of this.runtimeCtx.getWebSockets()) {
       try {
         socket.send(event);
       } catch {
@@ -441,7 +497,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
     this.sql.exec("DELETE FROM karaoke_token");
     this.sql.exec("UPDATE karaoke_session SET snapshot_json='{}',terminal=1 WHERE id=1");
     this.host = null;
-    await this.ctx.storage.setAlarm(Date.now());
+    await this.runtimeCtx.storage.setAlarm(Date.now());
   }
 
   private async ensureHost(): Promise<KaraokeSessionHost> {
@@ -453,7 +509,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
     if (row === null) throw new Error("karaoke_session_uninitialized");
     const snapshot = deserializeKaraokeSessionSnapshot(sqlJson(row.snapshot_json));
     this.serverSequence = Number(row.server_sequence);
-    const key = this.env.ELEVENLABS_API_KEY;
+    const key = this.runtimeEnv.ELEVENLABS_API_KEY;
     if (key === undefined || key.trim() === "") throw new Error("karaoke_provider_unavailable");
     this.adapter = new ElevenLabsKaraokeSttAdapter({ apiKey: key });
     this.host = new KaraokeSessionHost(snapshot.state, new RuntimeEffects(this), this.adapter, {
@@ -528,7 +584,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
   }
 
   private async uploadPending(final: boolean): Promise<void> {
-    const bucket = this.env.LEARNER_AUDIO;
+    const bucket = this.runtimeEnv.LEARNER_AUDIO;
     if (bucket === undefined) throw new Error("karaoke_archive_bucket_unavailable");
     let archive = this.archive();
     const chunks = this.sql
@@ -566,7 +622,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
   }
 
   private async finishArchive(): Promise<KaraokeRecordingResult> {
-    const bucket = this.env.LEARNER_AUDIO;
+    const bucket = this.runtimeEnv.LEARNER_AUDIO;
     if (bucket === undefined) return { state: "failed", failureKind: "multipart_failed" };
     try {
       const previous = this.archive();
@@ -616,7 +672,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
   }
 
   private async storedArchiveResult(
-    bucket: R2Bucket,
+    bucket: KaraokeR2Bucket,
     archive: ArchiveState,
   ): Promise<KaraokeRecordingResult> {
     const stored = await bucket.get(archive.objectKey);
@@ -645,7 +701,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
   }
 
   private async persistStoredArchiveResult(
-    bucket: R2Bucket,
+    bucket: KaraokeR2Bucket,
     archive: ArchiveState,
   ): Promise<KaraokeRecordingResult> {
     const result = await this.storedArchiveResult(bucket, archive);
@@ -682,7 +738,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
     const payload = sqlJson<Outbox>(row.payload_json);
     const authority = this.authority();
     const store = makeControlPlaneKaraokeStore(
-      makeHyperdriveControlPlaneLayer(this.env.CONTROL_PLANE),
+      makeHyperdriveControlPlaneLayer(this.runtimeEnv.CONTROL_PLANE),
     );
     let retry = false;
     if (row.score_state === "pending") {
@@ -729,7 +785,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
       this.sql.exec("DELETE FROM karaoke_audio_chunk");
       return;
     }
-    if (retry) await this.ctx.storage.setAlarm(Date.now() + 30_000);
+    if (retry) await this.runtimeCtx.storage.setAlarm(Date.now() + 30_000);
   }
 }
 

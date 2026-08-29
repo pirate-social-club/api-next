@@ -82,7 +82,12 @@ describe("ElevenLabs Karaoke realtime adapter", () => {
     expect(await adapter.commit()).toBeNull();
     await adapter.sendPcm16(frame(2_000, 1_375));
     const commit = await adapter.commit();
-    expect(commit?.streamGeneration).toBe(adapter.streamGeneration);
+    expect(commit).not.toBeNull();
+    if (commit === null) throw new Error("expected_commit");
+    const streamGeneration = adapter.streamGeneration;
+    expect(streamGeneration).not.toBeNull();
+    if (streamGeneration === null) throw new Error("expected_stream_generation");
+    expect(commit.streamGeneration).toBe(streamGeneration);
     expect(socket.sent).toHaveLength(3);
 
     socket.emit({
@@ -145,7 +150,7 @@ describe("ElevenLabs Karaoke realtime adapter", () => {
     const requests: Request[] = [];
     try {
       globalThis.fetch = (async (input, init) => {
-        const request = new Request(input, init);
+        const request = new Request(input instanceof Request ? input.url : String(input), init);
         requests.push(request);
         if (requests.length === 1) return Response.json({ token: "single-use" });
         return { status: 101, webSocket: { accept: () => undefined } } as unknown as Response;

@@ -33,6 +33,6 @@
     "fullUnitSuite": "2207 passed, 305 database-gated tests skipped, 0 failed",
     "fullWorkerdSuite": "96 passed, 0 failed, including single-use token, reconnect epoch, accepted-frame archive binding, R2 multipart completion and abort, terminal evidence scrubbing, and outbox retry rearming",
     "packageVerifier": "passed",
-    "repositoryCheck": "Effect diagnostics, formatting, binding contract, dependency boundaries, migration integrity, contract freshness, and package verification passed; the direct TypeScript 7 check remains blocked by the existing repository-wide Bun and DOM ambient mismatch"
+    "repositoryCheck": "passed, including Effect diagnostics, both direct TypeScript 7 projects, formatting, binding contract, dependency boundaries, migration integrity, contract freshness, and package verification"
   }
 }
