@@ -4,6 +4,7 @@ import {
   KaraokeAttempt,
   KaraokeAttemptCreate,
   type KaraokeClientEvent,
+  KaraokeReadiness,
   KaraokeScoringPolicy,
   KaraokeSession,
   KaraokeSongLeaderboard,
@@ -110,5 +111,36 @@ describe("karaoke contracts", () => {
       type: "playback_sync",
     };
     expect(clientEvent.type).toBe("playback_sync");
+  });
+
+  it("decodes typed unavailable and browser-ready payload states", () => {
+    const decode = Schema.decodeUnknownSync(KaraokeReadiness);
+    expect(decode({ state: "processing", reason: "alignment_pending" })).toEqual({
+      state: "processing",
+      reason: "alignment_pending",
+    });
+    const ready = decode({
+      state: "ready",
+      object: "song_karaoke_payload",
+      community_id: "community-1",
+      post_id: "post-1",
+      title: "Song",
+      karaoke_revision_id: "karaoke-revision-1",
+      playback_audio: { kind: "full_mix", ref: "audio-1" },
+      playback_kind: "full_mix",
+      karaoke_lines: [
+        {
+          id: "line-1",
+          index: 0,
+          kind: "lyric",
+          text: "Hold on",
+          start_ms: 100,
+          end_ms: 900,
+          words: [{ text: "Hold", start_ms: 100, end_ms: 400 }],
+        },
+      ],
+    });
+    if (ready.state !== "ready") throw new TypeError("expected ready Karaoke payload");
+    expect(ready.playback_kind).toBe("full_mix");
   });
 });

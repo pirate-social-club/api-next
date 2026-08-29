@@ -25,6 +25,7 @@
     "./custody-solvency-coordinator": "./src/custody-solvency-coordinator.ts",
     "./custody-solvency-repository": "./src/custody-solvency-repository.ts",
     "./activity-qualification-repository": "./src/activity-qualification-repository.ts",
+    "./karaoke-readiness-repository": "./src/karaoke-readiness-repository.ts",
     "./study-v2-repository": "./src/study-v2-repository.ts",
     "./study-spoken-audio": "./src/study-spoken-audio.ts",
     "./accepted-lyrics-study-item-source": "./src/accepted-lyrics-study-item-source.ts",

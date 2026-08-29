@@ -59,6 +59,7 @@ import {
   makeControlPlanePrivySessionCredentialStore,
   makeControlPlaneSessionProductReadiness,
 } from "@pirate/platform-cf/identity-repository";
+import { makeControlPlaneKaraokeReadinessStore } from "@pirate/platform-cf/karaoke-readiness-repository";
 import { makeR2MediaIngressPresigner } from "@pirate/platform-cf/media-ingress-presigner";
 import {
   type MediaSealBuckets,
@@ -144,6 +145,7 @@ import {
 import { makeHandleSalesHandlers } from "./handle-sales-handlers.ts";
 import { makeProductionHnsCommunityAppApiComposition } from "./hns-community-app-api-production-composition.ts";
 import { makeHnsOwnershipComposition } from "./hns-ownership-composition.ts";
+import { makeKaraokeReadinessHandlers } from "./karaoke-handlers.ts";
 import { makeMediaUploadHandlers } from "./media-upload-handlers.ts";
 import { makeNamespaceOwnershipHandlers } from "./namespace-ownership-handlers.ts";
 import { makePersonaHandlers } from "./persona-handlers.ts";
@@ -863,6 +865,9 @@ export async function createProductionHttpWorker(
           },
         }),
   });
+  const karaokeReadinessHandlers = makeKaraokeReadinessHandlers(
+    makeControlPlaneKaraokeReadinessStore(controlPlane),
+  );
   const handleSalesHandlers = makeHandleSalesHandlers({
     store: makeControlPlaneHandleSalesStore(controlPlane),
     ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
@@ -973,6 +978,7 @@ export async function createProductionHttpWorker(
       ...fundingHandlers,
       ...personaHandlers,
       ...activityQualificationHandlers,
+      ...karaokeReadinessHandlers,
       ...studyV2Handlers,
       ...handleSalesHandlers,
       ...platformPirateHandleHandlers,

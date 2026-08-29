@@ -4,6 +4,7 @@ import {
   type KaraokeAttempt,
   type KaraokeAttemptCreateRequest,
   type KaraokeLeaderboardQuery,
+  type KaraokeReadiness,
   type KaraokeSession,
   type KaraokeSongLeaderboard,
   NotFound,
@@ -31,6 +32,13 @@ export interface KaraokeHandlerServices {
     readonly postId: string;
     readonly userId: string;
   }) => Promise<KaraokeSongLeaderboard>;
+}
+
+export interface KaraokeReadinessHandlerServices {
+  readonly get: (input: {
+    readonly communityId: string;
+    readonly postId: string;
+  }) => Promise<KaraokeReadiness>;
 }
 
 type KaraokePath = {
@@ -121,4 +129,15 @@ export const makeKaraokeHandlers = (services: KaraokeHandlerServices): KaraokeHa
   CreateKaraokeAttempt: createAttempt(services),
   GetKaraokeAttempt: getAttempt(services),
   GetKaraokeLeaderboard: leaderboard(services),
+});
+
+export const makeKaraokeReadinessHandlers = (
+  services: KaraokeReadinessHandlerServices,
+): Readonly<{ GetKaraokeReadiness: EndpointHandler }> => ({
+  GetKaraokeReadiness: (request) => {
+    karaokeActor(request.principal);
+    const path = karaokePath(request);
+    if (!path.postId) throw new BadRequest({ message: "Karaoke readiness requires postId" });
+    return services.get({ communityId: path.communityId, postId: path.postId });
+  },
 });
