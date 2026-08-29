@@ -7,9 +7,16 @@ import {
   OpenSongRewardOffer,
   SONG_LYRICS_TEXT_MAX_LENGTH,
   StartStudySession,
+  StartStudySessionV2,
   SubmitStudyAnswer,
 } from "@pirate/contracts";
 import { Schema } from "effect";
+import {
+  type MegapotParticipantPreflight,
+  parseMegapotParticipantPreflight,
+  participantPreflightMatches,
+  studySessionMatchesParticipantPreflight,
+} from "./megapot-participant-preflight-artifact.ts";
 import { runStagingStudyParticipant } from "./staging-study-participant.ts";
 
 const Identifier = Schema.NonEmptyString.check(Schema.isMaxLength(128));
@@ -40,6 +47,7 @@ const GoldenInput = Schema.Struct({
     Schema.isMaxLength(2),
   ),
   study_participant: Schema.Struct({
+    account_id: Identifier,
     persona_id: Identifier,
     timezone: Identifier,
     accepted_lyrics: Schema.NonEmptyString.check(Schema.isMaxLength(SONG_LYRICS_TEXT_MAX_LENGTH)),
@@ -60,11 +68,13 @@ export type MegapotGoldenOptions = Readonly<{
   participantAuthorization?: string;
   participantCookie?: string;
   participantCsrfToken?: string;
+  participantPreflight?: MegapotParticipantPreflight;
 }>;
 
 export type MegapotGoldenDependencies = Readonly<{
   fetcher: Fetcher;
   sleep: (milliseconds: number) => Promise<void>;
+  now: () => Date;
 }>;
 
 export class MegapotBaseSepoliaGoldenFailed extends Error {
@@ -185,7 +195,59 @@ function participantOptions(options: MegapotGoldenOptions): MegapotGoldenOptions
     ...(options.participantCsrfToken === undefined
       ? {}
       : { csrfToken: options.participantCsrfToken }),
+    ...(options.participantPreflight === undefined
+      ? {}
+      : { participantPreflight: options.participantPreflight }),
   };
+}
+
+async function assertParticipantReady(
+  input: GoldenInput,
+  options: MegapotGoldenOptions,
+  dependencies: MegapotGoldenDependencies,
+) {
+  const artifact = options.participantPreflight;
+  if (
+    !participantPreflightMatches(
+      artifact,
+      {
+        accountId: input.study_participant.account_id,
+        personaId: input.study_participant.persona_id,
+        communityId: input.community_id,
+        postId: input.post_id,
+      },
+      dependencies.now(),
+    )
+  ) {
+    throw new MegapotBaseSepoliaGoldenFailed(
+      "invalid-options",
+      "A fresh matching participant preflight is required before offer creation.",
+    );
+  }
+
+  const session = await requestJson(
+    dependencies,
+    participantOptions(options),
+    `/communities/${encodeURIComponent(input.community_id)}/posts/${encodeURIComponent(input.post_id)}/study/v2/sessions`,
+    StartStudySessionV2.response,
+    {
+      method: "POST",
+      body: {
+        idempotency_key: `megapot-golden-${input.run_id}-study-v2-preflight`,
+        persona_id: input.study_participant.persona_id,
+        target_language: null,
+        learner_band: null,
+        timezone: input.study_participant.timezone,
+      },
+    },
+  );
+  if (!studySessionMatchesParticipantPreflight(session, artifact)) {
+    throw new MegapotBaseSepoliaGoldenFailed(
+      "request-failed",
+      "The typed Study session does not match the participant preflight artifact.",
+    );
+  }
+  return session;
 }
 
 async function requestJson<S extends Schema.ConstraintDecoder<unknown>>(
@@ -250,11 +312,14 @@ export async function runMegapotBaseSepoliaGolden(
   dependencies: MegapotGoldenDependencies = {
     fetcher: fetch,
     sleep: (milliseconds) => Bun.sleep(milliseconds),
+    now: () => new Date(),
   },
 ) {
   const plan = dryRun(input, options);
   endpoint(options.apiOrigin, "/");
   if (!options.execute) return plan;
+
+  await assertParticipantReady(input, options, dependencies);
 
   const communityId = encodeURIComponent(input.community_id);
   const postId = encodeURIComponent(input.post_id);
@@ -426,33 +491,45 @@ function parseOptions(args: readonly string[]): {
   readonly execute: boolean;
   readonly qualifyStudy: boolean;
   readonly input: string;
+  readonly participantPreflight?: string;
 } {
   const execute = args.includes("--execute");
   const confirmed = args.includes("--confirm-base-sepolia");
   const qualifyStudy = args.includes("--qualify-study");
   const inputIndex = args.indexOf("--input");
   const input = inputIndex < 0 ? undefined : args[inputIndex + 1];
+  const preflightIndex = args.indexOf("--participant-preflight");
+  const participantPreflight = preflightIndex < 0 ? undefined : args[preflightIndex + 1];
   const allowed = new Set([
     "--execute",
     "--confirm-base-sepolia",
     "--qualify-study",
     "--input",
     input,
+    "--participant-preflight",
+    participantPreflight,
   ]);
   const unknown = args.find((argument) => !allowed.has(argument));
   if (
     unknown !== undefined ||
     input === undefined ||
     input.startsWith("--") ||
+    (execute && (participantPreflight === undefined || participantPreflight.startsWith("--"))) ||
+    (!execute && participantPreflight !== undefined) ||
     execute !== confirmed ||
     (qualifyStudy && !execute)
   ) {
     throw new MegapotBaseSepoliaGoldenFailed(
       "invalid-options",
-      "Use --input PATH for dry-run, add --execute --confirm-base-sepolia for writes, and add --qualify-study only after an eligible drawing is open.",
+      "Use --input PATH for dry-run; writes also require --participant-preflight PATH, --execute, and --confirm-base-sepolia. Add --qualify-study only after an eligible drawing is open.",
     );
   }
-  return { execute, qualifyStudy, input };
+  return {
+    execute,
+    qualifyStudy,
+    input,
+    ...(participantPreflight === undefined ? {} : { participantPreflight }),
+  };
 }
 
 export async function main(args: readonly string[] = Bun.argv.slice(2)): Promise<void> {
@@ -468,6 +545,20 @@ export async function main(args: readonly string[] = Bun.argv.slice(2)): Promise
     document = JSON.parse(await Bun.file(parsed.input).text()) as unknown;
   } catch {
     throw new MegapotBaseSepoliaGoldenFailed("invalid-input", "Unable to read golden-flow input.");
+  }
+  let participantPreflight: MegapotParticipantPreflight | undefined;
+  if (parsed.participantPreflight !== undefined) {
+    try {
+      participantPreflight = parseMegapotParticipantPreflight(
+        JSON.parse(await Bun.file(parsed.participantPreflight).text()) as unknown,
+      );
+    } catch (error) {
+      if (error instanceof MegapotBaseSepoliaGoldenFailed) throw error;
+      throw new MegapotBaseSepoliaGoldenFailed(
+        "invalid-input",
+        "Unable to read participant preflight artifact.",
+      );
+    }
   }
   const result = await runMegapotBaseSepoliaGolden(parseMegapotGoldenInput(document), {
     execute: parsed.execute,
@@ -491,6 +582,7 @@ export async function main(args: readonly string[] = Bun.argv.slice(2)): Promise
     ...(process.env.PIRATE_STAGING_PARTICIPANT_CSRF_TOKEN === undefined
       ? {}
       : { participantCsrfToken: process.env.PIRATE_STAGING_PARTICIPANT_CSRF_TOKEN }),
+    ...(participantPreflight === undefined ? {} : { participantPreflight }),
   });
   console.log(JSON.stringify(result, null, 2));
 }
