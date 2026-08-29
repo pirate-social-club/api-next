@@ -71,6 +71,13 @@ function bigint(row: Row, field: string): bigint {
   return BigInt(value);
 }
 
+function instantMillis(row: Row, field: string): number {
+  const value = row[field];
+  const millis = value instanceof Date ? value.getTime() : Date.parse(String(value));
+  if (!Number.isFinite(millis)) throw new Error(`invalid ${field}`);
+  return millis;
+}
+
 function nullableText(row: Row, field: string): string | null {
   const value = row[field];
   if (value === null || value === undefined) return null;
@@ -348,7 +355,7 @@ function reserveNonceIn(
       if (existingNonce.rows.length !== 1) return yield* storage("invalid-row");
       const nonceRow = existingNonce.rows[0] as Row;
       const previousBlock = bigint(nonceRow, "observed_block_number");
-      const previousObservedAt = new Date(text(nonceRow, "observed_at")).getTime();
+      const previousObservedAt = instantMillis(nonceRow, "observed_at");
       if (
         input.observedBlockNumber < previousBlock ||
         Date.parse(input.observedAt) < previousObservedAt
