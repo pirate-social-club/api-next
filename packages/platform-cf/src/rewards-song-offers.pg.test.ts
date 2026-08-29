@@ -953,7 +953,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
              commitment_effect_id, cutoff_frozen_at
            ) VALUES (
              $1, 101, 'drawing-observation-101', 'committed', 3,
-             clock_timestamp() + interval '55 minutes', 10000, 10000, 0,
+             clock_timestamp() + interval '55 minutes', 50000, 50000, 0,
              1, false, 'snapshot-101', 'commitment-101', clock_timestamp()
            )`,
           [legId],
@@ -991,7 +991,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         await admin.query("SET session_replication_role = origin");
       }
 
-      await admin.query(`UPDATE song_reward_offer_legs SET reserved_atomic=10000 WHERE leg_id=$1`, [
+      await admin.query(`UPDATE song_reward_offer_legs SET reserved_atomic=50000 WHERE leg_id=$1`, [
         legId,
       ]);
 
@@ -1576,7 +1576,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
              commitment_effect_id, cutoff_frozen_at, created_at, updated_at
            ) VALUES (
              $1, 101, 'drawing-observation-prebroadcast-close', 'committed', 3,
-             clock_timestamp() - interval '15 minutes', 10000, 10000, 0,
+             clock_timestamp() - interval '15 minutes', 50000, 50000, 0,
              1, false, 'snapshot-prebroadcast-close',
              'commitment-prebroadcast-close', clock_timestamp() - interval '20 minutes',
              clock_timestamp() - interval '25 minutes',
@@ -1613,7 +1613,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
       } finally {
         await admin.query("SET session_replication_role = origin");
       }
-      await admin.query(`UPDATE song_reward_offer_legs SET reserved_atomic=10000 WHERE leg_id=$1`, [
+      await admin.query(`UPDATE song_reward_offer_legs SET reserved_atomic=50000 WHERE leg_id=$1`, [
         legId,
       ]);
       const layer = makeDirectPostgresControlPlaneLayer(scopedConnection);
