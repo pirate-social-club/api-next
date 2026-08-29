@@ -13,6 +13,8 @@ export type HnsDnsZoneActivationLifecycleStatusV1 = "active" | "suspended" | "re
 
 export const HNS_DNS_ZONE_ACTIVATION_DOCUMENT_VERSION =
   "pirate-hns-dns-zone-activation-document-v1" as const;
+export const HNS_DNS_ZONE_PERSISTENCE_DOCUMENT_VERSION =
+  "pirate-hns-dns-zone-persistence-document-v1" as const;
 
 export type HnsAuthoritySuccessorGenerationSnapshotV1 = Readonly<{
   dns_current_generation: number;
@@ -45,7 +47,9 @@ export class HnsAuthorityEmitRefusal extends Error {
       | "dnskey_ds_mismatch"
       | "candidate_metadata_invalid"
       | "incomplete_candidate_artifacts"
-      | "noncanonical_candidate_artifact",
+      | "noncanonical_candidate_artifact"
+      | "observer_evidence_not_verified"
+      | "observer_evidence_mismatch",
   ) {
     super(`HNS authority candidate emission refused: ${reason}`);
   }
@@ -131,12 +135,34 @@ export async function prepareHnsAuthoritySuccessorCandidateV1(
   }
   const inventory = await decodeHnsAuthorityInventoryBytes(input.artifacts.authority_inventory);
   const canonicalInventory = await encodeHnsAuthorityInventory(inventory.inventory);
+  const dnsZoneActivation = await decodeHnsDnsZonePersistenceDocumentV1(
+    input.artifacts.dns_zone_activation,
+  );
+  const canonicalDnsZoneActivation = encodeHnsDnsZonePersistenceDocumentV1(dnsZoneActivation);
+  const appHostTransition = decodeHnsAppHostTransitionDocumentV1(
+    input.artifacts.app_host_activation,
+  );
+  const canonicalAppHostTransition = encodeHnsAppHostTransitionDocumentV1(appHostTransition);
+  const healthObservation = decodeHnsDnsHealthDocumentV1(input.artifacts.health_observation);
+  const canonicalHealthObservation = encodeHnsDnsHealthDocumentV1(healthObservation);
   const observation = await decodeHnsControlObservationResultV2Bytes(
     input.artifacts.observer_evidence,
   );
+  if (observation.result.status !== "verified") {
+    throw new HnsAuthorityEmitRefusal("observer_evidence_not_verified");
+  }
+  if (
+    observation.result.root_label !== input.root_label ||
+    observation.result.chain_anchor_height !== input.chain_height
+  ) {
+    throw new HnsAuthorityEmitRefusal("observer_evidence_mismatch");
+  }
   const canonicalObservation = await encodeHnsControlObservationResultV2(observation.result);
   if (
     !equalBytes(canonicalInventory, input.artifacts.authority_inventory) ||
+    !equalBytes(canonicalDnsZoneActivation, input.artifacts.dns_zone_activation) ||
+    !equalBytes(canonicalAppHostTransition, input.artifacts.app_host_activation) ||
+    !equalBytes(canonicalHealthObservation, input.artifacts.health_observation) ||
     !equalBytes(canonicalObservation, input.artifacts.observer_evidence)
   ) {
     throw new HnsAuthorityEmitRefusal("noncanonical_candidate_artifact");
@@ -369,6 +395,128 @@ export type HnsDnsZoneActivationDocumentV1 = Readonly<{
   stable_chain_delegation_snapshot_reference: string;
   stable_chain_delegation_snapshot_digest: string;
 }>;
+
+type HnsDnsZonePersistenceDocumentPayloadV1 = Readonly<{
+  version: typeof HNS_DNS_ZONE_PERSISTENCE_DOCUMENT_VERSION;
+  activation_document_bytes_hex: string;
+  dns_zone_activation_id: string;
+  canonical_root: string;
+  dns_authority_kind: "pirate_managed_dns_v1";
+  dns_authority_reference: string;
+  dns_authority_generation: number;
+  pirate_dns_authority_inventory_reference: string;
+  pirate_dns_authority_inventory_version: string;
+  pirate_dns_authority_inventory_digest: string;
+  zone_revision: number;
+  zone_bytes_hex: string;
+  zone_bytes_digest: string;
+  dnssec_keyset_reference: string;
+  dnssec_keyset_version: string;
+  gateway_deployment_reference: string;
+  gateway_certificate_spki_sha256: string;
+  stable_chain_delegation_snapshot_reference: string;
+  stable_chain_delegation_snapshot_digest: string;
+}>;
+
+function bytesFromHex(value: unknown): Uint8Array {
+  if (typeof value !== "string" || value.length % 2 !== 0 || !/^[0-9a-f]*$/u.test(value)) {
+    throw new TypeError("HNS persistence document byte field is invalid");
+  }
+  return Uint8Array.from(value.match(/.{2}/gu) ?? [], (byte) => Number.parseInt(byte, 16));
+}
+
+/** Encodes every authority-controlled DNS finalization input into one review artifact. */
+export function encodeHnsDnsZonePersistenceDocumentV1(
+  document: HnsDnsZoneActivationDocumentV1,
+): Uint8Array {
+  return canonicalDocumentBytes({
+    version: HNS_DNS_ZONE_PERSISTENCE_DOCUMENT_VERSION,
+    activation_document_bytes_hex: hex(document.activation_document_bytes),
+    dns_zone_activation_id: document.dns_zone_activation_id,
+    canonical_root: document.canonical_root,
+    dns_authority_kind: document.dns_authority_kind,
+    dns_authority_reference: document.dns_authority_reference,
+    dns_authority_generation: document.dns_authority_generation,
+    pirate_dns_authority_inventory_reference: document.pirate_dns_authority_inventory_reference,
+    pirate_dns_authority_inventory_version: document.pirate_dns_authority_inventory_version,
+    pirate_dns_authority_inventory_digest: document.pirate_dns_authority_inventory_digest,
+    zone_revision: document.zone_revision,
+    zone_bytes_hex: hex(document.zone_bytes),
+    zone_bytes_digest: document.zone_bytes_digest,
+    dnssec_keyset_reference: document.dnssec_keyset_reference,
+    dnssec_keyset_version: document.dnssec_keyset_version,
+    gateway_deployment_reference: document.gateway_deployment_reference,
+    gateway_certificate_spki_sha256: document.gateway_certificate_spki_sha256,
+    stable_chain_delegation_snapshot_reference: document.stable_chain_delegation_snapshot_reference,
+    stable_chain_delegation_snapshot_digest: document.stable_chain_delegation_snapshot_digest,
+  } satisfies HnsDnsZonePersistenceDocumentPayloadV1);
+}
+
+/** Strictly decodes and internally revalidates a reviewed DNS finalization artifact. */
+export async function decodeHnsDnsZonePersistenceDocumentV1(
+  bytes: Uint8Array,
+): Promise<HnsDnsZoneActivationDocumentV1> {
+  const value = decodeCanonicalDocument(bytes);
+  const keys = [
+    "version",
+    "activation_document_bytes_hex",
+    "dns_zone_activation_id",
+    "canonical_root",
+    "dns_authority_kind",
+    "dns_authority_reference",
+    "dns_authority_generation",
+    "pirate_dns_authority_inventory_reference",
+    "pirate_dns_authority_inventory_version",
+    "pirate_dns_authority_inventory_digest",
+    "zone_revision",
+    "zone_bytes_hex",
+    "zone_bytes_digest",
+    "dnssec_keyset_reference",
+    "dnssec_keyset_version",
+    "gateway_deployment_reference",
+    "gateway_certificate_spki_sha256",
+    "stable_chain_delegation_snapshot_reference",
+    "stable_chain_delegation_snapshot_digest",
+  ];
+  if (!exactObject(value, keys) || value.version !== HNS_DNS_ZONE_PERSISTENCE_DOCUMENT_VERSION) {
+    throw new TypeError("HNS DNS persistence document is invalid");
+  }
+  const payload = value as HnsDnsZonePersistenceDocumentPayloadV1;
+  const activationBytes = bytesFromHex(payload.activation_document_bytes_hex);
+  const zoneBytes = bytesFromHex(payload.zone_bytes_hex);
+  const prepared = await prepareHnsDnsZoneActivationDocumentV1({
+    payload: {
+      version: HNS_DNS_ZONE_ACTIVATION_DOCUMENT_VERSION,
+      dns_zone_activation_id: payload.dns_zone_activation_id,
+      canonical_root: payload.canonical_root,
+      dns_authority: [
+        payload.dns_authority_kind,
+        payload.dns_authority_reference,
+        payload.dns_authority_generation,
+      ],
+      pirate_dns_authority_inventory: [
+        payload.pirate_dns_authority_inventory_reference,
+        payload.pirate_dns_authority_inventory_version,
+        payload.pirate_dns_authority_inventory_digest,
+      ],
+      zone_revision: payload.zone_revision,
+      dnssec_keyset: [payload.dnssec_keyset_reference, payload.dnssec_keyset_version],
+      gateway: [payload.gateway_deployment_reference, payload.gateway_certificate_spki_sha256],
+      stable_chain_delegation_snapshot: [
+        payload.stable_chain_delegation_snapshot_reference,
+        payload.stable_chain_delegation_snapshot_digest,
+      ],
+    },
+    zone_bytes: zoneBytes,
+  });
+  if (
+    !equalBytes(prepared.activation_document_bytes, activationBytes) ||
+    prepared.zone_bytes_digest !== payload.zone_bytes_digest
+  ) {
+    throw new TypeError("HNS DNS persistence document is internally inconsistent");
+  }
+  return prepared;
+}
 
 export type HnsDnsZoneActivationReservationV1 = Readonly<{
   outcome: "reserved" | "replayed";

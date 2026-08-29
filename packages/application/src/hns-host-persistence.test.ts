@@ -5,6 +5,7 @@ import {
   deriveHnsAuthoritySuccessorGenerationsV1,
   encodeHnsAppHostTransitionDocumentV1,
   encodeHnsDnsHealthDocumentV1,
+  encodeHnsDnsZonePersistenceDocumentV1,
   HNS_DNS_ZONE_ACTIVATION_DOCUMENT_VERSION,
   prepareHnsAuthoritySuccessorCandidateV1,
   prepareHnsDnsZoneActivationDocumentV1,
@@ -15,6 +16,7 @@ import {
   encodeHnsAuthorityInventory,
   hnsAuthorityCapabilitySetDigest,
 } from "./namespace-ownership/hns-authority-inventory.ts";
+import { encodeHnsControlObservationResultV2 } from "./namespace-ownership/hns-control-observer-v2.ts";
 
 describe("HNS authority successor generation preparation", () => {
   test("predicts the fenced jazleeuw successor generations without a reservation", () => {
@@ -183,15 +185,82 @@ async function canonicalCandidateArtifacts() {
     authoritative_nameserver_glue: authoritativeNameserverGlue,
     dns_write_capabilities: dnsWriteCapabilities,
   });
-  const observerEvidence = new TextEncoder().encode(
-    '{"version":"pirate-hns-control-observation-result-v2","observation_id":"observer-custody-unavailable-01","request_sha256":"dda73915eef72c40ba3b5d4d105814bb0cf8a69ceda29f1a94f15bf9345786a0","status":"unavailable","reason_code":"authority_inventory_unavailable","retry_after_seconds":null,"observer_snapshot_sha256":"8cdf5aade56695d4cbdcf0f98cdb381d49bed92be927894f09985ac919d239a7","diagnostic_ref":"hns-observer:regtest:custody-unavailable-01"}',
-  );
-  const artifact = (name: string) => new TextEncoder().encode(`exact-${name}-bytes`);
+  const observerEvidence = await encodeHnsControlObservationResultV2({
+    version: "pirate-hns-control-observation-result-v2",
+    observation_id: "observer-jazleeuw-verified-01",
+    request_sha256: "1".repeat(64),
+    status: "verified",
+    provider_id: "hns.owner.v1",
+    provider_configuration_reference: "hns-observer-production-config-v1",
+    provider_configuration_version: "production-v1",
+    provider_configuration_digest: "2".repeat(64),
+    environment: "production",
+    ownership_source: "hns_parent_chain_txt",
+    root_label: "jazleeuw",
+    txt_name: "jazleeuw",
+    expected_txt_value_sha256: "3".repeat(64),
+    control_identity_digest: "4".repeat(64),
+    chain_authority_digest: "5".repeat(64),
+    root_exists: true,
+    root_control_verified: true,
+    expiry_horizon_sufficient: true,
+    chain_network: "main",
+    chain_genesis_block_hash: "6".repeat(64),
+    chain_anchor_height: 344_448,
+    chain_anchor_block_hash: "7".repeat(64),
+    chain_anchor_median_time: 1_777_689_600,
+    expiry_height: 500_000,
+    observer_snapshot_sha256: "8".repeat(64),
+    provider_evidence_ref: "hns-observer:main:jazleeuw-verified-01",
+  });
+  const dnsZoneActivation = await prepareHnsDnsZoneActivationDocumentV1({
+    payload: {
+      version: HNS_DNS_ZONE_ACTIVATION_DOCUMENT_VERSION,
+      dns_zone_activation_id: "hns-rehearsal-dns-zone-v1",
+      canonical_root: "jazleeuw",
+      dns_authority: ["pirate_managed_dns_v1", "dns-authority:jazleeuw", 6],
+      pirate_dns_authority_inventory: ["authority-inventory:jazleeuw", "v6", "9".repeat(64)],
+      zone_revision: 6,
+      dnssec_keyset: ["dnssec-keyset:jazleeuw", "key-tag-10875"],
+      gateway: ["gateway:jazleeuw", "2".repeat(64)],
+      stable_chain_delegation_snapshot: ["delegation:jazleeuw:344448", "3".repeat(64)],
+    },
+    zone_bytes: new TextEncoder().encode("$ORIGIN jazleeuw.\n; canonical observation\n"),
+  });
+  const appHostActivation = encodeHnsAppHostTransitionDocumentV1({
+    operation_id: "app-operation-10",
+    idempotency_key: "app-key-10",
+    request_hash: "a".repeat(64),
+    app_host_activation_id: "hns-rehearsal-app-host-v1",
+    expected_activation_generation: 9,
+    target_status: "active",
+    reason_code: "canonical-authority",
+  });
+  const healthObservation = encodeHnsDnsHealthDocumentV1({
+    operation_id: "health-operation-1",
+    idempotency_key: "health-key-1",
+    request_hash: "b".repeat(64),
+    dns_zone_activation_id: "hns-rehearsal-dns-zone-v1",
+    activation_generation: 6,
+    expected_health_generation: 0,
+    stable_chain_delegation_snapshot_reference: "delegation:jazleeuw:344448",
+    stable_chain_delegation_snapshot_digest: "c".repeat(64),
+    observed_zone_bytes_digest: "d".repeat(64),
+    observed_dnssec_keyset_reference: "dnssec-keyset:jazleeuw",
+    observed_dnssec_keyset_version: "key-tag-10875",
+    observed_gateway_deployment_reference: "gateway:jazleeuw",
+    observed_gateway_certificate_spki_sha256: "e".repeat(64),
+    delegation_matches: true,
+    ds_authenticates_zone: true,
+    retained_zone_digest_matches: true,
+    gateway_healthy: true,
+    valid_for_seconds: 3600,
+  });
   return {
     authority_inventory: authorityInventory,
-    dns_zone_activation: artifact("dns6"),
-    app_host_activation: artifact("app10"),
-    health_observation: artifact("health1"),
+    dns_zone_activation: encodeHnsDnsZonePersistenceDocumentV1(dnsZoneActivation),
+    app_host_activation: appHostActivation,
+    health_observation: healthObservation,
     observer_evidence: observerEvidence,
   } as const;
 }
@@ -276,6 +345,63 @@ test("refuses the entire package when any required artifact is empty", async () 
       },
     }),
   ).rejects.toThrow("incomplete_candidate_artifacts");
+});
+
+test("refuses canonical observer evidence that is not verified or bound to this root", async () => {
+  const base = {
+    source_commit: "1".repeat(40),
+    root_label: "jazleeuw",
+    observed_at: "2026-08-29T17:00:00.000Z",
+    chain_height: 344_448,
+    generation_snapshot: emittedSnapshot,
+    expected_authority_addresses: ["94.103.168.161", "81.15.150.159"] as const,
+    authority_views: [observedView("94.103.168.161"), observedView("81.15.150.159")],
+    chain_ds: chainDs,
+  };
+  const artifacts = await canonicalCandidateArtifacts();
+  const unavailable = new TextEncoder().encode(
+    '{"version":"pirate-hns-control-observation-result-v2","observation_id":"observer-custody-unavailable-01","request_sha256":"dda73915eef72c40ba3b5d4d105814bb0cf8a69ceda29f1a94f15bf9345786a0","status":"unavailable","reason_code":"authority_inventory_unavailable","retry_after_seconds":null,"observer_snapshot_sha256":"8cdf5aade56695d4cbdcf0f98cdb381d49bed92be927894f09985ac919d239a7","diagnostic_ref":"hns-observer:regtest:custody-unavailable-01"}',
+  );
+  await expect(
+    prepareHnsAuthoritySuccessorCandidateV1({
+      ...base,
+      artifacts: { ...artifacts, observer_evidence: unavailable },
+    }),
+  ).rejects.toThrow("observer_evidence_not_verified");
+
+  const mismatched = new TextEncoder().encode(
+    new TextDecoder()
+      .decode(artifacts.observer_evidence)
+      .replace('"root_label":"jazleeuw"', '"root_label":"elsewhere"')
+      .replace('"txt_name":"jazleeuw"', '"txt_name":"elsewhere"'),
+  );
+  await expect(
+    prepareHnsAuthoritySuccessorCandidateV1({
+      ...base,
+      artifacts: { ...artifacts, observer_evidence: mismatched },
+    }),
+  ).rejects.toThrow("observer_evidence_mismatch");
+});
+
+test("refuses a DNS persistence artifact whose reviewed zone bytes do not match its digest", async () => {
+  const artifacts = await canonicalCandidateArtifacts();
+  const document = new TextDecoder().decode(artifacts.dns_zone_activation);
+  const tampered = new TextEncoder().encode(
+    document.replace('"zone_bytes_hex":"24', '"zone_bytes_hex":"25'),
+  );
+  await expect(
+    prepareHnsAuthoritySuccessorCandidateV1({
+      source_commit: "1".repeat(40),
+      root_label: "jazleeuw",
+      observed_at: "2026-08-29T17:00:00.000Z",
+      chain_height: 344_448,
+      generation_snapshot: emittedSnapshot,
+      expected_authority_addresses: ["94.103.168.161", "81.15.150.159"],
+      authority_views: [observedView("94.103.168.161"), observedView("81.15.150.159")],
+      chain_ds: chainDs,
+      artifacts: { ...artifacts, dns_zone_activation: tampered },
+    }),
+  ).rejects.toThrow("internally inconsistent");
 });
 
 test("round-trips every app-host and health commit parameter through reviewed bytes", () => {
