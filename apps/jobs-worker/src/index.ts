@@ -725,7 +725,13 @@ export default {
     }
     if (mediaMaintenance !== null || dataRegistrationMaintenance !== null) {
       scheduledWork.push(
-        runSongPipelineOutboxAlertTick(sink, collectSongPipelineOutboxAlerts(runtime)),
+        runSongPipelineOutboxAlertTick(
+          sink,
+          collectSongPipelineOutboxAlerts(runtime, {
+            media: mediaMaintenance !== null,
+            data: dataRegistrationMaintenance !== null,
+          }),
+        ),
       );
     }
     await ctx.waitUntil(Promise.all(scheduledWork));

@@ -21,6 +21,12 @@ describe("song pipeline outbox alerts", () => {
       severity: "high",
       body: "A current song-pipeline launch exhausted and requires recovery observation.",
       entity: "data:registration-1:r2:outbox-1",
+      subsystem: "data",
+      operation_id: "registration-1",
+      outbox_id: "outbox-1",
+      workflow_revision: "2",
+      failure_code: "workflow_unavailable",
+      outcome: "exhausted",
     });
   });
 
@@ -57,7 +63,7 @@ describe("song pipeline outbox alerts", () => {
     try {
       await expect(
         runSongPipelineOutboxAlertTick(
-          { email: () => Effect.void, webhook: () => Effect.void },
+          { webhook: () => Effect.void },
           Effect.fail(new Error("database unavailable")),
         ),
       ).resolves.toBeUndefined();

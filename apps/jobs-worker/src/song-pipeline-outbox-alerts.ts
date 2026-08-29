@@ -12,6 +12,11 @@ type ExhaustedLaunch = Readonly<{
   outcome: "exhausted" | "queue_dlq" | "replacement_limit";
 }>;
 
+export type SongPipelineEnablement = Readonly<{
+  readonly media: boolean;
+  readonly data: boolean;
+}>;
+
 export const exhaustedLaunchAlert = (row: ExhaustedLaunch) => ({
   key: `song-pipeline:${row.subsystem}-${
     row.outcome === "exhausted"
@@ -23,17 +28,23 @@ export const exhaustedLaunchAlert = (row: ExhaustedLaunch) => ({
   severity: "high" as const,
   body: "A current song-pipeline launch exhausted and requires recovery observation.",
   entity: `${row.subsystem}:${row.operation_id}:r${row.workflow_revision}:${row.outbox_id}`,
+  subsystem: row.subsystem,
+  operation_id: row.operation_id,
+  outbox_id: row.outbox_id,
+  workflow_revision: row.workflow_revision,
+  ...(row.failure_code === null ? {} : { failure_code: row.failure_code }),
+  outcome: row.outcome,
 });
 
 export function collectSongPipelineOutboxAlerts(
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+  enabled: SongPipelineEnablement = { media: true, data: true },
 ) {
   return Effect.provide(runtime)(
     Effect.gen(function* () {
-      const db = yield* ControlPlaneDb;
-      const result = yield* db.execute<ExhaustedLaunch>({
-        label: "song-pipeline.outbox.exhausted-alerts",
-        text: `SELECT 'media'::text AS subsystem,outbox.operation_id AS operation_id,
+      const queries: string[] = [];
+      if (enabled.media) {
+        queries.push(`SELECT 'media'::text AS subsystem,outbox.operation_id AS operation_id,
                       outbox.outbox_event_id AS outbox_id,
                       outbox.workflow_revision::text AS workflow_revision,
                       outbox.failure_code,
@@ -47,9 +58,10 @@ export function collectSongPipelineOutboxAlerts(
                   AND submission.workflow_revision=outbox.workflow_revision
                 WHERE (outbox.state='exhausted'
                        OR (outbox.state='failed' AND outbox.next_eligible_at IS NULL))
-                  AND submission.status IN ('processing','action_required','manual_review')
-                UNION ALL
-               SELECT 'data'::text AS subsystem,outbox.registration_operation_id AS operation_id,
+                  AND submission.status IN ('processing','action_required','manual_review')`);
+      }
+      if (enabled.data) {
+        queries.push(`SELECT 'data'::text AS subsystem,outbox.registration_operation_id AS operation_id,
                       outbox.outbox_id,outbox.workflow_revision::text,outbox.failure_code,
                       CASE WHEN outbox.workflow_revision>=4 THEN 'replacement_limit'
                            WHEN outbox.state='exhausted' THEN 'exhausted'
@@ -60,7 +72,13 @@ export function collectSongPipelineOutboxAlerts(
                   AND operation.workflow_revision=outbox.workflow_revision
                 WHERE (outbox.state='exhausted'
                        OR (outbox.state='failed' AND outbox.next_eligible_at IS NULL))
-                  AND operation.state NOT IN ('registered','failed','reconciliation_required')
+                  AND operation.state NOT IN ('registered','failed','reconciliation_required')`);
+      }
+      if (queries.length === 0) return 0;
+      const db = yield* ControlPlaneDb;
+      const result = yield* db.execute<ExhaustedLaunch>({
+        label: "song-pipeline.outbox.exhausted-alerts",
+        text: `${queries.join("\nUNION ALL\n")}
                 ORDER BY subsystem,operation_id,workflow_revision
                 LIMIT 50`,
         values: [],

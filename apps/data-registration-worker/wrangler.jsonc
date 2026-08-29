@@ -4,6 +4,21 @@
   "main": "src/entrypoint.ts",
   "compatibility_date": "2026-08-01",
   "compatibility_flags": ["nodejs_compat"],
+  // DATA custom operational logs are intentionally unsampled. Traces are
+  // controlled at 10%; they do not imply cross-invocation operation linkage.
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "persist": true
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 0.1,
+      "persist": true
+    }
+  },
   "hyperdrive": [
     {
       "binding": "CONTROL_PLANE",
@@ -48,6 +63,19 @@
   "env": {
     "staging": {
       "name": "pirate-data-registration-worker-staging",
+      "observability": {
+        "enabled": true,
+        "logs": {
+          "enabled": true,
+          "head_sampling_rate": 1,
+          "persist": true
+        },
+        "traces": {
+          "enabled": true,
+          "head_sampling_rate": 0.1,
+          "persist": true
+        }
+      },
       "hyperdrive": [
         {
           "binding": "CONTROL_PLANE",
@@ -95,6 +123,19 @@
     },
     "production": {
       "name": "pirate-data-registration-worker-production",
+      "observability": {
+        "enabled": true,
+        "logs": {
+          "enabled": true,
+          "head_sampling_rate": 1,
+          "persist": true
+        },
+        "traces": {
+          "enabled": true,
+          "head_sampling_rate": 0.1,
+          "persist": true
+        }
+      },
       "hyperdrive": [
         {
           "binding": "CONTROL_PLANE",

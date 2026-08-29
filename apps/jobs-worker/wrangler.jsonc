@@ -4,6 +4,23 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-08-01",
   "compatibility_flags": ["nodejs_compat"],
+  // The scheduler emits low-volume operational events; persist all custom
+  // logs. Traces are sampled deliberately because one operation can span
+  // multiple invocations and no automatic cross-invocation propagation is
+  // assumed by this configuration.
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "persist": true
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 0.1,
+      "persist": true
+    }
+  },
   "triggers": {
     "crons": ["* * * * *"]
   },
@@ -67,6 +84,19 @@
   "env": {
     "staging": {
       "name": "pirate-jobs-worker-staging",
+      "observability": {
+        "enabled": true,
+        "logs": {
+          "enabled": true,
+          "head_sampling_rate": 1,
+          "persist": true
+        },
+        "traces": {
+          "enabled": true,
+          "head_sampling_rate": 0.1,
+          "persist": true
+        }
+      },
       "durable_objects": {
         "bindings": [
           {
@@ -153,6 +183,19 @@
     },
     "production": {
       "name": "pirate-jobs-worker-production",
+      "observability": {
+        "enabled": true,
+        "logs": {
+          "enabled": true,
+          "head_sampling_rate": 1,
+          "persist": true
+        },
+        "traces": {
+          "enabled": true,
+          "head_sampling_rate": 0.1,
+          "persist": true
+        }
+      },
       "durable_objects": {
         "bindings": [
           {
