@@ -146,40 +146,6 @@ suite("Study v2 Postgres foundation", () => {
             WHERE review_item_id = 'review-item-1'`,
         ),
       ).rejects.toThrow();
-      await admin.query(
-        `UPDATE study_spoken_answer_commands
-            SET lease_expires_at=clock_timestamp() - interval '1 second'
-          WHERE command_id='spoken-1'`,
-      );
-      const reclaimed = await admin.query(
-        `UPDATE study_spoken_answer_commands
-            SET lease_token='lease-2',
-                lease_expires_at=clock_timestamp() + interval '1 minute',
-                reserved_at=clock_timestamp()
-          WHERE command_id='spoken-1' AND lease_expires_at <= clock_timestamp()
-        RETURNING command_id`,
-      );
-      expect(reclaimed.rows).toEqual([{ command_id: "spoken-1" }]);
-      const staleFinalizer = await admin.query(
-        `UPDATE study_spoken_answer_commands
-            SET state='retryable_failed', provider_failure_kind='timeout',
-                completed_at=clock_timestamp()
-          WHERE command_id='spoken-1' AND lease_token='lease-1'
-            AND lease_expires_at > clock_timestamp()
-        RETURNING command_id`,
-      );
-      expect(staleFinalizer.rows).toEqual([]);
-      const pendingArtifact = await admin.query(
-        `SELECT expected_object_ref, recording_state
-           FROM learner_audio_artifacts
-          WHERE learner_audio_artifact_id='audio-command-1'`,
-      );
-      expect(pendingArtifact.rows).toEqual([
-        {
-          expected_object_ref: "learner-audio/study/spoken-attempt-1/audio",
-          recording_state: "pending",
-        },
-      ]);
       const review = await admin.query(
         `SELECT review_item_id, exercise_review_key, current_exercise_version_id
            FROM study_review_items`,
@@ -306,6 +272,41 @@ suite("Study v2 Postgres foundation", () => {
           ["3".repeat(64), "4".repeat(64)],
         ),
       ).rejects.toThrow();
+      await admin.query(
+        `UPDATE study_spoken_answer_commands
+            SET reserved_at=clock_timestamp() - interval '2 minutes',
+                lease_expires_at=clock_timestamp() - interval '1 second'
+          WHERE command_id='spoken-1'`,
+      );
+      const reclaimed = await admin.query(
+        `UPDATE study_spoken_answer_commands
+            SET lease_token='lease-2',
+                lease_expires_at=clock_timestamp() + interval '1 minute',
+                reserved_at=clock_timestamp()
+          WHERE command_id='spoken-1' AND lease_expires_at <= clock_timestamp()
+        RETURNING command_id`,
+      );
+      expect(reclaimed.rows).toEqual([{ command_id: "spoken-1" }]);
+      const staleFinalizer = await admin.query(
+        `UPDATE study_spoken_answer_commands
+            SET state='retryable_failed', provider_failure_kind='timeout',
+                completed_at=clock_timestamp()
+          WHERE command_id='spoken-1' AND lease_token='lease-1'
+            AND lease_expires_at > clock_timestamp()
+        RETURNING command_id`,
+      );
+      expect(staleFinalizer.rows).toEqual([]);
+      const pendingArtifact = await admin.query(
+        `SELECT expected_object_ref, recording_state
+           FROM learner_audio_artifacts
+          WHERE learner_audio_artifact_id='audio-command-1'`,
+      );
+      expect(pendingArtifact.rows).toEqual([
+        {
+          expected_object_ref: "learner-audio/study/spoken-attempt-1/audio",
+          recording_state: "pending",
+        },
+      ]);
       await expect(
         admin.query(
           `INSERT INTO study_sessions_v2 (
