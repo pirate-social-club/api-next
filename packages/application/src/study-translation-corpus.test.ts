@@ -5,8 +5,8 @@ import {
   STUDY_TRANSLATION_CORPUS_V1,
 } from "./study-translation-corpus.ts";
 import {
-  STUDY_TRANSLATION_PROMPT_V1,
-  STUDY_TRANSLATION_VALIDATOR_V1,
+  STUDY_TRANSLATION_PROMPT_V2,
+  STUDY_TRANSLATION_VALIDATOR_V2,
 } from "./study-translation-generator.ts";
 
 const reviewedCorpus = (): Record<string, unknown> & { items: Record<string, unknown>[] } => ({
@@ -14,8 +14,8 @@ const reviewedCorpus = (): Record<string, unknown> & { items: Record<string, unk
   corpus_revision: "es-B1-reviewed-v1",
   target_language: "es",
   learner_band: "B1",
-  prompt_revision: STUDY_TRANSLATION_PROMPT_V1,
-  validator_revision: STUDY_TRANSLATION_VALIDATOR_V1,
+  prompt_revision: STUDY_TRANSLATION_PROMPT_V2,
+  validator_revision: STUDY_TRANSLATION_VALIDATOR_V2,
   reviewer_role: "qualified_bilingual_reviewer",
   reviewed_at: "2026-08-29T12:00:00.000Z",
   items: Array.from({ length: 100 }, (_, index) => ({

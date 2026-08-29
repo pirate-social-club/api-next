@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   makeStudyLanguageProfileAnalyzer,
   makeStudyTranslationGenerator,
-  STUDY_TRANSLATION_PROMPT_V1,
+  STUDY_TRANSLATION_PROMPT_V2,
   type StudyTranslationGenerationRequest,
 } from "@pirate/application";
 import { Effect, Exit } from "effect";
@@ -45,6 +45,7 @@ describe("OpenRouter Study generation", () => {
             dominant_language: "ko",
             mixed: true,
             vocable_only: false,
+            proper_name_only: false,
             confidence: 0.94,
           },
           {
@@ -53,6 +54,7 @@ describe("OpenRouter Study generation", () => {
             dominant_language: null,
             mixed: false,
             vocable_only: true,
+            proper_name_only: false,
             confidence: null,
           },
         ],
@@ -142,7 +144,7 @@ describe("OpenRouter Study generation", () => {
       learningLanguage: "en",
       targetLanguage: "es",
       learnerBand: "B1",
-      promptRevision: STUDY_TRANSLATION_PROMPT_V1,
+      promptRevision: STUDY_TRANSLATION_PROMPT_V2,
       qualityPolicyRevision: "quality-es-b1-evaluation-v1",
       rightsPolicyRevision: "translated-lyrics-original-v1",
       contextLines: [
@@ -168,6 +170,7 @@ describe("OpenRouter Study generation", () => {
             dominantLanguage: "en",
             mixed: false,
             vocableOnly: false,
+            properNameOnly: false,
           },
         },
       ],
@@ -196,6 +199,7 @@ describe("OpenRouter Study generation", () => {
               dominant_language: "en",
               mixed: false,
               vocable_only: false,
+              proper_name_only: false,
               question: "¿Qué significa esta línea?",
               translation: "Noches de Seúl, subimos más alto",
               distractors: [
