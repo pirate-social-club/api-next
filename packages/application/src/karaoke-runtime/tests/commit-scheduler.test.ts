@@ -195,7 +195,7 @@ function setup(
       clearTimer: timers.clearTimer,
       commitAckTimeoutMs: 5_000,
       now: () => timers.now,
-      onCommitSettled,
+      ...(onCommitSettled === undefined ? {} : { onCommitSettled }),
       setTimer: timers.setTimer,
     },
   );

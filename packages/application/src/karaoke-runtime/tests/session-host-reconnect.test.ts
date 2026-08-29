@@ -226,7 +226,9 @@ function setup(
       clearTimer: clock.clearTimer,
       commitAckTimeoutMs: options.commitAckTimeoutMs ?? 5_000,
       now: () => clock.now,
-      onReconnectBufferDrop: options.onReconnectBufferDrop,
+      ...(options.onReconnectBufferDrop === undefined
+        ? {}
+        : { onReconnectBufferDrop: options.onReconnectBufferDrop }),
       setTimer: clock.setTimer,
     },
   );
