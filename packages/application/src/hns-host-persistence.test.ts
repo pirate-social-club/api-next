@@ -1,6 +1,10 @@
 import { describe, expect, test } from "vitest";
 import {
+  decodeHnsAppHostTransitionDocumentV1,
+  decodeHnsDnsHealthDocumentV1,
   deriveHnsAuthoritySuccessorGenerationsV1,
+  encodeHnsAppHostTransitionDocumentV1,
+  encodeHnsDnsHealthDocumentV1,
   HNS_DNS_ZONE_ACTIVATION_DOCUMENT_VERSION,
   prepareHnsAuthoritySuccessorCandidateV1,
   prepareHnsDnsZoneActivationDocumentV1,
@@ -232,4 +236,40 @@ test("refuses the entire package when any required artifact is empty", async () 
       },
     }),
   ).rejects.toThrow("incomplete_candidate_artifacts");
+});
+
+test("round-trips every app-host and health commit parameter through reviewed bytes", () => {
+  const app = {
+    operation_id: "app-operation-10",
+    idempotency_key: "app-key-10",
+    request_hash: "a".repeat(64),
+    app_host_activation_id: "hns-rehearsal-app-host-v1",
+    expected_activation_generation: 9,
+    target_status: "active",
+    reason_code: "canonical-authority",
+  } as const;
+  const health = {
+    operation_id: "health-operation-1",
+    idempotency_key: "health-key-1",
+    request_hash: "b".repeat(64),
+    dns_zone_activation_id: "hns-rehearsal-dns-zone-v1",
+    activation_generation: 6,
+    expected_health_generation: 0,
+    stable_chain_delegation_snapshot_reference: "delegation:jazleeuw:344448",
+    stable_chain_delegation_snapshot_digest: "c".repeat(64),
+    observed_zone_bytes_digest: "d".repeat(64),
+    observed_dnssec_keyset_reference: "dnssec-keyset:jazleeuw",
+    observed_dnssec_keyset_version: "key-tag-10875",
+    observed_gateway_deployment_reference: "gateway:jazleeuw",
+    observed_gateway_certificate_spki_sha256: "e".repeat(64),
+    delegation_matches: true,
+    ds_authenticates_zone: true,
+    retained_zone_digest_matches: true,
+    gateway_healthy: true,
+    valid_for_seconds: 3600,
+  } as const;
+  expect(decodeHnsAppHostTransitionDocumentV1(encodeHnsAppHostTransitionDocumentV1(app))).toEqual(
+    app,
+  );
+  expect(decodeHnsDnsHealthDocumentV1(encodeHnsDnsHealthDocumentV1(health))).toEqual(health);
 });

@@ -385,6 +385,171 @@ export type HnsCommunityAppHostActivationOutcomeV1 = Readonly<{
   status: HnsDnsZoneActivationLifecycleStatusV1;
 }>;
 
+export const HNS_APP_HOST_TRANSITION_DOCUMENT_VERSION =
+  "pirate-hns-app-host-transition-document-v1" as const;
+export const HNS_DNS_HEALTH_DOCUMENT_VERSION = "pirate-hns-dns-health-document-v1" as const;
+
+export type HnsCommunityAppHostStatusChangeInputV1 = Readonly<{
+  operation_id: string;
+  idempotency_key: string;
+  request_hash: string;
+  app_host_activation_id: string;
+  expected_activation_generation: number;
+  target_status: HnsDnsZoneActivationLifecycleStatusV1;
+  reason_code: string;
+}>;
+
+export type HnsDnsZoneHealthInputV1 = Readonly<{
+  operation_id: string;
+  idempotency_key: string;
+  request_hash: string;
+  dns_zone_activation_id: string;
+  activation_generation: number;
+  expected_health_generation: number;
+  stable_chain_delegation_snapshot_reference: string;
+  stable_chain_delegation_snapshot_digest: string;
+  observed_zone_bytes_digest: string;
+  observed_dnssec_keyset_reference: string;
+  observed_dnssec_keyset_version: string;
+  observed_gateway_deployment_reference: string;
+  observed_gateway_certificate_spki_sha256: string;
+  delegation_matches: boolean;
+  ds_authenticates_zone: boolean;
+  retained_zone_digest_matches: boolean;
+  gateway_healthy: boolean;
+  valid_for_seconds: number;
+}>;
+
+function canonicalDocumentBytes(value: unknown): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(value));
+}
+
+function decodeCanonicalDocument(bytes: Uint8Array): unknown {
+  const copy = new Uint8Array(bytes);
+  const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(copy));
+  if (!equalBytes(copy, canonicalDocumentBytes(value)))
+    throw new TypeError("HNS document is not canonical");
+  return value;
+}
+
+function exactObject(
+  value: unknown,
+  keys: ReadonlyArray<string>,
+): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const actual = Object.keys(value);
+  return actual.length === keys.length && actual.every((key, index) => key === keys[index]);
+}
+
+function validIdentity(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value === value.trim();
+}
+function validHash(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{64}$/u.test(value);
+}
+
+export function encodeHnsAppHostTransitionDocumentV1(
+  input: HnsCommunityAppHostStatusChangeInputV1,
+): Uint8Array {
+  return canonicalDocumentBytes({ version: HNS_APP_HOST_TRANSITION_DOCUMENT_VERSION, input });
+}
+
+export function decodeHnsAppHostTransitionDocumentV1(
+  bytes: Uint8Array,
+): HnsCommunityAppHostStatusChangeInputV1 {
+  const document = decodeCanonicalDocument(bytes);
+  const keys = [
+    "operation_id",
+    "idempotency_key",
+    "request_hash",
+    "app_host_activation_id",
+    "expected_activation_generation",
+    "target_status",
+    "reason_code",
+  ];
+  if (
+    !exactObject(document, ["version", "input"]) ||
+    document.version !== HNS_APP_HOST_TRANSITION_DOCUMENT_VERSION ||
+    !exactObject(document.input, keys)
+  )
+    throw new TypeError("HNS app-host transition document is invalid");
+  const input = document.input;
+  if (
+    !validIdentity(input.operation_id) ||
+    !validIdentity(input.idempotency_key) ||
+    !validHash(input.request_hash) ||
+    !validIdentity(input.app_host_activation_id) ||
+    !Number.isSafeInteger(input.expected_activation_generation) ||
+    (input.expected_activation_generation as number) < 0 ||
+    (input.target_status !== "active" &&
+      input.target_status !== "suspended" &&
+      input.target_status !== "revoked") ||
+    !validIdentity(input.reason_code)
+  )
+    throw new TypeError("HNS app-host transition input is invalid");
+  return input as HnsCommunityAppHostStatusChangeInputV1;
+}
+
+export function encodeHnsDnsHealthDocumentV1(input: HnsDnsZoneHealthInputV1): Uint8Array {
+  return canonicalDocumentBytes({ version: HNS_DNS_HEALTH_DOCUMENT_VERSION, input });
+}
+
+export function decodeHnsDnsHealthDocumentV1(bytes: Uint8Array): HnsDnsZoneHealthInputV1 {
+  const document = decodeCanonicalDocument(bytes);
+  const keys = [
+    "operation_id",
+    "idempotency_key",
+    "request_hash",
+    "dns_zone_activation_id",
+    "activation_generation",
+    "expected_health_generation",
+    "stable_chain_delegation_snapshot_reference",
+    "stable_chain_delegation_snapshot_digest",
+    "observed_zone_bytes_digest",
+    "observed_dnssec_keyset_reference",
+    "observed_dnssec_keyset_version",
+    "observed_gateway_deployment_reference",
+    "observed_gateway_certificate_spki_sha256",
+    "delegation_matches",
+    "ds_authenticates_zone",
+    "retained_zone_digest_matches",
+    "gateway_healthy",
+    "valid_for_seconds",
+  ];
+  if (
+    !exactObject(document, ["version", "input"]) ||
+    document.version !== HNS_DNS_HEALTH_DOCUMENT_VERSION ||
+    !exactObject(document.input, keys)
+  )
+    throw new TypeError("HNS DNS health document is invalid");
+  const input = document.input;
+  if (
+    !validIdentity(input.operation_id) ||
+    !validIdentity(input.idempotency_key) ||
+    !validHash(input.request_hash) ||
+    !validIdentity(input.dns_zone_activation_id) ||
+    !Number.isSafeInteger(input.activation_generation) ||
+    (input.activation_generation as number) <= 0 ||
+    !Number.isSafeInteger(input.expected_health_generation) ||
+    (input.expected_health_generation as number) < 0 ||
+    !validIdentity(input.stable_chain_delegation_snapshot_reference) ||
+    !validHash(input.stable_chain_delegation_snapshot_digest) ||
+    !validHash(input.observed_zone_bytes_digest) ||
+    !validIdentity(input.observed_dnssec_keyset_reference) ||
+    !validIdentity(input.observed_dnssec_keyset_version) ||
+    !validIdentity(input.observed_gateway_deployment_reference) ||
+    !validHash(input.observed_gateway_certificate_spki_sha256) ||
+    typeof input.delegation_matches !== "boolean" ||
+    typeof input.ds_authenticates_zone !== "boolean" ||
+    typeof input.retained_zone_digest_matches !== "boolean" ||
+    typeof input.gateway_healthy !== "boolean" ||
+    !Number.isSafeInteger(input.valid_for_seconds) ||
+    (input.valid_for_seconds as number) <= 0
+  )
+    throw new TypeError("HNS DNS health input is invalid");
+  return input as HnsDnsZoneHealthInputV1;
+}
+
 export type HnsFirstPartyHostPersistenceStoreV1 = Readonly<{
   reserveDnsZoneActivation: (
     input: Readonly<{
@@ -414,26 +579,7 @@ export type HnsFirstPartyHostPersistenceStoreV1 = Readonly<{
     }>,
   ) => Effect.Effect<HnsLifecycleOutcomeV1, ControlPlaneError>;
   recordDnsZoneHealth: (
-    input: Readonly<{
-      operation_id: string;
-      idempotency_key: string;
-      request_hash: string;
-      dns_zone_activation_id: string;
-      activation_generation: number;
-      expected_health_generation: number;
-      stable_chain_delegation_snapshot_reference: string;
-      stable_chain_delegation_snapshot_digest: string;
-      observed_zone_bytes_digest: string;
-      observed_dnssec_keyset_reference: string;
-      observed_dnssec_keyset_version: string;
-      observed_gateway_deployment_reference: string;
-      observed_gateway_certificate_spki_sha256: string;
-      delegation_matches: boolean;
-      ds_authenticates_zone: boolean;
-      retained_zone_digest_matches: boolean;
-      gateway_healthy: boolean;
-      valid_for_seconds: number;
-    }>,
+    input: HnsDnsZoneHealthInputV1,
   ) => Effect.Effect<HnsDnsZoneHealthOutcomeV1, ControlPlaneError>;
   activateCommunityAppHost: (
     input: Readonly<{
@@ -453,14 +599,6 @@ export type HnsFirstPartyHostPersistenceStoreV1 = Readonly<{
     }>,
   ) => Effect.Effect<HnsCommunityAppHostActivationOutcomeV1, ControlPlaneError>;
   changeCommunityAppHostStatus: (
-    input: Readonly<{
-      operation_id: string;
-      idempotency_key: string;
-      request_hash: string;
-      app_host_activation_id: string;
-      expected_activation_generation: number;
-      target_status: HnsDnsZoneActivationLifecycleStatusV1;
-      reason_code: string;
-    }>,
+    input: HnsCommunityAppHostStatusChangeInputV1,
   ) => Effect.Effect<HnsCommunityAppHostActivationOutcomeV1, ControlPlaneError>;
 }>;

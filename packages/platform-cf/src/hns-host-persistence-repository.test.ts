@@ -3,9 +3,13 @@ import {
   ControlPlaneDb,
   type ControlPlaneResult,
   type ControlPlaneStatement,
+  encodeHnsAppHostTransitionDocumentV1,
+  encodeHnsDnsHealthDocumentV1,
 } from "@pirate/application";
 import { Effect, Layer } from "effect";
 import {
+  hnsAppHostTransitionStatementFromReviewedDocument,
+  hnsDnsHealthStatementFromReviewedDocument,
   makeControlPlaneHnsCommunityAppHostAuthoritySource,
   makeControlPlaneHnsFirstPartyHostPersistenceRepository,
 } from "./hns-host-persistence-repository.ts";
@@ -102,6 +106,100 @@ test("reads successor generation fences without reserving or writing", async () 
   });
   expect(calls[0]?.text).not.toContain("reserve_hns");
   expect(calls[0]?.values).toEqual(["hns-rehearsal-dns-zone-v1", "hns-rehearsal-app-host-v1"]);
+});
+
+test("derives every app-host and health SQL parameter only from reviewed bytes", () => {
+  const app = {
+    operation_id: "app-op",
+    idempotency_key: "app-key",
+    request_hash: "a".repeat(64),
+    app_host_activation_id: "app-host",
+    expected_activation_generation: 9,
+    target_status: "active",
+    reason_code: "canonical-authority",
+  } as const;
+  const health = {
+    operation_id: "health-op",
+    idempotency_key: "health-key",
+    request_hash: "b".repeat(64),
+    dns_zone_activation_id: "dns-zone",
+    activation_generation: 6,
+    expected_health_generation: 0,
+    stable_chain_delegation_snapshot_reference: "delegation:jazleeuw",
+    stable_chain_delegation_snapshot_digest: "c".repeat(64),
+    observed_zone_bytes_digest: "d".repeat(64),
+    observed_dnssec_keyset_reference: "keyset:jazleeuw",
+    observed_dnssec_keyset_version: "key-tag-10875",
+    observed_gateway_deployment_reference: "gateway:jazleeuw",
+    observed_gateway_certificate_spki_sha256: "e".repeat(64),
+    delegation_matches: true,
+    ds_authenticates_zone: true,
+    retained_zone_digest_matches: true,
+    gateway_healthy: true,
+    valid_for_seconds: 3600,
+  } as const;
+  expect(
+    hnsAppHostTransitionStatementFromReviewedDocument(encodeHnsAppHostTransitionDocumentV1(app))
+      .values,
+  ).toEqual(["app-op", "app-key", "a".repeat(64), "app-host", 9, "active", "canonical-authority"]);
+  expect(
+    hnsDnsHealthStatementFromReviewedDocument(encodeHnsDnsHealthDocumentV1(health)).values,
+  ).toEqual([
+    "health-op",
+    "health-key",
+    "b".repeat(64),
+    "dns-zone",
+    6,
+    0,
+    "delegation:jazleeuw",
+    "c".repeat(64),
+    "d".repeat(64),
+    "keyset:jazleeuw",
+    "key-tag-10875",
+    "gateway:jazleeuw",
+    "e".repeat(64),
+    true,
+    true,
+    true,
+    true,
+    3600,
+  ]);
+
+  const changedValue = (key: string, value: string | number | boolean) => {
+    if (typeof value === "number") return value + 1;
+    if (typeof value === "boolean") return !value;
+    if (key === "target_status") return "suspended";
+    if (key.includes("hash") || key.includes("digest") || key.includes("sha256")) {
+      return `${value.startsWith("f") ? "e" : "f"}${value.slice(1)}`;
+    }
+    return `${value}-changed`;
+  };
+  const assertOneToOne = (
+    input: Readonly<Record<string, string | number | boolean>>,
+    statement: (changed: Readonly<Record<string, string | number | boolean>>) => readonly unknown[],
+  ) => {
+    const baseline = statement(input);
+    Object.entries(input).forEach(([key, value], index) => {
+      const changed = statement({ ...input, [key]: changedValue(key, value) });
+      expect(
+        changed.flatMap((entry, position) => (entry === baseline[position] ? [] : [position])),
+      ).toEqual([index]);
+    });
+  };
+  assertOneToOne(
+    app,
+    (changed) =>
+      hnsAppHostTransitionStatementFromReviewedDocument(
+        encodeHnsAppHostTransitionDocumentV1(changed as typeof app),
+      ).values,
+  );
+  assertOneToOne(
+    health,
+    (changed) =>
+      hnsDnsHealthStatementFromReviewedDocument(
+        encodeHnsDnsHealthDocumentV1(changed as typeof health),
+      ).values,
+  );
 });
 
 test("resolves only by normalized host and decodes current database authority", async () => {

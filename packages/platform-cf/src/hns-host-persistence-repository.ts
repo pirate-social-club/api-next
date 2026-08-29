@@ -1,11 +1,15 @@
 import {
   ControlPlaneDb,
   type ControlPlaneError,
+  decodeHnsAppHostTransitionDocumentV1,
+  decodeHnsDnsHealthDocumentV1,
   type HnsAuthoritySuccessorGenerationSnapshotV1,
   type HnsCommunityAppHostActivationOutcomeV1,
   type HnsCommunityAppHostAuthorityStateV1,
+  type HnsCommunityAppHostStatusChangeInputV1,
   type HnsDnsZoneActivationOutcomeV1,
   type HnsDnsZoneActivationReservationV1,
+  type HnsDnsZoneHealthInputV1,
   type HnsDnsZoneHealthOutcomeV1,
   type HnsFirstPartyHostPersistenceStoreV1,
   type HnsForwarderGatewayAuthoritySourceV1,
@@ -15,6 +19,62 @@ import {
 import { Effect, type Layer } from "effect";
 
 type Row = Readonly<Record<string, unknown>>;
+
+function dnsHealthStatement(input: HnsDnsZoneHealthInputV1) {
+  return {
+    label: "hns.hosts.dns-zone.record-health",
+    text: `SELECT * FROM record_hns_dns_zone_health_v1(
+      $1, $2, $3, $4, $5::bigint, $6::bigint, $7, $8, $9, $10, $11,
+      $12, $13, $14::boolean, $15::boolean, $16::boolean, $17::boolean, $18::integer
+    )`,
+    values: [
+      input.operation_id,
+      input.idempotency_key,
+      input.request_hash,
+      input.dns_zone_activation_id,
+      input.activation_generation,
+      input.expected_health_generation,
+      input.stable_chain_delegation_snapshot_reference,
+      input.stable_chain_delegation_snapshot_digest,
+      input.observed_zone_bytes_digest,
+      input.observed_dnssec_keyset_reference,
+      input.observed_dnssec_keyset_version,
+      input.observed_gateway_deployment_reference,
+      input.observed_gateway_certificate_spki_sha256,
+      input.delegation_matches,
+      input.ds_authenticates_zone,
+      input.retained_zone_digest_matches,
+      input.gateway_healthy,
+      input.valid_for_seconds,
+    ],
+    readonly: false,
+  } as const;
+}
+
+export function hnsDnsHealthStatementFromReviewedDocument(bytes: Uint8Array) {
+  return dnsHealthStatement(decodeHnsDnsHealthDocumentV1(bytes));
+}
+
+function appHostTransitionStatement(input: HnsCommunityAppHostStatusChangeInputV1) {
+  return {
+    label: "hns.hosts.community-app.change-status",
+    text: "SELECT * FROM change_hns_community_app_host_status_v1($1, $2, $3, $4, $5::bigint, $6, $7)",
+    values: [
+      input.operation_id,
+      input.idempotency_key,
+      input.request_hash,
+      input.app_host_activation_id,
+      input.expected_activation_generation,
+      input.target_status,
+      input.reason_code,
+    ],
+    readonly: false,
+  } as const;
+}
+
+export function hnsAppHostTransitionStatementFromReviewedDocument(bytes: Uint8Array) {
+  return appHostTransitionStatement(decodeHnsAppHostTransitionDocumentV1(bytes));
+}
 
 function identity(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 && value === value.trim() ? value : null;
@@ -369,38 +429,7 @@ export function makeControlPlaneHnsFirstPartyHostPersistenceRepository(
         },
         decodeLifecycle,
       ),
-    recordDnsZoneHealth: (input) =>
-      execute(
-        {
-          label: "hns.hosts.dns-zone.record-health",
-          text: `SELECT * FROM record_hns_dns_zone_health_v1(
-            $1, $2, $3, $4, $5::bigint, $6::bigint, $7, $8, $9, $10, $11,
-            $12, $13, $14::boolean, $15::boolean, $16::boolean, $17::boolean, $18::integer
-          )`,
-          values: [
-            input.operation_id,
-            input.idempotency_key,
-            input.request_hash,
-            input.dns_zone_activation_id,
-            input.activation_generation,
-            input.expected_health_generation,
-            input.stable_chain_delegation_snapshot_reference,
-            input.stable_chain_delegation_snapshot_digest,
-            input.observed_zone_bytes_digest,
-            input.observed_dnssec_keyset_reference,
-            input.observed_dnssec_keyset_version,
-            input.observed_gateway_deployment_reference,
-            input.observed_gateway_certificate_spki_sha256,
-            input.delegation_matches,
-            input.ds_authenticates_zone,
-            input.retained_zone_digest_matches,
-            input.gateway_healthy,
-            input.valid_for_seconds,
-          ],
-          readonly: false,
-        },
-        decodeHealth,
-      ),
+    recordDnsZoneHealth: (input) => execute(dnsHealthStatement(input), decodeHealth),
     activateCommunityAppHost: (input) =>
       execute(
         {
@@ -428,23 +457,7 @@ export function makeControlPlaneHnsFirstPartyHostPersistenceRepository(
         decodeAppOutcome,
       ),
     changeCommunityAppHostStatus: (input) =>
-      execute(
-        {
-          label: "hns.hosts.community-app.change-status",
-          text: "SELECT * FROM change_hns_community_app_host_status_v1($1, $2, $3, $4, $5::bigint, $6, $7)",
-          values: [
-            input.operation_id,
-            input.idempotency_key,
-            input.request_hash,
-            input.app_host_activation_id,
-            input.expected_activation_generation,
-            input.target_status,
-            input.reason_code,
-          ],
-          readonly: false,
-        },
-        decodeAppOutcome,
-      ),
+      execute(appHostTransitionStatement(input), decodeAppOutcome),
   };
 
   return {
