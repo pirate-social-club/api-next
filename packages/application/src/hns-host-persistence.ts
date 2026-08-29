@@ -18,6 +18,78 @@ export type HnsAuthoritySuccessorGenerationsV1 = Readonly<{
   health_generation: number;
 }>;
 
+export type HnsAuthorityEmitDsV1 = readonly [number, 13, 2 | 4, string];
+export type HnsAuthorityEmitViewV1 = Readonly<{
+  authority_address: string;
+  outcome: "observed" | "unavailable";
+  zone_bytes_digest: string | null;
+  dnskey_key_tag: number | null;
+  derived_ds: ReadonlyArray<HnsAuthorityEmitDsV1> | null;
+}>;
+
+export class HnsAuthorityEmitRefusal extends Error {
+  readonly name = "HnsAuthorityEmitRefusal";
+  constructor(
+    readonly reason:
+      | "incomplete_authority_views"
+      | "unavailable_authority_view"
+      | "authority_view_mismatch"
+      | "dnskey_ds_mismatch",
+  ) {
+    super(`HNS authority candidate emission refused: ${reason}`);
+  }
+}
+
+function sameDs(
+  left: ReadonlyArray<HnsAuthorityEmitDsV1>,
+  right: ReadonlyArray<HnsAuthorityEmitDsV1>,
+) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+/** Requires a complete, internally consistent two-authority DNSSEC observation. */
+export function requireHnsAuthorityEmitObservationV1(
+  input: Readonly<{
+    expected_authority_addresses: readonly [string, string];
+    views: ReadonlyArray<HnsAuthorityEmitViewV1>;
+    chain_ds: ReadonlyArray<HnsAuthorityEmitDsV1>;
+  }>,
+): readonly [HnsAuthorityEmitViewV1, HnsAuthorityEmitViewV1] {
+  const [firstAddress, secondAddress] = input.expected_authority_addresses;
+  if (
+    firstAddress === secondAddress ||
+    input.views.length !== 2 ||
+    new Set(input.views.map((view) => view.authority_address)).size !== 2
+  ) {
+    throw new HnsAuthorityEmitRefusal("incomplete_authority_views");
+  }
+  const first = input.views.find((view) => view.authority_address === firstAddress);
+  const second = input.views.find((view) => view.authority_address === secondAddress);
+  if (first === undefined || second === undefined) {
+    throw new HnsAuthorityEmitRefusal("incomplete_authority_views");
+  }
+  if (first.outcome !== "observed" || second.outcome !== "observed") {
+    throw new HnsAuthorityEmitRefusal("unavailable_authority_view");
+  }
+  if (
+    first.zone_bytes_digest === null ||
+    first.dnskey_key_tag === null ||
+    first.derived_ds === null ||
+    second.zone_bytes_digest === null ||
+    second.dnskey_key_tag === null ||
+    second.derived_ds === null ||
+    first.zone_bytes_digest !== second.zone_bytes_digest ||
+    first.dnskey_key_tag !== second.dnskey_key_tag ||
+    !sameDs(first.derived_ds, second.derived_ds)
+  ) {
+    throw new HnsAuthorityEmitRefusal("authority_view_mismatch");
+  }
+  if (!sameDs(first.derived_ds, input.chain_ds)) {
+    throw new HnsAuthorityEmitRefusal("dnskey_ds_mismatch");
+  }
+  return [first, second];
+}
+
 function nonnegativeSafeInteger(value: number, label: string): number {
   if (!Number.isSafeInteger(value) || value < 0 || value >= Number.MAX_SAFE_INTEGER) {
     throw new Error(`${label} must be a nonnegative incrementable safe integer`);

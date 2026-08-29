@@ -3,6 +3,7 @@ import {
   deriveHnsAuthoritySuccessorGenerationsV1,
   HNS_DNS_ZONE_ACTIVATION_DOCUMENT_VERSION,
   prepareHnsDnsZoneActivationDocumentV1,
+  requireHnsAuthorityEmitObservationV1,
 } from "./hns-host-persistence.ts";
 
 describe("HNS authority successor generation preparation", () => {
@@ -64,4 +65,71 @@ test("emit and persistence preparation share the exact activation bytes", async 
   expect(emitted.activation_document_bytes).toEqual(persistencePrepared.activation_document_bytes);
   expect(emitted.dnssec_keyset_version).toBe("key-tag-10875");
   expect(emitted.zone_bytes).not.toBe(zoneBytes);
+});
+
+const chainDs = [
+  [10875, 13, 2, "a".repeat(64)],
+  [10875, 13, 4, "b".repeat(96)],
+] as const;
+const observedView = (authorityAddress: string) => ({
+  authority_address: authorityAddress,
+  outcome: "observed" as const,
+  zone_bytes_digest: "c".repeat(64),
+  dnskey_key_tag: 10875,
+  derived_ds: chainDs,
+});
+
+test("admits only two complete agreeing authority views with chain-matching DS", () => {
+  expect(
+    requireHnsAuthorityEmitObservationV1({
+      expected_authority_addresses: ["94.103.168.161", "81.15.150.159"],
+      views: [observedView("94.103.168.161"), observedView("81.15.150.159")],
+      chain_ds: chainDs,
+    }),
+  ).toHaveLength(2);
+});
+
+test("refuses missing and unavailable authority views without partial emission", () => {
+  const expected = ["94.103.168.161", "81.15.150.159"] as const;
+  expect(() =>
+    requireHnsAuthorityEmitObservationV1({
+      expected_authority_addresses: expected,
+      views: [observedView(expected[0])],
+      chain_ds: chainDs,
+    }),
+  ).toThrow("incomplete_authority_views");
+  expect(() =>
+    requireHnsAuthorityEmitObservationV1({
+      expected_authority_addresses: expected,
+      views: [
+        observedView(expected[0]),
+        {
+          authority_address: expected[1],
+          outcome: "unavailable",
+          zone_bytes_digest: null,
+          dnskey_key_tag: null,
+          derived_ds: null,
+        },
+      ],
+      chain_ds: chainDs,
+    }),
+  ).toThrow("unavailable_authority_view");
+});
+
+test("refuses authority disagreement and DNSKEY-to-chain DS mismatch", () => {
+  const expected = ["94.103.168.161", "81.15.150.159"] as const;
+  expect(() =>
+    requireHnsAuthorityEmitObservationV1({
+      expected_authority_addresses: expected,
+      views: [observedView(expected[0]), { ...observedView(expected[1]), dnskey_key_tag: 39280 }],
+      chain_ds: chainDs,
+    }),
+  ).toThrow("authority_view_mismatch");
+  expect(() =>
+    requireHnsAuthorityEmitObservationV1({
+      expected_authority_addresses: expected,
+      views: [observedView(expected[0]), observedView(expected[1])],
+      chain_ds: [[39280, 13, 2, "d".repeat(64)]],
+    }),
+  ).toThrow("dnskey_ds_mismatch");
 });
