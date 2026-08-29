@@ -84,8 +84,6 @@ CREATE TRIGGER study_language_profile_units_immutable
   BEFORE UPDATE OR DELETE ON study_language_profile_units
   FOR EACH ROW EXECUTE FUNCTION reject_localization_immutable_mutation();
 
-DROP TABLE study_transcript_evidence_v2;
-
 ALTER TABLE study_exercise_versions
   RENAME COLUMN helper_language TO target_language;
 ALTER TABLE study_exercise_versions
