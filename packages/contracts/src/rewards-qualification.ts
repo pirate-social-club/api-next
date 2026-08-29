@@ -99,7 +99,6 @@ export const KaraokeQualificationPolicyV2 = Schema.Struct({
 export const QualificationPolicyV1 = Schema.Union([
   StudyQualificationPolicyV1,
   KaraokeQualificationPolicyV1,
-  KaraokeQualificationPolicyV2,
 ]);
 export type QualificationPolicyV1 = Schema.Schema.Type<typeof QualificationPolicyV1>;
 
@@ -169,7 +168,6 @@ export const KaraokeQualificationEvidenceV2 = Schema.Struct({
 export const ActivityQualificationEvidenceV1 = Schema.Union([
   StudyQualificationEvidenceV1,
   KaraokeQualificationEvidenceV1,
-  KaraokeQualificationEvidenceV2,
 ]);
 export type ActivityQualificationEvidenceV1 = Schema.Schema.Type<
   typeof ActivityQualificationEvidenceV1
@@ -201,8 +199,7 @@ export const ActivityQualificationV1 = Schema.Struct({
       (qualification.activity === "study" &&
         qualification.evidence_summary.kind !== "study_session_first_pass_v2") ||
       (qualification.activity === "karaoke" &&
-        qualification.evidence_summary.kind !== "karaoke_qualification_v1" &&
-        qualification.evidence_summary.kind !== "karaoke_qualification_v2")
+        qualification.evidence_summary.kind !== "karaoke_qualification_v1")
     ) {
       return "Qualification activity, attempt, and evidence kinds must agree";
     }
