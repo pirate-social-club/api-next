@@ -3,9 +3,12 @@ import {
   decodeHnsAppHostTransitionDocumentV1,
   decodeHnsAuthorityDetachedObserverEvidenceV1,
   encodeHnsAuthorityDetachedObserverEvidenceV1,
+  encodeHnsDnsZonePersistenceDocumentV1,
   HNS_AUTHORITY_SUCCESSOR_CANDIDATE_VERSION,
+  HNS_DNS_ZONE_ACTIVATION_DOCUMENT_VERSION,
   HNS_MAINNET_GENESIS_BLOCK_HASH,
   type prepareHnsAuthoritySuccessorCandidateV1,
+  prepareHnsDnsZoneActivationDocumentV1,
 } from "@pirate/application/hns-host-persistence";
 import {
   encodeHnsAuthorityInventory,
@@ -23,6 +26,8 @@ import {
   makeHnsAuthoritySuccessorObservationSourceV1,
   runHnsAuthoritySuccessorObservationHarnessV1,
 } from "./authority-successor-observation-harness.ts";
+import { deriveCanonicalHnsAuthorityZoneBytesV1 } from "./dns-axfr-zone.ts";
+import { encodeHnsDnsTcpMessageSequenceV1 } from "./dns-tsig-axfr.ts";
 
 const encoder = new TextEncoder();
 const candidateBytes = encoder.encode('{"candidate":"review-exact"}');
@@ -33,6 +38,118 @@ const chainMedianTime = 1_777_689_600;
 const expiryHeight = 500_000;
 const hsdRpcResponse = (result: unknown) =>
   encoder.encode(JSON.stringify({ result, error: null, id: null }));
+
+function uint16(value: number): Uint8Array {
+  return new Uint8Array([(value >>> 8) & 0xff, value & 0xff]);
+}
+
+function uint32(value: number): Uint8Array {
+  return new Uint8Array([
+    (value >>> 24) & 0xff,
+    (value >>> 16) & 0xff,
+    (value >>> 8) & 0xff,
+    value & 0xff,
+  ]);
+}
+
+function uint48(value: number): Uint8Array {
+  return new Uint8Array([
+    Math.floor(value / 0x10000000000) & 0xff,
+    Math.floor(value / 0x100000000) & 0xff,
+    ...uint32(value >>> 0),
+  ]);
+}
+
+function concat(parts: ReadonlyArray<Uint8Array>): Uint8Array {
+  const bytes = new Uint8Array(parts.reduce((total, part) => total + part.byteLength, 0));
+  let offset = 0;
+  for (const part of parts) {
+    bytes.set(part, offset);
+    offset += part.byteLength;
+  }
+  return bytes;
+}
+
+function dnsName(value: string): Uint8Array {
+  return concat([
+    ...value.split(".").map((label) => {
+      const bytes = encoder.encode(label);
+      return new Uint8Array([bytes.byteLength, ...bytes]);
+    }),
+    new Uint8Array([0]),
+  ]);
+}
+
+function dnsRecord(owner: string, type: number, ttl: number, rdata: Uint8Array): Uint8Array {
+  return concat([
+    dnsName(owner),
+    uint16(type),
+    uint16(1),
+    uint32(ttl),
+    uint16(rdata.byteLength),
+    rdata,
+  ]);
+}
+
+function childAxfrSequence(appAddress: readonly [number, number, number, number]): Uint8Array {
+  const messageId = 0x1234;
+  const soa = dnsRecord(
+    "jazleeuw",
+    6,
+    300,
+    concat([
+      dnsName("ns1.pirate"),
+      dnsName("hostmaster.jazleeuw"),
+      uint32(2_026_080_805),
+      uint32(3_600),
+      uint32(900),
+      uint32(1_209_600),
+      uint32(300),
+    ]),
+  );
+  const answers = [
+    soa,
+    dnsRecord("jazleeuw", 2, 300, dnsName("ns1.pirate")),
+    dnsRecord("jazleeuw", 2, 300, dnsName("ns2.pirate")),
+    dnsRecord("app.jazleeuw", 1, 300, new Uint8Array(appAddress)),
+    soa,
+  ];
+  const question = concat([dnsName("jazleeuw"), uint16(252), uint16(1)]);
+  const unsigned = concat([
+    uint16(messageId),
+    uint16(0x8400),
+    uint16(1),
+    uint16(answers.length),
+    uint16(0),
+    uint16(0),
+    question,
+    ...answers,
+  ]);
+  const tsigRdata = concat([
+    dnsName("hmac-sha256"),
+    uint48(chainMedianTime),
+    uint16(300),
+    uint16(32),
+    new Uint8Array(32),
+    uint16(messageId),
+    uint16(0),
+    uint16(0),
+  ]);
+  const tsig = concat([
+    dnsName("pirate-axfr"),
+    uint16(250),
+    uint16(255),
+    uint32(0),
+    uint16(tsigRdata.byteLength),
+    tsigRdata,
+  ]);
+  const message = concat([unsigned, tsig]);
+  message[10] = 0;
+  message[11] = 1;
+  return encodeHnsDnsTcpMessageSequenceV1([message]);
+}
+
+const canonicalChildAxfrSequence = childAxfrSequence([94, 103, 168, 161]);
 const detachedTranscript = [
   {
     exchange_kind: "hns_rpc",
@@ -201,7 +318,7 @@ const detachedTranscript = [
     subject_reference: "94.103.168.161",
     query_reference: "axfr:jazleeuw",
     request_bytes: encoder.encode("dns-query:jazleeuw:axfr:primary"),
-    response_bytes: encoder.encode("dns-response:jazleeuw:axfr:primary"),
+    response_bytes: canonicalChildAxfrSequence,
   },
   {
     exchange_kind: "child_authority_dns",
@@ -209,7 +326,7 @@ const detachedTranscript = [
     subject_reference: "81.15.150.159",
     query_reference: "axfr:jazleeuw",
     request_bytes: encoder.encode("dns-query:jazleeuw:axfr:secondary"),
-    response_bytes: encoder.encode("dns-response:jazleeuw:axfr:secondary"),
+    response_bytes: canonicalChildAxfrSequence,
   },
   {
     exchange_kind: "parent_authority_dns",
@@ -331,6 +448,25 @@ const authorityAddressProvenance = {
 } as const;
 
 async function sourceObservation(): Promise<HnsAuthoritySuccessorSourceObservationV1> {
+  const zoneBytes = deriveCanonicalHnsAuthorityZoneBytesV1({
+    zone_name: "jazleeuw",
+    response_sequence_bytes: canonicalChildAxfrSequence,
+  });
+  const zoneDigest = await digest(zoneBytes);
+  const dnsDocument = await prepareHnsDnsZoneActivationDocumentV1({
+    payload: {
+      version: HNS_DNS_ZONE_ACTIVATION_DOCUMENT_VERSION,
+      dns_zone_activation_id: "hns-rehearsal-dns-zone-v1",
+      canonical_root: "jazleeuw",
+      dns_authority: ["pirate_managed_dns_v1", "dns-authority:jazleeuw", 6],
+      pirate_dns_authority_inventory: ["authority-inventory:jazleeuw", "v6", "a".repeat(64)],
+      zone_revision: 6,
+      dnssec_keyset: ["dnssec-keyset:jazleeuw", "key-tag-10875"],
+      gateway: ["gateway:jazleeuw", "2".repeat(64)],
+      stable_chain_delegation_snapshot: [evidenceReference, "5".repeat(64)],
+    },
+    zone_bytes: zoneBytes,
+  });
   const observerEvidence = await encodeHnsAuthorityDetachedObserverEvidenceV1({
     observation_id: "observer-jazleeuw-verified-01",
     request_sha256: "1".repeat(64),
@@ -358,7 +494,7 @@ async function sourceObservation(): Promise<HnsAuthoritySuccessorSourceObservati
     attestation_kind: "operator_attested_authority_view_v1" as const,
     authority_address: authorityAddress,
     outcome: "observed" as const,
-    zone_bytes_digest: "c".repeat(64),
+    zone_bytes_digest: zoneDigest,
     dnskey_key_tag: 10875,
     derived_ds: chainDs,
   });
@@ -383,7 +519,7 @@ async function sourceObservation(): Promise<HnsAuthoritySuccessorSourceObservati
     authority_views: [view("94.103.168.161"), view("81.15.150.159")],
     artifacts: {
       authority_inventory: encoder.encode('{"artifact":"inventory"}'),
-      dns_zone_activation: encoder.encode('{"artifact":"dns"}'),
+      dns_zone_activation: encodeHnsDnsZonePersistenceDocumentV1(dnsDocument),
       app_host_activation: encoder.encode('{"artifact":"app"}'),
       health_observation: encoder.encode('{"artifact":"health"}'),
       observer_evidence: observerEvidence,
@@ -438,11 +574,8 @@ function source(value: HnsAuthoritySuccessorSourceObservationV1, calls: string[]
 
 test("derives the complete 6/10/1 package from live authority and row-identity ports", async () => {
   const observedAt = "2026-08-29T17:00:00.000Z";
-  const zoneBytes = encoder.encode("$ORIGIN jazleeuw.\n; canonical live observation\n");
-  let observedZoneBytes = zoneBytes;
-  const zoneDigest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", zoneBytes))]
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
+  let observedTranscript: ReadonlyArray<HnsAuthoritySuccessorDetachedTranscriptEntryV1> =
+    detachedTranscript;
   const authoritativeGlue = [
     {
       authority_nameserver: "ns1.pirate",
@@ -492,7 +625,6 @@ test("derives the complete 6/10/1 package from live authority and row-identity p
     attestation_kind: "operator_attested_authority_view_v1" as const,
     authority_address: authorityAddress,
     outcome: "observed" as const,
-    zone_bytes_digest: zoneDigest,
     dnskey_key_tag: 10875,
     derived_ds: chainDs,
   });
@@ -534,8 +666,7 @@ test("derives the complete 6/10/1 package from live authority and row-identity p
         chain_authority_records: chainAuthorityRecords,
         authority_address_provenance: authorityAddressProvenance,
         authority_views: [view("94.103.168.161"), view("81.15.150.159")],
-        detached_transcript: detachedTranscript,
-        zone_bytes: observedZoneBytes,
+        detached_transcript: observedTranscript,
         dns_authority_reference: "dns-authority:jazleeuw",
         dnssec_keyset_reference: "dnssec-keyset:jazleeuw",
         gateway_deployment_reference: "gateway:jazleeuw",
@@ -593,7 +724,12 @@ test("derives the complete 6/10/1 package from live authority and row-identity p
     (artifact) => artifact.name === "app_host_activation",
   );
   if (firstAppArtifact === undefined) throw new Error("missing first app-host artifact");
-  observedZoneBytes = encoder.encode("$ORIGIN jazleeuw.\n; distinct reviewed observation\n");
+  const changedSequence = childAxfrSequence([81, 15, 150, 159]);
+  observedTranscript = detachedTranscript.map((entry) =>
+    entry.exchange_kind === "child_authority_dns"
+      ? { ...entry, response_bytes: changedSequence }
+      : entry,
+  );
   const secondEmissions: Uint8Array[] = [];
   await runHnsAuthoritySuccessorObservationHarnessV1(
     [],
@@ -620,6 +756,21 @@ test("derives the complete 6/10/1 package from live authority and row-identity p
   );
   expect(secondApp.idempotency_key).not.toBe(firstApp.idempotency_key);
   expect(secondApp.request_hash).not.toBe(firstApp.request_hash);
+
+  observedTranscript = detachedTranscript.map((entry) =>
+    entry.exchange_kind === "child_authority_dns" && entry.subject_reference === "94.103.168.161"
+      ? { ...entry, response_bytes: changedSequence }
+      : entry,
+  );
+  await expect(
+    runHnsAuthoritySuccessorObservationHarnessV1(
+      [],
+      harnessSource,
+      { emit: async () => undefined },
+      {},
+      fakePreparer([]),
+    ),
+  ).rejects.toMatchObject({ reason: "invalid_source_observation" });
 });
 
 test("acquires every live fact from one source and emits one canonical observation document", async () => {
@@ -796,6 +947,48 @@ test("refuses altered detached transcript bytes even with coherently updated tra
     encoder.encode(
       JSON.stringify(["pirate-hns-authority-detached-transcript-v1", altered.detached_transcript]),
     ),
+  );
+
+  await expect(
+    decodeHnsAuthoritySuccessorObservationDocumentV1(encoder.encode(JSON.stringify(altered))),
+  ).rejects.toMatchObject({ reason: "observer_provenance_mismatch" });
+});
+
+test("refuses internally coherent DNS artifact bytes that disagree with the AXFR transcript", async () => {
+  const emitted: Uint8Array[] = [];
+  await runHnsAuthoritySuccessorObservationHarnessV1(
+    [],
+    source(await sourceObservation(), []),
+    {
+      emit: async (bytes) => {
+        emitted.push(Uint8Array.from(bytes));
+      },
+    },
+    {},
+    fakePreparer([]),
+  );
+  const original = emitted[0];
+  if (original === undefined) throw new Error("missing observation bytes");
+  const altered = JSON.parse(new TextDecoder().decode(original)) as {
+    artifacts_hex: { dns_zone_activation: string };
+  };
+  const forgedZoneBytes = encoder.encode('{"zone":"not-the-authenticated-transfer"}');
+  const forgedDnsDocument = await prepareHnsDnsZoneActivationDocumentV1({
+    payload: {
+      version: HNS_DNS_ZONE_ACTIVATION_DOCUMENT_VERSION,
+      dns_zone_activation_id: "hns-rehearsal-dns-zone-v1",
+      canonical_root: "jazleeuw",
+      dns_authority: ["pirate_managed_dns_v1", "dns-authority:jazleeuw", 6],
+      pirate_dns_authority_inventory: ["authority-inventory:jazleeuw", "v6", "a".repeat(64)],
+      zone_revision: 6,
+      dnssec_keyset: ["dnssec-keyset:jazleeuw", "key-tag-10875"],
+      gateway: ["gateway:jazleeuw", "2".repeat(64)],
+      stable_chain_delegation_snapshot: [evidenceReference, "5".repeat(64)],
+    },
+    zone_bytes: forgedZoneBytes,
+  });
+  altered.artifacts_hex.dns_zone_activation = bytesHex(
+    encodeHnsDnsZonePersistenceDocumentV1(forgedDnsDocument),
   );
 
   await expect(

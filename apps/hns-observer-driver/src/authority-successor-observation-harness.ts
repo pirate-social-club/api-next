@@ -1,6 +1,7 @@
 import {
   type HnsAuthoritySuccessorGenerationReaderV1 as ApplicationHnsAuthoritySuccessorGenerationReaderV1,
   decodeHnsAuthorityDetachedObserverEvidenceV1,
+  decodeHnsDnsZonePersistenceDocumentV1,
   encodeHnsAppHostTransitionDocumentV1,
   encodeHnsAuthorityDetachedObserverEvidenceV1,
   encodeHnsDnsHealthDocumentV1,
@@ -16,6 +17,7 @@ import {
   prepareHnsDnsZoneActivationDocumentV1,
 } from "@pirate/application/hns-host-persistence";
 import { decodeHnsAuthorityInventoryBytes } from "@pirate/application/namespace-ownership";
+import { deriveHnsAuthoritySuccessorChildZoneObservationV1 } from "./authority-successor-zone-observation.ts";
 
 export const HNS_AUTHORITY_SUCCESSOR_OBSERVATION_VERSION =
   "pirate-hns-authority-successor-observation-v1" as const;
@@ -121,9 +123,11 @@ export type HnsAuthoritySuccessorLiveAuthorityObservationV1 = Readonly<{
   observer_facts: HnsAuthorityDetachedObserverFactsV1;
   chain_authority_records: ReadonlyArray<HnsAuthorityEmitChainRecordV1>;
   authority_address_provenance: HnsAuthorityAddressProvenanceV1;
-  authority_views: readonly [HnsAuthorityEmitViewV1, HnsAuthorityEmitViewV1];
+  authority_views: readonly [
+    Omit<HnsAuthorityEmitViewV1, "zone_bytes_digest">,
+    Omit<HnsAuthorityEmitViewV1, "zone_bytes_digest">,
+  ];
   detached_transcript: ReadonlyArray<HnsAuthoritySuccessorDetachedTranscriptEntryV1>;
-  zone_bytes: Uint8Array;
   dns_authority_reference: string;
   dnssec_keyset_reference: string;
   gateway_deployment_reference: string;
@@ -170,6 +174,10 @@ function safeIdentity(value: unknown, maximumBytes = 512): value is string {
     value.trim() === value &&
     new TextEncoder().encode(value).byteLength <= maximumBytes
   );
+}
+
+function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
+  return left.byteLength === right.byteLength && left.every((byte, index) => byte === right[index]);
 }
 
 function validAuthorityAddressProvenance(value: unknown): value is HnsAuthorityAddressProvenanceV1 {
@@ -400,12 +408,16 @@ async function decodeAndValidateDetachedTranscript(
     "getblockheader:tip-after",
   ];
   const hsdEntries = decoded.filter((entry) => entry.exchange_kind === "hns_rpc");
+  const childEntries = decoded.filter((entry) => entry.exchange_kind === "child_authority_dns");
   const transcriptShapeIsBound = decoded.every((entry) => {
     if (entry.exchange_kind === "hns_rpc") {
       return requiredHsdReferences.includes(entry.query_reference);
     }
     if (entry.exchange_kind === "child_authority_dns") {
-      return expectedChildAddresses.has(entry.subject_reference);
+      return (
+        expectedChildAddresses.has(entry.subject_reference) &&
+        entry.query_reference === `axfr:${document.root_label}`
+      );
     }
     return (
       document.authority_address_provenance.source_kind ===
@@ -429,10 +441,10 @@ async function decodeAndValidateDetachedTranscript(
     ) ||
     [...expectedChildAddresses].some(
       (address) =>
-        !decoded.some(
+        childEntries.filter(
           (entry) =>
             entry.exchange_kind === "child_authority_dns" && entry.subject_reference === address,
-        ),
+        ).length !== 1,
     ) ||
     [...parentVantages].some(
       (vantage) =>
@@ -441,6 +453,40 @@ async function decodeAndValidateDetachedTranscript(
             entry.exchange_kind === "parent_authority_dns" && entry.vantage_reference === vantage,
         ),
     )
+  ) {
+    throw new HnsAuthoritySuccessorObservationHarnessError("observer_provenance_mismatch");
+  }
+  let derivedZone: Awaited<ReturnType<typeof deriveHnsAuthoritySuccessorChildZoneObservationV1>>;
+  try {
+    derivedZone = await deriveHnsAuthoritySuccessorChildZoneObservationV1(
+      document.root_label,
+      document.expected_authority_addresses,
+      decoded,
+      document.authority_views.map((view) => ({
+        attestation_kind: view.attestation_kind,
+        authority_address: view.authority_address,
+        outcome: view.outcome,
+        dnskey_key_tag: view.dnskey_key_tag,
+        derived_ds: view.derived_ds,
+      })),
+    );
+  } catch {
+    throw new HnsAuthoritySuccessorObservationHarnessError("observer_provenance_mismatch");
+  }
+  let dnsDocument: Awaited<ReturnType<typeof decodeHnsDnsZonePersistenceDocumentV1>>;
+  try {
+    dnsDocument = await decodeHnsDnsZonePersistenceDocumentV1(
+      bytesFromHex(document.artifacts_hex.dns_zone_activation),
+    );
+  } catch {
+    throw new HnsAuthoritySuccessorObservationHarnessError("observer_provenance_mismatch");
+  }
+  if (
+    document.authority_views.some(
+      (view) => view.zone_bytes_digest !== derivedZone.zone_bytes_digest,
+    ) ||
+    dnsDocument.zone_bytes_digest !== derivedZone.zone_bytes_digest ||
+    !equalBytes(dnsDocument.zone_bytes, derivedZone.zone_bytes)
   ) {
     throw new HnsAuthoritySuccessorObservationHarnessError("observer_provenance_mismatch");
   }
@@ -521,11 +567,24 @@ export function makeHnsAuthoritySuccessorObservationSourceV1(input: {
       ) {
         throw new HnsAuthoritySuccessorObservationHarnessError("invalid_source_observation");
       }
+      let zoneObservation: Awaited<
+        ReturnType<typeof deriveHnsAuthoritySuccessorChildZoneObservationV1>
+      >;
+      try {
+        zoneObservation = await deriveHnsAuthoritySuccessorChildZoneObservationV1(
+          rootLabel,
+          [firstAddress, secondAddress],
+          live.detached_transcript,
+          live.authority_views,
+        );
+      } catch {
+        throw new HnsAuthoritySuccessorObservationHarnessError("invalid_source_observation");
+      }
       const dnsGeneration = generation.snapshot.dns_current_generation + 1;
       if (!Number.isSafeInteger(dnsGeneration)) {
         throw new HnsAuthoritySuccessorObservationHarnessError("invalid_source_observation");
       }
-      const observedKeyTag = live.authority_views[0].dnskey_key_tag;
+      const observedKeyTag = zoneObservation.authority_views[0].dnskey_key_tag;
       if (observedKeyTag === null) {
         throw new HnsAuthoritySuccessorObservationHarnessError("invalid_source_observation");
       }
@@ -546,7 +605,7 @@ export function makeHnsAuthoritySuccessorObservationSourceV1(input: {
           gateway: [live.gateway_deployment_reference, live.gateway_certificate_spki_sha256],
           stable_chain_delegation_snapshot: [delegationReference, evidence.chain_authority_digest],
         },
-        zone_bytes: live.zone_bytes,
+        zone_bytes: zoneObservation.zone_bytes,
       });
       const dnsDocumentBytes = encodeHnsDnsZonePersistenceDocumentV1(dnsDocument);
       const dnsDocumentSha256 = await sha256(dnsDocumentBytes);
@@ -610,7 +669,7 @@ export function makeHnsAuthoritySuccessorObservationSourceV1(input: {
         authority_address_provenance: live.authority_address_provenance,
         generation_snapshot: generation.snapshot,
         expected_authority_addresses: [firstAddress, secondAddress],
-        authority_views: live.authority_views,
+        authority_views: zoneObservation.authority_views,
         artifacts: {
           authority_inventory: Uint8Array.from(inventoryBytes),
           dns_zone_activation: dnsDocumentBytes,

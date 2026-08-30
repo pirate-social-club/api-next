@@ -21,14 +21,15 @@ export type HnsDnsTsigAxfrSessionV1 = Readonly<{
 export type HnsDnsTsigAxfrExchangeResultV1 = Readonly<{
   readonly request_bytes: Uint8Array;
   readonly response_messages: ReadonlyArray<Uint8Array>;
+  readonly response_sequence_bytes: Uint8Array;
 }>;
 
 export class HnsDnsTsigAxfrError extends Error {
   readonly name = "HnsDnsTsigAxfrError";
 }
 
-type ParsedName = Readonly<{ name: string; next_offset: number }>;
-type ParsedRecord = Readonly<{
+export type HnsDnsParsedNameV1 = Readonly<{ name: string; next_offset: number }>;
+export type HnsDnsParsedRecordV1 = Readonly<{
   name: string;
   type: number;
   record_class: number;
@@ -63,6 +64,8 @@ const ANY_CLASS = 255;
 const HMAC_SHA256_NAME = "hmac-sha256";
 const HMAC_SHA256_OUTPUT_BYTES = 32;
 const DNS_COMPRESSION_POINTER_MAX_HOPS = 16;
+const DNS_TCP_SEQUENCE_MAX_MESSAGES = 4_096;
+const DNS_TCP_SEQUENCE_MAX_BYTES = 16 * 1_024 * 1_024;
 
 function failed(message: string): HnsDnsTsigAxfrError {
   return new HnsDnsTsigAxfrError(message);
@@ -130,7 +133,7 @@ function concat(parts: ReadonlyArray<Uint8Array>): Uint8Array {
   return bytes;
 }
 
-function canonicalName(value: string): string {
+export function canonicalHnsDnsNameV1(value: string): string {
   const name = value.endsWith(".") ? value.slice(0, -1) : value;
   const lowered = name.toLowerCase();
   if (
@@ -146,7 +149,7 @@ function canonicalName(value: string): string {
 }
 
 function encodeName(value: string): Uint8Array {
-  const name = canonicalName(value);
+  const name = canonicalHnsDnsNameV1(value);
   const labels = name.split(".").map((label) => encoder.encode(label));
   const bytes = new Uint8Array(labels.reduce((total, label) => total + label.byteLength + 1, 1));
   let offset = 0;
@@ -158,7 +161,7 @@ function encodeName(value: string): Uint8Array {
   return bytes;
 }
 
-function readName(bytes: Uint8Array, initialOffset: number): ParsedName {
+export function readHnsDnsNameV1(bytes: Uint8Array, initialOffset: number): HnsDnsParsedNameV1 {
   const labels: string[] = [];
   const visited = new Set<number>();
   let offset = initialOffset;
@@ -204,9 +207,9 @@ function readName(bytes: Uint8Array, initialOffset: number): ParsedName {
   return { name: labels.join("."), next_offset: nextOffset };
 }
 
-function readRecord(bytes: Uint8Array, offset: number): ParsedRecord {
+function readRecord(bytes: Uint8Array, offset: number): HnsDnsParsedRecordV1 {
   const startOffset = offset;
-  const owner = readName(bytes, offset);
+  const owner = readHnsDnsNameV1(bytes, offset);
   offset = owner.next_offset;
   if (offset + 10 > bytes.byteLength) throw failed("truncated DNS resource record");
   const type = readUint16(bytes, offset);
@@ -227,12 +230,12 @@ function readRecord(bytes: Uint8Array, offset: number): ParsedRecord {
   };
 }
 
-function parseTsig(bytes: Uint8Array, record: ParsedRecord): ParsedTsig {
+function parseTsig(bytes: Uint8Array, record: HnsDnsParsedRecordV1): ParsedTsig {
   if (record.type !== TSIG_TYPE || record.record_class !== ANY_CLASS || record.ttl !== 0) {
     throw failed("AXFR response lacks a canonical TSIG record");
   }
   let offset = record.rdata_offset;
-  const algorithm = readName(bytes, offset);
+  const algorithm = readHnsDnsNameV1(bytes, offset);
   offset = algorithm.next_offset;
   if (offset + 10 > record.end_offset) throw failed("truncated TSIG data");
   const timeBytes = bytes.slice(offset, offset + 6);
@@ -271,17 +274,10 @@ function parseTsig(bytes: Uint8Array, record: ParsedRecord): ParsedTsig {
   };
 }
 
-function canonicalSoa(bytes: Uint8Array, record: ParsedRecord): Uint8Array {
+function canonicalSoa(bytes: Uint8Array, record: HnsDnsParsedRecordV1): Uint8Array {
   if (record.type !== SOA_TYPE || record.record_class !== IN_CLASS)
     throw failed("invalid AXFR SOA");
-  const mname = readName(bytes, record.rdata_offset);
-  const rname = readName(bytes, mname.next_offset);
-  if (rname.next_offset + 20 !== record.end_offset) throw failed("invalid AXFR SOA data");
-  const rdata = concat([
-    encodeName(mname.name),
-    encodeName(rname.name),
-    bytes.slice(rname.next_offset, record.end_offset),
-  ]);
+  const rdata = canonicalSoaRdata(bytes, record);
   return concat([
     encodeName(record.name),
     uint16(record.type),
@@ -289,6 +285,17 @@ function canonicalSoa(bytes: Uint8Array, record: ParsedRecord): Uint8Array {
     uint32(record.ttl),
     uint16(rdata.byteLength),
     rdata,
+  ]);
+}
+
+function canonicalSoaRdata(bytes: Uint8Array, record: HnsDnsParsedRecordV1): Uint8Array {
+  const mname = readHnsDnsNameV1(bytes, record.rdata_offset);
+  const rname = readHnsDnsNameV1(bytes, mname.next_offset);
+  if (rname.next_offset + 20 !== record.end_offset) throw failed("invalid AXFR SOA data");
+  return concat([
+    encodeName(mname.name),
+    encodeName(rname.name),
+    bytes.slice(rname.next_offset, record.end_offset),
   ]);
 }
 
@@ -380,7 +387,7 @@ function messageWithoutTsig(message: Uint8Array, tsig: ParsedTsig): Uint8Array {
   return result;
 }
 
-function parseAxfrResponse(
+export function parseHnsDnsTsigAxfrResponseV1(
   message: Uint8Array,
   messageId: number,
   zoneName: string,
@@ -390,6 +397,7 @@ function parseAxfrResponse(
   soa_records: ReadonlyArray<Readonly<{ bytes: Uint8Array; answer_index: number }>>;
   answer_count: number;
   apex_ns_count: number;
+  answer_records: ReadonlyArray<HnsDnsParsedRecordV1>;
 }> {
   if (message.byteLength < 12 || readUint16(message, 0) !== messageId) {
     throw failed("AXFR response id mismatch");
@@ -412,7 +420,7 @@ function parseAxfrResponse(
   }
   let offset = 12;
   if (questionCount === 1) {
-    const question = readName(message, offset);
+    const question = readHnsDnsNameV1(message, offset);
     offset = question.next_offset;
     if (
       question.name !== zoneName ||
@@ -424,10 +432,12 @@ function parseAxfrResponse(
     offset += 4;
   }
   const soaRecords: Array<Readonly<{ bytes: Uint8Array; answer_index: number }>> = [];
+  const answerRecords: HnsDnsParsedRecordV1[] = [];
   let apexNsCount = 0;
   for (let answerIndex = 0; answerIndex < answerCount; answerIndex += 1) {
     const record = readRecord(message, offset);
     offset = record.end_offset;
+    answerRecords.push(record);
     if (!ownerBelongsToZone(record.name, zoneName)) {
       throw failed("AXFR answer owner is outside the requested zone");
     }
@@ -436,7 +446,7 @@ function parseAxfrResponse(
       soaRecords.push({ bytes: canonicalSoa(message, record), answer_index: answerIndex });
     }
     if (record.type === 2 && record.record_class === IN_CLASS && record.name === zoneName) {
-      const target = readName(message, record.rdata_offset);
+      const target = readHnsDnsNameV1(message, record.rdata_offset);
       if (target.next_offset !== record.end_offset) {
         throw failed("invalid AXFR apex NS data");
       }
@@ -451,7 +461,52 @@ function parseAxfrResponse(
     soa_records: soaRecords,
     answer_count: answerCount,
     apex_ns_count: apexNsCount,
+    answer_records: answerRecords,
   };
+}
+
+export function encodeHnsDnsTcpMessageSequenceV1(messages: ReadonlyArray<Uint8Array>): Uint8Array {
+  if (messages.length === 0 || messages.length > DNS_TCP_SEQUENCE_MAX_MESSAGES) {
+    throw failed("invalid DNS TCP message sequence");
+  }
+  let totalBytes = 0;
+  const parts: Uint8Array[] = [];
+  for (const message of messages) {
+    if (message.byteLength === 0 || message.byteLength > 65_535) {
+      throw failed("invalid DNS TCP message sequence");
+    }
+    totalBytes += message.byteLength + 2;
+    if (totalBytes > DNS_TCP_SEQUENCE_MAX_BYTES) {
+      throw failed("invalid DNS TCP message sequence");
+    }
+    parts.push(uint16(message.byteLength), Uint8Array.from(message));
+  }
+  return concat(parts);
+}
+
+export function decodeHnsDnsTcpMessageSequenceV1(
+  sequenceBytes: Uint8Array,
+): ReadonlyArray<Uint8Array> {
+  if (sequenceBytes.byteLength === 0 || sequenceBytes.byteLength > DNS_TCP_SEQUENCE_MAX_BYTES) {
+    throw failed("invalid DNS TCP message sequence");
+  }
+  const messages: Uint8Array[] = [];
+  let offset = 0;
+  while (offset < sequenceBytes.byteLength) {
+    if (offset + 2 > sequenceBytes.byteLength) throw failed("truncated DNS TCP message sequence");
+    const length = readUint16(sequenceBytes, offset);
+    offset += 2;
+    if (
+      length === 0 ||
+      offset + length > sequenceBytes.byteLength ||
+      messages.length >= DNS_TCP_SEQUENCE_MAX_MESSAGES
+    ) {
+      throw failed("invalid DNS TCP message sequence");
+    }
+    messages.push(sequenceBytes.slice(offset, offset + length));
+    offset += length;
+  }
+  return messages;
 }
 
 export function makeHnsDnsTsigAxfrSessionV1(
@@ -477,8 +532,8 @@ export function makeHnsDnsTsigAxfrSessionV1(
   ) {
     throw failed("invalid AXFR session input");
   }
-  const zoneName = canonicalName(input.zone_name);
-  const keyName = canonicalName(input.credential.key_name);
+  const zoneName = canonicalHnsDnsNameV1(input.zone_name);
+  const keyName = canonicalHnsDnsNameV1(input.credential.key_name);
   const secret = Uint8Array.from(input.credential.secret_bytes);
   const timeBytes = uint48(input.signed_at_seconds);
   const fudgeBytes = uint16(input.fudge_seconds);
@@ -512,7 +567,12 @@ export function makeHnsDnsTsigAxfrSessionV1(
       ) {
         throw failed("invalid AXFR response sequence");
       }
-      const parsed = parseAxfrResponse(message, input.message_id, zoneName, messageIndex);
+      const parsed = parseHnsDnsTsigAxfrResponseV1(
+        message,
+        input.message_id,
+        zoneName,
+        messageIndex,
+      );
       const tsig = parsed.tsig;
       const nowSeconds = input.now_seconds();
       if (
@@ -631,8 +691,10 @@ export async function exchangeDirectHnsDnsTsigAxfrV1(
     timeout_ms: input.timeout_ms,
     signal: input.signal,
   });
+  const responseSequenceBytes = encodeHnsDnsTcpMessageSequenceV1(responseMessages);
   return {
     request_bytes: Uint8Array.from(session.request_bytes),
     response_messages: responseMessages.map((message) => Uint8Array.from(message)),
+    response_sequence_bytes: responseSequenceBytes,
   };
 }

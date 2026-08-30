@@ -1,6 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
-import { HnsDnsTsigAxfrError, makeHnsDnsTsigAxfrSessionV1 } from "./dns-tsig-axfr.ts";
+import {
+  deriveCanonicalHnsAuthorityZoneBytesV1,
+  HNS_CANONICAL_AUTHORITY_ZONE_VERSION,
+} from "./dns-axfr-zone.ts";
+import {
+  decodeHnsDnsTcpMessageSequenceV1,
+  encodeHnsDnsTcpMessageSequenceV1,
+  HnsDnsTsigAxfrError,
+  makeHnsDnsTsigAxfrSessionV1,
+} from "./dns-tsig-axfr.ts";
 
 const messageId = 0x1234;
 const zoneName = "jazleeuw";
@@ -62,6 +71,10 @@ function record(owner: string, type: number, ttl: number, rdata: Uint8Array): Ui
     uint16(rdata.byteLength),
     rdata,
   ]);
+}
+
+function wireRecord(owner: Uint8Array, type: number, ttl: number, rdata: Uint8Array): Uint8Array {
+  return concat([owner, uint16(type), uint16(1), uint32(ttl), uint16(rdata.byteLength), rdata]);
 }
 
 function soa(serial = 2_026_080_805, owner = zoneName): Uint8Array {
@@ -207,7 +220,7 @@ function unsignedResponseWithCompressionPointerLadder(): Uint8Array {
   for (let index = 0; index < 17; index += 1) {
     pointers.push(compressionPointer(index === 0 ? 12 : fillerRdataOffset + (index - 1) * 2));
   }
-  const filler = record(zoneName, 16, 300, concat(pointers));
+  const filler = record(zoneName, 46, 300, concat(pointers));
   const maliciousOwner = compressionPointer(fillerRdataOffset + 16 * 2);
   const maliciousRecord = concat([
     maliciousOwner,
@@ -416,5 +429,145 @@ describe("TSIG-authenticated AXFR session", () => {
         now_seconds: () => signedAt,
       }),
     ).toThrow(HnsDnsTsigAxfrError);
+  });
+});
+
+describe("canonical authority zone derivation", () => {
+  test("round-trips exact message framing and canonicalizes equivalent transfer order", () => {
+    const twoMessageSession = session();
+    const twoMessageTransfer = signedTransfer(twoMessageSession);
+    const sequenceBytes = encodeHnsDnsTcpMessageSequenceV1(twoMessageTransfer);
+    expect(decodeHnsDnsTcpMessageSequenceV1(sequenceBytes)).toEqual(twoMessageTransfer);
+    const twoMessageZone = deriveCanonicalHnsAuthorityZoneBytesV1({
+      zone_name: zoneName,
+      response_sequence_bytes: sequenceBytes,
+    });
+
+    const oneMessageSession = session();
+    const oneMessage = appendTsig(
+      unsignedResponse([soa(), appA, apexNs, soa()], true),
+      requestMac(oneMessageSession.request_bytes),
+      0,
+    );
+    const oneMessageZone = deriveCanonicalHnsAuthorityZoneBytesV1({
+      zone_name: zoneName,
+      response_sequence_bytes: encodeHnsDnsTcpMessageSequenceV1([oneMessage.message]),
+    });
+
+    expect(oneMessageZone).toEqual(twoMessageZone);
+    expect(JSON.parse(new TextDecoder().decode(twoMessageZone))).toMatchObject({
+      version: HNS_CANONICAL_AUTHORITY_ZONE_VERSION,
+      root_label: zoneName,
+    });
+  });
+
+  test("canonicalizes compressed owners and RDATA names to the same zone bytes", () => {
+    const uncompressedSession = session();
+    const uncompressed = appendTsig(
+      unsignedResponse([soa(), apexNs, appA, soa()], true),
+      requestMac(uncompressedSession.request_bytes),
+      0,
+    );
+    const uncompressedZone = deriveCanonicalHnsAuthorityZoneBytesV1({
+      zone_name: zoneName,
+      response_sequence_bytes: encodeHnsDnsTcpMessageSequenceV1([uncompressed.message]),
+    });
+
+    const apex = compressionPointer(12);
+    const soaRdata = concat([
+      name("ns1.pirate"),
+      new Uint8Array([10, ...new TextEncoder().encode("hostmaster")]),
+      apex,
+      uint32(2_026_080_805),
+      uint32(3_600),
+      uint32(900),
+      uint32(1_209_600),
+      uint32(300),
+    ]);
+    const compressedSoa = wireRecord(apex, 6, 300, soaRdata);
+    const compressedNs = wireRecord(apex, 2, 300, name("ns1.pirate"));
+    const compressedApp = wireRecord(
+      concat([new Uint8Array([3, 0x61, 0x70, 0x70]), apex]),
+      1,
+      300,
+      new Uint8Array([94, 103, 168, 161]),
+    );
+    const compressedSession = session();
+    const compressed = appendTsig(
+      unsignedResponse([compressedSoa, compressedNs, compressedApp, compressedSoa], true),
+      requestMac(compressedSession.request_bytes),
+      0,
+    );
+    const compressedZone = deriveCanonicalHnsAuthorityZoneBytesV1({
+      zone_name: zoneName,
+      response_sequence_bytes: encodeHnsDnsTcpMessageSequenceV1([compressed.message]),
+    });
+
+    expect(compressedZone).toEqual(uncompressedZone);
+  });
+
+  test("omits online RRSIG bytes but detects a changed stable record", () => {
+    const firstSession = session();
+    const first = appendTsig(
+      unsignedResponse(
+        [soa(), apexNs, appA, record(zoneName, 46, 300, new Uint8Array([1, 2, 3])), soa()],
+        true,
+      ),
+      requestMac(firstSession.request_bytes),
+      0,
+    );
+    const secondSession = session();
+    const second = appendTsig(
+      unsignedResponse(
+        [soa(), apexNs, appA, record(zoneName, 46, 300, new Uint8Array([9, 8, 7])), soa()],
+        true,
+      ),
+      requestMac(secondSession.request_bytes),
+      0,
+    );
+    const firstZone = deriveCanonicalHnsAuthorityZoneBytesV1({
+      zone_name: zoneName,
+      response_sequence_bytes: encodeHnsDnsTcpMessageSequenceV1([first.message]),
+    });
+    const secondZone = deriveCanonicalHnsAuthorityZoneBytesV1({
+      zone_name: zoneName,
+      response_sequence_bytes: encodeHnsDnsTcpMessageSequenceV1([second.message]),
+    });
+    expect(secondZone).toEqual(firstZone);
+
+    const changedSession = session();
+    const changedA = record("app.jazleeuw", 1, 300, new Uint8Array([81, 15, 150, 159]));
+    const changed = appendTsig(
+      unsignedResponse([soa(), apexNs, changedA, soa()], true),
+      requestMac(changedSession.request_bytes),
+      0,
+    );
+    expect(
+      deriveCanonicalHnsAuthorityZoneBytesV1({
+        zone_name: zoneName,
+        response_sequence_bytes: encodeHnsDnsTcpMessageSequenceV1([changed.message]),
+      }),
+    ).not.toEqual(firstZone);
+  });
+
+  test("refuses unsupported stable record types and malformed framing", () => {
+    const current = session();
+    const unsupported = appendTsig(
+      unsignedResponse(
+        [soa(), apexNs, record(zoneName, 99, 300, new Uint8Array([1])), soa()],
+        true,
+      ),
+      requestMac(current.request_bytes),
+      0,
+    );
+    expect(() =>
+      deriveCanonicalHnsAuthorityZoneBytesV1({
+        zone_name: zoneName,
+        response_sequence_bytes: encodeHnsDnsTcpMessageSequenceV1([unsupported.message]),
+      }),
+    ).toThrow("unsupported AXFR record type");
+    expect(() => decodeHnsDnsTcpMessageSequenceV1(new Uint8Array([0, 2, 1]))).toThrow(
+      "invalid DNS TCP message sequence",
+    );
   });
 });

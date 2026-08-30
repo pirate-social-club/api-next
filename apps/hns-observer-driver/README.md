@@ -19,12 +19,20 @@ snapshot; neither fact may come from the live-authority adapter.
 The driver now owns a bounded multi-message DNS-over-TCP acquisition primitive
 and a fixed HMAC-SHA256 TSIG AXFR session. The session signs the request,
 verifies every response message in the running MAC chain, and accepts a
-transfer only when identical SOA records bracket it. These primitives are not
-yet exposed through the private-driver protocol and do not yet produce zone
-bytes. The remaining source adapter must serialize the exact response sequence
-into the detached transcript and reconstruct one canonical zone document from
-that sequence. It must never accept zone bytes or a zone digest beside the
-transcript.
+transfer only when identical apex SOA records bracket in-zone data containing
+an apex NS RRset. The composed acquisition serializes the exact message
+sequence with DNS-over-TCP length prefixes. The separate pure canonicalizer
+reconstructs stable zone bytes from that sequence. Record order and
+compression do not affect those bytes; online RRSIG material is omitted
+because its timing and signature bytes may differ while the separately bound
+DNSKEY/DS-authenticated zone content is equal.
+
+The remaining source adapter must put each authority's framed response
+sequence into the detached transcript. The harness independently reconstructs
+both canonical zones, requires byte equality, derives the view digest, and
+builds the DNS persistence artifact from those bytes. The live-authority port
+has no zone-bytes or zone-digest input. These primitives are not yet exposed
+through the private-driver protocol, and no concrete operator command exists.
 
 The HSD transcript is a closed stable bracket, not only two resource reads. It
 contains tip information and the matching tip header before observation, the

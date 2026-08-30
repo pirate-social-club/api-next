@@ -22,6 +22,10 @@ export {
   runHnsAuthoritySuccessorObservationHarnessV1,
 } from "./authority-successor-observation-harness.ts";
 export {
+  deriveCanonicalHnsAuthorityZoneBytesV1,
+  HNS_CANONICAL_AUTHORITY_ZONE_VERSION,
+} from "./dns-axfr-zone.ts";
+export {
   exchangeDirectHnsDnsTcp,
   exchangeDirectHnsDnsTcpSequence,
   type HnsDnsTcpConnectInput,
@@ -33,6 +37,8 @@ export {
   makeNodeHnsDnsTcpConnector,
 } from "./dns-tcp.ts";
 export {
+  decodeHnsDnsTcpMessageSequenceV1,
+  encodeHnsDnsTcpMessageSequenceV1,
   exchangeDirectHnsDnsTsigAxfrV1,
   HNS_DNS_TSIG_AXFR_ALGORITHM,
   HnsDnsTsigAxfrError,
