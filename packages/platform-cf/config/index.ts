@@ -190,6 +190,9 @@ export const HttpWorkerConfig = Config.all({
   HNS_COMMUNITY_APP_API_ENABLED: Config.boolean("HNS_COMMUNITY_APP_API_ENABLED").pipe(
     Config.withDefault(false),
   ),
+  HNS_HANDLE_HOST_API_ENABLED: Config.boolean("HNS_HANDLE_HOST_API_ENABLED").pipe(
+    Config.withDefault(false),
+  ),
   HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN: Config.string(
     "HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN",
   ).pipe(Config.withDefault("")),

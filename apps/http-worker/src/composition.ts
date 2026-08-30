@@ -71,6 +71,7 @@ import {
   makeCloudflareHnsEdgeAlertSink,
 } from "@pirate/platform-cf/hns-edge-alert-email";
 import type { HnsForwarderReplayStoreNamespace } from "@pirate/platform-cf/hns-forwarder-replay-store";
+import { makeControlPlaneHnsHandlePersonaHostAuthoritySource } from "@pirate/platform-cf/hns-handle-host-authority-repository";
 import { makeControlPlaneHnsCommunityAppHostAuthoritySource } from "@pirate/platform-cf/hns-host-persistence-repository";
 import {
   makeControlPlaneCredentialCanonicalResolver,
@@ -177,6 +178,7 @@ import { makeHandleSalesHandlers } from "./handle-sales-handlers.ts";
 import { makeProductionHnsCommunityAppApiComposition } from "./hns-community-app-api-production-composition.ts";
 import { hnsEdgeAlertBearerMatches, isHnsEdgeAlertTokenConfigured } from "./hns-edge-alert-auth.ts";
 import { makeHnsEdgeAlertHandlers } from "./hns-edge-alert-handlers.ts";
+import { makeProductionHnsHandleHostApiComposition } from "./hns-handle-host-api-production-composition.ts";
 import { makeHnsOwnershipComposition } from "./hns-ownership-composition.ts";
 import { makeKaraokeHandlers, makeKaraokeReadinessHandlers } from "./karaoke-handlers.ts";
 import { makeLearnerAudioHandlers } from "./learner-audio-handlers.ts";
@@ -242,6 +244,7 @@ export interface HttpWorkerBindings {
   readonly HNS_COMMUNITY_APP_API_REPLAY?: HnsForwarderReplayStoreNamespace;
   readonly KARAOKE_ATTEMPT?: KaraokeAttemptDoNamespace;
   readonly HNS_COMMUNITY_APP_API_ENABLED?: string;
+  readonly HNS_HANDLE_HOST_API_ENABLED?: string;
   readonly HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN?: string;
   readonly HNS_COMMUNITY_APP_API_ACCESS_ISSUER?: string;
   readonly HNS_COMMUNITY_APP_API_ACCESS_JWKS_URL?: string;
@@ -374,6 +377,7 @@ function configSource(bindings: HttpWorkerBindings): Record<string, string | und
     HNS_OWNERSHIP_CONFIGURATION_REFERENCE: bindings.HNS_OWNERSHIP_CONFIGURATION_REFERENCE,
     HNS_OWNERSHIP_CONFIGURATION_VERSION: bindings.HNS_OWNERSHIP_CONFIGURATION_VERSION,
     HNS_COMMUNITY_APP_API_ENABLED: bindings.HNS_COMMUNITY_APP_API_ENABLED,
+    HNS_HANDLE_HOST_API_ENABLED: bindings.HNS_HANDLE_HOST_API_ENABLED,
     HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN: bindings.HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN,
     HNS_COMMUNITY_APP_API_ACCESS_ISSUER: bindings.HNS_COMMUNITY_APP_API_ACCESS_ISSUER,
     HNS_COMMUNITY_APP_API_ACCESS_JWKS_URL: bindings.HNS_COMMUNITY_APP_API_ACCESS_JWKS_URL,
@@ -627,6 +631,10 @@ export async function createProductionHttpWorker(
     ...(bindings.HNS_COMMUNITY_APP_API_REPLAY === undefined
       ? {}
       : { replay_namespace: bindings.HNS_COMMUNITY_APP_API_REPLAY }),
+  });
+  const hnsHandleHostApi = makeProductionHnsHandleHostApiComposition({
+    config,
+    authority_source: makeControlPlaneHnsHandlePersonaHostAuthoritySource(controlPlane),
   });
   const identityStore = makeControlPlaneIdentityStore(controlPlane);
   const resolvePrivyCredentialAccount = makeControlPlaneCredentialCanonicalResolver(controlPlane, {
@@ -1138,6 +1146,7 @@ export async function createProductionHttpWorker(
   return createHttpWorker({
     config: { corsOrigin: config.CORS_ORIGIN },
     hnsCommunityAppApi,
+    hnsHandleHostApi,
     handlers: {
       ...productHandlers,
       ...communityCreationHandlers,
