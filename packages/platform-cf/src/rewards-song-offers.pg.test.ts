@@ -597,7 +597,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
     completedTestCount += 1;
   });
 
-  test("adds only an exact active whitelisted asset-bonus tuple", async () => {
+  test("adds only an exact active asset bonus and selects its terminal balance for refund", async () => {
     await withSchema(async (admin, scopedConnection) => {
       const identity = await seedSong(admin, "asset-command", address("d"));
       await seedMegapotAuthority(admin);
@@ -744,6 +744,49 @@ suite("Postgres 17 Megapot rewards persistence", () => {
           }),
         ),
       ).resolves.toEqual({ replayed: false });
+
+      const fundingStore = makeControlPlaneRewardFundingStore(
+        makeDirectPostgresControlPlaneLayer(scopedConnection),
+      );
+      await Effect.runPromise(
+        fundingStore.bindTransaction({
+          fundingEffectId: funding.fundingEffectId,
+          transactionHash: bytes32("1"),
+        }),
+      );
+      await Effect.runPromise(
+        fundingStore.confirm({
+          fundingEffectId: funding.fundingEffectId,
+          transactionHash: bytes32("1"),
+          transferLogIndex: 1,
+          amountAtomic: 1_000n,
+          blockNumber: 151n,
+          blockHash: bytes32("2"),
+          observationHash: hash("2"),
+          confirmedAt: new Date().toISOString(),
+        }),
+      );
+      await admin.query(
+        `UPDATE song_reward_offer_legs
+            SET status='ended',participation_ends_at=clock_timestamp(),
+                updated_at=clock_timestamp() + interval '1 millisecond'
+          WHERE leg_id=$1`,
+        [added.leg.legId],
+      );
+      await admin.query(
+        `UPDATE song_reward_offers
+            SET status='ended',terminal_at=clock_timestamp(),
+                updated_at=clock_timestamp() + interval '1 millisecond'
+          WHERE offer_id=$1`,
+        [opened.offer.offerId],
+      );
+      await expect(
+        Effect.runPromise(
+          makeControlPlaneMegapotWorkStore(
+            makeDirectPostgresControlPlaneLayer(scopedConnection),
+          ).loadRefunds(10),
+        ),
+      ).resolves.toEqual([funding.fundingEffectId]);
 
       await admin.query(
         `UPDATE reward_asset_whitelist SET status='retired',retired_at=clock_timestamp()
