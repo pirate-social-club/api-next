@@ -39,6 +39,7 @@ import {
   MEGAPOT_REWARDS_CYCLE_TIMEOUT,
   observeMegapotDrawingForCycle,
   runMegapotRewardsCycle,
+  writeMegapotRewardsCycleSnapshot,
 } from "./megapot-rewards-cycle.ts";
 import {
   defaultRetrySchedule,
@@ -150,6 +151,8 @@ const MEGAPOT_REWARDS_SEVERITY: SeverityMapping = {
 };
 
 export type MegapotRewardsJobOptions = Readonly<{
+  environment: string;
+  workerVersion: Readonly<{ id: string; tag: string; timestamp: string }>;
   attestationId: string;
   rpcUrl: string;
   custodyPrivateKey: string;
@@ -172,6 +175,7 @@ export function makeMegapotRewardsJob(
   options: MegapotRewardsJobOptions,
 ): JobDeclaration<unknown, ControlPlaneDb | AlertCollector> {
   const run = Effect.gen(function* () {
+    const startedAt = Date.now();
     const db = yield* ControlPlaneDb;
     const collector = yield* AlertCollector;
     const controlPlane = Layer.succeed(ControlPlaneDb, db);
@@ -322,6 +326,16 @@ export function makeMegapotRewardsJob(
         payout: (creditId) => payout.payout(creditId),
       },
     });
+    writeMegapotRewardsCycleSnapshot(
+      summary,
+      {
+        environment: options.environment,
+        emittedAt: new Date().toISOString(),
+        durationMs: Date.now() - startedAt,
+        workerVersion: options.workerVersion,
+      },
+      sink.log ?? ((event, fields) => console.info(event, fields)),
+    );
     if (summary.failures.length > 0) {
       yield* collector.emit({
         key: "megapot-rewards:candidate-failures",

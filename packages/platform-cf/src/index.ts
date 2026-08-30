@@ -36,6 +36,7 @@ export {
   aggregateAlerts,
   alertTick,
   decideAlertSuppression,
+  type MegapotRewardsCycleSnapshotFields,
   makeAlertDeliveryLedger,
   makeLocalAlertSink,
   type OperationsBalanceSnapshotFields,

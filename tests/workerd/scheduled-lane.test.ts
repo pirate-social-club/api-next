@@ -34,6 +34,11 @@ const nonDueScheduledEvent = {
 
 function scheduledWorkerEnv(hns: Partial<JobsWorkerEnv> = {}): JobsWorkerEnv {
   return {
+    CF_VERSION_METADATA: {
+      id: "worker-version-test",
+      tag: "",
+      timestamp: "2026-08-30T05:00:00.000Z",
+    },
     CRON_LOCK: env.CRON_LOCK,
     CONTROL_PLANE: {
       connectionString: "postgres://postgres:postgres@127.0.0.1:5432/postgres",
@@ -93,6 +98,12 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
       { enabled: false },
       "development",
       {
+        environment: "development",
+        workerVersion: {
+          id: "worker-version-test",
+          tag: "",
+          timestamp: "2026-08-30T05:00:00.000Z",
+        },
         attestationId: "megapot-base-sepolia-v2",
         rpcUrl: "https://megapot-rpc.test/",
         custodyPrivateKey: `0x${"1".repeat(64)}`,

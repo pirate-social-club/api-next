@@ -1,4 +1,5 @@
 import type { MegapotDrawingObservationFailure } from "@pirate/application";
+import type { PipelineLogFields } from "@pirate/platform-cf";
 import type {
   MegapotChainEffectWork,
   MegapotDrawingWork,
@@ -56,6 +57,48 @@ export type MegapotRewardsCycleSummary = Readonly<{
   paid: number;
   failures: readonly string[];
 }>;
+
+export function writeMegapotRewardsCycleSnapshot(
+  summary: MegapotRewardsCycleSummary,
+  input: Readonly<{
+    environment: string;
+    emittedAt: string;
+    durationMs: number;
+    workerVersion: Readonly<{ id: string; tag: string; timestamp: string }>;
+  }>,
+  writer: (event: PipelineLogFields["event"], fields: PipelineLogFields) => void,
+): boolean {
+  try {
+    writer("megapot.rewards.cycle", {
+      event: "megapot.rewards.cycle",
+      schema_version: 1,
+      emitted_at: input.emittedAt,
+      environment: input.environment,
+      worker_version_id: input.workerVersion.id,
+      worker_version_tag: input.workerVersion.tag,
+      worker_version_created_at: input.workerVersion.timestamp,
+      duration_ms: input.durationMs,
+      reconciled_count: summary.reconciled,
+      observed_count: summary.observed,
+      frozen_count: summary.frozen,
+      committed_count: summary.committed,
+      purchased_count: summary.purchased,
+      swept_count: summary.swept,
+      claimed_count: summary.claimed,
+      allocated_count: summary.allocated,
+      terminal_offer_count: summary.terminalOffers,
+      refunded_count: summary.refunded,
+      paid_count: summary.paid,
+      failure_count: summary.failures.length,
+      failure_tags: summary.failures,
+      outcome: summary.failures.length === 0 ? "healthy" : "degraded",
+      sampled: false,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function failureTag(error: unknown): string {
   if (typeof error === "object" && error !== null && "_tag" in error) {
