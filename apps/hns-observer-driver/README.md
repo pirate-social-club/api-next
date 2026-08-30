@@ -16,6 +16,16 @@ adapter and preserve their exact transcripts. The platform PostgreSQL readers
 independently supply the current authority inventory and exact generation-row
 snapshot; neither fact may come from the live-authority adapter.
 
+The driver now owns a bounded multi-message DNS-over-TCP acquisition primitive
+and a fixed HMAC-SHA256 TSIG AXFR session. The session signs the request,
+verifies every response message in the running MAC chain, and accepts a
+transfer only when identical SOA records bracket it. These primitives are not
+yet exposed through the private-driver protocol and do not yet produce zone
+bytes. The remaining source adapter must serialize the exact response sequence
+into the detached transcript and reconstruct one canonical zone document from
+that sequence. It must never accept zone bytes or a zone digest beside the
+transcript.
+
 The HSD transcript is a closed stable bracket, not only two resource reads. It
 contains tip information and the matching tip header before observation, the
 fixed mainnet genesis header, active-name and expiry state, child and parent
