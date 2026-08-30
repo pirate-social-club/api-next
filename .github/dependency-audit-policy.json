@@ -1,0 +1,15 @@
+{
+  "globalThreshold": "high",
+  "requestPathThreshold": "moderate",
+  "requestPathPackages": [
+    "@selfxyz/core",
+    "@zkpassport/sdk",
+    "effect",
+    "hono",
+    "jose",
+    "pg",
+    "tr46",
+    "viem"
+  ],
+  "exceptions": []
+}
