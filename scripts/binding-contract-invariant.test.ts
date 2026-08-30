@@ -113,6 +113,7 @@ const ALERT_BINDING_KINDS = {
 } as const satisfies BindingManifest<AlertSinkBindings>;
 
 const JOBS_BINDING_KINDS = {
+  CF_VERSION_METADATA: "platform",
   CRON_LOCK: "platform",
   CONTROL_PLANE: "platform",
   MEGAPOT_COMMITMENTS: "platform",

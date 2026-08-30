@@ -6,6 +6,7 @@ import {
   type MegapotRewardsRuntime,
   observeMegapotDrawingForCycle,
   runMegapotRewardsCycle,
+  writeMegapotRewardsCycleSnapshot,
 } from "./megapot-rewards-cycle.ts";
 
 const drawing = (status: Parameters<MegapotWorkStore["loadDrawings"]>[0]["statuses"][number]) => ({
@@ -49,6 +50,92 @@ function fixture(approvalKind: "submitted" | "confirmed") {
 }
 
 describe("Megapot rewards scheduled cycle", () => {
+  test("writes one versioned cycle summary without entity identifiers", () => {
+    const events: unknown[] = [];
+    const written = writeMegapotRewardsCycleSnapshot(
+      {
+        reconciled: 1,
+        observed: 1,
+        frozen: 0,
+        committed: 0,
+        purchased: 0,
+        swept: 1,
+        claimed: 0,
+        allocated: 0,
+        terminalOffers: 1,
+        refunded: 1,
+        paid: 0,
+        failures: ["RewardRefundRejected"],
+      },
+      {
+        environment: "staging",
+        emittedAt: "2026-08-30T05:00:00.000Z",
+        durationMs: 1_234,
+        workerVersion: {
+          id: "worker-version-1",
+          tag: "",
+          timestamp: "2026-08-30T04:59:00.000Z",
+        },
+      },
+      (event, fields) => events.push({ event, fields }),
+    );
+    expect(written).toBe(true);
+    expect(events).toEqual([
+      {
+        event: "megapot.rewards.cycle",
+        fields: expect.objectContaining({
+          event: "megapot.rewards.cycle",
+          schema_version: 1,
+          environment: "staging",
+          worker_version_id: "worker-version-1",
+          duration_ms: 1_234,
+          observed_count: 1,
+          swept_count: 1,
+          terminal_offer_count: 1,
+          refunded_count: 1,
+          failure_count: 1,
+          failure_tags: ["RewardRefundRejected"],
+          outcome: "degraded",
+          sampled: false,
+        }),
+      },
+    ]);
+  });
+
+  test("keeps an unavailable cycle-summary sink diagnostic-only", () => {
+    expect(
+      writeMegapotRewardsCycleSnapshot(
+        {
+          reconciled: 0,
+          observed: 0,
+          frozen: 0,
+          committed: 0,
+          purchased: 0,
+          swept: 0,
+          claimed: 0,
+          allocated: 0,
+          terminalOffers: 0,
+          refunded: 0,
+          paid: 0,
+          failures: [],
+        },
+        {
+          environment: "staging",
+          emittedAt: "2026-08-30T05:00:00.000Z",
+          durationMs: 50,
+          workerVersion: {
+            id: "worker-version-1",
+            tag: "",
+            timestamp: "2026-08-30T04:59:00.000Z",
+          },
+        },
+        () => {
+          throw new Error("sink unavailable");
+        },
+      ),
+    ).toBe(false);
+  });
+
   test("advances every persisted phase sequentially under one custody lane", async () => {
     const { calls, runtime, work } = fixture("confirmed");
     const result = await Effect.runPromise(runMegapotRewardsCycle({ work, runtime }));

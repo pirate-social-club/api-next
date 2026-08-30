@@ -188,11 +188,38 @@ export type OperationsBalanceSnapshotFields = Readonly<{
   readonly sampled: false;
 }>;
 
+export type MegapotRewardsCycleSnapshotFields = Readonly<{
+  readonly event: "megapot.rewards.cycle";
+  readonly schema_version: 1;
+  readonly emitted_at: string;
+  readonly environment: string;
+  readonly worker_version_id: string;
+  readonly worker_version_tag: string;
+  readonly worker_version_created_at: string;
+  readonly duration_ms: number;
+  readonly reconciled_count: number;
+  readonly observed_count: number;
+  readonly frozen_count: number;
+  readonly committed_count: number;
+  readonly purchased_count: number;
+  readonly swept_count: number;
+  readonly claimed_count: number;
+  readonly allocated_count: number;
+  readonly terminal_offer_count: number;
+  readonly refunded_count: number;
+  readonly paid_count: number;
+  readonly failure_count: number;
+  readonly failure_tags: readonly string[];
+  readonly outcome: "healthy" | "degraded";
+  readonly sampled: false;
+}>;
+
 export type PipelineLogFields =
   | AlertLogFields
   | AlertSuppressionObservationFields
   | PipelineHealthSnapshotFields
-  | OperationsBalanceSnapshotFields;
+  | OperationsBalanceSnapshotFields
+  | MegapotRewardsCycleSnapshotFields;
 export type PipelineLogEvent = PipelineLogFields["event"];
 
 export type PipelineHealthSnapshotInput = Readonly<{

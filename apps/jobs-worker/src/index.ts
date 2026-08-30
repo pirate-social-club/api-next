@@ -121,6 +121,7 @@ export interface JobsWorkerEnv
     DataRegistrationJobsBindings,
     HnsRouteRevalidationBindings,
     MediaJobsBindings {
+  readonly CF_VERSION_METADATA: MegapotRewardsJobOptions["workerVersion"];
   readonly CRON_LOCK: DurableObjectNamespace<ScheduledCronLockDO>;
   readonly CONTROL_PLANE?: HyperdriveConnection;
   readonly MEGAPOT_COMMITMENTS?: R2Bucket;
@@ -227,6 +228,8 @@ function makeMegapotOptions(
     throw new Error("Jobs worker configuration is incomplete or invalid");
   }
   return {
+    environment: config.API_NEXT_ENV,
+    workerVersion: env.CF_VERSION_METADATA,
     attestationId: config.MEGAPOT_ATTESTATION_ID,
     rpcUrl: fundingRpcUrl(Redacted.value(config.MEGAPOT_V2_RPC_URL), config.API_NEXT_ENV),
     custodyPrivateKey,
