@@ -440,13 +440,20 @@ function canonicalHsdName(value: unknown): string {
     throw new HnsAuthorityEmitRefusal("observer_evidence_mismatch");
   }
   const canonical = value.slice(0, -1);
-  hnsChainAuthorityRecords("owner_authoritative_dns_txt", [["NS", canonical]]);
+  try {
+    hnsChainAuthorityRecords("owner_authoritative_dns_txt", [["NS", canonical]]);
+  } catch {
+    throw new HnsAuthorityEmitRefusal("observer_evidence_mismatch");
+  }
   return canonical;
 }
 
 function decodeHsdTranscriptAuthorityRecords(
   entry: HnsAuthorityEncodedTranscriptEntryV1,
-): ReadonlyArray<HnsChainAuthorityRecord> {
+): Readonly<{
+  authority_records: ReadonlyArray<HnsChainAuthorityRecord>;
+  txt_values: ReadonlyArray<string>;
+}> {
   let request: unknown;
   let response: unknown;
   try {
@@ -455,6 +462,8 @@ function decodeHsdTranscriptAuthorityRecords(
   } catch {
     throw new HnsAuthorityEmitRefusal("observer_evidence_mismatch");
   }
+  // This is the canonical request/response envelope enforced by the existing
+  // HSD private transport; a live transcript remains a separate ceremony input.
   if (
     !hasExactKeys(request, ["method", "params"]) ||
     request.method !== "getnameresource" ||
@@ -471,6 +480,7 @@ function decodeHsdTranscriptAuthorityRecords(
     throw new HnsAuthorityEmitRefusal("observer_evidence_mismatch");
   }
   const authorityRecords: HnsChainAuthorityRecord[] = [];
+  const txtValues: string[] = [];
   for (const unknownRecord of response.result.records) {
     if (
       unknownRecord === null ||
@@ -498,6 +508,7 @@ function decodeHsdTranscriptAuthorityRecords(
       ) {
         throw new HnsAuthorityEmitRefusal("observer_evidence_mismatch");
       }
+      txtValues.push(record.txt.join(""));
       continue;
     }
     if (record.type === "NS") {
@@ -515,13 +526,9 @@ function decodeHsdTranscriptAuthorityRecords(
       continue;
     }
     if (record.type === "SYNTH4" || record.type === "SYNTH6") {
-      if (!hasExactKeys(record, ["type", "address"]) || typeof record.address !== "string") {
-        throw new HnsAuthorityEmitRefusal("observer_evidence_mismatch");
-      }
-      hnsChainAuthorityRecords("owner_authoritative_dns_txt", [
-        [record.type === "SYNTH4" ? "GLUE4" : "GLUE6", "synth.invalid", record.address],
-      ]);
-      continue;
+      // Synthetic records do not have an owner name and therefore cannot be
+      // represented in the authority-record digest without inventing one.
+      throw new HnsAuthorityEmitRefusal("observer_evidence_mismatch");
     }
     if (record.type === "DS") {
       if (
@@ -545,7 +552,10 @@ function decodeHsdTranscriptAuthorityRecords(
     throw new HnsAuthorityEmitRefusal("observer_evidence_mismatch");
   }
   try {
-    return hnsChainAuthorityRecords("owner_authoritative_dns_txt", authorityRecords);
+    return {
+      authority_records: hnsChainAuthorityRecords("owner_authoritative_dns_txt", authorityRecords),
+      txt_values: txtValues,
+    };
   } catch {
     throw new HnsAuthorityEmitRefusal("observer_evidence_mismatch");
   }
@@ -562,6 +572,7 @@ function requireDetachedTranscriptSemantics(
   evidence: HnsAuthorityDetachedObserverEvidenceV1,
   input: Readonly<{
     root_label: string;
+    expected_txt_value: string;
     chain_authority_records: ReadonlyArray<HnsChainAuthorityRecord>;
     expected_authority_addresses: readonly [string, string];
     authority_address_provenance: HnsAuthorityAddressProvenanceV1;
@@ -601,7 +612,7 @@ function requireDetachedTranscriptSemantics(
       ) {
         throw new HnsAuthorityEmitRefusal("observer_evidence_mismatch");
       }
-      const transcriptRecords = decodeHsdTranscriptAuthorityRecords(entry);
+      const transcriptResource = decodeHsdTranscriptAuthorityRecords(entry);
       const expectedRecords =
         entry.subject_reference === input.root_label
           ? input.chain_authority_records
@@ -609,7 +620,12 @@ function requireDetachedTranscriptSemantics(
               "detached_parent_authority_attestation_v1"
             ? input.authority_address_provenance.parent_chain_authority_records
             : [];
-      if (!sameChainAuthorityRecords(transcriptRecords, expectedRecords)) {
+      if (
+        !sameChainAuthorityRecords(transcriptResource.authority_records, expectedRecords) ||
+        (entry.subject_reference === input.root_label &&
+          (transcriptResource.txt_values.length !== 1 ||
+            transcriptResource.txt_values[0] !== input.expected_txt_value))
+      ) {
         throw new HnsAuthorityEmitRefusal(
           entry.subject_reference === input.root_label
             ? "observer_evidence_mismatch"
@@ -843,6 +859,7 @@ export async function prepareHnsAuthoritySuccessorCandidateV1(
   });
   requireDetachedTranscriptSemantics(observation, {
     root_label: input.root_label,
+    expected_txt_value: observation.expected_txt_value,
     chain_authority_records: chainAuthorityRecords,
     expected_authority_addresses: input.expected_authority_addresses,
     authority_address_provenance: authorityAddressProvenance,
@@ -1181,13 +1198,17 @@ function sameDs(
   left: ReadonlyArray<HnsAuthorityEmitDsV1>,
   right: ReadonlyArray<HnsAuthorityEmitDsV1>,
 ) {
-  const canonical = (records: ReadonlyArray<HnsAuthorityEmitDsV1>) =>
-    [...records].sort((first, second) => {
-      const encodedFirst = JSON.stringify(first);
-      const encodedSecond = JSON.stringify(second);
-      return encodedFirst < encodedSecond ? -1 : encodedFirst > encodedSecond ? 1 : 0;
-    });
-  return JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
+  return JSON.stringify(canonicalDs(left)) === JSON.stringify(canonicalDs(right));
+}
+
+function canonicalDs(
+  records: ReadonlyArray<HnsAuthorityEmitDsV1>,
+): ReadonlyArray<HnsAuthorityEmitDsV1> {
+  return [...records].sort((first, second) => {
+    const encodedFirst = JSON.stringify(first);
+    const encodedSecond = JSON.stringify(second);
+    return encodedFirst < encodedSecond ? -1 : encodedFirst > encodedSecond ? 1 : 0;
+  });
 }
 
 function validDsForKeyTag(records: ReadonlyArray<HnsAuthorityEmitDsV1>, keyTag: number): boolean {
@@ -1269,6 +1290,7 @@ export function requireHnsAuthorityEmitObservationV1(
   ) {
     throw new HnsAuthorityEmitRefusal("dnskey_ds_mismatch");
   }
+  const canonicalDerivedDs = canonicalDs(first.derived_ds);
   return [
     {
       attestation_kind: first.attestation_kind,
@@ -1276,7 +1298,7 @@ export function requireHnsAuthorityEmitObservationV1(
       outcome: first.outcome,
       zone_bytes_digest: first.zone_bytes_digest,
       dnskey_key_tag: first.dnskey_key_tag,
-      derived_ds: first.derived_ds,
+      derived_ds: canonicalDerivedDs,
     },
     {
       attestation_kind: second.attestation_kind,
@@ -1284,7 +1306,7 @@ export function requireHnsAuthorityEmitObservationV1(
       outcome: second.outcome,
       zone_bytes_digest: second.zone_bytes_digest,
       dnskey_key_tag: second.dnskey_key_tag,
-      derived_ds: second.derived_ds,
+      derived_ds: canonicalDerivedDs,
     },
   ];
 }

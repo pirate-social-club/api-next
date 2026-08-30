@@ -34,6 +34,47 @@ async function digest(bytes: Uint8Array): Promise<string> {
 }
 const hsdResourceResponse = (records: ReadonlyArray<unknown>) =>
   encoder.encode(JSON.stringify({ result: { records }, error: null, id: null }));
+const jazleeuwHsdRecords = [
+  { type: "NS", ns: "ns1.pirate." },
+  { type: "NS", ns: "ns2.pirate." },
+  { type: "TXT", txt: ["pirate-verification=nvs_9cc970eae6194214ad98a76bfa5af3ac"] },
+  {
+    type: "DS",
+    keyTag: 10875,
+    algorithm: 13,
+    digestType: 2,
+    digest: "ba5d84ad6e3e7ec452a569ee2e6c447ba2b9b533de65c58e59f2f0b7f0773045",
+  },
+  {
+    type: "DS",
+    keyTag: 10875,
+    algorithm: 13,
+    digestType: 4,
+    digest:
+      "fde2c7af467092476b5572f9ac43fbbbbe82f63f7c785af984dc5884a2dae0384519dea6982fdbd19c375756b4ebaf70",
+  },
+] as const;
+const pirateHsdRecords = [
+  { type: "NS", ns: "ns1.pirate." },
+  { type: "NS", ns: "ns2.pirate." },
+  { type: "GLUE4", ns: "ns1.pirate.", address: "94.103.168.161" },
+  { type: "GLUE4", ns: "ns2.pirate.", address: "81.15.150.159" },
+  {
+    type: "DS",
+    keyTag: 34383,
+    algorithm: 13,
+    digestType: 2,
+    digest: "2c16acbc6081a8eeca4582ff967ebba29f30e2df5abd845dd2d1992449ebeecd",
+  },
+  {
+    type: "DS",
+    keyTag: 34383,
+    algorithm: 13,
+    digestType: 4,
+    digest:
+      "3c48cc64c1ed89b267850e3d97de40672c4be4ef4f0538c775c68412faa81dc3c5c65418aa24db3bdd7b5ffec8e64005",
+  },
+] as const;
 const detachedTranscript = [
   {
     exchange_kind: "hns_rpc" as const,
@@ -41,26 +82,7 @@ const detachedTranscript = [
     subject_reference: "jazleeuw",
     query_reference: "getnameresource:jazleeuw",
     request_bytes: encoder.encode('{"method":"getnameresource","params":["jazleeuw",false]}'),
-    response_bytes: hsdResourceResponse([
-      { type: "NS", ns: "ns1.pirate." },
-      { type: "NS", ns: "ns2.pirate." },
-      { type: "TXT", txt: ["pirate-verification=nvs_9cc970eae6194214ad98a76bfa5af3ac"] },
-      {
-        type: "DS",
-        keyTag: 10875,
-        algorithm: 13,
-        digestType: 2,
-        digest: "ba5d84ad6e3e7ec452a569ee2e6c447ba2b9b533de65c58e59f2f0b7f0773045",
-      },
-      {
-        type: "DS",
-        keyTag: 10875,
-        algorithm: 13,
-        digestType: 4,
-        digest:
-          "fde2c7af467092476b5572f9ac43fbbbbe82f63f7c785af984dc5884a2dae0384519dea6982fdbd19c375756b4ebaf70",
-      },
-    ]),
+    response_bytes: hsdResourceResponse(jazleeuwHsdRecords),
   },
   {
     exchange_kind: "hns_rpc" as const,
@@ -68,27 +90,7 @@ const detachedTranscript = [
     subject_reference: "pirate",
     query_reference: "getnameresource:pirate",
     request_bytes: encoder.encode('{"method":"getnameresource","params":["pirate",false]}'),
-    response_bytes: hsdResourceResponse([
-      { type: "NS", ns: "ns1.pirate." },
-      { type: "NS", ns: "ns2.pirate." },
-      { type: "GLUE4", ns: "ns1.pirate.", address: "94.103.168.161" },
-      { type: "GLUE4", ns: "ns2.pirate.", address: "81.15.150.159" },
-      {
-        type: "DS",
-        keyTag: 34383,
-        algorithm: 13,
-        digestType: 2,
-        digest: "2c16acbc6081a8eeca4582ff967ebba29f30e2df5abd845dd2d1992449ebeecd",
-      },
-      {
-        type: "DS",
-        keyTag: 34383,
-        algorithm: 13,
-        digestType: 4,
-        digest:
-          "3c48cc64c1ed89b267850e3d97de40672c4be4ef4f0538c775c68412faa81dc3c5c65418aa24db3bdd7b5ffec8e64005",
-      },
-    ]),
+    response_bytes: hsdResourceResponse(pirateHsdRecords),
   },
   ...[
     ["child_authority_dns", "deployment-vantage:primary", "94.103.168.161", "axfr"],
@@ -264,7 +266,7 @@ test("admits only two complete agreeing authority views with chain-matching DS",
 
 test("canonicalizes child view key order and refuses extra caller fields", () => {
   const reordered = (authorityAddress: string) => ({
-    derived_ds: chainDs,
+    derived_ds: [...chainDs].reverse(),
     dnskey_key_tag: 10875,
     zone_bytes_digest: canonicalZoneDigest,
     outcome: "observed" as const,
@@ -284,6 +286,8 @@ test("canonicalizes child view key order and refuses extra caller fields", () =>
     "dnskey_key_tag",
     "derived_ds",
   ]);
+  expect(result[0].derived_ds).toEqual(chainDs);
+  expect(result[1].derived_ds).toEqual(chainDs);
   const viewWithExtra = { ...observedView("94.103.168.161"), unreviewed_extra: true };
   expect(() =>
     requireHnsAuthorityEmitObservationV1({
@@ -505,6 +509,21 @@ async function canonicalCandidateInput(): Promise<CandidatePreparationInput> {
     authority_views: [observedView("94.103.168.161"), observedView("81.15.150.159")],
     artifacts: await canonicalCandidateArtifacts(),
   };
+}
+
+async function observerEvidenceWithTranscript(
+  input: CandidatePreparationInput,
+  transcript: Parameters<
+    typeof encodeHnsAuthorityDetachedObserverEvidenceV1
+  >[0]["detached_transcript"],
+): Promise<Uint8Array> {
+  const observer = await decodeHnsAuthorityDetachedObserverEvidenceV1(
+    input.artifacts.observer_evidence,
+  );
+  return encodeHnsAuthorityDetachedObserverEvidenceV1({
+    ...observer,
+    detached_transcript: transcript,
+  });
 }
 
 async function rewriteDnsArtifact(
@@ -1100,6 +1119,59 @@ test("binds out-of-bailiwick addresses to the parent chain transcript and attest
   ).rejects.toMatchObject({ reason: "parent_address_mismatch" });
 });
 
+test("binds the child ownership TXT and authority records to the HSD transcript", async () => {
+  const input = await canonicalCandidateInput();
+  const childRecordMutations = [
+    jazleeuwHsdRecords.map((record) =>
+      record.type === "TXT" ? { type: "TXT", txt: ["pirate-verification=nvs_deadbeef"] } : record,
+    ),
+    [...jazleeuwHsdRecords, { type: "TXT", txt: ["unrelated=value"] }],
+    [...jazleeuwHsdRecords, { type: "NS", ns: "ns3.pirate." }],
+    [...jazleeuwHsdRecords, { type: "SYNTH4", address: "203.0.113.53" }],
+    jazleeuwHsdRecords.map((record) =>
+      record.type === "NS" && record.ns === "ns1.pirate."
+        ? { type: "NS", ns: "NS1.pirate." }
+        : record,
+    ),
+  ];
+
+  for (const records of childRecordMutations) {
+    const transcript = detachedTranscript.map((entry) =>
+      entry.exchange_kind === "hns_rpc" && entry.subject_reference === "jazleeuw"
+        ? { ...entry, response_bytes: hsdResourceResponse(records) }
+        : entry,
+    );
+    const observerEvidence = await observerEvidenceWithTranscript(input, transcript);
+    await expect(
+      prepareHnsAuthoritySuccessorCandidateV1({
+        ...input,
+        artifacts: { ...input.artifacts, observer_evidence: observerEvidence },
+      }),
+    ).rejects.toMatchObject({ reason: "observer_evidence_mismatch" });
+  }
+});
+
+test("refuses a parent transcript that disagrees with unchanged candidate records", async () => {
+  const input = await canonicalCandidateInput();
+  const transcript = detachedTranscript.map((entry) =>
+    entry.exchange_kind === "hns_rpc" && entry.subject_reference === "pirate"
+      ? {
+          ...entry,
+          response_bytes: hsdResourceResponse(
+            pirateHsdRecords.filter((record) => !(record.type === "DS" && record.digestType === 4)),
+          ),
+        }
+      : entry,
+  );
+  const observerEvidence = await observerEvidenceWithTranscript(input, transcript);
+  await expect(
+    prepareHnsAuthoritySuccessorCandidateV1({
+      ...input,
+      artifacts: { ...input.artifacts, observer_evidence: observerEvidence },
+    }),
+  ).rejects.toMatchObject({ reason: "parent_chain_anchor_mismatch" });
+});
+
 test("refuses pointer drift independently of candidate byte identity", () => {
   const bytes = new TextEncoder().encode("reviewed-6-10-1");
   expect(() =>
@@ -1369,16 +1441,19 @@ test("refuses canonical observer evidence that is not verified or bound to this 
 
 test("binds chain DS through candidate preparation and ignores only record ordering", async () => {
   const input = await canonicalCandidateInput();
-  await expect(
-    prepareHnsAuthoritySuccessorCandidateV1({
-      ...input,
-      chain_authority_records: [...input.chain_authority_records].reverse(),
-      authority_views: [
-        { ...observedView("94.103.168.161"), derived_ds: [...chainDs].reverse() },
-        { ...observedView("81.15.150.159"), derived_ds: [...chainDs].reverse() },
-      ],
-    }),
-  ).resolves.toMatchObject({ candidate: { chain_ds: chainDs } });
+  const canonical = await prepareHnsAuthoritySuccessorCandidateV1(input);
+  const reordered = await prepareHnsAuthoritySuccessorCandidateV1({
+    ...input,
+    chain_authority_records: [...input.chain_authority_records].reverse(),
+    authority_views: [
+      { ...observedView("94.103.168.161"), derived_ds: [...chainDs].reverse() },
+      { ...observedView("81.15.150.159"), derived_ds: [...chainDs].reverse() },
+    ],
+  });
+  expect(reordered.candidate.chain_ds).toEqual(chainDs);
+  expect(reordered.candidate.authority_views[0].derived_ds).toEqual(chainDs);
+  expect(reordered.candidate.authority_views[1].derived_ds).toEqual(chainDs);
+  expect(reordered.candidate_sha256).toBe(canonical.candidate_sha256);
 
   const mismatchedDs = [[39280, 13, 2, "d".repeat(64)]] as const;
   await expect(
