@@ -21,6 +21,19 @@ export type HnsDnsTcpExchangeInput = Readonly<{
   readonly signal: AbortSignal;
 }>;
 
+export type HnsDnsTcpSequenceExchangeInput = Readonly<{
+  readonly connector: HnsDnsTcpConnector;
+  readonly host: string;
+  readonly family: 4 | 6;
+  readonly request_bytes: Uint8Array;
+  readonly response_message_max_bytes: number;
+  readonly response_total_max_bytes: number;
+  readonly response_max_messages: number;
+  readonly is_complete: (message: Uint8Array, message_index: number) => boolean;
+  readonly timeout_ms: number;
+  readonly signal: AbortSignal;
+}>;
+
 export type HnsObserverDriverExchangeFailure =
   | "timeout"
   | "upstream_protocol_error"
@@ -180,6 +193,130 @@ async function readOneResponse(
   });
 }
 
+async function readResponseSequence(
+  socket: Socket,
+  input: Pick<
+    HnsDnsTcpSequenceExchangeInput,
+    | "response_message_max_bytes"
+    | "response_total_max_bytes"
+    | "response_max_messages"
+    | "is_complete"
+    | "signal"
+  >,
+): Promise<ReadonlyArray<Uint8Array>> {
+  return await new Promise<ReadonlyArray<Uint8Array>>((resolve, reject) => {
+    const messages: Uint8Array[] = [];
+    const prefix = new Uint8Array(2);
+    let prefixBytes = 0;
+    let message: Uint8Array | undefined;
+    let messageBytes = 0;
+    let totalBytes = 0;
+    let settled = false;
+
+    const cleanup = () => {
+      input.signal.removeEventListener("abort", abort);
+      socket.off("data", data);
+      socket.off("error", error);
+      socket.off("end", ended);
+      socket.off("close", closed);
+    };
+    const settleError = (outcome: HnsObserverDriverExchangeFailure) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      socket.destroy();
+      reject(failed(outcome));
+    };
+    const settleResponse = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      socket.destroy();
+      resolve(messages.map((part) => Uint8Array.from(part)));
+    };
+    const abort = () => settleError("aborted");
+    const error = () => settleError("upstream_unavailable");
+    const ended = () => settleError("upstream_protocol_error");
+    const closed = () => settleError("upstream_protocol_error");
+    const data = (chunk: Buffer) => {
+      let offset = 0;
+      while (offset < chunk.byteLength && !settled) {
+        if (message === undefined) {
+          while (prefixBytes < 2 && offset < chunk.byteLength) {
+            prefix[prefixBytes] = chunk[offset] ?? 0;
+            prefixBytes += 1;
+            offset += 1;
+          }
+          if (prefixBytes < 2) return;
+          const expectedBytes = ((prefix[0] ?? 0) << 8) | (prefix[1] ?? 0);
+          prefixBytes = 0;
+          if (
+            expectedBytes === 0 ||
+            expectedBytes > input.response_message_max_bytes ||
+            messages.length >= input.response_max_messages ||
+            totalBytes + expectedBytes > input.response_total_max_bytes
+          ) {
+            settleError("upstream_protocol_error");
+            return;
+          }
+          message = new Uint8Array(expectedBytes);
+          messageBytes = 0;
+        }
+
+        const remaining = message.byteLength - messageBytes;
+        const available = Math.min(remaining, chunk.byteLength - offset);
+        message.set(chunk.subarray(offset, offset + available), messageBytes);
+        messageBytes += available;
+        offset += available;
+        if (messageBytes !== message.byteLength) return;
+
+        const completedMessage = message;
+        message = undefined;
+        messageBytes = 0;
+        totalBytes += completedMessage.byteLength;
+        messages.push(completedMessage);
+        let complete: boolean;
+        try {
+          complete = input.is_complete(Uint8Array.from(completedMessage), messages.length - 1);
+        } catch {
+          settleError("upstream_protocol_error");
+          return;
+        }
+        if (complete) {
+          if (offset !== chunk.byteLength) {
+            settleError("upstream_protocol_error");
+            return;
+          }
+          settleResponse();
+        }
+      }
+    };
+
+    input.signal.addEventListener("abort", abort, { once: true });
+    socket.on("data", data);
+    socket.once("error", error);
+    socket.once("end", ended);
+    socket.once("close", closed);
+    if (input.signal.aborted) abort();
+  });
+}
+
+function validSequenceLimits(input: HnsDnsTcpSequenceExchangeInput): boolean {
+  return (
+    Number.isSafeInteger(input.response_message_max_bytes) &&
+    input.response_message_max_bytes > 0 &&
+    input.response_message_max_bytes <= 65_535 &&
+    Number.isSafeInteger(input.response_total_max_bytes) &&
+    input.response_total_max_bytes >= input.response_message_max_bytes &&
+    input.response_total_max_bytes <= 16 * 1_024 * 1_024 &&
+    Number.isSafeInteger(input.response_max_messages) &&
+    input.response_max_messages > 0 &&
+    input.response_max_messages <= 4_096 &&
+    Number.isSafeInteger(input.timeout_ms) &&
+    input.timeout_ms > 0
+  );
+}
+
 export async function exchangeDirectHnsDnsTcp(input: HnsDnsTcpExchangeInput): Promise<Uint8Array> {
   if (
     input.signal.aborted ||
@@ -211,6 +348,60 @@ export async function exchangeDirectHnsDnsTcp(input: HnsDnsTcpExchangeInput): Pr
     if (deadline.signal.aborted) throw failed(input.signal.aborted ? "aborted" : "timeout");
     await writeOneRequest(socket, framed, deadline.signal);
     return await readOneResponse(socket, input.response_max_bytes, deadline.signal);
+  } catch (error) {
+    socket?.destroy();
+    if (error instanceof HnsObserverDriverExchangeError) {
+      if (error.outcome === "aborted") {
+        throw failed(
+          input.signal.aborted ? "aborted" : timedOut ? "timeout" : "upstream_unavailable",
+        );
+      }
+      throw error;
+    }
+    throw failed(input.signal.aborted ? "aborted" : timedOut ? "timeout" : "upstream_unavailable");
+  } finally {
+    clearTimeout(timeout);
+    input.signal.removeEventListener("abort", abort);
+  }
+}
+
+/**
+ * Acquires an exact, bounded DNS-over-TCP message sequence. This function does
+ * not authenticate or interpret the messages; callers must verify the TSIG
+ * chain and AXFR terminal SOA before treating the bytes as a zone transfer.
+ */
+export async function exchangeDirectHnsDnsTcpSequence(
+  input: HnsDnsTcpSequenceExchangeInput,
+): Promise<ReadonlyArray<Uint8Array>> {
+  if (input.signal.aborted || !validSequenceLimits(input)) {
+    throw failed(input.signal.aborted ? "aborted" : "upstream_protocol_error");
+  }
+  const framed = frameRequest(input.request_bytes);
+  const deadline = new AbortController();
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    deadline.abort();
+  }, input.timeout_ms);
+  const abort = () => deadline.abort();
+  input.signal.addEventListener("abort", abort, { once: true });
+  let socket: Socket | undefined;
+  try {
+    socket = await connectBound(input.connector, {
+      host: input.host,
+      port: 53,
+      family: input.family,
+      signal: deadline.signal,
+    });
+    if (deadline.signal.aborted) throw failed(input.signal.aborted ? "aborted" : "timeout");
+    await writeOneRequest(socket, framed, deadline.signal);
+    return await readResponseSequence(socket, {
+      response_message_max_bytes: input.response_message_max_bytes,
+      response_total_max_bytes: input.response_total_max_bytes,
+      response_max_messages: input.response_max_messages,
+      is_complete: input.is_complete,
+      signal: deadline.signal,
+    });
   } catch (error) {
     socket?.destroy();
     if (error instanceof HnsObserverDriverExchangeError) {

@@ -23,13 +23,24 @@ export {
 } from "./authority-successor-observation-harness.ts";
 export {
   exchangeDirectHnsDnsTcp,
+  exchangeDirectHnsDnsTcpSequence,
   type HnsDnsTcpConnectInput,
   type HnsDnsTcpConnector,
   type HnsDnsTcpExchangeInput,
+  type HnsDnsTcpSequenceExchangeInput,
   HnsObserverDriverExchangeError,
   type HnsObserverDriverExchangeFailure,
   makeNodeHnsDnsTcpConnector,
 } from "./dns-tcp.ts";
+export {
+  exchangeDirectHnsDnsTsigAxfrV1,
+  HNS_DNS_TSIG_AXFR_ALGORITHM,
+  HnsDnsTsigAxfrError,
+  type HnsDnsTsigAxfrExchangeResultV1,
+  type HnsDnsTsigAxfrSessionV1,
+  type HnsDnsTsigCredentialV1,
+  makeHnsDnsTsigAxfrSessionV1,
+} from "./dns-tsig-axfr.ts";
 export {
   type HnsObserverDriverHsdCapability,
   type HnsObserverDriverHsdExchangeResult,
