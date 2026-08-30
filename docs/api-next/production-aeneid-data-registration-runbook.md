@@ -6,10 +6,10 @@ signing, signer creation, secret installation, faucet requests, deployment,
 database migration, runtime activation, or a transaction. Those actions remain
 with their owning tasks and require their recorded authority.
 
-The runtime must stay disabled until the production Aeneid signer ceremony has
-recorded a fresh public address and the infrastructure task has installed only
-the matching production secret. The checked-in empty
-`DATA_REGISTRATION_SIGNER_ADDRESS` is intentional before that ceremony.
+The production Aeneid signer ceremony recorded the public address on 2026-08-30.
+The runtime must stay disabled until the infrastructure task has installed only
+the matching production secret into the production data-registration Worker and
+the later readiness tasks have supplied their own evidence and authority.
 
 ## Fixed identity and transaction boundary
 
@@ -25,10 +25,10 @@ reviewed Aeneid workflow contracts:
 - license workflow: `0xcC2E862bCee5B6036Db0de6E06Ae87e524a79fd8`;
 - royalty workflow: `0xa38f42B8d33809917f23997B8423054aAB97322C`.
 
-The production signer address is unassigned until the ceremony. After the
-ceremony, the same checksummed address must be committed as
-`DATA_REGISTRATION_SIGNER_ADDRESS` in both the data-registration and jobs
-production environments. It must derive from
+The production signer address is
+`0x91016D653FDa20E7C8eb2a1E6710a6504C5d1E7d`. The same checksummed address is
+committed as `DATA_REGISTRATION_SIGNER_ADDRESS` in both the data-registration
+and jobs production environments. It must derive from
 `DATA_REGISTRATION_PRODUCTION_AENEID_PRIVATE_KEY`; neither environment may read
 or fall back to the staging key.
 
