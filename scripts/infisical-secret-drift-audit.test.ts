@@ -220,6 +220,41 @@ describe("Infisical secret drift audit", () => {
     ]);
   });
 
+  test("allows production DATA secret names without requiring them before ceremony", () => {
+    const prodBase = emptySnapshot("prod");
+    const requiredRuntimeNames = [
+      "PIRATE_APP_JWT_PRIVATE_KEY",
+      "PRIVY_APP_SECRET",
+      "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
+      "MEGAPOT_V2_RPC_URL",
+    ];
+    const withoutSigner: InfisicalSnapshot = {
+      ...prodBase,
+      secrets: {
+        ...prodBase.secrets,
+        "/services/api-next": requiredRuntimeNames,
+        "/services/api-next/operator": [
+          "CONTROL_PLANE_POSTGRES_ADMIN_URL",
+          "CONTROL_PLANE_POSTGRES_RUNTIME_URL",
+        ],
+      },
+    };
+    expect(auditInfisicalSnapshots([withoutSigner]).violations).toEqual([]);
+
+    const withSigner: InfisicalSnapshot = {
+      ...withoutSigner,
+      secrets: {
+        ...withoutSigner.secrets,
+        "/services/api-next": [
+          ...requiredRuntimeNames,
+          "DATA_REGISTRATION_PRODUCTION_AENEID_PRIVATE_KEY",
+          "FILEBASE_IPFS_TOKEN",
+        ],
+      },
+    };
+    expect(auditInfisicalSnapshots([withSigner]).violations).toEqual([]);
+  });
+
   test("forces the REST query to hide values", async () => {
     let requestedUrl = "";
     const names = await listInfisicalSecretNames({

@@ -171,11 +171,17 @@
         "API_NEXT_ENV": "production",
         "DATA_REGISTRATION_ENABLED": "false",
         "DATA_REGISTRATION_CHAIN_ID": "1315",
-        "DATA_REGISTRATION_RPC_URL": "",
+        "DATA_REGISTRATION_RPC_URL": "https://aeneid.storyrpc.io",
         "DATA_REGISTRATION_SIGNER_ADDRESS": "",
-        "DATA_REGISTRATION_SPG_NFT_CONTRACT": "",
+        "DATA_REGISTRATION_SPG_NFT_CONTRACT": "0xc32A8a0FF3beDDDa58393d022aF433e78739FAbc",
         "DATA_REGISTRATION_REQUIRED_CONFIRMATIONS": "3",
         "DATA_REGISTRATION_PUBLIC_ORIGIN": "https://pirate.sc"
+      },
+      "secrets": {
+        "required": [
+          "DATA_REGISTRATION_PRODUCTION_AENEID_PRIVATE_KEY",
+          "FILEBASE_IPFS_TOKEN"
+        ]
       }
     }
   }

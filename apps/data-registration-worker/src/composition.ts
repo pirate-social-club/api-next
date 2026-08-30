@@ -17,11 +17,11 @@ import {
   makeDataRegistrationAeneidChain,
   makeJsonRpcTransport,
 } from "@pirate/platform-cf/data/registration-aeneid-chain";
+import { makeDataRegistrationAeneidDirectKeySignerLayer } from "@pirate/platform-cf/data/registration-aeneid-direct-key-signer";
 import {
   makeDataRegistrationArtifactPipeline,
   makePostgresDataRegistrationArtifactAuthorityReader,
 } from "@pirate/platform-cf/data/registration-artifact-pipeline";
-import { makeDataRegistrationStagingSignerLayer } from "@pirate/platform-cf/data/registration-staging-signer";
 import {
   type CloudflareDataRegistrationWorkflowBinding,
   makeCloudflareDataRegistrationWorkflowLauncher,
@@ -45,6 +45,7 @@ export type DataRegistrationRuntimeEnv = DataRegistrationWorkerEnv &
     DATA_REGISTRATION_SIGNER_ADDRESS?: string;
     DATA_REGISTRATION_SPG_NFT_CONTRACT?: string;
     DATA_REGISTRATION_STAGING_PRIVATE_KEY?: string;
+    DATA_REGISTRATION_PRODUCTION_AENEID_PRIVATE_KEY?: string;
     DATA_REGISTRATION_REQUIRED_CONFIRMATIONS?: string;
     DATA_REGISTRATION_PUBLIC_ORIGIN?: string;
     FILEBASE_IPFS_TOKEN?: string;
@@ -139,8 +140,8 @@ export function makeDataRegistrationComposition(
     return { queue, workflow: disabledWorkflow() };
   }
 
-  if (env.API_NEXT_ENV !== "staging") {
-    throw new Error("the reviewed DATA registration signer is staging-only");
+  if (env.API_NEXT_ENV !== "staging" && env.API_NEXT_ENV !== "production") {
+    throw new Error("the reviewed DATA registration signer is Aeneid environment-only");
   }
 
   const chainId = BigInt(required(env.DATA_REGISTRATION_CHAIN_ID, "DATA_REGISTRATION_CHAIN_ID"));
@@ -191,11 +192,15 @@ export function makeDataRegistrationComposition(
     gateway: makeIpfsIoGatewayVerifier(),
     publicOrigin: required(env.DATA_REGISTRATION_PUBLIC_ORIGIN, "DATA_REGISTRATION_PUBLIC_ORIGIN"),
   });
-  const signerLayer = makeDataRegistrationStagingSignerLayer({
-    privateKey: required(
-      env.DATA_REGISTRATION_STAGING_PRIVATE_KEY,
-      "DATA_REGISTRATION_STAGING_PRIVATE_KEY",
-    ),
+  const signerPrivateKey =
+    env.API_NEXT_ENV === "staging"
+      ? required(env.DATA_REGISTRATION_STAGING_PRIVATE_KEY, "DATA_REGISTRATION_STAGING_PRIVATE_KEY")
+      : required(
+          env.DATA_REGISTRATION_PRODUCTION_AENEID_PRIVATE_KEY,
+          "DATA_REGISTRATION_PRODUCTION_AENEID_PRIVATE_KEY",
+        );
+  const signerLayer = makeDataRegistrationAeneidDirectKeySignerLayer({
+    privateKey: signerPrivateKey,
     expectedAddress: signerAddress,
     chainId,
     signerNamespace: "data_registration",

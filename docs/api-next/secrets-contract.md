@@ -403,6 +403,35 @@ the classifier likewise follow their owning roles. Any future assignment must
 update the destination Worker's Wrangler declaration in the same reviewed
 tranche.
 
+### Production-hosted Aeneid signer boundary — 2026-08-29
+
+`DATA_REGISTRATION_PRODUCTION_AENEID_PRIVATE_KEY` is allowed only in Infisical
+environment `prod` at `/services/api-next`. It is not completeness-required
+before the production Aeneid signer ceremony. Its presence is not authority to
+enable DATA registration or evidence that the corresponding public address has
+been reviewed and funded.
+
+The value belongs to a fresh production-environment Aeneid testnet EOA. It must
+not reuse `DATA_REGISTRATION_STAGING_PRIVATE_KEY`, a Megapot key, a future Lit
+usage key, or any Story mainnet identity. The DATA-registration Worker consumes
+the production name only when `API_NEXT_ENV=production`; there is no
+cross-environment fallback. The reviewed adapter is restricted to chain 1315,
+the `data_registration` namespace, zero native value, and the transaction
+envelope selected by the signing coordinator.
+
+Creating the EOA, storing the value, recording its public address, requesting
+faucet gas, and synchronizing the exact secret to the production Worker belong
+to separately authorized ceremony and infrastructure tasks. Infisical is the
+delivery boundary, not the signer-security decision. Story mainnet and Lit
+integration remain outside this contract.
+
+`FILEBASE_IPFS_TOKEN` is also allowed in production at
+`/services/api-next` for the DATA-registration Worker. Production activation
+requires a production-scoped Filebase token as well as the signer key; neither
+secret may fall back to its staging value. Provisioning and synchronizing the
+exact Filebase token belongs to the production infrastructure ceremony, and
+its presence does not authorize provider traffic or DATA activation.
+
 `OPENROUTER_API_KEY` names the actual credential boundary. A reviewed model
 change within OpenRouter does not require a new secret. Replacing OpenRouter
 with another classifier provider requires a separately reviewed binding.
