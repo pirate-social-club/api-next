@@ -47,6 +47,8 @@
     "./data/registration-workflow-entrypoint": "./src/data/registration-workflow-entrypoint.ts",
     "./data/registration-workflow-reader": "./src/data/registration-workflow-reader.ts",
     "./dance-reference-processing-repository": "./src/dance-reference-processing-repository.ts",
+    "./dance-reference-processing-cloudflare": "./src/dance-reference-processing-cloudflare.ts",
+    "./dance-reference-workflow-entrypoint": "./src/dance-reference-workflow-entrypoint.ts",
     "./data/signing-intent-reader": "./src/data/signing-intent-reader.ts",
     "./data/filebase-ipfs-pinning": "./src/data/filebase-ipfs-pinning.ts",
     "./data/ipfs-live-gateway": "./src/data/ipfs-live-gateway.ts",

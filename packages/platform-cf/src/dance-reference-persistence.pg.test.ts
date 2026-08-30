@@ -22,7 +22,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_DANCE_REFERENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-dance-reference-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-dance-reference-suite-complete\n";
-const testCount = 6;
+const testCount = 7;
 let completedTestCount = 0;
 
 const HASH_A = "11".repeat(32);
@@ -419,6 +419,19 @@ suite("Dance reference shadow persistence", () => {
           connectionForSchema(connectionString as string, schema),
         ),
       );
+      expect(await store.listEligibleWakeups(25)).toEqual([
+        {
+          outboxId: "outbox-1",
+          choreographyId: "choreography-1",
+          choreographyRevision: 1,
+          effectIdentity: "dance-reference-choreography-1-r1",
+          revisionStatus: "processing",
+          state: "pending",
+          deliveryAttempts: 0,
+          claimFence: 0,
+          eligible: true,
+        },
+      ]);
       const result = await runDanceReferenceProcessing(
         {
           choreographyId: "choreography-1",
@@ -438,6 +451,13 @@ suite("Dance reference shadow persistence", () => {
         },
       );
       expect(result).toEqual({ kind: "committed", status: "ready" });
+      expect(await store.getWakeup("outbox-1")).toMatchObject({
+        revisionStatus: "ready",
+        state: "delivered",
+        deliveryAttempts: 1,
+        claimFence: 1,
+        eligible: false,
+      });
       const persisted = await admin.query(
         `SELECT revision.status, choreography.status AS choreography_status,
                 outbox.state AS outbox_state, attempt.state AS attempt_state,
@@ -496,7 +516,36 @@ suite("Dance reference shadow persistence", () => {
           },
         },
       );
-      expect(first).toEqual({ kind: "pending" });
+      expect(first).toEqual({ kind: "pending", claimFence: 1, outboxClaimFence: 1 });
+      const renewed = await runDanceReferenceProcessing(
+        {
+          choreographyId: "choreography-1",
+          choreographyRevision: 1,
+          workerId: "worker-first",
+          leaseSeconds: 1,
+          adapterId: "fake-reference",
+          adapterRevision: "fake-v1",
+          resume: { claimFence: 1, outboxClaimFence: 1 },
+        },
+        {
+          store,
+          processor: {
+            prepareReference: () => Effect.die("renewal must reuse preparation"),
+            observeReference: (operation) =>
+              Effect.succeed({ status: "pending", binding: operation.binding }),
+          },
+        },
+      );
+      expect(renewed).toEqual({ kind: "pending", claimFence: 1, outboxClaimFence: 1 });
+      const renewedFences = await admin.query(
+        `SELECT attempt.lease_fence::text,outbox.claim_fence::text AS outbox_fence,
+                outbox.delivery_attempts
+           FROM dance_reference_processing_attempts attempt
+           JOIN dance_reference_outbox outbox USING (choreography_id,revision)`,
+      );
+      expect(renewedFences.rows).toEqual([
+        { lease_fence: "1", outbox_fence: "1", delivery_attempts: 1 },
+      ]);
       const concurrent = await runDanceReferenceProcessing(
         {
           choreographyId: "choreography-1",
@@ -562,6 +611,87 @@ suite("Dance reference shadow persistence", () => {
           },
         ),
       ).rejects.toMatchObject({ reason: "identity-conflict" });
+    });
+    completedTestCount += 1;
+  });
+
+  test("rejects the original completion after a reconciler steals its expired lease", async () => {
+    await withSchema("runtime_stolen_lease", async (admin, schema) => {
+      await insertProcessingGraph(admin, true);
+      const store = makeDanceReferenceProcessingStore(
+        makeDirectPostgresControlPlaneLayer(
+          connectionForSchema(connectionString as string, schema),
+        ),
+      );
+      let releaseOriginal: (() => void) | undefined;
+      let signalObserved: (() => void) | undefined;
+      const originalObserved = new Promise<void>((resolve) => {
+        signalObserved = resolve;
+      });
+      const originalRelease = new Promise<void>((resolve) => {
+        releaseOriginal = resolve;
+      });
+      const original = runDanceReferenceProcessing(
+        {
+          choreographyId: "choreography-1",
+          choreographyRevision: 1,
+          workerId: "workflow-original",
+          leaseSeconds: 1,
+          adapterId: "fake-reference",
+          adapterRevision: "fake-v1",
+          frozenInput: frozenReferenceInput(),
+        },
+        {
+          store,
+          processor: {
+            prepareReference: (_input, binding) => Effect.succeed(preparedReference(binding)),
+            observeReference: (operation) =>
+              Effect.promise(async () => {
+                signalObserved?.();
+                await originalRelease;
+                return readyReference(operation.binding);
+              }),
+          },
+        },
+      );
+      await originalObserved;
+      await admin.query("SELECT pg_sleep(1.05)");
+      const stolen = await runDanceReferenceProcessing(
+        {
+          choreographyId: "choreography-1",
+          choreographyRevision: 1,
+          workerId: "workflow-reconciler",
+          leaseSeconds: 60,
+          adapterId: "fake-reference",
+          adapterRevision: "fake-v1",
+        },
+        {
+          store,
+          processor: {
+            prepareReference: () => Effect.die("the prepared operation must be replayed"),
+            observeReference: (operation) => Effect.succeed(readyReference(operation.binding)),
+          },
+        },
+      );
+      expect(stolen).toEqual({ kind: "committed", status: "ready" });
+      releaseOriginal?.();
+      expect(await original).toEqual({ kind: "stale" });
+      const persisted = await admin.query(
+        `SELECT attempt.lease_fence::text,attempt.state,outbox.claim_fence::text AS outbox_fence,
+                outbox.state AS outbox_state,revision.status AS revision_status
+           FROM dance_reference_processing_attempts attempt
+           JOIN dance_reference_outbox outbox USING (choreography_id,revision)
+           JOIN dance_choreography_revisions revision USING (choreography_id,revision)`,
+      );
+      expect(persisted.rows).toEqual([
+        {
+          lease_fence: "2",
+          state: "succeeded",
+          outbox_fence: "2",
+          outbox_state: "delivered",
+          revision_status: "ready",
+        },
+      ]);
     });
     completedTestCount += 1;
   });

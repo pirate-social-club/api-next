@@ -14,6 +14,10 @@ import {
   freezePreparedDanceReferenceOperation,
   type PreparedDanceReferenceOperation,
 } from "@pirate/application/dance/reference-processing";
+import type {
+  DanceReferenceWakeupRecord,
+  DanceReferenceWakeupStore,
+} from "@pirate/application/dance/reference-processing-wakeup";
 import { Data, Effect, type Layer } from "effect";
 
 type Row = Readonly<Record<string, unknown>>;
@@ -37,7 +41,7 @@ const bytesText = (value: unknown): string | null =>
 export class DanceReferenceProcessingRepositoryError extends Data.TaggedError(
   "DanceReferenceProcessingRepositoryError",
 )<{
-  readonly operation: "claim" | "prepare" | "complete";
+  readonly operation: "claim" | "prepare" | "complete" | "wakeup";
   readonly reason: "invalid-input" | "invalid-row" | "identity-conflict" | "unavailable";
 }> {}
 
@@ -107,6 +111,45 @@ function exactRequest(
   );
 }
 
+const wakeupStates = new Set(["pending", "running", "delivered", "failed", "exhausted"]);
+const revisionStates = new Set(["processing", "ready", "processing_failed", "disabled", "retired"]);
+
+function decodeWakeupRow(row: Row): DanceReferenceWakeupRecord {
+  const choreographyRevision = integer(row.revision);
+  const deliveryAttempts = integer(row.delivery_attempts);
+  const claimFence = integer(row.claim_fence);
+  if (
+    !validId(row.outbox_event_id) ||
+    !validId(row.choreography_id) ||
+    choreographyRevision === null ||
+    choreographyRevision < 1 ||
+    !validId(row.effect_identity) ||
+    typeof row.revision_status !== "string" ||
+    !revisionStates.has(row.revision_status) ||
+    typeof row.state !== "string" ||
+    !wakeupStates.has(row.state) ||
+    deliveryAttempts === null ||
+    deliveryAttempts < 0 ||
+    deliveryAttempts > 3 ||
+    claimFence === null ||
+    claimFence < 0 ||
+    typeof row.eligible !== "boolean"
+  ) {
+    throw fail("wakeup", "invalid-row");
+  }
+  return Object.freeze({
+    outboxId: row.outbox_event_id,
+    choreographyId: row.choreography_id,
+    choreographyRevision,
+    effectIdentity: row.effect_identity,
+    revisionStatus: row.revision_status as DanceReferenceWakeupRecord["revisionStatus"],
+    state: row.state as DanceReferenceWakeupRecord["state"],
+    deliveryAttempts,
+    claimFence,
+    eligible: row.eligible,
+  });
+}
+
 export type DanceReferenceProcessingStoreOptions = Readonly<{
   readonly retryBaseMs?: number;
 }>;
@@ -114,7 +157,7 @@ export type DanceReferenceProcessingStoreOptions = Readonly<{
 export function makeDanceReferenceProcessingStore(
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
   options: DanceReferenceProcessingStoreOptions = {},
-): DanceReferenceProcessingStore {
+): DanceReferenceProcessingStore & DanceReferenceWakeupStore {
   const retryBaseMs = options.retryBaseMs ?? 15_000;
   const run = <A, E>(effect: Effect.Effect<A, E, ControlPlaneDb>): Promise<A> =>
     Effect.runPromise(Effect.provide(runtime)(effect));
@@ -129,7 +172,12 @@ export function makeDanceReferenceProcessingStore(
       input.choreographyRevision < 1 ||
       !Number.isSafeInteger(input.leaseSeconds) ||
       input.leaseSeconds < 1 ||
-      input.leaseSeconds > 3_600
+      input.leaseSeconds > 3_600 ||
+      (input.resume !== undefined &&
+        (!Number.isSafeInteger(input.resume.claimFence) ||
+          input.resume.claimFence < 1 ||
+          !Number.isSafeInteger(input.resume.outboxClaimFence) ||
+          input.resume.outboxClaimFence < 1))
     ) {
       throw fail("claim", "invalid-input");
     }
@@ -205,22 +253,45 @@ export function makeDanceReferenceProcessingStore(
             }
             if (status !== "processing") return { kind: "busy" } as const;
 
-            const outbox = yield* tx.execute<Row>({
-              label: "dance-reference-processing.outbox.claim",
-              text: "UPDATE dance_reference_outbox SET state='running',delivery_attempts=delivery_attempts+1,claim_owner=$1,claim_fence=claim_fence+1,lease_expires_at=clock_timestamp()+make_interval(secs=>$2),next_eligible_at=NULL,failure_code=NULL,updated_at=clock_timestamp() WHERE choreography_id=$3 AND revision=$4 AND delivery_attempts<3 AND (state='pending' OR (state='failed' AND next_eligible_at<=clock_timestamp()) OR (state='running' AND lease_expires_at<=clock_timestamp())) RETURNING outbox_event_id,effect_identity,claim_fence",
-              values: [
-                input.workerId,
-                input.leaseSeconds,
-                input.choreographyId,
-                input.choreographyRevision,
-              ],
-              readonly: false,
-            });
-            if (outbox.rows.length === 0) return { kind: "busy" } as const;
+            const outbox =
+              input.resume === undefined
+                ? yield* tx.execute<Row>({
+                    label: "dance-reference-processing.outbox.claim",
+                    text: "UPDATE dance_reference_outbox SET state='running',delivery_attempts=delivery_attempts+1,claim_owner=$1,claim_fence=claim_fence+1,lease_expires_at=clock_timestamp()+make_interval(secs=>$2),next_eligible_at=NULL,failure_code=NULL,updated_at=clock_timestamp() WHERE choreography_id=$3 AND revision=$4 AND delivery_attempts<3 AND (state='pending' OR (state='failed' AND next_eligible_at<=clock_timestamp()) OR (state='running' AND lease_expires_at<=clock_timestamp())) RETURNING outbox_event_id,effect_identity,claim_fence",
+                    values: [
+                      input.workerId,
+                      input.leaseSeconds,
+                      input.choreographyId,
+                      input.choreographyRevision,
+                    ],
+                    readonly: false,
+                  })
+                : yield* tx.execute<Row>({
+                    label: "dance-reference-processing.outbox.renew",
+                    text: "UPDATE dance_reference_outbox SET lease_expires_at=clock_timestamp()+make_interval(secs=>$1),updated_at=clock_timestamp() WHERE choreography_id=$2 AND revision=$3 AND state='running' AND claim_owner=$4 AND claim_fence=$5 AND lease_expires_at>clock_timestamp() RETURNING outbox_event_id,effect_identity,claim_fence",
+                    values: [
+                      input.leaseSeconds,
+                      input.choreographyId,
+                      input.choreographyRevision,
+                      input.workerId,
+                      input.resume.outboxClaimFence,
+                    ],
+                    readonly: false,
+                  });
+            if (outbox.rows.length === 0) {
+              if (input.resume !== undefined) {
+                return yield* Effect.fail(new DanceReferenceClaimBusy({ reason: "busy" }));
+              }
+              return { kind: "busy" } as const;
+            }
             if (
               outbox.rows.length !== 1 ||
               outbox.rows[0]?.effect_identity !== request.frozenInput.effectIdentity
             ) {
+              return yield* Effect.fail(fail("claim", "invalid-row"));
+            }
+            const outboxClaimFence = integer(outbox.rows[0]?.claim_fence);
+            if (outboxClaimFence === null) {
               return yield* Effect.fail(fail("claim", "invalid-row"));
             }
 
@@ -231,7 +302,34 @@ export function makeDanceReferenceProcessingStore(
               readonly: false,
             });
             let attempt: Row;
-            if (latest.rows.length === 0) {
+            if (input.resume !== undefined) {
+              if (latest.rows.length !== 1) {
+                return yield* Effect.fail(new DanceReferenceClaimBusy({ reason: "busy" }));
+              }
+              const prior = latest.rows[0] as Row;
+              if (
+                prior.adapter_id !== input.adapterId ||
+                prior.adapter_revision !== input.adapterRevision ||
+                prior.input_digest !== request.inputDigest
+              ) {
+                return yield* Effect.fail(fail("claim", "identity-conflict"));
+              }
+              const renewed = yield* tx.execute<Row>({
+                label: "dance-reference-processing.attempt.renew",
+                text: "UPDATE dance_reference_processing_attempts SET lease_expires_at=clock_timestamp()+make_interval(secs=>$1),updated_at=clock_timestamp() WHERE processing_attempt_id=$2 AND state='leased' AND lease_owner=$3 AND lease_fence=$4 AND lease_expires_at>clock_timestamp() RETURNING *",
+                values: [
+                  input.leaseSeconds,
+                  prior.processing_attempt_id,
+                  input.workerId,
+                  input.resume.claimFence,
+                ],
+                readonly: false,
+              });
+              if (renewed.rows.length !== 1) {
+                return yield* Effect.fail(new DanceReferenceClaimBusy({ reason: "busy" }));
+              }
+              attempt = renewed.rows[0] as Row;
+            } else if (latest.rows.length === 0) {
               const attemptId = `dance-processing-${request.inputDigest.slice(0, 32)}-a1`;
               const inserted = yield* tx.execute<Row>({
                 label: "dance-reference-processing.attempt.insert",
@@ -315,6 +413,13 @@ export function makeDanceReferenceProcessingStore(
             ) {
               return yield* Effect.fail(fail("claim", "invalid-row"));
             }
+            if (
+              input.resume !== undefined &&
+              (claimFence !== input.resume.claimFence ||
+                outboxClaimFence !== input.resume.outboxClaimFence)
+            ) {
+              return yield* Effect.fail(new DanceReferenceClaimBusy({ reason: "busy" }));
+            }
             const binding: DanceReferenceProcessingBinding = {
               version: "dance-reference-processing-binding-v1",
               effectIdentity: request.frozenInput.effectIdentity,
@@ -335,6 +440,7 @@ export function makeDanceReferenceProcessingStore(
               binding,
               claimOwner: attempt.lease_owner,
               claimFence,
+              outboxClaimFence,
               preparedOperation,
             };
             return { kind: "claimed", claim: claimValue } as const;
@@ -395,7 +501,67 @@ export function makeDanceReferenceProcessingStore(
   const complete: DanceReferenceProcessingStore["complete"] = async (claimValue, outcome) =>
     run(completeEffect(claimValue, outcome, retryBaseMs));
 
-  return { claim, recordPrepared, complete };
+  const getWakeup: DanceReferenceWakeupStore["getWakeup"] = async (outboxId) => {
+    if (!validId(outboxId)) throw fail("wakeup", "invalid-input");
+    return run(
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        const result = yield* db.execute<Row>({
+          label: "dance-reference-processing.wakeup.get",
+          text: `SELECT outbox.outbox_event_id,outbox.choreography_id,outbox.revision::text,
+                        outbox.effect_identity,revision.status AS revision_status,outbox.state,
+                        outbox.delivery_attempts,outbox.claim_fence::text,
+                        (revision.status='processing' AND outbox.delivery_attempts<3 AND
+                          (outbox.state='pending'
+                            OR (outbox.state='failed' AND outbox.next_eligible_at<=clock_timestamp())
+                            OR (outbox.state='running' AND outbox.lease_expires_at<=clock_timestamp())
+                          )) AS eligible
+                   FROM dance_reference_outbox outbox
+                   JOIN dance_choreography_revisions revision
+                     ON revision.choreography_id=outbox.choreography_id
+                    AND revision.revision=outbox.revision
+                  WHERE outbox.outbox_event_id=$1`,
+          values: [outboxId],
+          readonly: true,
+        });
+        if (result.rows.length === 0) return null;
+        if (result.rows.length !== 1) return yield* Effect.fail(fail("wakeup", "invalid-row"));
+        return decodeWakeupRow(result.rows[0] as Row);
+      }),
+    );
+  };
+
+  const listEligibleWakeups: DanceReferenceWakeupStore["listEligibleWakeups"] = async (limit) => {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      throw fail("wakeup", "invalid-input");
+    }
+    return run(
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        const result = yield* db.execute<Row>({
+          label: "dance-reference-processing.wakeup.list",
+          text: `SELECT outbox.outbox_event_id,outbox.choreography_id,outbox.revision::text,
+                        outbox.effect_identity,revision.status AS revision_status,outbox.state,
+                        outbox.delivery_attempts,outbox.claim_fence::text,TRUE AS eligible
+                   FROM dance_reference_outbox outbox
+                   JOIN dance_choreography_revisions revision
+                     ON revision.choreography_id=outbox.choreography_id
+                    AND revision.revision=outbox.revision
+                  WHERE revision.status='processing' AND outbox.delivery_attempts<3
+                    AND (outbox.state='pending'
+                      OR (outbox.state='failed' AND outbox.next_eligible_at<=clock_timestamp())
+                      OR (outbox.state='running' AND outbox.lease_expires_at<=clock_timestamp()))
+                  ORDER BY outbox.created_at,outbox.outbox_event_id
+                  LIMIT $1`,
+          values: [limit],
+          readonly: true,
+        });
+        return result.rows.map(decodeWakeupRow);
+      }),
+    );
+  };
+
+  return { claim, recordPrepared, complete, getWakeup, listEligibleWakeups };
 }
 
 function completeEffect(
@@ -418,6 +584,34 @@ function completeEffect(
           readonly: false,
         });
         if (target.rows.length !== 1) return yield* Effect.fail(fail("complete", "invalid-row"));
+        const attempt = yield* tx.execute<Row>({
+          label: "dance-reference-processing.complete.attempt",
+          text: "SELECT state,lease_owner,lease_fence,lease_expires_at FROM dance_reference_processing_attempts WHERE choreography_id=$1 AND revision=$2 AND attempt_number=$3 FOR UPDATE",
+          values: [
+            claim.binding.choreographyId,
+            claim.binding.choreographyRevision,
+            claim.binding.attemptNumber,
+          ],
+          readonly: false,
+        });
+        if (
+          attempt.rows.length !== 1 ||
+          integer(attempt.rows[0]?.lease_fence) !== claim.claimFence
+        ) {
+          return "stale";
+        }
+        const outbox = yield* tx.execute<Row>({
+          label: "dance-reference-processing.complete.outbox-fence",
+          text: "SELECT claim_fence FROM dance_reference_outbox WHERE choreography_id=$1 AND revision=$2 FOR UPDATE",
+          values: [claim.binding.choreographyId, claim.binding.choreographyRevision],
+          readonly: false,
+        });
+        if (
+          outbox.rows.length !== 1 ||
+          integer(outbox.rows[0]?.claim_fence) !== claim.outboxClaimFence
+        ) {
+          return "stale";
+        }
         const expectedDigest =
           outcome.status === "ready"
             ? outcome.evidence.evidenceDigest
@@ -433,19 +627,7 @@ function completeEffect(
             : "stale";
         }
         if (currentStatus !== "processing") return "stale";
-
-        const attempt = yield* tx.execute<Row>({
-          label: "dance-reference-processing.complete.attempt",
-          text: "SELECT state,lease_owner,lease_fence,lease_expires_at FROM dance_reference_processing_attempts WHERE choreography_id=$1 AND revision=$2 AND attempt_number=$3 FOR UPDATE",
-          values: [
-            claim.binding.choreographyId,
-            claim.binding.choreographyRevision,
-            claim.binding.attemptNumber,
-          ],
-          readonly: false,
-        });
         if (
-          attempt.rows.length !== 1 ||
           attempt.rows[0]?.state !== "leased" ||
           attempt.rows[0]?.lease_owner !== claim.claimOwner ||
           integer(attempt.rows[0]?.lease_fence) !== claim.claimFence
@@ -475,13 +657,14 @@ function completeEffect(
           if (attemptResult.rowCount !== 1) return "stale";
           const outboxResult = yield* tx.execute({
             label: "dance-reference-processing.complete.retryable-outbox",
-            text: "UPDATE dance_reference_outbox SET state=CASE WHEN delivery_attempts=3 THEN 'exhausted' ELSE 'failed' END,claim_owner=NULL,lease_expires_at=NULL,next_eligible_at=CASE WHEN delivery_attempts=3 THEN NULL ELSE clock_timestamp()+make_interval(secs=>$1) END,failure_code=$2,updated_at=clock_timestamp() WHERE choreography_id=$3 AND revision=$4 AND state='running' AND claim_owner=$5 AND lease_expires_at>clock_timestamp()",
+            text: "UPDATE dance_reference_outbox SET state=CASE WHEN delivery_attempts=3 THEN 'exhausted' ELSE 'failed' END,claim_owner=NULL,lease_expires_at=NULL,next_eligible_at=CASE WHEN delivery_attempts=3 THEN NULL ELSE clock_timestamp()+make_interval(secs=>$1) END,failure_code=$2,updated_at=clock_timestamp() WHERE choreography_id=$3 AND revision=$4 AND state='running' AND claim_owner=$5 AND claim_fence=$6 AND lease_expires_at>clock_timestamp()",
             values: [
               Math.ceil((retryBaseMs * 2 ** (claim.binding.attemptNumber - 1)) / 1_000),
               outcome.reason,
               claim.binding.choreographyId,
               claim.binding.choreographyRevision,
               claim.claimOwner,
+              claim.outboxClaimFence,
             ],
             readonly: false,
           });
@@ -511,11 +694,12 @@ function completeEffect(
         if (attemptResult.rowCount !== 1) return "stale";
         const outboxResult = yield* tx.execute({
           label: "dance-reference-processing.complete.outbox",
-          text: "UPDATE dance_reference_outbox SET state='delivered',claim_owner=NULL,lease_expires_at=NULL,next_eligible_at=NULL,delivered_at=clock_timestamp(),failure_code=NULL,updated_at=clock_timestamp() WHERE choreography_id=$1 AND revision=$2 AND state='running' AND claim_owner=$3 AND lease_expires_at>clock_timestamp()",
+          text: "UPDATE dance_reference_outbox SET state='delivered',claim_owner=NULL,lease_expires_at=NULL,next_eligible_at=NULL,delivered_at=clock_timestamp(),failure_code=NULL,updated_at=clock_timestamp() WHERE choreography_id=$1 AND revision=$2 AND state='running' AND claim_owner=$3 AND claim_fence=$4 AND lease_expires_at>clock_timestamp()",
           values: [
             claim.binding.choreographyId,
             claim.binding.choreographyRevision,
             claim.claimOwner,
+            claim.outboxClaimFence,
           ],
           readonly: false,
         });

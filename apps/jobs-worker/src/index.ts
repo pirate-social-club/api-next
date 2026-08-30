@@ -40,6 +40,10 @@ import {
 
 import { makeCommunityPurchaseFundingReconciliationJob } from "./community-purchase-funding";
 import {
+  type DanceReferenceJobsBindings,
+  makeDanceReferenceMaintenance,
+} from "./dance-reference-runtime";
+import {
   type DataRegistrationJobsBindings,
   makeDataRegistrationMaintenance,
 } from "./data-registration-runtime";
@@ -119,6 +123,7 @@ export {
 export interface JobsWorkerEnv
   extends AlertSinkBindings,
     DataRegistrationJobsBindings,
+    DanceReferenceJobsBindings,
     HnsRouteRevalidationBindings,
     MediaJobsBindings {
   readonly CF_VERSION_METADATA: MegapotRewardsJobOptions["workerVersion"];
@@ -723,12 +728,16 @@ export default {
     const runtime = makeHyperdriveControlPlaneLayer(env.CONTROL_PLANE);
     const mediaMaintenance = makeMediaMaintenance(env, runtime);
     const dataRegistrationMaintenance = makeDataRegistrationMaintenance(env, runtime);
+    const danceReferenceMaintenance = makeDanceReferenceMaintenance(env, runtime);
     const scheduledWork: Promise<unknown>[] = Array.from(dueByLane, ([lane, laneJobs]) =>
       handleScheduled(env, lane, laneJobs, event.scheduledTime, { runtime }),
     );
     if (mediaMaintenance !== null) scheduledWork.push(mediaMaintenance());
     if (dataRegistrationMaintenance !== null) {
       scheduledWork.push(dataRegistrationMaintenance());
+    }
+    if (danceReferenceMaintenance !== null) {
+      scheduledWork.push(danceReferenceMaintenance());
     }
     if (mediaMaintenance !== null || dataRegistrationMaintenance !== null) {
       scheduledWork.push(

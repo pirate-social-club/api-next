@@ -788,6 +788,12 @@ BEGIN
           RAISE EXCEPTION 'Dance prepared operation fence is stale';
         END IF;
       ELSIF OLD.lease_expires_at > clock_timestamp()
+         AND NEW.lease_owner = OLD.lease_owner
+         AND NEW.lease_fence = OLD.lease_fence
+         AND NEW.lease_expires_at > OLD.lease_expires_at
+         AND NEW.updated_at > OLD.updated_at THEN
+        NULL;
+      ELSIF OLD.lease_expires_at > clock_timestamp()
          OR NEW.lease_expires_at <= clock_timestamp()
          OR NEW.lease_fence <> OLD.lease_fence + 1
          OR NEW.updated_at <= OLD.updated_at THEN
@@ -852,10 +858,17 @@ BEGIN
       END IF;
     ELSIF OLD.state = 'running' AND NEW.state = 'running' THEN
       IF OLD.lease_expires_at > clock_timestamp()
+         AND NEW.claim_owner = OLD.claim_owner
+         AND NEW.delivery_attempts = OLD.delivery_attempts
+         AND NEW.claim_fence = OLD.claim_fence
+         AND NEW.lease_expires_at > OLD.lease_expires_at
+         AND NEW.updated_at > OLD.updated_at THEN
+        NULL;
+      ELSIF OLD.lease_expires_at > clock_timestamp()
          OR NEW.lease_expires_at <= clock_timestamp()
          OR NEW.delivery_attempts <> OLD.delivery_attempts + 1
          OR NEW.claim_fence <> OLD.claim_fence + 1 OR NEW.updated_at <= OLD.updated_at THEN
-        RAISE EXCEPTION 'Dance outbox lease cannot be reclaimed';
+        RAISE EXCEPTION 'Dance outbox lease cannot be reclaimed or renewed';
       END IF;
     ELSIF OLD.state = 'running' AND NEW.state IN ('delivered', 'failed', 'exhausted') THEN
       IF OLD.lease_expires_at <= clock_timestamp()

@@ -200,6 +200,7 @@ class FakeStore implements DanceReferenceProcessingStore {
         binding,
         claimOwner: input.workerId,
         claimFence: 1,
+        outboxClaimFence: 1,
         preparedOperation: this.saved,
       };
       return { kind: "claimed" as const, claim };
@@ -334,7 +335,7 @@ describe("Dance reference processing interpreter", () => {
         },
       },
     );
-    expect(disposition).toEqual({ kind: "pending" });
+    expect(disposition).toEqual({ kind: "pending", claimFence: 1, outboxClaimFence: 1 });
     expect(store.committed).toBeNull();
   });
 

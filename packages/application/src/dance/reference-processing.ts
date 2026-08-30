@@ -282,6 +282,7 @@ export type DanceReferenceProcessingClaim = Readonly<{
   readonly binding: DanceReferenceProcessingBinding;
   readonly claimOwner: string;
   readonly claimFence: number;
+  readonly outboxClaimFence: number;
   readonly preparedOperation: PreparedDanceReferenceOperation | null;
 }>;
 
@@ -298,6 +299,10 @@ export interface DanceReferenceProcessingStore {
     readonly leaseSeconds: number;
     readonly adapterId: string;
     readonly adapterRevision: string;
+    readonly resume?: Readonly<{
+      readonly claimFence: number;
+      readonly outboxClaimFence: number;
+    }>;
     readonly request?: Readonly<{
       readonly frozenInput: FrozenDanceReferenceInput;
       readonly canonicalRequest: string;
@@ -321,12 +326,22 @@ export type RunDanceReferenceProcessingInput = Readonly<{
   readonly leaseSeconds: number;
   readonly adapterId: string;
   readonly adapterRevision: string;
+  /** Same-Workflow pending observation renews, but never advances, these fences. */
+  readonly resume?: Readonly<{
+    readonly claimFence: number;
+    readonly outboxClaimFence: number;
+  }>;
   /** Present on initial dispatch; recovery deliberately omits it. */
   readonly frozenInput?: unknown;
 }>;
 
 export type DanceReferenceProcessingDisposition =
-  | Readonly<{ readonly kind: "busy" | "pending" | "stale" }>
+  | Readonly<{ readonly kind: "busy" | "stale" }>
+  | Readonly<{
+      readonly kind: "pending";
+      readonly claimFence: number;
+      readonly outboxClaimFence: number;
+    }>
   | Readonly<{ readonly kind: "terminal"; readonly status: "ready" | "processing_failed" }>
   | Readonly<{ readonly kind: "committed" | "replayed"; readonly status: "ready" | "failed" }>;
 
@@ -541,6 +556,7 @@ export async function runDanceReferenceProcessing(
     leaseSeconds: input.leaseSeconds,
     adapterId: input.adapterId,
     adapterRevision: input.adapterRevision,
+    ...(input.resume === undefined ? {} : { resume: input.resume }),
     ...(request === undefined ? {} : { request }),
   });
   if (claimed.kind !== "claimed") return claimed;
@@ -563,7 +579,13 @@ export async function runDanceReferenceProcessing(
       dependencies.processor.observeReference(prepared as PreparedDanceReferenceOperation),
     ),
   );
-  if (outcome.status === "pending") return { kind: "pending" };
+  if (outcome.status === "pending") {
+    return {
+      kind: "pending",
+      claimFence: claim.claimFence,
+      outboxClaimFence: claim.outboxClaimFence,
+    };
+  }
   const completed = await dependencies.store.complete(claim, outcome);
   if (completed === "stale") return { kind: "stale" };
   return {
