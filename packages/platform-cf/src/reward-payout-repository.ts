@@ -105,15 +105,18 @@ const CANDIDATE_SELECT = `
          observation.observation_id AS solvency_observation_id,
          observation.balance_atomic AS custody_balance_before_atomic,
          observation.expires_at AS solvency_expires_at, observation.solvent,
+         credit.token_address,
          attestation.attestation_id, attestation.environment, attestation.chain_id,
          attestation.usdc_address, attestation.custody_address,
          attestation.jackpot_address, attestation.ticket_nft_address,
          attestation.referrer_address, attestation.jackpot_code_hash,
          attestation.usdc_code_hash, attestation.ticket_nft_code_hash
     FROM reward_ledger_credits credit
+    JOIN reward_asset_whitelist asset
+      ON asset.chain_id=credit.chain_id AND asset.token_address=credit.token_address
     JOIN megapot_deployment_attestations attestation
       ON attestation.chain_id=credit.chain_id
-     AND attestation.usdc_address=credit.token_address
+     AND attestation.environment=asset.environment
      AND attestation.status='active'
     LEFT JOIN LATERAL (
       SELECT assignment_id, address
@@ -127,6 +130,7 @@ const CANDIDATE_SELECT = `
       SELECT observation_id, balance_atomic, expires_at, solvent
         FROM custody_solvency_observations
        WHERE attestation_id=attestation.attestation_id
+         AND token_address=credit.token_address
        ORDER BY block_number DESC, observation_id DESC LIMIT 1
     ) observation ON true`;
 
@@ -148,6 +152,7 @@ function candidateFromRow(row: Row): RewardPayoutCandidate {
     attestationId: text(row, "attestation_id"),
     environment,
     chainId: integer(row, "chain_id"),
+    tokenAddress: text(row, "token_address"),
     usdcAddress: text(row, "usdc_address"),
     custodyAddress: text(row, "custody_address"),
     jackpotAddress: text(row, "jackpot_address"),
@@ -208,6 +213,7 @@ const PROGRESS_SELECT = `
          payout.wallet_assignment_id, payout.destination_address,
          payout.solvency_observation_id, payout.custody_balance_before_atomic,
          observation.expires_at AS solvency_expires_at,
+         effect.target_address AS token_address,
          payout.attestation_id, attestation.environment, attestation.chain_id,
          attestation.usdc_address, attestation.custody_address,
          attestation.jackpot_address, attestation.ticket_nft_address,
@@ -281,6 +287,7 @@ function sameCandidate(left: RewardPayoutCandidate, right: RewardPayoutCandidate
     left.custodyBalanceBeforeAtomic === right.custodyBalanceBeforeAtomic &&
     left.attestationId === right.attestationId &&
     left.chainId === right.chainId &&
+    left.tokenAddress === right.tokenAddress &&
     left.usdcAddress === right.usdcAddress &&
     left.custodyAddress === right.custodyAddress
   );
@@ -365,7 +372,7 @@ function reserveNonceIn(
         input.effectId,
         candidate.chainId,
         candidate.custodyAddress,
-        candidate.usdcAddress,
+        candidate.tokenAddress,
         candidate.amountAtomic.toString(),
       ],
       readonly: false,
@@ -657,6 +664,7 @@ export function makeControlPlaneRewardPayoutRepository() {
             const result = yield* transaction.execute<Row>({
               label: "reward-payout.confirm.read",
               text: `SELECT effect.state, effect.version, effect.transaction_hash,
+                            effect.target_address AS token_address,
                             payout.attestation_id, payout.credit_id,
                             payout.destination_address, payout.amount_atomic,
                             attestation.usdc_address, attestation.custody_address
@@ -731,7 +739,7 @@ export function makeControlPlaneRewardPayoutRepository() {
               values: [
                 input.effectId,
                 text(row, "attestation_id"),
-                text(row, "usdc_address"),
+                text(row, "token_address"),
                 text(row, "custody_address"),
                 text(row, "destination_address"),
                 input.amountAtomic.toString(),

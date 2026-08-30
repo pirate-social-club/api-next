@@ -48,6 +48,10 @@ function deployment(intent: RewardFundingIntent): MegapotV2DeploymentAttestation
   };
 }
 
+function assetDeployment(intent: RewardFundingIntent): MegapotV2DeploymentAttestation {
+  return { ...deployment(intent), usdcAddress: intent.tokenAddress };
+}
+
 function canonicalReceipt(receipt: MegapotTransactionReceipt): string {
   return JSON.stringify({
     chainId: receipt.chainId,
@@ -186,7 +190,7 @@ export function makeRewardFundingCoordinator(input: {
       let evidence: ReturnType<typeof validateMegapotUsdcFundingReceipt>;
       try {
         evidence = validateMegapotUsdcFundingReceipt({
-          deployment: deployment(intent),
+          deployment: assetDeployment(intent),
           receipt,
           sender: intent.senderAddress,
           amountAtomic: intent.expectedAmountAtomic,

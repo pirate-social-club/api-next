@@ -45,11 +45,15 @@ import {
   SubmitStudyAnswer,
 } from "./rewards-qualification.ts";
 import {
+  AddAssetBonusLeg,
   AddMegapotPoolLeg,
+  GetAssetBonusFunding,
   GetMegapotPoolFunding,
   GetMegapotPoolStanding,
   GetSongMegapotPool,
   ListMyRewardCredits,
+  ListSongAssetBonuses,
+  ObserveAssetBonusFunding,
   ObserveMegapotPoolFunding,
   OpenSongRewardOffer,
 } from "./rewards-song-offers.ts";
@@ -109,6 +113,10 @@ export const registry = {
   GetSongMegapotPool,
   GetMegapotPoolStanding,
   ListMyRewardCredits,
+  AddAssetBonusLeg,
+  ObserveAssetBonusFunding,
+  GetAssetBonusFunding,
+  ListSongAssetBonuses,
 } as const;
 
 /** The sole source consumed by every generated HTTP artifact. */

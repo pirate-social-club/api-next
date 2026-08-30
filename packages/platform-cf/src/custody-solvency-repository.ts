@@ -92,6 +92,7 @@ function candidateFromRow(row: Row): CustodySolvencyCandidate {
     attestationId: text(row, "attestation_id"),
     environment,
     chainId: integer(row, "chain_id"),
+    tokenAddress: text(row, "token_address"),
     usdcAddress: text(row, "usdc_address"),
     custodyAddress: text(row, "custody_address"),
     jackpotAddress: text(row, "jackpot_address"),
@@ -107,6 +108,7 @@ function observationFromRow(row: Row): CustodySolvencyObservation {
   return {
     observationId: text(row, "observation_id"),
     attestationId: text(row, "attestation_id"),
+    tokenAddress: text(row, "token_address"),
     balanceAtomic: bigint(row, "balance_atomic"),
     reservedPurchaseAtomic: bigint(row, "reserved_purchase_atomic"),
     outstandingCreditAtomic: bigint(row, "outstanding_credit_atomic"),
@@ -120,25 +122,68 @@ function observationFromRow(row: Row): CustodySolvencyObservation {
   };
 }
 
-const OBSERVATION_SELECT = `SELECT observation_id, attestation_id, balance_atomic,
+const OBSERVATION_SELECT = `SELECT observation_id, attestation_id, token_address, balance_atomic,
   reserved_purchase_atomic, outstanding_credit_atomic, pending_refund_atomic,
   shared_sponsorship_atomic, solvent, block_number, block_hash, observed_at, expires_at
   FROM custody_solvency_observations`;
 
 export function makeControlPlaneCustodySolvencyRepository() {
   return {
-    loadCandidate: (attestationId: string) =>
+    listTokenAddresses: (attestationId: string) =>
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        const result = yield* db.execute<Row>({
+          label: "custody-solvency.assets.read",
+          text: `SELECT token_address FROM (
+                  SELECT attestation.usdc_address AS token_address
+                    FROM megapot_deployment_attestations attestation
+                   WHERE attestation.attestation_id=$1 AND attestation.status='active'
+                  UNION
+                  SELECT leg.token_address
+                    FROM megapot_deployment_attestations attestation
+                    JOIN song_reward_offer_legs leg ON leg.chain_id=attestation.chain_id
+                   WHERE attestation.attestation_id=$1 AND attestation.status='active'
+                     AND leg.kind='asset_bonus' AND leg.funded_atomic > 0
+                  UNION
+                  SELECT credit.token_address
+                    FROM megapot_deployment_attestations attestation
+                    JOIN reward_ledger_credits credit ON credit.chain_id=attestation.chain_id
+                   WHERE attestation.attestation_id=$1 AND attestation.status='active'
+                     AND credit.state <> 'sent'
+                ) assets ORDER BY token_address`,
+          values: [attestationId],
+          readonly: true,
+        });
+        if (result.rows.length === 0) return yield* rejected("attestation-not-found");
+        return result.rows.map((row) => text(row, "token_address"));
+      }).pipe(mapped),
+    loadCandidate: (attestationId: string, tokenAddress?: string) =>
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
         const result = yield* db.execute<Row>({
           label: "custody-solvency.candidate.read",
-          text: `SELECT attestation_id, environment, chain_id, usdc_address,
+          text: `SELECT attestation.attestation_id, attestation.environment,
+                        attestation.chain_id, asset.token_address, attestation.usdc_address,
                         custody_address, jackpot_address, ticket_nft_address,
                         referrer_address, jackpot_code_hash, usdc_code_hash,
                         ticket_nft_code_hash
-                   FROM megapot_deployment_attestations
-                  WHERE attestation_id=$1 AND status='active'`,
-          values: [attestationId],
+                   FROM megapot_deployment_attestations attestation
+                   JOIN reward_asset_whitelist asset
+                     ON asset.chain_id=attestation.chain_id
+                    AND asset.token_address=COALESCE($2,attestation.usdc_address)
+                  WHERE attestation.attestation_id=$1 AND attestation.status='active'
+                    AND (asset.token_address=attestation.usdc_address OR EXISTS (
+                      SELECT 1 FROM song_reward_offer_legs leg
+                       WHERE leg.chain_id=asset.chain_id
+                         AND leg.token_address=asset.token_address
+                         AND leg.kind='asset_bonus' AND leg.funded_atomic > 0
+                    ) OR EXISTS (
+                      SELECT 1 FROM reward_ledger_credits credit
+                       WHERE credit.chain_id=asset.chain_id
+                         AND credit.token_address=asset.token_address
+                         AND credit.state <> 'sent'
+                    ))`,
+          values: [attestationId, tokenAddress ?? null],
           readonly: true,
         });
         if (result.rows.length === 0) return yield* rejected("attestation-not-found");
@@ -183,13 +228,18 @@ export function makeControlPlaneCustodySolvencyRepository() {
             }
             const authority = yield* transaction.execute<Row>({
               label: "custody-solvency.authority.read",
-              text: `SELECT attestation_id, environment, chain_id, usdc_address,
+              text: `SELECT attestation.attestation_id, attestation.environment,
+                            attestation.chain_id, asset.token_address, attestation.usdc_address,
                             custody_address, jackpot_address, ticket_nft_address,
                             referrer_address, jackpot_code_hash, usdc_code_hash,
                             ticket_nft_code_hash
-                       FROM megapot_deployment_attestations
-                      WHERE attestation_id=$1 AND status='active' FOR SHARE`,
-              values: [input.candidate.attestationId],
+                       FROM megapot_deployment_attestations attestation
+                       JOIN reward_asset_whitelist asset
+                         ON asset.chain_id=attestation.chain_id
+                        AND asset.token_address=$2
+                      WHERE attestation.attestation_id=$1 AND attestation.status='active'
+                      FOR SHARE OF attestation, asset`,
+              values: [input.candidate.attestationId, input.candidate.tokenAddress],
               readonly: false,
             });
             if (authority.rows.length !== 1) return yield* rejected("attestation-not-found");
@@ -214,13 +264,14 @@ export function makeControlPlaneCustodySolvencyRepository() {
                 (SELECT COALESCE(sum(funded_atomic-reserved_atomic-spent_atomic
                     -fulfilled_atomic-refunded_atomic),0)::text
                    FROM song_reward_offer_legs
-                  WHERE funding_source='leg_budget' AND chain_id=$1 AND token_address=$2)
+                  WHERE (funding_source='leg_budget' OR kind='asset_bonus')
+                    AND chain_id=$1 AND token_address=$2)
                   AS pending_refund_atomic,
                 (SELECT COALESCE(sum(funded_atomic+winnings_credited_atomic
                     -spent_atomic-withdrawn_atomic),0)::text
                    FROM platform_sponsorship_budgets
                   WHERE chain_id=$1 AND token_address=$2) AS shared_sponsorship_atomic`,
-              values: [candidate.chainId, candidate.usdcAddress],
+              values: [candidate.chainId, candidate.tokenAddress],
               readonly: true,
             });
             if (totals.rows.length !== 1) return yield* storage("invalid-row");
@@ -239,7 +290,7 @@ export function makeControlPlaneCustodySolvencyRepository() {
                 candidate.attestationId,
                 candidate.chainId,
                 candidate.custodyAddress,
-                candidate.usdcAddress,
+                candidate.tokenAddress,
                 input.balanceAtomic.toString(),
                 text(row, "reserved_purchase_atomic"),
                 text(row, "outstanding_credit_atomic"),
@@ -276,7 +327,9 @@ export const makeControlPlaneCustodySolvencyStore = (
   const provide = <A, E>(effect: Effect.Effect<A, E, ControlPlaneDb>) =>
     mapped(Effect.provide(layer)(effect));
   return {
-    loadCandidate: (attestationId) => provide(repository.loadCandidate(attestationId)),
+    listTokenAddresses: (attestationId) => provide(repository.listTokenAddresses(attestationId)),
+    loadCandidate: (attestationId, tokenAddress) =>
+      provide(repository.loadCandidate(attestationId, tokenAddress)),
     findObservation: (observationId) => provide(repository.findObservation(observationId)),
     record: (input) => provide(repository.record(input)),
   };

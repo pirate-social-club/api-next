@@ -87,11 +87,13 @@ function nullableBigint(row: Row, field: string): bigint | null {
 }
 
 const INTENT_SELECT = `
-  SELECT funding.funding_effect_id, funding.leg_id, funding.funder_account_id,
+  SELECT funding.funding_effect_id, funding.leg_id, leg.kind AS leg_kind,
+         funding.funder_account_id,
          funding.sender_address, funding.recipient_address,
          funding.expected_amount_atomic, funding.required_confirmations,
          funding.state, funding.transaction_hash, funding.confirmed_amount_atomic,
          funding.log_index, funding.block_number, funding.block_hash,
+         funding.token_address, leg.token_decimals,
          attestation.attestation_id, attestation.environment, attestation.chain_id,
          attestation.usdc_address, attestation.custody_address,
          attestation.jackpot_address, attestation.ticket_nft_address,
@@ -99,11 +101,15 @@ const INTENT_SELECT = `
          attestation.usdc_code_hash, attestation.ticket_nft_code_hash
     FROM song_reward_leg_funding_effects funding
     JOIN song_reward_offer_legs leg ON leg.leg_id=funding.leg_id
+    JOIN reward_asset_whitelist asset
+      ON asset.chain_id=leg.chain_id AND asset.token_address=leg.token_address
     JOIN megapot_deployment_attestations attestation
-      ON attestation.attestation_id=leg.attestation_id`;
+      ON attestation.chain_id=leg.chain_id AND attestation.environment=asset.environment
+     AND attestation.status='active'`;
 
 function intentFromRow(row: Row): RewardFundingIntent {
   const state = text(row, "state");
+  const legKind = text(row, "leg_kind");
   const environment = text(row, "environment");
   if (
     ![
@@ -114,13 +120,15 @@ function intentFromRow(row: Row): RewardFundingIntent {
       "reclaimable_failed",
       "reconciliation_required",
     ].includes(state) ||
-    (environment !== "test" && environment !== "staging" && environment !== "production")
+    (environment !== "test" && environment !== "staging" && environment !== "production") ||
+    (legKind !== "megapot_pool" && legKind !== "asset_bonus")
   ) {
     throw new Error("invalid funding intent");
   }
   return {
     fundingEffectId: text(row, "funding_effect_id"),
     legId: text(row, "leg_id"),
+    legKind,
     funderAccountId: text(row, "funder_account_id"),
     senderAddress: text(row, "sender_address"),
     recipientAddress: text(row, "recipient_address"),
@@ -135,6 +143,8 @@ function intentFromRow(row: Row): RewardFundingIntent {
     attestationId: text(row, "attestation_id"),
     environment,
     chainId: integer(row, "chain_id"),
+    tokenAddress: text(row, "token_address"),
+    tokenDecimals: integer(row, "token_decimals"),
     usdcAddress: text(row, "usdc_address"),
     custodyAddress: text(row, "custody_address"),
     jackpotAddress: text(row, "jackpot_address"),
@@ -177,15 +187,21 @@ export function makeControlPlaneRewardFundingRepository() {
             if (replay !== null) return replay;
             const authority = yield* transaction.execute<Row>({
               label: "reward-funding.authority.read",
-              text: `SELECT leg.leg_id, leg.funder_account_id AS frozen_funder_account_id,
+              text: `SELECT leg.leg_id, leg.kind,
+                            leg.funder_account_id AS frozen_funder_account_id,
                             leg.empty_pool_policy, leg.funding_source, leg.chain_id,
                             leg.token_address, leg.status, attestation.attestation_id,
                             attestation.custody_address
                        FROM song_reward_offer_legs leg
+                       JOIN reward_asset_whitelist asset
+                         ON asset.chain_id=leg.chain_id AND asset.token_address=leg.token_address
+                        AND asset.status='active'
                        JOIN megapot_deployment_attestations attestation
-                         ON attestation.attestation_id=leg.attestation_id
-                      WHERE leg.leg_id=$1 AND leg.kind='megapot_pool'
-                        AND attestation.status='active' FOR SHARE OF leg, attestation`,
+                         ON attestation.chain_id=leg.chain_id
+                        AND attestation.environment=asset.environment
+                        AND attestation.status='active'
+                      WHERE leg.leg_id=$1 AND leg.kind IN ('megapot_pool','asset_bonus')
+                        FOR SHARE OF leg, attestation`,
               values: [input.legId],
               readonly: false,
             });
@@ -193,12 +209,14 @@ export function makeControlPlaneRewardFundingRepository() {
             if (authority.rows.length !== 1) return yield* storage("invalid-row");
             const row = authority.rows[0] as Row;
             if (
-              text(row, "funding_source") !== "leg_budget" ||
+              (text(row, "kind") === "megapot_pool" &&
+                text(row, "funding_source") !== "leg_budget") ||
               !["funding", "active"].includes(text(row, "status"))
             ) {
               return yield* rejected("funding-not-allowed");
             }
             if (
+              text(row, "kind") === "megapot_pool" &&
               text(row, "empty_pool_policy") === "funder_fallback" &&
               text(row, "frozen_funder_account_id") !== input.funderAccountId
             ) {
@@ -342,6 +360,20 @@ export function makeControlPlaneRewardFundingRepository() {
                         AND leg.kind='megapot_pool' AND leg.status='funding'
                         AND leg.empty_pool_policy='no_purchase'
                         AND leg.funded_atomic >= leg.max_ticket_price_atomic
+                        AND offer.status='active' AND offer.starts_at <= clock_timestamp()
+                        AND offer.ends_at > clock_timestamp()`,
+              values: [text(row, "leg_id")],
+              readonly: false,
+            });
+            yield* transaction.execute({
+              label: "reward-funding.leg.activate-asset-bonus",
+              text: `UPDATE song_reward_offer_legs leg
+                        SET status='active', activated_at=clock_timestamp(),
+                            updated_at=clock_timestamp()
+                       FROM song_reward_offers offer
+                      WHERE leg.leg_id=$1 AND leg.offer_id=offer.offer_id
+                        AND leg.kind='asset_bonus' AND leg.status='funding'
+                        AND leg.funded_atomic >= leg.amount_per_claim_atomic
                         AND offer.status='active' AND offer.starts_at <= clock_timestamp()
                         AND offer.ends_at > clock_timestamp()`,
               values: [text(row, "leg_id")],

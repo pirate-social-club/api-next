@@ -7,6 +7,7 @@ import {
   type MegapotPoolStanding,
   type MegapotSponsorFallbackState,
   type PublicMegapotDrawingProjection,
+  type PublicSongAssetBonusProjection,
   type PublicSongMegapotPoolProjection,
   type RewardCredit,
   type RewardCreditState,
@@ -371,6 +372,46 @@ function rewardCreditFromRow(row: Row): RewardCredit {
   };
 }
 
+function assetBonusFromRow(row: Row): PublicSongAssetBonusProjection {
+  const offerStatus = text(row, "offer_status");
+  const legStatus = text(row, "leg_status");
+  const viewerState = nullableText(row, "viewer_state");
+  const viewerCreditState = nullableText(row, "viewer_credit_state");
+  if (
+    !["active", "paused", "exhausted", "expired", "ended", "operational_hold"].includes(
+      offerStatus,
+    ) ||
+    !["funding", "active", "paused", "exhausted", "ended", "operational_hold"].includes(
+      legStatus,
+    ) ||
+    (viewerState !== null &&
+      !["claimable", "already_claimed", "unavailable"].includes(viewerState)) ||
+    (viewerCreditState !== null && !creditStates.has(viewerCreditState as RewardCreditState))
+  ) {
+    throw new Error("invalid asset bonus projection row");
+  }
+  return {
+    offerId: text(row, "offer_id"),
+    legId: text(row, "leg_id"),
+    communityId: text(row, "community_id"),
+    postId: text(row, "post_id"),
+    offerStatus: offerStatus as PublicSongAssetBonusProjection["offerStatus"],
+    legStatus: legStatus as PublicSongAssetBonusProjection["legStatus"],
+    chainId: integer(row, "chain_id"),
+    tokenAddress: text(row, "token_address"),
+    tokenDecimals: integer(row, "token_decimals"),
+    tokenSymbol: text(row, "token_symbol"),
+    assetPolicyVersion: text(row, "asset_policy_version"),
+    amountPerClaimAtomic: bigint(row, "amount_per_claim_atomic"),
+    maxClaims: integer(row, "max_claims"),
+    claimedCount: integer(row, "claimed_count"),
+    availableInventoryAtomic: bigint(row, "available_inventory_atomic"),
+    viewerState: viewerState as PublicSongAssetBonusProjection["viewerState"],
+    viewerCreditId: nullableText(row, "viewer_credit_id"),
+    viewerCreditState: viewerCreditState as RewardCreditState | null,
+  };
+}
+
 export function makeControlPlaneRewardProjectionRepository() {
   return {
     findPublicSongPool: (input: Parameters<RewardProjectionStore["findPublicSongPool"]>[0]) =>
@@ -439,6 +480,64 @@ export function makeControlPlaneRewardProjectionRepository() {
           if (result.rows.length !== 1) return yield* Effect.fail(storage("invalid-row"));
           return yield* Effect.try({
             try: () => publicPoolFromRow(result.rows[0] as Row),
+            catch: () => storage("invalid-row"),
+          });
+        }),
+      ),
+
+    listPublicSongAssetBonuses: (
+      input: Parameters<RewardProjectionStore["listPublicSongAssetBonuses"]>[0],
+    ) =>
+      mapped(
+        Effect.gen(function* () {
+          const db = yield* ControlPlaneDb;
+          const result = yield* db.execute<Row>({
+            label: "reward-projection.public-asset-bonuses.read",
+            text: `SELECT offer.offer_id, offer.community_id, offer.post_id,
+                          offer.status AS offer_status, leg.leg_id,
+                          leg.status AS leg_status, leg.chain_id, leg.token_address,
+                          leg.token_decimals, leg.token_symbol, leg.asset_policy_version,
+                          leg.amount_per_claim_atomic, leg.max_claims,
+                          leg.fulfilled_atomic / leg.amount_per_claim_atomic AS claimed_count,
+                          leg.funded_atomic-leg.reserved_atomic-leg.spent_atomic-
+                            leg.fulfilled_atomic-leg.refunded_atomic
+                            AS available_inventory_atomic,
+                          CASE
+                            WHEN $1::text IS NULL THEN NULL
+                            WHEN claim.account_id IS NOT NULL THEN 'already_claimed'
+                            WHEN offer.status='active' AND leg.status='active'
+                              AND clock_timestamp() >= offer.starts_at
+                              AND clock_timestamp() < offer.ends_at
+                              AND leg.fulfilled_atomic / leg.amount_per_claim_atomic < leg.max_claims
+                              AND leg.funded_atomic-leg.reserved_atomic-leg.spent_atomic-
+                                leg.fulfilled_atomic-leg.refunded_atomic
+                                >= leg.amount_per_claim_atomic
+                            THEN 'claimable' ELSE 'unavailable'
+                          END AS viewer_state,
+                          claim_leg.credit_id AS viewer_credit_id,
+                          credit.state AS viewer_credit_state
+                     FROM song_reward_offers offer
+                     JOIN posts post ON post.community_id=offer.community_id
+                       AND post.post_id=offer.post_id AND post.post_type='song'
+                       AND post.status='published' AND post.visibility='public'
+                     JOIN song_reward_offer_legs leg ON leg.offer_id=offer.offer_id
+                       AND leg.kind='asset_bonus' AND leg.status <> 'draft'
+                     LEFT JOIN song_reward_bundle_claims claim
+                       ON claim.account_id=$1 AND claim.offer_id=offer.offer_id
+                     LEFT JOIN song_reward_bundle_claim_legs claim_leg
+                       ON claim_leg.account_id=claim.account_id
+                      AND claim_leg.offer_id=claim.offer_id AND claim_leg.leg_id=leg.leg_id
+                     LEFT JOIN reward_ledger_credits credit
+                       ON credit.credit_id=claim_leg.credit_id
+                    WHERE offer.community_id=$2 AND offer.post_id=$3
+                      AND offer.status <> 'draft'
+                    ORDER BY (offer.status IN ('active','paused','operational_hold')) DESC,
+                             offer.created_at DESC, leg.created_at, leg.leg_id`,
+            values: [input.accountId, input.communityId, input.postId],
+            readonly: true,
+          });
+          return yield* Effect.try({
+            try: () => result.rows.map((row) => assetBonusFromRow(row as Row)),
             catch: () => storage("invalid-row"),
           });
         }),
@@ -575,6 +674,7 @@ export function makeControlPlaneRewardProjectionStore(
     mapped(Effect.provide(runtime)(effect));
   return {
     findPublicSongPool: (input) => provide(repository.findPublicSongPool(input)),
+    listPublicSongAssetBonuses: (input) => provide(repository.listPublicSongAssetBonuses(input)),
     findStanding: (input) => provide(repository.findStanding(input)),
     listCredits: (input) => provide(repository.listCredits(input)),
   };

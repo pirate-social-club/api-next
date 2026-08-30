@@ -26,6 +26,7 @@ import {
 } from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { applyPostgresMigrations } from "./postgres-migrations.ts";
+import { makeControlPlaneRewardProjectionStore } from "./reward-projection-repository.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -337,9 +338,9 @@ async function seedOpenMegapotPool(
   await admin.query(
     `INSERT INTO reward_asset_whitelist (
        chain_id,token_address,decimals,symbol,asset_kind,environment,status,
-       policy_version,activated_at
+       policy_version,activated_at,plain_erc20_verified_at
      ) VALUES (84532,$1,6,'USDC','settlement_usdc','staging','active',
-       'base-sepolia-usdc-v1',clock_timestamp())`,
+       'base-sepolia-usdc-v1',statement_timestamp(),statement_timestamp())`,
     [address("1")],
   );
   await admin.query(
@@ -457,6 +458,106 @@ async function seedOpenMegapotPool(
     [legId, observationId],
   );
   return { legId, offerId };
+}
+
+async function seedOpenAssetBonus(
+  admin: Client,
+  identity: Readonly<{
+    readonly accountId: string;
+    readonly communityId: string;
+    readonly personaId: string;
+    readonly postId: string;
+  }>,
+  suffix: string,
+  input: Readonly<{
+    readonly fundedAtomic?: number;
+    readonly maxClaims?: number;
+  }> = {},
+): Promise<Readonly<{ readonly legId: string; readonly offerId: string; readonly token: string }>> {
+  const offerId = `offer-${suffix}`;
+  const legId = `leg-${suffix}`;
+  const policyVersionId = `reward-policy-${suffix}`;
+  const token = address("d");
+  const fundedAtomic = input.fundedAtomic ?? 200;
+  const maxClaims = input.maxClaims ?? 2;
+  await admin.query(
+    `INSERT INTO reward_asset_whitelist (
+       chain_id,token_address,decimals,symbol,asset_kind,environment,status,
+       policy_version,activated_at,plain_erc20_verified_at
+     ) VALUES (84532,$1,6,'BONUS','bonus_asset','staging','active',
+       'bonus-v1',statement_timestamp(),statement_timestamp())`,
+    [token],
+  );
+  await admin.query(
+    `INSERT INTO reward_activity_availability_observations (
+       availability_observation_id,community_id,post_id,audio_revision,activity_key,
+       producer_id,producer_revision,state,study_item_count,evidence,evidence_hash,
+       observed_at,expires_at
+     ) VALUES ($1,$2,$3,3,'study','study-item-source','v1','available',1,
+       '{"kind":"typed_study_items","item_count":1}'::jsonb,$4,
+       clock_timestamp(),clock_timestamp() + interval '2 hours')`,
+    [`availability-${suffix}`, identity.communityId, identity.postId, hash("d")],
+  );
+  await admin.query(
+    `INSERT INTO reward_uniqueness_authorities (
+       campaign_id,issuer,method,scope_kind,issuer_rp_scope
+     ) VALUES ($1,$2,$3,'issuer_rp_scope',$4)`,
+    [offerId, VERY_WEB_ISSUER, VERY_WEB_METHOD, VERY_WEB_RP_SCOPE],
+  );
+  await admin.query(
+    `INSERT INTO policy_versions (
+       policy_version_id,community_id,policy_key,revision,policy_hash,policy,
+       compiled_plan,compiler_version,uniqueness_model,created_by_user_id,
+       published_at,policy_purpose,uniqueness_authority_id
+     ) VALUES ($1,$2,$3,1,$4,'{"version":"scarce_reward_v1"}'::jsonb,
+       '{"evaluator":"scarce_reward_eligibility_v1"}'::jsonb,
+       'scarce_reward_policy_v1',$5::jsonb,$6,clock_timestamp(),'reward',$7)`,
+    [
+      policyVersionId,
+      identity.communityId,
+      `song_reward_offer:${offerId}`,
+      hash("e"),
+      JSON.stringify({ kind: "single_authority", authority_id: offerId }),
+      identity.accountId,
+      offerId,
+    ],
+  );
+  await admin.query(
+    `INSERT INTO song_reward_offers (
+       offer_id,community_id,post_id,audio_revision,created_by_account_id,status,
+       starts_at,ends_at,owner_policy_snapshot,terms_hash,reward_policy_version_id
+     ) VALUES ($1,$2,$3,3,$4,'draft','2026-08-01T00:00:00.000Z',
+       clock_timestamp() + interval '10 days','{"third_party_legs":"allowed"}'::jsonb,
+       $5,$6)`,
+    [
+      offerId,
+      identity.communityId,
+      identity.postId,
+      identity.accountId,
+      hash("f"),
+      policyVersionId,
+    ],
+  );
+  await admin.query(
+    `UPDATE song_reward_offers SET status='active',activated_at=clock_timestamp(),
+       updated_at=clock_timestamp() WHERE offer_id=$1`,
+    [offerId],
+  );
+  await admin.query(
+    `INSERT INTO song_reward_offer_legs (
+       leg_id,offer_id,kind,status,funder_account_id,refund_policy,leg_terms_hash,
+       participation_starts_at,chain_id,token_address,token_decimals,token_symbol,
+       asset_policy_version,amount_per_claim_atomic,max_claims,funded_atomic
+     ) VALUES ($1,$2,'asset_bonus','draft',$3,'refund_to_funders_pro_rata',$4,
+       '2026-08-01T00:00:00.000Z',84532,$5,6,'BONUS','bonus-v1',100,$6,$7)`,
+    [legId, offerId, identity.accountId, bytes32("b"), token, maxClaims, fundedAtomic],
+  );
+  await admin.query(
+    `UPDATE song_reward_offer_legs SET status='active',activated_at=clock_timestamp(),
+       updated_at=clock_timestamp() WHERE leg_id=$1`,
+    [legId],
+  );
+  return { legId, offerId, token };
 }
 
 const sourceFor = (identity: {
@@ -950,6 +1051,366 @@ suite("Postgres 17 activity qualification repository", () => {
         offerId,
       ]);
       expect(consumptions.rows).toEqual([{ campaign_id: offerId, user_id: identity.accountId }]);
+    });
+  });
+
+  test("credits every available asset-bonus leg once per verified account", async () => {
+    await withSchema(async ({ admin, scopedConnection }) => {
+      const identity = await seedAccountSong(admin, "asset-claim");
+      const missing = await seedParticipant(admin, identity, "asset-claim-missing");
+      const second = await seedParticipant(admin, identity, "asset-claim-second");
+      const stale = await seedParticipant(admin, identity, "asset-claim-stale");
+      await seedVeryRewardEvidence(admin, identity.accountId, "asset-claim");
+      await seedVeryRewardEvidence(admin, second.accountId, "asset-claim-second", "2");
+      await seedVeryRewardEvidence(admin, stale.accountId, "asset-claim-stale", "3");
+      await admin.query("SET session_replication_role = replica");
+      try {
+        await admin.query(
+          `UPDATE evidence_receipts SET expires_at=clock_timestamp() - interval '1 minute'
+            WHERE evidence_receipt_id='receipt-asset-claim-stale'`,
+        );
+        await admin.query(
+          `UPDATE assertions SET expires_at=clock_timestamp() - interval '1 minute'
+            WHERE user_id=$1`,
+          [stale.accountId],
+        );
+      } finally {
+        await admin.query("SET session_replication_role = origin");
+      }
+      const { legId, offerId, token } = await seedOpenAssetBonus(admin, identity, "asset-claim");
+      const unfundedLegId = "leg-asset-claim-unfunded";
+      await admin.query(
+        `INSERT INTO song_reward_offer_legs (
+           leg_id,offer_id,kind,status,funder_account_id,refund_policy,leg_terms_hash,
+           participation_starts_at,chain_id,token_address,token_decimals,token_symbol,
+           asset_policy_version,amount_per_claim_atomic,max_claims,funded_atomic
+         ) VALUES ($1,$2,'asset_bonus','draft',$3,'refund_to_funders_pro_rata',$4,
+           '2026-08-01T00:00:00.000Z',84532,$5,6,'BONUS','bonus-v1',50,2,0)`,
+        [unfundedLegId, offerId, identity.accountId, bytes32("c"), token],
+      );
+      await admin.query(
+        `UPDATE song_reward_offer_legs SET status='funding',updated_at=clock_timestamp()
+          WHERE leg_id=$1`,
+        [unfundedLegId],
+      );
+      const source = sourceFor(identity);
+      const service = makeActivityQualificationService(
+        makeControlPlaneActivityQualificationStore(
+          makeDirectPostgresControlPlaneLayer(scopedConnection),
+        ),
+      );
+
+      const qualify = async (
+        actor: Readonly<{ readonly accountId: string; readonly personaId: string }>,
+        suffix: string,
+        now: string,
+      ): Promise<void> => {
+        const session = await Effect.runPromise(
+          provideServices(
+            [`session-${suffix}`, `item-${suffix}`],
+            source,
+            now,
+          )(
+            service.startStudySession({
+              accountId: actor.accountId,
+              communityId: identity.communityId,
+              idempotencyKey: `start-${suffix}`,
+              personaId: actor.personaId,
+              postId: identity.postId,
+              requestedTimezone: "UTC",
+            }),
+          ),
+        );
+        const result = await Effect.runPromise(
+          provideServices(
+            [`answer-${suffix}`, `qualification-${suffix}`],
+            source,
+            new Date(Date.parse(now) + 60_000).toISOString(),
+          )(
+            service.submitStudyAnswer({
+              accountId: actor.accountId,
+              answer: { kind: "text_response", text: "Sail away" },
+              attemptNumber: 1,
+              communityId: identity.communityId,
+              idempotencyKey: `answer-${suffix}`,
+              sessionId: session.session_id,
+              sessionItemId: session.items[0]?.session_item_id ?? "missing",
+            }),
+          ),
+        );
+        expect(result.session.qualification).not.toBeNull();
+      };
+
+      await qualify(identity, "asset-claim-eligible", "2026-08-25T15:00:00.000Z");
+
+      const secondPersonaId = `persona-${crypto.randomUUID()}`;
+      await createActivePersonaFixture(admin, {
+        accountId: identity.accountId,
+        personaId: secondPersonaId,
+        profile: { displayName: "Second Asset Persona" },
+      });
+      await qualify(
+        { accountId: identity.accountId, personaId: secondPersonaId },
+        "asset-claim-second-persona",
+        "2026-08-25T15:05:00.000Z",
+      );
+      await qualify(missing, "asset-claim-missing", "2026-08-25T15:10:00.000Z");
+      await qualify(stale, "asset-claim-stale", "2026-08-25T15:12:00.000Z");
+      await qualify(second, "asset-claim-second", "2026-08-25T15:15:00.000Z");
+
+      const claims = await admin.query<{
+        readonly account_id: string;
+        readonly state: string;
+        readonly terminal_reason: string | null;
+      }>(
+        `SELECT account_id,state,terminal_reason
+           FROM song_reward_bundle_claims WHERE offer_id=$1 ORDER BY account_id`,
+        [offerId],
+      );
+      expect(claims.rows).toEqual([
+        { account_id: identity.accountId, state: "credited", terminal_reason: null },
+        {
+          account_id: missing.accountId,
+          state: "ineligible",
+          terminal_reason: "verification_missing",
+        },
+        { account_id: second.accountId, state: "credited", terminal_reason: null },
+        {
+          account_id: stale.accountId,
+          state: "ineligible",
+          terminal_reason: "verification_stale",
+        },
+      ]);
+
+      const credits = await admin.query<{
+        readonly account_id: string;
+        readonly amount_atomic: string;
+        readonly token_address: string;
+      }>(
+        `SELECT account_id,amount_atomic::text,token_address
+           FROM reward_ledger_credits WHERE source_kind='asset_bonus'
+          ORDER BY account_id`,
+      );
+      expect(credits.rows).toEqual([
+        { account_id: identity.accountId, amount_atomic: "100", token_address: token },
+        { account_id: second.accountId, amount_atomic: "100", token_address: token },
+      ]);
+
+      const leg = await admin.query<{
+        readonly fulfilled_atomic: string;
+        readonly status: string;
+      }>(`SELECT fulfilled_atomic::text,status FROM song_reward_offer_legs WHERE leg_id=$1`, [
+        legId,
+      ]);
+      expect(leg.rows[0]).toEqual({ fulfilled_atomic: "200", status: "exhausted" });
+
+      const claimLegs = await admin.query<{
+        readonly state: string;
+        readonly terminal_reason: string | null;
+      }>(
+        `SELECT state,terminal_reason FROM song_reward_bundle_claim_legs
+          WHERE offer_id=$1 ORDER BY account_id`,
+        [offerId],
+      );
+      expect(claimLegs.rows).toEqual([
+        { state: "credited", terminal_reason: null },
+        { state: "unavailable", terminal_reason: "verification_missing" },
+        { state: "credited", terminal_reason: null },
+        { state: "unavailable", terminal_reason: "verification_stale" },
+      ]);
+
+      const projections = makeControlPlaneRewardProjectionStore(
+        makeDirectPostgresControlPlaneLayer(scopedConnection),
+      );
+      const participantProjection = await Effect.runPromise(
+        projections.listPublicSongAssetBonuses({
+          accountId: identity.accountId,
+          communityId: identity.communityId,
+          postId: identity.postId,
+        }),
+      );
+      expect(
+        participantProjection.find(({ legId: candidate }) => candidate === legId),
+      ).toMatchObject({
+        offerId,
+        legStatus: "exhausted",
+        tokenAddress: token,
+        claimedCount: 2,
+        availableInventoryAtomic: 0n,
+        viewerState: "already_claimed",
+        viewerCreditState: "credited",
+      });
+      expect(
+        participantProjection.find(({ legId: candidate }) => candidate === unfundedLegId),
+      ).toMatchObject({
+        legStatus: "funding",
+        claimedCount: 0,
+        viewerState: "already_claimed",
+        viewerCreditId: null,
+      });
+      const publicProjection = await Effect.runPromise(
+        projections.listPublicSongAssetBonuses({
+          accountId: null,
+          communityId: identity.communityId,
+          postId: identity.postId,
+        }),
+      );
+      expect(publicProjection).toHaveLength(2);
+      expect(
+        publicProjection.every(
+          ({ viewerState, viewerCreditId }) => viewerState === null && viewerCreditId === null,
+        ),
+      ).toBe(true);
+
+      const laterLegId = "leg-asset-claim-later";
+      await admin.query(
+        `INSERT INTO song_reward_offer_legs (
+           leg_id,offer_id,kind,status,funder_account_id,refund_policy,leg_terms_hash,
+           participation_starts_at,chain_id,token_address,token_decimals,token_symbol,
+           asset_policy_version,amount_per_claim_atomic,max_claims,funded_atomic
+         ) VALUES ($1,$2,'asset_bonus','draft',$3,'refund_to_funders_pro_rata',$4,
+           '2026-08-01T00:00:00.000Z',84532,$5,6,'BONUS','bonus-v1',100,1,100)`,
+        [laterLegId, offerId, identity.accountId, bytes32("e"), token],
+      );
+      await admin.query(
+        `UPDATE song_reward_offer_legs SET status='active',activated_at=clock_timestamp(),
+           updated_at=clock_timestamp() WHERE leg_id=$1`,
+        [laterLegId],
+      );
+      const afterLaterLeg = await Effect.runPromise(
+        projections.listPublicSongAssetBonuses({
+          accountId: identity.accountId,
+          communityId: identity.communityId,
+          postId: identity.postId,
+        }),
+      );
+      expect(afterLaterLeg.find(({ legId: candidate }) => candidate === laterLegId)).toMatchObject({
+        viewerState: "already_claimed",
+        viewerCreditId: null,
+        viewerCreditState: null,
+      });
+      const creditCount = await admin.query<{ readonly value: number }>(
+        `SELECT count(*)::integer AS value FROM reward_ledger_credits
+          WHERE source_kind='asset_bonus'`,
+      );
+      expect(creditCount.rows).toEqual([{ value: 2 }]);
+      await expect(
+        admin.query(
+          `UPDATE song_reward_bundle_claims SET updated_at=clock_timestamp()
+            WHERE account_id=$1 AND offer_id=$2`,
+          [identity.accountId, offerId],
+        ),
+      ).rejects.toThrow("song reward bundle claims are append-only");
+      await expect(
+        admin.query(
+          `UPDATE song_reward_offer_legs
+              SET fulfilled_atomic=100,updated_at=clock_timestamp()
+            WHERE leg_id=$1`,
+          [laterLegId],
+        ),
+      ).rejects.toThrow("asset bonus leg accounting is not exact");
+      await expect(
+        admin.query(
+          `INSERT INTO reward_ledger_credits (
+             credit_id,account_id,payout_persona_id,chain_id,token_address,
+             amount_atomic,source_kind,source_reference,state
+           ) VALUES ('hostile-asset-credit',$1,$2,84532,$3,100,
+             'asset_bonus','hostile-source','credited')`,
+          [identity.accountId, identity.personaId, token],
+        ),
+      ).rejects.toThrow("reward ledger credit lacks exact asset claim");
+    });
+  });
+
+  test("serializes concurrent asset claims at the funded inventory boundary", async () => {
+    await withSchema(async ({ admin, scopedConnection }) => {
+      const identity = await seedAccountSong(admin, "asset-capacity");
+      const second = await seedParticipant(admin, identity, "asset-capacity-second");
+      await seedVeryRewardEvidence(admin, identity.accountId, "asset-capacity");
+      await seedVeryRewardEvidence(admin, second.accountId, "asset-capacity-second", "2");
+      const { legId, offerId } = await seedOpenAssetBonus(admin, identity, "asset-capacity", {
+        fundedAtomic: 100,
+        maxClaims: 1,
+      });
+      const source = sourceFor(identity);
+      const service = makeActivityQualificationService(
+        makeControlPlaneActivityQualificationStore(
+          makeDirectPostgresControlPlaneLayer(scopedConnection),
+        ),
+      );
+      const start = (
+        actor: Readonly<{ readonly accountId: string; readonly personaId: string }>,
+        suffix: string,
+      ) =>
+        Effect.runPromise(
+          provideServices(
+            [`session-${suffix}`, `item-${suffix}`],
+            source,
+            "2026-08-25T16:00:00.000Z",
+          )(
+            service.startStudySession({
+              accountId: actor.accountId,
+              communityId: identity.communityId,
+              idempotencyKey: `start-${suffix}`,
+              personaId: actor.personaId,
+              postId: identity.postId,
+              requestedTimezone: "UTC",
+            }),
+          ),
+        );
+      const [firstSession, secondSession] = await Promise.all([
+        start(identity, "asset-capacity-first"),
+        start(second, "asset-capacity-second"),
+      ]);
+      const submit = (
+        actor: Readonly<{ readonly accountId: string }>,
+        suffix: string,
+        session: Readonly<{
+          readonly session_id: string;
+          readonly items: readonly Readonly<{ readonly session_item_id: string }>[];
+        }>,
+      ) =>
+        Effect.runPromise(
+          provideServices(
+            [`answer-${suffix}`, `qualification-${suffix}`],
+            source,
+            "2026-08-25T16:01:00.000Z",
+          )(
+            service.submitStudyAnswer({
+              accountId: actor.accountId,
+              answer: { kind: "text_response", text: "Sail away" },
+              attemptNumber: 1,
+              communityId: identity.communityId,
+              idempotencyKey: `answer-${suffix}`,
+              sessionId: session.session_id,
+              sessionItemId: session.items[0]?.session_item_id ?? "missing",
+            }),
+          ),
+        );
+      const results = await Promise.all([
+        submit(identity, "asset-capacity-first", firstSession),
+        submit(second, "asset-capacity-second", secondSession),
+      ]);
+      expect(results.every(({ session }) => session.qualification !== null)).toBe(true);
+
+      const counts = await admin.query<{
+        readonly claims: number;
+        readonly credits: number;
+        readonly fulfilled_atomic: string;
+        readonly status: string;
+      }>(
+        `SELECT
+           (SELECT count(*)::integer FROM song_reward_bundle_claims
+             WHERE offer_id=$1) AS claims,
+           (SELECT count(*)::integer FROM reward_ledger_credits
+             WHERE source_kind='asset_bonus') AS credits,
+           fulfilled_atomic::text,status
+          FROM song_reward_offer_legs WHERE leg_id=$2`,
+        [offerId, legId],
+      );
+      expect(counts.rows).toEqual([
+        { claims: 1, credits: 1, fulfilled_atomic: "100", status: "exhausted" },
+      ]);
     });
   });
 

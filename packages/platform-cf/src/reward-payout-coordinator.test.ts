@@ -25,6 +25,7 @@ const address = (byte: string): Hex => `0x${byte.repeat(40)}`;
 const hash = (byte: string): Hex => `0x${byte.repeat(64)}`;
 const JACKPOT = address("1");
 const USDC = address("2");
+const BONUS = address("b");
 const NFT = address("3");
 const CUSTODY = address("4");
 const RECIPIENT = address("5");
@@ -49,6 +50,7 @@ const candidate: RewardPayoutCandidate = {
   attestationId: "megapot-base-sepolia-v2",
   environment: "staging",
   chainId: 84_532,
+  tokenAddress: BONUS,
   usdcAddress: USDC,
   custodyAddress: CUSTODY,
   jackpotAddress: JACKPOT,
@@ -70,12 +72,12 @@ function receipt(): MegapotTransactionReceipt {
     status: "success",
     transactionHash: SIGNED_TRANSACTION_HASH,
     from: CUSTODY,
-    to: USDC,
+    to: BONUS,
     blockHash: BLOCK,
     blockNumber: 200n,
     logs: [
       {
-        address: USDC,
+        address: BONUS,
         topics: topics(
           encodeEventTopics({
             abi: transferEvent,
@@ -179,6 +181,10 @@ function harness() {
     }),
     readUsdcBalance: async (_account: string, blockNumber?: bigint) =>
       blockNumber === 200n ? 9_099n : 10_000n,
+    readErc20Balance: async (tokenAddress: string, _account: string, blockNumber?: bigint) => {
+      expect(tokenAddress).toBe(BONUS);
+      return blockNumber === 200n ? 9_099n : 10_000n;
+    },
     readPendingNonce: async () => 12n,
     estimateGas: async () => 50_000n,
     readNativeBalance: async () => 1_000_000n,
@@ -200,7 +206,7 @@ function harness() {
 }
 
 describe("reward payout coordinator", () => {
-  test("pays one credited liability exactly once and replays the confirmed receipt", async () => {
+  test("pays one bonus-token liability exactly once and replays the confirmed receipt", async () => {
     const state = harness();
     const coordinator = makeRewardPayoutCoordinator({
       store: state.store,

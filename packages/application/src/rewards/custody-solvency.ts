@@ -14,6 +14,7 @@ export type CustodySolvencyCandidate = Readonly<{
   attestationId: string;
   environment: "test" | "staging" | "production";
   chainId: number;
+  tokenAddress: string;
   usdcAddress: string;
   custodyAddress: string;
   jackpotAddress: string;
@@ -27,6 +28,7 @@ export type CustodySolvencyCandidate = Readonly<{
 export type CustodySolvencyObservation = Readonly<{
   observationId: string;
   attestationId: string;
+  tokenAddress: string;
   balanceAtomic: bigint;
   reservedPurchaseAtomic: bigint;
   outstandingCreditAtomic: bigint;
@@ -40,8 +42,12 @@ export type CustodySolvencyObservation = Readonly<{
 }>;
 
 export interface CustodySolvencyStore {
+  readonly listTokenAddresses: (
+    attestationId: string,
+  ) => Effect.Effect<readonly string[], CustodySolvencyFailure>;
   readonly loadCandidate: (
     attestationId: string,
+    tokenAddress?: string,
   ) => Effect.Effect<CustodySolvencyCandidate, CustodySolvencyFailure>;
   readonly findObservation: (
     observationId: string,

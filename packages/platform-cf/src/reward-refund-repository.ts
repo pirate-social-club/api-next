@@ -117,7 +117,8 @@ const CANDIDATE_SELECT = `
       JOIN song_reward_offer_legs leg ON leg.leg_id=funding.leg_id
       JOIN song_reward_offers offer ON offer.offer_id=leg.offer_id
      WHERE funding.state='confirmed' AND funding.confirmed_amount_atomic IS NOT NULL
-       AND leg.status IN ('exhausted','ended') AND leg.funding_source='leg_budget'
+       AND leg.status IN ('exhausted','ended')
+       AND (leg.funding_source='leg_budget' OR leg.kind='asset_bonus')
        AND leg.refund_policy='refund_to_funders_pro_rata' AND leg.reserved_atomic=0
        AND leg.funded_atomic > 0
        AND offer.status IN ('exhausted','expired','ended')
@@ -139,21 +140,24 @@ const CANDIDATE_SELECT = `
          observation.observation_id AS solvency_observation_id,
          observation.balance_atomic AS custody_balance_before_atomic,
          observation.expires_at AS solvency_expires_at, observation.solvent,
+         allocation.token_address,
          attestation.attestation_id, attestation.environment, attestation.chain_id,
          attestation.usdc_address, attestation.custody_address,
          attestation.jackpot_address, attestation.ticket_nft_address,
          attestation.referrer_address, attestation.jackpot_code_hash,
          attestation.usdc_code_hash, attestation.ticket_nft_code_hash
     FROM allocations allocation
+    JOIN reward_asset_whitelist asset
+      ON asset.chain_id=allocation.chain_id AND asset.token_address=allocation.token_address
     JOIN megapot_deployment_attestations attestation
-      ON attestation.attestation_id=allocation.attestation_id
-     AND attestation.chain_id=allocation.chain_id
-     AND attestation.usdc_address=allocation.token_address
+      ON attestation.chain_id=allocation.chain_id
+     AND attestation.environment=asset.environment
      AND attestation.status='active'
     LEFT JOIN LATERAL (
       SELECT observation_id, balance_atomic, expires_at, solvent
         FROM custody_solvency_observations
        WHERE attestation_id=attestation.attestation_id
+         AND token_address=allocation.token_address
        ORDER BY block_number DESC, observation_id DESC LIMIT 1
     ) observation ON true`;
 
@@ -178,6 +182,7 @@ function candidateFromRow(row: Row): RewardRefundCandidate {
     attestationId: text(row, "attestation_id"),
     environment,
     chainId: integer(row, "chain_id"),
+    tokenAddress: text(row, "token_address"),
     usdcAddress: text(row, "usdc_address"),
     custodyAddress: text(row, "custody_address"),
     jackpotAddress: text(row, "jackpot_address"),
@@ -259,6 +264,7 @@ const PROGRESS_SELECT = `
          refund.pro_rata_denominator_atomic,
          refund.solvency_observation_id, refund.custody_balance_before_atomic,
          observation.expires_at AS solvency_expires_at,
+         effect.target_address AS token_address,
          refund.attestation_id, attestation.environment, attestation.chain_id,
          attestation.usdc_address, attestation.custody_address,
          attestation.jackpot_address, attestation.ticket_nft_address,
@@ -334,6 +340,7 @@ function sameCandidate(left: RewardRefundCandidate, right: RewardRefundCandidate
     left.custodyBalanceBeforeAtomic === right.custodyBalanceBeforeAtomic &&
     left.attestationId === right.attestationId &&
     left.chainId === right.chainId &&
+    left.tokenAddress === right.tokenAddress &&
     left.usdcAddress === right.usdcAddress &&
     left.custodyAddress === right.custodyAddress
   );
@@ -418,7 +425,7 @@ function reserveNonceIn(
         input.effectId,
         candidate.chainId,
         candidate.custodyAddress,
-        candidate.usdcAddress,
+        candidate.tokenAddress,
         candidate.amountAtomic.toString(),
       ],
       readonly: false,
@@ -680,6 +687,7 @@ export function makeControlPlaneRewardRefundRepository() {
             const result = yield* transaction.execute<Row>({
               label: "reward-refund.confirm.read",
               text: `SELECT effect.state, effect.version, effect.transaction_hash,
+                            effect.target_address AS token_address,
                             refund.attestation_id, refund.funding_effect_id, refund.leg_id,
                             refund.destination_address, refund.amount_atomic,
                             attestation.usdc_address, attestation.custody_address
@@ -754,7 +762,7 @@ export function makeControlPlaneRewardRefundRepository() {
               values: [
                 input.effectId,
                 text(row, "attestation_id"),
-                text(row, "usdc_address"),
+                text(row, "token_address"),
                 text(row, "custody_address"),
                 text(row, "destination_address"),
                 input.amountAtomic.toString(),

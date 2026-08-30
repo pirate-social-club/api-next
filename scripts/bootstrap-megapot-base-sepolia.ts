@@ -140,9 +140,10 @@ export async function persistMegapotBaseSepoliaAuthority(
               label: "megapot.base-sepolia.bootstrap.asset",
               text: `INSERT INTO reward_asset_whitelist (
                        chain_id, token_address, decimals, symbol, asset_kind,
-                       environment, status, policy_version, activated_at
+                       environment, status, policy_version, activated_at,
+                       plain_erc20_verified_at
                      ) VALUES ($1,$2,6,'USDC','settlement_usdc','staging','active',
-                               'megapot-settlement-usdc-v1',$3::timestamptz)
+                               'megapot-settlement-usdc-v1',$3::timestamptz,$3::timestamptz)
                      ON CONFLICT (chain_id, token_address) DO NOTHING`,
               values: [manifest.chain_id, manifest.usdc_address, plan.verifiedAt],
               readonly: false,

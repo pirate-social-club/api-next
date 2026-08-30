@@ -29,6 +29,7 @@ export type RewardRefundCandidate = Readonly<{
   attestationId: string;
   environment: "test" | "staging" | "production";
   chainId: number;
+  tokenAddress: string;
   usdcAddress: string;
   custodyAddress: string;
   jackpotAddress: string;
