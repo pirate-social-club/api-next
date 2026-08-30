@@ -1,9 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { MegapotDrawingObservationRejected } from "@pirate/application";
-import type { MegapotWorkStore } from "@pirate/platform-cf/megapot-work-repository";
+import {
+  MegapotWorkStorageFailed,
+  type MegapotWorkStore,
+} from "@pirate/platform-cf/megapot-work-repository";
 import { Effect } from "effect";
 import {
   type MegapotRewardsRuntime,
+  megapotRewardsLivenessAlerts,
   observeMegapotDrawingForCycle,
   runMegapotRewardsCycle,
   writeMegapotRewardsCycleSnapshot,
@@ -25,6 +29,7 @@ function fixture(approvalKind: "submitted" | "confirmed") {
     loadDrawings: ({ statuses }) => Effect.succeed(statuses.map(drawing)),
     loadCredits: () => Effect.succeed(["credit-1"]),
     loadRefunds: () => Effect.succeed(["funding-1"]),
+    loadAgedPending: () => Effect.sync(() => calls.push("load-aged-pending")).pipe(Effect.as([])),
   };
   const call = (name: string) =>
     Effect.sync(() => {
@@ -66,6 +71,10 @@ describe("Megapot rewards scheduled cycle", () => {
         refunded: 1,
         paid: 0,
         failures: ["RewardRefundRejected"],
+        agedPending: [
+          { family: "chain_effects", count: 2, oldestAgeSeconds: 1_200 },
+          { family: "refund_liabilities", count: 1, oldestAgeSeconds: 900 },
+        ],
       },
       {
         environment: "staging",
@@ -85,7 +94,7 @@ describe("Megapot rewards scheduled cycle", () => {
         event: "megapot.rewards.cycle",
         fields: expect.objectContaining({
           event: "megapot.rewards.cycle",
-          schema_version: 1,
+          schema_version: 2,
           environment: "staging",
           worker_version_id: "worker-version-1",
           duration_ms: 1_234,
@@ -95,6 +104,15 @@ describe("Megapot rewards scheduled cycle", () => {
           refunded_count: 1,
           failure_count: 1,
           failure_tags: ["RewardRefundRejected"],
+          liveness_status: "available",
+          aged_pending_threshold_seconds: 600,
+          aged_pending_total_count: 3,
+          aged_chain_effect_count: 2,
+          aged_funding_effect_count: 0,
+          aged_drawing_count: 0,
+          aged_credit_count: 0,
+          aged_refund_liability_count: 1,
+          oldest_aged_pending_seconds: 1_200,
           outcome: "degraded",
           sampled: false,
         }),
@@ -118,6 +136,7 @@ describe("Megapot rewards scheduled cycle", () => {
           refunded: 0,
           paid: 0,
           failures: [],
+          agedPending: [],
         },
         {
           environment: "staging",
@@ -134,6 +153,51 @@ describe("Megapot rewards scheduled cycle", () => {
         },
       ),
     ).toBe(false);
+  });
+
+  test("records an unavailable liveness projection without false zero counts", () => {
+    const events: unknown[] = [];
+    expect(
+      writeMegapotRewardsCycleSnapshot(
+        {
+          reconciled: 0,
+          observed: 0,
+          frozen: 0,
+          committed: 0,
+          purchased: 0,
+          swept: 0,
+          claimed: 0,
+          allocated: 0,
+          terminalOffers: 0,
+          refunded: 0,
+          paid: 0,
+          failures: [],
+          agedPending: null,
+        },
+        {
+          environment: "staging",
+          emittedAt: "2026-08-30T05:00:00.000Z",
+          durationMs: 50,
+          workerVersion: {
+            id: "worker-version-1",
+            tag: "",
+            timestamp: "2026-08-30T04:59:00.000Z",
+          },
+        },
+        (_event, fields) => events.push(fields),
+      ),
+    ).toBe(true);
+    expect(events[0]).toMatchObject({
+      liveness_status: "unavailable",
+      aged_pending_total_count: null,
+      aged_chain_effect_count: null,
+      aged_funding_effect_count: null,
+      aged_drawing_count: null,
+      aged_credit_count: null,
+      aged_refund_liability_count: null,
+      oldest_aged_pending_seconds: null,
+      outcome: "degraded",
+    });
   });
 
   test("advances every persisted phase sequentially under one custody lane", async () => {
@@ -156,6 +220,7 @@ describe("Megapot rewards scheduled cycle", () => {
       "refund",
       "observe-solvency",
       "payout",
+      "load-aged-pending",
     ]);
     expect(result).toMatchObject({
       reconciled: 1,
@@ -170,7 +235,54 @@ describe("Megapot rewards scheduled cycle", () => {
       refunded: 1,
       paid: 1,
       failures: [],
+      agedPending: [],
     });
+  });
+
+  test("keeps an unavailable liveness projection diagnostic-only", async () => {
+    const { calls, runtime, work } = fixture("confirmed");
+    const result = await Effect.runPromise(
+      runMegapotRewardsCycle({
+        work: {
+          ...work,
+          loadAgedPending: () =>
+            Effect.fail(new MegapotWorkStorageFailed({ reason: "unavailable" })),
+        },
+        runtime,
+      }),
+    );
+
+    expect(calls).toContain("payout");
+    expect(result.agedPending).toBeNull();
+    expect(result.failures).toEqual([]);
+  });
+
+  test("emits stable identifier-free high conditions for aged state families", () => {
+    expect(
+      megapotRewardsLivenessAlerts([
+        { family: "drawings", count: 2, oldestAgeSeconds: 1_800 },
+        { family: "credits", count: 1, oldestAgeSeconds: 900 },
+      ]),
+    ).toEqual([
+      {
+        key: "megapot-rewards:aged-drawings",
+        severity: "high",
+        body: "Reward drawing transitions exceeded their persisted schedule grace period.",
+      },
+      {
+        key: "megapot-rewards:aged-credits",
+        severity: "high",
+        body: "Reward credits exceeded the payout grace period.",
+      },
+    ]);
+    expect(megapotRewardsLivenessAlerts([])).toEqual([]);
+    expect(megapotRewardsLivenessAlerts(null)).toEqual([
+      {
+        key: "megapot-rewards:aged-state-projection-unavailable",
+        severity: "high",
+        body: "The aggregate rewards liveness projection was unavailable.",
+      },
+    ]);
   });
 
   test("does not purchase until the shared allowance transaction is confirmed", async () => {

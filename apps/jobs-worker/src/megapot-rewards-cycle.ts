@@ -1,6 +1,8 @@
-import type { MegapotDrawingObservationFailure } from "@pirate/application";
+import type { Alert, MegapotDrawingObservationFailure } from "@pirate/application";
 import type { PipelineLogFields } from "@pirate/platform-cf";
 import type {
+  MegapotAgedPending,
+  MegapotAgedPendingFamily,
   MegapotChainEffectWork,
   MegapotDrawingWork,
   MegapotWorkStore,
@@ -11,6 +13,7 @@ export const MEGAPOT_REWARDS_CYCLE_JOB = "megapot-rewards.cycle";
 export const MEGAPOT_REWARDS_CYCLE_LANE = "megapot-rewards";
 export const MEGAPOT_REWARDS_CYCLE_SCHEDULE = "* * * * *";
 export const MEGAPOT_REWARDS_CYCLE_TIMEOUT = "50 seconds";
+const MEGAPOT_REWARDS_AGED_PENDING_THRESHOLD_SECONDS = 10 * 60;
 
 export function observeMegapotDrawingForCycle<A>(
   operation: Effect.Effect<A, MegapotDrawingObservationFailure>,
@@ -56,7 +59,66 @@ export type MegapotRewardsCycleSummary = Readonly<{
   refunded: number;
   paid: number;
   failures: readonly string[];
+  agedPending: readonly MegapotAgedPending[] | null;
 }>;
+
+const AGED_PENDING_FAMILIES = [
+  "chain_effects",
+  "funding_effects",
+  "drawings",
+  "credits",
+  "refund_liabilities",
+] as const satisfies readonly MegapotAgedPendingFamily[];
+
+const AGED_PENDING_ALERT_COPY: Readonly<
+  Record<MegapotAgedPendingFamily, Readonly<{ key: string; body: string }>>
+> = {
+  chain_effects: {
+    key: "megapot-rewards:aged-chain-effects",
+    body: "Custody-signed reward chain effects exceeded the reconciliation grace period.",
+  },
+  funding_effects: {
+    key: "megapot-rewards:aged-funding-effects",
+    body: "Participant-bound reward funding effects exceeded the reconciliation grace period.",
+  },
+  drawings: {
+    key: "megapot-rewards:aged-drawings",
+    body: "Reward drawing transitions exceeded their persisted schedule grace period.",
+  },
+  credits: {
+    key: "megapot-rewards:aged-credits",
+    body: "Reward credits exceeded the payout grace period.",
+  },
+  refund_liabilities: {
+    key: "megapot-rewards:aged-refund-liabilities",
+    body: "Terminal reward legs retained refundable balances beyond the grace period.",
+  },
+};
+
+function agedPendingCount(
+  pending: readonly MegapotAgedPending[],
+  family: MegapotAgedPendingFamily,
+): number {
+  return pending.find((entry) => entry.family === family)?.count ?? 0;
+}
+
+export function megapotRewardsLivenessAlerts(
+  agedPending: readonly MegapotAgedPending[] | null,
+): readonly Alert[] {
+  if (agedPending === null) {
+    return [
+      {
+        key: "megapot-rewards:aged-state-projection-unavailable",
+        severity: "high",
+        body: "The aggregate rewards liveness projection was unavailable.",
+      },
+    ];
+  }
+  return AGED_PENDING_FAMILIES.flatMap((family) => {
+    if (agedPendingCount(agedPending, family) === 0) return [];
+    return [{ ...AGED_PENDING_ALERT_COPY[family], severity: "high" as const }];
+  });
+}
 
 export function writeMegapotRewardsCycleSnapshot(
   summary: MegapotRewardsCycleSummary,
@@ -69,9 +131,15 @@ export function writeMegapotRewardsCycleSnapshot(
   writer: (event: PipelineLogFields["event"], fields: PipelineLogFields) => void,
 ): boolean {
   try {
+    const livenessAvailable = summary.agedPending !== null;
+    const agedTotal = summary.agedPending?.reduce((total, entry) => total + entry.count, 0) ?? null;
+    const oldestAgedPendingSeconds =
+      summary.agedPending === null || summary.agedPending.length === 0
+        ? null
+        : Math.max(...summary.agedPending.map((entry) => entry.oldestAgeSeconds));
     writer("megapot.rewards.cycle", {
       event: "megapot.rewards.cycle",
-      schema_version: 1,
+      schema_version: 2,
       emitted_at: input.emittedAt,
       environment: input.environment,
       worker_version_id: input.workerVersion.id,
@@ -91,7 +159,30 @@ export function writeMegapotRewardsCycleSnapshot(
       paid_count: summary.paid,
       failure_count: summary.failures.length,
       failure_tags: summary.failures,
-      outcome: summary.failures.length === 0 ? "healthy" : "degraded",
+      liveness_status: livenessAvailable ? "available" : "unavailable",
+      aged_pending_threshold_seconds: MEGAPOT_REWARDS_AGED_PENDING_THRESHOLD_SECONDS,
+      aged_pending_total_count: agedTotal,
+      aged_chain_effect_count:
+        summary.agedPending === null
+          ? null
+          : agedPendingCount(summary.agedPending, "chain_effects"),
+      aged_funding_effect_count:
+        summary.agedPending === null
+          ? null
+          : agedPendingCount(summary.agedPending, "funding_effects"),
+      aged_drawing_count:
+        summary.agedPending === null ? null : agedPendingCount(summary.agedPending, "drawings"),
+      aged_credit_count:
+        summary.agedPending === null ? null : agedPendingCount(summary.agedPending, "credits"),
+      aged_refund_liability_count:
+        summary.agedPending === null
+          ? null
+          : agedPendingCount(summary.agedPending, "refund_liabilities"),
+      oldest_aged_pending_seconds: oldestAgedPendingSeconds,
+      outcome:
+        summary.failures.length === 0 && livenessAvailable && agedTotal === 0
+          ? "healthy"
+          : "degraded",
       sampled: false,
     });
     return true;
@@ -196,6 +287,10 @@ export function runMegapotRewardsCycle(input: {
     );
     recordFailures(payoutFailures);
 
+    const agedPending = yield* input.work
+      .loadAgedPending(MEGAPOT_REWARDS_AGED_PENDING_THRESHOLD_SECONDS)
+      .pipe(Effect.catch(() => Effect.succeed(null)));
+
     return {
       reconciled: reconciled.length,
       observed: drawingObserved ? 1 : 0,
@@ -209,6 +304,7 @@ export function runMegapotRewardsCycle(input: {
       refunded: refunded.length,
       paid: paid.length,
       failures,
+      agedPending,
     };
   });
 }

@@ -37,6 +37,7 @@ import {
   MEGAPOT_REWARDS_CYCLE_LANE,
   MEGAPOT_REWARDS_CYCLE_SCHEDULE,
   MEGAPOT_REWARDS_CYCLE_TIMEOUT,
+  megapotRewardsLivenessAlerts,
   observeMegapotDrawingForCycle,
   runMegapotRewardsCycle,
   writeMegapotRewardsCycleSnapshot,
@@ -348,6 +349,9 @@ export function makeMegapotRewardsJob(
       },
       sink.log ?? ((event, fields) => console.info(event, fields)),
     );
+    for (const alert of megapotRewardsLivenessAlerts(summary.agedPending)) {
+      yield* collector.emit(alert);
+    }
     if (summary.failures.length > 0) {
       yield* collector.emit({
         key: "megapot-rewards:candidate-failures",
