@@ -20,6 +20,7 @@ export * from "./community/gate-policy-compiler.ts";
 export * from "./community/join-intent-binding.ts";
 export * from "./content/community-moderation-policy.ts";
 export * from "./content/text-moderation.ts";
+export * from "./dance/index.ts";
 export * from "./gates/country-codes.ts";
 export * from "./gates/erc721.ts";
 export * from "./gates/identity-evidence.ts";
