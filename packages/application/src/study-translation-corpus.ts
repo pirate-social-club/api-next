@@ -3,9 +3,12 @@ import { Option, Schema } from "effect";
 import {
   STUDY_TRANSLATION_PROMPT_V2,
   STUDY_TRANSLATION_VALIDATOR_V2,
+  StudyTranslationGenerationProposal,
 } from "./study-translation-generator.ts";
 
 export const STUDY_TRANSLATION_CORPUS_V1 = "study_translation_corpus_v1" as const;
+export const STUDY_TRANSLATION_CORPUS_CANDIDATE_DOCUMENT_V1 =
+  "study_translation_corpus_candidate_document_v1" as const;
 
 export const STUDY_TRANSLATION_CORPUS_CATEGORIES = [
   "ordinary",
@@ -74,6 +77,23 @@ export const StudyTranslationCorpusV1 = Schema.Struct({
 
 export type StudyTranslationCorpusV1 = Schema.Schema.Type<typeof StudyTranslationCorpusV1>;
 
+export const StudyTranslationCorpusCandidateDocumentV1 = Schema.Struct({
+  schema_revision: Schema.Literal(STUDY_TRANSLATION_CORPUS_CANDIDATE_DOCUMENT_V1),
+  planner_revision: Identifier,
+  corpus: StudyTranslationCorpusV1,
+  generated_songs: Schema.Array(
+    Schema.Struct({
+      song_id: Identifier,
+      post_id: Identifier,
+      proposal: StudyTranslationGenerationProposal,
+    }),
+  ).check(Schema.isMinLength(1), Schema.isMaxLength(256)),
+});
+
+export type StudyTranslationCorpusCandidateDocumentV1 = Schema.Schema.Type<
+  typeof StudyTranslationCorpusCandidateDocumentV1
+>;
+
 export type StudyTranslationCorpusEvaluation = Readonly<{
   schemaRevision: typeof STUDY_TRANSLATION_CORPUS_V1 | null;
   corpusRevision: string | null;
@@ -112,12 +132,21 @@ const ratio = (passing: number, total: number): number => (total === 0 ? 0 : pas
 export const evaluateStudyTranslationCorpus = (
   input: unknown,
 ): StudyTranslationCorpusEvaluation => {
-  const decoded = Schema.decodeUnknownOption(StudyTranslationCorpusV1, {
+  const directCorpus = Schema.decodeUnknownOption(StudyTranslationCorpusV1, {
     onExcessProperty: "error",
   })(input);
-  if (Option.isNone(decoded)) return invalidEvaluation();
+  const candidateDocument = Option.isNone(directCorpus)
+    ? Schema.decodeUnknownOption(StudyTranslationCorpusCandidateDocumentV1, {
+        onExcessProperty: "error",
+      })(input)
+    : Option.none<StudyTranslationCorpusCandidateDocumentV1>();
+  if (Option.isNone(directCorpus) && Option.isNone(candidateDocument)) {
+    return invalidEvaluation();
+  }
 
-  const corpus = decoded.value;
+  const corpus = Option.isSome(directCorpus)
+    ? directCorpus.value
+    : Option.getOrThrow(candidateDocument).corpus;
   const failures: string[] = [];
   const songCount = new Set(corpus.items.map(({ song_id }) => song_id)).size;
   const coveredCategories = new Set(corpus.items.flatMap(({ categories }) => categories));
