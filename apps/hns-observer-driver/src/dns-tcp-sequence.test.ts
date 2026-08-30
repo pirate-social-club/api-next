@@ -148,7 +148,7 @@ describe("bounded DNS-over-TCP message sequence acquisition", () => {
     await expect(exchange(port)).rejects.toMatchObject({ outcome: "upstream_protocol_error" });
   });
 
-  test("maps a throwing completion decoder to a protocol refusal", async () => {
+  test("maps an arbitrary throwing completion decoder to a protocol refusal", async () => {
     const server = createServer((socket) => {
       socket.once("data", () => socket.write(frame(new Uint8Array([1]))));
     });
@@ -160,7 +160,22 @@ describe("bounded DNS-over-TCP message sequence acquisition", () => {
           throw new Error("malformed terminal message");
         },
       }),
-    ).rejects.toBeInstanceOf(HnsObserverDriverExchangeError);
+    ).rejects.toMatchObject({ outcome: "upstream_protocol_error" });
+  });
+
+  test("preserves a typed authentication failure from the completion decoder", async () => {
+    const server = createServer((socket) => {
+      socket.once("data", () => socket.write(frame(new Uint8Array([1]))));
+    });
+    const port = await listen(server);
+
+    await expect(
+      exchange(port, {
+        is_complete: () => {
+          throw new HnsObserverDriverExchangeError("authentication_failed");
+        },
+      }),
+    ).rejects.toMatchObject({ outcome: "authentication_failed" });
   });
 
   test("enforces one deadline across connect, write, and the entire sequence", async () => {
@@ -170,5 +185,11 @@ describe("bounded DNS-over-TCP message sequence acquisition", () => {
     const port = await listen(server);
 
     await expect(exchange(port, { timeout_ms: 10 })).rejects.toMatchObject({ outcome: "timeout" });
+  });
+
+  test("refuses a deadline beyond the bounded acquisition policy", async () => {
+    await expect(exchange(1, { timeout_ms: 12_001 })).rejects.toMatchObject({
+      outcome: "upstream_protocol_error",
+    });
   });
 });

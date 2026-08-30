@@ -99,7 +99,7 @@ async function readRequestBody(request: Request): Promise<Uint8Array> {
 function exchangeErrorResponse(error: unknown): Response {
   if (!(error instanceof HnsObserverDriverExchangeError)) return errorResponse("internal_error");
   if (error.outcome === "timeout") return errorResponse("timeout");
-  if (error.outcome === "upstream_protocol_error") {
+  if (error.outcome === "upstream_protocol_error" || error.outcome === "authentication_failed") {
     return errorResponse("upstream_protocol_error");
   }
   return errorResponse("upstream_unavailable");

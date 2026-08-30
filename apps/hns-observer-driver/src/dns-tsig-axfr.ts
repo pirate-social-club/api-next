@@ -1,5 +1,9 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
-import { exchangeDirectHnsDnsTcpSequence, type HnsDnsTcpConnector } from "./dns-tcp.ts";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import {
+  exchangeDirectHnsDnsTcpSequence,
+  type HnsDnsTcpConnector,
+  HnsObserverDriverExchangeError,
+} from "./dns-tcp.ts";
 
 export const HNS_DNS_TSIG_AXFR_ALGORITHM = "hmac-sha256" as const;
 
@@ -57,6 +61,8 @@ const TSIG_TYPE = 250;
 const IN_CLASS = 1;
 const ANY_CLASS = 255;
 const HMAC_SHA256_NAME = "hmac-sha256";
+const HMAC_SHA256_OUTPUT_BYTES = 32;
+const DNS_COMPRESSION_POINTER_MAX_HOPS = 16;
 
 function failed(message: string): HnsDnsTsigAxfrError {
   return new HnsDnsTsigAxfrError(message);
@@ -158,6 +164,7 @@ function readName(bytes: Uint8Array, initialOffset: number): ParsedName {
   let offset = initialOffset;
   let nextOffset: number | undefined;
   let expandedLength = 1;
+  let pointerHops = 0;
   while (true) {
     if (offset >= bytes.byteLength || visited.has(offset)) throw failed("malformed DNS name");
     visited.add(offset);
@@ -165,7 +172,14 @@ function readName(bytes: Uint8Array, initialOffset: number): ParsedName {
     if ((length & 0xc0) === 0xc0) {
       if (offset + 2 > bytes.byteLength) throw failed("truncated DNS compression pointer");
       const pointer = ((length & 0x3f) << 8) | (bytes[offset + 1] ?? 0);
-      if (pointer >= bytes.byteLength) throw failed("invalid DNS compression pointer");
+      pointerHops += 1;
+      if (
+        pointer >= offset ||
+        pointer >= bytes.byteLength ||
+        pointerHops > DNS_COMPRESSION_POINTER_MAX_HOPS
+      ) {
+        throw failed("invalid DNS compression pointer");
+      }
       nextOffset ??= offset + 2;
       offset = pointer;
       continue;
@@ -232,7 +246,7 @@ function parseTsig(bytes: Uint8Array, record: ParsedRecord): ParsedTsig {
   offset += 2;
   const macSize = readUint16(bytes, offset);
   offset += 2;
-  if (macSize < 16 || macSize > 32 || offset + macSize + 6 > record.end_offset) {
+  if (macSize !== HMAC_SHA256_OUTPUT_BYTES || offset + macSize + 6 > record.end_offset) {
     throw failed("invalid TSIG MAC length");
   }
   const mac = bytes.slice(offset, offset + macSize);
@@ -276,6 +290,10 @@ function canonicalSoa(bytes: Uint8Array, record: ParsedRecord): Uint8Array {
     uint16(rdata.byteLength),
     rdata,
   ]);
+}
+
+function ownerBelongsToZone(owner: string, zoneName: string): boolean {
+  return owner === zoneName || owner.endsWith(`.${zoneName}`);
 }
 
 function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
@@ -371,6 +389,7 @@ function parseAxfrResponse(
   tsig: ParsedTsig;
   soa_records: ReadonlyArray<Readonly<{ bytes: Uint8Array; answer_index: number }>>;
   answer_count: number;
+  apex_ns_count: number;
 }> {
   if (message.byteLength < 12 || readUint16(message, 0) !== messageId) {
     throw failed("AXFR response id mismatch");
@@ -405,11 +424,23 @@ function parseAxfrResponse(
     offset += 4;
   }
   const soaRecords: Array<Readonly<{ bytes: Uint8Array; answer_index: number }>> = [];
+  let apexNsCount = 0;
   for (let answerIndex = 0; answerIndex < answerCount; answerIndex += 1) {
     const record = readRecord(message, offset);
     offset = record.end_offset;
+    if (!ownerBelongsToZone(record.name, zoneName)) {
+      throw failed("AXFR answer owner is outside the requested zone");
+    }
     if (record.type === SOA_TYPE) {
+      if (record.name !== zoneName) throw failed("AXFR SOA owner mismatch");
       soaRecords.push({ bytes: canonicalSoa(message, record), answer_index: answerIndex });
+    }
+    if (record.type === 2 && record.record_class === IN_CLASS && record.name === zoneName) {
+      const target = readName(message, record.rdata_offset);
+      if (target.next_offset !== record.end_offset) {
+        throw failed("invalid AXFR apex NS data");
+      }
+      apexNsCount += 1;
     }
   }
   const tsigRecord = readRecord(message, offset);
@@ -419,6 +450,7 @@ function parseAxfrResponse(
     tsig: parseTsig(message, tsigRecord),
     soa_records: soaRecords,
     answer_count: answerCount,
+    apex_ns_count: apexNsCount,
   };
 }
 
@@ -467,6 +499,7 @@ export function makeHnsDnsTsigAxfrSessionV1(
   let openingSoa: Uint8Array | undefined;
   let completed = false;
   let nextMessageIndex = 0;
+  let apexNsCount = 0;
 
   return {
     request_bytes: requestBytes,
@@ -511,12 +544,13 @@ export function makeHnsDnsTsigAxfrSessionV1(
               tsig.time_bytes,
               tsig.fudge_bytes,
             ]);
-      if (!equalBytes(expectedMac.subarray(0, tsig.mac.byteLength), tsig.mac)) {
+      if (!equalBytes(expectedMac, tsig.mac)) {
         throw failed("AXFR TSIG verification failed");
       }
       priorMac = Uint8Array.from(tsig.mac);
       priorResponseTime = tsig.time_signed;
       nextMessageIndex += 1;
+      apexNsCount += parsed.apex_ns_count;
 
       for (const soa of parsed.soa_records) {
         if (openingSoa === undefined) {
@@ -537,6 +571,9 @@ export function makeHnsDnsTsigAxfrSessionV1(
       if (parsed.soa_records.length > (messageIndex === 0 ? 2 : 1)) {
         throw failed("AXFR contains an intermediate SOA");
       }
+      if (completed && apexNsCount === 0) {
+        throw failed("AXFR lacks the apex NS RRset");
+      }
       return completed;
     },
   };
@@ -554,10 +591,7 @@ export async function exchangeDirectHnsDnsTsigAxfrV1(
     readonly family: 4 | 6;
     readonly zone_name: string;
     readonly credential: HnsDnsTsigCredentialV1;
-    readonly message_id: number;
-    readonly signed_at_seconds: number;
     readonly fudge_seconds: number;
-    readonly now_seconds: () => number;
     readonly response_message_max_bytes: number;
     readonly response_total_max_bytes: number;
     readonly response_max_messages: number;
@@ -565,13 +599,16 @@ export async function exchangeDirectHnsDnsTsigAxfrV1(
     readonly signal: AbortSignal;
   }>,
 ): Promise<HnsDnsTsigAxfrExchangeResultV1> {
+  const requestId = randomBytes(2);
+  const messageId = ((requestId[0] ?? 0) << 8) | (requestId[1] ?? 0);
+  const signedAtSeconds = Math.floor(Date.now() / 1_000);
   const session = makeHnsDnsTsigAxfrSessionV1({
-    message_id: input.message_id,
+    message_id: messageId,
     zone_name: input.zone_name,
     credential: input.credential,
-    signed_at_seconds: input.signed_at_seconds,
+    signed_at_seconds: signedAtSeconds,
     fudge_seconds: input.fudge_seconds,
-    now_seconds: input.now_seconds,
+    now_seconds: () => Math.floor(Date.now() / 1_000),
   });
   const responseMessages = await exchangeDirectHnsDnsTcpSequence({
     connector: input.connector,
@@ -581,7 +618,16 @@ export async function exchangeDirectHnsDnsTsigAxfrV1(
     response_message_max_bytes: input.response_message_max_bytes,
     response_total_max_bytes: input.response_total_max_bytes,
     response_max_messages: input.response_max_messages,
-    is_complete: session.accept_response,
+    is_complete: (message, messageIndex) => {
+      try {
+        return session.accept_response(message, messageIndex);
+      } catch (cause) {
+        if (cause instanceof HnsDnsTsigAxfrError) {
+          throw new HnsObserverDriverExchangeError("authentication_failed");
+        }
+        throw cause;
+      }
+    },
     timeout_ms: input.timeout_ms,
     signal: input.signal,
   });

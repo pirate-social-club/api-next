@@ -64,9 +64,9 @@ function record(owner: string, type: number, ttl: number, rdata: Uint8Array): Ui
   ]);
 }
 
-function soa(serial = 2_026_080_805): Uint8Array {
+function soa(serial = 2_026_080_805, owner = zoneName): Uint8Array {
   return record(
-    zoneName,
+    owner,
     6,
     300,
     concat([
@@ -81,6 +81,7 @@ function soa(serial = 2_026_080_805): Uint8Array {
   );
 }
 
+const apexNs = record(zoneName, 2, 300, name("ns1.pirate"));
 const appA = record("app.jazleeuw", 1, 300, new Uint8Array([94, 103, 168, 161]));
 
 function unsignedResponse(
@@ -132,11 +133,13 @@ function appendTsig(
   messageIndex: number,
   time = signedAt,
   fudge = 300,
+  macByteLength = 32,
 ): Readonly<{ message: Uint8Array; mac: Uint8Array }> {
-  const mac =
+  const fullMac =
     messageIndex === 0
       ? hmac([uint16(priorMac.byteLength), priorMac, message, fullVariables(time, fudge)])
       : hmac([uint16(priorMac.byteLength), priorMac, message, uint48(time), uint16(fudge)]);
+  const mac = fullMac.slice(0, macByteLength);
   const rdata = concat([
     name("hmac-sha256"),
     uint48(time),
@@ -177,12 +180,44 @@ function signedTransfer(
   closingSoa = soa(),
 ): readonly [Uint8Array, Uint8Array] {
   const first = appendTsig(
-    unsignedResponse([soa(), appA], true),
+    unsignedResponse([soa(), apexNs, appA], true),
     requestMac(current.request_bytes),
     0,
   );
   const second = appendTsig(unsignedResponse([closingSoa], false), first.mac, 1);
   return [first.message, second.message];
+}
+
+function compressionPointer(offset: number): Uint8Array {
+  return new Uint8Array([0xc0 | ((offset >>> 8) & 0x3f), offset & 0xff]);
+}
+
+function unsignedResponseWithCompressionPointerLadder(): Uint8Array {
+  const header = concat([
+    uint16(messageId),
+    uint16(0x8400),
+    uint16(1),
+    uint16(5),
+    uint16(0),
+    uint16(0),
+  ]);
+  const prefix = concat([header, question(), soa(), apexNs]);
+  const fillerRdataOffset = prefix.byteLength + name(zoneName).byteLength + 10;
+  const pointers: Uint8Array[] = [];
+  for (let index = 0; index < 17; index += 1) {
+    pointers.push(compressionPointer(index === 0 ? 12 : fillerRdataOffset + (index - 1) * 2));
+  }
+  const filler = record(zoneName, 16, 300, concat(pointers));
+  const maliciousOwner = compressionPointer(fillerRdataOffset + 16 * 2);
+  const maliciousRecord = concat([
+    maliciousOwner,
+    uint16(1),
+    uint16(1),
+    uint32(300),
+    uint16(4),
+    new Uint8Array([94, 103, 168, 161]),
+  ]);
+  return concat([prefix, filler, maliciousRecord, soa()]);
 }
 
 describe("TSIG-authenticated AXFR session", () => {
@@ -200,7 +235,7 @@ describe("TSIG-authenticated AXFR session", () => {
   test("accepts a one-message transfer only when identical SOAs bracket the records", () => {
     const current = session();
     const response = appendTsig(
-      unsignedResponse([soa(), appA, soa()], true),
+      unsignedResponse([soa(), apexNs, appA, soa()], true),
       requestMac(current.request_bytes),
       0,
     );
@@ -210,7 +245,7 @@ describe("TSIG-authenticated AXFR session", () => {
   test("accepts a first response within the clock window and enforces exact sequence indexes", () => {
     const current = session();
     const response = appendTsig(
-      unsignedResponse([soa(), appA, soa()], true),
+      unsignedResponse([soa(), apexNs, appA, soa()], true),
       requestMac(current.request_bytes),
       0,
       signedAt - 1,
@@ -246,6 +281,98 @@ describe("TSIG-authenticated AXFR session", () => {
       0,
     );
     expect(() => current.accept_response(response.message, 0)).toThrow("does not begin with SOA");
+  });
+
+  test("refuses authenticated SOAs whose owner is not the requested zone", () => {
+    const current = session();
+    const response = appendTsig(
+      unsignedResponse(
+        [soa(2_026_080_805, "attacker.example"), apexNs, soa(2_026_080_805, "attacker.example")],
+        true,
+      ),
+      requestMac(current.request_bytes),
+      0,
+    );
+    expect(() => current.accept_response(response.message, 0)).toThrow(
+      "answer owner is outside the requested zone",
+    );
+  });
+
+  test("refuses an authenticated SOA owned by a subdomain of the requested zone", () => {
+    const current = session();
+    const response = appendTsig(
+      unsignedResponse(
+        [soa(2_026_080_805, "child.jazleeuw"), apexNs, soa(2_026_080_805, "child.jazleeuw")],
+        true,
+      ),
+      requestMac(current.request_bytes),
+      0,
+    );
+    expect(() => current.accept_response(response.message, 0)).toThrow("AXFR SOA owner mismatch");
+  });
+
+  test("refuses authenticated records outside the requested zone", () => {
+    const current = session();
+    const outOfZone = record("attacker.example", 1, 300, new Uint8Array([192, 0, 2, 1]));
+    const response = appendTsig(
+      unsignedResponse([soa(), apexNs, outOfZone, soa()], true),
+      requestMac(current.request_bytes),
+      0,
+    );
+    expect(() => current.accept_response(response.message, 0)).toThrow(
+      "answer owner is outside the requested zone",
+    );
+  });
+
+  test("refuses an authenticated SOA-only transfer without the apex NS RRset", () => {
+    const current = session();
+    const response = appendTsig(
+      unsignedResponse([soa(), soa()], true),
+      requestMac(current.request_bytes),
+      0,
+    );
+    expect(() => current.accept_response(response.message, 0)).toThrow("lacks the apex NS RRset");
+  });
+
+  test("refuses a correctly truncated TSIG MAC rather than accepting a server downgrade", () => {
+    const current = session();
+    const response = appendTsig(
+      unsignedResponse([soa(), apexNs, appA, soa()], true),
+      requestMac(current.request_bytes),
+      0,
+      signedAt,
+      300,
+      16,
+    );
+    expect(() => current.accept_response(response.message, 0)).toThrow("invalid TSIG MAC length");
+  });
+
+  test("refuses a signed response whose owner uses an excessive compression-pointer ladder", () => {
+    const current = session();
+    const response = appendTsig(
+      unsignedResponseWithCompressionPointerLadder(),
+      requestMac(current.request_bytes),
+      0,
+    );
+    expect(() => current.accept_response(response.message, 0)).toThrow(
+      "invalid DNS compression pointer",
+    );
+  });
+
+  test("refuses a malformed record masquerading as the apex NS RRset", () => {
+    const current = session();
+    const malformedApexNs = record(
+      zoneName,
+      2,
+      300,
+      concat([name("ns1.pirate"), new Uint8Array([0])]),
+    );
+    const response = appendTsig(
+      unsignedResponse([soa(), malformedApexNs, soa()], true),
+      requestMac(current.request_bytes),
+      0,
+    );
+    expect(() => current.accept_response(response.message, 0)).toThrow("invalid AXFR apex NS data");
   });
 
   test("refuses stale signatures and invalid credentials before acquisition", () => {

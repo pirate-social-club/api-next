@@ -37,6 +37,7 @@ export type HnsDnsTcpSequenceExchangeInput = Readonly<{
 export type HnsObserverDriverExchangeFailure =
   | "timeout"
   | "upstream_protocol_error"
+  | "authentication_failed"
   | "upstream_unavailable"
   | "aborted";
 
@@ -220,13 +221,15 @@ async function readResponseSequence(
       socket.off("end", ended);
       socket.off("close", closed);
     };
-    const settleError = (outcome: HnsObserverDriverExchangeFailure) => {
+    const settleFailure = (cause: HnsObserverDriverExchangeError) => {
       if (settled) return;
       settled = true;
       cleanup();
       socket.destroy();
-      reject(failed(outcome));
+      reject(cause);
     };
+    const settleError = (outcome: HnsObserverDriverExchangeFailure) =>
+      settleFailure(failed(outcome));
     const settleResponse = () => {
       if (settled) return;
       settled = true;
@@ -278,8 +281,12 @@ async function readResponseSequence(
         let complete: boolean;
         try {
           complete = input.is_complete(Uint8Array.from(completedMessage), messages.length - 1);
-        } catch {
-          settleError("upstream_protocol_error");
+        } catch (cause) {
+          settleFailure(
+            cause instanceof HnsObserverDriverExchangeError
+              ? cause
+              : failed("upstream_protocol_error"),
+          );
           return;
         }
         if (complete) {
@@ -313,7 +320,8 @@ function validSequenceLimits(input: HnsDnsTcpSequenceExchangeInput): boolean {
     input.response_max_messages > 0 &&
     input.response_max_messages <= 4_096 &&
     Number.isSafeInteger(input.timeout_ms) &&
-    input.timeout_ms > 0
+    input.timeout_ms > 0 &&
+    input.timeout_ms <= 12_000
   );
 }
 
