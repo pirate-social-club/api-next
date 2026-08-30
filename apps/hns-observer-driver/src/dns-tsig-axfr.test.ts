@@ -276,7 +276,16 @@ describe("TSIG-authenticated AXFR session", () => {
     const [first] = signedTransfer(current);
     const tampered = Uint8Array.from(first);
     tampered[40] = (tampered[40] ?? 0) ^ 1;
-    expect(() => current.accept_response(tampered, 0)).toThrow("verification failed");
+    try {
+      current.accept_response(tampered, 0);
+      throw new Error("expected TSIG refusal");
+    } catch (cause) {
+      expect(cause).toBeInstanceOf(HnsDnsTsigAxfrError);
+      expect(cause).toMatchObject({
+        message: "AXFR TSIG verification failed",
+        cause_code: "tsig_mac_mismatch",
+      });
+    }
   });
 
   test("refuses a correctly signed transfer whose terminal SOA differs", () => {

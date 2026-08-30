@@ -41,16 +41,30 @@ export type HnsObserverDriverExchangeFailure =
   | "upstream_unavailable"
   | "aborted";
 
+export type HnsObserverDriverExchangeCause =
+  | "tcp_frame_invalid"
+  | "tcp_sequence_incomplete"
+  | "tcp_sequence_limit_exceeded"
+  | "completion_validator_refused"
+  | "authenticated_axfr_invalid"
+  | "tsig_mac_mismatch";
+
 export class HnsObserverDriverExchangeError extends Error {
   readonly name = "HnsObserverDriverExchangeError";
 
-  constructor(readonly outcome: HnsObserverDriverExchangeFailure) {
+  constructor(
+    readonly outcome: HnsObserverDriverExchangeFailure,
+    readonly cause_code?: HnsObserverDriverExchangeCause,
+  ) {
     super(outcome);
   }
 }
 
-function failed(outcome: HnsObserverDriverExchangeFailure): HnsObserverDriverExchangeError {
-  return new HnsObserverDriverExchangeError(outcome);
+function failed(
+  outcome: HnsObserverDriverExchangeFailure,
+  causeCode?: HnsObserverDriverExchangeCause,
+): HnsObserverDriverExchangeError {
+  return new HnsObserverDriverExchangeError(outcome, causeCode);
 }
 
 function frameRequest(requestBytes: Uint8Array): Uint8Array {
@@ -228,8 +242,10 @@ async function readResponseSequence(
       socket.destroy();
       reject(cause);
     };
-    const settleError = (outcome: HnsObserverDriverExchangeFailure) =>
-      settleFailure(failed(outcome));
+    const settleError = (
+      outcome: HnsObserverDriverExchangeFailure,
+      causeCode?: HnsObserverDriverExchangeCause,
+    ) => settleFailure(failed(outcome, causeCode));
     const settleResponse = () => {
       if (settled) return;
       settled = true;
@@ -239,8 +255,8 @@ async function readResponseSequence(
     };
     const abort = () => settleError("aborted");
     const error = () => settleError("upstream_unavailable");
-    const ended = () => settleError("upstream_protocol_error");
-    const closed = () => settleError("upstream_protocol_error");
+    const ended = () => settleError("upstream_protocol_error", "tcp_sequence_incomplete");
+    const closed = () => settleError("upstream_protocol_error", "tcp_sequence_incomplete");
     const data = (chunk: Buffer) => {
       let offset = 0;
       while (offset < chunk.byteLength && !settled) {
@@ -259,7 +275,7 @@ async function readResponseSequence(
             messages.length >= input.response_max_messages ||
             totalBytes + expectedBytes > input.response_total_max_bytes
           ) {
-            settleError("upstream_protocol_error");
+            settleError("upstream_protocol_error", "tcp_sequence_limit_exceeded");
             return;
           }
           message = new Uint8Array(expectedBytes);
@@ -285,13 +301,13 @@ async function readResponseSequence(
           settleFailure(
             cause instanceof HnsObserverDriverExchangeError
               ? cause
-              : failed("upstream_protocol_error"),
+              : failed("upstream_protocol_error", "completion_validator_refused"),
           );
           return;
         }
         if (complete) {
           if (offset !== chunk.byteLength) {
-            settleError("upstream_protocol_error");
+            settleError("upstream_protocol_error", "tcp_frame_invalid");
             return;
           }
           settleResponse();

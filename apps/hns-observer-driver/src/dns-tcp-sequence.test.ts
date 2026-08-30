@@ -98,6 +98,7 @@ describe("bounded DNS-over-TCP message sequence acquisition", () => {
 
     await expect(exchange(port)).rejects.toMatchObject({
       outcome: "upstream_protocol_error",
+      cause_code: "tcp_sequence_incomplete",
     });
   });
 
@@ -131,7 +132,10 @@ describe("bounded DNS-over-TCP message sequence acquisition", () => {
           is_complete: () => false,
           ...current.overrides,
         }),
-      ).rejects.toMatchObject({ outcome: "upstream_protocol_error" });
+      ).rejects.toMatchObject({
+        outcome: "upstream_protocol_error",
+        cause_code: "tcp_sequence_limit_exceeded",
+      });
     }
   });
 
@@ -145,7 +149,10 @@ describe("bounded DNS-over-TCP message sequence acquisition", () => {
     });
     const port = await listen(server);
 
-    await expect(exchange(port)).rejects.toMatchObject({ outcome: "upstream_protocol_error" });
+    await expect(exchange(port)).rejects.toMatchObject({
+      outcome: "upstream_protocol_error",
+      cause_code: "tcp_frame_invalid",
+    });
   });
 
   test("maps an arbitrary throwing completion decoder to a protocol refusal", async () => {
@@ -160,7 +167,10 @@ describe("bounded DNS-over-TCP message sequence acquisition", () => {
           throw new Error("malformed terminal message");
         },
       }),
-    ).rejects.toMatchObject({ outcome: "upstream_protocol_error" });
+    ).rejects.toMatchObject({
+      outcome: "upstream_protocol_error",
+      cause_code: "completion_validator_refused",
+    });
   });
 
   test("preserves a typed authentication failure from the completion decoder", async () => {
@@ -172,10 +182,13 @@ describe("bounded DNS-over-TCP message sequence acquisition", () => {
     await expect(
       exchange(port, {
         is_complete: () => {
-          throw new HnsObserverDriverExchangeError("authentication_failed");
+          throw new HnsObserverDriverExchangeError("authentication_failed", "tsig_mac_mismatch");
         },
       }),
-    ).rejects.toMatchObject({ outcome: "authentication_failed" });
+    ).rejects.toMatchObject({
+      outcome: "authentication_failed",
+      cause_code: "tsig_mac_mismatch",
+    });
   });
 
   test("enforces one deadline across connect, write, and the entire sequence", async () => {

@@ -2,6 +2,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import {
   exchangeDirectHnsDnsTcpSequence,
   type HnsDnsTcpConnector,
+  type HnsObserverDriverExchangeCause,
   HnsObserverDriverExchangeError,
 } from "./dns-tcp.ts";
 
@@ -26,6 +27,16 @@ export type HnsDnsTsigAxfrExchangeResultV1 = Readonly<{
 
 export class HnsDnsTsigAxfrError extends Error {
   readonly name = "HnsDnsTsigAxfrError";
+
+  constructor(
+    message: string,
+    readonly cause_code: Extract<
+      HnsObserverDriverExchangeCause,
+      "authenticated_axfr_invalid" | "tsig_mac_mismatch"
+    > = "authenticated_axfr_invalid",
+  ) {
+    super(message);
+  }
 }
 
 export type HnsDnsParsedNameV1 = Readonly<{ name: string; next_offset: number }>;
@@ -67,8 +78,14 @@ const DNS_COMPRESSION_POINTER_MAX_HOPS = 16;
 const DNS_TCP_SEQUENCE_MAX_MESSAGES = 4_096;
 const DNS_TCP_SEQUENCE_MAX_BYTES = 16 * 1_024 * 1_024;
 
-function failed(message: string): HnsDnsTsigAxfrError {
-  return new HnsDnsTsigAxfrError(message);
+function failed(
+  message: string,
+  causeCode: Extract<
+    HnsObserverDriverExchangeCause,
+    "authenticated_axfr_invalid" | "tsig_mac_mismatch"
+  > = "authenticated_axfr_invalid",
+): HnsDnsTsigAxfrError {
+  return new HnsDnsTsigAxfrError(message, causeCode);
 }
 
 function readUint16(bytes: Uint8Array, offset: number): number {
@@ -605,7 +622,7 @@ export function makeHnsDnsTsigAxfrSessionV1(
               tsig.fudge_bytes,
             ]);
       if (!equalBytes(expectedMac, tsig.mac)) {
-        throw failed("AXFR TSIG verification failed");
+        throw failed("AXFR TSIG verification failed", "tsig_mac_mismatch");
       }
       priorMac = Uint8Array.from(tsig.mac);
       priorResponseTime = tsig.time_signed;
@@ -683,7 +700,7 @@ export async function exchangeDirectHnsDnsTsigAxfrV1(
         return session.accept_response(message, messageIndex);
       } catch (cause) {
         if (cause instanceof HnsDnsTsigAxfrError) {
-          throw new HnsObserverDriverExchangeError("authentication_failed");
+          throw new HnsObserverDriverExchangeError("authentication_failed", cause.cause_code);
         }
         throw cause;
       }

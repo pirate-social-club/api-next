@@ -32,6 +32,7 @@ export {
   type HnsDnsTcpConnector,
   type HnsDnsTcpExchangeInput,
   type HnsDnsTcpSequenceExchangeInput,
+  type HnsObserverDriverExchangeCause,
   HnsObserverDriverExchangeError,
   type HnsObserverDriverExchangeFailure,
   makeNodeHnsDnsTcpConnector,
