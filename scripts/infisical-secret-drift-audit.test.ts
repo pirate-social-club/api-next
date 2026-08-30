@@ -86,6 +86,7 @@ describe("Infisical secret drift audit", () => {
       "ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_SECRET",
       "ZKPASSPORT_VERIFIER_SHARED_SECRET",
       "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
+      "HNS_EDGE_ALERT_TOKEN",
     ]);
     expect(report.acceptedDrift).toHaveLength(0);
   });
@@ -227,6 +228,7 @@ describe("Infisical secret drift audit", () => {
       "PRIVY_APP_SECRET",
       "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
       "MEGAPOT_V2_RPC_URL",
+      "HNS_EDGE_ALERT_TOKEN",
     ];
     const withoutSigner: InfisicalSnapshot = {
       ...prodBase,

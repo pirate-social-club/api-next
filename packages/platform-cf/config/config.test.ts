@@ -394,6 +394,12 @@ describe("config system (000 §9)", () => {
             readonly id?: string;
             readonly localConnectionString?: string;
           }[];
+          readonly send_email?: readonly {
+            readonly name?: string;
+            readonly destination_address?: string;
+            readonly allowed_sender_addresses?: readonly string[];
+          }[];
+          readonly secrets?: { readonly required?: readonly string[] };
           readonly vars?: Record<string, string>;
         };
       };
@@ -411,6 +417,14 @@ describe("config system (000 §9)", () => {
         localConnectionString: "postgres://postgres:postgres@127.0.0.1:5432/postgres",
       },
     ]);
+    expect(production?.send_email).toEqual([
+      {
+        name: "HNS_EDGE_ALERT_EMAIL",
+        destination_address: "piratesocialclub@proton.me",
+        allowed_sender_addresses: ["alerts@pirate.sc"],
+      },
+    ]);
+    expect(production?.secrets?.required).toContain("HNS_EDGE_ALERT_TOKEN");
     expect(production?.vars?.PIRATE_API_PUBLIC_ORIGIN).toBe("https://api-next.pirate.sc");
     expect(production?.vars?.CORS_ORIGIN).toBe(
       "https://app.pirate,https://pirate.app,https://pirate.sc",

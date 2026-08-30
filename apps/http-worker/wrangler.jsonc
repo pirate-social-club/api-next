@@ -371,6 +371,13 @@
           "bucket_name": "pirate-learner-audio-production"
         }
       ],
+      "send_email": [
+        {
+          "name": "HNS_EDGE_ALERT_EMAIL",
+          "destination_address": "piratesocialclub@proton.me",
+          "allowed_sender_addresses": ["alerts@pirate.sc"]
+        }
+      ],
       "vars": {
         "API_NEXT_ENV": "production",
         "STUDY_GENERATION_ENABLED": "false",
@@ -424,6 +431,7 @@
           "PIRATE_APP_JWT_PRIVATE_KEY",
           "PRIVY_APP_SECRET",
           "HNS_FORWARDER_V3_HMAC_KEY_REGISTRY",
+          "HNS_EDGE_ALERT_TOKEN",
           "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
           "MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID",
           "MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY"

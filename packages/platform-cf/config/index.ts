@@ -217,6 +217,7 @@ export const HttpWorkerConfig = Config.all({
   HNS_FORWARDER_V3_FUTURE_CLOCK_SKEW_SECONDS: Config.int(
     "HNS_FORWARDER_V3_FUTURE_CLOCK_SKEW_SECONDS",
   ).pipe(Config.withDefault(-1)),
+  HNS_EDGE_ALERT_TOKEN: secret("HNS_EDGE_ALERT_TOKEN").pipe(Config.withDefault(Redacted.make(""))),
   VERIFICATION_CALLBACK_CREDENTIAL_HEADERS: Config.string(
     "VERIFICATION_CALLBACK_CREDENTIAL_HEADERS",
   ).pipe(Config.withDefault("")),

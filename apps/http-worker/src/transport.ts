@@ -576,6 +576,7 @@ const PUBLIC_CACHE_CONTROL = "public, max-age=3600, must-revalidate";
 const HANDLE_SALES_MANAGEMENT_PATH =
   /^\/communities\/[^/]+\/handle-sales-management(?:\/(?:sale-namespaces|offerings))?$/u;
 const CANONICAL_ONLY_ENDPOINTS = new Set([
+  "DeliverHnsEdgeAlert",
   "GetHandleSalesManagement",
   "ListHandleSaleNamespaceManagement",
   "ListCommunityHandleOfferingManagement",
