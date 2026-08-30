@@ -4,6 +4,11 @@ import {
   HNS_COMMUNITY_APP_INTERACTIVE_GATEWAY_VERSION,
 } from "@pirate/application/hns-community-app-gateway";
 import {
+  HNS_COMMUNITY_HANDLE_PERSONA_GATEWAY_PROFILE,
+  HNS_COMMUNITY_HANDLE_PERSONA_GATEWAY_SHA256,
+  HNS_COMMUNITY_HANDLE_PERSONA_GATEWAY_VERSION,
+} from "@pirate/application/hns-community-handle-gateway";
+import {
   type HnsForwarderKeyRegistryV1,
   parseHnsForwarderV3KeyRegistry,
 } from "@pirate/platform-cf/hns-forwarder-v3";
@@ -11,6 +16,8 @@ import { Schema } from "effect";
 
 export const HNS_COMMUNITY_APP_GATEWAY_DEPLOYMENT_SCHEMA =
   "pirate-hns-community-app-gateway-deployment-v1" as const;
+export const HNS_COMMUNITY_APP_HANDLE_GATEWAY_DEPLOYMENT_SCHEMA =
+  "pirate-hns-community-app-handle-gateway-deployment-v1" as const;
 export const HNS_COMMUNITY_APP_GATEWAY_STAGING_DEPLOYMENT_SCHEMA =
   "pirate-hns-community-app-gateway-staging-deployment-v1" as const;
 export const HNS_COMMUNITY_APP_GATEWAY_TLS_TERMINATOR_CONTRACT =
@@ -123,6 +130,21 @@ const DeploymentManifestV1 = Schema.Struct({
   ...commonDeploymentManifestFields,
 });
 
+const CombinedDeploymentManifestV1 = Schema.Struct({
+  schema: Schema.Literal(HNS_COMMUNITY_APP_HANDLE_GATEWAY_DEPLOYMENT_SCHEMA),
+  production_gateway_listener: Schema.Literal("127.0.0.1:4069"),
+  production_health_listener: Schema.Literal("127.0.0.1:4071"),
+  shadow_gateway_listener: Schema.Literal("127.0.0.1:4169"),
+  shadow_health_listener: Schema.Literal("127.0.0.1:4171"),
+  tls_terminator_contract: Schema.Literal(HNS_COMMUNITY_APP_GATEWAY_TLS_TERMINATOR_CONTRACT),
+  gateway_certificate_spki_sha256: Sha256,
+  routing_contract: Schema.Literal("app-or-handle-host-v1"),
+  handle_profile_version: Schema.Literal(HNS_COMMUNITY_HANDLE_PERSONA_GATEWAY_VERSION),
+  handle_profile_utf8_bytes: Schema.Literal(447),
+  handle_profile_sha256: Schema.Literal(HNS_COMMUNITY_HANDLE_PERSONA_GATEWAY_SHA256),
+  ...commonDeploymentManifestFields,
+});
+
 const StagingDeploymentManifestV1 = Schema.Struct({
   schema: Schema.Literal(HNS_COMMUNITY_APP_GATEWAY_STAGING_DEPLOYMENT_SCHEMA),
   mode: Schema.Literal("staging-shadow"),
@@ -136,12 +158,17 @@ const StagingDeploymentManifestV1 = Schema.Struct({
 
 type HnsCommunityAppGatewayDeploymentManifestV1 = Schema.Schema.Type<typeof DeploymentManifestV1>;
 
+type HnsCommunityAppHandleGatewayDeploymentManifestV1 = Schema.Schema.Type<
+  typeof CombinedDeploymentManifestV1
+>;
+
 type HnsCommunityAppGatewayStagingDeploymentManifestV1 = Schema.Schema.Type<
   typeof StagingDeploymentManifestV1
 >;
 
 type HnsCommunityAppGatewayDeploymentManifest =
   | HnsCommunityAppGatewayDeploymentManifestV1
+  | HnsCommunityAppHandleGatewayDeploymentManifestV1
   | HnsCommunityAppGatewayStagingDeploymentManifestV1;
 
 export type HnsCommunityAppGatewayRuntimeConfigurationV1 = Readonly<{
@@ -196,6 +223,21 @@ const productionManifestKeys = Object.freeze([
   "shadow_health_listener",
   "tls_terminator_contract",
   "gateway_certificate_spki_sha256",
+  ...commonManifestKeys,
+] as const);
+
+const combinedProductionManifestKeys = Object.freeze([
+  "schema",
+  "production_gateway_listener",
+  "production_health_listener",
+  "shadow_gateway_listener",
+  "shadow_health_listener",
+  "tls_terminator_contract",
+  "gateway_certificate_spki_sha256",
+  "routing_contract",
+  "handle_profile_version",
+  "handle_profile_utf8_bytes",
+  "handle_profile_sha256",
   ...commonManifestKeys,
 ] as const);
 
@@ -321,15 +363,30 @@ function decodeManifest(
     const text = decoder.decode(bytes);
     const raw: unknown = JSON.parse(text);
     const staging = mode === "staging-shadow";
+    const combined =
+      !staging &&
+      typeof raw === "object" &&
+      raw !== null &&
+      !Array.isArray(raw) &&
+      (raw as { schema?: unknown }).schema === HNS_COMMUNITY_APP_HANDLE_GATEWAY_DEPLOYMENT_SCHEMA;
     if (
-      !exactObjectKeys(raw, staging ? stagingManifestKeys : productionManifestKeys) ||
+      !exactObjectKeys(
+        raw,
+        staging
+          ? stagingManifestKeys
+          : combined
+            ? combinedProductionManifestKeys
+            : productionManifestKeys,
+      ) ||
       JSON.stringify(raw) !== text
     ) {
       throw new Error("noncanonical manifest");
     }
     const manifest = staging
       ? Schema.decodeUnknownSync(StagingDeploymentManifestV1)(raw)
-      : Schema.decodeUnknownSync(DeploymentManifestV1)(raw);
+      : combined
+        ? Schema.decodeUnknownSync(CombinedDeploymentManifestV1)(raw)
+        : Schema.decodeUnknownSync(DeploymentManifestV1)(raw);
     if (
       !exactHttpsOrigin(manifest.solid_origin) ||
       exactAuthorityDatabaseEndpoint(manifest.authority_database_endpoint) === null
@@ -354,7 +411,10 @@ export async function loadHnsCommunityAppGatewayRuntimeConfigurationV1(input: {
     manifest.api_next_source_commit !== input.api_next_source_commit ||
     manifest.bundle_sha256 !== (await sha256(input.bundle_bytes)) ||
     encoder.encode(JSON.stringify(HNS_COMMUNITY_APP_INTERACTIVE_GATEWAY_PROFILE)).byteLength !==
-      manifest.profile_utf8_bytes
+      manifest.profile_utf8_bytes ||
+    (manifest.schema === HNS_COMMUNITY_APP_HANDLE_GATEWAY_DEPLOYMENT_SCHEMA &&
+      encoder.encode(JSON.stringify(HNS_COMMUNITY_HANDLE_PERSONA_GATEWAY_PROFILE)).byteLength !==
+        manifest.handle_profile_utf8_bytes)
   ) {
     throw new Error("HNS community app gateway configuration is incomplete or invalid");
   }
@@ -382,9 +442,11 @@ export async function loadHnsCommunityAppGatewayRuntimeConfigurationV1(input: {
       manifest.forwarder_key_registry_reference,
       manifest.forwarder_key_registry_version,
     );
-    const gatewayDeploymentReference = `hns-community-app-gateway-sha256:${await sha256(
-      input.manifest_bytes,
-    )}`;
+    const gatewayDeploymentReference = `${
+      manifest.schema === HNS_COMMUNITY_APP_HANDLE_GATEWAY_DEPLOYMENT_SCHEMA
+        ? "hns-community-app-handle-gateway"
+        : "hns-community-app-gateway"
+    }-sha256:${await sha256(input.manifest_bytes)}`;
     return Object.freeze({
       manifest,
       gateway_deployment_reference: gatewayDeploymentReference,

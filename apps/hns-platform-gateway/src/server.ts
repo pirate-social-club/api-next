@@ -4,6 +4,10 @@ import { isIP } from "node:net";
 import { HNS_COMMUNITY_APP_INTERACTIVE_GATEWAY_PROFILE } from "@pirate/application/hns-community-app-gateway";
 import { HNS_COMMUNITY_HANDLE_PERSONA_GATEWAY_PROFILE } from "@pirate/application/hns-community-handle-gateway";
 import { HNS_STATIC_PLATFORM_APP_GATEWAY_PROFILE } from "@pirate/application/hns-static-platform-app-gateway";
+import type {
+  HnsCommunityAppHandleGatewayComposition,
+  HnsCommunityAppHandleGatewayService,
+} from "./combined-composition.ts";
 import type { HnsCommunityAppGatewayComposition } from "./community-composition.ts";
 import {
   HnsCommunityAppGatewayCallerAbort,
@@ -29,11 +33,13 @@ export type HnsStaticPlatformGatewayServer = Readonly<{
 
 export type HnsCommunityAppGatewayServer = HnsStaticPlatformGatewayServer;
 export type HnsCommunityHandleGatewayServer = HnsStaticPlatformGatewayServer;
+export type HnsCommunityAppHandleGatewayServer = HnsStaticPlatformGatewayServer;
 
 type HnsLoopbackGatewayService =
   | HnsStaticPlatformGatewayService
   | HnsCommunityAppGatewayService
-  | HnsCommunityHandleGatewayService;
+  | HnsCommunityHandleGatewayService
+  | HnsCommunityAppHandleGatewayService;
 
 function validLoopbackAddress(host: string): boolean {
   const family = isIP(host);
@@ -268,6 +274,32 @@ export async function startHnsCommunityHandleGatewayServer(input: {
     maximum_request_body_bytes: HNS_COMMUNITY_HANDLE_PERSONA_GATEWAY_PROFILE[12],
     invalid_configuration_message:
       "HNS community handle gateway server configuration is incomplete or invalid",
+  });
+}
+
+export async function startHnsCommunityAppHandleGatewayServer(input: {
+  composition: HnsCommunityAppHandleGatewayComposition;
+  gateway_host: string;
+  gateway_port: number;
+  health_host: string;
+  health_port: number;
+  ready: () => Promise<boolean> | boolean;
+}): Promise<HnsCommunityAppHandleGatewayServer> {
+  if (!input.composition.enabled) {
+    throw new Error(
+      "HNS community app-handle gateway server configuration is incomplete or invalid",
+    );
+  }
+  return startLoopbackGatewayServer({
+    service: input.composition.service,
+    gateway_host: input.gateway_host,
+    gateway_port: input.gateway_port,
+    health_host: input.health_host,
+    health_port: input.health_port,
+    ready: input.ready,
+    maximum_request_body_bytes: HNS_COMMUNITY_APP_INTERACTIVE_GATEWAY_PROFILE[11],
+    invalid_configuration_message:
+      "HNS community app-handle gateway server configuration is incomplete or invalid",
   });
 }
 
