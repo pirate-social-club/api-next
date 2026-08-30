@@ -1,8 +1,10 @@
 import { expect, test } from "bun:test";
 import {
+  decodeHnsAppHostTransitionDocumentV1,
   decodeHnsAuthorityDetachedObserverEvidenceV1,
   encodeHnsAuthorityDetachedObserverEvidenceV1,
   HNS_AUTHORITY_SUCCESSOR_CANDIDATE_VERSION,
+  HNS_MAINNET_GENESIS_BLOCK_HASH,
   type prepareHnsAuthoritySuccessorCandidateV1,
 } from "@pirate/application/hns-host-persistence";
 import {
@@ -37,6 +39,14 @@ const detachedTranscript = [
     response_bytes: encoder.encode(
       JSON.stringify({ height: 344_448, resource: jazleeuwUpdate3ResourceHex }),
     ),
+  },
+  {
+    exchange_kind: "hns_rpc",
+    vantage_reference: "observer-vantage:primary-hsd",
+    subject_reference: "pirate",
+    query_reference: "getnameresource:pirate",
+    request_bytes: encoder.encode('{"method":"getnameresource","params":["pirate"]}'),
+    response_bytes: encoder.encode('{"height":344448,"resource":"parent-resource"}'),
   },
   {
     exchange_kind: "child_authority_dns",
@@ -135,13 +145,13 @@ const parentChainAuthorityRecords = [
 ] as const;
 const parentChainAuthorityDigest = await hnsChainAuthorityDigest({
   chain_network: "main",
-  chain_genesis_block_hash: "6".repeat(64),
+  chain_genesis_block_hash: HNS_MAINNET_GENESIS_BLOCK_HASH,
   root_label: "pirate",
   ownership_source: "owner_authoritative_dns_txt",
   authority_records: parentChainAuthorityRecords,
 });
 const authorityAddressProvenance = {
-  source_kind: "dnssec_parent_authoritative_dns_v1",
+  source_kind: "detached_parent_authority_attestation_v1",
   parent_zone: "pirate",
   parent_chain_authority_digest: parentChainAuthorityDigest,
   parent_chain_authority_records: parentChainAuthorityRecords,
@@ -150,9 +160,9 @@ const authorityAddressProvenance = {
       view_id: "parent-primary-external",
       vantage_reference: "deployment-vantage:primary-external",
       outcome: "observed",
-      dnssec_validation: "secure",
-      dnskey_key_tag: 34383,
-      derived_ds: parentChainDs,
+      validation_attestation: "operator_attested_dnssec_secure",
+      attested_dnskey_key_tag: 34383,
+      attested_derived_ds: parentChainDs,
       records: [
         ["A", "ns1.pirate", "94.103.168.161"],
         ["A", "ns2.pirate", "81.15.150.159"],
@@ -162,9 +172,9 @@ const authorityAddressProvenance = {
       view_id: "parent-secondary-independent",
       vantage_reference: "deployment-vantage:secondary-independent",
       outcome: "observed",
-      dnssec_validation: "secure",
-      dnskey_key_tag: 34383,
-      derived_ds: parentChainDs,
+      validation_attestation: "operator_attested_dnssec_secure",
+      attested_dnskey_key_tag: 34383,
+      attested_derived_ds: parentChainDs,
       records: [
         ["A", "ns1.pirate", "94.103.168.161"],
         ["A", "ns2.pirate", "81.15.150.159"],
@@ -185,14 +195,11 @@ async function sourceObservation(): Promise<HnsAuthoritySuccessorSourceObservati
     ownership_source: "owner_authoritative_dns_txt",
     root_label: "jazleeuw",
     txt_name: "_pirate.jazleeuw",
-    expected_txt_value_sha256: "3".repeat(64),
-    control_identity_digest: "4".repeat(64),
+    expected_txt_value: "pirate-verification=nvs_9cc970eae6194214ad98a76bfa5af3ac",
     chain_authority_digest: "5".repeat(64),
     root_exists: true,
     root_control_verified: true,
     expiry_horizon_sufficient: true,
-    chain_network: "main",
-    chain_genesis_block_hash: "6".repeat(64),
     chain_anchor_height: 344_448,
     chain_anchor_block_hash: "7".repeat(64),
     chain_anchor_median_time: 1_777_689_600,
@@ -215,7 +222,6 @@ async function sourceObservation(): Promise<HnsAuthoritySuccessorSourceObservati
     root_label: "jazleeuw",
     observed_at: "2026-08-29T17:00:00.000Z",
     chain_height: 344_448,
-    expected_chain_network: "main",
     chain_authority_records: chainAuthorityRecords,
     authority_address_provenance: authorityAddressProvenance,
     generation_snapshot: {
@@ -251,8 +257,8 @@ function fakePreparer(calls: Parameters<CandidatePreparer>[0][]): CandidatePrepa
         root_label: input.root_label,
         observed_at: input.observed_at,
         chain_height: input.chain_height,
-        chain_network: input.expected_chain_network,
-        chain_genesis_block_hash: "6".repeat(64),
+        chain_network: "main",
+        chain_genesis_block_hash: HNS_MAINNET_GENESIS_BLOCK_HASH,
         chain_authority_digest: "5".repeat(64),
         chain_authority_records: input.chain_authority_records,
         authority_address_provenance: input.authority_address_provenance,
@@ -285,6 +291,7 @@ function source(value: HnsAuthoritySuccessorSourceObservationV1, calls: string[]
 test("derives the complete 6/10/1 package from live authority and row-identity ports", async () => {
   const observedAt = "2026-08-29T17:00:00.000Z";
   const zoneBytes = encoder.encode("$ORIGIN jazleeuw.\n; canonical live observation\n");
+  let observedZoneBytes = zoneBytes;
   const zoneDigest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", zoneBytes))]
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
@@ -328,7 +335,7 @@ test("derives the complete 6/10/1 package from live authority and row-identity p
   });
   const chainAuthorityDigest = await hnsChainAuthorityDigest({
     chain_network: "main",
-    chain_genesis_block_hash: "6".repeat(64),
+    chain_genesis_block_hash: HNS_MAINNET_GENESIS_BLOCK_HASH,
     root_label: "jazleeuw",
     ownership_source: "owner_authoritative_dns_txt",
     authority_records: chainAuthorityRecords,
@@ -357,14 +364,11 @@ test("derives the complete 6/10/1 package from live authority and row-identity p
           ownership_source: "owner_authoritative_dns_txt",
           root_label: "jazleeuw",
           txt_name: "_pirate.jazleeuw",
-          expected_txt_value_sha256: "3".repeat(64),
-          control_identity_digest: "4".repeat(64),
+          expected_txt_value: "pirate-verification=nvs_9cc970eae6194214ad98a76bfa5af3ac",
           chain_authority_digest: chainAuthorityDigest,
           root_exists: true,
           root_control_verified: true,
           expiry_horizon_sufficient: true,
-          chain_network: "main",
-          chain_genesis_block_hash: "6".repeat(64),
           chain_anchor_height: 344_448,
           chain_anchor_block_hash: "7".repeat(64),
           chain_anchor_median_time: Date.parse(observedAt) / 1_000,
@@ -376,7 +380,7 @@ test("derives the complete 6/10/1 package from live authority and row-identity p
         authority_views: [view("94.103.168.161"), view("81.15.150.159")],
         detached_transcript: detachedTranscript,
         authority_inventory_bytes: inventoryBytes,
-        zone_bytes: zoneBytes,
+        zone_bytes: observedZoneBytes,
         dns_authority_reference: "dns-authority:jazleeuw",
         dnssec_keyset_reference: "dnssec-keyset:jazleeuw",
         gateway_deployment_reference: "gateway:jazleeuw",
@@ -430,6 +434,38 @@ test("derives the complete 6/10/1 package from live authority and row-identity p
     bytesHex(encoder.encode(jazleeuwUpdate3ResourceHex)),
   );
   expect(emissions).toEqual([result.observation_document_bytes]);
+
+  const firstAppArtifact = result.candidate.candidate.artifacts.find(
+    (artifact) => artifact.name === "app_host_activation",
+  );
+  if (firstAppArtifact === undefined) throw new Error("missing first app-host artifact");
+  observedZoneBytes = encoder.encode("$ORIGIN jazleeuw.\n; distinct reviewed observation\n");
+  const secondEmissions: Uint8Array[] = [];
+  await runHnsAuthoritySuccessorObservationHarnessV1(
+    [],
+    harnessSource,
+    {
+      emit: async (bytes) => {
+        secondEmissions.push(Uint8Array.from(bytes));
+      },
+    },
+    {},
+    fakePreparer([]),
+  );
+  const secondObservationBytes = secondEmissions[0];
+  if (secondObservationBytes === undefined) throw new Error("missing second observation");
+  const secondObservation =
+    await decodeHnsAuthoritySuccessorObservationDocumentV1(secondObservationBytes);
+  const firstApp = decodeHnsAppHostTransitionDocumentV1(
+    Uint8Array.from(firstAppArtifact.bytes_hex.match(/.{2}/gu) ?? [], (byte) =>
+      Number.parseInt(byte, 16),
+    ),
+  );
+  const secondApp = decodeHnsAppHostTransitionDocumentV1(
+    secondObservation.source_observation.artifacts.app_host_activation,
+  );
+  expect(secondApp.idempotency_key).not.toBe(firstApp.idempotency_key);
+  expect(secondApp.request_hash).not.toBe(firstApp.request_hash);
 });
 
 test("acquires every live fact from one source and emits one canonical observation document", async () => {

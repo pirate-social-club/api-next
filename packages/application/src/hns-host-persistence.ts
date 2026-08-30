@@ -7,6 +7,7 @@ import {
   type HnsChainAuthorityRecord,
   hnsChainAuthorityDigest,
   hnsChainAuthorityRecords,
+  hnsControlIdentityDigest,
 } from "./namespace-ownership/hns-control-observer.ts";
 import type { ControlPlaneError } from "./ports.ts";
 
@@ -45,7 +46,7 @@ export type HnsAuthorityAddressRecordV1 = readonly ["A" | "AAAA", string, string
 export type HnsAuthorityAddressProvenanceV1 =
   | Readonly<{ readonly source_kind: "chain_glue_v1" }>
   | Readonly<{
-      readonly source_kind: "dnssec_parent_authoritative_dns_v1";
+      readonly source_kind: "detached_parent_authority_attestation_v1";
       readonly parent_zone: string;
       readonly parent_chain_authority_digest: string;
       readonly parent_chain_authority_records: ReadonlyArray<HnsChainAuthorityRecord>;
@@ -54,18 +55,26 @@ export type HnsAuthorityAddressProvenanceV1 =
           readonly view_id: string;
           readonly vantage_reference: string;
           readonly outcome: "observed" | "unavailable";
-          readonly dnssec_validation: "secure" | "insecure" | "bogus" | "indeterminate";
-          readonly dnskey_key_tag: number | null;
-          readonly derived_ds: ReadonlyArray<HnsAuthorityEmitDsV1> | null;
+          readonly validation_attestation:
+            | "operator_attested_dnssec_secure"
+            | "operator_attested_insecure"
+            | "operator_attested_bogus"
+            | "operator_attested_indeterminate";
+          readonly attested_dnskey_key_tag: number | null;
+          readonly attested_derived_ds: ReadonlyArray<HnsAuthorityEmitDsV1> | null;
           readonly records: ReadonlyArray<HnsAuthorityAddressRecordV1> | null;
         }>,
         Readonly<{
           readonly view_id: string;
           readonly vantage_reference: string;
           readonly outcome: "observed" | "unavailable";
-          readonly dnssec_validation: "secure" | "insecure" | "bogus" | "indeterminate";
-          readonly dnskey_key_tag: number | null;
-          readonly derived_ds: ReadonlyArray<HnsAuthorityEmitDsV1> | null;
+          readonly validation_attestation:
+            | "operator_attested_dnssec_secure"
+            | "operator_attested_insecure"
+            | "operator_attested_bogus"
+            | "operator_attested_indeterminate";
+          readonly attested_dnskey_key_tag: number | null;
+          readonly attested_derived_ds: ReadonlyArray<HnsAuthorityEmitDsV1> | null;
           readonly records: ReadonlyArray<HnsAuthorityAddressRecordV1> | null;
         }>,
       ];
@@ -84,6 +93,13 @@ export class HnsAuthorityEmitRefusal extends Error {
       | "noncanonical_candidate_artifact"
       | "observer_evidence_not_verified"
       | "observer_evidence_mismatch"
+      | "control_identity_mismatch"
+      | "parent_chain_anchor_mismatch"
+      | "parent_delegation_mismatch"
+      | "parent_address_mismatch"
+      | "parent_view_identity_mismatch"
+      | "parent_view_unavailable"
+      | "parent_view_attestation_mismatch"
       | "artifact_semantics_mismatch",
   ) {
     super(`HNS authority candidate emission refused: ${reason}`);
@@ -94,6 +110,9 @@ export const HNS_AUTHORITY_SUCCESSOR_CANDIDATE_VERSION =
   "pirate-hns-authority-successor-candidate-v1" as const;
 export const HNS_AUTHORITY_DETACHED_OBSERVER_EVIDENCE_VERSION =
   "pirate-hns-authority-detached-observer-evidence-v1" as const;
+export const HNS_AUTHORITY_SUCCESSOR_CHAIN_NETWORK = "main" as const;
+export const HNS_MAINNET_GENESIS_BLOCK_HASH =
+  "5b6ef2d3c1f3cdcadfd9a030ba1811efdd17740f14e166489760741d075992e0" as const;
 
 export type HnsAuthorityDetachedTranscriptEntryV1 = Readonly<{
   exchange_kind: "hns_rpc" | "child_authority_dns" | "parent_authority_dns";
@@ -126,14 +145,11 @@ export type HnsAuthorityDetachedObserverFactsV1 = Readonly<{
   ownership_source: "owner_authoritative_dns_txt";
   root_label: string;
   txt_name: string;
-  expected_txt_value_sha256: string;
-  control_identity_digest: string;
+  expected_txt_value: string;
   chain_authority_digest: string;
   root_exists: true;
   root_control_verified: true;
   expiry_horizon_sufficient: true;
-  chain_network: string;
-  chain_genesis_block_hash: string;
   chain_anchor_height: number;
   chain_anchor_block_hash: string;
   chain_anchor_median_time: number;
@@ -154,6 +170,7 @@ export type HnsAuthorityDetachedObserverEvidenceV1 = Readonly<{
   ownership_source: "owner_authoritative_dns_txt";
   root_label: string;
   txt_name: string;
+  expected_txt_value: string;
   expected_txt_value_sha256: string;
   control_identity_digest: string;
   chain_authority_digest: string;
@@ -219,6 +236,7 @@ const detachedObserverEvidenceKeys = [
   "ownership_source",
   "root_label",
   "txt_name",
+  "expected_txt_value",
   "expected_txt_value_sha256",
   "control_identity_digest",
   "chain_authority_digest",
@@ -255,14 +273,16 @@ export async function decodeHnsAuthorityDetachedObserverEvidenceV1(
     typeof value.root_label !== "string" ||
     !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(value.root_label) ||
     !validIdentity(value.txt_name) ||
+    !validIdentity(value.expected_txt_value) ||
+    new TextEncoder().encode(value.expected_txt_value).byteLength > 4_096 ||
     !validHash(value.expected_txt_value_sha256) ||
     !validHash(value.control_identity_digest) ||
     !validHash(value.chain_authority_digest) ||
     value.root_exists !== true ||
     value.root_control_verified !== true ||
     value.expiry_horizon_sufficient !== true ||
-    !validIdentity(value.chain_network) ||
-    !validHash(value.chain_genesis_block_hash) ||
+    value.chain_network !== HNS_AUTHORITY_SUCCESSOR_CHAIN_NETWORK ||
+    value.chain_genesis_block_hash !== HNS_MAINNET_GENESIS_BLOCK_HASH ||
     !Number.isSafeInteger(value.chain_anchor_height) ||
     Number(value.chain_anchor_height) <= 0 ||
     !validHash(value.chain_anchor_block_hash) ||
@@ -273,7 +293,7 @@ export async function decodeHnsAuthorityDetachedObserverEvidenceV1(
     !validIdentity(value.evidence_reference) ||
     !validHash(value.detached_transcript_sha256) ||
     !Array.isArray(value.detached_transcript) ||
-    value.detached_transcript.length < 5 ||
+    value.detached_transcript.length < 6 ||
     value.detached_transcript.length > 64
   ) {
     throw new TypeError("HNS detached observer evidence is invalid");
@@ -321,6 +341,24 @@ export async function decodeHnsAuthorityDetachedObserverEvidenceV1(
   if (transcriptDigest !== value.detached_transcript_sha256) {
     throw new TypeError("HNS detached observer transcript binding is invalid");
   }
+  const expectedTxtValueSha256 = await sha256Hex(
+    new TextEncoder().encode(value.expected_txt_value),
+  );
+  const controlIdentityDigest = await hnsControlIdentityDigest({
+    ownership_source: value.ownership_source,
+    txt_name: value.txt_name,
+    expected_txt_value: value.expected_txt_value,
+    root_label: value.root_label,
+    chain_authority_digest: value.chain_authority_digest as Parameters<
+      typeof hnsControlIdentityDigest
+    >[0]["chain_authority_digest"],
+  });
+  if (
+    expectedTxtValueSha256 !== value.expected_txt_value_sha256 ||
+    controlIdentityDigest !== value.control_identity_digest
+  ) {
+    throw new TypeError("HNS detached observer control identity binding is invalid");
+  }
   return value as HnsAuthorityDetachedObserverEvidenceV1;
 }
 
@@ -328,6 +366,18 @@ export async function encodeHnsAuthorityDetachedObserverEvidenceV1(
   input: HnsAuthorityDetachedObserverFactsV1 &
     Readonly<{ detached_transcript: ReadonlyArray<HnsAuthorityDetachedTranscriptEntryV1> }>,
 ): Promise<Uint8Array> {
+  const expectedTxtValueSha256 = await sha256Hex(
+    new TextEncoder().encode(input.expected_txt_value),
+  );
+  const controlIdentityDigest = await hnsControlIdentityDigest({
+    ownership_source: input.ownership_source,
+    txt_name: input.txt_name,
+    expected_txt_value: input.expected_txt_value,
+    root_label: input.root_label,
+    chain_authority_digest: input.chain_authority_digest as Parameters<
+      typeof hnsControlIdentityDigest
+    >[0]["chain_authority_digest"],
+  });
   const detachedTranscript = await Promise.all(
     input.detached_transcript.map(async (entry) => ({
       exchange_kind: entry.exchange_kind,
@@ -356,14 +406,15 @@ export async function encodeHnsAuthorityDetachedObserverEvidenceV1(
     ownership_source: input.ownership_source,
     root_label: input.root_label,
     txt_name: input.txt_name,
-    expected_txt_value_sha256: input.expected_txt_value_sha256,
-    control_identity_digest: input.control_identity_digest,
+    expected_txt_value: input.expected_txt_value,
+    expected_txt_value_sha256: expectedTxtValueSha256,
+    control_identity_digest: controlIdentityDigest,
     chain_authority_digest: input.chain_authority_digest,
     root_exists: input.root_exists,
     root_control_verified: input.root_control_verified,
     expiry_horizon_sufficient: input.expiry_horizon_sufficient,
-    chain_network: input.chain_network,
-    chain_genesis_block_hash: input.chain_genesis_block_hash,
+    chain_network: HNS_AUTHORITY_SUCCESSOR_CHAIN_NETWORK,
+    chain_genesis_block_hash: HNS_MAINNET_GENESIS_BLOCK_HASH,
     chain_anchor_height: input.chain_anchor_height,
     chain_anchor_block_hash: input.chain_anchor_block_hash,
     chain_anchor_median_time: input.chain_anchor_median_time,
@@ -387,10 +438,14 @@ function requireDetachedTranscriptSemantics(
   const identities = new Set<string>();
   const childVantages = new Set<string>();
   const parentVantages = new Set(
-    input.authority_address_provenance.source_kind === "dnssec_parent_authoritative_dns_v1"
+    input.authority_address_provenance.source_kind === "detached_parent_authority_attestation_v1"
       ? input.authority_address_provenance.views.map((view) => view.vantage_reference)
       : [],
   );
+  const parentZone =
+    input.authority_address_provenance.source_kind === "detached_parent_authority_attestation_v1"
+      ? input.authority_address_provenance.parent_zone
+      : undefined;
   for (const entry of evidence.detached_transcript) {
     const identity = JSON.stringify([
       entry.exchange_kind,
@@ -403,7 +458,15 @@ function requireDetachedTranscriptSemantics(
     }
     identities.add(identity);
     if (entry.exchange_kind === "hns_rpc") {
-      if (entry.subject_reference !== input.root_label) {
+      const parentZone =
+        input.authority_address_provenance.source_kind ===
+        "detached_parent_authority_attestation_v1"
+          ? input.authority_address_provenance.parent_zone
+          : undefined;
+      if (
+        (entry.subject_reference !== input.root_label && entry.subject_reference !== parentZone) ||
+        entry.query_reference !== `getnameresource:${entry.subject_reference}`
+      ) {
         throw new HnsAuthorityEmitRefusal("observer_evidence_mismatch");
       }
     } else if (entry.exchange_kind === "child_authority_dns") {
@@ -412,7 +475,8 @@ function requireDetachedTranscriptSemantics(
       }
       childVantages.add(entry.vantage_reference);
     } else if (
-      input.authority_address_provenance.source_kind !== "dnssec_parent_authoritative_dns_v1" ||
+      input.authority_address_provenance.source_kind !==
+        "detached_parent_authority_attestation_v1" ||
       entry.subject_reference !== input.authority_address_provenance.parent_zone ||
       !parentVantages.has(entry.vantage_reference)
     ) {
@@ -420,7 +484,13 @@ function requireDetachedTranscriptSemantics(
     }
   }
   if (
-    !evidence.detached_transcript.some((entry) => entry.exchange_kind === "hns_rpc") ||
+    !evidence.detached_transcript.some(
+      (entry) => entry.exchange_kind === "hns_rpc" && entry.subject_reference === input.root_label,
+    ) ||
+    (parentZone !== undefined &&
+      !evidence.detached_transcript.some(
+        (entry) => entry.exchange_kind === "hns_rpc" && entry.subject_reference === parentZone,
+      )) ||
     childVantages.size !== input.expected_authority_addresses.length ||
     input.expected_authority_addresses.some(
       (address) =>
@@ -447,14 +517,14 @@ async function canonicalAuthorityAddressProvenance(
 ): Promise<HnsAuthorityAddressProvenanceV1> {
   if (provenance?.source_kind === "chain_glue_v1") return { source_kind: "chain_glue_v1" };
   if (
-    provenance?.source_kind !== "dnssec_parent_authoritative_dns_v1" ||
+    provenance?.source_kind !== "detached_parent_authority_attestation_v1" ||
     !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(provenance.parent_zone) ||
     !/^[0-9a-f]{64}$/u.test(provenance.parent_chain_authority_digest) ||
     !Array.isArray(provenance.parent_chain_authority_records) ||
     !Array.isArray(provenance.views) ||
     provenance.views.length !== 2
   ) {
-    throw new HnsAuthorityEmitRefusal("artifact_semantics_mismatch");
+    throw new HnsAuthorityEmitRefusal("parent_chain_anchor_mismatch");
   }
   let parentChainAuthorityRecords: ReadonlyArray<HnsChainAuthorityRecord>;
   let parentChainAuthorityDigest: string;
@@ -471,13 +541,13 @@ async function canonicalAuthorityAddressProvenance(
       authority_records: parentChainAuthorityRecords,
     });
   } catch {
-    throw new HnsAuthorityEmitRefusal("artifact_semantics_mismatch");
+    throw new HnsAuthorityEmitRefusal("parent_chain_anchor_mismatch");
   }
   if (parentChainAuthorityDigest !== provenance.parent_chain_authority_digest) {
-    throw new HnsAuthorityEmitRefusal("artifact_semantics_mismatch");
+    throw new HnsAuthorityEmitRefusal("parent_chain_anchor_mismatch");
   }
   return {
-    source_kind: "dnssec_parent_authoritative_dns_v1",
+    source_kind: "detached_parent_authority_attestation_v1",
     parent_zone: provenance.parent_zone,
     parent_chain_authority_digest: parentChainAuthorityDigest,
     parent_chain_authority_records: parentChainAuthorityRecords,
@@ -492,7 +562,6 @@ export async function prepareHnsAuthoritySuccessorCandidateV1(
     root_label: string;
     observed_at: string;
     chain_height: number;
-    expected_chain_network: string;
     chain_authority_records: ReadonlyArray<HnsChainAuthorityRecord>;
     authority_address_provenance: HnsAuthorityAddressProvenanceV1;
     generation_snapshot: HnsAuthoritySuccessorGenerationSnapshotV1;
@@ -550,7 +619,8 @@ export async function prepareHnsAuthoritySuccessorCandidateV1(
   if (
     observation.root_label !== input.root_label ||
     observation.chain_anchor_height !== input.chain_height ||
-    observation.chain_network !== input.expected_chain_network ||
+    observation.chain_network !== HNS_AUTHORITY_SUCCESSOR_CHAIN_NETWORK ||
+    observation.chain_genesis_block_hash !== HNS_MAINNET_GENESIS_BLOCK_HASH ||
     observation.ownership_source !== "owner_authoritative_dns_txt"
   ) {
     throw new HnsAuthorityEmitRefusal("observer_evidence_mismatch");
@@ -715,7 +785,9 @@ function requireHnsAuthorityCandidateArtifactSemanticsV1(
   // jazleeuw delegates to out-of-bailiwick ns1.pirate and ns2.pirate. Its
   // Handshake resource attests only those NS names; it correctly carries no
   // address glue. Address authority instead comes from the exact reviewed
-  // inventory bytes, the pirate chain anchor, and DNSSEC-secure parent views.
+  // inventory bytes, the pirate chain transcript, and two explicitly labelled
+  // operator attestations. A concrete adapter must perform actual DNSSEC
+  // validation before it is permitted to make those attestations.
   // Chain records have already passed canonical DNS-name decoding, so neither
   // the digest nor this comparison admits presentation-only trailing dots.
   const provenance = input.authority_address_provenance;
@@ -726,9 +798,9 @@ function requireHnsAuthorityCandidateArtifactSemanticsV1(
     .map((nameserver) => nameserver.split(".").at(-1))
     .find((parentZone) => parentZone !== undefined);
   const parentViews =
-    provenance.source_kind === "dnssec_parent_authoritative_dns_v1" ? provenance.views : [];
+    provenance.source_kind === "detached_parent_authority_attestation_v1" ? provenance.views : [];
   const parentChainRecords =
-    provenance.source_kind === "dnssec_parent_authoritative_dns_v1"
+    provenance.source_kind === "detached_parent_authority_attestation_v1"
       ? provenance.parent_chain_authority_records
       : [];
   const parentChainNameservers = new Set(
@@ -759,50 +831,77 @@ function requireHnsAuthorityCandidateArtifactSemanticsV1(
         entry.authority_address,
       ] as HnsAuthorityAddressRecordV1,
   );
-  const parentAddressBindingMatchesInventory =
-    provenance.source_kind === "dnssec_parent_authoritative_dns_v1" &&
-    provenance.parent_zone === expectedParentZone &&
-    [...chainNameservers].every((nameserver) =>
-      nameserver.endsWith(`.${provenance.parent_zone}`),
-    ) &&
-    parentChainNameservers.size === activeAuthorityNameservers.size &&
-    [...activeAuthorityNameservers].every((nameserver) => parentChainNameservers.has(nameserver)) &&
-    parentChainGlue.size === activeAuthorityEndpoints.length &&
-    activeAuthorityEndpoints.every((entry) =>
-      parentChainGlue.has(
-        JSON.stringify([
-          entry.authority_nameserver,
-          entry.authority_address_family,
-          entry.authority_address,
-        ]),
-      ),
-    ) &&
-    parentViews.length === 2 &&
-    new Set(parentViews.map((view) => view.view_id)).size === parentViews.length &&
-    new Set(parentViews.map((view) => view.vantage_reference)).size === parentViews.length &&
-    parentViews.every((view) => {
-      if (
-        !/^[a-z][a-z0-9-]{0,63}$/u.test(view.view_id) ||
-        !/^[a-z][a-z0-9-]{0,63}:[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/u.test(view.vantage_reference) ||
-        view.outcome !== "observed" ||
-        view.dnssec_validation !== "secure" ||
-        view.dnskey_key_tag === null ||
-        !Array.isArray(view.derived_ds) ||
-        !sameDs(view.derived_ds, parentChainDs) ||
-        !validDsForKeyTag(parentChainDs, view.dnskey_key_tag) ||
-        !Array.isArray(view.records)
-      ) {
-        return false;
-      }
-      const records = new Set(view.records.map((record) => JSON.stringify(record)));
-      return (
-        view.records.length === canonicalParentRecords.length &&
-        records.size === canonicalParentRecords.length &&
-        canonicalParentRecords.every((record) => records.has(JSON.stringify(record)))
-      );
-    });
+  if (chainDelegationIsOutOfBailiwick) {
+    if (
+      provenance.source_kind !== "detached_parent_authority_attestation_v1" ||
+      provenance.parent_zone !== expectedParentZone ||
+      ![...chainNameservers].every((nameserver) =>
+        nameserver.endsWith(`.${provenance.parent_zone}`),
+      )
+    ) {
+      throw new HnsAuthorityEmitRefusal("parent_delegation_mismatch");
+    }
+    if (
+      parentChainNameservers.size !== activeAuthorityNameservers.size ||
+      ![...activeAuthorityNameservers].every((nameserver) =>
+        parentChainNameservers.has(nameserver),
+      ) ||
+      parentChainGlue.size !== activeAuthorityEndpoints.length ||
+      !activeAuthorityEndpoints.every((entry) =>
+        parentChainGlue.has(
+          JSON.stringify([
+            entry.authority_nameserver,
+            entry.authority_address_family,
+            entry.authority_address,
+          ]),
+        ),
+      )
+    ) {
+      throw new HnsAuthorityEmitRefusal("parent_address_mismatch");
+    }
+    if (
+      parentViews.length !== 2 ||
+      new Set(parentViews.map((view) => view.view_id)).size !== parentViews.length ||
+      new Set(parentViews.map((view) => view.vantage_reference)).size !== parentViews.length ||
+      parentViews.some(
+        (view) =>
+          !/^[a-z][a-z0-9-]{0,63}$/u.test(view.view_id) ||
+          !/^[a-z][a-z0-9-]{0,63}:[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/u.test(view.vantage_reference),
+      )
+    ) {
+      throw new HnsAuthorityEmitRefusal("parent_view_identity_mismatch");
+    }
+    if (parentViews.some((view) => view.outcome !== "observed")) {
+      throw new HnsAuthorityEmitRefusal("parent_view_unavailable");
+    }
+    if (
+      parentViews.some(
+        (view) =>
+          view.validation_attestation !== "operator_attested_dnssec_secure" ||
+          view.attested_dnskey_key_tag === null ||
+          !Array.isArray(view.attested_derived_ds) ||
+          !sameDs(view.attested_derived_ds, parentChainDs) ||
+          !validDsForKeyTag(parentChainDs, view.attested_dnskey_key_tag),
+      )
+    ) {
+      throw new HnsAuthorityEmitRefusal("parent_view_attestation_mismatch");
+    }
+    if (
+      parentViews.some((view) => {
+        if (!Array.isArray(view.records)) return true;
+        const records = new Set(view.records.map((record) => JSON.stringify(record)));
+        return (
+          view.records.length !== canonicalParentRecords.length ||
+          records.size !== canonicalParentRecords.length ||
+          !canonicalParentRecords.every((record) => records.has(JSON.stringify(record)))
+        );
+      })
+    ) {
+      throw new HnsAuthorityEmitRefusal("parent_address_mismatch");
+    }
+  }
   const chainAddressBindingMatchesInventory = chainDelegationIsOutOfBailiwick
-    ? chainGlue.size === 0 && parentAddressBindingMatchesInventory
+    ? chainGlue.size === 0
     : chainDelegationIsInBailiwick &&
       provenance.source_kind === "chain_glue_v1" &&
       chainGlue.size === activeAuthorityEndpoints.length &&

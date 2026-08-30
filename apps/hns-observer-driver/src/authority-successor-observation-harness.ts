@@ -58,7 +58,6 @@ export type HnsAuthoritySuccessorSourceObservationV1 = Readonly<{
   root_label: string;
   observed_at: string;
   chain_height: number;
-  expected_chain_network: string;
   chain_authority_records: ReadonlyArray<HnsAuthorityEmitChainRecordV1>;
   authority_address_provenance: HnsAuthorityAddressProvenanceV1;
   generation_snapshot: HnsAuthoritySuccessorGenerationSnapshotV1;
@@ -80,7 +79,6 @@ export type HnsAuthoritySuccessorObservationDocumentV1 = Readonly<{
   root_label: string;
   observed_at: string;
   chain_height: number;
-  expected_chain_network: string;
   chain_authority_records: ReadonlyArray<HnsAuthorityEmitChainRecordV1>;
   authority_address_provenance: HnsAuthorityAddressProvenanceV1;
   generation_snapshot: HnsAuthoritySuccessorGenerationSnapshotV1;
@@ -204,7 +202,7 @@ function validAuthorityAddressProvenance(value: unknown): value is HnsAuthorityA
       "parent_chain_authority_records",
       "views",
     ]) ||
-    value.source_kind !== "dnssec_parent_authoritative_dns_v1" ||
+    value.source_kind !== "detached_parent_authority_attestation_v1" ||
     typeof value.parent_zone !== "string" ||
     !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(value.parent_zone) ||
     !sha256HexValue(value.parent_chain_authority_digest) ||
@@ -220,23 +218,23 @@ function validAuthorityAddressProvenance(value: unknown): value is HnsAuthorityA
         "view_id",
         "vantage_reference",
         "outcome",
-        "dnssec_validation",
-        "dnskey_key_tag",
-        "derived_ds",
+        "validation_attestation",
+        "attested_dnskey_key_tag",
+        "attested_derived_ds",
         "records",
       ]) &&
       safeIdentity(view.view_id) &&
       safeIdentity(view.vantage_reference) &&
       (view.outcome === "observed" || view.outcome === "unavailable") &&
-      (view.dnssec_validation === "secure" ||
-        view.dnssec_validation === "insecure" ||
-        view.dnssec_validation === "bogus" ||
-        view.dnssec_validation === "indeterminate") &&
-      (view.dnskey_key_tag === null ||
-        (Number.isSafeInteger(view.dnskey_key_tag) &&
-          Number(view.dnskey_key_tag) >= 0 &&
-          Number(view.dnskey_key_tag) <= 65_535)) &&
-      (view.derived_ds === null || Array.isArray(view.derived_ds)) &&
+      (view.validation_attestation === "operator_attested_dnssec_secure" ||
+        view.validation_attestation === "operator_attested_insecure" ||
+        view.validation_attestation === "operator_attested_bogus" ||
+        view.validation_attestation === "operator_attested_indeterminate") &&
+      (view.attested_dnskey_key_tag === null ||
+        (Number.isSafeInteger(view.attested_dnskey_key_tag) &&
+          Number(view.attested_dnskey_key_tag) >= 0 &&
+          Number(view.attested_dnskey_key_tag) <= 65_535)) &&
+      (view.attested_derived_ds === null || Array.isArray(view.attested_derived_ds)) &&
       (view.records === null ||
         (Array.isArray(view.records) &&
           view.records.every(
@@ -339,7 +337,7 @@ async function decodeAndValidateDetachedTranscript(
   document: HnsAuthoritySuccessorObservationDocumentV1,
 ): Promise<ReadonlyArray<HnsAuthoritySuccessorDetachedTranscriptEntryV1>> {
   if (
-    document.detached_transcript.length < 5 ||
+    document.detached_transcript.length < 6 ||
     document.detached_transcript.length > 64 ||
     !document.detached_transcript.every(validEncodedTranscriptEntry)
   ) {
@@ -377,26 +375,47 @@ async function decodeAndValidateDetachedTranscript(
   }
   const expectedChildAddresses = new Set(document.expected_authority_addresses);
   const parentVantages = new Set(
-    document.authority_address_provenance.source_kind === "dnssec_parent_authoritative_dns_v1"
+    document.authority_address_provenance.source_kind === "detached_parent_authority_attestation_v1"
       ? document.authority_address_provenance.views.map((view) => view.vantage_reference)
       : [],
   );
+  const parentZone =
+    document.authority_address_provenance.source_kind === "detached_parent_authority_attestation_v1"
+      ? document.authority_address_provenance.parent_zone
+      : undefined;
   const transcriptShapeIsBound = decoded.every((entry) => {
     if (entry.exchange_kind === "hns_rpc") {
-      return entry.subject_reference === document.root_label;
+      const parentZone =
+        document.authority_address_provenance.source_kind ===
+        "detached_parent_authority_attestation_v1"
+          ? document.authority_address_provenance.parent_zone
+          : undefined;
+      return (
+        (entry.subject_reference === document.root_label ||
+          entry.subject_reference === parentZone) &&
+        entry.query_reference === `getnameresource:${entry.subject_reference}`
+      );
     }
     if (entry.exchange_kind === "child_authority_dns") {
       return expectedChildAddresses.has(entry.subject_reference);
     }
     return (
-      document.authority_address_provenance.source_kind === "dnssec_parent_authoritative_dns_v1" &&
+      document.authority_address_provenance.source_kind ===
+        "detached_parent_authority_attestation_v1" &&
       entry.subject_reference === document.authority_address_provenance.parent_zone &&
       parentVantages.has(entry.vantage_reference)
     );
   });
   if (
     !transcriptShapeIsBound ||
-    !decoded.some((entry) => entry.exchange_kind === "hns_rpc") ||
+    !decoded.some(
+      (entry) =>
+        entry.exchange_kind === "hns_rpc" && entry.subject_reference === document.root_label,
+    ) ||
+    (parentZone !== undefined &&
+      !decoded.some(
+        (entry) => entry.exchange_kind === "hns_rpc" && entry.subject_reference === parentZone,
+      )) ||
     [...expectedChildAddresses].some(
       (address) =>
         !decoded.some(
@@ -516,11 +535,14 @@ export function makeHnsAuthoritySuccessorObservationSourceV1(input: {
         },
         zone_bytes: live.zone_bytes,
       });
+      const dnsDocumentBytes = encodeHnsDnsZonePersistenceDocumentV1(dnsDocument);
+      const dnsDocumentSha256 = await sha256(dnsDocumentBytes);
       const appSemanticInput = [
         generation.snapshot.app_host_activation_id,
         generation.snapshot.app_host_current_generation,
         "active",
         "canonical-authority",
+        dnsDocumentSha256,
       ] as const;
       const appAuthority = await operationAuthority("app-host", appSemanticInput);
       const appHost = encodeHnsAppHostTransitionDocumentV1({
@@ -571,7 +593,6 @@ export function makeHnsAuthoritySuccessorObservationSourceV1(input: {
         root_label: rootLabel,
         observed_at: generation.database_time,
         chain_height: evidence.chain_anchor_height,
-        expected_chain_network: evidence.chain_network,
         chain_authority_records: live.chain_authority_records,
         authority_address_provenance: live.authority_address_provenance,
         generation_snapshot: generation.snapshot,
@@ -579,7 +600,7 @@ export function makeHnsAuthoritySuccessorObservationSourceV1(input: {
         authority_views: live.authority_views,
         artifacts: {
           authority_inventory: Uint8Array.from(live.authority_inventory_bytes),
-          dns_zone_activation: encodeHnsDnsZonePersistenceDocumentV1(dnsDocument),
+          dns_zone_activation: dnsDocumentBytes,
           app_host_activation: appHost,
           health_observation: health,
           observer_evidence: observerEvidenceBytes,
@@ -630,7 +651,6 @@ async function observationDocument(
     root_label: source.root_label,
     observed_at: source.observed_at,
     chain_height: source.chain_height,
-    expected_chain_network: source.expected_chain_network,
     chain_authority_records: source.chain_authority_records,
     authority_address_provenance: source.authority_address_provenance,
     generation_snapshot: source.generation_snapshot,
@@ -652,7 +672,6 @@ function structurallyValid(value: unknown): value is HnsAuthoritySuccessorObserv
       "root_label",
       "observed_at",
       "chain_height",
-      "expected_chain_network",
       "chain_authority_records",
       "authority_address_provenance",
       "generation_snapshot",
@@ -678,7 +697,6 @@ function structurallyValid(value: unknown): value is HnsAuthoritySuccessorObserv
     typeof value.root_label !== "string" ||
     !canonicalInstant(value.observed_at) ||
     !Number.isSafeInteger(value.chain_height) ||
-    typeof value.expected_chain_network !== "string" ||
     !Array.isArray(value.chain_authority_records) ||
     !validAuthorityAddressProvenance(value.authority_address_provenance) ||
     !exactObject(value.generation_snapshot, [
@@ -771,7 +789,6 @@ export async function decodeHnsAuthoritySuccessorObservationDocumentV1(bytes: Ui
       root_label: value.root_label,
       observed_at: value.observed_at,
       chain_height: value.chain_height,
-      expected_chain_network: value.expected_chain_network,
       chain_authority_records: value.chain_authority_records,
       authority_address_provenance: value.authority_address_provenance,
       generation_snapshot: value.generation_snapshot,
@@ -790,7 +807,6 @@ function candidateInput(source: HnsAuthoritySuccessorSourceObservationV1) {
     root_label: source.root_label,
     observed_at: source.observed_at,
     chain_height: source.chain_height,
-    expected_chain_network: source.expected_chain_network,
     chain_authority_records: source.chain_authority_records,
     authority_address_provenance: source.authority_address_provenance,
     generation_snapshot: source.generation_snapshot,
