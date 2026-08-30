@@ -3,6 +3,7 @@ import {
   encodeHnsDnsHealthDocumentV1,
   encodeHnsDnsZonePersistenceDocumentV1,
   HNS_DNS_ZONE_ACTIVATION_DOCUMENT_VERSION,
+  type HnsAuthorityAddressProvenanceV1,
   type HnsAuthorityEmitChainRecordV1,
   type HnsAuthorityEmitViewV1,
   type HnsAuthoritySuccessorGenerationSnapshotV1,
@@ -39,6 +40,7 @@ export type HnsAuthoritySuccessorSourceObservationV1 = Readonly<{
   chain_height: number;
   expected_chain_network: string;
   chain_authority_records: ReadonlyArray<HnsAuthorityEmitChainRecordV1>;
+  authority_address_provenance: HnsAuthorityAddressProvenanceV1;
   generation_snapshot: HnsAuthoritySuccessorGenerationSnapshotV1;
   expected_authority_addresses: readonly [string, string];
   authority_views: readonly [HnsAuthorityEmitViewV1, HnsAuthorityEmitViewV1];
@@ -60,6 +62,7 @@ export type HnsAuthoritySuccessorObservationDocumentV1 = Readonly<{
   chain_height: number;
   expected_chain_network: string;
   chain_authority_records: ReadonlyArray<HnsAuthorityEmitChainRecordV1>;
+  authority_address_provenance: HnsAuthorityAddressProvenanceV1;
   generation_snapshot: HnsAuthoritySuccessorGenerationSnapshotV1;
   expected_authority_addresses: readonly [string, string];
   authority_views: readonly [HnsAuthorityEmitViewV1, HnsAuthorityEmitViewV1];
@@ -96,6 +99,7 @@ export type HnsAuthoritySuccessorLiveAuthorityObservationV1 = Readonly<{
   source_commit: string;
   observer_evidence_bytes: Uint8Array;
   chain_authority_records: ReadonlyArray<HnsAuthorityEmitChainRecordV1>;
+  authority_address_provenance: HnsAuthorityAddressProvenanceV1;
   authority_views: readonly [HnsAuthorityEmitViewV1, HnsAuthorityEmitViewV1];
   authority_inventory_bytes: Uint8Array;
   zone_bytes: Uint8Array;
@@ -158,6 +162,43 @@ function safeIdentity(value: unknown, maximumBytes = 512): value is string {
     value.length > 0 &&
     value.trim() === value &&
     new TextEncoder().encode(value).byteLength <= maximumBytes
+  );
+}
+
+function validAuthorityAddressProvenance(value: unknown): value is HnsAuthorityAddressProvenanceV1 {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  if (
+    "source_kind" in value &&
+    value.source_kind === "chain_glue_v1" &&
+    exactObject(value, ["source_kind"])
+  ) {
+    return true;
+  }
+  if (
+    !exactObject(value, ["source_kind", "parent_zone", "views"]) ||
+    value.source_kind !== "parent_authoritative_dns_v1" ||
+    typeof value.parent_zone !== "string" ||
+    !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(value.parent_zone) ||
+    !Array.isArray(value.views) ||
+    value.views.length !== 2
+  ) {
+    return false;
+  }
+  return value.views.every(
+    (view) =>
+      exactObject(view, ["authority_address", "outcome", "records"]) &&
+      typeof view.authority_address === "string" &&
+      (view.outcome === "observed" || view.outcome === "unavailable") &&
+      (view.records === null ||
+        (Array.isArray(view.records) &&
+          view.records.every(
+            (record) =>
+              Array.isArray(record) &&
+              record.length === 3 &&
+              (record[0] === "A" || record[0] === "AAAA") &&
+              typeof record[1] === "string" &&
+              typeof record[2] === "string",
+          ))),
   );
 }
 
@@ -348,6 +389,7 @@ export function makeHnsAuthoritySuccessorObservationSourceV1(input: {
         chain_height: evidence.chain_anchor_height,
         expected_chain_network: evidence.chain_network,
         chain_authority_records: live.chain_authority_records,
+        authority_address_provenance: live.authority_address_provenance,
         generation_snapshot: generation.snapshot,
         expected_authority_addresses: [firstAddress, secondAddress],
         authority_views: live.authority_views,
@@ -404,6 +446,7 @@ async function observationDocument(
     chain_height: source.chain_height,
     expected_chain_network: source.expected_chain_network,
     chain_authority_records: source.chain_authority_records,
+    authority_address_provenance: source.authority_address_provenance,
     generation_snapshot: source.generation_snapshot,
     expected_authority_addresses: source.expected_authority_addresses,
     authority_views: source.authority_views,
@@ -424,6 +467,7 @@ function structurallyValid(value: unknown): value is HnsAuthoritySuccessorObserv
       "chain_height",
       "expected_chain_network",
       "chain_authority_records",
+      "authority_address_provenance",
       "generation_snapshot",
       "expected_authority_addresses",
       "authority_views",
@@ -448,6 +492,7 @@ function structurallyValid(value: unknown): value is HnsAuthoritySuccessorObserv
     !Number.isSafeInteger(value.chain_height) ||
     typeof value.expected_chain_network !== "string" ||
     !Array.isArray(value.chain_authority_records) ||
+    !validAuthorityAddressProvenance(value.authority_address_provenance) ||
     !exactObject(value.generation_snapshot, [
       "dns_zone_activation_id",
       "dns_current_generation",
@@ -536,6 +581,7 @@ export async function decodeHnsAuthoritySuccessorObservationDocumentV1(bytes: Ui
       chain_height: value.chain_height,
       expected_chain_network: value.expected_chain_network,
       chain_authority_records: value.chain_authority_records,
+      authority_address_provenance: value.authority_address_provenance,
       generation_snapshot: value.generation_snapshot,
       expected_authority_addresses: value.expected_authority_addresses,
       authority_views: value.authority_views,
@@ -554,6 +600,7 @@ function candidateInput(source: HnsAuthoritySuccessorSourceObservationV1) {
     chain_height: source.chain_height,
     expected_chain_network: source.expected_chain_network,
     chain_authority_records: source.chain_authority_records,
+    authority_address_provenance: source.authority_address_provenance,
     generation_snapshot: source.generation_snapshot,
     expected_authority_addresses: source.expected_authority_addresses,
     authority_views: source.authority_views,

@@ -90,17 +90,22 @@ test("emit and persistence preparation share the exact activation bytes", async 
 });
 
 const chainDs = [
-  [10875, 13, 2, "a".repeat(64)],
-  [10875, 13, 4, "b".repeat(96)],
+  [10875, 13, 2, "ba5d84ad6e3e7ec452a569ee2e6c447ba2b9b533de65c58e59f2f0b7f0773045"],
+  [
+    10875,
+    13,
+    4,
+    "fde2c7af467092476b5572f9ac43fbbbbe82f63f7c785af984dc5884a2dae0384519dea6982fdbd19c375756b4ebaf70",
+  ],
 ] as const;
 const chainAuthorityRecords = [
   ["NS", "ns1.pirate"],
   ["NS", "ns2.pirate"],
-  ["GLUE4", "ns1.pirate", "94.103.168.161"],
-  ["GLUE4", "ns2.pirate", "81.15.150.159"],
   ["DS", ...chainDs[0]],
   ["DS", ...chainDs[1]],
 ] as const;
+const jazleeuwUpdate3ResourceHex =
+  "0001036e7331067069726174650001036e7332c0060601387069726174652d766572696669636174696f6e3d6e76735f3963633937306561653631393432313461643938613736626661356166336163002a7b0d0220ba5d84ad6e3e7ec452a569ee2e6c447ba2b9b533de65c58e59f2f0b7f0773045002a7b0d0430fde2c7af467092476b5572f9ac43fbbbbe82f63f7c785af984dc5884a2dae0384519dea6982fdbd19c375756b4ebaf70";
 const canonicalZoneBytes = new TextEncoder().encode("$ORIGIN jazleeuw.\n; canonical observation\n");
 const canonicalZoneDigest = "907702901595a5d159cf4d855a8a3c907cfda15cb96f2fa8888cde954d324bb6";
 const observedView = (authorityAddress: string) => ({
@@ -110,6 +115,26 @@ const observedView = (authorityAddress: string) => ({
   dnskey_key_tag: 10875,
   derived_ds: chainDs,
 });
+const authorityAddressRecords = [
+  ["A", "ns1.pirate", "94.103.168.161"],
+  ["A", "ns2.pirate", "81.15.150.159"],
+] as const;
+const authorityAddressProvenance = {
+  source_kind: "parent_authoritative_dns_v1",
+  parent_zone: "pirate",
+  views: [
+    {
+      authority_address: "94.103.168.161",
+      outcome: "observed",
+      records: authorityAddressRecords,
+    },
+    {
+      authority_address: "81.15.150.159",
+      outcome: "observed",
+      records: authorityAddressRecords,
+    },
+  ],
+} as const;
 
 test("admits only two complete agreeing authority views with chain-matching DS", () => {
   expect(
@@ -331,6 +356,7 @@ async function canonicalCandidateInput(): Promise<CandidatePreparationInput> {
     chain_height: 344_448,
     expected_chain_network: "main",
     chain_authority_records: chainAuthorityRecords,
+    authority_address_provenance: authorityAddressProvenance,
     generation_snapshot: emittedSnapshot,
     expected_authority_addresses: ["94.103.168.161", "81.15.150.159"],
     authority_views: [observedView("94.103.168.161"), observedView("81.15.150.159")],
@@ -653,20 +679,33 @@ test("refuses every divergent semantic join between canonical review artifacts",
   }
 });
 
-test("binds digest-authenticated chain NS and glue exactly to the active inventory", async () => {
+test("accepts the actual 172-byte jazleeuw Update 3 out-of-bailiwick resource shape", async () => {
+  const resourceBytes = Uint8Array.from(jazleeuwUpdate3ResourceHex.match(/.{2}/gu) ?? [], (byte) =>
+    Number.parseInt(byte, 16),
+  );
+  expect(resourceBytes).toHaveLength(172);
+  expect(chainAuthorityRecords.map((record) => record[0])).toEqual(["NS", "NS", "DS", "DS"]);
+  await expect(
+    prepareHnsAuthoritySuccessorCandidateV1(await canonicalCandidateInput()),
+  ).resolves.toMatchObject({
+    candidate: {
+      chain_authority_records: chainAuthorityRecords,
+      chain_ds: chainDs,
+      dnskey_key_tag: 10875,
+    },
+  });
+});
+
+test("binds out-of-bailiwick chain NS names without inventing chain glue", async () => {
   const mutations = [
     chainAuthorityRecords.map((record) =>
-      record[0] === "NS" && record[1] === "ns1.pirate"
-        ? (["NS", "ns3.pirate"] as const)
-        : record[0] === "GLUE4" && record[1] === "ns1.pirate"
-          ? (["GLUE4", "ns3.pirate", record[2]] as const)
-          : record,
+      record[0] === "NS" && record[1] === "ns1.pirate" ? (["NS", "ns3.pirate"] as const) : record,
     ),
-    chainAuthorityRecords.map((record) =>
-      record[0] === "GLUE4" && record[1] === "ns1.pirate"
-        ? (["GLUE4", record[1], "203.0.113.53"] as const)
-        : record,
-    ),
+    [
+      ...chainAuthorityRecords,
+      ["GLUE4", "ns1.pirate", "94.103.168.161"] as const,
+      ["GLUE4", "ns2.pirate", "81.15.150.159"] as const,
+    ],
   ] as const;
 
   for (const chain_authority_records of mutations) {
@@ -704,6 +743,61 @@ test("binds digest-authenticated chain NS and glue exactly to the active invento
           health_observation: health,
           observer_evidence: observerEvidence,
         },
+      }),
+    ).rejects.toMatchObject({ reason: "artifact_semantics_mismatch" });
+  }
+
+  expect(() =>
+    hnsChainAuthorityDigest({
+      chain_network: "main",
+      chain_genesis_block_hash: "6".repeat(64),
+      root_label: "jazleeuw",
+      ownership_source: "owner_authoritative_dns_txt",
+      authority_records: [
+        ["NS", "ns1.pirate."],
+        ["NS", "ns2.pirate"],
+        ["DS", ...chainDs[0]],
+        ["DS", ...chainDs[1]],
+      ],
+    }),
+  ).toThrow("Authority record is not canonical");
+});
+
+test("binds out-of-bailiwick authority addresses to matching pirate parent-zone views", async () => {
+  const mutations = [
+    { ...authorityAddressProvenance, parent_zone: "elsewhere" },
+    {
+      ...authorityAddressProvenance,
+      views: [
+        { ...authorityAddressProvenance.views[0], outcome: "unavailable", records: null },
+        authorityAddressProvenance.views[1],
+      ],
+    },
+    {
+      ...authorityAddressProvenance,
+      views: [
+        {
+          ...authorityAddressProvenance.views[0],
+          records: [["A", "ns1.pirate", "203.0.113.53"], authorityAddressRecords[1]],
+        },
+        authorityAddressProvenance.views[1],
+      ],
+    },
+    {
+      ...authorityAddressProvenance,
+      views: [
+        { ...authorityAddressProvenance.views[0], authority_address: "203.0.113.53" },
+        authorityAddressProvenance.views[1],
+      ],
+    },
+    { source_kind: "chain_glue_v1" },
+  ] as const;
+
+  for (const authority_address_provenance of mutations) {
+    await expect(
+      prepareHnsAuthoritySuccessorCandidateV1({
+        ...(await canonicalCandidateInput()),
+        authority_address_provenance,
       }),
     ).rejects.toMatchObject({ reason: "artifact_semantics_mismatch" });
   }
@@ -769,6 +863,7 @@ test("emits one canonical all-or-nothing 6/10/1 review package", async () => {
     chain_height: 344_448,
     expected_chain_network: "main",
     chain_authority_records: chainAuthorityRecords,
+    authority_address_provenance: authorityAddressProvenance,
     generation_snapshot: emittedSnapshot,
     expected_authority_addresses: ["94.103.168.161", "81.15.150.159"],
     authority_views: [observedView("94.103.168.161"), observedView("81.15.150.159")],
@@ -799,6 +894,7 @@ test("refuses the entire package when any required artifact is empty", async () 
       chain_height: 344_448,
       expected_chain_network: "main",
       chain_authority_records: chainAuthorityRecords,
+      authority_address_provenance: authorityAddressProvenance,
       generation_snapshot: emittedSnapshot,
       expected_authority_addresses: ["94.103.168.161", "81.15.150.159"],
       authority_views: [observedView("94.103.168.161"), observedView("81.15.150.159")],
@@ -818,6 +914,7 @@ test("refuses canonical observer evidence that is not verified or bound to this 
     chain_height: 344_448,
     expected_chain_network: "main",
     chain_authority_records: chainAuthorityRecords,
+    authority_address_provenance: authorityAddressProvenance,
     generation_snapshot: emittedSnapshot,
     expected_authority_addresses: ["94.103.168.161", "81.15.150.159"] as const,
     authority_views: [observedView("94.103.168.161"), observedView("81.15.150.159")],
@@ -937,6 +1034,7 @@ test("refuses a DNS persistence artifact whose reviewed zone bytes do not match 
       chain_height: 344_448,
       expected_chain_network: "main",
       chain_authority_records: chainAuthorityRecords,
+      authority_address_provenance: authorityAddressProvenance,
       generation_snapshot: emittedSnapshot,
       expected_authority_addresses: ["94.103.168.161", "81.15.150.159"],
       authority_views: [observedView("94.103.168.161"), observedView("81.15.150.159")],

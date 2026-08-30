@@ -45,6 +45,26 @@ export type HnsAuthorityEmitViewV1 = Readonly<{
   derived_ds: ReadonlyArray<HnsAuthorityEmitDsV1> | null;
 }>;
 
+export type HnsAuthorityAddressRecordV1 = readonly ["A" | "AAAA", string, string];
+export type HnsAuthorityAddressProvenanceV1 =
+  | Readonly<{ readonly source_kind: "chain_glue_v1" }>
+  | Readonly<{
+      readonly source_kind: "parent_authoritative_dns_v1";
+      readonly parent_zone: string;
+      readonly views: readonly [
+        Readonly<{
+          readonly authority_address: string;
+          readonly outcome: "observed" | "unavailable";
+          readonly records: ReadonlyArray<HnsAuthorityAddressRecordV1> | null;
+        }>,
+        Readonly<{
+          readonly authority_address: string;
+          readonly outcome: "observed" | "unavailable";
+          readonly records: ReadonlyArray<HnsAuthorityAddressRecordV1> | null;
+        }>,
+      ];
+    }>;
+
 export class HnsAuthorityEmitRefusal extends Error {
   readonly name = "HnsAuthorityEmitRefusal";
   constructor(
@@ -84,6 +104,7 @@ export type HnsAuthoritySuccessorCandidateV1 = Readonly<{
   chain_genesis_block_hash: string;
   chain_authority_digest: string;
   chain_authority_records: ReadonlyArray<HnsChainAuthorityRecord>;
+  authority_address_provenance: HnsAuthorityAddressProvenanceV1;
   generations: HnsAuthoritySuccessorGenerationsV1;
   dnskey_key_tag: number;
   authority_views: readonly [HnsAuthorityEmitViewV1, HnsAuthorityEmitViewV1];
@@ -110,6 +131,7 @@ export async function prepareHnsAuthoritySuccessorCandidateV1(
     chain_height: number;
     expected_chain_network: string;
     chain_authority_records: ReadonlyArray<HnsChainAuthorityRecord>;
+    authority_address_provenance: HnsAuthorityAddressProvenanceV1;
     generation_snapshot: HnsAuthoritySuccessorGenerationSnapshotV1;
     expected_authority_addresses: readonly [string, string];
     authority_views: ReadonlyArray<HnsAuthorityEmitViewV1>;
@@ -219,6 +241,7 @@ export async function prepareHnsAuthoritySuccessorCandidateV1(
     observed_at: input.observed_at,
     chain_authority_digest: chainAuthorityDigest,
     chain_authority_records: chainAuthorityRecords,
+    authority_address_provenance: input.authority_address_provenance,
     generation_snapshot: input.generation_snapshot,
     generations,
     expected_authority_addresses: input.expected_authority_addresses,
@@ -245,6 +268,7 @@ export async function prepareHnsAuthoritySuccessorCandidateV1(
     chain_genesis_block_hash: observation.result.chain_genesis_block_hash,
     chain_authority_digest: chainAuthorityDigest,
     chain_authority_records: chainAuthorityRecords,
+    authority_address_provenance: input.authority_address_provenance,
     generations,
     dnskey_key_tag: views[0].dnskey_key_tag as number,
     authority_views: views,
@@ -265,6 +289,7 @@ function requireHnsAuthorityCandidateArtifactSemanticsV1(
     observed_at: string;
     chain_authority_digest: string;
     chain_authority_records: ReadonlyArray<HnsChainAuthorityRecord>;
+    authority_address_provenance: HnsAuthorityAddressProvenanceV1;
     generation_snapshot: HnsAuthoritySuccessorGenerationSnapshotV1;
     generations: HnsAuthoritySuccessorGenerationsV1;
     expected_authority_addresses: readonly [string, string];
@@ -284,13 +309,14 @@ function requireHnsAuthorityCandidateArtifactSemanticsV1(
   const dns = input.dns_zone_activation;
   const app = input.app_host_transition;
   const health = input.health_observation;
-  const activeAuthorityAddresses = new Set(
-    inventory.authoritative_nameserver_glue
-      .filter((entry) => entry.active)
-      .map((entry) => entry.authority_address),
-  );
-  const activeAuthorityGlue = inventory.authoritative_nameserver_glue.filter(
+  const activeAuthorityEndpoints = inventory.authoritative_nameserver_glue.filter(
     (entry) => entry.active,
+  );
+  const activeAuthorityAddresses = new Set(
+    activeAuthorityEndpoints.map((entry) => entry.authority_address),
+  );
+  const activeAuthorityNameservers = new Set(
+    activeAuthorityEndpoints.map((entry) => entry.authority_nameserver),
   );
   const chainNameservers = new Set(
     input.chain_authority_records.flatMap((record) => (record[0] === "NS" ? [record[1]] : [])),
@@ -302,17 +328,60 @@ function requireHnsAuthorityCandidateArtifactSemanticsV1(
         : [],
     ),
   );
+  const chainDelegationIsInBailiwick = [...chainNameservers].every((nameserver) =>
+    nameserver.endsWith(`.${input.root_label}`),
+  );
+  const chainDelegationIsOutOfBailiwick = [...chainNameservers].every(
+    (nameserver) => nameserver !== input.root_label && !nameserver.endsWith(`.${input.root_label}`),
+  );
   const expectedAuthorityAddresses = new Set(input.expected_authority_addresses);
-  const chainAuthorityMatchesInventory =
-    expectedAuthorityAddresses.size === input.expected_authority_addresses.length &&
-    activeAuthorityGlue.length === input.expected_authority_addresses.length &&
-    chainNameservers.size ===
-      new Set(activeAuthorityGlue.map((entry) => entry.authority_nameserver)).size &&
-    chainGlue.size === activeAuthorityGlue.length &&
-    activeAuthorityGlue.every(
-      (entry) =>
-        expectedAuthorityAddresses.has(entry.authority_address) &&
-        chainNameservers.has(entry.authority_nameserver) &&
+  // jazleeuw delegates to out-of-bailiwick ns1.pirate and ns2.pirate. Its
+  // Handshake resource attests only those NS names; it correctly carries no
+  // address glue. Address authority instead comes from the exact reviewed
+  // inventory bytes and two matching observations of the pirate parent zone.
+  // Chain records have already passed canonical DNS-name decoding, so neither
+  // the digest nor this comparison admits presentation-only trailing dots.
+  const provenance = input.authority_address_provenance;
+  if (provenance === null || typeof provenance !== "object") {
+    throw new HnsAuthorityEmitRefusal("artifact_semantics_mismatch");
+  }
+  const expectedParentZone = [...chainNameservers]
+    .map((nameserver) => nameserver.split(".").at(-1))
+    .find((parentZone) => parentZone !== undefined);
+  const parentViews =
+    provenance.source_kind === "parent_authoritative_dns_v1" ? provenance.views : [];
+  const canonicalParentRecords = activeAuthorityEndpoints.map(
+    (entry) =>
+      [
+        entry.authority_address_family === "GLUE4" ? "A" : "AAAA",
+        entry.authority_nameserver,
+        entry.authority_address,
+      ] as HnsAuthorityAddressRecordV1,
+  );
+  const parentAddressBindingMatchesInventory =
+    provenance.source_kind === "parent_authoritative_dns_v1" &&
+    provenance.parent_zone === expectedParentZone &&
+    [...chainNameservers].every((nameserver) =>
+      nameserver.endsWith(`.${provenance.parent_zone}`),
+    ) &&
+    parentViews.length === input.expected_authority_addresses.length &&
+    new Set(parentViews.map((view) => view.authority_address)).size === parentViews.length &&
+    parentViews.every((view) => expectedAuthorityAddresses.has(view.authority_address)) &&
+    parentViews.every((view) => {
+      if (view.outcome !== "observed" || !Array.isArray(view.records)) return false;
+      const records = new Set(view.records.map((record) => JSON.stringify(record)));
+      return (
+        view.records.length === canonicalParentRecords.length &&
+        records.size === canonicalParentRecords.length &&
+        canonicalParentRecords.every((record) => records.has(JSON.stringify(record)))
+      );
+    });
+  const chainAddressBindingMatchesInventory = chainDelegationIsOutOfBailiwick
+    ? chainGlue.size === 0 && parentAddressBindingMatchesInventory
+    : chainDelegationIsInBailiwick &&
+      provenance.source_kind === "chain_glue_v1" &&
+      chainGlue.size === activeAuthorityEndpoints.length &&
+      activeAuthorityEndpoints.every((entry) =>
         chainGlue.has(
           JSON.stringify([
             entry.authority_nameserver,
@@ -320,6 +389,17 @@ function requireHnsAuthorityCandidateArtifactSemanticsV1(
             entry.authority_address,
           ]),
         ),
+      );
+  const chainAuthorityMatchesInventory =
+    expectedAuthorityAddresses.size === input.expected_authority_addresses.length &&
+    activeAuthorityEndpoints.length === input.expected_authority_addresses.length &&
+    activeAuthorityNameservers.size === activeAuthorityEndpoints.length &&
+    chainNameservers.size === activeAuthorityNameservers.size &&
+    chainAddressBindingMatchesInventory &&
+    activeAuthorityEndpoints.every(
+      (entry) =>
+        expectedAuthorityAddresses.has(entry.authority_address) &&
+        chainNameservers.has(entry.authority_nameserver),
     );
   const inventoryCoversRoot = inventory.dns_write_capabilities.some(
     (entry) =>

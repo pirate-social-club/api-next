@@ -25,17 +25,42 @@ const candidateBytes = encoder.encode('{"candidate":"review-exact"}');
 const snapshotReference = "hns-observer:main:jazleeuw-verified-01";
 const snapshotSha256 = "8".repeat(64);
 const chainDs = [
-  [10875, 13, 2, "a".repeat(64)],
-  [10875, 13, 4, "b".repeat(96)],
+  [10875, 13, 2, "ba5d84ad6e3e7ec452a569ee2e6c447ba2b9b533de65c58e59f2f0b7f0773045"],
+  [
+    10875,
+    13,
+    4,
+    "fde2c7af467092476b5572f9ac43fbbbbe82f63f7c785af984dc5884a2dae0384519dea6982fdbd19c375756b4ebaf70",
+  ],
 ] as const;
 const chainAuthorityRecords = [
   ["NS", "ns1.pirate"],
   ["NS", "ns2.pirate"],
-  ["GLUE4", "ns1.pirate", "94.103.168.161"],
-  ["GLUE4", "ns2.pirate", "81.15.150.159"],
   ["DS", ...chainDs[0]],
   ["DS", ...chainDs[1]],
 ] as const;
+const authorityAddressProvenance = {
+  source_kind: "parent_authoritative_dns_v1",
+  parent_zone: "pirate",
+  views: [
+    {
+      authority_address: "94.103.168.161",
+      outcome: "observed",
+      records: [
+        ["A", "ns1.pirate", "94.103.168.161"],
+        ["A", "ns2.pirate", "81.15.150.159"],
+      ],
+    },
+    {
+      authority_address: "81.15.150.159",
+      outcome: "observed",
+      records: [
+        ["A", "ns1.pirate", "94.103.168.161"],
+        ["A", "ns2.pirate", "81.15.150.159"],
+      ],
+    },
+  ],
+} as const;
 
 async function sourceObservation(): Promise<HnsAuthoritySuccessorSourceObservationV1> {
   const observerEvidence = await encodeHnsControlObservationResultV2({
@@ -83,6 +108,7 @@ async function sourceObservation(): Promise<HnsAuthoritySuccessorSourceObservati
     chain_height: 344_448,
     expected_chain_network: "main",
     chain_authority_records: chainAuthorityRecords,
+    authority_address_provenance: authorityAddressProvenance,
     generation_snapshot: {
       dns_zone_activation_id: "hns-rehearsal-dns-zone-v1",
       dns_current_generation: 5,
@@ -120,6 +146,7 @@ function fakePreparer(calls: Parameters<CandidatePreparer>[0][]): CandidatePrepa
         chain_genesis_block_hash: "6".repeat(64),
         chain_authority_digest: "5".repeat(64),
         chain_authority_records: input.chain_authority_records,
+        authority_address_provenance: input.authority_address_provenance,
         generations: {
           dns_activation_generation: 6,
           app_host_activation_generation: 10,
@@ -240,6 +267,7 @@ test("derives the complete 6/10/1 package from live authority and row-identity p
         source_commit: "1".repeat(40),
         observer_evidence_bytes: evidenceBytes,
         chain_authority_records: chainAuthorityRecords,
+        authority_address_provenance: authorityAddressProvenance,
         authority_views: [view("94.103.168.161"), view("81.15.150.159")],
         authority_inventory_bytes: inventoryBytes,
         zone_bytes: zoneBytes,
@@ -308,6 +336,9 @@ test("acquires every live fact from one source and emits one canonical observati
     result.observation_document_bytes,
   );
   expect(decoded.source_observation.generation_snapshot).toEqual(observed.generation_snapshot);
+  expect(decoded.source_observation.authority_address_provenance).toEqual(
+    authorityAddressProvenance,
+  );
   expect(decoded.source_observation.artifacts).toEqual(observed.artifacts);
   expect(decoded.document.source_provenance).toMatchObject({
     observer_snapshot_reference: snapshotReference,
