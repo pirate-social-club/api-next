@@ -20,11 +20,19 @@ describe("lyric line identity normalization v1", () => {
   test("excludes complete structural metadata without rewriting inline annotations", () => {
     expect(
       acceptedLyricLines(
-        ' [Verse 1] \r\nVerse one\n[Bridge – Beat Drops]\nSing it [vocal growl]\n[vocal echo: "Echo..."]\nVerse one',
+        ' [Verse 1] \r\nVerse one\n[Bridge – Beat Drops]\n(Instrumental)\n(Instrumental Solo)\n(Instrumental breakdown with vocal chops)\nSing it [vocal growl]\n[falsetto] She bite me [vocal ad-lib]\n(Always coming at you with something that\'s clever)\n[vocal echo: "Echo..."]\nVerse one',
       ),
-    ).toEqual(["Verse one", "Sing it [vocal growl]", "Verse one"]);
+    ).toEqual([
+      "Verse one",
+      "Sing it [vocal growl]",
+      "[falsetto] She bite me [vocal ad-lib]",
+      "(Always coming at you with something that's clever)",
+      "Verse one",
+    ]);
     expect(isStandaloneLyricMetadataLine(" [Instrumental] ")).toBe(true);
+    expect(isStandaloneLyricMetadataLine(" (Instrumental Solo) ")).toBe(true);
     expect(isStandaloneLyricMetadataLine("Sing it [vocal growl]")).toBe(false);
+    expect(isStandaloneLyricMetadataLine("(That's what I need)")).toBe(false);
   });
 
   test("keeps ordinary lyric units eligible and declines only extreme spoken recall", () => {

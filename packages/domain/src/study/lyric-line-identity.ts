@@ -11,8 +11,23 @@ export type StudyUnitSayItBackEligibilityV1 = Readonly<{
   tokenCount: number;
 }>;
 
-export const isStandaloneLyricMetadataLine = (value: string): boolean =>
-  /^\[[^\r\n]*\]$/u.test(value.trim());
+const STANDALONE_PARENTHESIZED_INSTRUMENTAL_DIRECTION =
+  /^\(\s*instrumental(?:\s+solo|\s+breakdown(?:\s+with\s+vocal\s+chops)?)?\s*\)$/iu;
+
+export const isStandaloneLyricMetadataLine = (value: string): boolean => {
+  const trimmed = value.trim();
+  const bracketInterior = trimmed.slice(1, -1);
+  const isSingleBracketedAnnotation =
+    trimmed.startsWith("[") &&
+    trimmed.endsWith("]") &&
+    !bracketInterior.includes("[") &&
+    !bracketInterior.includes("]") &&
+    !bracketInterior.includes("\r") &&
+    !bracketInterior.includes("\n");
+  return (
+    isSingleBracketedAnnotation || STANDALONE_PARENTHESIZED_INSTRUMENTAL_DIRECTION.test(trimmed)
+  );
+};
 
 export const normalizeLyricLineIdentityV1 = (value: string): string =>
   value
