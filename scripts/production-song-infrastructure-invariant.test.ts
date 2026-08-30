@@ -60,6 +60,7 @@ describe("disabled production song infrastructure", () => {
       DATA_REGISTRATION_ENABLED: "false",
       DATA_REGISTRATION_CHAIN_ID: "1315",
     });
+    expect(configs.jobs.triggers).toEqual({ crons: [] });
   });
 
   test("reuses the reviewed production Hyperdrive everywhere", () => {
