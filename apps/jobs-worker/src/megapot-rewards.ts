@@ -260,8 +260,9 @@ export function makeMegapotRewardsJob(
       rpc,
       observationTtlMs: options.observationTtlMs,
     });
+    const solvencyStore = makeControlPlaneCustodySolvencyStore(controlPlane);
     const solvency = makeCustodySolvencyCoordinator({
-      store: makeControlPlaneCustodySolvencyStore(controlPlane),
+      store: solvencyStore,
       rpc,
       requiredConfirmations: options.requiredConfirmations,
     });
@@ -305,7 +306,18 @@ export function makeMegapotRewardsJob(
         },
         observeDrawing: () =>
           observeMegapotDrawingForCycle(observer.observe(options.attestationId)),
-        observeSolvency: () => solvency.observe(options.attestationId),
+        observeSolvency: () =>
+          solvencyStore
+            .listTokenAddresses(options.attestationId)
+            .pipe(
+              Effect.flatMap((tokenAddresses) =>
+                Effect.forEach(
+                  tokenAddresses,
+                  (tokenAddress) => solvency.observe(options.attestationId, tokenAddress),
+                  { concurrency: 1 },
+                ),
+              ),
+            ),
         freezeDue: (limit) => cutoff.freezeDue({ limit }),
         publishCommitment: (work) =>
           commitment.commit({ poolLegId: work.poolLegId, drawingId: work.drawingId }),

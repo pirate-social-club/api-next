@@ -1,12 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import { Schema } from "effect";
 import {
+  AddAssetBonusLeg,
   AddMegapotPoolLeg,
+  AssetBonusFundingV1,
   GetMegapotPoolStanding,
   GetSongMegapotPool,
   ListMyRewardCredits,
   MegapotFundingV1,
   MegapotPoolStandingV1,
+  ObserveAssetBonusFunding,
   ObserveMegapotPoolFunding,
   OpenSongRewardOffer,
 } from "./rewards-song-offers.ts";
@@ -15,6 +18,48 @@ const strict = <S extends Schema.ConstraintDecoder<unknown>>(schema: S) =>
   Schema.decodeUnknownSync(schema, { onExcessProperty: "error" });
 
 describe("song reward offer contracts", () => {
+  test("requires the complete server-whitelist identity for an asset bonus", () => {
+    const body = AddAssetBonusLeg.request?.body;
+    if (body === undefined) throw new Error("asset bonus body missing");
+    const request = {
+      idempotency_key: "asset_1",
+      persona_id: "persona_1",
+      funding_amount_atomic: "1000000",
+      chain_id: 84_532,
+      token_address: `0x${"a".repeat(40)}`,
+      token_decimals: 18,
+      token_symbol: "BONUS",
+      asset_policy_version: "bonus-v1",
+      amount_per_claim_atomic: "10000",
+      max_claims: 100,
+    } as const;
+    expect(strict(body)(request)).toEqual(request);
+    expect(() => strict(body)({ ...request, token_decimals: 6 })).not.toThrow();
+    expect(() =>
+      strict(body)({ ...request, token_symbol: "BONUS", arbitrary_token: true }),
+    ).toThrow();
+    expect(() => strict(body)({ ...request, token_symbol: "🚢".repeat(9) })).toThrow();
+    expect(() => strict(body)({ ...request, asset_policy_version: " bonus-v1" })).toThrow();
+    expect(
+      Schema.decodeUnknownSync(AssetBonusFundingV1)({
+        object: "asset_bonus_funding",
+        action: "fund_with_asset",
+        funding_effect_id: "funding_1",
+        leg_id: "leg_1",
+        status: "planned",
+        chain_id: 84_532,
+        token_address: request.token_address,
+        token_decimals: 18,
+        sender_address: `0x${"2".repeat(40)}`,
+        recipient_address: `0x${"3".repeat(40)}`,
+        expected_amount_atomic: "1000000",
+        confirmed_amount_atomic: null,
+        required_confirmations: 3,
+        transaction_hash: null,
+      }).action,
+    ).toBe("fund_with_asset");
+  });
+
   test("accepts pool terms but never a client-selected custody or ticket recipient", () => {
     const body = AddMegapotPoolLeg.request?.body;
     if (body === undefined) throw new Error("pool body missing");
@@ -78,6 +123,37 @@ describe("song reward offer contracts", () => {
       persona_id: "persona_1",
       transaction_hash: `0x${"4".repeat(64)}`,
     });
+    expect(ObserveAssetBonusFunding.path).toBe(
+      "/asset-bonus-legs/:legId/funding/:fundingEffectId/observations",
+    );
+  });
+
+  test("keeps existing Megapot funding responses closed to asset variants", () => {
+    const assetResponse = {
+      funding: {
+        object: "asset_bonus_funding",
+        action: "fund_with_asset",
+        funding_effect_id: "funding_1",
+        leg_id: "leg_1",
+        status: "planned",
+        chain_id: 84_532,
+        token_address: `0x${"a".repeat(40)}`,
+        token_decimals: 18,
+        sender_address: `0x${"2".repeat(40)}`,
+        recipient_address: `0x${"3".repeat(40)}`,
+        expected_amount_atomic: "1000000",
+        confirmed_amount_atomic: null,
+        required_confirmations: 3,
+        transaction_hash: null,
+      },
+      replayed: false,
+    } as const;
+    expect(() =>
+      Schema.decodeUnknownSync(ObserveMegapotPoolFunding.response)(assetResponse),
+    ).toThrow();
+    expect(Schema.decodeUnknownSync(ObserveAssetBonusFunding.response)(assetResponse)).toEqual(
+      assetResponse,
+    );
   });
 
   test("separates public pool facts from private participant and credit reads", () => {

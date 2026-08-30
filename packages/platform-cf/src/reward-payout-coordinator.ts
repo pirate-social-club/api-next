@@ -72,6 +72,10 @@ function deployment(candidate: RewardPayoutCandidate): MegapotV2DeploymentAttest
   };
 }
 
+function assetDeployment(candidate: RewardPayoutCandidate): MegapotV2DeploymentAttestation {
+  return { ...deployment(candidate), usdcAddress: candidate.tokenAddress };
+}
+
 function canonicalReceipt(receipt: MegapotTransactionReceipt): string {
   return JSON.stringify({
     chainId: receipt.chainId,
@@ -173,6 +177,12 @@ export function makeRewardPayoutCoordinator(input: {
     if (!sameAddress(input.signer.address, candidate.custodyAddress)) {
       return yield* failed("signer_mismatch", "configuration");
     }
+    if (
+      !sameAddress(candidate.tokenAddress, candidate.usdcAddress) &&
+      input.rpc.readErc20Balance === undefined
+    ) {
+      return yield* failed("invalid_config", "configuration");
+    }
     yield* rpcEffect("preflight", "deployment_attestation_mismatch", () =>
       input.rpc.attestDeployment(),
     );
@@ -237,7 +247,7 @@ export function makeRewardPayoutCoordinator(input: {
     let evidence: ReturnType<typeof validateMegapotUsdcTransferReceipt>;
     try {
       evidence = validateMegapotUsdcTransferReceipt({
-        deployment: deployment(payout),
+        deployment: assetDeployment(payout),
         receipt,
         recipient: payout.destinationAddress,
         amountAtomic: payout.amountAtomic,
@@ -246,7 +256,13 @@ export function makeRewardPayoutCoordinator(input: {
       return yield* requireReconciliation(payout, "payout_receipt_evidence_invalid");
     }
     const custodyBalanceAfterAtomic = yield* rpcEffect("receipt", "receipt_evidence_invalid", () =>
-      input.rpc.readUsdcBalance(payout.custodyAddress, receipt.blockNumber),
+      input.rpc.readErc20Balance === undefined
+        ? input.rpc.readUsdcBalance(payout.custodyAddress, receipt.blockNumber)
+        : input.rpc.readErc20Balance(
+            payout.tokenAddress,
+            payout.custodyAddress,
+            receipt.blockNumber,
+          ),
     );
     const receiptHash = yield* sha256Hex(toBytes(canonicalReceipt(receipt)));
     const confirmations = Number(confirmationsBig);
@@ -340,7 +356,7 @@ export function makeRewardPayoutCoordinator(input: {
         Promise.all([
           input.rpc.estimateGas({
             from: reservation.custodyAddress,
-            to: reservation.usdcAddress,
+            to: reservation.tokenAddress,
             data: calldata,
             value: 0n,
           }),
@@ -356,7 +372,7 @@ export function makeRewardPayoutCoordinator(input: {
       input.signer.sign({
         chainId: reservation.chainId,
         signerAddress: reservation.custodyAddress,
-        targetAddress: reservation.usdcAddress,
+        targetAddress: reservation.tokenAddress,
         nonce: reservation.nonce,
         data: calldata,
         valueWei: 0n,
@@ -421,11 +437,17 @@ export function makeRewardPayoutCoordinator(input: {
       () =>
         Promise.all([
           input.rpc.readBlock(feeQuote.observedBlockNumber),
-          input.rpc.readUsdcBalance(candidate.custodyAddress, feeQuote.observedBlockNumber),
+          input.rpc.readErc20Balance === undefined
+            ? input.rpc.readUsdcBalance(candidate.custodyAddress, feeQuote.observedBlockNumber)
+            : input.rpc.readErc20Balance(
+                candidate.tokenAddress,
+                candidate.custodyAddress,
+                feeQuote.observedBlockNumber,
+              ),
           input.rpc.readPendingNonce(candidate.custodyAddress),
           input.rpc.estimateGas({
             from: candidate.custodyAddress,
-            to: candidate.usdcAddress,
+            to: candidate.tokenAddress,
             data: calldata,
             value: 0n,
           }),

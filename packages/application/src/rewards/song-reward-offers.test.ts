@@ -3,6 +3,7 @@ import { Effect } from "effect";
 import { Clock, IdGen } from "../ports.ts";
 import type { RewardFundingIntent } from "./reward-funding.ts";
 import {
+  type AssetBonusLeg,
   type MegapotPoolLeg,
   makeSongRewardOfferService,
   SongRewardOfferRejected,
@@ -40,10 +41,28 @@ const leg: MegapotPoolLeg = {
   fundedAtomic: 0n,
   legTermsHash: `0x${"b".repeat(64)}`,
 };
+const assetLeg: AssetBonusLeg = {
+  legId: "reward_leg_asset_1",
+  offerId: offer.offerId,
+  status: "funding",
+  funderAccountId: "account_1",
+  chainId: 84_532,
+  tokenAddress: `0x${"a".repeat(40)}`,
+  tokenDecimals: 18,
+  tokenSymbol: "BONUS",
+  assetPolicyVersion: "bonus-v1",
+  custodyAddress: `0x${"4".repeat(40)}`,
+  amountPerClaimAtomic: 100n,
+  maxClaims: 10,
+  fundedAtomic: 0n,
+  fulfilledAtomic: 0n,
+  legTermsHash: `0x${"c".repeat(64)}`,
+};
 
 const fundingIntent: RewardFundingIntent = {
   fundingEffectId: `0x${"f".repeat(64)}`,
   legId: leg.legId,
+  legKind: "megapot_pool",
   funderAccountId: "account_1",
   senderAddress: `0x${"5".repeat(40)}`,
   recipientAddress: leg.custodyAddress,
@@ -58,6 +77,8 @@ const fundingIntent: RewardFundingIntent = {
   attestationId: "attestation_1",
   environment: "staging",
   chainId: 84_532,
+  tokenAddress: leg.tokenAddress,
+  tokenDecimals: leg.tokenDecimals,
   usdcAddress: leg.tokenAddress,
   custodyAddress: leg.custodyAddress,
   jackpotAddress: `0x${"1".repeat(40)}`,
@@ -98,6 +119,7 @@ describe("song reward offer application service", () => {
         legCalls.push(input);
         return Effect.succeed({ leg, replayed: false });
       },
+      addAssetBonusLeg: unexpected,
       recordFundingObservation: unexpected,
     };
     const service = makeSongRewardOfferService({
@@ -182,6 +204,7 @@ describe("song reward offer application service", () => {
       store: {
         openOffer: unexpected,
         addMegapotPoolLeg: unexpected,
+        addAssetBonusLeg: unexpected,
         recordFundingObservation: unexpected,
       },
       funding: { plan: unexpected, observe: unexpected },
@@ -211,5 +234,80 @@ describe("song reward offer application service", () => {
     );
     expect(error).toBeInstanceOf(SongRewardOfferRejected);
     expect((error as SongRewardOfferRejected).reason).toBe("fallback-policy-unavailable");
+  });
+
+  test("pins the exact whitelisted asset tuple before planning funding", async () => {
+    const legCalls: unknown[] = [];
+    const fundingCalls: unknown[] = [];
+    const assetFundingIntent: RewardFundingIntent = {
+      ...fundingIntent,
+      legId: assetLeg.legId,
+      legKind: "asset_bonus",
+      tokenAddress: assetLeg.tokenAddress,
+      tokenDecimals: assetLeg.tokenDecimals,
+    };
+    const service = makeSongRewardOfferService({
+      store: {
+        openOffer: unexpected,
+        addMegapotPoolLeg: unexpected,
+        addAssetBonusLeg: (input) => {
+          legCalls.push(input);
+          return Effect.succeed({ leg: assetLeg, replayed: false });
+        },
+        recordFundingObservation: unexpected,
+      },
+      funding: {
+        plan: (input) => {
+          fundingCalls.push(input);
+          return Effect.succeed({ kind: "planned", intent: assetFundingIntent });
+        },
+        observe: unexpected,
+      },
+      requiredConfirmations: 3,
+      externalFallbackPolicy: null,
+    });
+
+    const result = await Effect.runPromise(
+      service
+        .addAssetBonusLeg({
+          accountId: "account_1",
+          personaId: "persona_1",
+          offerId: offer.offerId,
+          idempotencyKey: "asset_1",
+          senderAddress: fundingIntent.senderAddress,
+          fundingAmountAtomic: 1_000n,
+          chainId: 84_532,
+          tokenAddress: assetLeg.tokenAddress,
+          tokenDecimals: assetLeg.tokenDecimals,
+          tokenSymbol: assetLeg.tokenSymbol,
+          assetPolicyVersion: assetLeg.assetPolicyVersion,
+          amountPerClaimAtomic: assetLeg.amountPerClaimAtomic,
+          maxClaims: assetLeg.maxClaims,
+        })
+        .pipe(...services(["action-asset", "asset-leg"])),
+    );
+
+    expect(result.leg).toEqual(assetLeg);
+    expect(legCalls).toEqual([
+      expect.objectContaining({
+        chainId: 84_532,
+        tokenAddress: assetLeg.tokenAddress,
+        tokenDecimals: 18,
+        tokenSymbol: "BONUS",
+        assetPolicyVersion: "bonus-v1",
+        amountPerClaimAtomic: 100n,
+        maxClaims: 10,
+      }),
+    ]);
+    expect(fundingCalls).toEqual([
+      {
+        legId: assetLeg.legId,
+        funderAccountId: "account_1",
+        senderAddress: fundingIntent.senderAddress,
+        expectedAmountAtomic: 1_000n,
+        requiredConfirmations: 3,
+        idempotencyKey: "asset_1",
+      },
+    ]);
   });
 });

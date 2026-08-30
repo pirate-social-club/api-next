@@ -18,6 +18,22 @@ const TransactionHash = Schema.String.check(Schema.isPattern(/^0x[0-9a-f]{64}$/u
 const Bytes32 = Schema.String.check(Schema.isPattern(/^0x[0-9a-f]{64}$/u));
 const Sha256 = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u));
 const AtomicAmount = Schema.String.check(Schema.isPattern(/^[1-9][0-9]*$/u));
+const TokenSymbol = Schema.NonEmptyString.check(
+  Schema.isMaxLength(32),
+  Schema.makeFilter((value) =>
+    value === value.trim() && new TextEncoder().encode(value).byteLength <= 32
+      ? undefined
+      : "Expected a trimmed token symbol of at most 32 UTF-8 bytes",
+  ),
+);
+const AssetPolicyVersion = Schema.NonEmptyString.check(
+  Schema.isMaxLength(128),
+  Schema.makeFilter((value) =>
+    value === value.trim() && new TextEncoder().encode(value).byteLength <= 128
+      ? undefined
+      : "Expected a trimmed asset policy version of at most 128 UTF-8 bytes",
+  ),
+);
 const NonNegativeAtomicAmount = Schema.String.check(Schema.isPattern(/^(?:0|[1-9][0-9]*)$/u));
 const PositiveInteger = Schema.Int.check(
   Schema.isBetween({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
@@ -110,6 +126,43 @@ export const MegapotFundingV1 = Schema.Struct({
   transaction_hash: Schema.NullOr(TransactionHash),
 });
 export type MegapotFundingV1 = Schema.Schema.Type<typeof MegapotFundingV1>;
+
+export const AssetBonusLegV1 = Schema.Struct({
+  object: Schema.Literal("asset_bonus_leg"),
+  leg_id: Identifier,
+  offer_id: Identifier,
+  status: MegapotPoolLegStatusV1,
+  chain_id: Schema.Literal(84_532),
+  token_address: Address,
+  token_decimals: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 77 })),
+  token_symbol: TokenSymbol,
+  asset_policy_version: AssetPolicyVersion,
+  custody_address: Address,
+  amount_per_claim_atomic: AtomicAmount,
+  max_claims: PositiveInteger,
+  funded_atomic: NonNegativeAtomicAmount,
+  fulfilled_atomic: NonNegativeAtomicAmount,
+  leg_terms_hash: Bytes32,
+});
+export type AssetBonusLegV1 = Schema.Schema.Type<typeof AssetBonusLegV1>;
+
+export const AssetBonusFundingV1 = Schema.Struct({
+  object: Schema.Literal("asset_bonus_funding"),
+  action: Schema.Literal("fund_with_asset"),
+  funding_effect_id: Identifier,
+  leg_id: Identifier,
+  status: MegapotFundingStatusV1,
+  chain_id: Schema.Literal(84_532),
+  token_address: Address,
+  token_decimals: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 77 })),
+  sender_address: Address,
+  recipient_address: Address,
+  expected_amount_atomic: AtomicAmount,
+  confirmed_amount_atomic: Schema.NullOr(AtomicAmount),
+  required_confirmations: PositiveInteger,
+  transaction_hash: Schema.NullOr(TransactionHash),
+});
+export type AssetBonusFundingV1 = Schema.Schema.Type<typeof AssetBonusFundingV1>;
 
 export const MegapotPoolDrawingLifecycleStatusV1 = Schema.Literals([
   "entry_open",
@@ -230,6 +283,31 @@ export const RewardCreditStateV1 = Schema.Literals([
   "reconciliation_required",
 ]);
 
+export const SongAssetBonusProjectionV1 = Schema.Struct({
+  object: Schema.Literal("song_asset_bonus_projection"),
+  offer_id: Identifier,
+  leg_id: Identifier,
+  community_id: Identifier,
+  post_id: Identifier,
+  offer_status: SongRewardOfferStatusV1,
+  leg_status: MegapotPoolLegStatusV1,
+  chain_id: Schema.Literal(84_532),
+  token_address: Address,
+  token_decimals: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 77 })),
+  token_symbol: TokenSymbol,
+  asset_policy_version: Identifier,
+  amount_per_claim_atomic: AtomicAmount,
+  max_claims: PositiveInteger,
+  claimed_count: Schema.Int.check(
+    Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
+  ),
+  available_inventory_atomic: NonNegativeAtomicAmount,
+  viewer_state: Schema.NullOr(Schema.Literals(["claimable", "already_claimed", "unavailable"])),
+  viewer_credit_id: Schema.NullOr(Identifier),
+  viewer_credit_state: Schema.NullOr(RewardCreditStateV1),
+});
+export type SongAssetBonusProjectionV1 = Schema.Schema.Type<typeof SongAssetBonusProjectionV1>;
+
 export const MegapotPoolStandingV1 = Schema.Struct({
   object: Schema.Literal("megapot_pool_standing"),
   leg_id: Identifier,
@@ -316,6 +394,34 @@ export const AddMegapotPoolLeg = endpoint({
   errors: [...CommonErrors, ProviderUnavailable],
 });
 
+export const AddAssetBonusLeg = endpoint({
+  method: "POST",
+  path: "/reward-offers/:offerId/asset-bonus-legs",
+  auth: Auth.user(),
+  request: {
+    path: OfferPath,
+    body: Schema.Struct({
+      idempotency_key: Identifier,
+      persona_id: PersonaIdV1,
+      funding_amount_atomic: AtomicAmount,
+      chain_id: Schema.Literal(84_532),
+      token_address: Address,
+      token_decimals: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 77 })),
+      token_symbol: TokenSymbol,
+      asset_policy_version: AssetPolicyVersion,
+      amount_per_claim_atomic: AtomicAmount,
+      max_claims: PositiveInteger,
+    }),
+  },
+  response: Schema.Struct({
+    leg: AssetBonusLegV1,
+    funding: AssetBonusFundingV1,
+    replayed: Schema.Boolean,
+  }),
+  successStatus: [200, 201],
+  errors: [...CommonErrors, ProviderUnavailable],
+});
+
 export const ObserveMegapotPoolFunding = endpoint({
   method: "POST",
   path: "/reward-offer-legs/:legId/funding/:fundingEffectId/observations",
@@ -328,7 +434,10 @@ export const ObserveMegapotPoolFunding = endpoint({
       transaction_hash: TransactionHash,
     }),
   },
-  response: Schema.Struct({ funding: MegapotFundingV1, replayed: Schema.Boolean }),
+  response: Schema.Struct({
+    funding: MegapotFundingV1,
+    replayed: Schema.Boolean,
+  }),
   errors: [...CommonErrors, RetryableConflict, ProviderUnavailable],
 });
 
@@ -341,12 +450,52 @@ export const GetMegapotPoolFunding = endpoint({
   errors: [AuthError, BadRequest, NotFound, InternalError],
 });
 
+export const ObserveAssetBonusFunding = endpoint({
+  method: "POST",
+  path: "/asset-bonus-legs/:legId/funding/:fundingEffectId/observations",
+  auth: Auth.user(),
+  request: {
+    path: FundingPath,
+    body: Schema.Struct({
+      idempotency_key: Identifier,
+      persona_id: PersonaIdV1,
+      transaction_hash: TransactionHash,
+    }),
+  },
+  response: Schema.Struct({
+    funding: AssetBonusFundingV1,
+    replayed: Schema.Boolean,
+  }),
+  errors: [...CommonErrors, RetryableConflict, ProviderUnavailable],
+});
+
+export const GetAssetBonusFunding = endpoint({
+  method: "GET",
+  path: "/asset-bonus-legs/:legId/funding/:fundingEffectId",
+  auth: Auth.user(),
+  request: { path: FundingPath },
+  response: Schema.Struct({ funding: AssetBonusFundingV1 }),
+  errors: [AuthError, BadRequest, NotFound, InternalError],
+});
+
 export const GetSongMegapotPool = endpoint({
   method: "GET",
   path: "/communities/:communityId/posts/:postId/rewards/megapot-pool",
   auth: Auth.user({ optionalUser: true }),
   request: { path: CommunityPostPath },
   response: Schema.Struct({ pool: Schema.NullOr(SongMegapotPoolProjectionV1) }),
+  errors: [BadRequest, InternalError],
+});
+
+export const ListSongAssetBonuses = endpoint({
+  method: "GET",
+  path: "/communities/:communityId/posts/:postId/rewards/asset-bonuses",
+  auth: Auth.user({ optionalUser: true }),
+  request: { path: CommunityPostPath },
+  response: Schema.Struct({
+    object: Schema.Literal("song_asset_bonus_list"),
+    items: Schema.Array(SongAssetBonusProjectionV1),
+  }),
   errors: [BadRequest, InternalError],
 });
 

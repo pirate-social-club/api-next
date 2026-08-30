@@ -1,8 +1,10 @@
 import {
+  type AssetBonusLeg,
   Clock,
   IdGen,
   type MegapotPoolLeg,
   makeSongRewardOfferService,
+  type PublicSongAssetBonusProjection,
   type PublicSongMegapotPoolProjection,
   type RewardCredit,
   type RewardFundingIntent,
@@ -42,10 +44,14 @@ export type SongRewardOfferHandlerServices = Readonly<{
 
 export type SongRewardOfferHandlers = Readonly<{
   OpenSongRewardOffer: EndpointHandler;
+  AddAssetBonusLeg: EndpointHandler;
   AddMegapotPoolLeg: EndpointHandler;
+  ObserveAssetBonusFunding: EndpointHandler;
+  GetAssetBonusFunding: EndpointHandler;
   ObserveMegapotPoolFunding: EndpointHandler;
   GetMegapotPoolFunding: EndpointHandler;
   GetSongMegapotPool: EndpointHandler;
+  ListSongAssetBonuses: EndpointHandler;
   GetMegapotPoolStanding: EndpointHandler;
   ListMyRewardCredits: EndpointHandler;
 }>;
@@ -58,6 +64,12 @@ function user(principal: Principal | null): {
     throw new AuthError({ message: "Authentication required" });
   }
   return { accountId: principal.subject, wallet: principal.walletAddress ?? null };
+}
+
+function optionalAccountId(principal: Principal | null): string | null {
+  return principal !== null && (principal.kind === "user" || principal.kind === "admin")
+    ? principal.subject
+    : null;
 }
 
 function wireFailure(error: unknown): Error {
@@ -145,6 +157,24 @@ const leg = (value: MegapotPoolLeg) => ({
   leg_terms_hash: value.legTermsHash,
 });
 
+const assetLeg = (value: AssetBonusLeg) => ({
+  object: "asset_bonus_leg" as const,
+  leg_id: value.legId,
+  offer_id: value.offerId,
+  status: value.status,
+  chain_id: value.chainId as 84_532,
+  token_address: value.tokenAddress,
+  token_decimals: value.tokenDecimals,
+  token_symbol: value.tokenSymbol,
+  asset_policy_version: value.assetPolicyVersion,
+  custody_address: value.custodyAddress,
+  amount_per_claim_atomic: value.amountPerClaimAtomic.toString(),
+  max_claims: value.maxClaims,
+  funded_atomic: value.fundedAtomic.toString(),
+  fulfilled_atomic: value.fulfilledAtomic.toString(),
+  leg_terms_hash: value.legTermsHash,
+});
+
 const funding = (value: RewardFundingIntent) => ({
   object: "megapot_pool_funding" as const,
   action: "fund_with_usdc" as const,
@@ -152,14 +182,53 @@ const funding = (value: RewardFundingIntent) => ({
   leg_id: value.legId,
   status: value.state === "reclaimable_failed" ? ("reverted" as const) : value.state,
   chain_id: value.chainId as 84_532,
-  token_address: value.usdcAddress,
-  token_decimals: 6 as const,
+  token_address: value.tokenAddress,
+  token_decimals: value.tokenDecimals as 6,
   sender_address: value.senderAddress,
   recipient_address: value.recipientAddress,
   expected_amount_atomic: value.expectedAmountAtomic.toString(),
   confirmed_amount_atomic: value.confirmedAmountAtomic?.toString() ?? null,
   required_confirmations: value.requiredConfirmations,
   transaction_hash: value.transactionHash,
+});
+
+const assetFunding = (value: RewardFundingIntent) => ({
+  object: "asset_bonus_funding" as const,
+  action: "fund_with_asset" as const,
+  funding_effect_id: value.fundingEffectId,
+  leg_id: value.legId,
+  status: value.state === "reclaimable_failed" ? ("reverted" as const) : value.state,
+  chain_id: value.chainId as 84_532,
+  token_address: value.tokenAddress,
+  token_decimals: value.tokenDecimals,
+  sender_address: value.senderAddress,
+  recipient_address: value.recipientAddress,
+  expected_amount_atomic: value.expectedAmountAtomic.toString(),
+  confirmed_amount_atomic: value.confirmedAmountAtomic?.toString() ?? null,
+  required_confirmations: value.requiredConfirmations,
+  transaction_hash: value.transactionHash,
+});
+
+const assetBonusProjection = (value: PublicSongAssetBonusProjection) => ({
+  object: "song_asset_bonus_projection" as const,
+  offer_id: value.offerId,
+  leg_id: value.legId,
+  community_id: value.communityId,
+  post_id: value.postId,
+  offer_status: value.offerStatus,
+  leg_status: value.legStatus,
+  chain_id: value.chainId as 84_532,
+  token_address: value.tokenAddress,
+  token_decimals: value.tokenDecimals,
+  token_symbol: value.tokenSymbol,
+  asset_policy_version: value.assetPolicyVersion,
+  amount_per_claim_atomic: value.amountPerClaimAtomic.toString(),
+  max_claims: value.maxClaims,
+  claimed_count: value.claimedCount,
+  available_inventory_atomic: value.availableInventoryAtomic.toString(),
+  viewer_state: value.viewerState,
+  viewer_credit_id: value.viewerCreditId,
+  viewer_credit_state: value.viewerCreditState,
 });
 
 const drawingProjection = (value: NonNullable<PublicSongMegapotPoolProjection["drawing"]>) => ({
@@ -313,6 +382,48 @@ export function makeSongRewardOfferHandlers(
         result.replayed ? 200 : 201,
       );
     },
+    AddAssetBonusLeg: async (request) => {
+      const principal = user(request.principal);
+      if (principal.wallet === null) throw new AuthError({ message: "Wallet session required" });
+      const path = request.params as { readonly offerId: string };
+      const body = request.body as {
+        readonly idempotency_key: string;
+        readonly persona_id: string;
+        readonly funding_amount_atomic: string;
+        readonly chain_id: 84_532;
+        readonly token_address: string;
+        readonly token_decimals: number;
+        readonly token_symbol: string;
+        readonly asset_policy_version: string;
+        readonly amount_per_claim_atomic: string;
+        readonly max_claims: number;
+      };
+      const result = await run(
+        rewards.addAssetBonusLeg({
+          accountId: principal.accountId,
+          personaId: body.persona_id,
+          offerId: path.offerId,
+          idempotencyKey: body.idempotency_key,
+          senderAddress: principal.wallet,
+          fundingAmountAtomic: BigInt(body.funding_amount_atomic),
+          chainId: body.chain_id,
+          tokenAddress: body.token_address,
+          tokenDecimals: body.token_decimals,
+          tokenSymbol: body.token_symbol,
+          assetPolicyVersion: body.asset_policy_version,
+          amountPerClaimAtomic: BigInt(body.amount_per_claim_atomic),
+          maxClaims: body.max_claims,
+        }),
+      );
+      return withEndpointResult(
+        {
+          leg: assetLeg(result.leg),
+          funding: assetFunding(result.funding.intent),
+          replayed: result.replayed,
+        },
+        result.replayed ? 200 : 201,
+      );
+    },
     ObserveMegapotPoolFunding: async (request) => {
       const principal = user(request.principal);
       const path = request.params as { readonly legId: string; readonly fundingEffectId: string };
@@ -326,11 +437,15 @@ export function makeSongRewardOfferHandlers(
           accountId: principal.accountId,
           personaId: body.persona_id,
           legId: path.legId,
+          legKind: "megapot_pool",
           fundingEffectId: path.fundingEffectId,
           idempotencyKey: body.idempotency_key,
           transactionHash: body.transaction_hash,
         }),
       );
+      if (result.funding.intent.legKind !== "megapot_pool") {
+        throw new NotFound({ message: "Reward funding target is unavailable" });
+      }
       return { funding: funding(result.funding.intent), replayed: result.replayed };
     },
     GetMegapotPoolFunding: async (request) => {
@@ -342,11 +457,52 @@ export function makeSongRewardOfferHandlers(
       if (
         intent === null ||
         intent.legId !== path.legId ||
+        intent.legKind !== "megapot_pool" ||
         intent.funderAccountId !== principal.accountId
       ) {
         throw new NotFound({ message: "Reward funding target is unavailable" });
       }
       return { funding: funding(intent) };
+    },
+    ObserveAssetBonusFunding: async (request) => {
+      const principal = user(request.principal);
+      const path = request.params as { readonly legId: string; readonly fundingEffectId: string };
+      const body = request.body as {
+        readonly idempotency_key: string;
+        readonly persona_id: string;
+        readonly transaction_hash: string;
+      };
+      const result = await run(
+        rewards.observeFunding({
+          accountId: principal.accountId,
+          personaId: body.persona_id,
+          legId: path.legId,
+          legKind: "asset_bonus",
+          fundingEffectId: path.fundingEffectId,
+          idempotencyKey: body.idempotency_key,
+          transactionHash: body.transaction_hash,
+        }),
+      );
+      if (result.funding.intent.legKind !== "asset_bonus") {
+        throw new NotFound({ message: "Reward funding target is unavailable" });
+      }
+      return { funding: assetFunding(result.funding.intent), replayed: result.replayed };
+    },
+    GetAssetBonusFunding: async (request) => {
+      const principal = user(request.principal);
+      const path = request.params as { readonly legId: string; readonly fundingEffectId: string };
+      const intent = await Effect.runPromise(
+        services.fundingStore.find(path.fundingEffectId).pipe(Effect.mapError(wireFailure)),
+      );
+      if (
+        intent === null ||
+        intent.legId !== path.legId ||
+        intent.legKind !== "asset_bonus" ||
+        intent.funderAccountId !== principal.accountId
+      ) {
+        throw new NotFound({ message: "Reward funding target is unavailable" });
+      }
+      return { funding: assetFunding(intent) };
     },
     GetSongMegapotPool: async (request) => {
       const path = request.params as { readonly communityId: string; readonly postId: string };
@@ -356,6 +512,22 @@ export function makeSongRewardOfferHandlers(
           .pipe(Effect.mapError((error) => wireFailure(error as RewardProjectionFailure))),
       );
       return { pool: pool === null ? null : poolProjection(pool) };
+    },
+    ListSongAssetBonuses: async (request) => {
+      const path = request.params as { readonly communityId: string; readonly postId: string };
+      const items = await Effect.runPromise(
+        services.projections
+          .listPublicSongAssetBonuses({
+            accountId: optionalAccountId(request.principal),
+            communityId: path.communityId,
+            postId: path.postId,
+          })
+          .pipe(Effect.mapError((error) => wireFailure(error as RewardProjectionFailure))),
+      );
+      return {
+        object: "song_asset_bonus_list" as const,
+        items: items.map(assetBonusProjection),
+      };
     },
     GetMegapotPoolStanding: async (request) => {
       const principal = user(request.principal);

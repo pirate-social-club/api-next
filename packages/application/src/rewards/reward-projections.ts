@@ -81,6 +81,27 @@ export type PublicSongMegapotPoolProjection = Readonly<{
   drawing: PublicMegapotDrawingProjection | null;
 }>;
 
+export type PublicSongAssetBonusProjection = Readonly<{
+  offerId: string;
+  legId: string;
+  communityId: string;
+  postId: string;
+  offerStatus: "active" | "paused" | "exhausted" | "expired" | "ended" | "operational_hold";
+  legStatus: "funding" | "active" | "paused" | "exhausted" | "ended" | "operational_hold";
+  chainId: number;
+  tokenAddress: string;
+  tokenDecimals: number;
+  tokenSymbol: string;
+  assetPolicyVersion: string;
+  amountPerClaimAtomic: bigint;
+  maxClaims: number;
+  claimedCount: number;
+  availableInventoryAtomic: bigint;
+  viewerState: "claimable" | "already_claimed" | "unavailable" | null;
+  viewerCreditId: string | null;
+  viewerCreditState: RewardCreditState | null;
+}>;
+
 export type MegapotParticipantStandingState =
   | "entry_open"
   | "entry_closed"
@@ -144,6 +165,11 @@ export interface RewardProjectionStore {
     readonly communityId: string;
     readonly postId: string;
   }) => Effect.Effect<PublicSongMegapotPoolProjection | null, RewardProjectionFailure>;
+  readonly listPublicSongAssetBonuses: (input: {
+    readonly accountId: string | null;
+    readonly communityId: string;
+    readonly postId: string;
+  }) => Effect.Effect<readonly PublicSongAssetBonusProjection[], RewardProjectionFailure>;
   readonly findStanding: (input: {
     readonly accountId: string;
     readonly legId: string;

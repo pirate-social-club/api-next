@@ -1,4 +1,5 @@
 import {
+  type AssetBonusLeg,
   ControlPlaneDb,
   type ControlPlaneError,
   type ControlPlaneTransaction,
@@ -114,6 +115,19 @@ const LEG_SELECT = `
     JOIN megapot_deployment_attestations attestation
       ON attestation.attestation_id=leg.attestation_id`;
 
+const ASSET_LEG_SELECT = `
+  SELECT leg.leg_id, leg.offer_id, leg.status, leg.funder_account_id,
+         leg.chain_id, leg.token_address, leg.token_decimals, leg.token_symbol,
+         leg.asset_policy_version, attestation.custody_address,
+         leg.amount_per_claim_atomic, leg.max_claims, leg.funded_atomic,
+         leg.fulfilled_atomic, leg.leg_terms_hash
+    FROM song_reward_offer_legs leg
+    JOIN reward_asset_whitelist asset
+      ON asset.chain_id=leg.chain_id AND asset.token_address=leg.token_address
+    JOIN megapot_deployment_attestations attestation
+      ON attestation.chain_id=leg.chain_id AND attestation.environment=asset.environment
+     AND attestation.status='active'`;
+
 function legFromRow(row: Row): MegapotPoolLeg {
   const status = text(row, "status");
   const emptyPoolPolicy = text(row, "empty_pool_policy");
@@ -148,6 +162,34 @@ function legFromRow(row: Row): MegapotPoolLeg {
   };
 }
 
+function assetLegFromRow(row: Row): AssetBonusLeg {
+  const status = text(row, "status");
+  if (
+    !["draft", "funding", "active", "paused", "exhausted", "ended", "operational_hold"].includes(
+      status,
+    )
+  ) {
+    throw new Error("invalid asset bonus leg");
+  }
+  return {
+    legId: text(row, "leg_id"),
+    offerId: text(row, "offer_id"),
+    status: status as AssetBonusLeg["status"],
+    funderAccountId: text(row, "funder_account_id"),
+    chainId: integer(row, "chain_id"),
+    tokenAddress: text(row, "token_address"),
+    tokenDecimals: integer(row, "token_decimals"),
+    tokenSymbol: text(row, "token_symbol"),
+    assetPolicyVersion: text(row, "asset_policy_version"),
+    custodyAddress: text(row, "custody_address"),
+    amountPerClaimAtomic: bigint(row, "amount_per_claim_atomic"),
+    maxClaims: integer(row, "max_claims"),
+    fundedAtomic: bigint(row, "funded_atomic"),
+    fulfilledAtomic: bigint(row, "fulfilled_atomic"),
+    legTermsHash: text(row, "leg_terms_hash"),
+  };
+}
+
 const readOffer = (db: ControlPlaneTransaction, offerId: string) =>
   Effect.gen(function* () {
     const result = yield* db.execute<Row>({
@@ -174,6 +216,21 @@ const readLeg = (db: ControlPlaneTransaction, legId: string) =>
     if (result.rows.length !== 1) return yield* storage("invalid-row");
     return yield* Effect.try({
       try: () => legFromRow(result.rows[0] as Row),
+      catch: () => storage("invalid-row"),
+    });
+  });
+
+const readAssetLeg = (db: ControlPlaneTransaction, legId: string) =>
+  Effect.gen(function* () {
+    const result = yield* db.execute<Row>({
+      label: "song-reward-offer.asset-leg.read",
+      text: `${ASSET_LEG_SELECT} WHERE leg.leg_id=$1 AND leg.kind='asset_bonus'`,
+      values: [legId],
+      readonly: true,
+    });
+    if (result.rows.length !== 1) return yield* storage("invalid-row");
+    return yield* Effect.try({
+      try: () => assetLegFromRow(result.rows[0] as Row),
       catch: () => storage("invalid-row"),
     });
   });
@@ -487,6 +544,146 @@ export function makeControlPlaneSongRewardOfferRepository() {
         );
       }).pipe(mapped),
 
+    addAssetBonusLeg: (input: Parameters<SongRewardOfferStore["addAssetBonusLeg"]>[0]) =>
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        return yield* db.withTransaction((transaction) =>
+          Effect.gen(function* () {
+            const endpoint = "/reward-offers/:offerId/asset-bonus-legs";
+            yield* lockAction(transaction, { ...input, endpoint });
+            const replay = yield* transaction.execute<Row>({
+              label: "song-reward-offer.asset-leg.replay",
+              text: `SELECT request_hash, leg_id FROM song_reward_offer_actions
+                      WHERE account_id=$1 AND persona_id=$2 AND endpoint_template=$3
+                        AND idempotency_key=$4`,
+              values: [input.accountId, input.personaId, endpoint, input.idempotencyKey],
+              readonly: false,
+            });
+            if (replay.rows.length === 1) {
+              const row = replay.rows[0] as Row;
+              if (text(row, "request_hash") !== input.requestHash) {
+                return yield* rejected("idempotency-conflict");
+              }
+              return {
+                leg: yield* readAssetLeg(transaction, text(row, "leg_id")),
+                replayed: true,
+              };
+            }
+            const authority = yield* transaction.execute<Row>({
+              label: "song-reward-offer.asset-leg.authority",
+              text: `SELECT offer.status AS offer_status,
+                            offer.owner_policy_snapshot->>'third_party_legs' AS third_party_legs,
+                            publication.actor_user_id AS song_owner_account_id,
+                            asset.chain_id, asset.token_address, asset.decimals,
+                            asset.symbol, asset.policy_version, attestation.custody_address
+                       FROM song_reward_offers offer
+                       JOIN communities community ON community.community_id=offer.community_id
+                         AND community.status='active'
+                       JOIN community_memberships membership
+                         ON membership.community_id=offer.community_id
+                        AND membership.user_id=$2 AND membership.status='member'
+                       JOIN personas persona ON persona.account_id=$2 AND persona.persona_id=$3
+                         AND persona.status='active'
+                       JOIN media_publication_projections publication
+                         ON publication.community_id=offer.community_id
+                        AND publication.post_id=offer.post_id
+                        AND publication.audio_revision=offer.audio_revision
+                       JOIN reward_asset_whitelist asset
+                         ON asset.chain_id=$4 AND asset.token_address=$5
+                        AND asset.decimals=$6 AND asset.symbol=$7 AND asset.policy_version=$8
+                        AND asset.asset_kind='bonus_asset' AND asset.status='active'
+                        AND asset.environment IN ('test','staging')
+                       JOIN megapot_deployment_attestations attestation
+                         ON attestation.chain_id=asset.chain_id
+                        AND attestation.environment=asset.environment
+                        AND attestation.status='active'
+                      WHERE offer.offer_id=$1 AND offer.status IN ('draft','active')
+                        AND offer.ends_at > clock_timestamp()`,
+              values: [
+                input.offerId,
+                input.accountId,
+                input.personaId,
+                input.chainId,
+                input.tokenAddress,
+                input.tokenDecimals,
+                input.tokenSymbol,
+                input.assetPolicyVersion,
+              ],
+              readonly: false,
+            });
+            if (authority.rows.length !== 1) return yield* rejected("not-found");
+            const row = authority.rows[0] as Row;
+            if (
+              text(row, "third_party_legs") === "owner_only" &&
+              text(row, "song_owner_account_id") !== input.accountId
+            ) {
+              return yield* rejected("owner-only");
+            }
+            yield* transaction.execute({
+              label: "song-reward-offer.asset-leg.create",
+              text: `INSERT INTO song_reward_offer_legs (
+                       leg_id,offer_id,kind,status,funder_account_id,refund_policy,leg_terms_hash,
+                       participation_starts_at,chain_id,token_address,token_decimals,
+                       token_symbol,asset_policy_version,amount_per_claim_atomic,max_claims,
+                       legal_activation_gate,created_at,updated_at
+                     ) VALUES ($1,$2,'asset_bonus','draft',$3,'refund_to_funders_pro_rata',$4,
+                       $5,$6,$7,$8,$9,$10,$11,$12,'test_only',$5,$5)`,
+              values: [
+                input.legId,
+                input.offerId,
+                input.accountId,
+                input.legTermsHash,
+                input.createdAt,
+                input.chainId,
+                input.tokenAddress,
+                input.tokenDecimals,
+                input.tokenSymbol,
+                input.assetPolicyVersion,
+                input.amountPerClaimAtomic.toString(),
+                input.maxClaims,
+              ],
+              readonly: false,
+            });
+            if (text(row, "offer_status") === "draft") {
+              yield* transaction.execute({
+                label: "song-reward-offer.asset-leg.activate-offer",
+                text: `UPDATE song_reward_offers SET status='active',activated_at=$2,updated_at=$2
+                        WHERE offer_id=$1 AND status='draft'`,
+                values: [input.offerId, input.createdAt],
+                readonly: false,
+              });
+            }
+            yield* transaction.execute({
+              label: "song-reward-offer.asset-leg.begin-funding",
+              text: `UPDATE song_reward_offer_legs SET status='funding',updated_at=$2
+                      WHERE leg_id=$1 AND status='draft'`,
+              values: [input.legId, input.createdAt],
+              readonly: false,
+            });
+            yield* transaction.execute({
+              label: "song-reward-offer.asset-leg.action",
+              text: `INSERT INTO song_reward_offer_actions (
+                       action_id,account_id,persona_id,endpoint_template,idempotency_key,
+                       request_hash,offer_id,leg_id,created_at
+                     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+              values: [
+                input.actionId,
+                input.accountId,
+                input.personaId,
+                endpoint,
+                input.idempotencyKey,
+                input.requestHash,
+                input.offerId,
+                input.legId,
+                input.createdAt,
+              ],
+              readonly: false,
+            });
+            return { leg: yield* readAssetLeg(transaction, input.legId), replayed: false };
+          }),
+        );
+      }).pipe(mapped),
+
     recordFundingObservation: (
       input: Parameters<SongRewardOfferStore["recordFundingObservation"]>[0],
     ) =>
@@ -494,7 +691,10 @@ export function makeControlPlaneSongRewardOfferRepository() {
         const db = yield* ControlPlaneDb;
         return yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
-            const endpoint = "/reward-offer-legs/:legId/funding/:fundingEffectId/observations";
+            const endpoint =
+              input.legKind === "asset_bonus"
+                ? "/asset-bonus-legs/:legId/funding/:fundingEffectId/observations"
+                : "/reward-offer-legs/:legId/funding/:fundingEffectId/observations";
             yield* lockAction(transaction, { ...input, endpoint });
             const replay = yield* transaction.execute<Row>({
               label: "song-reward-offer.funding-observation.replay",
@@ -529,7 +729,7 @@ export function makeControlPlaneSongRewardOfferRepository() {
                        JOIN personas persona ON persona.account_id=$2 AND persona.persona_id=$3
                          AND persona.status='active'
                       WHERE leg.leg_id=$7 AND funding.funding_effect_id=$8
-                        AND funding.funder_account_id=$2`,
+                        AND funding.funder_account_id=$2 AND leg.kind=$10`,
               values: [
                 input.actionId,
                 input.accountId,
@@ -540,6 +740,7 @@ export function makeControlPlaneSongRewardOfferRepository() {
                 input.legId,
                 input.fundingEffectId,
                 input.createdAt,
+                input.legKind,
               ],
               readonly: false,
             });
@@ -560,6 +761,7 @@ export const makeControlPlaneSongRewardOfferStore = (
   return {
     openOffer: (input) => provide(repository.openOffer(input)),
     addMegapotPoolLeg: (input) => provide(repository.addMegapotPoolLeg(input)),
+    addAssetBonusLeg: (input) => provide(repository.addAssetBonusLeg(input)),
     recordFundingObservation: (input) => provide(repository.recordFundingObservation(input)),
   };
 };

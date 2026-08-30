@@ -18,6 +18,7 @@ export type RewardFundingFailure = RewardFundingRejected | RewardFundingStorageF
 export type RewardFundingIntent = Readonly<{
   fundingEffectId: string;
   legId: string;
+  legKind: "megapot_pool" | "asset_bonus";
   funderAccountId: string;
   senderAddress: string;
   recipientAddress: string;
@@ -38,6 +39,8 @@ export type RewardFundingIntent = Readonly<{
   attestationId: string;
   environment: "test" | "staging" | "production";
   chainId: number;
+  tokenAddress: string;
+  tokenDecimals: number;
   usdcAddress: string;
   custodyAddress: string;
   jackpotAddress: string;

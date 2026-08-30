@@ -386,7 +386,8 @@ describe("Megapot v2 Worker runtime adapters", () => {
       },
     });
     const store: CustodySolvencyStore = {
-      loadCandidate: () => Effect.succeed(deployment),
+      listTokenAddresses: () => Effect.succeed([deployment.usdcAddress]),
+      loadCandidate: () => Effect.succeed({ ...deployment, tokenAddress: deployment.usdcAddress }),
       findObservation: () => Effect.succeed(null),
       record: () => Effect.die("unexpected solvency record"),
     };

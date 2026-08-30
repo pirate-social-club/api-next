@@ -19,6 +19,7 @@ const address = (byte: string): Hex => `0x${byte.repeat(40)}`;
 const hash = (byte: string): Hex => `0x${byte.repeat(64)}`;
 const JACKPOT = address("1");
 const USDC = address("2");
+const BONUS = address("d");
 const NFT = address("3");
 const CUSTODY = address("4");
 const SENDER = address("5");
@@ -40,12 +41,12 @@ function receipt(): MegapotTransactionReceipt {
     status: "success",
     transactionHash: TX,
     from: SENDER,
-    to: USDC,
+    to: BONUS,
     blockHash: BLOCK,
     blockNumber: 200n,
     logs: [
       {
-        address: USDC,
+        address: BONUS,
         topics: topics(
           encodeEventTopics({
             abi: transferEvent,
@@ -64,13 +65,14 @@ function receipt(): MegapotTransactionReceipt {
 }
 
 describe("reward funding coordinator", () => {
-  test("observes one user-authorized custody transfer and credits the leg once", async () => {
+  test("observes one user-authorized bonus-token transfer and credits the leg once", async () => {
     let intent: RewardFundingIntent | null = null;
     let confirms = 0;
     const store: RewardFundingStore = {
       plan: (input) => {
         intent = {
           ...input,
+          legKind: "asset_bonus",
           recipientAddress: CUSTODY,
           state: "planned",
           transactionHash: null,
@@ -81,6 +83,8 @@ describe("reward funding coordinator", () => {
           attestationId: "megapot-base-sepolia-v2",
           environment: "staging",
           chainId: 84_532,
+          tokenAddress: BONUS,
+          tokenDecimals: 18,
           usdcAddress: USDC,
           custodyAddress: CUSTODY,
           jackpotAddress: JACKPOT,

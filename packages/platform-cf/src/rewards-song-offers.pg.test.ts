@@ -37,7 +37,7 @@ const sentinelPath =
   "/tmp/api-next-control-plane-postgres-rewards-song-offers-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-rewards-song-offers-suite-complete\n";
 const migrations = await loadPostgresMigrations();
-const testCount = 14;
+const testCount = 15;
 let completedTestCount = 0;
 
 const address = (byte: string): string => `0x${byte.repeat(40)}`;
@@ -164,9 +164,9 @@ async function seedMegapotAuthority(admin: Client): Promise<void> {
   await admin.query(
     `INSERT INTO reward_asset_whitelist (
        chain_id, token_address, decimals, symbol, asset_kind, environment,
-       status, policy_version, activated_at
+       status, policy_version, activated_at, plain_erc20_verified_at
      ) VALUES (84532, $1, 6, 'USDC', 'settlement_usdc', 'staging',
-       'active', 'base-sepolia-usdc-v1', clock_timestamp())`,
+       'active', 'base-sepolia-usdc-v1', statement_timestamp(), statement_timestamp())`,
     [address("1")],
   );
   await admin.query(
@@ -542,6 +542,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         accountId: identity.accountId,
         personaId: identity.personaId,
         legId: added.leg.legId,
+        legKind: "megapot_pool",
         fundingEffectId: funding.fundingEffectId,
         idempotencyKey: "observe-funding-command-1",
         requestHash: hash("d"),
@@ -592,6 +593,174 @@ suite("Postgres 17 Megapot rewards persistence", () => {
       await expect(
         Effect.runPromise(store.openOffer({ ...openInput, requestHash: hash("9") })),
       ).rejects.toMatchObject({ reason: "idempotency-conflict" });
+    });
+    completedTestCount += 1;
+  });
+
+  test("adds only an exact active whitelisted asset-bonus tuple", async () => {
+    await withSchema(async (admin, scopedConnection) => {
+      const identity = await seedSong(admin, "asset-command", address("d"));
+      await seedMegapotAuthority(admin);
+      const token = address("b");
+      await admin.query(
+        `INSERT INTO reward_asset_whitelist (
+           chain_id,token_address,decimals,symbol,asset_kind,environment,status,
+           policy_version,activated_at,plain_erc20_verified_at
+         ) VALUES (84532,$1,18,'BONUS','bonus_asset','staging','active','bonus-v1',
+           statement_timestamp(),statement_timestamp())`,
+        [token],
+      );
+      const store = makeControlPlaneSongRewardOfferStore(
+        makeDirectPostgresControlPlaneLayer(scopedConnection),
+      );
+      const now = new Date().toISOString();
+      const opened = await Effect.runPromise(
+        store.openOffer({
+          actionId: "reward-action-open-asset-command",
+          offerId: "reward-offer-asset-command",
+          accountId: identity.accountId,
+          personaId: identity.personaId,
+          communityId: identity.communityId,
+          postId: identity.postId,
+          idempotencyKey: "open-asset-command-1",
+          requestHash: hash("5"),
+          termsHash: hash("6"),
+          rewardPolicy: {
+            version: "scarce_reward_v1",
+            community_id: identity.communityId,
+            offer_id: "reward-offer-asset-command",
+            requirements: ["human.personhood", "credential.subject_unique"],
+            uniqueness: {
+              kind: "single_authority",
+              authority_id: "reward-offer-asset-command",
+            },
+            legal_eligibility: {
+              age: null,
+              geography: null,
+              disclosure: null,
+              environment: "test_staging_empty_v1",
+            },
+          },
+          rewardPolicyHash: hash("a"),
+          startsAt: now,
+          endsAt: new Date(Date.now() + 86_400_000).toISOString(),
+          createdAt: now,
+        }),
+      );
+      const legInput = {
+        actionId: "reward-action-asset-leg-command",
+        legId: "reward-asset-leg-command",
+        offerId: opened.offer.offerId,
+        accountId: identity.accountId,
+        personaId: identity.personaId,
+        idempotencyKey: "asset-leg-command-1",
+        requestHash: hash("7"),
+        legTermsHash: bytes32("8"),
+        createdAt: new Date(Date.now() + 1).toISOString(),
+        chainId: 84_532,
+        tokenAddress: token,
+        tokenDecimals: 18,
+        tokenSymbol: "BONUS",
+        assetPolicyVersion: "bonus-v1",
+        amountPerClaimAtomic: 100n,
+        maxClaims: 10,
+      } as const;
+
+      await expect(
+        Effect.runPromise(
+          store.addAssetBonusLeg({
+            ...legInput,
+            actionId: "reward-action-asset-leg-mismatch",
+            legId: "reward-asset-leg-mismatch",
+            idempotencyKey: "asset-leg-mismatch-1",
+            tokenDecimals: 6,
+          }),
+        ),
+      ).rejects.toMatchObject({ _tag: "SongRewardOfferRejected", reason: "not-found" });
+
+      const added = await Effect.runPromise(store.addAssetBonusLeg(legInput));
+      expect(added).toMatchObject({
+        replayed: false,
+        leg: {
+          status: "funding",
+          tokenAddress: token,
+          tokenDecimals: 18,
+          tokenSymbol: "BONUS",
+          assetPolicyVersion: "bonus-v1",
+          custodyAddress: address("4"),
+          amountPerClaimAtomic: 100n,
+          maxClaims: 10,
+        },
+      });
+      await expect(
+        Effect.runPromise(
+          store.addAssetBonusLeg({
+            ...legInput,
+            actionId: "ignored-asset-leg-action",
+            legId: "ignored-asset-leg-id",
+          }),
+        ),
+      ).resolves.toEqual({ ...added, replayed: true });
+
+      const funding = await Effect.runPromise(
+        makeControlPlaneRewardFundingStore(
+          makeDirectPostgresControlPlaneLayer(scopedConnection),
+        ).plan({
+          fundingEffectId: "funding-asset-command",
+          legId: added.leg.legId,
+          funderAccountId: identity.accountId,
+          senderAddress: address("d"),
+          expectedAmountAtomic: 1_000n,
+          requiredConfirmations: 3,
+        }),
+      );
+      await expect(
+        Effect.runPromise(
+          store.recordFundingObservation({
+            actionId: "reward-action-wrong-asset-observation",
+            accountId: identity.accountId,
+            personaId: identity.personaId,
+            legId: added.leg.legId,
+            legKind: "megapot_pool",
+            fundingEffectId: funding.fundingEffectId,
+            idempotencyKey: "wrong-asset-observation-1",
+            requestHash: hash("b"),
+            createdAt: new Date(Date.now() + 2).toISOString(),
+          }),
+        ),
+      ).rejects.toMatchObject({ _tag: "SongRewardOfferRejected", reason: "not-found" });
+      await expect(
+        Effect.runPromise(
+          store.recordFundingObservation({
+            actionId: "reward-action-asset-observation",
+            accountId: identity.accountId,
+            personaId: identity.personaId,
+            legId: added.leg.legId,
+            legKind: "asset_bonus",
+            fundingEffectId: funding.fundingEffectId,
+            idempotencyKey: "asset-observation-1",
+            requestHash: hash("c"),
+            createdAt: new Date(Date.now() + 2).toISOString(),
+          }),
+        ),
+      ).resolves.toEqual({ replayed: false });
+
+      await admin.query(
+        `UPDATE reward_asset_whitelist SET status='retired',retired_at=clock_timestamp()
+          WHERE chain_id=84532 AND token_address=$1`,
+        [token],
+      );
+      await expect(
+        Effect.runPromise(
+          store.addAssetBonusLeg({
+            ...legInput,
+            actionId: "reward-action-retired-asset-leg",
+            legId: "reward-retired-asset-leg",
+            idempotencyKey: "retired-asset-leg-1",
+            requestHash: hash("9"),
+          }),
+        ),
+      ).rejects.toMatchObject({ _tag: "SongRewardOfferRejected", reason: "not-found" });
     });
     completedTestCount += 1;
   });

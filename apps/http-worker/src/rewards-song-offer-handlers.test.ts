@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type {
+  AssetBonusLeg,
   MegapotPoolLeg,
   RewardFundingIntent,
   RewardFundingStore,
@@ -33,10 +34,28 @@ const leg: MegapotPoolLeg = {
   fundedAtomic: 0n,
   legTermsHash: hash("b"),
 };
+const assetLeg: AssetBonusLeg = {
+  legId: "reward_asset_leg_1",
+  offerId: "reward_offer_1",
+  status: "funding",
+  funderAccountId: "account_1",
+  chainId: 84_532,
+  tokenAddress: address("b"),
+  tokenDecimals: 18,
+  tokenSymbol: "BONUS",
+  assetPolicyVersion: "bonus-v1",
+  custodyAddress: address("4"),
+  amountPerClaimAtomic: 100n,
+  maxClaims: 10,
+  fundedAtomic: 0n,
+  fulfilledAtomic: 0n,
+  legTermsHash: hash("c"),
+};
 
 const intent: RewardFundingIntent = {
   fundingEffectId: hash("f"),
   legId: leg.legId,
+  legKind: "megapot_pool",
   funderAccountId: "account_1",
   senderAddress: address("5"),
   recipientAddress: leg.custodyAddress,
@@ -51,6 +70,8 @@ const intent: RewardFundingIntent = {
   attestationId: "attestation_1",
   environment: "staging",
   chainId: 84_532,
+  tokenAddress: leg.tokenAddress,
+  tokenDecimals: leg.tokenDecimals,
   usdcAddress: leg.tokenAddress,
   custodyAddress: leg.custodyAddress,
   jackpotAddress: address("1"),
@@ -59,6 +80,13 @@ const intent: RewardFundingIntent = {
   jackpotCodeHash: hash("7"),
   usdcCodeHash: hash("8"),
   ticketNftCodeHash: hash("9"),
+};
+const assetIntent: RewardFundingIntent = {
+  ...intent,
+  legId: assetLeg.legId,
+  legKind: "asset_bonus",
+  tokenAddress: assetLeg.tokenAddress,
+  tokenDecimals: assetLeg.tokenDecimals,
 };
 
 const unexpected = (): never => {
@@ -84,6 +112,7 @@ function fixture(fundingIntent: RewardFundingIntent = intent) {
         },
       }),
     addMegapotPoolLeg: () => Effect.succeed({ leg, replayed: false }),
+    addAssetBonusLeg: () => Effect.succeed({ leg: assetLeg, replayed: false }),
     recordFundingObservation: () => Effect.succeed({ replayed: false }),
   };
   const fundingStore: RewardFundingStore = {
@@ -95,6 +124,29 @@ function fixture(fundingIntent: RewardFundingIntent = intent) {
     requireReconciliation: unexpected,
   };
   const projections: RewardProjectionStore = {
+    listPublicSongAssetBonuses: ({ accountId }) =>
+      Effect.succeed([
+        {
+          offerId: assetLeg.offerId,
+          legId: assetLeg.legId,
+          communityId: "community_1",
+          postId: "post_1",
+          offerStatus: "active",
+          legStatus: "active",
+          chainId: assetLeg.chainId,
+          tokenAddress: assetLeg.tokenAddress,
+          tokenDecimals: assetLeg.tokenDecimals,
+          tokenSymbol: assetLeg.tokenSymbol,
+          assetPolicyVersion: assetLeg.assetPolicyVersion,
+          amountPerClaimAtomic: assetLeg.amountPerClaimAtomic,
+          maxClaims: assetLeg.maxClaims,
+          claimedCount: 2,
+          availableInventoryAtomic: 800n,
+          viewerState: accountId === null ? null : "claimable",
+          viewerCreditId: null,
+          viewerCreditState: null,
+        },
+      ]),
     findPublicSongPool: () =>
       Effect.succeed({
         offerId: "reward_offer_1",
@@ -264,6 +316,90 @@ describe("song reward offer HTTP handlers", () => {
     expect(await response.json()).toMatchObject({
       funding: { status: "confirming", transaction_hash: hash("a") },
       replayed: false,
+    });
+  });
+
+  test("adds and publicly projects an exact whitelisted asset bonus", async () => {
+    const headers = { authorization: "Bearer test", "content-type": "application/json" };
+    const added = await fixture(assetIntent).request(
+      "/reward-offers/reward_offer_1/asset-bonus-legs",
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          idempotency_key: "asset_1",
+          persona_id: "persona_1",
+          funding_amount_atomic: "1000",
+          chain_id: 84_532,
+          token_address: assetLeg.tokenAddress,
+          token_decimals: 18,
+          token_symbol: "BONUS",
+          asset_policy_version: "bonus-v1",
+          amount_per_claim_atomic: "100",
+          max_claims: 10,
+        }),
+      },
+    );
+    expect(added.status).toBe(201);
+    expect(await added.json()).toMatchObject({
+      leg: {
+        object: "asset_bonus_leg",
+        token_address: assetLeg.tokenAddress,
+        token_symbol: "BONUS",
+        amount_per_claim_atomic: "100",
+      },
+      funding: {
+        object: "asset_bonus_funding",
+        action: "fund_with_asset",
+        token_address: assetLeg.tokenAddress,
+        recipient_address: assetLeg.custodyAddress,
+      },
+    });
+
+    const observed = await fixture(assetIntent).request(
+      `/asset-bonus-legs/${assetLeg.legId}/funding/${assetIntent.fundingEffectId}/observations`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          idempotency_key: "observe_asset_1",
+          persona_id: "persona_1",
+          transaction_hash: hash("a"),
+        }),
+      },
+    );
+    expect(observed.status).toBe(200);
+    expect(await observed.json()).toMatchObject({
+      funding: {
+        object: "asset_bonus_funding",
+        token_address: assetLeg.tokenAddress,
+        status: "confirming",
+      },
+    });
+    const fundingState = await fixture(assetIntent).request(
+      `/asset-bonus-legs/${assetLeg.legId}/funding/${assetIntent.fundingEffectId}`,
+      { headers },
+    );
+    expect(fundingState.status).toBe(200);
+    expect(await fundingState.json()).toMatchObject({
+      funding: { object: "asset_bonus_funding", token_address: assetLeg.tokenAddress },
+    });
+
+    const publicProjection = await fixture(assetIntent).request(
+      "/communities/community_1/posts/post_1/rewards/asset-bonuses",
+    );
+    expect(publicProjection.status).toBe(200);
+    expect(await publicProjection.json()).toMatchObject({
+      object: "song_asset_bonus_list",
+      items: [
+        {
+          object: "song_asset_bonus_projection",
+          token_address: assetLeg.tokenAddress,
+          claimed_count: 2,
+          available_inventory_atomic: "800",
+          viewer_state: null,
+        },
+      ],
     });
   });
 

@@ -6,6 +6,7 @@ import type { RewardFundingIntent } from "./reward-funding.ts";
 export { Clock, IdGen } from "../ports.ts";
 export type { RewardFundingIntent, RewardFundingStore } from "./reward-funding.ts";
 export type {
+  PublicSongAssetBonusProjection,
   PublicSongMegapotPoolProjection,
   RewardCredit,
   RewardProjectionFailure,
@@ -63,6 +64,24 @@ export type MegapotPoolLeg = Readonly<{
   legTermsHash: string;
 }>;
 
+export type AssetBonusLeg = Readonly<{
+  legId: string;
+  offerId: string;
+  status: "draft" | "funding" | "active" | "paused" | "exhausted" | "ended" | "operational_hold";
+  funderAccountId: string;
+  chainId: number;
+  tokenAddress: string;
+  tokenDecimals: number;
+  tokenSymbol: string;
+  assetPolicyVersion: string;
+  custodyAddress: string;
+  amountPerClaimAtomic: bigint;
+  maxClaims: number;
+  fundedAtomic: bigint;
+  fulfilledAtomic: bigint;
+  legTermsHash: string;
+}>;
+
 export type ScarceRewardPolicyV1 = Readonly<{
   version: "scarce_reward_v1";
   community_id: string;
@@ -117,11 +136,30 @@ export interface SongRewardOfferStore {
     readonly referralPolicyHash: string | null;
     readonly referralDisclosedAt: string | null;
   }) => Effect.Effect<Readonly<{ leg: MegapotPoolLeg; replayed: boolean }>, SongRewardOfferFailure>;
+  readonly addAssetBonusLeg: (input: {
+    readonly actionId: string;
+    readonly legId: string;
+    readonly offerId: string;
+    readonly accountId: string;
+    readonly personaId: string;
+    readonly idempotencyKey: string;
+    readonly requestHash: string;
+    readonly legTermsHash: string;
+    readonly createdAt: string;
+    readonly chainId: number;
+    readonly tokenAddress: string;
+    readonly tokenDecimals: number;
+    readonly tokenSymbol: string;
+    readonly assetPolicyVersion: string;
+    readonly amountPerClaimAtomic: bigint;
+    readonly maxClaims: number;
+  }) => Effect.Effect<Readonly<{ leg: AssetBonusLeg; replayed: boolean }>, SongRewardOfferFailure>;
   readonly recordFundingObservation: (input: {
     readonly actionId: string;
     readonly accountId: string;
     readonly personaId: string;
     readonly legId: string;
+    readonly legKind: "megapot_pool" | "asset_bonus";
     readonly fundingEffectId: string;
     readonly idempotencyKey: string;
     readonly requestHash: string;
@@ -191,10 +229,30 @@ export interface SongRewardOfferService {
     SongRewardOfferFailure | unknown,
     Clock | IdGen
   >;
+  readonly addAssetBonusLeg: (input: {
+    readonly accountId: string;
+    readonly personaId: string;
+    readonly offerId: string;
+    readonly idempotencyKey: string;
+    readonly senderAddress: string;
+    readonly fundingAmountAtomic: bigint;
+    readonly chainId: number;
+    readonly tokenAddress: string;
+    readonly tokenDecimals: number;
+    readonly tokenSymbol: string;
+    readonly assetPolicyVersion: string;
+    readonly amountPerClaimAtomic: bigint;
+    readonly maxClaims: number;
+  }) => Effect.Effect<
+    Readonly<{ leg: AssetBonusLeg; funding: RewardFundingPlan; replayed: boolean }>,
+    SongRewardOfferFailure | unknown,
+    Clock | IdGen
+  >;
   readonly observeFunding: (input: {
     readonly accountId: string;
     readonly personaId: string;
     readonly legId: string;
+    readonly legKind: "megapot_pool" | "asset_bonus";
     readonly fundingEffectId: string;
     readonly idempotencyKey: string;
     readonly transactionHash: string;
@@ -369,6 +427,7 @@ export function makeSongRewardOfferService(input: {
         account_id: request.accountId,
         persona_id: request.personaId,
         leg_id: request.legId,
+        leg_kind: request.legKind,
         funding_effect_id: request.fundingEffectId,
         idempotency_key: request.idempotencyKey,
         transaction_hash: request.transactionHash,
@@ -381,6 +440,7 @@ export function makeSongRewardOfferService(input: {
       accountId: request.accountId,
       personaId: request.personaId,
       legId: request.legId,
+      legKind: request.legKind,
       fundingEffectId: request.fundingEffectId,
       idempotencyKey: request.idempotencyKey,
       requestHash,
@@ -393,5 +453,80 @@ export function makeSongRewardOfferService(input: {
     return { funding, replayed: action.replayed };
   });
 
-  return { openOffer, addMegapotPoolLeg, observeFunding };
+  const addAssetBonusLeg = Effect.fn("SongRewardOffer.addAssetBonusLeg")(function* (
+    request: Parameters<SongRewardOfferService["addAssetBonusLeg"]>[0],
+  ) {
+    if (
+      request.chainId !== 84_532 ||
+      !/^0x[0-9a-f]{40}$/u.test(request.tokenAddress) ||
+      !Number.isSafeInteger(request.tokenDecimals) ||
+      request.tokenDecimals < 0 ||
+      request.tokenDecimals > 77 ||
+      request.tokenSymbol.length === 0 ||
+      request.tokenSymbol !== request.tokenSymbol.trim() ||
+      new TextEncoder().encode(request.tokenSymbol).byteLength > 32 ||
+      request.assetPolicyVersion.length === 0 ||
+      request.assetPolicyVersion !== request.assetPolicyVersion.trim() ||
+      new TextEncoder().encode(request.assetPolicyVersion).byteLength > 128 ||
+      request.fundingAmountAtomic <= 0n ||
+      request.amountPerClaimAtomic <= 0n ||
+      !Number.isSafeInteger(request.maxClaims) ||
+      request.maxClaims <= 0 ||
+      request.fundingAmountAtomic < request.amountPerClaimAtomic
+    ) {
+      return yield* rejected("invalid-input");
+    }
+    const canonicalRequest = {
+      account_id: request.accountId,
+      persona_id: request.personaId,
+      offer_id: request.offerId,
+      idempotency_key: request.idempotencyKey,
+      sender_address: request.senderAddress,
+      funding_amount_atomic: request.fundingAmountAtomic.toString(),
+      chain_id: request.chainId,
+      token_address: request.tokenAddress,
+      token_decimals: request.tokenDecimals,
+      token_symbol: request.tokenSymbol,
+      asset_policy_version: request.assetPolicyVersion,
+      amount_per_claim_atomic: request.amountPerClaimAtomic.toString(),
+      max_claims: request.maxClaims,
+    };
+    const [requestHash, termsDigest, actionId, legId, clock] = yield* Effect.all([
+      hash(canonicalRequest),
+      hash(canonicalRequest),
+      nextId("reward_action"),
+      nextId("reward_leg"),
+      Clock,
+    ]);
+    const createdAt = new Date(yield* clock.now).toISOString();
+    const result = yield* input.store.addAssetBonusLeg({
+      actionId,
+      legId,
+      offerId: request.offerId,
+      accountId: request.accountId,
+      personaId: request.personaId,
+      idempotencyKey: request.idempotencyKey,
+      requestHash,
+      legTermsHash: `0x${termsDigest}`,
+      createdAt,
+      chainId: request.chainId,
+      tokenAddress: request.tokenAddress,
+      tokenDecimals: request.tokenDecimals,
+      tokenSymbol: request.tokenSymbol,
+      assetPolicyVersion: request.assetPolicyVersion,
+      amountPerClaimAtomic: request.amountPerClaimAtomic,
+      maxClaims: request.maxClaims,
+    });
+    const funding = yield* input.funding.plan({
+      legId: result.leg.legId,
+      funderAccountId: request.accountId,
+      senderAddress: request.senderAddress,
+      expectedAmountAtomic: request.fundingAmountAtomic,
+      requiredConfirmations: input.requiredConfirmations,
+      idempotencyKey: request.idempotencyKey,
+    });
+    return { leg: result.leg, funding, replayed: result.replayed };
+  });
+
+  return { openOffer, addMegapotPoolLeg, addAssetBonusLeg, observeFunding };
 }
