@@ -1,4 +1,36 @@
 export const LYRIC_LINE_IDENTITY_NORMALIZATION_V1 = "lyric_line_identity_normalization_v1" as const;
+export const STUDY_UNIT_ELIGIBILITY_POLICY_V1 = "study_unit_eligibility_v1" as const;
+export const STUDY_SAY_IT_BACK_MAX_TOKEN_COUNT_V1 = 32 as const;
+export const STUDY_SAY_IT_BACK_MAX_CHARACTER_COUNT_V1 = 512 as const;
+
+export type StudyUnitSayItBackEligibilityV1 = Readonly<{
+  characterCount: number;
+  eligibility: "eligible" | "ineligible";
+  policyRevision: typeof STUDY_UNIT_ELIGIBILITY_POLICY_V1;
+  reason: "spoken_recall_too_long" | null;
+  tokenCount: number;
+}>;
+
+// Frozen from the 92-song production-near corpus. Re-measure when the catalog
+// grows materially; expanding this set changes materialized Study units and
+// requires a new eligibility-policy revision rather than an edit to v1.
+const STANDALONE_PARENTHESIZED_INSTRUMENTAL_DIRECTION =
+  /^\(\s*instrumental(?:\s+solo|\s+breakdown(?:\s+with\s+vocal\s+chops)?)?\s*\)$/iu;
+
+export const isStandaloneLyricMetadataLine = (value: string): boolean => {
+  const trimmed = value.trim();
+  const bracketInterior = trimmed.slice(1, -1);
+  const isSingleBracketedAnnotation =
+    trimmed.startsWith("[") &&
+    trimmed.endsWith("]") &&
+    !bracketInterior.includes("[") &&
+    !bracketInterior.includes("]") &&
+    !bracketInterior.includes("\r") &&
+    !bracketInterior.includes("\n");
+  return (
+    isSingleBracketedAnnotation || STANDALONE_PARENTHESIZED_INSTRUMENTAL_DIRECTION.test(trimmed)
+  );
+};
 
 export const normalizeLyricLineIdentityV1 = (value: string): string =>
   value
@@ -8,6 +40,23 @@ export const normalizeLyricLineIdentityV1 = (value: string): string =>
     .replace(/[\p{P}\p{S}]+/gu, " ")
     .replace(/\s+/gu, " ")
     .trim();
+
+export const evaluateStudyUnitSayItBackEligibilityV1 = (
+  normalizedText: string,
+): StudyUnitSayItBackEligibilityV1 => {
+  const tokenCount = normalizedText.length === 0 ? 0 : normalizedText.split(" ").length;
+  const characterCount = [...normalizedText].length;
+  const eligible =
+    tokenCount <= STUDY_SAY_IT_BACK_MAX_TOKEN_COUNT_V1 &&
+    characterCount <= STUDY_SAY_IT_BACK_MAX_CHARACTER_COUNT_V1;
+  return {
+    characterCount,
+    eligibility: eligible ? "eligible" : "ineligible",
+    policyRevision: STUDY_UNIT_ELIGIBILITY_POLICY_V1,
+    reason: eligible ? null : "spoken_recall_too_long",
+    tokenCount,
+  };
+};
 
 export type PriorLyricOccurrence = Readonly<{
   canonicalText: string;
@@ -40,7 +89,7 @@ export const acceptedLyricLines = (lyrics: string): readonly string[] =>
   lyrics
     .split(/\r\n?|\n/u)
     .map((line) => line.trim())
-    .filter((line) => line.length > 0);
+    .filter((line) => line.length > 0 && !isStandaloneLyricMetadataLine(line));
 
 const lcsLengths = (left: readonly string[], right: readonly string[]): number[][] => {
   const lengths = Array.from({ length: left.length + 1 }, () =>

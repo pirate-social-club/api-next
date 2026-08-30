@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import type { ControlPlaneError, ControlPlaneTransaction } from "@pirate/application";
 import {
+  acceptedLyricLines,
+  evaluateStudyUnitSayItBackEligibilityV1,
   LYRIC_LINE_IDENTITY_NORMALIZATION_V1,
   normalizeLyricLineIdentityV1,
   type PriorLyricOccurrence,
@@ -96,11 +98,7 @@ export const materializeAcceptedLyricLineCatalog = (
     const unitByHash = new Map(
       unitRows.rows.map((row) => [text(row, "normalized_source_hash"), text(row, "study_unit_id")]),
     );
-    const normalizedCandidates = input.lyrics
-      .split(/\r\n?|\n/u)
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0)
-      .map(normalizeLyricLineIdentityV1);
+    const normalizedCandidates = acceptedLyricLines(input.lyrics).map(normalizeLyricLineIdentityV1);
     const unitsByText = new Map<string, string>();
     for (const normalized of normalizedCandidates) {
       const unitId = unitByHash.get(sha256(normalized));
@@ -178,10 +176,34 @@ export const materializeAcceptedLyricLineCatalog = (
       });
       if (!materializedStudyUnits.has(line.studyUnitId)) {
         materializedStudyUnits.add(line.studyUnitId);
-        const exerciseReviewKey = `study-say-it-back:${input.postId}:${line.studyUnitId}`;
+        const eligibility = evaluateStudyUnitSayItBackEligibilityV1(line.normalizedText);
         yield* tx.execute({
-          label: "lyric-line-catalog.study-exercise.insert",
-          text: `INSERT INTO study_exercise_versions (
+          label: "lyric-line-catalog.study-eligibility.insert",
+          text: `INSERT INTO study_unit_exercise_eligibility (
+                 community_id, post_id, study_unit_id, exercise_kind, policy_revision,
+                 eligibility, ineligibility_reason, measured_token_count,
+                 measured_character_count
+               ) VALUES ($1,$2,$3,'say_it_back',$4,$5,$6,$7,$8)
+               ON CONFLICT (
+                 community_id, post_id, study_unit_id, exercise_kind, policy_revision
+               ) DO NOTHING`,
+          values: [
+            input.communityId,
+            input.postId,
+            line.studyUnitId,
+            eligibility.policyRevision,
+            eligibility.eligibility,
+            eligibility.reason,
+            eligibility.tokenCount,
+            eligibility.characterCount,
+          ],
+          readonly: false,
+        });
+        if (eligibility.eligibility === "eligible") {
+          const exerciseReviewKey = `study-say-it-back:${input.postId}:${line.studyUnitId}`;
+          yield* tx.execute({
+            label: "lyric-line-catalog.study-exercise.insert",
+            text: `INSERT INTO study_exercise_versions (
                  exercise_version_id, community_id, post_id, audio_revision, lyrics_revision,
                  lyric_line_id, line_version, line_source_hash, exercise_review_key,
                  exercise_type, exercise_variant, learning_language, target_language,
@@ -202,43 +224,44 @@ export const materializeAcceptedLyricLineCatalog = (
                  'study-source-quality-v1','accepted-source-v1',clock_timestamp(),
                  clock_timestamp(),clock_timestamp()
                ) ON CONFLICT (exercise_review_key, content_revision) DO NOTHING`,
-          values: [
-            `study-exercise-${crypto.randomUUID()}`,
-            input.communityId,
-            input.postId,
-            input.audioRevision,
-            input.lyricsRevision,
-            line.lineId,
-            line.lineVersion,
-            sourceHash,
-            exerciseReviewKey,
-            JSON.stringify({
-              kind: "say_it_back",
-              reference_text: line.canonicalText,
-              capture: "microphone_audio",
-            }),
-            JSON.stringify({
-              kind: "source_token_diff_v1",
-              reference_text: line.canonicalText,
-              tokenizer_policy_revision: "script_aware_token_diff_v1",
-            }),
-            line.studyUnitId,
-            `study-source-${crypto.randomUUID()}`,
-            sha256(
-              JSON.stringify([
-                "accepted_say_it_back_v1",
-                input.postId,
-                input.audioRevision,
-                input.lyricsRevision,
-                line.studyUnitId,
-                line.lineVersion,
-                sourceHash,
-              ]),
-            ),
-            input.audioRevision * 1_000_000 + input.lyricsRevision,
-          ],
-          readonly: false,
-        });
+            values: [
+              `study-exercise-${crypto.randomUUID()}`,
+              input.communityId,
+              input.postId,
+              input.audioRevision,
+              input.lyricsRevision,
+              line.lineId,
+              line.lineVersion,
+              sourceHash,
+              exerciseReviewKey,
+              JSON.stringify({
+                kind: "say_it_back",
+                reference_text: line.canonicalText,
+                capture: "microphone_audio",
+              }),
+              JSON.stringify({
+                kind: "source_token_diff_v1",
+                reference_text: line.canonicalText,
+                tokenizer_policy_revision: "script_aware_token_diff_v1",
+              }),
+              line.studyUnitId,
+              `study-source-${crypto.randomUUID()}`,
+              sha256(
+                JSON.stringify([
+                  "accepted_say_it_back_v1",
+                  input.postId,
+                  input.audioRevision,
+                  input.lyricsRevision,
+                  line.studyUnitId,
+                  line.lineVersion,
+                  sourceHash,
+                ]),
+              ),
+              input.audioRevision * 1_000_000 + input.lyricsRevision,
+            ],
+            readonly: false,
+          });
+        }
       }
       yield* tx.execute({
         label: "lyric-line-catalog.revision-membership.insert",

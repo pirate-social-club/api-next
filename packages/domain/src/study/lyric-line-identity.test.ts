@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
   acceptedLyricLines,
+  evaluateStudyUnitSayItBackEligibilityV1,
+  isStandaloneLyricMetadataLine,
   normalizeLyricLineIdentityV1,
   type PriorLyricOccurrence,
   reconcileLyricLineIdentities,
@@ -15,12 +17,45 @@ describe("lyric line identity normalization v1", () => {
     expect(normalizeLyricLineIdentityV1("Hold on…")).toBe(normalizeLyricLineIdentityV1("HOLD ON"));
   });
 
-  test("parses every nonblank accepted occurrence without deduplicating choruses", () => {
-    expect(acceptedLyricLines(" Verse one \r\n\r\nChorus\n Chorus ")).toEqual([
+  test("excludes complete structural metadata without rewriting inline annotations", () => {
+    expect(
+      acceptedLyricLines(
+        ' [Verse 1] \r\nVerse one\n[Bridge – Beat Drops]\n(Instrumental)\n(Instrumental Solo)\n(Instrumental breakdown with vocal chops)\nSing it [vocal growl]\n[falsetto] She bite me [vocal ad-lib]\n(Always coming at you with something that\'s clever)\n[vocal echo: "Echo..."]\nVerse one',
+      ),
+    ).toEqual([
       "Verse one",
-      "Chorus",
-      "Chorus",
+      "Sing it [vocal growl]",
+      "[falsetto] She bite me [vocal ad-lib]",
+      "(Always coming at you with something that's clever)",
+      "Verse one",
     ]);
+    expect(isStandaloneLyricMetadataLine(" [Instrumental] ")).toBe(true);
+    expect(isStandaloneLyricMetadataLine(" (Instrumental Solo) ")).toBe(true);
+    expect(isStandaloneLyricMetadataLine("Sing it [vocal growl]")).toBe(false);
+    expect(isStandaloneLyricMetadataLine("(That's what I need)")).toBe(false);
+  });
+
+  test("keeps ordinary lyric units eligible and declines only extreme spoken recall", () => {
+    expect(evaluateStudyUnitSayItBackEligibilityV1("what if i lost you")).toMatchObject({
+      eligibility: "eligible",
+      reason: null,
+      tokenCount: 5,
+    });
+    expect(
+      evaluateStudyUnitSayItBackEligibilityV1(
+        Array.from({ length: 33 }, (_, index) => `word${index + 1}`).join(" "),
+      ),
+    ).toMatchObject({
+      eligibility: "ineligible",
+      reason: "spoken_recall_too_long",
+      tokenCount: 33,
+    });
+    expect(evaluateStudyUnitSayItBackEligibilityV1("字".repeat(513))).toMatchObject({
+      characterCount: 513,
+      eligibility: "ineligible",
+      reason: "spoken_recall_too_long",
+      tokenCount: 1,
+    });
   });
 
   test("carries only conservative in-order matches and shares repeated Study units", () => {
