@@ -559,6 +559,47 @@ describe("canonical authority zone derivation", () => {
     ).not.toEqual(firstZone);
   });
 
+  test("canonicalizes wildcard owners in the live NSEC chain", () => {
+    const nsec = record(
+      zoneName,
+      47,
+      300,
+      concat([name("*.jazleeuw"), new Uint8Array([0, 1, 0x40])]),
+    );
+    const current = session();
+    const response = appendTsig(
+      unsignedResponse([soa(), apexNs, appA, nsec, soa()], true),
+      requestMac(current.request_bytes),
+      0,
+    );
+    const decoded = JSON.parse(
+      new TextDecoder().decode(
+        deriveCanonicalHnsAuthorityZoneBytesV1({
+          zone_name: zoneName,
+          response_sequence_bytes: encodeHnsDnsTcpMessageSequenceV1([response.message]),
+        }),
+      ),
+    ) as { records: ReadonlyArray<readonly [string, number, number, number, string]> };
+    const canonicalNsec = decoded.records.find((entry) => entry[1] === 47);
+    expect(canonicalNsec?.[4]).toStartWith("012a086a617a6c6565757700");
+  });
+
+  test("refuses noncanonical stable owner names instead of preserving arbitrary wire text", () => {
+    const current = session();
+    const invalidOwner = record("bad*.jazleeuw", 1, 300, new Uint8Array([94, 103, 168, 161]));
+    const response = appendTsig(
+      unsignedResponse([soa(), apexNs, invalidOwner, soa()], true),
+      requestMac(current.request_bytes),
+      0,
+    );
+    expect(() =>
+      deriveCanonicalHnsAuthorityZoneBytesV1({
+        zone_name: zoneName,
+        response_sequence_bytes: encodeHnsDnsTcpMessageSequenceV1([response.message]),
+      }),
+    ).toThrow("invalid canonical DNS name");
+  });
+
   test("refuses unsupported stable record types and malformed framing", () => {
     const current = session();
     const unsupported = appendTsig(

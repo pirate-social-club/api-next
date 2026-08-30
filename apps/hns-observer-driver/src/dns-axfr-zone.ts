@@ -47,6 +47,17 @@ function encodeName(value: string): Uint8Array {
   ]);
 }
 
+function canonicalZoneOwnerName(value: string): string {
+  if (!value.startsWith("*.")) return canonicalHnsDnsNameV1(value);
+  return `*.${canonicalHnsDnsNameV1(value.slice(2))}`;
+}
+
+function encodeZoneOwnerName(value: string): Uint8Array {
+  const canonical = canonicalZoneOwnerName(value);
+  if (!canonical.startsWith("*.")) return encodeName(canonical);
+  return concat([new Uint8Array([1, 0x2a]), encodeName(canonical.slice(2))]);
+}
+
 function readUint16(bytes: Uint8Array, offset: number): number {
   if (offset < 0 || offset + 2 > bytes.byteLength) throw failed("truncated DNS integer");
   return ((bytes[offset] ?? 0) << 8) | (bytes[offset + 1] ?? 0);
@@ -109,7 +120,10 @@ function validateTxtRdata(bytes: Uint8Array, record: HnsDnsParsedRecordV1): Uint
 function canonicalNsecRdata(bytes: Uint8Array, record: HnsDnsParsedRecordV1): Uint8Array {
   const nextName = readHnsDnsNameV1(bytes, record.rdata_offset);
   if (nextName.next_offset >= record.end_offset) throw failed("invalid AXFR NSEC data");
-  return concat([encodeName(nextName.name), bytes.slice(nextName.next_offset, record.end_offset)]);
+  return concat([
+    encodeZoneOwnerName(nextName.name),
+    bytes.slice(nextName.next_offset, record.end_offset),
+  ]);
 }
 
 function canonicalRecordRdata(bytes: Uint8Array, record: HnsDnsParsedRecordV1): Uint8Array | null {
@@ -173,7 +187,9 @@ function canonicalZoneRecord(
   record: HnsDnsParsedRecordV1,
 ): HnsCanonicalAuthorityZoneRecordV1 | null {
   const rdata = canonicalRecordRdata(bytes, record);
-  return rdata === null ? null : [record.name, record.type, IN_CLASS, record.ttl, hex(rdata)];
+  return rdata === null
+    ? null
+    : [canonicalZoneOwnerName(record.name), record.type, IN_CLASS, record.ttl, hex(rdata)];
 }
 
 function compareRecords(
