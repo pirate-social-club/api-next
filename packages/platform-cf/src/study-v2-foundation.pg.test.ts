@@ -204,6 +204,35 @@ suite("Study v2 Postgres foundation", () => {
         ["5".repeat(64)],
       );
       await admin.query(
+        `INSERT INTO learner_audio_artifacts (
+           learner_audio_artifact_id, account_id, source_kind, attempt_ref,
+           expected_object_ref, object_ref, content_digest, content_type, byte_size,
+           duration_ms, platform_retention, provider_retention, recording_state, expires_at
+         ) VALUES ('audio-provider-logged', 'account-1', 'study', 'attempt-provider-logged',
+           'private/audio-provider-logged', 'private/audio-provider-logged', $1,
+           'audio/webm', 100, 1000, 'private_learning', 'stored', 'stored',
+           clock_timestamp() + interval '24 months')`,
+        ["7".repeat(64)],
+      );
+      const loggedRetention = await admin.query(
+        `SELECT provider_retention FROM learner_audio_artifacts
+          WHERE learner_audio_artifact_id='audio-provider-logged'`,
+      );
+      expect(loggedRetention.rows).toEqual([{ provider_retention: "stored" }]);
+      await expect(
+        admin.query(
+          `INSERT INTO learner_audio_artifacts (
+             learner_audio_artifact_id, account_id, source_kind, attempt_ref,
+             expected_object_ref, object_ref, content_digest, content_type, byte_size,
+             duration_ms, platform_retention, provider_retention, recording_state, expires_at
+           ) VALUES ('audio-provider-unknown', 'account-1', 'study', 'attempt-provider-unknown',
+             'private/audio-provider-unknown', NULL, $1, 'audio/webm', 100, 1000,
+             'private_learning', 'unknown', 'pending',
+             clock_timestamp() + interval '24 months')`,
+          ["8".repeat(64)],
+        ),
+      ).rejects.toThrow();
+      await admin.query(
         `INSERT INTO study_attempts_v2 (
            attempt_id, session_item_id, attempt_number, submission_kind,
            submission_evidence, outcome, first_pass, attempt_state, feedback_kind,

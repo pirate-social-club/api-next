@@ -1,6 +1,19 @@
 import { describe, expect, test } from "bun:test";
 import { ProviderUnavailable } from "@pirate/contracts";
 import { makeStudyGenerationHandlers } from "./study-generation-handlers.ts";
+import type { StudyGenerationWorkflowPayload } from "./study-generation-workflow.ts";
+
+type PolicyRevisions = Pick<
+  StudyGenerationWorkflowPayload,
+  "generatorPolicyRevision" | "promptRevision" | "qualityPolicyRevision"
+>;
+
+const policy = (
+  generatorPolicyRevision = "study_translation_generation_v1",
+  promptRevision = "song_study_translation_prompt_v2",
+  qualityPolicyRevision = "study-translation-quality-es-v1",
+): PolicyRevisions =>
+  ({ generatorPolicyRevision, promptRevision, qualityPolicyRevision }) as PolicyRevisions;
 
 const request = {
   body: { target_language: "es", learner_band: "B1" },
@@ -41,6 +54,7 @@ describe("Study generation handlers", () => {
         launched = { instanceId: workflowId, payload };
         return "created";
       },
+      resolveTranslationPolicy: async () => policy(),
     });
     const result = await handlers.RequestStudyGenerationV2(request);
     expect(result).toMatchObject({
@@ -59,6 +73,9 @@ describe("Study generation handlers", () => {
       sourceHash: "a".repeat(64),
       targetLanguage: "es",
       learnerBand: "B1",
+      generatorPolicyRevision: "study_translation_generation_v1",
+      promptRevision: "song_study_translation_prompt_v2",
+      qualityPolicyRevision: "study-translation-quality-es-v1",
     });
   });
 
@@ -78,9 +95,46 @@ describe("Study generation handlers", () => {
       launch: async () => {
         throw new Error("secret provider detail");
       },
+      resolveTranslationPolicy: async () => policy(),
     });
     await expect(handlers.RequestStudyGenerationV2(request)).rejects.toBeInstanceOf(
       ProviderUnavailable,
     );
+  });
+
+  test("changes Workflow identity when any generation policy revision changes", async () => {
+    const ids: string[] = [];
+    const make = (revisions: PolicyRevisions) =>
+      makeStudyGenerationHandlers({
+        resolveProfile: async () => ({
+          state: "ready",
+          outcome: {
+            communityId: "community-1",
+            postId: "post-1",
+            lyricsRevision: 3,
+            sourceHash: "a".repeat(64),
+            languageProfileRevision: 1,
+            state: "ready",
+          },
+        }),
+        resolveTranslationPolicy: async () => revisions,
+        launch: async (workflowId) => {
+          ids.push(workflowId);
+          return "created";
+        },
+      });
+    await make(policy()).RequestStudyGenerationV2(request);
+    await make(policy("study_translation_generation_v2")).RequestStudyGenerationV2(request);
+    await make(
+      policy("study_translation_generation_v1", "song_study_translation_prompt_v3"),
+    ).RequestStudyGenerationV2(request);
+    await make(
+      policy(
+        "study_translation_generation_v1",
+        "song_study_translation_prompt_v2",
+        "study-translation-quality-es-v2",
+      ),
+    ).RequestStudyGenerationV2(request);
+    expect(new Set(ids).size).toBe(4);
   });
 });

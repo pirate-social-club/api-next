@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   STUDY_LANGUAGE_PROFILE_PROMPT_V2,
   STUDY_LANGUAGE_PROFILE_VALIDATOR_V2,
+  STUDY_TRANSLATION_GENERATOR_POLICY_V1,
   STUDY_TRANSLATION_PROMPT_V2,
   validateStudyTranslationProposal,
 } from "@pirate/application";
@@ -10,7 +11,10 @@ import { Client } from "pg";
 import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { makeControlPlaneStudyLanguageProfileRepository } from "./study-language-profile-repository.ts";
-import { makeControlPlaneStudyTranslationRepository } from "./study-translation-repository.ts";
+import {
+  makeControlPlaneStudyTranslationPolicyResolver,
+  makeControlPlaneStudyTranslationRepository,
+} from "./study-translation-repository.ts";
 import { makeControlPlaneStudyV2Repository } from "./study-v2-repository.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -172,13 +176,25 @@ suite("Study translation generation", () => {
             [ordinal, `line-${ordinal}`, lineHashes[index]],
           );
         }
+        await expect(
+          admin.query(
+            `INSERT INTO study_translation_quality_policies (
+                 target_language, quality_policy_revision, release_state, corpus_sample_count,
+                 source_binding_bps, meaning_preservation_bps, bilingual_rubric_bps,
+                 critical_defect_count, accepted_at
+               ) VALUES ('es','study-translation-quality-missing-evidence','active',100,
+                 10000,10000,9500,0,clock_timestamp())`,
+          ),
+        ).rejects.toThrow();
         await admin.query(
           `INSERT INTO study_translation_quality_policies (
                target_language, quality_policy_revision, release_state, corpus_sample_count,
                source_binding_bps, meaning_preservation_bps, bilingual_rubric_bps,
-               critical_defect_count, accepted_at
+               critical_defect_count, corpus_revision, reviewed_file_sha256,
+               reviewer_role, evaluator_revision, accepted_at
              ) VALUES ('es','study-translation-quality-es-v1','active',100,10000,10000,9500,0,
-               clock_timestamp())`,
+               'study-translation-corpus-es-b1-v1',repeat('f',64),'bilingual_reviewer',
+               'study_translation_corpus_evaluator_v1',clock_timestamp())`,
         );
         await admin.query(
           `INSERT INTO study_translation_quality_registry (
@@ -191,6 +207,18 @@ suite("Study translation generation", () => {
       }
 
       const runtime = makeDirectPostgresControlPlaneLayer(scoped);
+      const policy = await Effect.runPromise(
+        Effect.scoped(
+          makeControlPlaneStudyTranslationPolicyResolver(runtime).resolve({
+            targetLanguage: "es",
+          }),
+        ),
+      );
+      expect(policy).toEqual({
+        generatorPolicyRevision: STUDY_TRANSLATION_GENERATOR_POLICY_V1,
+        promptRevision: STUDY_TRANSLATION_PROMPT_V2,
+        qualityPolicyRevision: "study-translation-quality-es-v1",
+      });
       const profiles = makeControlPlaneStudyLanguageProfileRepository();
       const profileResolution = await Effect.runPromise(
         Effect.scoped(
@@ -240,6 +268,27 @@ suite("Study translation generation", () => {
       expect(profileReplay).toEqual({ state: "ready", outcome: profileOutcome });
 
       const repository = makeControlPlaneStudyTranslationRepository();
+      await expect(
+        Effect.runPromise(
+          Effect.scoped(
+            repository
+              .reserve({
+                communityId: "study-community",
+                postId: "study-post",
+                targetLanguage: "es",
+                learnerBand: "B1",
+                generatorPolicyRevision: STUDY_TRANSLATION_GENERATOR_POLICY_V1,
+                promptRevision: STUDY_TRANSLATION_PROMPT_V2,
+                qualityPolicyRevision: "study-translation-quality-es-v2",
+                generationRunId: "translation-run-policy-mismatch",
+                leaseToken: "translation-lease-policy-mismatch",
+                requestedAt: "2026-08-29T12:00:00.000Z",
+                leaseExpiresAt: "2026-08-29T12:06:00.000Z",
+              })
+              .pipe(Effect.provide(runtime)),
+          ),
+        ),
+      ).rejects.toMatchObject({ reason: "policy-blocked" });
       const reservation = await Effect.runPromise(
         Effect.scoped(
           repository
@@ -248,6 +297,9 @@ suite("Study translation generation", () => {
               postId: "study-post",
               targetLanguage: "es",
               learnerBand: "B1",
+              generatorPolicyRevision: STUDY_TRANSLATION_GENERATOR_POLICY_V1,
+              promptRevision: STUDY_TRANSLATION_PROMPT_V2,
+              qualityPolicyRevision: "study-translation-quality-es-v1",
               generationRunId: "translation-run-1",
               leaseToken: "translation-lease-1",
               requestedAt: "2026-08-29T12:00:00.000Z",

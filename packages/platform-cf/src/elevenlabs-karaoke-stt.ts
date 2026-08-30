@@ -9,6 +9,15 @@ import type {
 
 const DEFAULT_URL = "wss://api.elevenlabs.io/v1/speech-to-text/realtime";
 const DEFAULT_MODEL = "scribe_v2_realtime";
+export const ELEVENLABS_KARAOKE_ENABLE_LOGGING = false as const;
+function providerRetentionForLogging(enableLogging: false): "not_stored";
+function providerRetentionForLogging(enableLogging: true): "stored";
+function providerRetentionForLogging(enableLogging: boolean): "not_stored" | "stored" {
+  return enableLogging ? "stored" : "not_stored";
+}
+export const ELEVENLABS_KARAOKE_PROVIDER_RETENTION = providerRetentionForLogging(
+  ELEVENLABS_KARAOKE_ENABLE_LOGGING,
+);
 const TOKEN_PATH = "/v1/single-use-token/realtime_scribe";
 const SAFE_COMMIT_FLOOR_MS = 400;
 const COMMIT_DRAIN_TIMEOUT_MS = 1_500;
@@ -120,6 +129,7 @@ export interface ElevenLabsKaraokeSttOptions {
   readonly model?: string;
   readonly websocketUrl?: string;
   readonly connect?: KaraokeSttSocketConnect;
+  readonly onProviderRetentionChanged?: (retention: "not_stored" | "stored") => void;
 }
 
 export class ElevenLabsKaraokeSttAdapter implements KaraokeStreamingSttAdapter {
@@ -163,7 +173,7 @@ export class ElevenLabsKaraokeSttAdapter implements KaraokeStreamingSttAdapter {
     url.searchParams.set("audio_format", "pcm_16000");
     url.searchParams.set("include_timestamps", "true");
     url.searchParams.set("commit_strategy", "manual");
-    url.searchParams.set("disable_logging", "true");
+    url.searchParams.set("enable_logging", String(ELEVENLABS_KARAOKE_ENABLE_LOGGING));
     const socket = await (this.options.connect ?? connectElevenLabsKaraokeSocket)({
       url: url.toString(),
       apiKey: this.options.apiKey,
@@ -272,12 +282,17 @@ export class ElevenLabsKaraokeSttAdapter implements KaraokeStreamingSttAdapter {
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return;
     const message = parsed as Record<string, unknown>;
     const type = string(message.message_type) || string(message.type);
+    if (type === "warning") {
+      try {
+        this.options.onProviderRetentionChanged?.("stored");
+      } finally {
+        this.terminate("zero_retention_not_applied");
+      }
+      return;
+    }
     if (PROVIDER_ERRORS.has(type)) {
       if (RETRYABLE_ERRORS.has(type)) this.socketDropped();
-      else {
-        this.markClosed();
-        this.onTerminalError?.(type);
-      }
+      else this.terminate(type);
       return;
     }
     const transcript = string(message.text) || string(message.transcript);
@@ -299,6 +314,14 @@ export class ElevenLabsKaraokeSttAdapter implements KaraokeStreamingSttAdapter {
     await this.emitter.send("stt_final", transcript, this.mapWords(message.words), commit);
     this.drain?.();
     this.drain = null;
+  }
+
+  private terminate(code: string): void {
+    const socket = this.socket;
+    this.markClosed();
+    this.socket = null;
+    socket?.close(1008, code);
+    this.onTerminalError?.(code);
   }
 
   private mapWords(raw: unknown): KaraokeRecognizedWord[] {

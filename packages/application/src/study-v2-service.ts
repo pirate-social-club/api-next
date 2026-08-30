@@ -54,6 +54,8 @@ export type StudyBatchTranscript = Readonly<{
   detectedLanguageConfidence: number | null;
 }>;
 
+export type LearnerAudioProviderRetention = "not_stored" | "stored";
+
 export class StudyBatchTranscriptionFailed extends Data.TaggedError(
   "StudyBatchTranscriptionFailed",
 )<{
@@ -66,6 +68,7 @@ export class StudyBatchTranscriptionFailed extends Data.TaggedError(
 }> {}
 
 export interface StudyBatchTranscriber {
+  readonly providerRetention: LearnerAudioProviderRetention;
   readonly transcribe: (input: {
     readonly audio: Uint8Array;
     readonly contentType: string;
@@ -144,6 +147,7 @@ export interface StudyV2Store {
     readonly idempotencyKey: string;
     readonly requestHash: string;
     readonly leaseToken: string;
+    readonly providerRetention: LearnerAudioProviderRetention;
     readonly sessionId: string;
     readonly sessionItemId: string;
   }) => Effect.Effect<StudySpokenAnswerReservation, StudyV2Failure>;
@@ -271,6 +275,7 @@ export const makeStudyV2Service = (
         source_line_revision: context.item.line.line_version,
         language_profile_revision: context.item.language_profile_revision,
         grading_revision: context.item.grader_policy_revision,
+        provider_retention: spoken.transcriber.providerRetention,
       });
       const ids = yield* IdGen;
       const clock = yield* Clock;
@@ -285,6 +290,7 @@ export const makeStudyV2Service = (
         attemptId,
         artifactId,
         leaseToken,
+        providerRetention: spoken.transcriber.providerRetention,
         requestHash,
         audioDigest,
       });

@@ -22,7 +22,10 @@ import {
   serializeKaraokeSessionSnapshot,
 } from "@pirate/application";
 import { Effect } from "effect";
-import { ElevenLabsKaraokeSttAdapter } from "./elevenlabs-karaoke-stt.ts";
+import {
+  ELEVENLABS_KARAOKE_PROVIDER_RETENTION,
+  ElevenLabsKaraokeSttAdapter,
+} from "./elevenlabs-karaoke-stt.ts";
 import { makeControlPlaneKaraokeStore } from "./karaoke-repository.ts";
 import { type HyperdriveConnection, makeHyperdriveControlPlaneLayer } from "./postgres.ts";
 
@@ -259,6 +262,14 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
         epoch_count INTEGER NOT NULL DEFAULT 0, dropped_frame_count INTEGER NOT NULL DEFAULT 0,
         late_frame_count INTEGER NOT NULL DEFAULT 0, commit_latencies_json TEXT NOT NULL DEFAULT '[]'
       )`);
+      this.sql.exec(`CREATE TABLE IF NOT EXISTS karaoke_provider_retention (
+        id INTEGER PRIMARY KEY CHECK (id=1),
+        retention TEXT NOT NULL CHECK (retention IN ('not_stored','stored'))
+      )`);
+      this.sql.exec(
+        "INSERT OR IGNORE INTO karaoke_provider_retention (id,retention) VALUES (1,?)",
+        ELEVENLABS_KARAOKE_PROVIDER_RETENTION,
+      );
     });
   }
 
@@ -297,7 +308,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
           kind: "enabled",
           provider: "elevenlabs",
           model: "scribe_v2_realtime",
-          retention: "not_stored",
+          retention: ELEVENLABS_KARAOKE_PROVIDER_RETENTION,
         },
       });
       const snapshot = serializeKaraokeSessionSnapshot({
@@ -511,7 +522,10 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
     this.serverSequence = Number(row.server_sequence);
     const key = this.runtimeEnv.ELEVENLABS_API_KEY;
     if (key === undefined || key.trim() === "") throw new Error("karaoke_provider_unavailable");
-    this.adapter = new ElevenLabsKaraokeSttAdapter({ apiKey: key });
+    this.adapter = new ElevenLabsKaraokeSttAdapter({
+      apiKey: key,
+      onProviderRetentionChanged: (retention) => this.recordProviderRetention(retention),
+    });
     this.host = new KaraokeSessionHost(snapshot.state, new RuntimeEffects(this), this.adapter, {
       restore: snapshot,
       persist: () => this.persistHost(),
@@ -732,6 +746,18 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
     };
   }
 
+  private providerRetention(): "not_stored" | "stored" {
+    const row = one(this.sql, "SELECT retention FROM karaoke_provider_retention WHERE id=1");
+    if (row?.retention === "not_stored" || row?.retention === "stored") return row.retention;
+    throw new Error("karaoke_provider_retention_unavailable");
+  }
+
+  private recordProviderRetention(retention: "not_stored" | "stored"): void {
+    if (retention === "stored") {
+      this.sql.exec("UPDATE karaoke_provider_retention SET retention='stored' WHERE id=1");
+    }
+  }
+
   private async flushOutbox(): Promise<void> {
     const row = one(this.sql, "SELECT * FROM karaoke_outbox WHERE id=1");
     if (row === null) return;
@@ -768,6 +794,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
             artifactId: authority.artifactId,
             attemptId: authority.attemptId,
             reconciledAt: new Date().toISOString(),
+            providerRetention: this.providerRetention(),
             result,
             sessionId: authority.sessionId,
           }),

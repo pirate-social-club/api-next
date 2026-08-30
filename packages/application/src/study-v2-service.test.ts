@@ -134,6 +134,7 @@ describe("Study spoken answer command", () => {
     };
     const service = makeStudyV2Service(store, {
       transcriber: {
+        providerRetention: "stored",
         transcribe: () => {
           transcriptions += 1;
           return Effect.succeed({
@@ -175,5 +176,62 @@ describe("Study spoken answer command", () => {
     expect(transcriptions).toBe(1);
     expect(archives).toBe(1);
     expect(recordedArchives).toEqual([{ state: "failed", objectRef: null }]);
+  });
+
+  test("binds provider retention into the reserved command identity", async () => {
+    const recorded: { retention: string | null; requestHash: string | null } = {
+      retention: null,
+      requestHash: null,
+    };
+    const unused = () => Effect.die("unused Study store operation");
+    const store: StudyV2Store = {
+      getAvailability: unused,
+      startSession: unused,
+      getSession: unused,
+      submitAnswer: unused,
+      loadSpokenAnswerContext: () =>
+        Effect.succeed({ item: item(0), referenceText: "Hold on", dominantLanguage: null }),
+      reserveSpokenAnswer: (input) => {
+        recorded.retention = input.providerRetention;
+        recorded.requestHash = input.requestHash;
+        return Effect.succeed({
+          state: "reserved",
+          commandId: input.commandId,
+          leaseToken: input.leaseToken,
+          attemptId: input.attemptId,
+          artifactId: input.artifactId,
+        });
+      },
+      failSpokenAnswer: () => Effect.void,
+      completeSpokenAnswer: () => Effect.die("stop after reservation fixture"),
+    };
+    const service = makeStudyV2Service(store, {
+      transcriber: {
+        providerRetention: "stored",
+        transcribe: () => Effect.die("stop after reservation fixture"),
+      },
+      archive: { store: () => Effect.die("unused archive") },
+    });
+    const exit = await Effect.runPromiseExit(
+      service
+        .submitSpokenAnswer({
+          accountId: "account-1",
+          attemptNumber: 1,
+          audio: new Uint8Array([1]),
+          audioContentType: "audio/webm",
+          audioDurationMs: 100,
+          communityId: "community-1",
+          idempotencyKey: "answer-retention",
+          sessionId: "session-1",
+          sessionItemId: "item-0",
+        })
+        .pipe(
+          Effect.provideService(Clock, { now: Effect.succeed(Date.UTC(2026, 7, 29)) }),
+          Effect.provideService(IdGen, { next: Effect.succeed("fixture") }),
+        ),
+    );
+    expect(exit._tag).toBe("Failure");
+    expect(recorded.retention).toBe("stored");
+    expect(recorded.requestHash).toMatch(/^[0-9a-f]{64}$/u);
   });
 });

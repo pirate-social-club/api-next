@@ -11,6 +11,9 @@ export type StudyGenerationWorkflowPayload = Readonly<{
   sourceHash: string;
   targetLanguage: string;
   learnerBand: StudyLearnerBandV2;
+  generatorPolicyRevision: "study_translation_generation_v1";
+  promptRevision: "song_study_translation_prompt_v2";
+  qualityPolicyRevision: string;
 }>;
 
 export type StudyGenerationWorkflowResult = Readonly<{
@@ -39,11 +42,19 @@ export type StudyGenerationWorkflowComposition = Readonly<{
     readonly postId: string;
     readonly targetLanguage: string;
     readonly learnerBand: StudyLearnerBandV2;
+    readonly generatorPolicyRevision: StudyGenerationWorkflowPayload["generatorPolicyRevision"];
+    readonly promptRevision: StudyGenerationWorkflowPayload["promptRevision"];
+    readonly qualityPolicyRevision: string;
   }) => Promise<StudyTranslationGenerationOutcome>;
 }>;
 
-const options = {
+const profileOptions = {
   retries: { limit: 2, delay: "15 seconds", backoff: "exponential" },
+  timeout: "5 minutes",
+} as const;
+
+const translationOptions = {
+  retries: { limit: 2, delay: "7 minutes", backoff: "exponential" },
   timeout: "5 minutes",
 } as const;
 
@@ -56,7 +67,7 @@ export const makeStudyGenerationWorkflowRunner =
   ): Promise<StudyGenerationWorkflowResult> => {
     const composition = resolve(env);
     const identity = event.payload;
-    const profile = await step.do("study-language-profile-v1", options, () =>
+    const profile = await step.do("study-language-profile-v1", profileOptions, () =>
       composition.generateProfile({
         communityId: identity.communityId,
         postId: identity.postId,
@@ -68,12 +79,15 @@ export const makeStudyGenerationWorkflowRunner =
     ) {
       throw new Error("Study generation authority became stale");
     }
-    const translation = await step.do("study-translation-choice-v1", options, () =>
+    const translation = await step.do("study-translation-choice-v2", translationOptions, () =>
       composition.generateTranslation({
         communityId: identity.communityId,
         postId: identity.postId,
         targetLanguage: identity.targetLanguage,
         learnerBand: identity.learnerBand,
+        generatorPolicyRevision: identity.generatorPolicyRevision,
+        promptRevision: identity.promptRevision,
+        qualityPolicyRevision: identity.qualityPolicyRevision,
       }),
     );
     return { profile, translation };
