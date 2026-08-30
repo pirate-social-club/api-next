@@ -29,7 +29,7 @@ import { startHnsCommunityAppHandleGatewayServer } from "./server.ts";
 
 declare const __PIRATE_API_NEXT_SOURCE_COMMIT__: string;
 
-export type HnsCommunityAppHandleGatewayMode = "production" | "shadow";
+type HnsCommunityAppHandleGatewayMode = "production" | "shadow";
 
 export type HnsCommunityAppHandleGatewayArguments = Readonly<{
   mode: HnsCommunityAppHandleGatewayMode;

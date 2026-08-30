@@ -58,6 +58,3 @@ export function makeHnsCommunityAppHandleGatewayComposition(
     }),
   });
 }
-
-export const disabledProductionHnsCommunityAppHandleGatewayComposition =
-  makeHnsCommunityAppHandleGatewayComposition(false);
