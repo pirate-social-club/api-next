@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.40.0",
+  "releaseType": "hns-edge-alert-ingress",
+  "wireContract": "api-next-operator-hns-edge-alert-v1",
+  "sourceCommit": "pending-review",
+  "supersedes": "0.39.0; adds the bearer-authenticated, exact-JSON HNS edge alert ingress used by the authoritative DNS monitoring sink.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.40.0.tgz",
+    "sha256": "86e4da1751e592a01e9d37f7381e37ef6774311e20832f5f57c13c830001cfdf",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@362fda01515b9cb46a6ec09ab040d3c7d98b21153d82e638830076de1e75dea5",
+    "openapiSha256": "362fda01515b9cb46a6ec09ab040d3c7d98b21153d82e638830076de1e75dea5",
+    "clientSha256": "be92427183ee938d21e9f992e81143aa73fd7d3ad3e79498049dcf66d16a9a36"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "passed",
+      "baselineCommit": "origin/main",
+      "reason": "The release adds one operator-only endpoint and does not alter an existing operation."
+    },
+    "focusedContractSuites": "11 HNS edge alert tests and 29 binding, configuration, and secret-boundary tests passed locally",
+    "fullUnitSuite": "2382 passed, 314 PostgreSQL-dependent tests skipped, 0 failed",
+    "fullWorkerdSuite": "97 passed across scheduled, HTTP, Self, and HNS verifier suites; the Self suite passed on an exact-command retry after transient import timeouts",
+    "packageVerifier": "passed",
+    "repositoryCheck": "passed"
+  }
+}

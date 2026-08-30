@@ -66,6 +66,10 @@ import { makeControlPlaneContentStore } from "@pirate/platform-cf/content-reposi
 import { makeControlPlaneFeedStore } from "@pirate/platform-cf/feed-repository";
 import { makeHandleRecipientTokenVault } from "@pirate/platform-cf/handle-recipient-token-vault";
 import { makeControlPlaneHandleSalesStore } from "@pirate/platform-cf/handle-sales-repository";
+import {
+  type HnsEdgeAlertEmailClient,
+  makeCloudflareHnsEdgeAlertSink,
+} from "@pirate/platform-cf/hns-edge-alert-email";
 import type { HnsForwarderReplayStoreNamespace } from "@pirate/platform-cf/hns-forwarder-replay-store";
 import { makeControlPlaneHnsCommunityAppHostAuthoritySource } from "@pirate/platform-cf/hns-host-persistence-repository";
 import {
@@ -171,6 +175,8 @@ import {
 } from "./community-purchase-funding-handlers.ts";
 import { makeHandleSalesHandlers } from "./handle-sales-handlers.ts";
 import { makeProductionHnsCommunityAppApiComposition } from "./hns-community-app-api-production-composition.ts";
+import { hnsEdgeAlertBearerMatches, isHnsEdgeAlertTokenConfigured } from "./hns-edge-alert-auth.ts";
+import { makeHnsEdgeAlertHandlers } from "./hns-edge-alert-handlers.ts";
 import { makeHnsOwnershipComposition } from "./hns-ownership-composition.ts";
 import { makeKaraokeHandlers, makeKaraokeReadinessHandlers } from "./karaoke-handlers.ts";
 import { makeLearnerAudioHandlers } from "./learner-audio-handlers.ts";
@@ -245,6 +251,8 @@ export interface HttpWorkerBindings {
   readonly HNS_FORWARDER_V3_HMAC_KEY_REGISTRY?: string;
   readonly HNS_FORWARDER_V3_FRESHNESS_WINDOW_SECONDS?: string;
   readonly HNS_FORWARDER_V3_FUTURE_CLOCK_SKEW_SECONDS?: string;
+  readonly HNS_EDGE_ALERT_TOKEN?: string;
+  readonly HNS_EDGE_ALERT_EMAIL?: HnsEdgeAlertEmailClient;
   readonly VERIFICATION_CALLBACK_CREDENTIAL_HEADERS?: string;
   readonly PIRATE_APP_JWT_PRIVATE_KEY?: string;
   readonly PIRATE_APP_JWT_PUBLIC_KEY?: string;
@@ -375,6 +383,7 @@ function configSource(bindings: HttpWorkerBindings): Record<string, string | und
     HNS_FORWARDER_V3_HMAC_KEY_REGISTRY: bindings.HNS_FORWARDER_V3_HMAC_KEY_REGISTRY,
     HNS_FORWARDER_V3_FRESHNESS_WINDOW_SECONDS: bindings.HNS_FORWARDER_V3_FRESHNESS_WINDOW_SECONDS,
     HNS_FORWARDER_V3_FUTURE_CLOCK_SKEW_SECONDS: bindings.HNS_FORWARDER_V3_FUTURE_CLOCK_SKEW_SECONDS,
+    HNS_EDGE_ALERT_TOKEN: bindings.HNS_EDGE_ALERT_TOKEN,
     VERIFICATION_CALLBACK_CREDENTIAL_HEADERS: bindings.VERIFICATION_CALLBACK_CREDENTIAL_HEADERS,
     PIRATE_APP_JWT_PRIVATE_KEY: bindings.PIRATE_APP_JWT_PRIVATE_KEY,
     PIRATE_APP_JWT_PUBLIC_KEY: bindings.PIRATE_APP_JWT_PUBLIC_KEY,
@@ -531,6 +540,15 @@ export async function createProductionHttpWorker(
     Redacted.value(config.VERY_OAUTH_SEALING_KEY),
   );
   const veryWebSealingKey = decodeVeryOauthSealingKey(Redacted.value(config.VERY_WEB_SEALING_KEY));
+  const hnsEdgeAlertToken = Redacted.value(config.HNS_EDGE_ALERT_TOKEN);
+  const hnsEdgeAlertsEnabled = config.API_NEXT_ENV === "production";
+  if (
+    hnsEdgeAlertsEnabled &&
+    (!isHnsEdgeAlertTokenConfigured(hnsEdgeAlertToken) ||
+      bindings.HNS_EDGE_ALERT_EMAIL === undefined)
+  ) {
+    throw new Error("HTTP worker configuration is incomplete or invalid");
+  }
   const previousSigningFields = [
     zkPassportPreviousSigningSecret,
     config.ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_KEY_ID,
@@ -930,6 +948,10 @@ export async function createProductionHttpWorker(
           clock: { now: Effect.sync(() => Date.now()) },
           store: makeControlPlaneLearnerAudioDeletionStore(controlPlane, bindings.LEARNER_AUDIO),
         });
+  const hnsEdgeAlertHandlers =
+    !hnsEdgeAlertsEnabled || bindings.HNS_EDGE_ALERT_EMAIL === undefined
+      ? {}
+      : makeHnsEdgeAlertHandlers(makeCloudflareHnsEdgeAlertSink(bindings.HNS_EDGE_ALERT_EMAIL));
   const karaokeReadinessHandlers = makeKaraokeReadinessHandlers(
     makeControlPlaneKaraokeReadinessStore(controlPlane),
   );
@@ -1073,12 +1095,29 @@ export async function createProductionHttpWorker(
   const tokenVerifier = makeRs256SessionTokenVerifier(sessionCrypto, identityStore, {
     additionalUserScopes: [PERSONA_WALLET_SETUP_SESSION_SCOPE],
   });
-  const authenticate = ({
+  const authenticate = async ({
+    endpoint,
     credentials,
   }: {
+    readonly endpoint: {
+      readonly auth: { readonly policy: { readonly kind: string; readonly name?: string } };
+    };
     readonly credentials: { readonly authorization?: string; readonly sessionCookie?: string };
-  }) =>
-    Effect.runPromise(
+  }) => {
+    if (endpoint.auth.policy.kind === "sharedSecret") {
+      if (
+        endpoint.auth.policy.name !== "hns-edge-alert" ||
+        !(await hnsEdgeAlertBearerMatches(credentials.authorization, hnsEdgeAlertToken))
+      ) {
+        throw new AuthError({ message: "Authentication failed" });
+      }
+      return {
+        kind: "device" as const,
+        subject: "hns-edge-alert",
+        scopes: ["hns-edge-alert:deliver"],
+      };
+    }
+    return Effect.runPromise(
       authenticateSession(
         {
           ...(credentials.authorization === undefined
@@ -1091,6 +1130,7 @@ export async function createProductionHttpWorker(
         { verifier: tokenVerifier },
       ).pipe(Effect.map(principal)),
     );
+  };
   const profile: EndpointHandler = ({ principal: session }) =>
     Effect.runPromise(getMyProfile({ userId: session?.subject ?? "" }, { identityStore }));
   const publicProfile = makePublicProfileHandler({ publicProfileStore });
@@ -1112,6 +1152,7 @@ export async function createProductionHttpWorker(
       ...studyV2Handlers,
       ...studyGenerationHandlers,
       ...learnerAudioHandlers,
+      ...hnsEdgeAlertHandlers,
       ...handleSalesHandlers,
       ...platformPirateHandleHandlers,
       ...songRewardOfferHandlers,
@@ -1127,6 +1168,17 @@ export async function createProductionHttpWorker(
     authorize: ({ endpoint, input }) =>
       Effect.runPromise(
         Effect.gen(function* () {
+          if (endpoint.auth.policy.kind === "sharedSecret") {
+            if (
+              endpoint.auth.policy.name === "hns-edge-alert" &&
+              input.principal?.kind === "device" &&
+              input.principal.subject === "hns-edge-alert" &&
+              input.principal.scopes?.includes("hns-edge-alert:deliver") === true
+            ) {
+              return;
+            }
+            return yield* new AuthError({ message: "Authorization failed" });
+          }
           yield* authorizeSession({
             session: {
               subject: input.principal?.subject ?? "",
