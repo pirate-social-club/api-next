@@ -3054,7 +3054,18 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
   }, 40_000);
   test("publishes explicit classified lyrics with their truthful label", async () => {
     await withSchema(async (admin, connection) => {
-      const explicitLyrics = "Hold on!\nExplicit fixture verse\nHold on!";
+      const longDialogue = Array.from({ length: 33 }, (_, index) => `dialogue${index + 1}`).join(
+        " ",
+      );
+      const explicitLyrics = [
+        "[Verse 1]",
+        "Hold on!",
+        "Explicit fixture verse",
+        "[Bridge – Beat Drops]",
+        longDialogue,
+        "[Instrumental]",
+        "Hold on!",
+      ].join("\n");
       const explicitAnalysis: TrustedSongAnalysis = {
         ...analysis,
         lyricsAnalysis: {
@@ -3127,23 +3138,42 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
                  WHERE community_id=$1 AND post_id=$2) AS study_units,
                (SELECT count(*)::text FROM study_exercise_versions
                  WHERE community_id=$1 AND post_id=$2
-                   AND exercise_type='say_it_back') AS source_exercises`,
+                   AND exercise_type='say_it_back') AS source_exercises,
+               (SELECT count(*)::text FROM study_unit_exercise_eligibility
+                 WHERE community_id=$1 AND post_id=$2
+                   AND exercise_kind='say_it_back' AND eligibility='eligible') AS eligible_units,
+               (SELECT count(*)::text FROM study_unit_exercise_eligibility
+                 WHERE community_id=$1 AND post_id=$2
+                   AND exercise_kind='say_it_back' AND eligibility='ineligible'
+                   AND ineligibility_reason='spoken_recall_too_long') AS ineligible_units`,
             [community, postId],
           )
         ).rows[0],
-      ).toEqual({ occurrences: "3", source_exercises: "2", study_units: "2" });
+      ).toEqual({
+        eligible_units: "2",
+        ineligible_units: "1",
+        occurrences: "4",
+        source_exercises: "2",
+        study_units: "3",
+      });
+      const timedTokens = [
+        "Hold",
+        "on!",
+        "Explicit",
+        "fixture",
+        "verse",
+        ...longDialogue.split(" "),
+        "Hold",
+        "on!",
+      ];
       const timedLyricsArtifact = {
         version: "media-timed-lyrics-artifact-v1",
         mode: "word",
-        segments: [
-          { text: "Hold", start_ms: 0, end_ms: 300 },
-          { text: "on!", start_ms: 310, end_ms: 600 },
-          { text: "Explicit", start_ms: 700, end_ms: 1_000 },
-          { text: "fixture", start_ms: 1_010, end_ms: 1_300 },
-          { text: "verse", start_ms: 1_310, end_ms: 1_600 },
-          { text: "Hold", start_ms: 1_700, end_ms: 2_000 },
-          { text: "on!", start_ms: 2_010, end_ms: 2_300 },
-        ],
+        segments: timedTokens.map((text, index) => ({
+          text,
+          start_ms: index * 100,
+          end_ms: index * 100 + 80,
+        })),
       };
       await admin.query(
         `INSERT INTO media_timed_lyrics_artifacts (
@@ -3180,9 +3210,10 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         expect(readiness.karaoke_lines.map(({ text }) => text)).toEqual([
           "Hold on!",
           "Explicit fixture verse",
+          longDialogue,
           "Hold on!",
         ]);
-        expect(readiness.karaoke_lines[0]?.id).not.toBe(readiness.karaoke_lines[2]?.id);
+        expect(readiness.karaoke_lines[0]?.id).not.toBe(readiness.karaoke_lines[3]?.id);
         expect(readiness.playback_kind).toBe("full_mix");
       }
       await admin.query("BEGIN");
