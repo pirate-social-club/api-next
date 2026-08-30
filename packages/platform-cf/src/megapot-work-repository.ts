@@ -34,6 +34,19 @@ export type MegapotChainEffectWork = Readonly<{
   effectKind: MegapotChainEffectKind;
 }>;
 
+export type MegapotAgedPendingFamily =
+  | "chain_effects"
+  | "funding_effects"
+  | "drawings"
+  | "credits"
+  | "refund_liabilities";
+
+export type MegapotAgedPending = Readonly<{
+  family: MegapotAgedPendingFamily;
+  count: number;
+  oldestAgeSeconds: number;
+}>;
+
 export class MegapotWorkStorageFailed extends Data.TaggedError("MegapotWorkStorageFailed")<{
   readonly reason: "invalid-row" | "outcome-unknown" | "unavailable";
 }> {}
@@ -52,6 +65,9 @@ export interface MegapotWorkStore {
   readonly loadChainEffects: (
     limit: number,
   ) => Effect.Effect<readonly MegapotChainEffectWork[], MegapotWorkStorageFailed>;
+  readonly loadAgedPending: (
+    thresholdSeconds: number,
+  ) => Effect.Effect<readonly MegapotAgedPending[], MegapotWorkStorageFailed>;
 }
 
 const failed = (reason: MegapotWorkStorageFailed["reason"]) =>
@@ -87,6 +103,13 @@ function bigint(row: Row, field: string): bigint {
     throw new Error(`invalid ${field}`);
   }
   return BigInt(value);
+}
+
+function naturalNumber(row: Row, field: string): number {
+  const value = row[field];
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) throw new Error(`invalid ${field}`);
+  return parsed;
 }
 
 function drawing(row: Row): MegapotDrawingWork {
@@ -125,6 +148,23 @@ function chainEffect(row: Row): MegapotChainEffectWork {
     throw new Error("invalid effect kind");
   }
   return { effectId: text(row, "effect_id"), effectKind };
+}
+
+function agedPending(row: Row): MegapotAgedPending {
+  const family = text(row, "family");
+  if (
+    family !== "chain_effects" &&
+    family !== "funding_effects" &&
+    family !== "drawings" &&
+    family !== "credits" &&
+    family !== "refund_liabilities"
+  ) {
+    throw new Error("invalid aged pending family");
+  }
+  const count = naturalNumber(row, "count");
+  const oldestAgeSeconds = naturalNumber(row, "oldest_age_seconds");
+  if (count < 1) throw new Error("invalid aged pending count");
+  return { family, count, oldestAgeSeconds };
 }
 
 function validLimit(value: number): boolean {
@@ -273,6 +313,103 @@ export function makeControlPlaneMegapotWorkRepository() {
           });
         }),
       ),
+
+    loadAgedPending: (thresholdSeconds: number) =>
+      mapped(
+        Effect.gen(function* () {
+          if (!Number.isSafeInteger(thresholdSeconds) || thresholdSeconds < 60) {
+            return yield* failed("invalid-row");
+          }
+          const db = yield* ControlPlaneDb;
+          const result = yield* db.execute<Row>({
+            label: "megapot-work.aged-pending.read",
+            text: `WITH parameters AS (
+                    SELECT clock_timestamp() AS observed_at,
+                           make_interval(secs => $1::integer) AS threshold
+                  ), candidates AS (
+                    SELECT 'chain_effects'::text AS family,
+                           effect.updated_at AS pending_since,
+                           parameters.observed_at
+                      FROM reward_chain_effects effect
+                      CROSS JOIN parameters
+                     WHERE effect.effect_kind IN (
+                       'usdc_approval','ticket_purchase','winnings_claim','reward_payout',
+                       'reward_refund'
+                     )
+                       AND effect.state IN (
+                         'nonce_reserved','prepared','broadcast_pending','confirming',
+                         'reconciliation_required'
+                       )
+                       AND effect.updated_at <= parameters.observed_at-parameters.threshold
+                    UNION ALL
+                    SELECT 'funding_effects', funding.updated_at, parameters.observed_at
+                      FROM song_reward_leg_funding_effects funding
+                      CROSS JOIN parameters
+                     WHERE funding.state IN ('confirming','reconciliation_required')
+                       AND funding.updated_at <= parameters.observed_at-parameters.threshold
+                    UNION ALL
+                    SELECT 'drawings',
+                           CASE
+                             WHEN drawing.status='entry_open' THEN drawing.entry_cutoff_at
+                             WHEN drawing.status IN ('tickets_confirmed','drawing_pending')
+                               THEN observation.drawing_time
+                             ELSE drawing.updated_at
+                           END,
+                           parameters.observed_at
+                      FROM megapot_pool_drawings drawing
+                      JOIN megapot_drawing_observations observation
+                        ON observation.observation_id=drawing.observation_id
+                      CROSS JOIN parameters
+                     WHERE drawing.status IN (
+                       'entry_open','cutoff_frozen','committed','purchase_pending',
+                       'tickets_confirmed','drawing_pending','winnings_detected',
+                       'claim_pending','claimed','allocated'
+                     )
+                       AND CASE
+                         WHEN drawing.status='entry_open' THEN drawing.entry_cutoff_at
+                         WHEN drawing.status IN ('tickets_confirmed','drawing_pending')
+                           THEN observation.drawing_time
+                         ELSE drawing.updated_at
+                       END <= parameters.observed_at-parameters.threshold
+                    UNION ALL
+                    SELECT 'credits', credit.updated_at, parameters.observed_at
+                      FROM reward_ledger_credits credit
+                      CROSS JOIN parameters
+                     WHERE credit.state IN (
+                       'credited','payout_reserved','payout_pending','reconciliation_required'
+                     )
+                       AND credit.updated_at <= parameters.observed_at-parameters.threshold
+                    UNION ALL
+                    SELECT 'refund_liabilities',
+                           greatest(leg.updated_at,offer.terminal_at),
+                           parameters.observed_at
+                      FROM song_reward_offer_legs leg
+                      JOIN song_reward_offers offer ON offer.offer_id=leg.offer_id
+                      CROSS JOIN parameters
+                     WHERE leg.status IN ('exhausted','ended')
+                       AND offer.status IN ('exhausted','expired','ended')
+                       AND leg.reserved_atomic=0
+                       AND leg.funded_atomic >
+                         leg.spent_atomic+leg.fulfilled_atomic+leg.refunded_atomic
+                       AND greatest(leg.updated_at,offer.terminal_at)
+                         <= parameters.observed_at-parameters.threshold
+                  )
+                  SELECT family,count(*)::text AS count,
+                         floor(extract(epoch FROM (
+                           max(observed_at)-min(pending_since)
+                         )))::text AS oldest_age_seconds
+                    FROM candidates
+                   GROUP BY family
+                   ORDER BY family`,
+            values: [thresholdSeconds],
+            readonly: true,
+          });
+          return yield* Effect.try({
+            try: () => result.rows.map(agedPending),
+            catch: () => failed("invalid-row"),
+          });
+        }),
+      ),
   };
 }
 
@@ -287,5 +424,6 @@ export const makeControlPlaneMegapotWorkStore = (
     loadCredits: (limit) => provide(repository.loadCredits(limit)),
     loadRefunds: (limit) => provide(repository.loadRefunds(limit)),
     loadChainEffects: (limit) => provide(repository.loadChainEffects(limit)),
+    loadAgedPending: (thresholdSeconds) => provide(repository.loadAgedPending(thresholdSeconds)),
   };
 };
