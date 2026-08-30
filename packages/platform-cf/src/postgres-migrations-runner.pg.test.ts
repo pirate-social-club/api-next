@@ -83,8 +83,58 @@ suite("Postgres 17 migration runner", () => {
     completedTestCount += 1;
   });
 
+  test("backfills an existing settlement asset before installing the verification guard", async () => {
+    const migrations = await loadPostgresMigrations();
+    const assetBonusIndex = migrations.findIndex(
+      ({ version }) => version === "0088_rewards_song_asset_bonus.sql",
+    );
+    expect(assetBonusIndex).toBeGreaterThan(0);
+
+    await withSchema(async (scopedConnection, admin) => {
+      await runPostgresMigrations({
+        connectionString: scopedConnection,
+        migrations: migrations.slice(0, assetBonusIndex),
+      });
+      await admin.query(`INSERT INTO reward_asset_whitelist (
+        chain_id, token_address, decimals, symbol, asset_kind, environment,
+        status, policy_version, activated_at
+      ) VALUES (
+        84532, '0x036cbd53842c5426634e7929541ec2318f3dcf7e', 6, 'USDC',
+        'settlement_usdc', 'staging', 'active', 'settlement-usdc-v1',
+        '2026-08-28T12:27:28.000Z'
+      )`);
+
+      const result = await runPostgresMigrations({
+        connectionString: scopedConnection,
+        migrations,
+      });
+      expect(result).toMatchObject({
+        dryRun: false,
+        result: {
+          applied: ["0088_rewards_song_asset_bonus.sql"],
+          currentVersion: "0088_rewards_song_asset_bonus.sql",
+        },
+      });
+      const asset = await admin.query(
+        `SELECT activated_at, plain_erc20_verified_at
+           FROM reward_asset_whitelist
+          WHERE chain_id = 84532
+            AND token_address = '0x036cbd53842c5426634e7929541ec2318f3dcf7e'`,
+      );
+      expect(asset.rows).toHaveLength(1);
+      expect(asset.rows[0]?.plain_erc20_verified_at).toEqual(asset.rows[0]?.activated_at);
+      await expect(
+        admin.query(`UPDATE reward_asset_whitelist
+                        SET symbol = 'USDX'
+                      WHERE chain_id = 84532
+                        AND token_address = '0x036cbd53842c5426634e7929541ec2318f3dcf7e'`),
+      ).rejects.toThrow("reward asset whitelist only permits retirement");
+    });
+    completedTestCount += 1;
+  });
+
   afterAll(async () => {
-    if (connectionString !== undefined && completedTestCount === 2) {
+    if (connectionString !== undefined && completedTestCount === 3) {
       await Bun.write(sentinelPath, sentinelContents);
     }
   });

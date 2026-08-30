@@ -12,9 +12,15 @@ BEGIN
 END
 $$;
 
+DROP TRIGGER reward_asset_whitelist_change_guard ON reward_asset_whitelist;
+
 UPDATE reward_asset_whitelist
    SET plain_erc20_verified_at = activated_at
  WHERE asset_kind = 'settlement_usdc';
+
+CREATE TRIGGER reward_asset_whitelist_change_guard
+BEFORE UPDATE OR DELETE ON reward_asset_whitelist
+FOR EACH ROW EXECUTE FUNCTION guard_reward_asset_whitelist_change();
 
 ALTER TABLE reward_asset_whitelist
   ALTER COLUMN plain_erc20_verified_at SET NOT NULL,
