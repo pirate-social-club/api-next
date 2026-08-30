@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { ControlPlaneDb } from "@pirate/application";
 import { Effect } from "effect";
 import { Client } from "pg";
+import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 
 import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres";
@@ -1047,7 +1048,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
-      await applyMigrations(scopedConnectionString, migrations);
+      await applyMigrations(scopedConnectionString, await loadPostgresMigrations());
       const migratedCatalog = await catalogForSchema(admin, schema);
       const baselineSchema = schemaIdentifier();
       await admin.query(`CREATE SCHEMA ${quoteIdentifier(baselineSchema)}`);
@@ -1065,6 +1066,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       );
       expect(tables.rows.map((row) => row.table_name).sort()).toEqual([
         "account_aliases",
+        "account_language_preferences",
         "account_minimum_age_attestations",
         "account_streak_clocks",
         "account_streak_timezone_actions",
@@ -1206,7 +1208,20 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "home_feed_projection",
         "identity_credentials",
         "karaoke_attempts",
+        "karaoke_recordings",
         "karaoke_sessions",
+        "learner_audio_artifacts",
+        "localization_lyric_line_lineage",
+        "localization_lyric_line_occurrences",
+        "localization_lyric_line_study_units",
+        "localization_lyric_line_versions",
+        "localization_lyric_reconciliation_decisions",
+        "localization_lyrics_revision_lines",
+        "localization_source_units",
+        "localization_study_units",
+        "localization_translation_jobs",
+        "localization_translation_selections",
+        "localization_translation_versions",
         "media_alignment_projections",
         "media_analysis_evidence",
         "media_audio_revisions",
@@ -1314,9 +1329,24 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "song_streaks",
         "sponsor_daily_ticket_totals",
         "sponsor_withdrawal_effects",
+        "study_attempts_v2",
+        "study_exercise_versions",
+        "study_language_profile_units",
+        "study_language_profiles",
+        "study_lesson_item_state_v2",
+        "study_presentations_v2",
+        "study_review_items",
         "study_session_answers",
         "study_session_items",
+        "study_session_items_v2",
         "study_sessions",
+        "study_sessions_v2",
+        "study_spoken_answer_commands",
+        "study_translation_generation_items",
+        "study_translation_generation_runs",
+        "study_translation_quality_policies",
+        "study_translation_quality_registry",
+        "study_unit_exercise_eligibility",
         "subject_key_binding_events",
         "subject_keys",
         "text_content_held_revisions",

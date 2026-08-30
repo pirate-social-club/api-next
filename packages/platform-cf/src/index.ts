@@ -129,6 +129,12 @@ export {
   makeControlPlaneHandleSalesStore,
 } from "./handle-sales-repository";
 export {
+  HnsAuthoritySuccessorPostgresReaderError,
+  makeHnsAuthoritySuccessorGenerationReaderFromRepositoryV1,
+  makeHnsAuthoritySuccessorInventoryReaderFromResolverV1,
+  makeHnsAuthoritySuccessorPostgresReadersV1,
+} from "./hns-authority-successor-postgres.ts";
+export {
   HNS_COMMUNITY_APP_API_REPLAY_SCOPE,
   type HnsForwarderReplayStoreNamespace,
   makeDurableObjectHnsForwarderReplayStore,

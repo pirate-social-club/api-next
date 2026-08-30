@@ -106,7 +106,7 @@ suite("Postgres 17 migration runner", () => {
 
       const result = await runPostgresMigrations({
         connectionString: scopedConnection,
-        migrations,
+        migrations: migrations.slice(0, assetBonusIndex + 1),
       });
       expect(result).toMatchObject({
         dryRun: false,

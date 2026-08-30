@@ -36,6 +36,10 @@ const alias = {
     "../../packages/application/src/use-cases/session-exchange.ts",
     import.meta.url,
   ).pathname,
+  "@pirate/application/namespace-ownership": new URL(
+    "../../packages/application/src/namespace-ownership/index.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/domain/verification": new URL(
     "../../packages/domain/src/verification/index.ts",
     import.meta.url,

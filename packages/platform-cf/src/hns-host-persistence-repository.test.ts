@@ -14,6 +14,7 @@ import {
   hnsAppHostTransitionStatementFromReviewedDocument,
   hnsDnsHealthStatementFromReviewedDocument,
   hnsDnsZoneFinalizationStatementFromReviewedDocument,
+  hnsDnsZoneReservationStatementFromReviewedDocument,
   makeControlPlaneHnsCommunityAppHostAuthoritySource,
   makeControlPlaneHnsFirstPartyHostPersistenceRepository,
 } from "./hns-host-persistence-repository.ts";
@@ -34,7 +35,7 @@ function runtime(rows: readonly Record<string, unknown>[], calls: ControlPlaneSt
   });
 }
 
-test("closes DNS activation endpoint authority over the repository", async () => {
+test("derives DNS reservation authority from reviewed bytes", async () => {
   const calls: ControlPlaneStatement[] = [];
   const repository = makeControlPlaneHnsFirstPartyHostPersistenceRepository(
     runtime(
@@ -51,28 +52,38 @@ test("closes DNS activation endpoint authority over the repository", async () =>
       calls,
     ),
   );
+  const document = await prepareHnsDnsZoneActivationDocumentV1({
+    payload: {
+      version: HNS_DNS_ZONE_ACTIVATION_DOCUMENT_VERSION,
+      dns_zone_activation_id: "dns-zone-1",
+      canonical_root: "jazleeuw",
+      dns_authority: ["pirate_managed_dns_v1", "authority:jazleeuw", 1],
+      pirate_dns_authority_inventory: ["inventory:jazleeuw", "v1", "a".repeat(64)],
+      zone_revision: 1,
+      dnssec_keyset: ["keyset:jazleeuw", "key-tag-10875"],
+      gateway: ["gateway:jazleeuw", "b".repeat(64)],
+      stable_chain_delegation_snapshot: ["delegation:jazleeuw", "c".repeat(64)],
+    },
+    zone_bytes: new TextEncoder().encode("$ORIGIN jazleeuw.\n"),
+  });
+  const reviewedBytes = encodeHnsDnsZonePersistenceDocumentV1(document);
   await expect(
-    Effect.runPromise(
-      repository.store.reserveDnsZoneActivation({
-        operation_id: "dns-operation-1",
-        idempotency_key: "dns-key-1",
-        activation_document_digest: "a".repeat(64),
-        dns_zone_activation_id: "dns-zone-1",
-        expected_activation_generation: 0,
-        lease_seconds: 30,
-      }),
-    ),
+    Effect.runPromise(repository.store.reserveDnsZoneActivation(reviewedBytes, 30)),
   ).resolves.toMatchObject({ outcome: "reserved", fence_token: 1 });
   expect(calls).toHaveLength(1);
   expect(calls[0]).toMatchObject({ label: "hns.hosts.dns-zone.reserve", readonly: false });
   expect(calls[0]?.text).toContain("reserve_hns_dns_zone_activation_v1");
-  expect(calls[0]?.values).toEqual([
-    "dns-operation-1",
-    "dns-key-1",
-    "a".repeat(64),
-    "dns-zone-1",
-    0,
-    30,
+  expect(calls[0]?.values).toEqual(
+    (await hnsDnsZoneReservationStatementFromReviewedDocument(reviewedBytes, 30)).values,
+  );
+  expect(calls[0]?.values[0]).toBe(calls[0]?.values[1]);
+  expect(calls[0]?.values[2]).toMatch(/^[0-9a-f]{64}$/u);
+  expect(calls[0]?.values.slice(3)).toEqual(["dns-zone-1", 0, 30]);
+  expect(Object.keys(repository.store).sort()).toEqual([
+    "changeCommunityAppHostStatus",
+    "finalizeDnsZoneActivation",
+    "recordDnsZoneHealth",
+    "reserveDnsZoneActivation",
   ]);
 });
 
@@ -82,6 +93,7 @@ test("reads successor generation fences without reserving or writing", async () 
     runtime(
       [
         {
+          database_time: "2026-08-29T17:00:00.000Z",
           dns_zone_activation_id: "hns-rehearsal-dns-zone-v1",
           dns_current_generation: "5",
           app_host_activation_id: "hns-rehearsal-app-host-v1",
@@ -95,17 +107,20 @@ test("reads successor generation fences without reserving or writing", async () 
 
   await expect(
     Effect.runPromise(
-      repository.readSuccessorGenerationSnapshot({
-        dns_zone_activation_id: "hns-rehearsal-dns-zone-v1",
-        app_host_activation_id: "hns-rehearsal-app-host-v1",
+      repository.readSuccessorGenerationObservation({
+        canonical_root: "jazleeuw",
+        normalized_app_host: "app.jazleeuw",
       }),
     ),
   ).resolves.toEqual({
-    dns_zone_activation_id: "hns-rehearsal-dns-zone-v1",
-    dns_current_generation: 5,
-    app_host_activation_id: "hns-rehearsal-app-host-v1",
-    app_host_current_generation: 9,
-    successor_dns_latest_health_generation: 0,
+    database_time: "2026-08-29T17:00:00.000Z",
+    snapshot: {
+      dns_zone_activation_id: "hns-rehearsal-dns-zone-v1",
+      dns_current_generation: 5,
+      app_host_activation_id: "hns-rehearsal-app-host-v1",
+      app_host_current_generation: 9,
+      successor_dns_latest_health_generation: 0,
+    },
   });
   expect(calls).toHaveLength(1);
   expect(calls[0]).toMatchObject({
@@ -113,7 +128,8 @@ test("reads successor generation fences without reserving or writing", async () 
     readonly: true,
   });
   expect(calls[0]?.text).not.toContain("reserve_hns");
-  expect(calls[0]?.values).toEqual(["hns-rehearsal-dns-zone-v1", "hns-rehearsal-app-host-v1"]);
+  expect(calls[0]?.values).toEqual(["jazleeuw", "app.jazleeuw"]);
+  expect(calls[0]?.text).toContain("app_revision.canonical_root = dns.canonical_root");
 });
 
 test("derives every app-host and health SQL parameter only from reviewed bytes", () => {
@@ -373,6 +389,41 @@ test("production mutation entry points accept reviewed documents only", async ()
     "active",
     "canonical-authority",
   ]);
+});
+
+test("malformed reviewed bytes remain typed failures before any SQL starts", async () => {
+  const calls: ControlPlaneStatement[] = [];
+  const repository = makeControlPlaneHnsFirstPartyHostPersistenceRepository(runtime([], calls));
+  const malformed = new TextEncoder().encode("not-canonical-json");
+  const reservation = {
+    outcome: "reserved" as const,
+    operation_id: "dns-operation",
+    dns_zone_activation_id: "dns-zone",
+    fence_token: 42,
+    lease_expires_at: "2026-08-29T18:00:00.000Z",
+    activation_generation: null,
+  };
+  const effects: ReadonlyArray<Effect.Effect<unknown, unknown, never>> = [
+    repository.store.reserveDnsZoneActivation(malformed, 30),
+    repository.store.finalizeDnsZoneActivation({
+      reservation,
+      reviewed_document_bytes: malformed,
+    }),
+    repository.store.recordDnsZoneHealth(malformed),
+    repository.store.changeCommunityAppHostStatus(malformed),
+  ];
+
+  expect(calls).toHaveLength(0);
+  for (const effect of effects) {
+    const failure = await Effect.runPromise(Effect.flip(effect));
+    expect(failure).toMatchObject({
+      _tag: "ControlPlaneStatementFailed",
+      sqlState: null,
+      constraint: null,
+      outcomeCertainty: "not-started",
+    });
+  }
+  expect(calls).toHaveLength(0);
 });
 
 test("resolves only by normalized host and decodes current database authority", async () => {

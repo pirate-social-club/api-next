@@ -1,13 +1,16 @@
 import { describe, expect, test } from "vitest";
 import {
   decodeHnsAppHostTransitionDocumentV1,
+  decodeHnsAuthorityDetachedObserverEvidenceV1,
   decodeHnsDnsHealthDocumentV1,
   decodeHnsDnsZonePersistenceDocumentV1,
   deriveHnsAuthoritySuccessorGenerationsV1,
   encodeHnsAppHostTransitionDocumentV1,
+  encodeHnsAuthorityDetachedObserverEvidenceV1,
   encodeHnsDnsHealthDocumentV1,
   encodeHnsDnsZonePersistenceDocumentV1,
   HNS_DNS_ZONE_ACTIVATION_DOCUMENT_VERSION,
+  HNS_MAINNET_GENESIS_BLOCK_HASH,
   prepareHnsAuthoritySuccessorCandidateV1,
   prepareHnsDnsZoneActivationDocumentV1,
   requireHnsAuthorityEmitObservationV1,
@@ -18,8 +21,187 @@ import {
   encodeHnsAuthorityInventory,
   hnsAuthorityCapabilitySetDigest,
 } from "./namespace-ownership/hns-authority-inventory.ts";
-import { hnsChainAuthorityDigest } from "./namespace-ownership/hns-control-observer.ts";
-import { encodeHnsControlObservationResultV2 } from "./namespace-ownership/hns-control-observer-v2.ts";
+import {
+  hnsChainAuthorityDigest,
+  hnsControlIdentityDigest,
+} from "./namespace-ownership/hns-control-observer.ts";
+
+const encoder = new TextEncoder();
+async function digest(bytes: Uint8Array): Promise<string> {
+  return [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+const hsdResourceResponse = (records: ReadonlyArray<unknown>) =>
+  encoder.encode(JSON.stringify({ result: { records }, error: null, id: null }));
+const hsdRpcResponse = (result: unknown) =>
+  encoder.encode(JSON.stringify({ result, error: null, id: null }));
+const chainHeight = 344_448;
+const chainBlockHash = "7".repeat(64);
+const chainMedianTime = 1_777_689_600;
+const expiryHeight = 500_000;
+const jazleeuwHsdRecords = [
+  { type: "NS", ns: "ns1.pirate." },
+  { type: "NS", ns: "ns2.pirate." },
+  { type: "TXT", txt: ["pirate-verification=nvs_9cc970eae6194214ad98a76bfa5af3ac"] },
+  {
+    type: "DS",
+    keyTag: 10875,
+    algorithm: 13,
+    digestType: 2,
+    digest: "ba5d84ad6e3e7ec452a569ee2e6c447ba2b9b533de65c58e59f2f0b7f0773045",
+  },
+  {
+    type: "DS",
+    keyTag: 10875,
+    algorithm: 13,
+    digestType: 4,
+    digest:
+      "fde2c7af467092476b5572f9ac43fbbbbe82f63f7c785af984dc5884a2dae0384519dea6982fdbd19c375756b4ebaf70",
+  },
+] as const;
+const pirateHsdRecords = [
+  { type: "NS", ns: "ns1.pirate." },
+  { type: "NS", ns: "ns2.pirate." },
+  { type: "GLUE4", ns: "ns1.pirate.", address: "94.103.168.161" },
+  { type: "GLUE4", ns: "ns2.pirate.", address: "81.15.150.159" },
+  {
+    type: "DS",
+    keyTag: 34383,
+    algorithm: 13,
+    digestType: 2,
+    digest: "2c16acbc6081a8eeca4582ff967ebba29f30e2df5abd845dd2d1992449ebeecd",
+  },
+  {
+    type: "DS",
+    keyTag: 34383,
+    algorithm: 13,
+    digestType: 4,
+    digest:
+      "3c48cc64c1ed89b267850e3d97de40672c4be4ef4f0538c775c68412faa81dc3c5c65418aa24db3bdd7b5ffec8e64005",
+  },
+] as const;
+const detachedTranscript = [
+  {
+    exchange_kind: "hns_rpc" as const,
+    vantage_reference: "observer-vantage:primary-hsd",
+    subject_reference: "jazleeuw",
+    query_reference: "getblockchaininfo:before",
+    request_bytes: encoder.encode('{"method":"getblockchaininfo","params":[]}'),
+    response_bytes: hsdRpcResponse({
+      chain: "main",
+      blocks: chainHeight,
+      headers: chainHeight,
+      bestblockhash: chainBlockHash,
+      mediantime: chainMedianTime,
+      verificationprogress: 1,
+    }),
+  },
+  {
+    exchange_kind: "hns_rpc" as const,
+    vantage_reference: "observer-vantage:primary-hsd",
+    subject_reference: "jazleeuw",
+    query_reference: "getblockheader:tip-before",
+    request_bytes: encoder.encode(
+      JSON.stringify({ method: "getblockheader", params: [chainBlockHash, true] }),
+    ),
+    response_bytes: hsdRpcResponse({
+      hash: chainBlockHash,
+      height: chainHeight,
+      mediantime: chainMedianTime,
+      time: chainMedianTime - 60,
+      confirmations: 1,
+    }),
+  },
+  {
+    exchange_kind: "hns_rpc" as const,
+    vantage_reference: "observer-vantage:primary-hsd",
+    subject_reference: "jazleeuw",
+    query_reference: "getblockheader:genesis",
+    request_bytes: encoder.encode(
+      JSON.stringify({ method: "getblockheader", params: [HNS_MAINNET_GENESIS_BLOCK_HASH, true] }),
+    ),
+    response_bytes: hsdRpcResponse({ hash: HNS_MAINNET_GENESIS_BLOCK_HASH, height: 0 }),
+  },
+  {
+    exchange_kind: "hns_rpc" as const,
+    vantage_reference: "observer-vantage:primary-hsd",
+    subject_reference: "jazleeuw",
+    query_reference: "getnameinfo:jazleeuw",
+    request_bytes: encoder.encode('{"method":"getnameinfo","params":["jazleeuw",false]}'),
+    response_bytes: hsdRpcResponse({
+      info: {
+        state: "CLOSED",
+        registered: true,
+        expired: false,
+        stats: {
+          renewalPeriodEnd: expiryHeight,
+          blocksUntilExpire: expiryHeight - chainHeight,
+        },
+      },
+    }),
+  },
+  {
+    exchange_kind: "hns_rpc" as const,
+    vantage_reference: "observer-vantage:primary-hsd",
+    subject_reference: "jazleeuw",
+    query_reference: "getnameresource:jazleeuw",
+    request_bytes: encoder.encode('{"method":"getnameresource","params":["jazleeuw",false]}'),
+    response_bytes: hsdResourceResponse(jazleeuwHsdRecords),
+  },
+  {
+    exchange_kind: "hns_rpc" as const,
+    vantage_reference: "observer-vantage:primary-hsd",
+    subject_reference: "pirate",
+    query_reference: "getnameresource:pirate",
+    request_bytes: encoder.encode('{"method":"getnameresource","params":["pirate",false]}'),
+    response_bytes: hsdResourceResponse(pirateHsdRecords),
+  },
+  {
+    exchange_kind: "hns_rpc" as const,
+    vantage_reference: "observer-vantage:primary-hsd",
+    subject_reference: "jazleeuw",
+    query_reference: "getblockchaininfo:after",
+    request_bytes: encoder.encode('{"method":"getblockchaininfo","params":[]}'),
+    response_bytes: hsdRpcResponse({
+      chain: "main",
+      blocks: chainHeight,
+      headers: chainHeight,
+      bestblockhash: chainBlockHash,
+      mediantime: chainMedianTime,
+      verificationprogress: 1,
+    }),
+  },
+  {
+    exchange_kind: "hns_rpc" as const,
+    vantage_reference: "observer-vantage:primary-hsd",
+    subject_reference: "jazleeuw",
+    query_reference: "getblockheader:tip-after",
+    request_bytes: encoder.encode(
+      JSON.stringify({ method: "getblockheader", params: [chainBlockHash, true] }),
+    ),
+    response_bytes: hsdRpcResponse({
+      hash: chainBlockHash,
+      height: chainHeight,
+      mediantime: chainMedianTime,
+      time: chainMedianTime - 60,
+      confirmations: 1,
+    }),
+  },
+  ...[
+    ["child_authority_dns", "deployment-vantage:primary", "94.103.168.161", "axfr"],
+    ["child_authority_dns", "deployment-vantage:secondary", "81.15.150.159", "axfr"],
+    ["parent_authority_dns", "deployment-vantage:primary-external", "pirate", "addresses"],
+    ["parent_authority_dns", "deployment-vantage:secondary-independent", "pirate", "addresses"],
+  ].map(([exchange_kind, vantage_reference, subject_reference, query_reference], index) => ({
+    exchange_kind: exchange_kind as "child_authority_dns" | "parent_authority_dns",
+    vantage_reference: vantage_reference as string,
+    subject_reference: subject_reference as string,
+    query_reference: query_reference as string,
+    request_bytes: encoder.encode(`request-${index}`),
+    response_bytes: encoder.encode(`response-${index}`),
+  })),
+];
 
 describe("HNS authority successor generation preparation", () => {
   test("predicts the fenced jazleeuw successor generations without a reservation", () => {
@@ -87,26 +269,86 @@ test("emit and persistence preparation share the exact activation bytes", async 
 });
 
 const chainDs = [
-  [10875, 13, 2, "a".repeat(64)],
-  [10875, 13, 4, "b".repeat(96)],
+  [10875, 13, 2, "ba5d84ad6e3e7ec452a569ee2e6c447ba2b9b533de65c58e59f2f0b7f0773045"],
+  [
+    10875,
+    13,
+    4,
+    "fde2c7af467092476b5572f9ac43fbbbbe82f63f7c785af984dc5884a2dae0384519dea6982fdbd19c375756b4ebaf70",
+  ],
 ] as const;
 const chainAuthorityRecords = [
   ["NS", "ns1.pirate"],
   ["NS", "ns2.pirate"],
-  ["GLUE4", "ns1.pirate", "94.103.168.161"],
-  ["GLUE4", "ns2.pirate", "81.15.150.159"],
   ["DS", ...chainDs[0]],
   ["DS", ...chainDs[1]],
 ] as const;
+const jazleeuwUpdate3ResourceHex =
+  "0001036e7331067069726174650001036e7332c0060601387069726174652d766572696669636174696f6e3d6e76735f3963633937306561653631393432313461643938613736626661356166336163002a7b0d0220ba5d84ad6e3e7ec452a569ee2e6c447ba2b9b533de65c58e59f2f0b7f0773045002a7b0d0430fde2c7af467092476b5572f9ac43fbbbbe82f63f7c785af984dc5884a2dae0384519dea6982fdbd19c375756b4ebaf70";
 const canonicalZoneBytes = new TextEncoder().encode("$ORIGIN jazleeuw.\n; canonical observation\n");
 const canonicalZoneDigest = "907702901595a5d159cf4d855a8a3c907cfda15cb96f2fa8888cde954d324bb6";
 const observedView = (authorityAddress: string) => ({
+  attestation_kind: "operator_attested_authority_view_v1" as const,
   authority_address: authorityAddress,
   outcome: "observed" as const,
   zone_bytes_digest: canonicalZoneDigest,
   dnskey_key_tag: 10875,
   derived_ds: chainDs,
 });
+const authorityAddressRecords = [
+  ["A", "ns1.pirate", "94.103.168.161"],
+  ["A", "ns2.pirate", "81.15.150.159"],
+] as const;
+const pirateChainDs = [
+  [34383, 13, 2, "2c16acbc6081a8eeca4582ff967ebba29f30e2df5abd845dd2d1992449ebeecd"],
+  [
+    34383,
+    13,
+    4,
+    "3c48cc64c1ed89b267850e3d97de40672c4be4ef4f0538c775c68412faa81dc3c5c65418aa24db3bdd7b5ffec8e64005",
+  ],
+] as const;
+const pirateChainAuthorityRecords = [
+  ["NS", "ns1.pirate"],
+  ["NS", "ns2.pirate"],
+  ["GLUE4", "ns1.pirate", "94.103.168.161"],
+  ["GLUE4", "ns2.pirate", "81.15.150.159"],
+  ["DS", ...pirateChainDs[0]],
+  ["DS", ...pirateChainDs[1]],
+] as const;
+const pirateChainAuthorityDigest = await hnsChainAuthorityDigest({
+  chain_network: "main",
+  chain_genesis_block_hash: HNS_MAINNET_GENESIS_BLOCK_HASH,
+  root_label: "pirate",
+  ownership_source: "owner_authoritative_dns_txt",
+  authority_records: pirateChainAuthorityRecords,
+});
+const authorityAddressProvenance = {
+  source_kind: "detached_parent_authority_attestation_v1",
+  parent_zone: "pirate",
+  parent_chain_authority_digest: pirateChainAuthorityDigest,
+  parent_chain_authority_records: pirateChainAuthorityRecords,
+  views: [
+    {
+      view_id: "parent-primary-external",
+      vantage_reference: "deployment-vantage:primary-external",
+      outcome: "observed",
+      validation_attestation: "operator_attested_dnssec_secure",
+      attested_dnskey_key_tag: 34383,
+      attested_derived_ds: pirateChainDs,
+      records: authorityAddressRecords,
+    },
+    {
+      view_id: "parent-secondary-independent",
+      vantage_reference: "deployment-vantage:secondary-independent",
+      outcome: "observed",
+      validation_attestation: "operator_attested_dnssec_secure",
+      attested_dnskey_key_tag: 34383,
+      attested_derived_ds: pirateChainDs,
+      records: authorityAddressRecords,
+    },
+  ],
+} as const;
 
 test("admits only two complete agreeing authority views with chain-matching DS", () => {
   expect(
@@ -116,6 +358,40 @@ test("admits only two complete agreeing authority views with chain-matching DS",
       chain_ds: chainDs,
     }),
   ).toHaveLength(2);
+});
+
+test("canonicalizes child view key order and refuses extra caller fields", () => {
+  const reordered = (authorityAddress: string) => ({
+    derived_ds: [...chainDs].reverse(),
+    dnskey_key_tag: 10875,
+    zone_bytes_digest: canonicalZoneDigest,
+    outcome: "observed" as const,
+    authority_address: authorityAddress,
+    attestation_kind: "operator_attested_authority_view_v1" as const,
+  });
+  const result = requireHnsAuthorityEmitObservationV1({
+    expected_authority_addresses: ["94.103.168.161", "81.15.150.159"],
+    views: [reordered("94.103.168.161"), reordered("81.15.150.159")],
+    chain_ds: chainDs,
+  });
+  expect(Object.keys(result[0])).toEqual([
+    "attestation_kind",
+    "authority_address",
+    "outcome",
+    "zone_bytes_digest",
+    "dnskey_key_tag",
+    "derived_ds",
+  ]);
+  expect(result[0].derived_ds).toEqual(chainDs);
+  expect(result[1].derived_ds).toEqual(chainDs);
+  const viewWithExtra = { ...observedView("94.103.168.161"), unreviewed_extra: true };
+  expect(() =>
+    requireHnsAuthorityEmitObservationV1({
+      expected_authority_addresses: ["94.103.168.161", "81.15.150.159"],
+      views: [viewWithExtra, observedView("81.15.150.159")],
+      chain_ds: chainDs,
+    }),
+  ).toThrow("authority_view_mismatch");
 });
 
 test("refuses missing and unavailable authority views without partial emission", () => {
@@ -133,6 +409,7 @@ test("refuses missing and unavailable authority views without partial emission",
       views: [
         observedView(expected[0]),
         {
+          attestation_kind: "operator_attested_authority_view_v1",
           authority_address: expected[1],
           outcome: "unavailable",
           zone_bytes_digest: null,
@@ -185,7 +462,7 @@ const emittedSnapshot = {
 async function canonicalCandidateArtifacts() {
   const chainAuthorityDigest = await hnsChainAuthorityDigest({
     chain_network: "main",
-    chain_genesis_block_hash: "6".repeat(64),
+    chain_genesis_block_hash: HNS_MAINNET_GENESIS_BLOCK_HASH,
     root_label: "jazleeuw",
     ownership_source: "owner_authoritative_dns_txt",
     authority_records: chainAuthorityRecords,
@@ -233,11 +510,9 @@ async function canonicalCandidateArtifacts() {
   ]
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
-  const observerEvidence = await encodeHnsControlObservationResultV2({
-    version: "pirate-hns-control-observation-result-v2",
+  const observerEvidence = await encodeHnsAuthorityDetachedObserverEvidenceV1({
     observation_id: "observer-jazleeuw-verified-01",
     request_sha256: "1".repeat(64),
-    status: "verified",
     provider_id: "hns.owner.v1",
     provider_configuration_reference: "hns-observer-production-config-v1",
     provider_configuration_version: "production-v1",
@@ -246,20 +521,17 @@ async function canonicalCandidateArtifacts() {
     ownership_source: "owner_authoritative_dns_txt",
     root_label: "jazleeuw",
     txt_name: "_pirate.jazleeuw",
-    expected_txt_value_sha256: "3".repeat(64),
-    control_identity_digest: "4".repeat(64),
+    expected_txt_value: "pirate-verification=nvs_9cc970eae6194214ad98a76bfa5af3ac",
     chain_authority_digest: chainAuthorityDigest,
     root_exists: true,
     root_control_verified: true,
     expiry_horizon_sufficient: true,
-    chain_network: "main",
-    chain_genesis_block_hash: "6".repeat(64),
     chain_anchor_height: 344_448,
     chain_anchor_block_hash: "7".repeat(64),
     chain_anchor_median_time: 1_777_689_600,
     expiry_height: 500_000,
-    observer_snapshot_sha256: "8".repeat(64),
-    provider_evidence_ref: "hns-observer:main:jazleeuw-verified-01",
+    evidence_reference: "hns-detached-observation:main:jazleeuw-verified-01",
+    detached_transcript: detachedTranscript,
   });
   const dnsZoneActivation = await prepareHnsDnsZoneActivationDocumentV1({
     payload: {
@@ -326,13 +598,28 @@ async function canonicalCandidateInput(): Promise<CandidatePreparationInput> {
     root_label: "jazleeuw",
     observed_at: "2026-08-29T17:00:00.000Z",
     chain_height: 344_448,
-    expected_chain_network: "main",
     chain_authority_records: chainAuthorityRecords,
+    authority_address_provenance: authorityAddressProvenance,
     generation_snapshot: emittedSnapshot,
     expected_authority_addresses: ["94.103.168.161", "81.15.150.159"],
     authority_views: [observedView("94.103.168.161"), observedView("81.15.150.159")],
     artifacts: await canonicalCandidateArtifacts(),
   };
+}
+
+async function observerEvidenceWithTranscript(
+  input: CandidatePreparationInput,
+  transcript: Parameters<
+    typeof encodeHnsAuthorityDetachedObserverEvidenceV1
+  >[0]["detached_transcript"],
+): Promise<Uint8Array> {
+  const observer = await decodeHnsAuthorityDetachedObserverEvidenceV1(
+    input.artifacts.observer_evidence,
+  );
+  return encodeHnsAuthorityDetachedObserverEvidenceV1({
+    ...observer,
+    detached_transcript: transcript,
+  });
 }
 
 async function rewriteDnsArtifact(
@@ -650,6 +937,337 @@ test("refuses every divergent semantic join between canonical review artifacts",
   }
 });
 
+test("accepts the actual 172-byte jazleeuw Update 3 out-of-bailiwick resource shape", async () => {
+  const resourceBytes = Uint8Array.from(jazleeuwUpdate3ResourceHex.match(/.{2}/gu) ?? [], (byte) =>
+    Number.parseInt(byte, 16),
+  );
+  expect(resourceBytes).toHaveLength(172);
+  expect(chainAuthorityRecords.map((record) => record[0])).toEqual(["NS", "NS", "DS", "DS"]);
+  await expect(
+    prepareHnsAuthoritySuccessorCandidateV1(await canonicalCandidateInput()),
+  ).resolves.toMatchObject({
+    candidate: {
+      chain_authority_records: chainAuthorityRecords,
+      chain_ds: chainDs,
+      dnskey_key_tag: 10875,
+    },
+  });
+});
+
+test("binds out-of-bailiwick chain NS names without inventing chain glue", async () => {
+  const mutations = [
+    chainAuthorityRecords.map((record) =>
+      record[0] === "NS" && record[1] === "ns1.pirate" ? (["NS", "ns3.pirate"] as const) : record,
+    ),
+    [
+      ...chainAuthorityRecords,
+      ["GLUE4", "ns1.pirate", "94.103.168.161"] as const,
+      ["GLUE4", "ns2.pirate", "81.15.150.159"] as const,
+    ],
+  ] as const;
+
+  for (const chain_authority_records of mutations) {
+    const input = await canonicalCandidateInput();
+    const chainAuthorityDigest = await hnsChainAuthorityDigest({
+      chain_network: "main",
+      chain_genesis_block_hash: HNS_MAINNET_GENESIS_BLOCK_HASH,
+      root_label: "jazleeuw",
+      ownership_source: "owner_authoritative_dns_txt",
+      authority_records: chain_authority_records,
+    });
+    const observer = await decodeHnsAuthorityDetachedObserverEvidenceV1(
+      input.artifacts.observer_evidence,
+    );
+    const observerEvidence = encoder.encode(
+      JSON.stringify({
+        ...observer,
+        chain_authority_digest: chainAuthorityDigest,
+        control_identity_digest: await hnsControlIdentityDigest({
+          ownership_source: observer.ownership_source,
+          txt_name: observer.txt_name,
+          expected_txt_value: observer.expected_txt_value,
+          root_label: observer.root_label,
+          chain_authority_digest: chainAuthorityDigest,
+        }),
+      }),
+    );
+    const dnsZone = await rewriteDnsArtifact(input.artifacts.dns_zone_activation, (document) => ({
+      ...document,
+      stable_chain_delegation_snapshot_digest: chainAuthorityDigest,
+    }));
+    const health = rewriteHealthArtifact(input.artifacts.health_observation, {
+      stable_chain_delegation_snapshot_digest: chainAuthorityDigest,
+    });
+
+    await expect(
+      prepareHnsAuthoritySuccessorCandidateV1({
+        ...input,
+        chain_authority_records,
+        artifacts: {
+          ...input.artifacts,
+          dns_zone_activation: dnsZone,
+          health_observation: health,
+          observer_evidence: observerEvidence,
+        },
+      }),
+    ).rejects.toMatchObject({ reason: "artifact_semantics_mismatch" });
+  }
+
+  expect(() =>
+    hnsChainAuthorityDigest({
+      chain_network: "main",
+      chain_genesis_block_hash: HNS_MAINNET_GENESIS_BLOCK_HASH,
+      root_label: "jazleeuw",
+      ownership_source: "owner_authoritative_dns_txt",
+      authority_records: [
+        ["NS", "ns1.pirate."],
+        ["NS", "ns2.pirate"],
+        ["DS", ...chainDs[0]],
+        ["DS", ...chainDs[1]],
+      ],
+    }),
+  ).toThrow("Authority record is not canonical");
+});
+
+test("binds out-of-bailiwick addresses to the parent chain transcript and attestations", async () => {
+  const changedParentRecords = pirateChainAuthorityRecords.map((record) =>
+    record[0] === "GLUE4" && record[1] === "ns1.pirate"
+      ? (["GLUE4", "ns1.pirate", "203.0.113.53"] as const)
+      : record,
+  );
+  const changedParentDigest = await hnsChainAuthorityDigest({
+    chain_network: "main",
+    chain_genesis_block_hash: HNS_MAINNET_GENESIS_BLOCK_HASH,
+    root_label: "pirate",
+    ownership_source: "owner_authoritative_dns_txt",
+    authority_records: changedParentRecords,
+  });
+  const mutations = [
+    [{ ...authorityAddressProvenance, parent_zone: "elsewhere" }, "parent_chain_anchor_mismatch"],
+    [
+      { ...authorityAddressProvenance, parent_chain_authority_digest: "f".repeat(64) },
+      "parent_chain_anchor_mismatch",
+    ],
+    [
+      {
+        ...authorityAddressProvenance,
+        parent_chain_authority_digest: changedParentDigest,
+        parent_chain_authority_records: changedParentRecords,
+      },
+      "parent_address_mismatch",
+    ],
+    [
+      {
+        ...authorityAddressProvenance,
+        views: [
+          { ...authorityAddressProvenance.views[0], outcome: "unavailable", records: null },
+          authorityAddressProvenance.views[1],
+        ],
+      },
+      "parent_view_unavailable",
+    ],
+    [
+      {
+        ...authorityAddressProvenance,
+        views: [
+          {
+            ...authorityAddressProvenance.views[0],
+            records: [["A", "ns1.pirate", "203.0.113.53"], authorityAddressRecords[1]],
+          },
+          authorityAddressProvenance.views[1],
+        ],
+      },
+      "parent_address_mismatch",
+    ],
+    [
+      {
+        ...authorityAddressProvenance,
+        views: [
+          {
+            ...authorityAddressProvenance.views[0],
+            validation_attestation: "operator_attested_bogus",
+          },
+          authorityAddressProvenance.views[1],
+        ],
+      },
+      "parent_view_attestation_mismatch",
+    ],
+    [
+      {
+        ...authorityAddressProvenance,
+        views: [
+          {
+            ...authorityAddressProvenance.views[0],
+            attested_derived_ds: [[34383, 13, 2, "f".repeat(64)], pirateChainDs[1]],
+          },
+          authorityAddressProvenance.views[1],
+        ],
+      },
+      "parent_view_attestation_mismatch",
+    ],
+    [
+      {
+        ...authorityAddressProvenance,
+        views: [
+          {
+            ...authorityAddressProvenance.views[0],
+            attested_dnskey_key_tag: 39280,
+          },
+          authorityAddressProvenance.views[1],
+        ],
+      },
+      "parent_view_attestation_mismatch",
+    ],
+    [
+      {
+        ...authorityAddressProvenance,
+        views: [
+          {
+            ...authorityAddressProvenance.views[0],
+            vantage_reference: authorityAddressProvenance.views[1].vantage_reference,
+          },
+          authorityAddressProvenance.views[1],
+        ],
+      },
+      "parent_view_identity_mismatch",
+    ],
+    [
+      {
+        ...authorityAddressProvenance,
+        views: [
+          {
+            ...authorityAddressProvenance.views[0],
+            view_id: authorityAddressProvenance.views[1].view_id,
+          },
+          authorityAddressProvenance.views[1],
+        ],
+      },
+      "parent_view_identity_mismatch",
+    ],
+    [{ source_kind: "chain_glue_v1" }, "parent_delegation_mismatch"],
+  ] as const;
+
+  for (const [authority_address_provenance, reason] of mutations) {
+    await expect(
+      prepareHnsAuthoritySuccessorCandidateV1({
+        ...(await canonicalCandidateInput()),
+        authority_address_provenance,
+      }),
+    ).rejects.toMatchObject({ reason });
+  }
+
+  const changedParentNameserverRecords = pirateChainAuthorityRecords.map((record) =>
+    record[0] === "NS" && record[1] === "ns1.pirate" ? (["NS", "ns3.pirate"] as const) : record,
+  );
+  const changedParentNameserverDigest = await hnsChainAuthorityDigest({
+    chain_network: "main",
+    chain_genesis_block_hash: HNS_MAINNET_GENESIS_BLOCK_HASH,
+    root_label: "pirate",
+    ownership_source: "owner_authoritative_dns_txt",
+    authority_records: changedParentNameserverRecords,
+  });
+  const input = await canonicalCandidateInput();
+  const observer = await decodeHnsAuthorityDetachedObserverEvidenceV1(
+    input.artifacts.observer_evidence,
+  );
+  const changedTranscript = detachedTranscript.map((entry) =>
+    entry.exchange_kind === "hns_rpc" && entry.subject_reference === "pirate"
+      ? {
+          ...entry,
+          response_bytes: hsdResourceResponse([
+            { type: "NS", ns: "ns3.pirate." },
+            { type: "NS", ns: "ns2.pirate." },
+            { type: "GLUE4", ns: "ns1.pirate.", address: "94.103.168.161" },
+            { type: "GLUE4", ns: "ns2.pirate.", address: "81.15.150.159" },
+            {
+              type: "DS",
+              keyTag: 34383,
+              algorithm: 13,
+              digestType: 2,
+              digest: "2c16acbc6081a8eeca4582ff967ebba29f30e2df5abd845dd2d1992449ebeecd",
+            },
+            {
+              type: "DS",
+              keyTag: 34383,
+              algorithm: 13,
+              digestType: 4,
+              digest:
+                "3c48cc64c1ed89b267850e3d97de40672c4be4ef4f0538c775c68412faa81dc3c5c65418aa24db3bdd7b5ffec8e64005",
+            },
+          ]),
+        }
+      : entry,
+  );
+  const observerEvidence = await encodeHnsAuthorityDetachedObserverEvidenceV1({
+    ...observer,
+    detached_transcript: changedTranscript,
+  });
+  await expect(
+    prepareHnsAuthoritySuccessorCandidateV1({
+      ...input,
+      authority_address_provenance: {
+        ...authorityAddressProvenance,
+        parent_chain_authority_digest: changedParentNameserverDigest,
+        parent_chain_authority_records: changedParentNameserverRecords,
+      },
+      artifacts: { ...input.artifacts, observer_evidence: observerEvidence },
+    }),
+  ).rejects.toMatchObject({ reason: "parent_address_mismatch" });
+});
+
+test("binds the child ownership TXT and authority records to the HSD transcript", async () => {
+  const input = await canonicalCandidateInput();
+  const childRecordMutations = [
+    jazleeuwHsdRecords.map((record) =>
+      record.type === "TXT" ? { type: "TXT", txt: ["pirate-verification=nvs_deadbeef"] } : record,
+    ),
+    [...jazleeuwHsdRecords, { type: "TXT", txt: ["unrelated=value"] }],
+    [...jazleeuwHsdRecords, { type: "NS", ns: "ns3.pirate." }],
+    [...jazleeuwHsdRecords, { type: "SYNTH4", address: "203.0.113.53" }],
+    jazleeuwHsdRecords.map((record) =>
+      record.type === "NS" && record.ns === "ns1.pirate."
+        ? { type: "NS", ns: "NS1.pirate." }
+        : record,
+    ),
+  ];
+
+  for (const records of childRecordMutations) {
+    const transcript = detachedTranscript.map((entry) =>
+      entry.exchange_kind === "hns_rpc" && entry.subject_reference === "jazleeuw"
+        ? { ...entry, response_bytes: hsdResourceResponse(records) }
+        : entry,
+    );
+    const observerEvidence = await observerEvidenceWithTranscript(input, transcript);
+    await expect(
+      prepareHnsAuthoritySuccessorCandidateV1({
+        ...input,
+        artifacts: { ...input.artifacts, observer_evidence: observerEvidence },
+      }),
+    ).rejects.toMatchObject({ reason: "observer_evidence_mismatch" });
+  }
+});
+
+test("refuses a parent transcript that disagrees with unchanged candidate records", async () => {
+  const input = await canonicalCandidateInput();
+  const transcript = detachedTranscript.map((entry) =>
+    entry.exchange_kind === "hns_rpc" && entry.subject_reference === "pirate"
+      ? {
+          ...entry,
+          response_bytes: hsdResourceResponse(
+            pirateHsdRecords.filter((record) => !(record.type === "DS" && record.digestType === 4)),
+          ),
+        }
+      : entry,
+  );
+  const observerEvidence = await observerEvidenceWithTranscript(input, transcript);
+  await expect(
+    prepareHnsAuthoritySuccessorCandidateV1({
+      ...input,
+      artifacts: { ...input.artifacts, observer_evidence: observerEvidence },
+    }),
+  ).rejects.toMatchObject({ reason: "parent_chain_anchor_mismatch" });
+});
+
 test("refuses pointer drift independently of candidate byte identity", () => {
   const bytes = new TextEncoder().encode("reviewed-6-10-1");
   expect(() =>
@@ -708,8 +1326,8 @@ test("emits one canonical all-or-nothing 6/10/1 review package", async () => {
     root_label: "jazleeuw",
     observed_at: "2026-08-29T17:00:00.000Z",
     chain_height: 344_448,
-    expected_chain_network: "main",
     chain_authority_records: chainAuthorityRecords,
+    authority_address_provenance: authorityAddressProvenance,
     generation_snapshot: emittedSnapshot,
     expected_authority_addresses: ["94.103.168.161", "81.15.150.159"],
     authority_views: [observedView("94.103.168.161"), observedView("81.15.150.159")],
@@ -738,8 +1356,8 @@ test("refuses the entire package when any required artifact is empty", async () 
       root_label: "jazleeuw",
       observed_at: "2026-08-29T17:00:00.000Z",
       chain_height: 344_448,
-      expected_chain_network: "main",
       chain_authority_records: chainAuthorityRecords,
+      authority_address_provenance: authorityAddressProvenance,
       generation_snapshot: emittedSnapshot,
       expected_authority_addresses: ["94.103.168.161", "81.15.150.159"],
       authority_views: [observedView("94.103.168.161"), observedView("81.15.150.159")],
@@ -757,8 +1375,8 @@ test("refuses canonical observer evidence that is not verified or bound to this 
     root_label: "jazleeuw",
     observed_at: "2026-08-29T17:00:00.000Z",
     chain_height: 344_448,
-    expected_chain_network: "main",
     chain_authority_records: chainAuthorityRecords,
+    authority_address_provenance: authorityAddressProvenance,
     generation_snapshot: emittedSnapshot,
     expected_authority_addresses: ["94.103.168.161", "81.15.150.159"] as const,
     authority_views: [observedView("94.103.168.161"), observedView("81.15.150.159")],
@@ -774,11 +1392,20 @@ test("refuses canonical observer evidence that is not verified or bound to this 
     }),
   ).rejects.toThrow("observer_evidence_not_verified");
 
-  const mismatched = new TextEncoder().encode(
-    new TextDecoder()
-      .decode(artifacts.observer_evidence)
-      .replace('"root_label":"jazleeuw"', '"root_label":"elsewhere"')
-      .replace('"txt_name":"_pirate.jazleeuw"', '"txt_name":"_pirate.elsewhere"'),
+  const decodedEvidence = JSON.parse(new TextDecoder().decode(artifacts.observer_evidence));
+  const mismatched = encoder.encode(
+    JSON.stringify({
+      ...decodedEvidence,
+      root_label: "elsewhere",
+      txt_name: "_pirate.elsewhere",
+      control_identity_digest: await hnsControlIdentityDigest({
+        ownership_source: decodedEvidence.ownership_source,
+        txt_name: "_pirate.elsewhere",
+        expected_txt_value: decodedEvidence.expected_txt_value,
+        root_label: "elsewhere",
+        chain_authority_digest: decodedEvidence.chain_authority_digest,
+      }),
+    }),
   );
   await expect(
     prepareHnsAuthoritySuccessorCandidateV1({
@@ -791,11 +1418,77 @@ test("refuses canonical observer evidence that is not verified or bound to this 
     prepareHnsAuthoritySuccessorCandidateV1({ ...base, chain_height: 344_449, artifacts }),
   ).rejects.toThrow("observer_evidence_mismatch");
 
+  const nonMainnet = encoder.encode(
+    JSON.stringify({
+      ...JSON.parse(new TextDecoder().decode(artifacts.observer_evidence)),
+      chain_network: "regtest",
+    }),
+  );
   await expect(
     prepareHnsAuthoritySuccessorCandidateV1({
       ...base,
-      expected_chain_network: "regtest",
-      artifacts,
+      artifacts: { ...artifacts, observer_evidence: nonMainnet },
+    }),
+  ).rejects.toThrow("observer_evidence_not_verified");
+
+  const wrongGenesis = encoder.encode(
+    JSON.stringify({
+      ...JSON.parse(new TextDecoder().decode(artifacts.observer_evidence)),
+      chain_genesis_block_hash: "6".repeat(64),
+    }),
+  );
+  await expect(
+    prepareHnsAuthoritySuccessorCandidateV1({
+      ...base,
+      artifacts: { ...artifacts, observer_evidence: wrongGenesis },
+    }),
+  ).rejects.toThrow("observer_evidence_not_verified");
+
+  const wrongControlIdentity = encoder.encode(
+    JSON.stringify({
+      ...JSON.parse(new TextDecoder().decode(artifacts.observer_evidence)),
+      control_identity_digest: "4".repeat(64),
+    }),
+  );
+  await expect(
+    prepareHnsAuthoritySuccessorCandidateV1({
+      ...base,
+      artifacts: { ...artifacts, observer_evidence: wrongControlIdentity },
+    }),
+  ).rejects.toThrow("observer_evidence_not_verified");
+
+  const missingParentChainTranscript = JSON.parse(
+    new TextDecoder().decode(artifacts.observer_evidence),
+  );
+  missingParentChainTranscript.detached_transcript =
+    missingParentChainTranscript.detached_transcript.filter(
+      (entry: { exchange_kind: string; subject_reference: string }) =>
+        entry.exchange_kind !== "hns_rpc" || entry.subject_reference !== "pirate",
+    );
+  const childChainTranscript = missingParentChainTranscript.detached_transcript.find(
+    (entry: { exchange_kind: string; subject_reference: string }) =>
+      entry.exchange_kind === "hns_rpc" && entry.subject_reference === "jazleeuw",
+  );
+  if (childChainTranscript === undefined) throw new Error("missing child HSD transcript");
+  missingParentChainTranscript.detached_transcript.push({
+    ...childChainTranscript,
+    vantage_reference: "observer-vantage:secondary-hsd",
+  });
+  missingParentChainTranscript.detached_transcript_sha256 = await digest(
+    encoder.encode(
+      JSON.stringify([
+        "pirate-hns-authority-detached-transcript-v1",
+        missingParentChainTranscript.detached_transcript,
+      ]),
+    ),
+  );
+  await expect(
+    prepareHnsAuthoritySuccessorCandidateV1({
+      ...base,
+      artifacts: {
+        ...artifacts,
+        observer_evidence: encoder.encode(JSON.stringify(missingParentChainTranscript)),
+      },
     }),
   ).rejects.toThrow("observer_evidence_mismatch");
 
@@ -812,6 +1505,58 @@ test("refuses canonical observer evidence that is not verified or bound to this 
     prepareHnsAuthoritySuccessorCandidateV1({
       ...base,
       artifacts: { ...artifacts, observer_evidence: parentSource },
+    }),
+  ).rejects.toThrow("observer_evidence_not_verified");
+
+  const observer = await decodeHnsAuthorityDetachedObserverEvidenceV1(artifacts.observer_evidence);
+  const selfConsistentHeightDrift = await encodeHnsAuthorityDetachedObserverEvidenceV1({
+    ...observer,
+    chain_anchor_height: observer.chain_anchor_height + 1,
+    detached_transcript: detachedTranscript,
+  });
+  await expect(
+    prepareHnsAuthoritySuccessorCandidateV1({
+      ...base,
+      chain_height: base.chain_height + 1,
+      artifacts: { ...artifacts, observer_evidence: selfConsistentHeightDrift },
+    }),
+  ).rejects.toThrow("observer_evidence_mismatch");
+
+  const oneSidedTipDrift = await encodeHnsAuthorityDetachedObserverEvidenceV1({
+    ...observer,
+    detached_transcript: detachedTranscript.map((entry) =>
+      entry.query_reference === "getblockchaininfo:before"
+        ? {
+            ...entry,
+            response_bytes: hsdRpcResponse({
+              chain: "main",
+              blocks: chainHeight + 1,
+              headers: chainHeight + 1,
+              bestblockhash: chainBlockHash,
+              mediantime: chainMedianTime,
+              verificationprogress: 1,
+            }),
+          }
+        : entry,
+    ),
+  });
+  await expect(
+    prepareHnsAuthoritySuccessorCandidateV1({
+      ...base,
+      artifacts: { ...artifacts, observer_evidence: oneSidedTipDrift },
+    }),
+  ).rejects.toThrow("observer_evidence_mismatch");
+
+  const detachedVantageDrift = await encodeHnsAuthorityDetachedObserverEvidenceV1({
+    ...observer,
+    detached_transcript: detachedTranscript.map((entry, index) =>
+      index === 4 ? { ...entry, vantage_reference: "deployment-vantage:unbound" } : entry,
+    ),
+  });
+  await expect(
+    prepareHnsAuthoritySuccessorCandidateV1({
+      ...base,
+      artifacts: { ...artifacts, observer_evidence: detachedVantageDrift },
     }),
   ).rejects.toThrow("observer_evidence_mismatch");
 
@@ -830,16 +1575,19 @@ test("refuses canonical observer evidence that is not verified or bound to this 
 
 test("binds chain DS through candidate preparation and ignores only record ordering", async () => {
   const input = await canonicalCandidateInput();
-  await expect(
-    prepareHnsAuthoritySuccessorCandidateV1({
-      ...input,
-      chain_authority_records: [...input.chain_authority_records].reverse(),
-      authority_views: [
-        { ...observedView("94.103.168.161"), derived_ds: [...chainDs].reverse() },
-        { ...observedView("81.15.150.159"), derived_ds: [...chainDs].reverse() },
-      ],
-    }),
-  ).resolves.toMatchObject({ candidate: { chain_ds: chainDs } });
+  const canonical = await prepareHnsAuthoritySuccessorCandidateV1(input);
+  const reordered = await prepareHnsAuthoritySuccessorCandidateV1({
+    ...input,
+    chain_authority_records: [...input.chain_authority_records].reverse(),
+    authority_views: [
+      { ...observedView("94.103.168.161"), derived_ds: [...chainDs].reverse() },
+      { ...observedView("81.15.150.159"), derived_ds: [...chainDs].reverse() },
+    ],
+  });
+  expect(reordered.candidate.chain_ds).toEqual(chainDs);
+  expect(reordered.candidate.authority_views[0].derived_ds).toEqual(chainDs);
+  expect(reordered.candidate.authority_views[1].derived_ds).toEqual(chainDs);
+  expect(reordered.candidate_sha256).toBe(canonical.candidate_sha256);
 
   const mismatchedDs = [[39280, 13, 2, "d".repeat(64)]] as const;
   await expect(
@@ -876,8 +1624,8 @@ test("refuses a DNS persistence artifact whose reviewed zone bytes do not match 
       root_label: "jazleeuw",
       observed_at: "2026-08-29T17:00:00.000Z",
       chain_height: 344_448,
-      expected_chain_network: "main",
       chain_authority_records: chainAuthorityRecords,
+      authority_address_provenance: authorityAddressProvenance,
       generation_snapshot: emittedSnapshot,
       expected_authority_addresses: ["94.103.168.161", "81.15.150.159"],
       authority_views: [observedView("94.103.168.161"), observedView("81.15.150.159")],

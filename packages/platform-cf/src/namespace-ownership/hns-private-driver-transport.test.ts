@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   buildHnsAuthoritativeDnsQueryV1,
   decodeHnsPrivateDriverRequestV1,
+  encodeHnsPrivateDriverAuthoritativeAxfrResponseV1,
   encodeHnsPrivateDriverErrorV1,
   encodeHnsPrivateDriverUpstreamContentType,
   HNS_PRIVATE_DRIVER_PROTOCOL,
@@ -11,6 +12,7 @@ import {
 } from "@pirate/application/namespace-ownership";
 import {
   type HnsPrivateDriverBinding,
+  makeHnsAuthoritativeAxfrPrivateDriverTransport,
   makeHnsAuthoritativeDnsPrivateDriverTransport,
   makeHnsControlObserverHsdPrivateDriverCapability,
 } from "./hns-private-driver-transport.ts";
@@ -69,6 +71,26 @@ function dnsExchange(
   });
 }
 
+function axfrExchange(binding: HnsPrivateDriverBinding, signal = new AbortController().signal) {
+  return makeHnsAuthoritativeAxfrPrivateDriverTransport({
+    binding,
+    driver_reference: "authoritative-axfr:production",
+    timeout_ms: 12_000,
+  }).exchange({
+    driver_reference: "authoritative-axfr:production",
+    view_id: "dns-view-a",
+    credential_reference: "tsig:primary",
+    root_label: "jazleeuw",
+    authority_nameserver: "ns1.pirate",
+    authority_address_family: "GLUE4",
+    authority_address: "94.103.168.161",
+    response_message_max_bytes: 65_535,
+    response_total_max_bytes: 2_097_152,
+    response_max_messages: 64,
+    signal,
+  });
+}
+
 function protocolHeaders(extra: Record<string, string> = {}): Record<string, string> {
   return {
     [HNS_PRIVATE_DRIVER_PROTOCOL_HEADER]: HNS_PRIVATE_DRIVER_PROTOCOL,
@@ -93,6 +115,7 @@ describe("HNS private-driver Worker transports", () => {
           response_max_bytes: 1_048_576,
           timeout_ms: 4_000,
         });
+        if (!("request_bytes" in decoded)) throw new Error("missing HSD request bytes");
         expect(decoded.request_bytes).toEqual(hsdBody);
         return new Response(responseBytes, {
           headers: protocolHeaders({
@@ -142,6 +165,7 @@ describe("HNS private-driver Worker transports", () => {
             authority_address: "192.0.2.53",
             timeout_ms: 4_000,
           });
+          if (!("request_bytes" in decoded)) throw new Error("missing DNS request bytes");
           expect(decoded.request_bytes).toEqual(dnsBody);
           return new Response(
             new ReadableStream<Uint8Array>({
@@ -163,6 +187,50 @@ describe("HNS private-driver Worker transports", () => {
     expect(calls).toBe(1);
     expect(result).toEqual(new Uint8Array([1, 2, 3, 4, 5]));
     expect(cancelled).toBe(true);
+  });
+
+  test("returns the exact authenticated AXFR request and framed response sequence", async () => {
+    const upstreamRequest = new Uint8Array([1, 2, 3]);
+    const upstreamSequence = new Uint8Array([0, 2, 4, 5]);
+    let calls = 0;
+    const result = await axfrExchange({
+      fetch: async (request) => {
+        calls += 1;
+        const captured = request as Request;
+        const decoded = decodeHnsPrivateDriverRequestV1(
+          new Uint8Array(await captured.arrayBuffer()),
+        );
+        expect(captured.url).toBe(
+          "http://hns-observer-driver.internal/internal/hns-observer-driver/v1/authoritative-axfr",
+        );
+        expect(captured.headers.get("accept")).toBe("application/octet-stream");
+        expect(decoded).toMatchObject({
+          request: {
+            exchange_kind: "authoritative_dns_tsig_axfr",
+            driver_reference: "authoritative-axfr:production",
+            view_id: "dns-view-a",
+            credential_reference: "tsig:primary",
+            root_label: "jazleeuw",
+            authority_nameserver: "ns1.pirate",
+            authority_address: "94.103.168.161",
+            response_max_messages: 64,
+            timeout_ms: 12_000,
+          },
+        });
+        return new Response(
+          encodeHnsPrivateDriverAuthoritativeAxfrResponseV1({
+            request_bytes: upstreamRequest,
+            response_sequence_bytes: upstreamSequence,
+          }),
+          { headers: protocolHeaders({ "Content-Type": "application/octet-stream" }) },
+        );
+      },
+    });
+    expect(calls).toBe(1);
+    expect(result).toEqual({
+      request_bytes: upstreamRequest,
+      response_sequence_bytes: upstreamSequence,
+    });
   });
 
   test("maps only the exact timeout envelope to timeout and never retries", async () => {
@@ -237,5 +305,13 @@ describe("HNS private-driver Worker transports", () => {
       ),
     ).rejects.toMatchObject({ outcome: "aborted" });
     expect(calls).toBe(0);
+
+    const axfrController = new AbortController();
+    const axfrOutcome = axfrExchange(
+      { fetch: () => new Promise<Response>(() => undefined) },
+      axfrController.signal,
+    );
+    axfrController.abort();
+    await expect(axfrOutcome).rejects.toMatchObject({ outcome: "aborted" });
   });
 });
