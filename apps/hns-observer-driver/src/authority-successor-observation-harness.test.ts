@@ -1,11 +1,12 @@
 import { expect, test } from "bun:test";
 import {
+  decodeHnsAuthorityDetachedObserverEvidenceV1,
+  encodeHnsAuthorityDetachedObserverEvidenceV1,
   HNS_AUTHORITY_SUCCESSOR_CANDIDATE_VERSION,
   type prepareHnsAuthoritySuccessorCandidateV1,
 } from "@pirate/application/hns-host-persistence";
 import {
   encodeHnsAuthorityInventory,
-  encodeHnsControlObservationResultV2,
   hnsAuthorityCapabilitySetDigest,
   hnsChainAuthorityDigest,
 } from "@pirate/application/namespace-ownership";
@@ -13,6 +14,7 @@ import { runHnsAuthoritySuccessorEmitterV1 } from "./authority-successor-emitter
 import {
   decodeHnsAuthoritySuccessorObservationDocumentV1,
   HNS_AUTHORITY_SUCCESSOR_OBSERVATION_MAX_BYTES,
+  type HnsAuthoritySuccessorDetachedTranscriptEntryV1,
   type HnsAuthoritySuccessorObservationHarnessIoV1,
   type HnsAuthoritySuccessorObservationSourceV1,
   type HnsAuthoritySuccessorSourceObservationV1,
@@ -22,8 +24,83 @@ import {
 
 const encoder = new TextEncoder();
 const candidateBytes = encoder.encode('{"candidate":"review-exact"}');
-const snapshotReference = "hns-observer:main:jazleeuw-verified-01";
-const snapshotSha256 = "8".repeat(64);
+const evidenceReference = "hns-detached-observation:main:jazleeuw-verified-01";
+const jazleeuwUpdate3ResourceHex =
+  "0001036e7331067069726174650001036e7332c0060601387069726174652d766572696669636174696f6e3d6e76735f3963633937306561653631393432313461643938613736626661356166336163002a7b0d0220ba5d84ad6e3e7ec452a569ee2e6c447ba2b9b533de65c58e59f2f0b7f0773045002a7b0d0430fde2c7af467092476b5572f9ac43fbbbbe82f63f7c785af984dc5884a2dae0384519dea6982fdbd19c375756b4ebaf70";
+const detachedTranscript = [
+  {
+    exchange_kind: "hns_rpc",
+    vantage_reference: "observer-vantage:primary-hsd",
+    subject_reference: "jazleeuw",
+    query_reference: "getnameresource:jazleeuw",
+    request_bytes: encoder.encode('{"method":"getnameresource","params":["jazleeuw"]}'),
+    response_bytes: encoder.encode(
+      JSON.stringify({ height: 344_448, resource: jazleeuwUpdate3ResourceHex }),
+    ),
+  },
+  {
+    exchange_kind: "child_authority_dns",
+    vantage_reference: "deployment-vantage:primary-external",
+    subject_reference: "94.103.168.161",
+    query_reference: "axfr:jazleeuw",
+    request_bytes: encoder.encode("dns-query:jazleeuw:axfr:primary"),
+    response_bytes: encoder.encode("dns-response:jazleeuw:axfr:primary"),
+  },
+  {
+    exchange_kind: "child_authority_dns",
+    vantage_reference: "deployment-vantage:secondary-independent",
+    subject_reference: "81.15.150.159",
+    query_reference: "axfr:jazleeuw",
+    request_bytes: encoder.encode("dns-query:jazleeuw:axfr:secondary"),
+    response_bytes: encoder.encode("dns-response:jazleeuw:axfr:secondary"),
+  },
+  {
+    exchange_kind: "parent_authority_dns",
+    vantage_reference: "deployment-vantage:primary-external",
+    subject_reference: "pirate",
+    query_reference: "dnssec-addresses:pirate",
+    request_bytes: encoder.encode("dns-query:pirate:dnssec-addresses:primary"),
+    response_bytes: encoder.encode("dns-response:pirate:dnssec-addresses:primary"),
+  },
+  {
+    exchange_kind: "parent_authority_dns",
+    vantage_reference: "deployment-vantage:secondary-independent",
+    subject_reference: "pirate",
+    query_reference: "dnssec-addresses:pirate",
+    request_bytes: encoder.encode("dns-query:pirate:dnssec-addresses:secondary"),
+    response_bytes: encoder.encode("dns-response:pirate:dnssec-addresses:secondary"),
+  },
+] as const satisfies ReadonlyArray<HnsAuthoritySuccessorDetachedTranscriptEntryV1>;
+
+function bytesHex(bytes: Uint8Array): string {
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function digest(bytes: Uint8Array): Promise<string> {
+  return bytesHex(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)));
+}
+
+async function transcriptDigest(
+  transcript: ReadonlyArray<HnsAuthoritySuccessorDetachedTranscriptEntryV1>,
+): Promise<string> {
+  const encoded = await Promise.all(
+    transcript.map(async (entry) => ({
+      exchange_kind: entry.exchange_kind,
+      vantage_reference: entry.vantage_reference,
+      subject_reference: entry.subject_reference,
+      query_reference: entry.query_reference,
+      request_sha256: await digest(entry.request_bytes),
+      response_sha256: await digest(entry.response_bytes),
+      request_hex: bytesHex(entry.request_bytes),
+      response_hex: bytesHex(entry.response_bytes),
+    })),
+  );
+  return digest(
+    encoder.encode(JSON.stringify(["pirate-hns-authority-detached-transcript-v1", encoded])),
+  );
+}
+
+const detachedTranscriptSha256 = await transcriptDigest(detachedTranscript);
 const chainDs = [
   [10875, 13, 2, "ba5d84ad6e3e7ec452a569ee2e6c447ba2b9b533de65c58e59f2f0b7f0773045"],
   [
@@ -39,21 +116,55 @@ const chainAuthorityRecords = [
   ["DS", ...chainDs[0]],
   ["DS", ...chainDs[1]],
 ] as const;
+const parentChainDs = [
+  [34383, 13, 2, "2c16acbc6081a8eeca4582ff967ebba29f30e2df5abd845dd2d1992449ebeecd"],
+  [
+    34383,
+    13,
+    4,
+    "3c48cc64c1ed89b267850e3d97de40672c4be4ef4f0538c775c68412faa81dc3c5c65418aa24db3bdd7b5ffec8e64005",
+  ],
+] as const;
+const parentChainAuthorityRecords = [
+  ["NS", "ns1.pirate"],
+  ["NS", "ns2.pirate"],
+  ["GLUE4", "ns1.pirate", "94.103.168.161"],
+  ["GLUE4", "ns2.pirate", "81.15.150.159"],
+  ["DS", ...parentChainDs[0]],
+  ["DS", ...parentChainDs[1]],
+] as const;
+const parentChainAuthorityDigest = await hnsChainAuthorityDigest({
+  chain_network: "main",
+  chain_genesis_block_hash: "6".repeat(64),
+  root_label: "pirate",
+  ownership_source: "owner_authoritative_dns_txt",
+  authority_records: parentChainAuthorityRecords,
+});
 const authorityAddressProvenance = {
-  source_kind: "parent_authoritative_dns_v1",
+  source_kind: "dnssec_parent_authoritative_dns_v1",
   parent_zone: "pirate",
+  parent_chain_authority_digest: parentChainAuthorityDigest,
+  parent_chain_authority_records: parentChainAuthorityRecords,
   views: [
     {
-      authority_address: "94.103.168.161",
+      view_id: "parent-primary-external",
+      vantage_reference: "deployment-vantage:primary-external",
       outcome: "observed",
+      dnssec_validation: "secure",
+      dnskey_key_tag: 34383,
+      derived_ds: parentChainDs,
       records: [
         ["A", "ns1.pirate", "94.103.168.161"],
         ["A", "ns2.pirate", "81.15.150.159"],
       ],
     },
     {
-      authority_address: "81.15.150.159",
+      view_id: "parent-secondary-independent",
+      vantage_reference: "deployment-vantage:secondary-independent",
       outcome: "observed",
+      dnssec_validation: "secure",
+      dnskey_key_tag: 34383,
+      derived_ds: parentChainDs,
       records: [
         ["A", "ns1.pirate", "94.103.168.161"],
         ["A", "ns2.pirate", "81.15.150.159"],
@@ -63,11 +174,9 @@ const authorityAddressProvenance = {
 } as const;
 
 async function sourceObservation(): Promise<HnsAuthoritySuccessorSourceObservationV1> {
-  const observerEvidence = await encodeHnsControlObservationResultV2({
-    version: "pirate-hns-control-observation-result-v2",
+  const observerEvidence = await encodeHnsAuthorityDetachedObserverEvidenceV1({
     observation_id: "observer-jazleeuw-verified-01",
     request_sha256: "1".repeat(64),
-    status: "verified",
     provider_id: "hns.owner.v1",
     provider_configuration_reference: "hns-observer-production-config-v1",
     provider_configuration_version: "production-v1",
@@ -88,8 +197,8 @@ async function sourceObservation(): Promise<HnsAuthoritySuccessorSourceObservati
     chain_anchor_block_hash: "7".repeat(64),
     chain_anchor_median_time: 1_777_689_600,
     expiry_height: 500_000,
-    observer_snapshot_sha256: snapshotSha256,
-    provider_evidence_ref: snapshotReference,
+    evidence_reference: evidenceReference,
+    detached_transcript: detachedTranscript,
   });
   const view = (authorityAddress: string) => ({
     authority_address: authorityAddress,
@@ -99,8 +208,8 @@ async function sourceObservation(): Promise<HnsAuthoritySuccessorSourceObservati
     derived_ds: chainDs,
   });
   return {
-    observer_snapshot_reference: snapshotReference,
-    observer_snapshot_sha256: snapshotSha256,
+    observer_evidence_reference: evidenceReference,
+    detached_transcript: detachedTranscript,
     generation_snapshot_database_time: "2026-08-29T17:00:00.000Z",
     source_commit: "1".repeat(40),
     root_label: "jazleeuw",
@@ -224,34 +333,6 @@ test("derives the complete 6/10/1 package from live authority and row-identity p
     ownership_source: "owner_authoritative_dns_txt",
     authority_records: chainAuthorityRecords,
   });
-  const evidenceBytes = await encodeHnsControlObservationResultV2({
-    version: "pirate-hns-control-observation-result-v2",
-    observation_id: "observer-jazleeuw-verified-01",
-    request_sha256: "1".repeat(64),
-    status: "verified",
-    provider_id: "hns.owner.v1",
-    provider_configuration_reference: "hns-observer-production-config-v1",
-    provider_configuration_version: "production-v1",
-    provider_configuration_digest: "2".repeat(64),
-    environment: "production",
-    ownership_source: "owner_authoritative_dns_txt",
-    root_label: "jazleeuw",
-    txt_name: "_pirate.jazleeuw",
-    expected_txt_value_sha256: "3".repeat(64),
-    control_identity_digest: "4".repeat(64),
-    chain_authority_digest: chainAuthorityDigest,
-    root_exists: true,
-    root_control_verified: true,
-    expiry_horizon_sufficient: true,
-    chain_network: "main",
-    chain_genesis_block_hash: "6".repeat(64),
-    chain_anchor_height: 344_448,
-    chain_anchor_block_hash: "7".repeat(64),
-    chain_anchor_median_time: Date.parse(observedAt) / 1_000,
-    expiry_height: 500_000,
-    observer_snapshot_sha256: snapshotSha256,
-    provider_evidence_ref: snapshotReference,
-  });
   const view = (authorityAddress: string) => ({
     authority_address: authorityAddress,
     outcome: "observed" as const,
@@ -265,10 +346,35 @@ test("derives the complete 6/10/1 package from live authority and row-identity p
     live_authority: {
       observe: () => ({
         source_commit: "1".repeat(40),
-        observer_evidence_bytes: evidenceBytes,
+        observer_facts: {
+          observation_id: "observer-jazleeuw-verified-01",
+          request_sha256: "1".repeat(64),
+          provider_id: "hns.owner.v1",
+          provider_configuration_reference: "hns-observer-production-config-v1",
+          provider_configuration_version: "production-v1",
+          provider_configuration_digest: "2".repeat(64),
+          environment: "production",
+          ownership_source: "owner_authoritative_dns_txt",
+          root_label: "jazleeuw",
+          txt_name: "_pirate.jazleeuw",
+          expected_txt_value_sha256: "3".repeat(64),
+          control_identity_digest: "4".repeat(64),
+          chain_authority_digest: chainAuthorityDigest,
+          root_exists: true,
+          root_control_verified: true,
+          expiry_horizon_sufficient: true,
+          chain_network: "main",
+          chain_genesis_block_hash: "6".repeat(64),
+          chain_anchor_height: 344_448,
+          chain_anchor_block_hash: "7".repeat(64),
+          chain_anchor_median_time: Date.parse(observedAt) / 1_000,
+          expiry_height: 500_000,
+          evidence_reference: evidenceReference,
+        },
         chain_authority_records: chainAuthorityRecords,
         authority_address_provenance: authorityAddressProvenance,
         authority_views: [view("94.103.168.161"), view("81.15.150.159")],
+        detached_transcript: detachedTranscript,
         authority_inventory_bytes: inventoryBytes,
         zone_bytes: zoneBytes,
         dns_authority_reference: "dns-authority:jazleeuw",
@@ -307,6 +413,22 @@ test("derives the complete 6/10/1 package from live authority and row-identity p
     app_host_activation_generation: 10,
     health_generation: 1,
   });
+  const observerArtifact = result.candidate.candidate.artifacts.find(
+    (artifact) => artifact.name === "observer_evidence",
+  );
+  expect(observerArtifact?.bytes_hex).toContain(bytesHex(encoder.encode(detachedTranscriptSha256)));
+  if (observerArtifact === undefined) throw new Error("missing observer evidence artifact");
+  const detachedEvidence = await decodeHnsAuthorityDetachedObserverEvidenceV1(
+    Uint8Array.from(observerArtifact.bytes_hex.match(/.{2}/gu) ?? [], (byte) =>
+      Number.parseInt(byte, 16),
+    ),
+  );
+  const hnsTranscript = detachedEvidence.detached_transcript.find(
+    (entry) => entry.exchange_kind === "hns_rpc",
+  );
+  expect(hnsTranscript?.response_hex).toContain(
+    bytesHex(encoder.encode(jazleeuwUpdate3ResourceHex)),
+  );
   expect(emissions).toEqual([result.observation_document_bytes]);
 });
 
@@ -341,8 +463,9 @@ test("acquires every live fact from one source and emits one canonical observati
   );
   expect(decoded.source_observation.artifacts).toEqual(observed.artifacts);
   expect(decoded.document.source_provenance).toMatchObject({
-    observer_snapshot_reference: snapshotReference,
-    observer_snapshot_sha256: snapshotSha256,
+    source_kind: "detached-read-only-observation-v1",
+    observer_evidence_reference: evidenceReference,
+    detached_transcript_sha256: detachedTranscriptSha256,
   });
 });
 
@@ -413,11 +536,11 @@ test("rejects operator arguments and source failure without partial output", asy
   expect(emissions).toHaveLength(0);
 });
 
-test("cross-pins retained observer provenance and the generation snapshot", async () => {
+test("cross-pins detached observer provenance, transcripts, and the generation snapshot", async () => {
   const observed = await sourceObservation();
   const mismatched = {
     ...observed,
-    observer_snapshot_reference: "hns-observer:main:different-snapshot",
+    observer_evidence_reference: "hns-detached-observation:main:different-evidence",
   };
   await expect(
     runHnsAuthoritySuccessorObservationHarnessV1(
@@ -447,6 +570,44 @@ test("cross-pins retained observer provenance and the generation snapshot", asyn
     generation_snapshot: { dns_current_generation: number };
   };
   altered.generation_snapshot.dns_current_generation += 1;
+  await expect(
+    decodeHnsAuthoritySuccessorObservationDocumentV1(encoder.encode(JSON.stringify(altered))),
+  ).rejects.toMatchObject({ reason: "observer_provenance_mismatch" });
+});
+
+test("refuses altered detached transcript bytes even with coherently updated transcript hashes", async () => {
+  const emitted: Uint8Array[] = [];
+  await runHnsAuthoritySuccessorObservationHarnessV1(
+    [],
+    source(await sourceObservation(), []),
+    {
+      emit: async (bytes) => {
+        emitted.push(Uint8Array.from(bytes));
+      },
+    },
+    {},
+    fakePreparer([]),
+  );
+  const original = emitted[0];
+  if (original === undefined) throw new Error("missing observation bytes");
+  const altered = JSON.parse(new TextDecoder().decode(original)) as {
+    source_provenance: { detached_transcript_sha256: string };
+    detached_transcript: Array<{
+      response_hex: string;
+      response_sha256: string;
+    }>;
+  };
+  const responseBytes = encoder.encode("different but internally coherent HSD response");
+  const first = altered.detached_transcript[0];
+  if (first === undefined) throw new Error("missing HSD transcript");
+  first.response_hex = bytesHex(responseBytes);
+  first.response_sha256 = await digest(responseBytes);
+  altered.source_provenance.detached_transcript_sha256 = await digest(
+    encoder.encode(
+      JSON.stringify(["pirate-hns-authority-detached-transcript-v1", altered.detached_transcript]),
+    ),
+  );
+
   await expect(
     decodeHnsAuthoritySuccessorObservationDocumentV1(encoder.encode(JSON.stringify(altered))),
   ).rejects.toMatchObject({ reason: "observer_provenance_mismatch" });

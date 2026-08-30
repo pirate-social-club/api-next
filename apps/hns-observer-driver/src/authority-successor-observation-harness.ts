@@ -1,19 +1,19 @@
 import {
+  decodeHnsAuthorityDetachedObserverEvidenceV1,
   encodeHnsAppHostTransitionDocumentV1,
+  encodeHnsAuthorityDetachedObserverEvidenceV1,
   encodeHnsDnsHealthDocumentV1,
   encodeHnsDnsZonePersistenceDocumentV1,
   HNS_DNS_ZONE_ACTIVATION_DOCUMENT_VERSION,
   type HnsAuthorityAddressProvenanceV1,
+  type HnsAuthorityDetachedObserverFactsV1,
   type HnsAuthorityEmitChainRecordV1,
   type HnsAuthorityEmitViewV1,
   type HnsAuthoritySuccessorGenerationSnapshotV1,
   prepareHnsAuthoritySuccessorCandidateV1,
   prepareHnsDnsZoneActivationDocumentV1,
 } from "@pirate/application/hns-host-persistence";
-import {
-  decodeHnsAuthorityInventoryBytes,
-  decodeHnsControlObservationResultV2Bytes,
-} from "@pirate/application/namespace-ownership";
+import { decodeHnsAuthorityInventoryBytes } from "@pirate/application/namespace-ownership";
 
 export const HNS_AUTHORITY_SUCCESSOR_OBSERVATION_VERSION =
   "pirate-hns-authority-successor-observation-v1" as const;
@@ -30,9 +30,29 @@ const artifactNames = [
 
 export type HnsAuthoritySuccessorArtifactNameV1 = (typeof artifactNames)[number];
 
+export type HnsAuthoritySuccessorDetachedTranscriptEntryV1 = Readonly<{
+  exchange_kind: "hns_rpc" | "child_authority_dns" | "parent_authority_dns";
+  vantage_reference: string;
+  subject_reference: string;
+  query_reference: string;
+  request_bytes: Uint8Array;
+  response_bytes: Uint8Array;
+}>;
+
+type HnsAuthoritySuccessorEncodedTranscriptEntryV1 = Readonly<{
+  exchange_kind: HnsAuthoritySuccessorDetachedTranscriptEntryV1["exchange_kind"];
+  vantage_reference: string;
+  subject_reference: string;
+  query_reference: string;
+  request_sha256: string;
+  response_sha256: string;
+  request_hex: string;
+  response_hex: string;
+}>;
+
 export type HnsAuthoritySuccessorSourceObservationV1 = Readonly<{
-  observer_snapshot_reference: string;
-  observer_snapshot_sha256: string;
+  observer_evidence_reference: string;
+  detached_transcript: ReadonlyArray<HnsAuthoritySuccessorDetachedTranscriptEntryV1>;
   generation_snapshot_database_time: string;
   source_commit: string;
   root_label: string;
@@ -50,9 +70,9 @@ export type HnsAuthoritySuccessorSourceObservationV1 = Readonly<{
 export type HnsAuthoritySuccessorObservationDocumentV1 = Readonly<{
   version: typeof HNS_AUTHORITY_SUCCESSOR_OBSERVATION_VERSION;
   source_provenance: Readonly<{
-    source_kind: "retained-control-plane-observation-v1";
-    observer_snapshot_reference: string;
-    observer_snapshot_sha256: string;
+    source_kind: "detached-read-only-observation-v1";
+    observer_evidence_reference: string;
+    detached_transcript_sha256: string;
     generation_snapshot_database_time: string;
     generation_snapshot_sha256: string;
   }>;
@@ -66,6 +86,7 @@ export type HnsAuthoritySuccessorObservationDocumentV1 = Readonly<{
   generation_snapshot: HnsAuthoritySuccessorGenerationSnapshotV1;
   expected_authority_addresses: readonly [string, string];
   authority_views: readonly [HnsAuthorityEmitViewV1, HnsAuthorityEmitViewV1];
+  detached_transcript: ReadonlyArray<HnsAuthoritySuccessorEncodedTranscriptEntryV1>;
   artifacts_hex: Readonly<Record<HnsAuthoritySuccessorArtifactNameV1, string>>;
 }>;
 
@@ -97,10 +118,11 @@ export type HnsAuthoritySuccessorObservationHarnessIoV1 = Readonly<{
 
 export type HnsAuthoritySuccessorLiveAuthorityObservationV1 = Readonly<{
   source_commit: string;
-  observer_evidence_bytes: Uint8Array;
+  observer_facts: HnsAuthorityDetachedObserverFactsV1;
   chain_authority_records: ReadonlyArray<HnsAuthorityEmitChainRecordV1>;
   authority_address_provenance: HnsAuthorityAddressProvenanceV1;
   authority_views: readonly [HnsAuthorityEmitViewV1, HnsAuthorityEmitViewV1];
+  detached_transcript: ReadonlyArray<HnsAuthoritySuccessorDetachedTranscriptEntryV1>;
   authority_inventory_bytes: Uint8Array;
   zone_bytes: Uint8Array;
   dns_authority_reference: string;
@@ -175,10 +197,18 @@ function validAuthorityAddressProvenance(value: unknown): value is HnsAuthorityA
     return true;
   }
   if (
-    !exactObject(value, ["source_kind", "parent_zone", "views"]) ||
-    value.source_kind !== "parent_authoritative_dns_v1" ||
+    !exactObject(value, [
+      "source_kind",
+      "parent_zone",
+      "parent_chain_authority_digest",
+      "parent_chain_authority_records",
+      "views",
+    ]) ||
+    value.source_kind !== "dnssec_parent_authoritative_dns_v1" ||
     typeof value.parent_zone !== "string" ||
     !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(value.parent_zone) ||
+    !sha256HexValue(value.parent_chain_authority_digest) ||
+    !Array.isArray(value.parent_chain_authority_records) ||
     !Array.isArray(value.views) ||
     value.views.length !== 2
   ) {
@@ -186,9 +216,27 @@ function validAuthorityAddressProvenance(value: unknown): value is HnsAuthorityA
   }
   return value.views.every(
     (view) =>
-      exactObject(view, ["authority_address", "outcome", "records"]) &&
-      typeof view.authority_address === "string" &&
+      exactObject(view, [
+        "view_id",
+        "vantage_reference",
+        "outcome",
+        "dnssec_validation",
+        "dnskey_key_tag",
+        "derived_ds",
+        "records",
+      ]) &&
+      safeIdentity(view.view_id) &&
+      safeIdentity(view.vantage_reference) &&
       (view.outcome === "observed" || view.outcome === "unavailable") &&
+      (view.dnssec_validation === "secure" ||
+        view.dnssec_validation === "insecure" ||
+        view.dnssec_validation === "bogus" ||
+        view.dnssec_validation === "indeterminate") &&
+      (view.dnskey_key_tag === null ||
+        (Number.isSafeInteger(view.dnskey_key_tag) &&
+          Number(view.dnskey_key_tag) >= 0 &&
+          Number(view.dnskey_key_tag) <= 65_535)) &&
+      (view.derived_ds === null || Array.isArray(view.derived_ds)) &&
       (view.records === null ||
         (Array.isArray(view.records) &&
           view.records.every(
@@ -208,6 +256,33 @@ function validArtifactsHex(
   return (
     exactObject(value, artifactNames) &&
     artifactNames.every((name) => typeof value[name] === "string")
+  );
+}
+
+function validEncodedTranscriptEntry(
+  value: unknown,
+): value is HnsAuthoritySuccessorEncodedTranscriptEntryV1 {
+  return (
+    exactObject(value, [
+      "exchange_kind",
+      "vantage_reference",
+      "subject_reference",
+      "query_reference",
+      "request_sha256",
+      "response_sha256",
+      "request_hex",
+      "response_hex",
+    ]) &&
+    (value.exchange_kind === "hns_rpc" ||
+      value.exchange_kind === "child_authority_dns" ||
+      value.exchange_kind === "parent_authority_dns") &&
+    safeIdentity(value.vantage_reference) &&
+    safeIdentity(value.subject_reference) &&
+    safeIdentity(value.query_reference) &&
+    sha256HexValue(value.request_sha256) &&
+    sha256HexValue(value.response_sha256) &&
+    typeof value.request_hex === "string" &&
+    typeof value.response_hex === "string"
   );
 }
 
@@ -231,6 +306,115 @@ function bytesFromHex(value: unknown): Uint8Array {
 async function sha256(bytes: Uint8Array): Promise<string> {
   const owned = Uint8Array.from(bytes);
   return hex(new Uint8Array(await crypto.subtle.digest("SHA-256", owned)));
+}
+
+async function encodeDetachedTranscript(
+  transcript: ReadonlyArray<HnsAuthoritySuccessorDetachedTranscriptEntryV1>,
+): Promise<ReadonlyArray<HnsAuthoritySuccessorEncodedTranscriptEntryV1>> {
+  return Promise.all(
+    transcript.map(async (entry) => ({
+      exchange_kind: entry.exchange_kind,
+      vantage_reference: entry.vantage_reference,
+      subject_reference: entry.subject_reference,
+      query_reference: entry.query_reference,
+      request_sha256: await sha256(entry.request_bytes),
+      response_sha256: await sha256(entry.response_bytes),
+      request_hex: hex(entry.request_bytes),
+      response_hex: hex(entry.response_bytes),
+    })),
+  );
+}
+
+async function detachedTranscriptSha256(
+  transcript: ReadonlyArray<HnsAuthoritySuccessorEncodedTranscriptEntryV1>,
+): Promise<string> {
+  return sha256(
+    new TextEncoder().encode(
+      JSON.stringify(["pirate-hns-authority-detached-transcript-v1", transcript]),
+    ),
+  );
+}
+
+async function decodeAndValidateDetachedTranscript(
+  document: HnsAuthoritySuccessorObservationDocumentV1,
+): Promise<ReadonlyArray<HnsAuthoritySuccessorDetachedTranscriptEntryV1>> {
+  if (
+    document.detached_transcript.length < 5 ||
+    document.detached_transcript.length > 64 ||
+    !document.detached_transcript.every(validEncodedTranscriptEntry)
+  ) {
+    throw new HnsAuthoritySuccessorObservationHarnessError("invalid_observation_document");
+  }
+  const decoded: HnsAuthoritySuccessorDetachedTranscriptEntryV1[] = [];
+  const identities = new Set<string>();
+  for (const entry of document.detached_transcript) {
+    const requestBytes = bytesFromHex(entry.request_hex);
+    const responseBytes = bytesFromHex(entry.response_hex);
+    if (
+      (await sha256(requestBytes)) !== entry.request_sha256 ||
+      (await sha256(responseBytes)) !== entry.response_sha256
+    ) {
+      throw new HnsAuthoritySuccessorObservationHarnessError("observer_provenance_mismatch");
+    }
+    const identity = JSON.stringify([
+      entry.exchange_kind,
+      entry.vantage_reference,
+      entry.subject_reference,
+      entry.query_reference,
+    ]);
+    if (identities.has(identity)) {
+      throw new HnsAuthoritySuccessorObservationHarnessError("invalid_observation_document");
+    }
+    identities.add(identity);
+    decoded.push({
+      exchange_kind: entry.exchange_kind,
+      vantage_reference: entry.vantage_reference,
+      subject_reference: entry.subject_reference,
+      query_reference: entry.query_reference,
+      request_bytes: requestBytes,
+      response_bytes: responseBytes,
+    });
+  }
+  const expectedChildAddresses = new Set(document.expected_authority_addresses);
+  const parentVantages = new Set(
+    document.authority_address_provenance.source_kind === "dnssec_parent_authoritative_dns_v1"
+      ? document.authority_address_provenance.views.map((view) => view.vantage_reference)
+      : [],
+  );
+  const transcriptShapeIsBound = decoded.every((entry) => {
+    if (entry.exchange_kind === "hns_rpc") {
+      return entry.subject_reference === document.root_label;
+    }
+    if (entry.exchange_kind === "child_authority_dns") {
+      return expectedChildAddresses.has(entry.subject_reference);
+    }
+    return (
+      document.authority_address_provenance.source_kind === "dnssec_parent_authoritative_dns_v1" &&
+      entry.subject_reference === document.authority_address_provenance.parent_zone &&
+      parentVantages.has(entry.vantage_reference)
+    );
+  });
+  if (
+    !transcriptShapeIsBound ||
+    !decoded.some((entry) => entry.exchange_kind === "hns_rpc") ||
+    [...expectedChildAddresses].some(
+      (address) =>
+        !decoded.some(
+          (entry) =>
+            entry.exchange_kind === "child_authority_dns" && entry.subject_reference === address,
+        ),
+    ) ||
+    [...parentVantages].some(
+      (vantage) =>
+        !decoded.some(
+          (entry) =>
+            entry.exchange_kind === "parent_authority_dns" && entry.vantage_reference === vantage,
+        ),
+    )
+  ) {
+    throw new HnsAuthoritySuccessorObservationHarnessError("observer_provenance_mismatch");
+  }
+  return decoded;
 }
 
 async function operationAuthority(
@@ -273,11 +457,11 @@ export function makeHnsAuthoritySuccessorObservationSourceV1(input: {
         throw new HnsAuthoritySuccessorObservationHarnessError("source_unavailable");
       }
       const live = await input.live_authority.observe({ signal });
-      const observer = await decodeHnsControlObservationResultV2Bytes(live.observer_evidence_bytes);
-      if (observer.result.status !== "verified") {
-        throw new HnsAuthoritySuccessorObservationHarnessError("invalid_source_observation");
-      }
-      const evidence = observer.result;
+      const observerEvidenceBytes = await encodeHnsAuthorityDetachedObserverEvidenceV1({
+        ...live.observer_facts,
+        detached_transcript: live.detached_transcript,
+      });
+      const evidence = await decodeHnsAuthorityDetachedObserverEvidenceV1(observerEvidenceBytes);
       const rootLabel = evidence.root_label;
       if (rootLabel !== HNS_JAZLEEUW_AUTHORITY_ROOT_LABEL) {
         throw new HnsAuthoritySuccessorObservationHarnessError("invalid_source_observation");
@@ -313,7 +497,7 @@ export function makeHnsAuthoritySuccessorObservationSourceV1(input: {
       if (observedKeyTag === null) {
         throw new HnsAuthoritySuccessorObservationHarnessError("invalid_source_observation");
       }
-      const delegationReference = evidence.provider_evidence_ref;
+      const delegationReference = evidence.evidence_reference;
       const dnsDocument = await prepareHnsDnsZoneActivationDocumentV1({
         payload: {
           version: HNS_DNS_ZONE_ACTIVATION_DOCUMENT_VERSION,
@@ -380,8 +564,8 @@ export function makeHnsAuthoritySuccessorObservationSourceV1(input: {
         valid_for_seconds: input.health_valid_for_seconds,
       });
       return {
-        observer_snapshot_reference: evidence.provider_evidence_ref,
-        observer_snapshot_sha256: evidence.observer_snapshot_sha256,
+        observer_evidence_reference: evidence.evidence_reference,
+        detached_transcript: live.detached_transcript,
         generation_snapshot_database_time: generation.database_time,
         source_commit: live.source_commit,
         root_label: rootLabel,
@@ -398,7 +582,7 @@ export function makeHnsAuthoritySuccessorObservationSourceV1(input: {
           dns_zone_activation: encodeHnsDnsZonePersistenceDocumentV1(dnsDocument),
           app_host_activation: appHost,
           health_observation: health,
-          observer_evidence: Uint8Array.from(live.observer_evidence_bytes),
+          observer_evidence: observerEvidenceBytes,
         },
       };
     },
@@ -425,6 +609,8 @@ function generationSnapshotPreimage(
 async function observationDocument(
   source: HnsAuthoritySuccessorSourceObservationV1,
 ): Promise<HnsAuthoritySuccessorObservationDocumentV1> {
+  const detachedTranscript = await encodeDetachedTranscript(source.detached_transcript);
+  const transcriptSha256 = await detachedTranscriptSha256(detachedTranscript);
   const generationSnapshotSha256 = await sha256(
     generationSnapshotPreimage(
       source.generation_snapshot_database_time,
@@ -434,9 +620,9 @@ async function observationDocument(
   return {
     version: HNS_AUTHORITY_SUCCESSOR_OBSERVATION_VERSION,
     source_provenance: {
-      source_kind: "retained-control-plane-observation-v1",
-      observer_snapshot_reference: source.observer_snapshot_reference,
-      observer_snapshot_sha256: source.observer_snapshot_sha256,
+      source_kind: "detached-read-only-observation-v1",
+      observer_evidence_reference: source.observer_evidence_reference,
+      detached_transcript_sha256: transcriptSha256,
       generation_snapshot_database_time: source.generation_snapshot_database_time,
       generation_snapshot_sha256: generationSnapshotSha256,
     },
@@ -450,6 +636,7 @@ async function observationDocument(
     generation_snapshot: source.generation_snapshot,
     expected_authority_addresses: source.expected_authority_addresses,
     authority_views: source.authority_views,
+    detached_transcript: detachedTranscript,
     artifacts_hex: Object.fromEntries(
       artifactNames.map((name) => [name, hex(source.artifacts[name])]),
     ) as Record<HnsAuthoritySuccessorArtifactNameV1, string>,
@@ -471,19 +658,20 @@ function structurallyValid(value: unknown): value is HnsAuthoritySuccessorObserv
       "generation_snapshot",
       "expected_authority_addresses",
       "authority_views",
+      "detached_transcript",
       "artifacts_hex",
     ]) ||
     value.version !== HNS_AUTHORITY_SUCCESSOR_OBSERVATION_VERSION ||
     !exactObject(value.source_provenance, [
       "source_kind",
-      "observer_snapshot_reference",
-      "observer_snapshot_sha256",
+      "observer_evidence_reference",
+      "detached_transcript_sha256",
       "generation_snapshot_database_time",
       "generation_snapshot_sha256",
     ]) ||
-    value.source_provenance.source_kind !== "retained-control-plane-observation-v1" ||
-    !safeIdentity(value.source_provenance.observer_snapshot_reference) ||
-    !sha256HexValue(value.source_provenance.observer_snapshot_sha256) ||
+    value.source_provenance.source_kind !== "detached-read-only-observation-v1" ||
+    !safeIdentity(value.source_provenance.observer_evidence_reference) ||
+    !sha256HexValue(value.source_provenance.detached_transcript_sha256) ||
     !canonicalInstant(value.source_provenance.generation_snapshot_database_time) ||
     !sha256HexValue(value.source_provenance.generation_snapshot_sha256) ||
     typeof value.source_commit !== "string" ||
@@ -510,6 +698,7 @@ function structurallyValid(value: unknown): value is HnsAuthoritySuccessorObserv
     !value.expected_authority_addresses.every((entry) => typeof entry === "string") ||
     !Array.isArray(value.authority_views) ||
     value.authority_views.length !== 2 ||
+    !Array.isArray(value.detached_transcript) ||
     !validArtifactsHex(value.artifacts_hex)
   ) {
     return false;
@@ -548,32 +737,35 @@ export async function decodeHnsAuthoritySuccessorObservationDocumentV1(bytes: Ui
   const artifacts = Object.fromEntries(
     artifactNames.map((name) => [name, bytesFromHex(value.artifacts_hex[name])]),
   ) as Record<HnsAuthoritySuccessorArtifactNameV1, Uint8Array>;
+  const detachedTranscript = await decodeAndValidateDetachedTranscript(value);
+  const transcriptSha256 = await detachedTranscriptSha256(value.detached_transcript);
   const expectedGenerationDigest = await sha256(
     generationSnapshotPreimage(
       value.source_provenance.generation_snapshot_database_time,
       value.generation_snapshot,
     ),
   );
-  let observerEvidence: Awaited<ReturnType<typeof decodeHnsControlObservationResultV2Bytes>>;
+  let observerEvidence: Awaited<ReturnType<typeof decodeHnsAuthorityDetachedObserverEvidenceV1>>;
   try {
-    observerEvidence = await decodeHnsControlObservationResultV2Bytes(artifacts.observer_evidence);
+    observerEvidence = await decodeHnsAuthorityDetachedObserverEvidenceV1(
+      artifacts.observer_evidence,
+    );
   } catch {
     throw new HnsAuthoritySuccessorObservationHarnessError("observer_provenance_mismatch");
   }
-  const result = observerEvidence.result;
   if (
     expectedGenerationDigest !== value.source_provenance.generation_snapshot_sha256 ||
-    result.status !== "verified" ||
-    result.provider_evidence_ref !== value.source_provenance.observer_snapshot_reference ||
-    result.observer_snapshot_sha256 !== value.source_provenance.observer_snapshot_sha256
+    transcriptSha256 !== value.source_provenance.detached_transcript_sha256 ||
+    observerEvidence.evidence_reference !== value.source_provenance.observer_evidence_reference ||
+    observerEvidence.detached_transcript_sha256 !== transcriptSha256
   ) {
     throw new HnsAuthoritySuccessorObservationHarnessError("observer_provenance_mismatch");
   }
   return {
     document: value,
     source_observation: {
-      observer_snapshot_reference: value.source_provenance.observer_snapshot_reference,
-      observer_snapshot_sha256: value.source_provenance.observer_snapshot_sha256,
+      observer_evidence_reference: value.source_provenance.observer_evidence_reference,
+      detached_transcript: detachedTranscript,
       generation_snapshot_database_time: value.source_provenance.generation_snapshot_database_time,
       source_commit: value.source_commit,
       root_label: value.root_label,

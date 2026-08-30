@@ -1,10 +1,12 @@
 import { describe, expect, test } from "vitest";
 import {
   decodeHnsAppHostTransitionDocumentV1,
+  decodeHnsAuthorityDetachedObserverEvidenceV1,
   decodeHnsDnsHealthDocumentV1,
   decodeHnsDnsZonePersistenceDocumentV1,
   deriveHnsAuthoritySuccessorGenerationsV1,
   encodeHnsAppHostTransitionDocumentV1,
+  encodeHnsAuthorityDetachedObserverEvidenceV1,
   encodeHnsDnsHealthDocumentV1,
   encodeHnsDnsZonePersistenceDocumentV1,
   HNS_DNS_ZONE_ACTIVATION_DOCUMENT_VERSION,
@@ -19,10 +21,22 @@ import {
   hnsAuthorityCapabilitySetDigest,
 } from "./namespace-ownership/hns-authority-inventory.ts";
 import { hnsChainAuthorityDigest } from "./namespace-ownership/hns-control-observer.ts";
-import {
-  decodeHnsControlObservationResultV2Bytes,
-  encodeHnsControlObservationResultV2,
-} from "./namespace-ownership/hns-control-observer-v2.ts";
+
+const encoder = new TextEncoder();
+const detachedTranscript = [
+  ["hns_rpc", "observer-vantage:primary-hsd", "jazleeuw", "getnameresource"],
+  ["child_authority_dns", "deployment-vantage:primary", "94.103.168.161", "axfr"],
+  ["child_authority_dns", "deployment-vantage:secondary", "81.15.150.159", "axfr"],
+  ["parent_authority_dns", "deployment-vantage:primary-external", "pirate", "addresses"],
+  ["parent_authority_dns", "deployment-vantage:secondary-independent", "pirate", "addresses"],
+].map(([exchange_kind, vantage_reference, subject_reference, query_reference], index) => ({
+  exchange_kind: exchange_kind as "hns_rpc" | "child_authority_dns" | "parent_authority_dns",
+  vantage_reference: vantage_reference as string,
+  subject_reference: subject_reference as string,
+  query_reference: query_reference as string,
+  request_bytes: encoder.encode(`request-${index}`),
+  response_bytes: encoder.encode(`response-${index}`),
+}));
 
 describe("HNS authority successor generation preparation", () => {
   test("predicts the fenced jazleeuw successor generations without a reservation", () => {
@@ -119,18 +133,52 @@ const authorityAddressRecords = [
   ["A", "ns1.pirate", "94.103.168.161"],
   ["A", "ns2.pirate", "81.15.150.159"],
 ] as const;
+const pirateChainDs = [
+  [34383, 13, 2, "2c16acbc6081a8eeca4582ff967ebba29f30e2df5abd845dd2d1992449ebeecd"],
+  [
+    34383,
+    13,
+    4,
+    "3c48cc64c1ed89b267850e3d97de40672c4be4ef4f0538c775c68412faa81dc3c5c65418aa24db3bdd7b5ffec8e64005",
+  ],
+] as const;
+const pirateChainAuthorityRecords = [
+  ["NS", "ns1.pirate"],
+  ["NS", "ns2.pirate"],
+  ["GLUE4", "ns1.pirate", "94.103.168.161"],
+  ["GLUE4", "ns2.pirate", "81.15.150.159"],
+  ["DS", ...pirateChainDs[0]],
+  ["DS", ...pirateChainDs[1]],
+] as const;
+const pirateChainAuthorityDigest = await hnsChainAuthorityDigest({
+  chain_network: "main",
+  chain_genesis_block_hash: "6".repeat(64),
+  root_label: "pirate",
+  ownership_source: "owner_authoritative_dns_txt",
+  authority_records: pirateChainAuthorityRecords,
+});
 const authorityAddressProvenance = {
-  source_kind: "parent_authoritative_dns_v1",
+  source_kind: "dnssec_parent_authoritative_dns_v1",
   parent_zone: "pirate",
+  parent_chain_authority_digest: pirateChainAuthorityDigest,
+  parent_chain_authority_records: pirateChainAuthorityRecords,
   views: [
     {
-      authority_address: "94.103.168.161",
+      view_id: "parent-primary-external",
+      vantage_reference: "deployment-vantage:primary-external",
       outcome: "observed",
+      dnssec_validation: "secure",
+      dnskey_key_tag: 34383,
+      derived_ds: pirateChainDs,
       records: authorityAddressRecords,
     },
     {
-      authority_address: "81.15.150.159",
+      view_id: "parent-secondary-independent",
+      vantage_reference: "deployment-vantage:secondary-independent",
       outcome: "observed",
+      dnssec_validation: "secure",
+      dnskey_key_tag: 34383,
+      derived_ds: pirateChainDs,
       records: authorityAddressRecords,
     },
   ],
@@ -261,11 +309,9 @@ async function canonicalCandidateArtifacts() {
   ]
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
-  const observerEvidence = await encodeHnsControlObservationResultV2({
-    version: "pirate-hns-control-observation-result-v2",
+  const observerEvidence = await encodeHnsAuthorityDetachedObserverEvidenceV1({
     observation_id: "observer-jazleeuw-verified-01",
     request_sha256: "1".repeat(64),
-    status: "verified",
     provider_id: "hns.owner.v1",
     provider_configuration_reference: "hns-observer-production-config-v1",
     provider_configuration_version: "production-v1",
@@ -286,8 +332,8 @@ async function canonicalCandidateArtifacts() {
     chain_anchor_block_hash: "7".repeat(64),
     chain_anchor_median_time: 1_777_689_600,
     expiry_height: 500_000,
-    observer_snapshot_sha256: "8".repeat(64),
-    provider_evidence_ref: "hns-observer:main:jazleeuw-verified-01",
+    evidence_reference: "hns-detached-observation:main:jazleeuw-verified-01",
+    detached_transcript: detachedTranscript,
   });
   const dnsZoneActivation = await prepareHnsDnsZoneActivationDocumentV1({
     payload: {
@@ -717,14 +763,15 @@ test("binds out-of-bailiwick chain NS names without inventing chain glue", async
       ownership_source: "owner_authoritative_dns_txt",
       authority_records: chain_authority_records,
     });
-    const observer = await decodeHnsControlObservationResultV2Bytes(
+    const observer = await decodeHnsAuthorityDetachedObserverEvidenceV1(
       input.artifacts.observer_evidence,
     );
-    if (observer.result.status !== "verified") throw new Error("expected verified fixture");
-    const observerEvidence = await encodeHnsControlObservationResultV2({
-      ...observer.result,
-      chain_authority_digest: chainAuthorityDigest,
-    });
+    const observerEvidence = encoder.encode(
+      JSON.stringify({
+        ...observer,
+        chain_authority_digest: chainAuthorityDigest,
+      }),
+    );
     const dnsZone = await rewriteDnsArtifact(input.artifacts.dns_zone_activation, (document) => ({
       ...document,
       stable_chain_delegation_snapshot_digest: chainAuthorityDigest,
@@ -763,9 +810,27 @@ test("binds out-of-bailiwick chain NS names without inventing chain glue", async
   ).toThrow("Authority record is not canonical");
 });
 
-test("binds out-of-bailiwick authority addresses to matching pirate parent-zone views", async () => {
+test("binds out-of-bailiwick addresses to the pirate chain anchor and secure parent views", async () => {
+  const changedParentRecords = pirateChainAuthorityRecords.map((record) =>
+    record[0] === "GLUE4" && record[1] === "ns1.pirate"
+      ? (["GLUE4", "ns1.pirate", "203.0.113.53"] as const)
+      : record,
+  );
+  const changedParentDigest = await hnsChainAuthorityDigest({
+    chain_network: "main",
+    chain_genesis_block_hash: "6".repeat(64),
+    root_label: "pirate",
+    ownership_source: "owner_authoritative_dns_txt",
+    authority_records: changedParentRecords,
+  });
   const mutations = [
     { ...authorityAddressProvenance, parent_zone: "elsewhere" },
+    { ...authorityAddressProvenance, parent_chain_authority_digest: "f".repeat(64) },
+    {
+      ...authorityAddressProvenance,
+      parent_chain_authority_digest: changedParentDigest,
+      parent_chain_authority_records: changedParentRecords,
+    },
     {
       ...authorityAddressProvenance,
       views: [
@@ -786,7 +851,17 @@ test("binds out-of-bailiwick authority addresses to matching pirate parent-zone 
     {
       ...authorityAddressProvenance,
       views: [
-        { ...authorityAddressProvenance.views[0], authority_address: "203.0.113.53" },
+        { ...authorityAddressProvenance.views[0], dnssec_validation: "bogus" },
+        authorityAddressProvenance.views[1],
+      ],
+    },
+    {
+      ...authorityAddressProvenance,
+      views: [
+        {
+          ...authorityAddressProvenance.views[0],
+          vantage_reference: authorityAddressProvenance.views[1].vantage_reference,
+        },
         authorityAddressProvenance.views[1],
       ],
     },
@@ -968,6 +1043,20 @@ test("refuses canonical observer evidence that is not verified or bound to this 
     prepareHnsAuthoritySuccessorCandidateV1({
       ...base,
       artifacts: { ...artifacts, observer_evidence: parentSource },
+    }),
+  ).rejects.toThrow("observer_evidence_not_verified");
+
+  const observer = await decodeHnsAuthorityDetachedObserverEvidenceV1(artifacts.observer_evidence);
+  const detachedVantageDrift = await encodeHnsAuthorityDetachedObserverEvidenceV1({
+    ...observer,
+    detached_transcript: detachedTranscript.map((entry, index) =>
+      index === 3 ? { ...entry, vantage_reference: "deployment-vantage:unbound" } : entry,
+    ),
+  });
+  await expect(
+    prepareHnsAuthoritySuccessorCandidateV1({
+      ...base,
+      artifacts: { ...artifacts, observer_evidence: detachedVantageDrift },
     }),
   ).rejects.toThrow("observer_evidence_mismatch");
 
