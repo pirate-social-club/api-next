@@ -218,6 +218,10 @@ export {
 } from "./namespace-ownership-start-repository";
 export { type NativeBalanceJsonRpc, readNativeBalance } from "./native-balance.ts";
 export {
+  makeControlPlaneOperatorControlPromotionRepository,
+  makeControlPlaneOperatorControlPromotionStore,
+} from "./operator-control-promotion-repository";
+export {
   makeControlPlaneOperatorManagedRouteRepository,
   makeControlPlaneOperatorManagedRouteStore,
 } from "./operator-managed-route-repository";

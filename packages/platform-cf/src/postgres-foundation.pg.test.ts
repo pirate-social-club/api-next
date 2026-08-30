@@ -1205,6 +1205,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "hns_dns_zone_health_observations",
         "hns_dns_zone_health_operations",
         "hns_dns_zone_lifecycle_operations",
+        "hns_operator_control_promotion_receipts",
         "home_feed_projection",
         "identity_credentials",
         "karaoke_attempts",

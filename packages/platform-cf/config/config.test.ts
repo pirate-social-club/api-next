@@ -229,6 +229,7 @@ describe("config system (000 §9)", () => {
       HNS_OWNERSHIP_CONFIGURATION_REFERENCE: "",
       HNS_OWNERSHIP_CONFIGURATION_VERSION: "",
       HNS_COMMUNITY_APP_API_ENABLED: false,
+      HNS_HANDLE_HOST_API_ENABLED: false,
       HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN: "",
       HNS_COMMUNITY_APP_API_ACCESS_ISSUER: "",
       HNS_COMMUNITY_APP_API_ACCESS_JWKS_URL: "",
@@ -284,6 +285,7 @@ describe("config system (000 §9)", () => {
 
     for (const environment of [config, config.env?.staging]) {
       expect(environment?.vars?.HNS_COMMUNITY_APP_API_ENABLED).toBe("false");
+      expect(environment?.vars?.HNS_HANDLE_HOST_API_ENABLED).toBe("false");
       expect(environment?.vars?.HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN).toBe("");
       expect(environment?.vars?.HNS_COMMUNITY_APP_API_ACCESS_ISSUER).toBe("");
       expect(environment?.vars?.HNS_COMMUNITY_APP_API_ACCESS_JWKS_URL).toBe("");
@@ -300,6 +302,7 @@ describe("config system (000 §9)", () => {
     }
     const production = config.env?.production;
     expect(production?.vars?.HNS_COMMUNITY_APP_API_ENABLED).toBe("true");
+    expect(production?.vars?.HNS_HANDLE_HOST_API_ENABLED).toBe("true");
     expect(production?.vars?.HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN).toBe(
       "https://hns-community-api.pirate.sc",
     );
