@@ -6,9 +6,14 @@ import {
   type PreparedDanceReferenceOperation,
   runDanceReferenceProcessing,
 } from "@pirate/application/dance/reference-processing";
+import {
+  type DanceReferenceAuthoringAuthority,
+  DanceReferenceStoreError,
+} from "@pirate/application/use-cases/dance/reference-services";
 import { Effect } from "effect";
 import { Client } from "pg";
 import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
+import { makeDanceReferenceStore } from "./dance-reference-authoring-repository.ts";
 import { makeDanceReferenceProcessingStore } from "./dance-reference-processing-repository.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 
@@ -22,7 +27,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_DANCE_REFERENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-dance-reference-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-dance-reference-suite-complete\n";
-const testCount = 7;
+const testCount = 10;
 let completedTestCount = 0;
 
 const HASH_A = "11".repeat(32);
@@ -198,6 +203,57 @@ async function insertOutbox(admin: Client): Promise<void> {
      FROM authority`,
     [HASH_C],
   );
+}
+
+function authoringAuthority(referenceVideoPostId = "video-1"): DanceReferenceAuthoringAuthority {
+  return {
+    canonicalAudio: {
+      objectKey: "private/song-audio",
+      sha256: HASH_A,
+      durationMs: 180000,
+      audioRevision: 4,
+    },
+    referenceVideo: {
+      postId: referenceVideoPostId,
+      objectKey: `private/reference/${referenceVideoPostId}`,
+      sha256: HASH_B,
+      durationMs: 60000,
+    },
+    extraction: {
+      policyVersion: "extract-v1",
+      outputProfile: { sampleRateHz: 48000, channels: 1, codec: "flac" },
+    },
+    alignment: {
+      policyVersion: "alignment-v1",
+      adapterId: "fake-alignment",
+      adapterRevision: "adapter-v1",
+      limits: {
+        maximumAbsoluteOffsetMs: 15000,
+        maximumAbsoluteDriftMs: 50,
+        maximumAbsoluteSlopeDeltaPpm: 1000,
+        minimumOverallConfidenceBps: 8000,
+        minimumCoverageBps: 9000,
+        minimumSoundtrackMatchBps: 8000,
+      },
+    },
+    pose: {
+      modelVersion: "pose-v1",
+      runtimeVersion: "runtime-v1",
+      featureSchemaVersion: "features-v1",
+      scorerContractVersion: "scorer-v1",
+      fingerprintPolicyVersion: "fingerprint-v1",
+      integrityPolicyVersion: "integrity-v1",
+    },
+    qualityLimits: {
+      minimumUsableCoverageBps: 9000,
+      maximumMissingGapSlots: 3,
+      minimumBodyCoverageBps: 9000,
+      minimumVisibilityCoverageBps: 8500,
+      minimumMotionEnergyBps: 2000,
+      minimumSpatialExtentBps: 2000,
+    },
+    ownerPolicy: { revision: 7, hash: HASH_A },
+  };
 }
 
 function frozenReferenceInput(
@@ -1089,6 +1145,251 @@ suite("Dance reference shadow persistence", () => {
         "SELECT count(*)::text AS count FROM dance_reference_actions",
       );
       expect(actionCount.rows).toEqual([{ count: "1" }]);
+    });
+    completedTestCount += 1;
+  });
+
+  test("atomically creates one processing graph and replays its action", async () => {
+    await withSchema("authoring_create", async (_admin, schema) => {
+      if (connectionString === undefined) throw new Error("test URL was not configured");
+      const store = makeDanceReferenceStore(
+        makeDirectPostgresControlPlaneLayer(connectionForSchema(connectionString, schema)),
+      );
+      const input = {
+        action: {
+          actorAccountId: "dance-creator",
+          httpMethod: "POST" as const,
+          endpointTemplate: "/communities/:communityId/posts/:postId/dance/choreographies" as const,
+          idempotencyKey: "authoring-create-1",
+          requestHash: HASH_C,
+        },
+        communityId: "community-1",
+        songPostId: "song-1",
+        creatorPersonaId: "dance-persona",
+        audioRevision: 4,
+        referenceVideoPostId: "video-1",
+        startMs: 10000,
+        endMs: 16000,
+        mirrorPolicy: "allowed" as const,
+        authority: authoringAuthority(),
+      };
+      const [first, second] = await Promise.all([store.create(input), store.create(input)]);
+      expect([first.replayed, second.replayed].sort()).toEqual([false, true]);
+      expect(first.choreography.choreography_id).toBe(second.choreography.choreography_id);
+      expect(first.processing.revision_terms_hash).toBe(second.processing.revision_terms_hash);
+
+      const client = new Client({
+        connectionString: connectionForSchema(connectionString, schema),
+      });
+      await client.connect();
+      try {
+        const counts = await client.query(
+          `SELECT
+             (SELECT count(*)::text FROM dance_choreographies) AS choreographies,
+             (SELECT count(*)::text FROM dance_choreography_revisions) AS revisions,
+             (SELECT count(*)::text FROM dance_reference_outbox) AS outbox,
+             (SELECT count(*)::text FROM dance_reference_processing_requests) AS requests,
+             (SELECT count(*)::text FROM dance_reference_actions) AS actions`,
+        );
+        expect(counts.rows).toEqual([
+          { choreographies: "1", revisions: "1", outbox: "1", requests: "1", actions: "1" },
+        ]);
+      } finally {
+        await client.end();
+      }
+    });
+    completedTestCount += 1;
+  });
+
+  test("enforces song-owner presentation and removes cut-off references from public reads", async () => {
+    await withSchema("authoring_public", async (admin, schema) => {
+      await insertProcessingGraph(admin);
+      await insertSegment(admin);
+      await makeReady(admin);
+      if (connectionString === undefined) throw new Error("test URL was not configured");
+      const store = makeDanceReferenceStore(
+        makeDirectPostgresControlPlaneLayer(connectionForSchema(connectionString, schema)),
+      );
+      const presentation = await store.setPresentation({
+        action: {
+          actorAccountId: "song-owner",
+          httpMethod: "PUT",
+          endpointTemplate: "/communities/:communityId/posts/:postId/dance/presentation",
+          idempotencyKey: "feature-1",
+          requestHash: HASH_A,
+        },
+        communityId: "community-1",
+        songPostId: "song-1",
+        audioRevision: 4,
+        choreographyId: "choreography-1",
+        choreographyRevision: 1,
+      });
+      expect(presentation.presentation.featured).toEqual({
+        choreography_id: "choreography-1",
+        choreography_revision: 1,
+      });
+      await expect(
+        store.setPresentation({
+          action: {
+            actorAccountId: "intruder",
+            httpMethod: "PUT",
+            endpointTemplate: "/communities/:communityId/posts/:postId/dance/presentation",
+            idempotencyKey: "feature-intruder",
+            requestHash: HASH_B,
+          },
+          communityId: "community-1",
+          songPostId: "song-1",
+          audioRevision: 4,
+          choreographyId: "choreography-1",
+          choreographyRevision: 1,
+        }),
+      ).rejects.toEqual(
+        new DanceReferenceStoreError({ operation: "set-presentation", reason: "not-found" }),
+      );
+      const listed = await store.listReady({
+        communityId: "community-1",
+        songPostId: "song-1",
+        audioRevision: 4,
+        cursor: null,
+        limit: 25,
+      });
+      expect(listed.items).toHaveLength(1);
+      expect(listed.items[0]?.featured).toBe(true);
+      expect(JSON.stringify(listed)).not.toContain("account");
+      expect(JSON.stringify(listed)).not.toContain("private/");
+
+      const cleared = await store.clearPresentation({
+        action: {
+          actorAccountId: "song-owner",
+          httpMethod: "DELETE",
+          endpointTemplate: "/communities/:communityId/posts/:postId/dance/presentation",
+          idempotencyKey: "clear-1",
+          requestHash: HASH_C,
+        },
+        communityId: "community-1",
+        songPostId: "song-1",
+        audioRevision: 4,
+      });
+      expect(cleared.presentation.featured).toBeNull();
+
+      await store.disable({
+        action: {
+          actorAccountId: "dance-creator",
+          httpMethod: "POST",
+          endpointTemplate:
+            "/communities/:communityId/dance/choreographies/:choreographyId/disable",
+          idempotencyKey: "disable-1",
+          requestHash: HASH_D,
+        },
+        communityId: "community-1",
+        choreographyId: "choreography-1",
+        reason: "rights",
+      });
+      expect(
+        await store.listReady({
+          communityId: "community-1",
+          songPostId: "song-1",
+          audioRevision: 4,
+          cursor: null,
+          limit: 25,
+        }),
+      ).toMatchObject({ items: [] });
+      await expect(
+        store.getRevision({
+          communityId: "community-1",
+          choreographyId: "choreography-1",
+          revision: 1,
+        }),
+      ).rejects.toEqual(
+        new DanceReferenceStoreError({ operation: "get-revision", reason: "not-found" }),
+      );
+    });
+    completedTestCount += 1;
+  });
+
+  test("appends revisions and preserves private lifecycle reads through retirement", async () => {
+    await withSchema("authoring_lifecycle", async (_admin, schema) => {
+      if (connectionString === undefined) throw new Error("test URL was not configured");
+      const store = makeDanceReferenceStore(
+        makeDirectPostgresControlPlaneLayer(connectionForSchema(connectionString, schema)),
+      );
+      const created = await store.create({
+        action: {
+          actorAccountId: "dance-creator",
+          httpMethod: "POST",
+          endpointTemplate: "/communities/:communityId/posts/:postId/dance/choreographies",
+          idempotencyKey: "lifecycle-create",
+          requestHash: HASH_A,
+        },
+        communityId: "community-1",
+        songPostId: "song-1",
+        creatorPersonaId: "dance-persona",
+        audioRevision: 4,
+        referenceVideoPostId: "video-1",
+        startMs: 10000,
+        endMs: 16000,
+        mirrorPolicy: "allowed",
+        authority: authoringAuthority(),
+      });
+      const appended = await store.append({
+        action: {
+          actorAccountId: "dance-creator",
+          httpMethod: "POST",
+          endpointTemplate:
+            "/communities/:communityId/dance/choreographies/:choreographyId/revisions",
+          idempotencyKey: "lifecycle-append",
+          requestHash: HASH_B,
+        },
+        communityId: "community-1",
+        choreographyId: created.choreography.choreography_id,
+        audioRevision: 4,
+        referenceVideoPostId: "video-2",
+        startMs: 20000,
+        endMs: 28000,
+        mirrorPolicy: "strict",
+        authority: authoringAuthority("video-2"),
+      });
+      expect(appended.processing.revision).toBe(2);
+      const privateView = await store.getProcessing({
+        actorAccountId: "dance-creator",
+        communityId: "community-1",
+        choreographyId: created.choreography.choreography_id,
+      });
+      expect(privateView.revisions.map((revision) => revision.revision)).toEqual([1, 2]);
+
+      await store.disable({
+        action: {
+          actorAccountId: "dance-creator",
+          httpMethod: "POST",
+          endpointTemplate:
+            "/communities/:communityId/dance/choreographies/:choreographyId/disable",
+          idempotencyKey: "lifecycle-disable",
+          requestHash: HASH_C,
+        },
+        communityId: "community-1",
+        choreographyId: created.choreography.choreography_id,
+        reason: "safety",
+      });
+      const retired = await store.retire({
+        action: {
+          actorAccountId: "dance-creator",
+          httpMethod: "POST",
+          endpointTemplate: "/communities/:communityId/dance/choreographies/:choreographyId/retire",
+          idempotencyKey: "lifecycle-retire",
+          requestHash: HASH_D,
+        },
+        communityId: "community-1",
+        choreographyId: created.choreography.choreography_id,
+      });
+      expect(retired.choreography.status).toBe("retired");
+      expect(retired.choreography.active_revision).toBeNull();
+      expect(
+        await store.getProcessing({
+          actorAccountId: "dance-creator",
+          communityId: "community-1",
+          choreographyId: created.choreography.choreography_id,
+        }),
+      ).toMatchObject({ choreography: { status: "retired" } });
     });
     completedTestCount += 1;
   });

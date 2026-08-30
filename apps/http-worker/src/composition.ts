@@ -5,6 +5,7 @@ import {
   type TextModeration,
   TextModerationProviderError,
 } from "@pirate/application/use-cases/content/text-post";
+import type { DanceReferenceAuthoringAuthorityResolver } from "@pirate/application/use-cases/dance/reference-services";
 import { makeRandomIdentityRegistrationCandidateSource } from "@pirate/application/use-cases/identity-registration";
 import { PERSONA_WALLET_SETUP_SESSION_SCOPE } from "@pirate/application/use-cases/identity-registration-handler";
 import { getMyProfile } from "@pirate/application/use-cases/profile";
@@ -63,6 +64,7 @@ import {
   loadConfigFrom,
 } from "@pirate/platform-cf/config";
 import { makeControlPlaneContentStore } from "@pirate/platform-cf/content-repository";
+import { makeDanceReferenceStore } from "@pirate/platform-cf/dance-reference-authoring-repository";
 import { makeControlPlaneFeedStore } from "@pirate/platform-cf/feed-repository";
 import { makeHandleRecipientTokenVault } from "@pirate/platform-cf/handle-recipient-token-vault";
 import { makeControlPlaneHandleSalesStore } from "@pirate/platform-cf/handle-sales-repository";
@@ -169,6 +171,7 @@ import {
   makeCommunityPurchaseFundingObservationHandlers,
   makeCommunityPurchaseFundingQuoteHandlers,
 } from "./community-purchase-funding-handlers.ts";
+import { makeDanceReferenceHandlers } from "./dance-reference-handlers.ts";
 import { makeHandleSalesHandlers } from "./handle-sales-handlers.ts";
 import { makeProductionHnsCommunityAppApiComposition } from "./hns-community-app-api-production-composition.ts";
 import { makeHnsOwnershipComposition } from "./hns-ownership-composition.ts";
@@ -295,6 +298,8 @@ export interface HttpWorkerCompositionDependencies {
   readonly study_audio_archive?: StudyAudioArchive;
   /** Test/review injection. Production constructs this only when media is explicitly enabled. */
   readonly media_services?: MediaSubmissionServices;
+  /** Sealed-video policy authority. Production remains null until its owning lane lands. */
+  readonly dance_reference_authority?: DanceReferenceAuthoringAuthorityResolver;
   /** Fake transport for provider-free composition and request-path tests. */
   readonly openai_moderation_transport?: OpenAiModerationTransport;
 }
@@ -603,6 +608,10 @@ export async function createProductionHttpWorker(
     throw new Error("HTTP worker configuration is incomplete or invalid");
   }
   const controlPlane = makeHyperdriveControlPlaneLayer(loadHyperdrive(bindings));
+  const danceReferenceHandlers = makeDanceReferenceHandlers({
+    store: makeDanceReferenceStore(controlPlane),
+    authority: dependencies.dance_reference_authority ?? null,
+  });
   const hnsCommunityAppApi = makeProductionHnsCommunityAppApiComposition({
     config,
     authority_source: makeControlPlaneHnsCommunityAppHostAuthoritySource(controlPlane),
@@ -1116,6 +1125,7 @@ export async function createProductionHttpWorker(
       ...platformPirateHandleHandlers,
       ...songRewardOfferHandlers,
       ...mediaHandlers,
+      ...danceReferenceHandlers,
       GetJwks: () => sessionCrypto.jwks(),
       GetPublicProfileByHandle: publicProfile,
     },
