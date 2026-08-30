@@ -1,0 +1,4 @@
+# Observed with Iron Proxy 0.41.0 on 2026-08-30. GitHub and codeload
+# destinations are covered by the pinned action's built-in GitHub rules.
+domains:
+  - registry.npmjs.org
