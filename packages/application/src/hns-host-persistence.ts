@@ -582,6 +582,162 @@ function decodeHsdTranscriptAuthorityRecords(
   }
 }
 
+function decodeHsdTranscriptRpcResult(
+  entry: HnsAuthorityEncodedTranscriptEntryV1,
+  method: "getblockchaininfo" | "getblockheader" | "getnameinfo",
+  params: ReadonlyArray<unknown>,
+): unknown {
+  let request: unknown;
+  let response: unknown;
+  const requestBytes = bytesFromHex(entry.request_hex);
+  try {
+    request = decodeStrictHnsJsonBytes(requestBytes, 1_048_576);
+    response = decodeStrictHnsJsonBytes(bytesFromHex(entry.response_hex), 8 * 1_024 * 1_024);
+  } catch {
+    throw new HnsAuthorityEmitRefusal("observer_evidence_mismatch");
+  }
+  if (
+    !hasExactKeys(request, ["method", "params"]) ||
+    request.method !== method ||
+    JSON.stringify(request.params) !== JSON.stringify(params) ||
+    !equalBytes(requestBytes, new TextEncoder().encode(JSON.stringify({ method, params }))) ||
+    !hasExactKeys(response, ["result", "error", "id"]) ||
+    response.error !== null ||
+    response.id !== null ||
+    response.result === null
+  ) {
+    throw new HnsAuthorityEmitRefusal("observer_evidence_mismatch");
+  }
+  return response.result;
+}
+
+function hsdResultRecord(value: unknown): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new HnsAuthorityEmitRefusal("observer_evidence_mismatch");
+  }
+  return value as Record<string, unknown>;
+}
+
+function safeRpcInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function requireDetachedChainAnchorSemantics(
+  evidence: HnsAuthorityDetachedObserverEvidenceV1,
+  rootLabel: string,
+  parentZone: string | undefined,
+): void {
+  const expectedReferences = [
+    "getblockchaininfo:before",
+    "getblockheader:tip-before",
+    "getblockheader:genesis",
+    `getnameinfo:${rootLabel}`,
+    `getnameresource:${rootLabel}`,
+    ...(parentZone === undefined ? [] : [`getnameresource:${parentZone}`]),
+    "getblockchaininfo:after",
+    "getblockheader:tip-after",
+  ];
+  const entries = evidence.detached_transcript.filter((entry) => entry.exchange_kind === "hns_rpc");
+  if (
+    entries.length !== expectedReferences.length ||
+    entries.some((entry, index) => entry.query_reference !== expectedReferences[index]) ||
+    new Set(entries.map((entry) => entry.vantage_reference)).size !== 1 ||
+    entries.some(
+      (entry) =>
+        entry.subject_reference !== rootLabel &&
+        !(
+          entry.query_reference === `getnameresource:${parentZone}` &&
+          entry.subject_reference === parentZone
+        ),
+    )
+  ) {
+    throw new HnsAuthorityEmitRefusal("observer_evidence_mismatch");
+  }
+  const byReference = new Map(entries.map((entry) => [entry.query_reference, entry]));
+  const requiredEntry = (reference: string): HnsAuthorityEncodedTranscriptEntryV1 => {
+    const entry = byReference.get(reference);
+    if (entry === undefined) {
+      throw new HnsAuthorityEmitRefusal("observer_evidence_mismatch");
+    }
+    return entry;
+  };
+  const chainInfo = (reference: "getblockchaininfo:before" | "getblockchaininfo:after") => {
+    const result = hsdResultRecord(
+      decodeHsdTranscriptRpcResult(requiredEntry(reference), "getblockchaininfo", []),
+    );
+    if (
+      result.chain !== HNS_AUTHORITY_SUCCESSOR_CHAIN_NETWORK ||
+      result.blocks !== evidence.chain_anchor_height ||
+      result.headers !== evidence.chain_anchor_height ||
+      result.bestblockhash !== evidence.chain_anchor_block_hash ||
+      result.mediantime !== evidence.chain_anchor_median_time ||
+      typeof result.verificationprogress !== "number" ||
+      !Number.isFinite(result.verificationprogress) ||
+      result.verificationprogress < 0.999_999 ||
+      result.verificationprogress > 1
+    ) {
+      throw new HnsAuthorityEmitRefusal("observer_evidence_mismatch");
+    }
+  };
+  const tipHeader = (
+    reference: "getblockheader:tip-before" | "getblockheader:tip-after",
+  ): Readonly<{ time: number; confirmations: number }> => {
+    const result = hsdResultRecord(
+      decodeHsdTranscriptRpcResult(requiredEntry(reference), "getblockheader", [
+        evidence.chain_anchor_block_hash,
+        true,
+      ]),
+    );
+    if (
+      result.hash !== evidence.chain_anchor_block_hash ||
+      result.height !== evidence.chain_anchor_height ||
+      result.mediantime !== evidence.chain_anchor_median_time ||
+      !safeRpcInteger(result.time) ||
+      !safeRpcInteger(result.confirmations) ||
+      result.confirmations < 1
+    ) {
+      throw new HnsAuthorityEmitRefusal("observer_evidence_mismatch");
+    }
+    return { time: result.time, confirmations: result.confirmations };
+  };
+  chainInfo("getblockchaininfo:before");
+  const beforeHeader = tipHeader("getblockheader:tip-before");
+  const genesis = hsdResultRecord(
+    decodeHsdTranscriptRpcResult(requiredEntry("getblockheader:genesis"), "getblockheader", [
+      HNS_MAINNET_GENESIS_BLOCK_HASH,
+      true,
+    ]),
+  );
+  if (genesis.hash !== HNS_MAINNET_GENESIS_BLOCK_HASH || genesis.height !== 0) {
+    throw new HnsAuthorityEmitRefusal("observer_evidence_mismatch");
+  }
+  const nameInfo = hsdResultRecord(
+    decodeHsdTranscriptRpcResult(requiredEntry(`getnameinfo:${rootLabel}`), "getnameinfo", [
+      rootLabel,
+      false,
+    ]),
+  );
+  const info = hsdResultRecord(nameInfo.info);
+  const stats = hsdResultRecord(info.stats);
+  if (
+    info.state !== "CLOSED" ||
+    info.registered !== true ||
+    info.expired !== false ||
+    stats.renewalPeriodEnd !== evidence.expiry_height ||
+    stats.blocksUntilExpire !== evidence.expiry_height - evidence.chain_anchor_height
+  ) {
+    throw new HnsAuthorityEmitRefusal("observer_evidence_mismatch");
+  }
+  chainInfo("getblockchaininfo:after");
+  const afterHeader = tipHeader("getblockheader:tip-after");
+  if (
+    beforeHeader.time !== afterHeader.time ||
+    beforeHeader.confirmations !== afterHeader.confirmations
+  ) {
+    throw new HnsAuthorityEmitRefusal("observer_evidence_mismatch");
+  }
+}
+
 function sameChainAuthorityRecords(
   left: ReadonlyArray<HnsChainAuthorityRecord>,
   right: ReadonlyArray<HnsChainAuthorityRecord>,
@@ -610,6 +766,7 @@ function requireDetachedTranscriptSemantics(
     input.authority_address_provenance.source_kind === "detached_parent_authority_attestation_v1"
       ? input.authority_address_provenance.parent_zone
       : undefined;
+  requireDetachedChainAnchorSemantics(evidence, input.root_label, parentZone);
   for (const entry of evidence.detached_transcript) {
     const identity = JSON.stringify([
       entry.exchange_kind,
@@ -622,11 +779,7 @@ function requireDetachedTranscriptSemantics(
     }
     identities.add(identity);
     if (entry.exchange_kind === "hns_rpc") {
-      const parentZone =
-        input.authority_address_provenance.source_kind ===
-        "detached_parent_authority_attestation_v1"
-          ? input.authority_address_provenance.parent_zone
-          : undefined;
+      if (!entry.query_reference.startsWith("getnameresource:")) continue;
       if (
         (entry.subject_reference !== input.root_label && entry.subject_reference !== parentZone) ||
         entry.query_reference !== `getnameresource:${entry.subject_reference}`

@@ -16,6 +16,14 @@ adapter and preserve their exact transcripts. The platform PostgreSQL readers
 independently supply the current authority inventory and exact generation-row
 snapshot; neither fact may come from the live-authority adapter.
 
+The HSD transcript is a closed stable bracket, not only two resource reads. It
+contains tip information and the matching tip header before observation, the
+fixed mainnet genesis header, active-name and expiry state, child and parent
+resources, then the same tip information and header after observation. The
+candidate builder decodes those exact bytes and binds the reported height,
+block hash, median time, expiry height, delegation, DS, and ownership TXT to
+them.
+
 The authority-successor emitter is the stdout-only second stage. It accepts
 only the canonical observation document produced by the harness, rechecks the
 detached observer evidence reference and transcript digest, rechecks the

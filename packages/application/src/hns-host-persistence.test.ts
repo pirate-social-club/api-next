@@ -34,6 +34,12 @@ async function digest(bytes: Uint8Array): Promise<string> {
 }
 const hsdResourceResponse = (records: ReadonlyArray<unknown>) =>
   encoder.encode(JSON.stringify({ result: { records }, error: null, id: null }));
+const hsdRpcResponse = (result: unknown) =>
+  encoder.encode(JSON.stringify({ result, error: null, id: null }));
+const chainHeight = 344_448;
+const chainBlockHash = "7".repeat(64);
+const chainMedianTime = 1_777_689_600;
+const expiryHeight = 500_000;
 const jazleeuwHsdRecords = [
   { type: "NS", ns: "ns1.pirate." },
   { type: "NS", ns: "ns2.pirate." },
@@ -80,6 +86,65 @@ const detachedTranscript = [
     exchange_kind: "hns_rpc" as const,
     vantage_reference: "observer-vantage:primary-hsd",
     subject_reference: "jazleeuw",
+    query_reference: "getblockchaininfo:before",
+    request_bytes: encoder.encode('{"method":"getblockchaininfo","params":[]}'),
+    response_bytes: hsdRpcResponse({
+      chain: "main",
+      blocks: chainHeight,
+      headers: chainHeight,
+      bestblockhash: chainBlockHash,
+      mediantime: chainMedianTime,
+      verificationprogress: 1,
+    }),
+  },
+  {
+    exchange_kind: "hns_rpc" as const,
+    vantage_reference: "observer-vantage:primary-hsd",
+    subject_reference: "jazleeuw",
+    query_reference: "getblockheader:tip-before",
+    request_bytes: encoder.encode(
+      JSON.stringify({ method: "getblockheader", params: [chainBlockHash, true] }),
+    ),
+    response_bytes: hsdRpcResponse({
+      hash: chainBlockHash,
+      height: chainHeight,
+      mediantime: chainMedianTime,
+      time: chainMedianTime - 60,
+      confirmations: 1,
+    }),
+  },
+  {
+    exchange_kind: "hns_rpc" as const,
+    vantage_reference: "observer-vantage:primary-hsd",
+    subject_reference: "jazleeuw",
+    query_reference: "getblockheader:genesis",
+    request_bytes: encoder.encode(
+      JSON.stringify({ method: "getblockheader", params: [HNS_MAINNET_GENESIS_BLOCK_HASH, true] }),
+    ),
+    response_bytes: hsdRpcResponse({ hash: HNS_MAINNET_GENESIS_BLOCK_HASH, height: 0 }),
+  },
+  {
+    exchange_kind: "hns_rpc" as const,
+    vantage_reference: "observer-vantage:primary-hsd",
+    subject_reference: "jazleeuw",
+    query_reference: "getnameinfo:jazleeuw",
+    request_bytes: encoder.encode('{"method":"getnameinfo","params":["jazleeuw",false]}'),
+    response_bytes: hsdRpcResponse({
+      info: {
+        state: "CLOSED",
+        registered: true,
+        expired: false,
+        stats: {
+          renewalPeriodEnd: expiryHeight,
+          blocksUntilExpire: expiryHeight - chainHeight,
+        },
+      },
+    }),
+  },
+  {
+    exchange_kind: "hns_rpc" as const,
+    vantage_reference: "observer-vantage:primary-hsd",
+    subject_reference: "jazleeuw",
     query_reference: "getnameresource:jazleeuw",
     request_bytes: encoder.encode('{"method":"getnameresource","params":["jazleeuw",false]}'),
     response_bytes: hsdResourceResponse(jazleeuwHsdRecords),
@@ -91,6 +156,37 @@ const detachedTranscript = [
     query_reference: "getnameresource:pirate",
     request_bytes: encoder.encode('{"method":"getnameresource","params":["pirate",false]}'),
     response_bytes: hsdResourceResponse(pirateHsdRecords),
+  },
+  {
+    exchange_kind: "hns_rpc" as const,
+    vantage_reference: "observer-vantage:primary-hsd",
+    subject_reference: "jazleeuw",
+    query_reference: "getblockchaininfo:after",
+    request_bytes: encoder.encode('{"method":"getblockchaininfo","params":[]}'),
+    response_bytes: hsdRpcResponse({
+      chain: "main",
+      blocks: chainHeight,
+      headers: chainHeight,
+      bestblockhash: chainBlockHash,
+      mediantime: chainMedianTime,
+      verificationprogress: 1,
+    }),
+  },
+  {
+    exchange_kind: "hns_rpc" as const,
+    vantage_reference: "observer-vantage:primary-hsd",
+    subject_reference: "jazleeuw",
+    query_reference: "getblockheader:tip-after",
+    request_bytes: encoder.encode(
+      JSON.stringify({ method: "getblockheader", params: [chainBlockHash, true] }),
+    ),
+    response_bytes: hsdRpcResponse({
+      hash: chainBlockHash,
+      height: chainHeight,
+      mediantime: chainMedianTime,
+      time: chainMedianTime - 60,
+      confirmations: 1,
+    }),
   },
   ...[
     ["child_authority_dns", "deployment-vantage:primary", "94.103.168.161", "axfr"],
@@ -1413,6 +1509,44 @@ test("refuses canonical observer evidence that is not verified or bound to this 
   ).rejects.toThrow("observer_evidence_not_verified");
 
   const observer = await decodeHnsAuthorityDetachedObserverEvidenceV1(artifacts.observer_evidence);
+  const selfConsistentHeightDrift = await encodeHnsAuthorityDetachedObserverEvidenceV1({
+    ...observer,
+    chain_anchor_height: observer.chain_anchor_height + 1,
+    detached_transcript: detachedTranscript,
+  });
+  await expect(
+    prepareHnsAuthoritySuccessorCandidateV1({
+      ...base,
+      chain_height: base.chain_height + 1,
+      artifacts: { ...artifacts, observer_evidence: selfConsistentHeightDrift },
+    }),
+  ).rejects.toThrow("observer_evidence_mismatch");
+
+  const oneSidedTipDrift = await encodeHnsAuthorityDetachedObserverEvidenceV1({
+    ...observer,
+    detached_transcript: detachedTranscript.map((entry) =>
+      entry.query_reference === "getblockchaininfo:before"
+        ? {
+            ...entry,
+            response_bytes: hsdRpcResponse({
+              chain: "main",
+              blocks: chainHeight + 1,
+              headers: chainHeight + 1,
+              bestblockhash: chainBlockHash,
+              mediantime: chainMedianTime,
+              verificationprogress: 1,
+            }),
+          }
+        : entry,
+    ),
+  });
+  await expect(
+    prepareHnsAuthoritySuccessorCandidateV1({
+      ...base,
+      artifacts: { ...artifacts, observer_evidence: oneSidedTipDrift },
+    }),
+  ).rejects.toThrow("observer_evidence_mismatch");
+
   const detachedVantageDrift = await encodeHnsAuthorityDetachedObserverEvidenceV1({
     ...observer,
     detached_transcript: detachedTranscript.map((entry, index) =>

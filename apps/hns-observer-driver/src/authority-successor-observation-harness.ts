@@ -389,18 +389,20 @@ async function decodeAndValidateDetachedTranscript(
     document.authority_address_provenance.source_kind === "detached_parent_authority_attestation_v1"
       ? document.authority_address_provenance.parent_zone
       : undefined;
+  const requiredHsdReferences = [
+    "getblockchaininfo:before",
+    "getblockheader:tip-before",
+    "getblockheader:genesis",
+    `getnameinfo:${document.root_label}`,
+    `getnameresource:${document.root_label}`,
+    ...(parentZone === undefined ? [] : [`getnameresource:${parentZone}`]),
+    "getblockchaininfo:after",
+    "getblockheader:tip-after",
+  ];
+  const hsdEntries = decoded.filter((entry) => entry.exchange_kind === "hns_rpc");
   const transcriptShapeIsBound = decoded.every((entry) => {
     if (entry.exchange_kind === "hns_rpc") {
-      const parentZone =
-        document.authority_address_provenance.source_kind ===
-        "detached_parent_authority_attestation_v1"
-          ? document.authority_address_provenance.parent_zone
-          : undefined;
-      return (
-        (entry.subject_reference === document.root_label ||
-          entry.subject_reference === parentZone) &&
-        entry.query_reference === `getnameresource:${entry.subject_reference}`
-      );
+      return requiredHsdReferences.includes(entry.query_reference);
     }
     if (entry.exchange_kind === "child_authority_dns") {
       return expectedChildAddresses.has(entry.subject_reference);
@@ -414,14 +416,17 @@ async function decodeAndValidateDetachedTranscript(
   });
   if (
     !transcriptShapeIsBound ||
-    !decoded.some(
+    hsdEntries.length !== requiredHsdReferences.length ||
+    hsdEntries.some((entry, index) => entry.query_reference !== requiredHsdReferences[index]) ||
+    new Set(hsdEntries.map((entry) => entry.vantage_reference)).size !== 1 ||
+    hsdEntries.some(
       (entry) =>
-        entry.exchange_kind === "hns_rpc" && entry.subject_reference === document.root_label,
+        entry.subject_reference !== document.root_label &&
+        !(
+          entry.query_reference === `getnameresource:${parentZone}` &&
+          entry.subject_reference === parentZone
+        ),
     ) ||
-    (parentZone !== undefined &&
-      !decoded.some(
-        (entry) => entry.exchange_kind === "hns_rpc" && entry.subject_reference === parentZone,
-      )) ||
     [...expectedChildAddresses].some(
       (address) =>
         !decoded.some(

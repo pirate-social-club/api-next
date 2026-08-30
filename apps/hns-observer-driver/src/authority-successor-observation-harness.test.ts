@@ -27,7 +27,72 @@ import {
 const encoder = new TextEncoder();
 const candidateBytes = encoder.encode('{"candidate":"review-exact"}');
 const evidenceReference = "hns-detached-observation:main:jazleeuw-verified-01";
+const chainHeight = 344_448;
+const chainBlockHash = "7".repeat(64);
+const chainMedianTime = 1_777_689_600;
+const expiryHeight = 500_000;
+const hsdRpcResponse = (result: unknown) =>
+  encoder.encode(JSON.stringify({ result, error: null, id: null }));
 const detachedTranscript = [
+  {
+    exchange_kind: "hns_rpc",
+    vantage_reference: "observer-vantage:primary-hsd",
+    subject_reference: "jazleeuw",
+    query_reference: "getblockchaininfo:before",
+    request_bytes: encoder.encode('{"method":"getblockchaininfo","params":[]}'),
+    response_bytes: hsdRpcResponse({
+      chain: "main",
+      blocks: chainHeight,
+      headers: chainHeight,
+      bestblockhash: chainBlockHash,
+      mediantime: chainMedianTime,
+      verificationprogress: 1,
+    }),
+  },
+  {
+    exchange_kind: "hns_rpc",
+    vantage_reference: "observer-vantage:primary-hsd",
+    subject_reference: "jazleeuw",
+    query_reference: "getblockheader:tip-before",
+    request_bytes: encoder.encode(
+      JSON.stringify({ method: "getblockheader", params: [chainBlockHash, true] }),
+    ),
+    response_bytes: hsdRpcResponse({
+      hash: chainBlockHash,
+      height: chainHeight,
+      mediantime: chainMedianTime,
+      time: chainMedianTime - 60,
+      confirmations: 1,
+    }),
+  },
+  {
+    exchange_kind: "hns_rpc",
+    vantage_reference: "observer-vantage:primary-hsd",
+    subject_reference: "jazleeuw",
+    query_reference: "getblockheader:genesis",
+    request_bytes: encoder.encode(
+      JSON.stringify({ method: "getblockheader", params: [HNS_MAINNET_GENESIS_BLOCK_HASH, true] }),
+    ),
+    response_bytes: hsdRpcResponse({ hash: HNS_MAINNET_GENESIS_BLOCK_HASH, height: 0 }),
+  },
+  {
+    exchange_kind: "hns_rpc",
+    vantage_reference: "observer-vantage:primary-hsd",
+    subject_reference: "jazleeuw",
+    query_reference: "getnameinfo:jazleeuw",
+    request_bytes: encoder.encode('{"method":"getnameinfo","params":["jazleeuw",false]}'),
+    response_bytes: hsdRpcResponse({
+      info: {
+        state: "CLOSED",
+        registered: true,
+        expired: false,
+        stats: {
+          renewalPeriodEnd: expiryHeight,
+          blocksUntilExpire: expiryHeight - chainHeight,
+        },
+      },
+    }),
+  },
   {
     exchange_kind: "hns_rpc",
     vantage_reference: "observer-vantage:primary-hsd",
@@ -98,6 +163,37 @@ const detachedTranscript = [
         id: null,
       }),
     ),
+  },
+  {
+    exchange_kind: "hns_rpc",
+    vantage_reference: "observer-vantage:primary-hsd",
+    subject_reference: "jazleeuw",
+    query_reference: "getblockchaininfo:after",
+    request_bytes: encoder.encode('{"method":"getblockchaininfo","params":[]}'),
+    response_bytes: hsdRpcResponse({
+      chain: "main",
+      blocks: chainHeight,
+      headers: chainHeight,
+      bestblockhash: chainBlockHash,
+      mediantime: chainMedianTime,
+      verificationprogress: 1,
+    }),
+  },
+  {
+    exchange_kind: "hns_rpc",
+    vantage_reference: "observer-vantage:primary-hsd",
+    subject_reference: "jazleeuw",
+    query_reference: "getblockheader:tip-after",
+    request_bytes: encoder.encode(
+      JSON.stringify({ method: "getblockheader", params: [chainBlockHash, true] }),
+    ),
+    response_bytes: hsdRpcResponse({
+      hash: chainBlockHash,
+      height: chainHeight,
+      mediantime: chainMedianTime,
+      time: chainMedianTime - 60,
+      confirmations: 1,
+    }),
   },
   {
     exchange_kind: "child_authority_dns",
@@ -431,7 +527,7 @@ test("derives the complete 6/10/1 package from live authority and row-identity p
           expiry_horizon_sufficient: true,
           chain_anchor_height: 344_448,
           chain_anchor_block_hash: "7".repeat(64),
-          chain_anchor_median_time: Date.parse(observedAt) / 1_000,
+          chain_anchor_median_time: chainMedianTime,
           expiry_height: 500_000,
           evidence_reference: evidenceReference,
         },
@@ -488,7 +584,7 @@ test("derives the complete 6/10/1 package from live authority and row-identity p
     ),
   );
   const hnsTranscript = detachedEvidence.detached_transcript.find(
-    (entry) => entry.exchange_kind === "hns_rpc",
+    (entry) => entry.query_reference === "getnameresource:jazleeuw",
   );
   expect(hnsTranscript?.response_hex).toContain(bytesHex(encoder.encode("ns1.pirate.")));
   expect(emissions).toEqual([result.observation_document_bytes]);
