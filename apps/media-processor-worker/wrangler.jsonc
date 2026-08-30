@@ -159,7 +159,7 @@
       "hyperdrive": [
         {
           "binding": "CONTROL_PLANE",
-          "id": "00000000-0000-0000-0000-000000000000",
+          "id": "884b68c5a7904982a86620ed90032b77",
           "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
         }
       ],
@@ -204,8 +204,9 @@
         "required": [
           "ACRCLOUD_ACCESS_KEY",
           "ACRCLOUD_ACCESS_SECRET",
-          "ELEVENLABS_API_KEY"
-          ,"OPENAI_API_KEY"
+          "ELEVENLABS_API_KEY",
+          "OPENAI_API_KEY",
+          "OPENROUTER_API_KEY"
         ]
       }
     }

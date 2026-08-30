@@ -223,9 +223,8 @@
       "hyperdrive": [
         {
           "binding": "CONTROL_PLANE",
-          // Resource provisioning is intentionally out of scope for M1.
-          // The coordinator replaces this with an existing reviewed ID.
-          "id": "00000000-0000-0000-0000-000000000000",
+          // Reuse the dedicated canonical-account production Hyperdrive.
+          "id": "884b68c5a7904982a86620ed90032b77",
           "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
         }
       ],
