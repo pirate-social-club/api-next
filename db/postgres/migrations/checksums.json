@@ -89,6 +89,7 @@
     "0086_rewards_drawing_offer_window_guard.sql": "4bebbf006bd365c843c63ef691d1f76fa172f3629d91d78476fa71d9d1af0d48",
     "0087_study_unit_exercise_eligibility.sql": "80902f630f4db0e0dc135c9f5ec027a20ea71c5e391f375e90b3ecb259d04984",
     "0088_rewards_song_asset_bonus.sql": "549e78987df022b877ff365601c21146819a630d658b014b80ad35018fe09371",
-    "0089_hns_app_host_active_refresh.sql": "a2b620bf31ef26f9ca7004fac2db4c385ce67ab6cd5d931fb8119b0caf08efad"
+    "0089_hns_app_host_active_refresh.sql": "a2b620bf31ef26f9ca7004fac2db4c385ce67ab6cd5d931fb8119b0caf08efad",
+    "0090_hns_operator_route_control_promotion.sql": "484e7655a52827fffe40fe477a787d4688acdc8cf2fa7e875fff10e2ecbc2be5"
   }
 }
