@@ -4974,6 +4974,7 @@ CREATE FUNCTION guard_megapot_pool_drawing() RETURNS trigger
     AS $$
 DECLARE
   leg_record song_reward_offer_legs%ROWTYPE;
+  offer_record song_reward_offers%ROWTYPE;
   observation_record megapot_drawing_observations%ROWTYPE;
 BEGIN
   IF TG_OP = 'DELETE' THEN
@@ -4982,10 +4983,14 @@ BEGIN
   IF TG_OP = 'INSERT' THEN
     SELECT * INTO leg_record FROM song_reward_offer_legs
      WHERE leg_id = NEW.pool_leg_id FOR SHARE;
+    SELECT * INTO offer_record FROM song_reward_offers
+     WHERE offer_id = leg_record.offer_id FOR SHARE;
     SELECT * INTO observation_record FROM megapot_drawing_observations
      WHERE observation_id = NEW.observation_id FOR SHARE;
     IF NEW.status <> 'entry_open' OR leg_record.kind <> 'megapot_pool'
        OR leg_record.status <> 'active'
+       OR offer_record.offer_id IS NULL
+       OR offer_record.status <> 'active'
        OR NEW.drawing_id < leg_record.participation_starts_drawing_id
        OR observation_record.observation_id IS NULL
        OR observation_record.attestation_id <> leg_record.attestation_id
@@ -4994,6 +4999,8 @@ BEGIN
        OR observation_record.expires_at <= clock_timestamp()
        OR NEW.entry_cutoff_at <> observation_record.drawing_time
             - make_interval(secs => leg_record.entry_cutoff_seconds)
+       OR NEW.entry_cutoff_at <= clock_timestamp()
+       OR NEW.entry_cutoff_at > offer_record.ends_at
        OR NEW.ticket_price_ceiling_atomic <> leg_record.max_ticket_price_atomic THEN
       RAISE EXCEPTION 'Megapot pool drawing does not match live leg and observation';
     END IF;
@@ -19758,6 +19765,26 @@ CREATE TABLE study_translation_quality_registry (
     CONSTRAINT study_translation_quality_registry_selected_by_check CHECK (((char_length(selected_by) >= 1) AND (char_length(selected_by) <= 128)))
 );
 
+CREATE TABLE study_unit_exercise_eligibility (
+    community_id text NOT NULL,
+    post_id text NOT NULL,
+    study_unit_id text NOT NULL,
+    exercise_kind text NOT NULL,
+    policy_revision text NOT NULL,
+    eligibility text NOT NULL,
+    ineligibility_reason text,
+    measured_token_count bigint NOT NULL,
+    measured_character_count bigint NOT NULL,
+    evaluated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT study_unit_exercise_eligibility_check CHECK ((((eligibility = 'eligible'::text) AND (ineligibility_reason IS NULL)) OR ((eligibility = 'ineligible'::text) AND (ineligibility_reason IS NOT NULL)))),
+    CONSTRAINT study_unit_exercise_eligibility_eligibility_check CHECK ((eligibility = ANY (ARRAY['eligible'::text, 'ineligible'::text]))),
+    CONSTRAINT study_unit_exercise_eligibility_exercise_kind_check CHECK ((exercise_kind = ANY (ARRAY['say_it_back'::text, 'translation_choice'::text]))),
+    CONSTRAINT study_unit_exercise_eligibility_ineligibility_reason_check CHECK (((ineligibility_reason IS NULL) OR (ineligibility_reason = 'spoken_recall_too_long'::text))),
+    CONSTRAINT study_unit_exercise_eligibility_measured_character_count_check CHECK ((measured_character_count >= 0)),
+    CONSTRAINT study_unit_exercise_eligibility_measured_token_count_check CHECK ((measured_token_count >= 0)),
+    CONSTRAINT study_unit_exercise_eligibility_policy_revision_check CHECK ((policy_revision = 'study_unit_eligibility_v1'::text))
+);
+
 CREATE TABLE subject_key_binding_events (
     binding_event_id text NOT NULL,
     subject_key_id text NOT NULL,
@@ -21666,6 +21693,9 @@ ALTER TABLE ONLY study_translation_quality_policies
 ALTER TABLE ONLY study_translation_quality_registry
     ADD CONSTRAINT study_translation_quality_registry_pkey PRIMARY KEY (target_language);
 
+ALTER TABLE ONLY study_unit_exercise_eligibility
+    ADD CONSTRAINT study_unit_exercise_eligibility_pkey PRIMARY KEY (community_id, post_id, study_unit_id, exercise_kind, policy_revision);
+
 ALTER TABLE ONLY subject_key_binding_events
     ADD CONSTRAINT subject_key_binding_events_event_subject_unique UNIQUE (binding_event_id, subject_key_id);
 
@@ -22885,6 +22915,8 @@ CREATE TRIGGER study_sessions_change_guard BEFORE INSERT OR DELETE OR UPDATE ON 
 CREATE TRIGGER study_translation_generation_items_immutable BEFORE DELETE OR UPDATE ON study_translation_generation_items FOR EACH ROW EXECUTE FUNCTION reject_localization_immutable_mutation();
 
 CREATE TRIGGER study_translation_quality_policies_immutable BEFORE DELETE OR UPDATE ON study_translation_quality_policies FOR EACH ROW EXECUTE FUNCTION reject_localization_immutable_mutation();
+
+CREATE TRIGGER study_unit_exercise_eligibility_immutable BEFORE DELETE OR UPDATE ON study_unit_exercise_eligibility FOR EACH ROW EXECUTE FUNCTION reject_localization_immutable_mutation();
 
 CREATE TRIGGER subject_key_binding_events_append_only BEFORE DELETE OR UPDATE ON subject_key_binding_events FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
@@ -24877,6 +24909,9 @@ ALTER TABLE ONLY study_translation_generation_runs
 
 ALTER TABLE ONLY study_translation_quality_registry
     ADD CONSTRAINT study_translation_quality_reg_target_language_quality_poli_fkey FOREIGN KEY (target_language, quality_policy_revision) REFERENCES study_translation_quality_policies(target_language, quality_policy_revision);
+
+ALTER TABLE ONLY study_unit_exercise_eligibility
+    ADD CONSTRAINT study_unit_exercise_eligibili_community_id_post_id_study_u_fkey FOREIGN KEY (community_id, post_id, study_unit_id) REFERENCES localization_study_units(community_id, post_id, study_unit_id);
 
 ALTER TABLE ONLY subject_key_binding_events
     ADD CONSTRAINT subject_key_binding_events_previous_fk FOREIGN KEY (previous_binding_event_id, subject_key_id) REFERENCES subject_key_binding_events(binding_event_id, subject_key_id);
