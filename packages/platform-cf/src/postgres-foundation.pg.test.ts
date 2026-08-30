@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { ControlPlaneDb } from "@pirate/application";
 import { Effect } from "effect";
 import { Client } from "pg";
+import { loadPostgresMigrations } from "../../../scripts/postgres-migrations";
 
 import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres";
@@ -747,6 +748,7 @@ const migrations: readonly PostgresMigration[] = [
   songRatingsAgeAccessMigration,
   generalAudienceSongCoversMigration,
 ];
+const allMigrations = await loadPostgresMigrations();
 
 function checksum(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -764,6 +766,11 @@ function connectionForSchema(raw: string, schema: string): string {
   const separator = raw.includes("?") ? "&" : "?";
   const option = encodeURIComponent(`-c search_path=${schema}`);
   return `${raw}${separator}options=${option}`;
+}
+
+function requireConnectionString(): string {
+  if (connectionString === undefined) throw new Error("test URL was not configured");
+  return connectionString;
 }
 
 async function applyMigrations(
@@ -832,20 +839,23 @@ async function catalogForSchema(admin: Client, schema: string): Promise<SchemaCa
       ...index,
       indexdef: index.indexdef.replaceAll(`${schema}.`, ""),
     })),
-    constraints: constraints.rows,
+    constraints: constraints.rows.map((constraint) => ({
+      ...constraint,
+      definition: constraint.definition.replaceAll(`${schema}.`, ""),
+    })),
   };
 }
 
 async function withSchema<A>(
   use: (admin: Client, connection: string, schema: string) => Promise<A>,
 ): Promise<A> {
-  if (connectionString === undefined) throw new Error("test URL was not configured");
+  const configuredConnectionString = requireConnectionString();
   const schema = schemaIdentifier();
-  const admin = new Client({ connectionString });
+  const admin = new Client({ connectionString: configuredConnectionString });
   await admin.connect();
   await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
   await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
-  const scopedConnectionString = connectionForSchema(connectionString, schema);
+  const scopedConnectionString = connectionForSchema(configuredConnectionString, schema);
   try {
     return await use(admin, scopedConnectionString, schema);
   } finally {
@@ -1046,19 +1056,36 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
+      for (const pinnedMigration of migrations) {
+        expect(
+          allMigrations.find(({ version: candidate }) => candidate === pinnedMigration.version),
+        ).toEqual(pinnedMigration);
+      }
+
+      const fullMigrationSchema = schemaIdentifier();
+      await admin.query(`CREATE SCHEMA ${quoteIdentifier(fullMigrationSchema)}`);
+      try {
+        await applyMigrations(
+          connectionForSchema(requireConnectionString(), fullMigrationSchema),
+          allMigrations,
+        );
+        const migratedCatalog = await catalogForSchema(admin, fullMigrationSchema);
+        const baselineSchema = schemaIdentifier();
+        await admin.query(`CREATE SCHEMA ${quoteIdentifier(baselineSchema)}`);
+        try {
+          await admin.query(`SET search_path TO ${quoteIdentifier(baselineSchema)}`);
+          await admin.query(baselineSql);
+          expect(migratedCatalog).toEqual(await catalogForSchema(admin, baselineSchema));
+        } finally {
+          await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
+          await admin.query(`DROP SCHEMA ${quoteIdentifier(baselineSchema)} CASCADE`);
+        }
+      } finally {
+        await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
+        await admin.query(`DROP SCHEMA ${quoteIdentifier(fullMigrationSchema)} CASCADE`);
+      }
 
       await applyMigrations(scopedConnectionString, migrations);
-      const migratedCatalog = await catalogForSchema(admin, schema);
-      const baselineSchema = schemaIdentifier();
-      await admin.query(`CREATE SCHEMA ${quoteIdentifier(baselineSchema)}`);
-      try {
-        await admin.query(`SET search_path TO ${quoteIdentifier(baselineSchema)}`);
-        await admin.query(baselineSql);
-        expect(migratedCatalog).toEqual(await catalogForSchema(admin, baselineSchema));
-      } finally {
-        await admin.query(`DROP SCHEMA ${quoteIdentifier(baselineSchema)} CASCADE`);
-        await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
-      }
 
       const tables = await admin.query<{ table_name: string }>(
         "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema()",

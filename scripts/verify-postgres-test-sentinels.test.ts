@@ -47,6 +47,7 @@ async function sentinelSet(): Promise<{
     "hns-host-persistence",
     "handle-sales",
     "community-moderation",
+    "dance-reference",
   ].map((name) => ({
     name,
     path: join(directory, `${name}.complete`),
@@ -149,6 +150,22 @@ describe("Postgres suite sentinel verification", () => {
     );
     expect(
       workflow.match(/\/tmp\/api-next-control-plane-postgres-rewards-song-offers-suite-complete/gu),
+    ).toHaveLength(2);
+  });
+
+  test("keeps Dance reference persistence fail-closed in Postgres CI", async () => {
+    const workflow = await readFile(
+      new URL("../.github/workflows/ci.yml", import.meta.url),
+      "utf8",
+    );
+
+    expect(workflow).toContain("packages/platform-cf/src/dance-reference-persistence.pg.test.ts");
+    expect(workflow).toContain(
+      "CONTROL_PLANE_POSTGRES_DANCE_REFERENCE_TEST_SENTINEL: " +
+        "/tmp/api-next-control-plane-postgres-dance-reference-suite-complete",
+    );
+    expect(
+      workflow.match(/\/tmp\/api-next-control-plane-postgres-dance-reference-suite-complete/gu),
     ).toHaveLength(2);
   });
 

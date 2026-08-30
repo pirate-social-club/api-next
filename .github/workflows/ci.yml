@@ -96,6 +96,7 @@ jobs:
           /tmp/api-next-control-plane-postgres-handle-sales-suite-complete
           /tmp/api-next-control-plane-postgres-community-moderation-suite-complete
           /tmp/api-next-control-plane-postgres-platform-pirate-rename-suite-complete
+          /tmp/api-next-control-plane-postgres-dance-reference-suite-complete
       - name: Run required Postgres 17 suite
         env:
           CONTROL_PLANE_POSTGRES_TEST_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
@@ -127,6 +128,7 @@ jobs:
           CONTROL_PLANE_POSTGRES_HANDLE_SALES_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-handle-sales-suite-complete
           CONTROL_PLANE_POSTGRES_COMMUNITY_MODERATION_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-community-moderation-suite-complete
           CONTROL_PLANE_POSTGRES_PLATFORM_PIRATE_RENAME_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-platform-pirate-rename-suite-complete
+          CONTROL_PLANE_POSTGRES_DANCE_REFERENCE_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-dance-reference-suite-complete
         run: |
           set -euo pipefail
           # This suite contains database-time lease fixtures measured in tens of
@@ -165,6 +167,7 @@ jobs:
             packages/platform-cf/src/hns-host-persistence-repository.pg.test.ts \
             packages/platform-cf/src/handle-sales-repository.pg.test.ts \
             packages/platform-cf/src/community-moderation-foundation.pg.test.ts \
-            packages/platform-cf/src/platform-pirate-handle-repository.pg.test.ts
+            packages/platform-cf/src/platform-pirate-handle-repository.pg.test.ts \
+            packages/platform-cf/src/dance-reference-persistence.pg.test.ts
       - name: Verify Postgres 17 completion sentinel
         run: bun run verify:postgres-sentinels

@@ -1860,6 +1860,19 @@ CREATE FUNCTION grade_study_answer_v1(candidate_answer jsonb, stored_answer_key 
   END
 $$;
 
+CREATE FUNCTION guard_account_language_preferences_update() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF OLD.account_id IS DISTINCT FROM NEW.account_id
+     OR NEW.revision <> OLD.revision + 1
+     OR NEW.updated_at <= OLD.updated_at THEN
+    RAISE EXCEPTION 'language preference update requires stable account and next revision';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION guard_account_minimum_age_attestation_v1() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -1923,14 +1936,68 @@ CREATE FUNCTION guard_activity_qualification() RETURNS trigger
     AS $$
 DECLARE
   study_record study_sessions%ROWTYPE;
+  study_v2_record RECORD;
   karaoke_session_record karaoke_sessions%ROWTYPE;
   karaoke_attempt_record karaoke_attempts%ROWTYPE;
+  karaoke_policy_document JSONB;
+  karaoke_policy_kind TEXT;
   expected_evidence JSONB;
 BEGIN
   IF TG_OP <> 'INSERT' THEN
     RAISE EXCEPTION 'activity qualifications are append-only';
   END IF;
   IF NEW.activity_key = 'study' THEN
+    SELECT session.account_id, session.persona_id, session.community_id, session.post_id,
+           session.audio_revision, session.qualification_policy_revision,
+           session.timezone, session.status, session.completed_at,
+           count(item.session_item_id)::bigint AS qualifying_exercise_count,
+           count(item.session_item_id) FILTER (WHERE EXISTS (
+             SELECT 1 FROM study_attempts_v2 attempt
+              WHERE attempt.session_item_id=item.session_item_id
+           ))::bigint AS presented_count,
+           count(item.session_item_id) FILTER (WHERE EXISTS (
+             SELECT 1 FROM study_attempts_v2 attempt
+              WHERE attempt.session_item_id=item.session_item_id
+                AND attempt.attempt_number=1 AND attempt.outcome='correct'
+           ))::bigint AS first_pass_correct
+      INTO study_v2_record
+     FROM study_sessions_v2 session
+      JOIN study_session_items_v2 item ON item.session_id=session.session_id
+     WHERE session.session_id=NEW.study_session_id
+     GROUP BY session.session_id;
+    IF study_v2_record.account_id IS NOT NULL THEN
+      expected_evidence := jsonb_build_object(
+        'kind', 'study_session_first_pass_v2',
+        'qualifying_exercise_count', study_v2_record.qualifying_exercise_count,
+        'first_pass_correct', study_v2_record.first_pass_correct,
+        'required_correct', greatest(
+          1, ceil((7 * study_v2_record.qualifying_exercise_count)::numeric / 10)::bigint
+        )
+      );
+      IF study_v2_record.status <> 'completed'
+         OR study_v2_record.presented_count <> study_v2_record.qualifying_exercise_count
+         OR study_v2_record.first_pass_correct < greatest(
+           1, ceil((7 * study_v2_record.qualifying_exercise_count)::numeric / 10)::bigint
+         )
+         OR ROW(
+           NEW.account_id, NEW.persona_id, NEW.community_id, NEW.post_id,
+           NEW.audio_revision, NEW.qualification_policy_version_id,
+           NEW.score_bps, NEW.qualified_at, NEW.streak_day, NEW.evidence_summary
+         ) IS DISTINCT FROM ROW(
+           study_v2_record.account_id, study_v2_record.persona_id,
+           study_v2_record.community_id, study_v2_record.post_id,
+           study_v2_record.audio_revision, study_v2_record.qualification_policy_revision,
+           ((10000 * study_v2_record.first_pass_correct)
+             / study_v2_record.qualifying_exercise_count)::integer,
+           study_v2_record.completed_at,
+           (study_v2_record.completed_at AT TIME ZONE study_v2_record.timezone)::date,
+           expected_evidence
+         ) THEN
+        RAISE EXCEPTION 'Study v2 qualification is not exact reducer output';
+      END IF;
+      RETURN NEW;
+    END IF;
+
     SELECT * INTO study_record FROM study_sessions
      WHERE session_id = NEW.study_session_id FOR SHARE;
     expected_evidence := jsonb_build_object(
@@ -1964,12 +2031,21 @@ BEGIN
     SELECT * INTO karaoke_attempt_record FROM karaoke_attempts
      WHERE session_id = NEW.karaoke_session_id
        AND attempt_id = NEW.karaoke_attempt_id FOR SHARE;
+    SELECT policy_kind, policy_document INTO karaoke_policy_kind, karaoke_policy_document
+      FROM qualification_policy_versions
+     WHERE qualification_policy_version_id = karaoke_session_record.qualification_policy_version_id
+       AND activity_key = 'karaoke';
     IF karaoke_session_record.session_id IS NULL
        OR karaoke_session_record.status <> 'completed'
        OR karaoke_attempt_record.completion_reason <> 'completed'
        OR karaoke_attempt_record.scored_line_count < 5
        OR karaoke_attempt_record.coverage_bps < 8500
        OR karaoke_attempt_record.final_score_bps < 7000
+       OR (
+         karaoke_policy_kind = 'karaoke_qualification_v2'
+         AND NOT (karaoke_policy_document->'eligible_playback_kinds'
+           ? karaoke_session_record.playback_kind)
+       )
        OR ROW(
          NEW.account_id, NEW.persona_id, NEW.community_id, NEW.post_id,
          NEW.audio_revision, NEW.qualification_policy_version_id,
@@ -2004,6 +2080,38 @@ BEGIN
   END IF;
   IF NEW.updated_at < OLD.updated_at THEN
     RAISE EXCEPTION 'activity registry time cannot move backward';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_asset_bonus_leg_asset() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  asset_record reward_asset_whitelist%ROWTYPE;
+BEGIN
+  IF NEW.kind <> 'asset_bonus' THEN
+    RETURN NEW;
+  END IF;
+  SELECT * INTO asset_record
+    FROM reward_asset_whitelist
+   WHERE chain_id = NEW.chain_id AND token_address = NEW.token_address
+   FOR SHARE;
+  IF asset_record.token_address IS NULL
+     OR asset_record.asset_kind <> 'bonus_asset'
+     OR asset_record.environment NOT IN ('test', 'staging')
+     OR asset_record.decimals <> NEW.token_decimals
+     OR asset_record.symbol <> NEW.token_symbol
+     OR asset_record.policy_version <> NEW.asset_policy_version THEN
+    RAISE EXCEPTION 'asset bonus leg requires exact active bonus asset';
+  END IF;
+  IF TG_OP = 'INSERT' AND asset_record.status <> 'active' THEN
+    RAISE EXCEPTION 'asset bonus leg requires exact active bonus asset';
+  END IF;
+  IF TG_OP = 'UPDATE' AND ROW(NEW.token_symbol, NEW.asset_policy_version)
+      IS DISTINCT FROM ROW(OLD.token_symbol, OLD.asset_policy_version) THEN
+    RAISE EXCEPTION 'asset bonus leg terms are immutable';
   END IF;
   RETURN NEW;
 END
@@ -3422,6 +3530,323 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION guard_dance_choreography() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  target dance_choreography_revisions%ROWTYPE;
+  song posts%ROWTYPE;
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'Dance choreographies cannot be deleted';
+  END IF;
+  IF TG_OP = 'INSERT' THEN
+    IF NOT active_owned_persona(NEW.creator_account_id, NEW.creator_persona_id) THEN
+      RAISE EXCEPTION 'Dance choreography requires an active owned persona';
+    END IF;
+    SELECT * INTO song FROM posts
+     WHERE community_id = NEW.community_id AND post_id = NEW.song_post_id FOR SHARE;
+    IF song.post_id IS NULL OR song.post_type <> 'song' OR song.status <> 'published' THEN
+      RAISE EXCEPTION 'Dance choreography requires a published song';
+    END IF;
+  ELSE
+    IF ROW(NEW.choreography_id, NEW.community_id, NEW.song_post_id,
+      NEW.creator_account_id, NEW.creator_persona_id, NEW.created_at)
+      IS DISTINCT FROM ROW(OLD.choreography_id, OLD.community_id, OLD.song_post_id,
+      OLD.creator_account_id, OLD.creator_persona_id, OLD.created_at) THEN
+      RAISE EXCEPTION 'Dance choreography identity is immutable';
+    END IF;
+    IF NEW IS NOT DISTINCT FROM OLD THEN
+      RETURN NEW;
+    END IF;
+    IF NEW.version <> OLD.version + 1 OR NEW.updated_at <= OLD.updated_at THEN
+      RAISE EXCEPTION 'Dance choreography update requires the next version';
+    END IF;
+    IF NOT (
+      (OLD.status = 'draft' AND NEW.status IN ('processing', 'disabled', 'retired'))
+      OR (OLD.status = 'processing' AND NEW.status IN ('processing', 'ready', 'disabled', 'retired'))
+      OR (OLD.status = 'ready' AND NEW.status IN ('ready', 'disabled'))
+      OR (OLD.status = 'disabled' AND NEW.status = 'retired')
+    ) THEN
+      RAISE EXCEPTION 'Invalid Dance choreography transition';
+    END IF;
+  END IF;
+  IF NEW.active_revision IS NOT NULL THEN
+    SELECT * INTO target FROM dance_choreography_revisions
+     WHERE choreography_id = NEW.choreography_id AND revision = NEW.active_revision;
+    IF target.choreography_id IS NULL OR target.status <> 'ready' THEN
+      RAISE EXCEPTION 'Dance active revision must be ready';
+    END IF;
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_dance_choreography_revision() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  aggregate dance_choreographies%ROWTYPE;
+  reference_post posts%ROWTYPE;
+  selected_segment dance_song_segments%ROWTYPE;
+  artifact dance_reference_artifacts%ROWTYPE;
+  latest_revision BIGINT;
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'Dance choreography revisions cannot be deleted';
+  END IF;
+  SELECT * INTO aggregate FROM dance_choreographies
+   WHERE choreography_id = NEW.choreography_id FOR SHARE;
+  SELECT * INTO reference_post FROM posts
+   WHERE community_id = NEW.community_id AND post_id = NEW.reference_video_post_id FOR SHARE;
+  IF aggregate.choreography_id IS NULL
+     OR aggregate.community_id <> NEW.community_id OR aggregate.song_post_id <> NEW.song_post_id
+     OR reference_post.post_id IS NULL OR reference_post.post_type <> 'video'
+     OR reference_post.status <> 'published' OR reference_post.visibility <> 'public' THEN
+    RAISE EXCEPTION 'Dance revision requires exact aggregate and published reference video';
+  END IF;
+  IF TG_OP = 'INSERT' THEN
+    IF aggregate.status NOT IN ('processing', 'ready') THEN
+      RAISE EXCEPTION 'Dance choreography is not open for a revision append';
+    END IF;
+    IF NEW.aggregate_version <> aggregate.version THEN
+      RAISE EXCEPTION 'Dance revision append requires the current aggregate version';
+    END IF;
+    SELECT max(existing.revision) INTO latest_revision
+      FROM dance_choreography_revisions AS existing
+     WHERE existing.choreography_id = NEW.choreography_id;
+    IF NEW.revision <> COALESCE(latest_revision, 0) + 1 THEN
+      RAISE EXCEPTION 'Dance revisions must append in order';
+    END IF;
+  END IF;
+  IF TG_OP = 'UPDATE' THEN
+    IF OLD.status = 'processing' AND aggregate.status IN ('disabled', 'retired') THEN
+      RAISE EXCEPTION 'Disabled or retired Dance choreography rejects late processing';
+    END IF;
+    IF ROW(NEW.choreography_id, NEW.revision, NEW.aggregate_version,
+      NEW.community_id, NEW.song_post_id,
+      NEW.audio_revision, NEW.requested_start_ms, NEW.requested_end_ms,
+      NEW.reference_video_post_id, NEW.reference_video_song_post_id,
+      NEW.reference_video_audio_revision, NEW.reference_video_object_ref,
+      NEW.reference_video_sha256, NEW.mirror_policy, NEW.alignment_policy_version,
+      NEW.alignment_adapter, NEW.alignment_revision, NEW.pose_model_version,
+      NEW.pose_runtime_version, NEW.feature_schema_version, NEW.scorer_contract_version,
+      NEW.fingerprint_policy_version, NEW.integrity_policy_version,
+      NEW.owner_policy_revision, NEW.owner_policy_hash, NEW.revision_terms_hash, NEW.created_at)
+      IS DISTINCT FROM ROW(OLD.choreography_id, OLD.revision, OLD.aggregate_version,
+      OLD.community_id,
+      OLD.song_post_id, OLD.audio_revision, OLD.requested_start_ms, OLD.requested_end_ms,
+      OLD.reference_video_post_id, OLD.reference_video_song_post_id,
+      OLD.reference_video_audio_revision, OLD.reference_video_object_ref,
+      OLD.reference_video_sha256, OLD.mirror_policy, OLD.alignment_policy_version,
+      OLD.alignment_adapter, OLD.alignment_revision, OLD.pose_model_version,
+      OLD.pose_runtime_version, OLD.feature_schema_version, OLD.scorer_contract_version,
+      OLD.fingerprint_policy_version, OLD.integrity_policy_version,
+      OLD.owner_policy_revision, OLD.owner_policy_hash, OLD.revision_terms_hash, OLD.created_at) THEN
+      RAISE EXCEPTION 'Dance revision terms are immutable';
+    END IF;
+    IF NEW IS NOT DISTINCT FROM OLD THEN
+      RETURN NEW;
+    END IF;
+    IF NOT (
+      (OLD.status = 'processing' AND NEW.status IN ('ready', 'processing_failed'))
+      OR (OLD.status = 'ready' AND NEW.status IN ('disabled', 'retired'))
+    ) THEN
+      RAISE EXCEPTION 'Invalid Dance revision transition';
+    END IF;
+  END IF;
+  IF NEW.status IN ('ready', 'disabled', 'retired') THEN
+    IF NEW.status = 'ready' AND aggregate.status IN ('disabled', 'retired') THEN
+      RAISE EXCEPTION 'Disabled or retired Dance choreography cannot become ready';
+    END IF;
+    SELECT * INTO selected_segment FROM dance_song_segments WHERE segment_id = NEW.segment_id;
+    SELECT * INTO artifact FROM dance_reference_artifacts
+     WHERE choreography_id = NEW.choreography_id AND revision = NEW.revision;
+    IF selected_segment.segment_id IS NULL
+       OR selected_segment.community_id <> NEW.community_id
+       OR selected_segment.song_post_id <> NEW.song_post_id
+       OR selected_segment.audio_revision <> NEW.audio_revision
+       OR selected_segment.start_ms <> NEW.requested_start_ms
+       OR selected_segment.end_ms <> NEW.requested_end_ms
+       OR NEW.reference_video_scored_end_ms - NEW.reference_video_scored_start_ms
+          <> selected_segment.duration_ms
+       OR artifact.artifact_id IS NULL THEN
+      RAISE EXCEPTION 'Ready Dance revision lacks exact segment, window, or artifact';
+    END IF;
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_dance_processing_attempt() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  target dance_choreography_revisions%ROWTYPE;
+  latest dance_reference_processing_attempts%ROWTYPE;
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'Dance processing attempts cannot be deleted';
+  END IF;
+  IF TG_OP = 'INSERT' THEN
+    SELECT * INTO target FROM dance_choreography_revisions
+     WHERE choreography_id = NEW.choreography_id AND revision = NEW.revision FOR SHARE;
+    SELECT * INTO latest FROM dance_reference_processing_attempts
+     WHERE choreography_id = NEW.choreography_id AND revision = NEW.revision
+     ORDER BY attempt_number DESC LIMIT 1 FOR SHARE;
+    IF target.choreography_id IS NULL OR target.status <> 'processing'
+       OR NEW.attempt_number <> COALESCE(latest.attempt_number, 0) + 1
+       OR NEW.lease_expires_at <= clock_timestamp()
+       OR (latest.processing_attempt_id IS NOT NULL
+         AND (latest.state <> 'failed' OR latest.retryable IS NOT TRUE)) THEN
+      RAISE EXCEPTION 'Dance processing attempt is not the exact next retry';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF TG_OP = 'UPDATE' THEN
+    IF ROW(NEW.processing_attempt_id, NEW.choreography_id, NEW.revision,
+      NEW.attempt_number, NEW.adapter_id, NEW.adapter_revision,
+      NEW.input_digest, NEW.created_at)
+      IS DISTINCT FROM ROW(OLD.processing_attempt_id, OLD.choreography_id, OLD.revision,
+      OLD.attempt_number, OLD.adapter_id, OLD.adapter_revision,
+      OLD.input_digest, OLD.created_at) THEN
+      RAISE EXCEPTION 'Dance processing attempt identity is immutable';
+    END IF;
+    IF NEW IS NOT DISTINCT FROM OLD THEN
+      RETURN NEW;
+    END IF;
+    IF OLD.state = 'leased' AND NEW.state = 'leased' THEN
+      IF OLD.lease_expires_at > clock_timestamp()
+         OR NEW.lease_expires_at <= clock_timestamp()
+         OR NEW.lease_fence <> OLD.lease_fence + 1
+         OR NEW.updated_at <= OLD.updated_at THEN
+        RAISE EXCEPTION 'Dance processing lease cannot be reclaimed';
+      END IF;
+    ELSIF OLD.state = 'leased' AND NEW.state IN ('succeeded', 'failed', 'exhausted') THEN
+      IF OLD.lease_expires_at <= clock_timestamp()
+         OR NEW.lease_fence <> OLD.lease_fence OR NEW.updated_at <= OLD.updated_at THEN
+        RAISE EXCEPTION 'Dance processing terminal fence is stale';
+      END IF;
+    ELSE
+      RAISE EXCEPTION 'Invalid Dance processing attempt transition';
+    END IF;
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_dance_reference_artifact() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  target dance_choreography_revisions%ROWTYPE;
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    RAISE EXCEPTION 'Dance reference artifacts are immutable';
+  END IF;
+  SELECT * INTO target FROM dance_choreography_revisions
+   WHERE choreography_id = NEW.choreography_id AND revision = NEW.revision FOR SHARE;
+  IF target.choreography_id IS NULL
+     OR target.pose_model_version <> NEW.pose_model_version
+     OR target.pose_runtime_version <> NEW.pose_runtime_version
+     OR target.feature_schema_version <> NEW.feature_schema_version
+     OR target.scorer_contract_version <> NEW.scorer_contract_version
+     OR target.integrity_policy_version <> NEW.integrity_policy_version THEN
+    RAISE EXCEPTION 'Dance reference artifact does not match revision terms';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_dance_reference_outbox() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  target dance_choreography_revisions%ROWTYPE;
+  payload_keys TEXT[];
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'Dance reference outbox rows cannot be deleted';
+  END IF;
+  IF TG_OP = 'INSERT' THEN
+    SELECT * INTO target FROM dance_choreography_revisions
+     WHERE choreography_id = NEW.choreography_id AND revision = NEW.revision FOR SHARE;
+    SELECT array_agg(key ORDER BY key) INTO payload_keys FROM jsonb_object_keys(NEW.payload) AS key;
+    IF target.choreography_id IS NULL OR target.status <> 'processing'
+       OR payload_keys IS DISTINCT FROM
+          ARRAY['choreography_id', 'effect_identity', 'revision', 'revision_terms_hash']::TEXT[]
+       OR NEW.payload->>'choreography_id' <> NEW.choreography_id
+       OR NEW.payload->>'effect_identity' <> NEW.effect_identity
+       OR NEW.payload->>'revision' <> NEW.revision::TEXT
+       OR NEW.payload->>'revision_terms_hash' <> target.revision_terms_hash THEN
+      RAISE EXCEPTION 'Dance reference outbox payload is not exact processing authority';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF TG_OP = 'UPDATE' THEN
+    IF ROW(NEW.outbox_event_id, NEW.choreography_id, NEW.revision, NEW.event_type,
+      NEW.effect_identity, NEW.payload, NEW.payload_sha256, NEW.created_at)
+      IS DISTINCT FROM ROW(OLD.outbox_event_id, OLD.choreography_id, OLD.revision,
+      OLD.event_type, OLD.effect_identity, OLD.payload, OLD.payload_sha256, OLD.created_at) THEN
+      RAISE EXCEPTION 'Dance reference outbox identity is immutable';
+    END IF;
+    IF NEW IS NOT DISTINCT FROM OLD THEN
+      RETURN NEW;
+    END IF;
+    IF OLD.state IN ('pending', 'failed') AND NEW.state = 'running' THEN
+      IF (OLD.state = 'failed' AND OLD.next_eligible_at > clock_timestamp())
+         OR NEW.lease_expires_at <= clock_timestamp()
+         OR NEW.delivery_attempts <> OLD.delivery_attempts + 1
+         OR NEW.claim_fence <> OLD.claim_fence + 1 OR NEW.updated_at <= OLD.updated_at THEN
+        RAISE EXCEPTION 'Dance outbox claim fence is invalid';
+      END IF;
+    ELSIF OLD.state = 'running' AND NEW.state = 'running' THEN
+      IF OLD.lease_expires_at > clock_timestamp()
+         OR NEW.lease_expires_at <= clock_timestamp()
+         OR NEW.delivery_attempts <> OLD.delivery_attempts + 1
+         OR NEW.claim_fence <> OLD.claim_fence + 1 OR NEW.updated_at <= OLD.updated_at THEN
+        RAISE EXCEPTION 'Dance outbox lease cannot be reclaimed';
+      END IF;
+    ELSIF OLD.state = 'running' AND NEW.state IN ('delivered', 'failed', 'exhausted') THEN
+      IF OLD.lease_expires_at <= clock_timestamp()
+         OR NEW.delivery_attempts <> OLD.delivery_attempts
+         OR NEW.claim_fence <> OLD.claim_fence OR NEW.updated_at <= OLD.updated_at THEN
+        RAISE EXCEPTION 'Dance outbox terminal fence is invalid';
+      END IF;
+    ELSE
+      RAISE EXCEPTION 'Invalid Dance reference outbox transition';
+    END IF;
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_dance_song_segment() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  publication media_publication_projections%ROWTYPE;
+  song posts%ROWTYPE;
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    RAISE EXCEPTION 'Dance song segments are immutable';
+  END IF;
+  SELECT * INTO publication FROM media_publication_projections
+   WHERE submission_id = NEW.song_submission_id FOR SHARE;
+  SELECT * INTO song FROM posts
+   WHERE community_id = NEW.community_id AND post_id = NEW.song_post_id FOR SHARE;
+  IF publication.submission_id IS NULL OR song.post_id IS NULL
+     OR publication.community_id <> NEW.community_id
+     OR publication.post_id <> NEW.song_post_id
+     OR publication.audio_revision <> NEW.audio_revision
+     OR publication.canonical_audio_sha256 <> NEW.source_media_sha256
+     OR song.post_type <> 'song' OR song.status <> 'published' THEN
+    RAISE EXCEPTION 'Dance segment requires exact published canonical song audio';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
 CREATE FUNCTION guard_data_registration_append_only() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -3913,19 +4338,23 @@ CREATE FUNCTION guard_karaoke_attempt() RETURNS trigger
     AS $$
 DECLARE
   session_record karaoke_sessions%ROWTYPE;
+  policy_kind_record TEXT;
+  expected_evidence JSONB;
 BEGIN
   IF TG_OP <> 'INSERT' THEN
     RAISE EXCEPTION 'Karaoke attempts are append-only';
   END IF;
   SELECT * INTO session_record FROM karaoke_sessions
    WHERE session_id = NEW.session_id AND attempt_id = NEW.attempt_id FOR SHARE;
+  SELECT policy_kind INTO policy_kind_record FROM qualification_policy_versions
+   WHERE qualification_policy_version_id = session_record.qualification_policy_version_id;
   IF session_record.session_id IS NULL OR session_record.status <> 'active'
      OR NEW.created_at IS DISTINCT FROM session_record.created_at
      OR NEW.completed_at < session_record.created_at THEN
     RAISE EXCEPTION 'Karaoke attempt is not bound to its active session';
   END IF;
-  IF NEW.evidence_summary <> jsonb_build_object(
-    'kind', 'karaoke_qualification_v1',
+  expected_evidence := jsonb_build_object(
+    'kind', policy_kind_record,
     'scored_line_count', NEW.scored_line_count,
     'line_count', NEW.line_count,
     'coverage_bps', floor(10000.0 * NEW.scored_line_count / NEW.line_count)::integer,
@@ -3933,8 +4362,56 @@ BEGIN
     'scoring_version', NEW.scoring_version,
     'scoring_provider', NEW.scoring_provider,
     'karaoke_revision_id', session_record.karaoke_revision_id
-  ) THEN
+  );
+  IF policy_kind_record = 'karaoke_qualification_v2' THEN
+    expected_evidence := expected_evidence || jsonb_build_object(
+      'playback_kind', session_record.playback_kind
+    );
+  ELSIF policy_kind_record <> 'karaoke_qualification_v1' THEN
+    RAISE EXCEPTION 'Karaoke attempt policy is unsupported';
+  END IF;
+  IF NEW.evidence_summary <> expected_evidence THEN
     RAISE EXCEPTION 'Karaoke attempt evidence summary is not exact';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_karaoke_recording() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'Karaoke recording rows cannot be deleted';
+  END IF;
+  IF TG_OP = 'UPDATE' THEN
+    IF ROW(NEW.session_id, NEW.attempt_id, NEW.account_id, NEW.artifact_id, NEW.created_at)
+      IS DISTINCT FROM
+       ROW(OLD.session_id, OLD.attempt_id, OLD.account_id, OLD.artifact_id, OLD.created_at) THEN
+      RAISE EXCEPTION 'Karaoke recording identity is immutable';
+    END IF;
+    IF OLD.state <> 'pending' OR NEW.state NOT IN ('stored', 'failed') THEN
+      IF OLD.state <> 'stored' OR NEW.state <> 'deleted' THEN
+        RAISE EXCEPTION 'Invalid Karaoke recording transition';
+      END IF;
+    END IF;
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_karaoke_runtime_session_authority() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF ROW(
+    NEW.lyrics_revision, NEW.scoring_version, NEW.scoring_provider,
+    NEW.scoring_model, NEW.line_snapshot, NEW.client_context
+  ) IS DISTINCT FROM ROW(
+    OLD.lyrics_revision, OLD.scoring_version, OLD.scoring_provider,
+    OLD.scoring_model, OLD.line_snapshot, OLD.client_context
+  ) THEN
+    RAISE EXCEPTION 'Karaoke runtime session authority is immutable';
   END IF;
   RETURN NEW;
 END
@@ -3995,6 +4472,34 @@ BEGIN
   END IF;
   RETURN NEW;
 END
+$$;
+
+CREATE FUNCTION guard_karaoke_session_playback_kind() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.playback_kind IS DISTINCT FROM OLD.playback_kind THEN
+    RAISE EXCEPTION 'Karaoke session playback kind is immutable';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_localization_lyric_line_lifecycle() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF OLD.community_id IS DISTINCT FROM NEW.community_id
+     OR OLD.post_id IS DISTINCT FROM NEW.post_id
+     OR OLD.lyric_line_id IS DISTINCT FROM NEW.lyric_line_id
+     OR OLD.lifecycle_status <> 'active'
+     OR NEW.lifecycle_status <> 'retired'
+     OR NEW.retirement_reason IS NULL
+     OR NEW.retired_at IS NULL THEN
+    RAISE EXCEPTION 'lyric line lifecycle permits only one active-to-retired transition';
+  END IF;
+  RETURN NEW;
+END;
 $$;
 
 CREATE FUNCTION guard_media_finalize_fence() RETURNS trigger
@@ -4818,6 +5323,7 @@ CREATE FUNCTION guard_megapot_pool_drawing() RETURNS trigger
     AS $$
 DECLARE
   leg_record song_reward_offer_legs%ROWTYPE;
+  offer_record song_reward_offers%ROWTYPE;
   observation_record megapot_drawing_observations%ROWTYPE;
 BEGIN
   IF TG_OP = 'DELETE' THEN
@@ -4826,10 +5332,14 @@ BEGIN
   IF TG_OP = 'INSERT' THEN
     SELECT * INTO leg_record FROM song_reward_offer_legs
      WHERE leg_id = NEW.pool_leg_id FOR SHARE;
+    SELECT * INTO offer_record FROM song_reward_offers
+     WHERE offer_id = leg_record.offer_id FOR SHARE;
     SELECT * INTO observation_record FROM megapot_drawing_observations
      WHERE observation_id = NEW.observation_id FOR SHARE;
     IF NEW.status <> 'entry_open' OR leg_record.kind <> 'megapot_pool'
        OR leg_record.status <> 'active'
+       OR offer_record.offer_id IS NULL
+       OR offer_record.status <> 'active'
        OR NEW.drawing_id < leg_record.participation_starts_drawing_id
        OR observation_record.observation_id IS NULL
        OR observation_record.attestation_id <> leg_record.attestation_id
@@ -4838,6 +5348,8 @@ BEGIN
        OR observation_record.expires_at <= clock_timestamp()
        OR NEW.entry_cutoff_at <> observation_record.drawing_time
             - make_interval(secs => leg_record.entry_cutoff_seconds)
+       OR NEW.entry_cutoff_at <= clock_timestamp()
+       OR NEW.entry_cutoff_at > offer_record.ends_at
        OR NEW.ticket_price_ceiling_atomic <> leg_record.max_ticket_price_atomic THEN
       RAISE EXCEPTION 'Megapot pool drawing does not match live leg and observation';
     END IF;
@@ -4855,7 +5367,7 @@ BEGIN
   IF OLD.status IN (
     'no_win', 'credited', 'closed_no_entries', 'closed_unfunded',
     'closed_fallback_ineligible', 'closed_fallback_unavailable',
-    'closed_fallback_ceiling', 'operational_hold'
+    'closed_fallback_ceiling', 'closed_purchase_unavailable', 'operational_hold'
   ) AND NEW IS DISTINCT FROM OLD THEN
     RAISE EXCEPTION 'terminal Megapot pool drawing is immutable';
   END IF;
@@ -4869,7 +5381,9 @@ BEGIN
       'closed_fallback_ceiling', 'operational_hold'
     ))
     OR (OLD.status = 'cutoff_frozen' AND NEW.status IN ('committed', 'operational_hold'))
-    OR (OLD.status = 'committed' AND NEW.status IN ('purchase_pending', 'operational_hold'))
+    OR (OLD.status = 'committed' AND NEW.status IN (
+      'purchase_pending', 'closed_purchase_unavailable', 'operational_hold'
+    ))
     OR (OLD.status = 'purchase_pending' AND NEW.status IN ('tickets_confirmed', 'operational_hold'))
     OR (OLD.status = 'tickets_confirmed' AND NEW.status IN ('drawing_pending', 'operational_hold'))
     OR (OLD.status = 'drawing_pending' AND NEW.status IN (
@@ -5688,6 +6202,17 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION guard_reward_asset_verification_change() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.plain_erc20_verified_at IS DISTINCT FROM OLD.plain_erc20_verified_at THEN
+    RAISE EXCEPTION 'reward asset ERC20 verification is immutable';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
 CREATE FUNCTION guard_reward_asset_whitelist_change() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -5862,9 +6387,14 @@ BEGIN
      OR chain_record.receipt_block_hash <> NEW.block_hash
      OR chain_record.receipt_hash <> NEW.receipt_hash
      OR chain_record.confirmations <> NEW.confirmations
+     OR attestation_record.status <> 'active'
      OR attestation_record.chain_id <> chain_record.chain_id
-     OR attestation_record.usdc_address <> NEW.token_address
-     OR attestation_record.custody_address <> NEW.sender_address THEN
+     OR attestation_record.custody_address <> NEW.sender_address
+     OR NOT EXISTS (
+       SELECT 1 FROM reward_asset_whitelist asset
+        WHERE asset.chain_id = chain_record.chain_id
+          AND asset.token_address = NEW.token_address
+     ) THEN
     RAISE EXCEPTION 'reward ERC20 transfer receipt does not match confirmed effect';
   END IF;
   IF NEW.transfer_purpose = 'reward_payout' THEN
@@ -5972,12 +6502,13 @@ BEGIN
       AND chain_id=credit_record.chain_id AND token_address=credit_record.token_address;
   SELECT COALESCE(sum(funded_atomic - reserved_atomic - spent_atomic
       - fulfilled_atomic - refunded_atomic), 0) INTO live_pending_refund
-    FROM song_reward_offer_legs WHERE funding_source='leg_budget'
-      AND chain_id=credit_record.chain_id AND token_address=credit_record.token_address;
+    FROM song_reward_offer_legs
+   WHERE (funding_source='leg_budget' OR kind='asset_bonus')
+     AND chain_id=credit_record.chain_id AND token_address=credit_record.token_address;
   SELECT COALESCE(sum(funded_atomic + winnings_credited_atomic
       - spent_atomic - withdrawn_atomic), 0) INTO live_shared_sponsorship
     FROM platform_sponsorship_budgets
-    WHERE chain_id=credit_record.chain_id AND token_address=credit_record.token_address;
+   WHERE chain_id=credit_record.chain_id AND token_address=credit_record.token_address;
   IF chain_record.effect_kind <> 'reward_payout'
      OR chain_record.reserved_amount_atomic <> NEW.amount_atomic
      OR chain_record.chain_id <> credit_record.chain_id
@@ -5985,7 +6516,6 @@ BEGIN
      OR chain_record.target_address <> credit_record.token_address
      OR attestation_record.status <> 'active'
      OR attestation_record.chain_id <> credit_record.chain_id
-     OR attestation_record.usdc_address <> credit_record.token_address
      OR credit_record.account_id <> NEW.account_id
      OR credit_record.payout_persona_id <> NEW.payout_persona_id
      OR credit_record.amount_atomic - credit_record.paid_atomic < NEW.amount_atomic
@@ -6056,26 +6586,26 @@ BEGIN
       AND chain_id=leg_record.chain_id AND token_address=leg_record.token_address;
   SELECT COALESCE(sum(funded_atomic-reserved_atomic-spent_atomic
       -fulfilled_atomic-refunded_atomic), 0) INTO live_pending_refund
-    FROM song_reward_offer_legs WHERE funding_source='leg_budget'
-      AND chain_id=leg_record.chain_id AND token_address=leg_record.token_address;
+    FROM song_reward_offer_legs
+   WHERE (funding_source='leg_budget' OR kind='asset_bonus')
+     AND chain_id=leg_record.chain_id AND token_address=leg_record.token_address;
   SELECT COALESCE(sum(funded_atomic+winnings_credited_atomic
       -spent_atomic-withdrawn_atomic), 0) INTO live_shared_sponsorship
     FROM platform_sponsorship_budgets
    WHERE chain_id=leg_record.chain_id AND token_address=leg_record.token_address;
   IF confirmed_total > 0 THEN
     WITH allocations AS (
-      SELECT candidate.funding_effect_id,
-             floor(refundable_total * candidate.confirmed_amount_atomic / confirmed_total) AS base,
+      SELECT funding_effect_id,
+             floor(refundable_total * confirmed_amount_atomic / confirmed_total) AS base,
              row_number() OVER (
-               ORDER BY mod(
-                 refundable_total * candidate.confirmed_amount_atomic, confirmed_total
-               ) DESC, candidate.funding_effect_id
+               ORDER BY mod(refundable_total * confirmed_amount_atomic, confirmed_total) DESC,
+                        funding_effect_id
              ) AS remainder_rank,
              refundable_total - sum(floor(
-               refundable_total * candidate.confirmed_amount_atomic / confirmed_total
+               refundable_total * confirmed_amount_atomic / confirmed_total
              )) OVER () AS remainder_units
-        FROM song_reward_leg_funding_effects candidate
-       WHERE candidate.leg_id = NEW.leg_id AND candidate.state = 'confirmed'
+        FROM song_reward_leg_funding_effects
+       WHERE leg_id = NEW.leg_id AND state = 'confirmed'
     )
     SELECT base + CASE WHEN remainder_rank <= remainder_units THEN 1 ELSE 0 END
       INTO expected_amount FROM allocations
@@ -6093,7 +6623,7 @@ BEGIN
      OR funding_record.sender_address <> NEW.destination_address
      OR leg_record.status NOT IN ('exhausted', 'ended')
      OR leg_record.refund_policy <> 'refund_to_funders_pro_rata'
-     OR leg_record.funding_source <> 'leg_budget'
+     OR NOT (leg_record.funding_source = 'leg_budget' OR leg_record.kind = 'asset_bonus')
      OR leg_record.reserved_atomic <> 0
      OR offer_record.status NOT IN ('exhausted', 'expired', 'ended')
      OR confirmed_total = 0 OR confirmed_total <> leg_record.funded_atomic
@@ -6103,7 +6633,6 @@ BEGIN
      OR NEW.pro_rata_denominator_atomic <> confirmed_total
      OR attestation_record.status <> 'active'
      OR attestation_record.chain_id <> leg_record.chain_id
-     OR attestation_record.usdc_address <> leg_record.token_address
      OR solvency_record.attestation_id <> NEW.attestation_id
      OR solvency_record.chain_id <> leg_record.chain_id
      OR solvency_record.custody_address <> chain_record.signer_address
@@ -6138,6 +6667,60 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION guard_song_dance_presentation() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  publication media_publication_projections%ROWTYPE;
+  target dance_choreography_revisions%ROWTYPE;
+  aggregate dance_choreographies%ROWTYPE;
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'Song Dance presentations cannot be deleted';
+  END IF;
+  SELECT * INTO publication FROM media_publication_projections
+   WHERE submission_id = NEW.song_submission_id FOR SHARE;
+  IF publication.submission_id IS NULL
+     OR publication.community_id <> NEW.community_id
+     OR publication.post_id <> NEW.song_post_id
+     OR publication.audio_revision <> NEW.audio_revision
+     OR publication.actor_account_id <> NEW.song_owner_account_id
+     OR NEW.updated_by_account_id <> NEW.song_owner_account_id THEN
+    RAISE EXCEPTION 'Song Dance presentation requires exact song-owner authority';
+  END IF;
+  IF TG_OP = 'UPDATE' THEN
+    IF ROW(NEW.community_id, NEW.song_post_id, NEW.song_submission_id,
+      NEW.audio_revision, NEW.song_owner_account_id, NEW.created_at)
+      IS DISTINCT FROM ROW(OLD.community_id, OLD.song_post_id, OLD.song_submission_id,
+      OLD.audio_revision, OLD.song_owner_account_id, OLD.created_at) THEN
+      RAISE EXCEPTION 'Song Dance presentation identity is immutable';
+    END IF;
+    IF NEW IS NOT DISTINCT FROM OLD THEN
+      RETURN NEW;
+    END IF;
+    IF NEW.presentation_revision <> OLD.presentation_revision + 1
+       OR NEW.updated_at <= OLD.updated_at THEN
+      RAISE EXCEPTION 'Song Dance presentation requires the next revision';
+    END IF;
+  END IF;
+  IF NEW.featured_choreography_id IS NOT NULL THEN
+    SELECT * INTO target FROM dance_choreography_revisions
+     WHERE choreography_id = NEW.featured_choreography_id
+       AND revision = NEW.featured_choreography_revision;
+    SELECT * INTO aggregate FROM dance_choreographies
+     WHERE choreography_id = NEW.featured_choreography_id;
+    IF target.choreography_id IS NULL OR target.status <> 'ready'
+       OR aggregate.status <> 'ready'
+       OR target.community_id <> NEW.community_id
+       OR target.song_post_id <> NEW.song_post_id
+       OR target.audio_revision <> NEW.audio_revision THEN
+      RAISE EXCEPTION 'Featured Dance presentation target is not selectable';
+    END IF;
+  END IF;
+  RETURN NEW;
+END
+$$;
+
 CREATE FUNCTION guard_song_rating_lowering_v1() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -6152,6 +6735,88 @@ BEGIN
   END IF;
   RETURN NEW;
 END;
+$$;
+
+CREATE FUNCTION guard_song_reward_bundle_claim() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  qualification_record activity_qualifications%ROWTYPE;
+  offer_record song_reward_offers%ROWTYPE;
+  eligibility_record reward_eligibility_decisions%ROWTYPE;
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    RAISE EXCEPTION 'song reward bundle claims are append-only';
+  END IF;
+  SELECT * INTO qualification_record FROM activity_qualifications
+   WHERE qualification_id = NEW.qualification_id FOR SHARE;
+  SELECT * INTO offer_record FROM song_reward_offers
+   WHERE offer_id = NEW.offer_id FOR SHARE;
+  SELECT * INTO eligibility_record FROM reward_eligibility_decisions
+   WHERE eligibility_decision_id = NEW.eligibility_decision_id FOR SHARE;
+  IF qualification_record.qualification_id IS NULL
+     OR offer_record.offer_id IS NULL
+     OR qualification_record.account_id <> NEW.account_id
+     OR qualification_record.persona_id <> NEW.persona_id
+     OR qualification_record.community_id <> offer_record.community_id
+     OR qualification_record.post_id <> offer_record.post_id
+     OR qualification_record.audio_revision <> offer_record.audio_revision
+     OR qualification_record.qualified_at < offer_record.starts_at
+     OR qualification_record.qualified_at >= offer_record.ends_at
+     OR eligibility_record.account_id <> NEW.account_id
+     OR eligibility_record.persona_id <> NEW.persona_id
+     OR eligibility_record.qualification_id <> NEW.qualification_id
+     OR eligibility_record.purpose <> 'asset_claim'
+     OR eligibility_record.drawing_id IS NOT NULL
+     OR eligibility_record.expires_at <= NEW.created_at
+     OR (NEW.state = 'credited' AND eligibility_record.outcome <> 'eligible')
+     OR (NEW.state = 'ineligible' AND eligibility_record.outcome <> 'ineligible')
+     OR NEW.state = 'reserved' THEN
+    RAISE EXCEPTION 'song reward bundle claim is not exact qualification output';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_song_reward_bundle_claim_leg() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  claim_record song_reward_bundle_claims%ROWTYPE;
+  leg_record song_reward_offer_legs%ROWTYPE;
+  credit_record reward_ledger_credits%ROWTYPE;
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    RAISE EXCEPTION 'song reward bundle claim legs are append-only';
+  END IF;
+  SELECT * INTO claim_record FROM song_reward_bundle_claims
+   WHERE account_id = NEW.account_id AND offer_id = NEW.offer_id FOR SHARE;
+  SELECT * INTO leg_record FROM song_reward_offer_legs
+   WHERE leg_id = NEW.leg_id FOR SHARE;
+  IF claim_record.account_id IS NULL OR leg_record.leg_id IS NULL
+     OR leg_record.offer_id <> NEW.offer_id OR leg_record.kind <> 'asset_bonus'
+     OR NEW.amount_atomic <> leg_record.amount_per_claim_atomic
+     OR (claim_record.state = 'credited' AND NEW.state <> 'credited')
+     OR (claim_record.state = 'ineligible' AND NEW.state <> 'unavailable') THEN
+    RAISE EXCEPTION 'song reward bundle claim leg is not exact';
+  END IF;
+  IF NEW.state = 'credited' THEN
+    SELECT * INTO credit_record FROM reward_ledger_credits
+     WHERE credit_id = NEW.credit_id FOR SHARE;
+    IF credit_record.credit_id IS NULL
+       OR credit_record.account_id <> NEW.account_id
+       OR credit_record.payout_persona_id <> claim_record.persona_id
+       OR credit_record.chain_id <> leg_record.chain_id
+       OR credit_record.token_address <> leg_record.token_address
+       OR credit_record.amount_atomic <> NEW.amount_atomic
+       OR credit_record.source_kind <> 'asset_bonus'
+       OR credit_record.source_reference <>
+          (NEW.leg_id || ':' || claim_record.qualification_id) THEN
+      RAISE EXCEPTION 'song reward bundle claim leg lacks exact credit';
+    END IF;
+  END IF;
+  RETURN NEW;
+END
 $$;
 
 CREATE FUNCTION guard_song_reward_funding_effect() RETURNS trigger
@@ -7144,6 +7809,14 @@ BEGIN
 END;
 $_$;
 
+CREATE FUNCTION is_dance_identifier(value text, maximum_octets integer DEFAULT 256) RETURNS boolean
+    LANGUAGE sql IMMUTABLE STRICT
+    AS $$
+  SELECT btrim(value) <> ''
+     AND value = btrim(value)
+     AND octet_length(value) <= maximum_octets
+$$;
+
 CREATE FUNCTION is_hns_host_persistence_identity(input_value text, maximum_bytes integer) RETURNS boolean
     LANGUAGE sql IMMUTABLE
     AS $$
@@ -7460,6 +8133,327 @@ BEGIN
   END IF;
   RETURN NEW;
 END;
+$$;
+
+CREATE FUNCTION project_asset_bonus_claim_from_qualification() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  candidate RECORD;
+  asset_leg RECORD;
+  evidence RECORD;
+  existing_consumption reward_subject_consumptions%ROWTYPE;
+  decided_at TIMESTAMPTZ := clock_timestamp();
+  reason TEXT;
+  decision_outcome TEXT;
+  decision_id TEXT;
+  eligibility_id TEXT;
+  consumption_id TEXT;
+  identity_digest TEXT;
+  credit_id TEXT;
+BEGIN
+  SELECT offer.offer_id, offer.community_id, offer.reward_policy_version_id,
+         offer.ends_at, policy.policy_hash, leg.leg_id
+    INTO candidate
+    FROM song_reward_offers offer
+    JOIN song_reward_offer_legs leg ON leg.offer_id = offer.offer_id
+    JOIN policy_versions policy
+      ON policy.community_id = offer.community_id
+     AND policy.policy_version_id = offer.reward_policy_version_id
+     AND policy.policy_purpose = 'reward'
+     AND policy.uniqueness_authority_id = offer.offer_id
+   WHERE offer.community_id = NEW.community_id
+     AND offer.post_id = NEW.post_id
+     AND offer.audio_revision = NEW.audio_revision
+     AND offer.status = 'active'
+     AND decided_at < offer.ends_at
+     AND NEW.qualified_at >= offer.starts_at
+     AND NEW.qualified_at < offer.ends_at
+     AND leg.kind = 'asset_bonus' AND leg.status = 'active'
+     AND NEW.qualified_at >= leg.participation_starts_at
+     AND leg.fulfilled_atomic / leg.amount_per_claim_atomic < leg.max_claims
+     AND leg.funded_atomic - leg.reserved_atomic - leg.spent_atomic
+       - leg.fulfilled_atomic - leg.refunded_atomic >= leg.amount_per_claim_atomic
+   ORDER BY leg.leg_id
+   LIMIT 1
+   FOR UPDATE OF leg;
+
+  IF candidate.offer_id IS NULL THEN
+    RETURN NEW;
+  END IF;
+  PERFORM pg_advisory_xact_lock(hashtextextended(
+    NEW.account_id || chr(31) || candidate.offer_id, 53000002
+  ));
+  IF EXISTS (
+    SELECT 1 FROM song_reward_bundle_claims claim
+     WHERE claim.account_id = NEW.account_id AND claim.offer_id = candidate.offer_id
+  ) THEN
+    RETURN NEW;
+  END IF;
+
+  identity_digest := md5(NEW.qualification_id || chr(31) || candidate.offer_id);
+  decision_id := 'reward_decision_' || identity_digest;
+  eligibility_id := 'reward_eligibility_' || identity_digest;
+  consumption_id := 'reward_subject_' || identity_digest;
+
+  WITH exact_evidence AS (
+    SELECT DISTINCT ON (subject.subject_key_id)
+           subject.subject_key_id, active_binding.binding_event_id,
+           active_binding.binding_epoch, receipt.evidence_receipt_id,
+           receipt.evidence_hash,
+           LEAST(candidate.ends_at, receipt.expires_at,
+             personhood.expires_at, subject_unique.expires_at) AS evidence_expires_at,
+           receipt.observed_at
+      FROM subject_keys subject
+      JOIN active_subject_key_bindings active_binding
+        ON active_binding.subject_key_id = subject.subject_key_id
+       AND active_binding.user_id = NEW.account_id
+      JOIN assertion_bindings binding
+        ON binding.user_id = NEW.account_id AND binding.binding_mode = 'same_subject'
+       AND binding.subject_key_id = subject.subject_key_id
+       AND binding.subject_binding_event_id = active_binding.binding_event_id
+       AND binding.subject_binding_epoch = active_binding.binding_epoch
+      JOIN assertions personhood
+        ON personhood.binding_group_id = binding.binding_group_id
+       AND personhood.user_id = NEW.account_id
+       AND personhood.subject_key_id = subject.subject_key_id
+       AND personhood.claim_id = 'human.personhood'
+       AND personhood.assertion_value = '{"personhood": true}'::jsonb
+       AND personhood.assurance = 'provider_attested'
+      JOIN assertions subject_unique
+        ON subject_unique.binding_group_id = binding.binding_group_id
+       AND subject_unique.user_id = NEW.account_id
+       AND subject_unique.subject_key_id = subject.subject_key_id
+       AND subject_unique.evidence_receipt_id = personhood.evidence_receipt_id
+       AND subject_unique.claim_id = 'credential.subject_unique'
+       AND subject_unique.assertion_value = '{"subject_unique": true}'::jsonb
+       AND subject_unique.assurance = 'provider_attested'
+      JOIN evidence_receipts receipt
+        ON receipt.evidence_receipt_id = personhood.evidence_receipt_id
+       AND receipt.user_id = NEW.account_id
+       AND receipt.subject_key_id = subject.subject_key_id
+       AND receipt.subject_binding_event_id = active_binding.binding_event_id
+       AND receipt.subject_binding_epoch = active_binding.binding_epoch
+       AND receipt.provider_id = 'very.web'
+       AND receipt.issuer = 'https://verify.very.org'
+       AND receipt.method = 'palm_web'
+       AND receipt.scope_kind = 'issuer_rp_scope'
+       AND receipt.issuer_rp_scope = 'pirate-social'
+       AND receipt.issuer_rp_action_scope IS NULL
+       AND receipt.protocol_version = 'very-web-v1'
+       AND receipt.evidence_kind = 'very.web.server-verified.v1'
+       AND receipt.provenance_kind = 'proof_session'
+      JOIN proof_sessions session
+        ON session.proof_session_id = receipt.proof_session_id
+       AND session.actor_id = NEW.account_id
+       AND session.status = 'completed' AND session.completed_at = session.terminal_at
+       AND session.provider_id = receipt.provider_id AND session.issuer = receipt.issuer
+       AND session.method = receipt.method AND session.scope_kind = receipt.scope_kind
+       AND session.issuer_rp_scope = receipt.issuer_rp_scope
+       AND session.issuer_rp_action_scope IS NOT DISTINCT FROM receipt.issuer_rp_action_scope
+       AND session.protocol_version = receipt.protocol_version
+       AND session.requested_requirements =
+         '[{"claim_id":"credential.subject_unique"},{"claim_id":"human.personhood"}]'::jsonb
+       AND session.requested_claim_ids =
+         '["credential.subject_unique","human.personhood"]'::jsonb
+     WHERE subject.issuer = 'https://verify.very.org'
+       AND subject.method = 'palm_web' AND subject.scope_kind = 'issuer_rp_scope'
+       AND subject.issuer_rp_scope = 'pirate-social'
+       AND subject.issuer_rp_action_scope IS NULL
+       AND (receipt.expires_at IS NULL OR receipt.expires_at > decided_at + interval '5 seconds')
+       AND (personhood.expires_at IS NULL OR personhood.expires_at > decided_at + interval '5 seconds')
+       AND (subject_unique.expires_at IS NULL OR subject_unique.expires_at > decided_at + interval '5 seconds')
+       AND COALESCE((SELECT revalidation.outcome
+          FROM assertion_revalidation_events revalidation
+         WHERE revalidation.assertion_id = personhood.assertion_id
+         ORDER BY revalidation.observed_at DESC,
+                  revalidation.assertion_revalidation_event_id DESC LIMIT 1), 'accepted') = 'accepted'
+       AND COALESCE((SELECT revalidation.outcome
+          FROM assertion_revalidation_events revalidation
+         WHERE revalidation.assertion_id = subject_unique.assertion_id
+         ORDER BY revalidation.observed_at DESC,
+                  revalidation.assertion_revalidation_event_id DESC LIMIT 1), 'accepted') = 'accepted'
+     ORDER BY subject.subject_key_id, receipt.observed_at DESC,
+              receipt.evidence_receipt_id DESC
+  )
+  SELECT exact_evidence.*, count(*) OVER () AS evidence_count
+    INTO evidence FROM exact_evidence
+   ORDER BY exact_evidence.observed_at DESC, exact_evidence.subject_key_id LIMIT 1;
+
+  IF evidence.subject_key_id IS NULL THEN
+    IF EXISTS (
+      SELECT 1 FROM subject_keys subject
+      JOIN active_subject_key_bindings active_binding
+        ON active_binding.subject_key_id = subject.subject_key_id
+       AND active_binding.user_id = NEW.account_id
+      JOIN assertions personhood ON personhood.subject_key_id = subject.subject_key_id
+       AND personhood.user_id = NEW.account_id AND personhood.claim_id = 'human.personhood'
+       AND personhood.assertion_value = '{"personhood": true}'::jsonb
+      JOIN assertions subject_unique
+        ON subject_unique.binding_group_id = personhood.binding_group_id
+       AND subject_unique.evidence_receipt_id = personhood.evidence_receipt_id
+       AND subject_unique.subject_key_id = subject.subject_key_id
+       AND subject_unique.user_id = NEW.account_id
+       AND subject_unique.claim_id = 'credential.subject_unique'
+       AND subject_unique.assertion_value = '{"subject_unique": true}'::jsonb
+      WHERE subject.issuer = 'https://verify.very.org' AND subject.method = 'palm_web'
+        AND subject.scope_kind = 'issuer_rp_scope'
+        AND subject.issuer_rp_scope = 'pirate-social'
+    ) THEN
+      reason := 'verification_stale'; decision_outcome := 'needs_evidence';
+    ELSIF EXISTS (
+      SELECT 1 FROM subject_keys subject
+      JOIN active_subject_key_bindings active_binding
+        ON active_binding.subject_key_id = subject.subject_key_id
+       AND active_binding.user_id = NEW.account_id
+      WHERE subject.issuer = 'https://verify.very.org' AND subject.method = 'palm_web'
+        AND subject.scope_kind = 'issuer_rp_scope'
+        AND subject.issuer_rp_scope = 'pirate-social'
+    ) THEN
+      reason := 'verification_failed'; decision_outcome := 'fail';
+    ELSE
+      reason := 'verification_missing'; decision_outcome := 'needs_evidence';
+    END IF;
+  ELSIF evidence.evidence_count <> 1 THEN
+    reason := 'verification_failed'; decision_outcome := 'fail';
+  ELSE
+    PERFORM 1 FROM subject_keys WHERE subject_key_id = evidence.subject_key_id FOR UPDATE;
+    SELECT * INTO existing_consumption FROM reward_subject_consumptions
+     WHERE campaign_id = candidate.offer_id AND subject_key_id = evidence.subject_key_id
+     FOR UPDATE;
+    IF existing_consumption.reward_subject_consumption_id IS NULL THEN
+      INSERT INTO reward_subject_consumptions (
+        reward_subject_consumption_id,campaign_id,subject_key_id,user_id,
+        binding_event_id,binding_epoch,evidence_receipt_id,consumed_at,created_at
+      ) VALUES (
+        consumption_id,candidate.offer_id,evidence.subject_key_id,NEW.account_id,
+        evidence.binding_event_id,evidence.binding_epoch,evidence.evidence_receipt_id,
+        decided_at,decided_at
+      );
+    ELSIF existing_consumption.user_id <> NEW.account_id THEN
+      reason := 'subject_already_consumed'; decision_outcome := 'fail';
+    END IF;
+  END IF;
+
+  IF reason IS NOT NULL THEN
+    INSERT INTO decision_records (
+      decision_record_id,community_id,user_id,policy_version_id,policy_hash,
+      evaluation_mode,outcome,winning_witness,trace,indeterminate_reason,request_id,created_at
+    ) VALUES (
+      decision_id,candidate.community_id,NEW.account_id,candidate.reward_policy_version_id,
+      candidate.policy_hash,'enforce',decision_outcome,'[]'::jsonb,
+      jsonb_build_array(jsonb_build_object('reason',reason)),reason,
+      'asset-claim:' || identity_digest,decided_at
+    );
+    INSERT INTO reward_eligibility_decisions (
+      eligibility_decision_id,leg_id,account_id,persona_id,purpose,qualification_id,
+      decision_record_id,outcome,reason,policy_version,evidence_hash,decided_at,expires_at
+    ) VALUES (
+      eligibility_id,candidate.leg_id,NEW.account_id,NEW.persona_id,'asset_claim',
+      NEW.qualification_id,decision_id,'ineligible',reason,
+      candidate.reward_policy_version_id,COALESCE(evidence.evidence_hash,candidate.policy_hash),
+      decided_at,candidate.ends_at
+    );
+    INSERT INTO song_reward_bundle_claims (
+      account_id,offer_id,persona_id,qualification_id,eligibility_decision_id,
+      state,terminal_reason,created_at,updated_at
+    ) VALUES (
+      NEW.account_id,candidate.offer_id,NEW.persona_id,NEW.qualification_id,
+      eligibility_id,'ineligible',reason,decided_at,decided_at
+    );
+    FOR asset_leg IN
+      SELECT leg.* FROM song_reward_offer_legs leg
+       WHERE leg.offer_id = candidate.offer_id AND leg.kind = 'asset_bonus'
+         AND leg.status = 'active' AND NEW.qualified_at >= leg.participation_starts_at
+         AND leg.fulfilled_atomic / leg.amount_per_claim_atomic < leg.max_claims
+         AND leg.funded_atomic - leg.reserved_atomic - leg.spent_atomic
+           - leg.fulfilled_atomic - leg.refunded_atomic >= leg.amount_per_claim_atomic
+       ORDER BY leg.leg_id FOR UPDATE
+    LOOP
+      INSERT INTO song_reward_bundle_claim_legs (
+        account_id,offer_id,leg_id,amount_atomic,state,terminal_reason,created_at
+      ) VALUES (
+        NEW.account_id,candidate.offer_id,asset_leg.leg_id,
+        asset_leg.amount_per_claim_atomic,'unavailable',reason,decided_at
+      );
+    END LOOP;
+    RETURN NEW;
+  END IF;
+
+  INSERT INTO decision_records (
+    decision_record_id,community_id,user_id,policy_version_id,policy_hash,
+    evaluation_mode,outcome,winning_witness,trace,request_id,created_at
+  ) VALUES (
+    decision_id,candidate.community_id,NEW.account_id,candidate.reward_policy_version_id,
+    candidate.policy_hash,'enforce','pass',
+    jsonb_build_array(jsonb_build_object('subject_key_id',evidence.subject_key_id,
+      'evidence_receipt_id',evidence.evidence_receipt_id)),
+    jsonb_build_array(jsonb_build_object('result','eligible')),
+    'asset-claim:' || identity_digest,decided_at
+  );
+  INSERT INTO reward_eligibility_decisions (
+    eligibility_decision_id,leg_id,account_id,persona_id,purpose,qualification_id,
+    decision_record_id,outcome,policy_version,evidence_hash,decided_at,expires_at
+  ) VALUES (
+    eligibility_id,candidate.leg_id,NEW.account_id,NEW.persona_id,'asset_claim',
+    NEW.qualification_id,decision_id,'eligible',candidate.reward_policy_version_id,
+    evidence.evidence_hash,decided_at,evidence.evidence_expires_at
+  );
+  INSERT INTO song_reward_bundle_claims (
+    account_id,offer_id,persona_id,qualification_id,eligibility_decision_id,
+    state,created_at,updated_at
+  ) VALUES (
+    NEW.account_id,candidate.offer_id,NEW.persona_id,NEW.qualification_id,
+    eligibility_id,'credited',decided_at,decided_at
+  );
+
+  FOR asset_leg IN
+    SELECT leg.* FROM song_reward_offer_legs leg
+     WHERE leg.offer_id = candidate.offer_id AND leg.kind = 'asset_bonus'
+       AND leg.status = 'active' AND NEW.qualified_at >= leg.participation_starts_at
+       AND leg.fulfilled_atomic / leg.amount_per_claim_atomic < leg.max_claims
+       AND leg.funded_atomic - leg.reserved_atomic - leg.spent_atomic
+         - leg.fulfilled_atomic - leg.refunded_atomic >= leg.amount_per_claim_atomic
+     ORDER BY leg.leg_id FOR UPDATE
+  LOOP
+    credit_id := 'reward_credit_' || md5(
+      NEW.account_id || chr(31) || asset_leg.leg_id || chr(31) || NEW.qualification_id
+    );
+    INSERT INTO reward_ledger_credits (
+      credit_id,account_id,payout_persona_id,chain_id,token_address,amount_atomic,
+      source_kind,source_reference,state,created_at,updated_at
+    ) VALUES (
+      credit_id,NEW.account_id,NEW.persona_id,asset_leg.chain_id,
+      asset_leg.token_address,asset_leg.amount_per_claim_atomic,'asset_bonus',
+      asset_leg.leg_id || ':' || NEW.qualification_id,'credited',decided_at,decided_at
+    );
+    INSERT INTO song_reward_bundle_claim_legs (
+      account_id,offer_id,leg_id,amount_atomic,credit_id,state,created_at
+    ) VALUES (
+      NEW.account_id,candidate.offer_id,asset_leg.leg_id,
+      asset_leg.amount_per_claim_atomic,credit_id,'credited',decided_at
+    );
+    UPDATE song_reward_offer_legs
+       SET fulfilled_atomic = fulfilled_atomic + asset_leg.amount_per_claim_atomic,
+           status = CASE
+             WHEN (fulfilled_atomic + asset_leg.amount_per_claim_atomic)
+                    / amount_per_claim_atomic >= max_claims
+               OR funded_atomic - reserved_atomic - spent_atomic - refunded_atomic
+                    - (fulfilled_atomic + asset_leg.amount_per_claim_atomic)
+                    < amount_per_claim_atomic
+             THEN 'exhausted' ELSE status END,
+           participation_ends_at = CASE
+             WHEN (fulfilled_atomic + asset_leg.amount_per_claim_atomic)
+                    / amount_per_claim_atomic >= max_claims
+               OR funded_atomic - reserved_atomic - spent_atomic - refunded_atomic
+                    - (fulfilled_atomic + asset_leg.amount_per_claim_atomic)
+                    < amount_per_claim_atomic
+             THEN decided_at ELSE participation_ends_at END,
+           updated_at = decided_at
+     WHERE leg_id = asset_leg.leg_id;
+  END LOOP;
+  RETURN NEW;
+END
 $$;
 
 CREATE FUNCTION project_megapot_pool_share_from_qualification() RETURNS trigger
@@ -8058,6 +9052,14 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION reject_dance_reference_action_change() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'Dance reference actions are append-only';
+END
+$$;
+
 CREATE FUNCTION reject_handle_sales_append_only_change_v1() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -8079,6 +9081,14 @@ CREATE FUNCTION reject_hns_host_persistence_append_only_change() RETURNS trigger
     AS $$
 BEGIN
   RAISE EXCEPTION 'HNS host persistence evidence is append-only';
+END;
+$$;
+
+CREATE FUNCTION reject_localization_immutable_mutation() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION '% rows are immutable', TG_TABLE_NAME;
 END;
 $$;
 
@@ -8808,6 +9818,32 @@ BEGIN
 EXCEPTION WHEN OTHERS THEN
   RETURN FALSE;
 END;
+$$;
+
+CREATE FUNCTION validate_asset_bonus_leg_accounting() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  target_leg_id TEXT;
+  leg_record song_reward_offer_legs%ROWTYPE;
+  credited_total NUMERIC(78, 0);
+  credited_count BIGINT;
+BEGIN
+  target_leg_id := NEW.leg_id;
+  SELECT * INTO leg_record FROM song_reward_offer_legs WHERE leg_id = target_leg_id;
+  IF leg_record.kind <> 'asset_bonus' THEN
+    RETURN NULL;
+  END IF;
+  SELECT COALESCE(sum(amount_atomic), 0), count(*)
+    INTO credited_total, credited_count
+    FROM song_reward_bundle_claim_legs
+   WHERE leg_id = target_leg_id AND state = 'credited';
+  IF leg_record.fulfilled_atomic <> credited_total
+     OR credited_count > leg_record.max_claims THEN
+    RAISE EXCEPTION 'asset bonus leg accounting is not exact';
+  END IF;
+  RETURN NULL;
+END
 $$;
 
 CREATE FUNCTION validate_community_canonical_route_reference() RETURNS trigger
@@ -10273,6 +11309,37 @@ EXCEPTION WHEN others THEN
 END;
 $_$;
 
+CREATE FUNCTION validate_dance_choreography_consistency() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  target_id TEXT;
+  aggregate dance_choreographies%ROWTYPE;
+  ready_count BIGINT;
+BEGIN
+  target_id := NEW.choreography_id;
+  SELECT * INTO aggregate FROM dance_choreographies
+   WHERE choreography_id = target_id;
+  IF aggregate.choreography_id IS NULL THEN
+    RETURN NULL;
+  END IF;
+  SELECT count(*) INTO ready_count FROM dance_choreography_revisions
+   WHERE choreography_id = target_id AND status = 'ready';
+  IF aggregate.status = 'ready' THEN
+    IF ready_count = 0 OR NOT EXISTS (
+      SELECT 1 FROM dance_choreography_revisions
+       WHERE choreography_id = target_id
+         AND revision = aggregate.active_revision AND status = 'ready'
+    ) THEN
+      RAISE EXCEPTION 'Ready Dance choreography requires an exact ready active revision';
+    END IF;
+  ELSIF aggregate.status IN ('draft', 'processing') AND ready_count <> 0 THEN
+    RAISE EXCEPTION 'Non-ready Dance choreography cannot retain a ready revision';
+  END IF;
+  RETURN NULL;
+END
+$$;
+
 CREATE FUNCTION validate_handle_claim_insert_v2() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -10703,6 +11770,7 @@ BEGIN
          'probeEvidenceRef','version']::TEXT[] THEN
     RAISE EXCEPTION 'analysis snapshot keys are not exact';
   END IF;
+
   lyrics_analysis := NEW.analysis_snapshot->'lyricsAnalysis';
   content_moderation := NEW.analysis_snapshot->'contentModeration';
   provider_evidence := content_moderation->'providerEvidence';
@@ -10710,6 +11778,7 @@ BEGIN
      OR jsonb_typeof(content_moderation) IS DISTINCT FROM 'object' THEN
     RAISE EXCEPTION 'analysis snapshot nested facts are not objects';
   END IF;
+
   IF (SELECT array_agg(key ORDER BY key) FROM jsonb_object_keys(content_moderation) AS key)
        IS DISTINCT FROM ARRAY['communityPolicyRevision','decision','evidenceRef','inputSha256',
          'matchedCategories','platformPolicyRevision','policyRevision','providerEvidence',
@@ -10727,6 +11796,7 @@ BEGIN
        AND jsonb_typeof(provider_evidence) IS DISTINCT FROM 'object') THEN
     RAISE EXCEPTION 'content moderation snapshot shape is invalid';
   END IF;
+
   IF provider_evidence IS DISTINCT FROM 'null'::jsonb
      AND ((SELECT array_agg(key ORDER BY key) FROM jsonb_object_keys(provider_evidence) AS key)
             IS DISTINCT FROM ARRAY['inputs','providerId','requestedModel','returnedModel']::TEXT[]
@@ -10736,6 +11806,7 @@ BEGIN
        OR jsonb_typeof(provider_evidence->'inputs') IS DISTINCT FROM 'array') THEN
     RAISE EXCEPTION 'content moderation provider evidence shape is invalid';
   END IF;
+
   expected_keys := CASE NEW.speech_status
     WHEN 'ready' THEN ARRAY['adapterRevision','evidenceRef','explicitness','policyRevision',
       'primaryLanguageBcp47','secondaryLanguageBcp47','status']::TEXT[]
@@ -13270,6 +14341,18 @@ CREATE TABLE account_aliases (
     CONSTRAINT account_aliases_status_check CHECK ((status = ANY (ARRAY['active'::text, 'finalizing'::text, 'completed'::text, 'inactive'::text])))
 );
 
+CREATE TABLE account_language_preferences (
+    account_id text NOT NULL,
+    ui_locale text,
+    study_helper_language text,
+    revision bigint DEFAULT 1 NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT account_language_preferences_revision_check CHECK ((revision > 0)),
+    CONSTRAINT account_language_preferences_study_helper_language_check CHECK (((study_helper_language IS NULL) OR ((char_length(study_helper_language) <= 64) AND (study_helper_language ~ '^[a-z]{2,3}(?:-[A-Z][a-z]{3})?(?:-(?:[A-Z]{2}|[0-9]{3}))?(?:-[a-z0-9]{5,8}|-[0-9][a-z0-9]{3})*$'::text)))),
+    CONSTRAINT account_language_preferences_ui_locale_check CHECK (((ui_locale IS NULL) OR ((char_length(ui_locale) <= 64) AND (ui_locale ~ '^[a-z]{2,3}(?:-[A-Z][a-z]{3})?(?:-(?:[A-Z]{2}|[0-9]{3}))?(?:-[a-z0-9]{5,8}|-[0-9][a-z0-9]{3})*$'::text))))
+);
+
 CREATE TABLE account_minimum_age_attestations (
     account_id text NOT NULL,
     version text NOT NULL,
@@ -15139,6 +16222,251 @@ CREATE TABLE custody_solvency_observations (
     CONSTRAINT custody_solvency_observations_token_address_check CHECK ((token_address ~ '^0x[0-9a-f]{40}$'::text))
 );
 
+CREATE TABLE dance_choreographies (
+    choreography_id text NOT NULL,
+    community_id text NOT NULL,
+    song_post_id text NOT NULL,
+    creator_account_id text NOT NULL,
+    creator_persona_id text NOT NULL,
+    version bigint DEFAULT 1 NOT NULL,
+    status text NOT NULL,
+    active_revision bigint,
+    disabled_reason text,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    disabled_at timestamp with time zone,
+    retired_at timestamp with time zone,
+    CONSTRAINT dance_choreographies_active_revision_check CHECK (((active_revision >= 1) AND (active_revision <= '9007199254740991'::bigint))),
+    CONSTRAINT dance_choreographies_choreography_id_check CHECK (is_dance_identifier(choreography_id)),
+    CONSTRAINT dance_choreographies_disabled_reason_check CHECK ((disabled_reason = ANY (ARRAY['rights'::text, 'safety'::text]))),
+    CONSTRAINT dance_choreographies_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'processing'::text, 'ready'::text, 'disabled'::text, 'retired'::text]))),
+    CONSTRAINT dance_choreographies_version_check CHECK (((version >= 1) AND (version <= '9007199254740991'::bigint))),
+    CONSTRAINT dance_choreography_state_shape CHECK ((((status = 'draft'::text) AND (active_revision IS NULL) AND (disabled_reason IS NULL) AND (disabled_at IS NULL) AND (retired_at IS NULL)) OR ((status = 'processing'::text) AND (active_revision IS NULL) AND (disabled_reason IS NULL) AND (disabled_at IS NULL) AND (retired_at IS NULL)) OR ((status = 'ready'::text) AND (active_revision IS NOT NULL) AND (disabled_reason IS NULL) AND (disabled_at IS NULL) AND (retired_at IS NULL)) OR ((status = 'disabled'::text) AND (disabled_reason IS NOT NULL) AND (disabled_at IS NOT NULL) AND (retired_at IS NULL)) OR ((status = 'retired'::text) AND (retired_at IS NOT NULL) AND (((disabled_reason IS NULL) AND (disabled_at IS NULL)) OR ((disabled_reason IS NOT NULL) AND (disabled_at IS NOT NULL)))))),
+    CONSTRAINT dance_choreography_time_order CHECK (((updated_at >= created_at) AND ((disabled_at IS NULL) OR (disabled_at >= created_at)) AND ((retired_at IS NULL) OR (retired_at >= created_at))))
+);
+
+CREATE TABLE dance_choreography_revisions (
+    choreography_id text NOT NULL,
+    revision bigint NOT NULL,
+    aggregate_version bigint NOT NULL,
+    community_id text NOT NULL,
+    song_post_id text NOT NULL,
+    audio_revision bigint NOT NULL,
+    requested_start_ms bigint NOT NULL,
+    requested_end_ms bigint NOT NULL,
+    segment_id text,
+    reference_video_post_id text NOT NULL,
+    reference_video_song_post_id text NOT NULL,
+    reference_video_audio_revision bigint NOT NULL,
+    reference_video_object_ref text NOT NULL,
+    reference_video_sha256 text NOT NULL,
+    mirror_policy text NOT NULL,
+    alignment_policy_version text NOT NULL,
+    alignment_adapter text NOT NULL,
+    alignment_revision text NOT NULL,
+    pose_model_version text NOT NULL,
+    pose_runtime_version text NOT NULL,
+    feature_schema_version text NOT NULL,
+    scorer_contract_version text NOT NULL,
+    fingerprint_policy_version text NOT NULL,
+    integrity_policy_version text NOT NULL,
+    owner_policy_revision bigint NOT NULL,
+    owner_policy_hash text NOT NULL,
+    revision_terms_hash text NOT NULL,
+    status text DEFAULT 'processing'::text NOT NULL,
+    reference_video_scored_start_ms bigint,
+    reference_video_scored_end_ms bigint,
+    alignment_metrics jsonb,
+    reference_duration_ms bigint,
+    reference_width integer,
+    reference_height integer,
+    reference_frame_rate_numerator integer,
+    reference_frame_rate_denominator integer,
+    usable_frame_summary jsonb,
+    alignment_accepted boolean,
+    time_stretch_detected boolean,
+    body_coverage_accepted boolean,
+    timeline_evidence_accepted boolean,
+    visibility_evidence_accepted boolean,
+    subject_continuity_accepted boolean,
+    meaningful_motion_accepted boolean,
+    terminal_evidence_digest text,
+    processing_failure_code text,
+    cutoff_reason text,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    terminal_at timestamp with time zone,
+    cutoff_at timestamp with time zone,
+    CONSTRAINT dance_choreography_revisions_aggregate_version_check CHECK (((aggregate_version >= 1) AND (aggregate_version <= '9007199254740991'::bigint))),
+    CONSTRAINT dance_choreography_revisions_alignment_adapter_check CHECK (is_dance_identifier(alignment_adapter)),
+    CONSTRAINT dance_choreography_revisions_alignment_policy_version_check CHECK (is_dance_identifier(alignment_policy_version)),
+    CONSTRAINT dance_choreography_revisions_alignment_revision_check CHECK (is_dance_identifier(alignment_revision)),
+    CONSTRAINT dance_choreography_revisions_audio_revision_check CHECK (((audio_revision >= 1) AND (audio_revision <= '9007199254740991'::bigint))),
+    CONSTRAINT dance_choreography_revisions_cutoff_reason_check CHECK ((cutoff_reason = ANY (ARRAY['rights'::text, 'safety'::text, 'retired'::text]))),
+    CONSTRAINT dance_choreography_revisions_feature_schema_version_check CHECK (is_dance_identifier(feature_schema_version)),
+    CONSTRAINT dance_choreography_revisions_fingerprint_policy_version_check CHECK (is_dance_identifier(fingerprint_policy_version)),
+    CONSTRAINT dance_choreography_revisions_integrity_policy_version_check CHECK (is_dance_identifier(integrity_policy_version)),
+    CONSTRAINT dance_choreography_revisions_mirror_policy_check CHECK ((mirror_policy = ANY (ARRAY['strict'::text, 'allowed'::text]))),
+    CONSTRAINT dance_choreography_revisions_owner_policy_hash_check CHECK ((owner_policy_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT dance_choreography_revisions_owner_policy_revision_check CHECK (((owner_policy_revision >= 1) AND (owner_policy_revision <= '9007199254740991'::bigint))),
+    CONSTRAINT dance_choreography_revisions_pose_model_version_check CHECK (is_dance_identifier(pose_model_version)),
+    CONSTRAINT dance_choreography_revisions_pose_runtime_version_check CHECK (is_dance_identifier(pose_runtime_version)),
+    CONSTRAINT dance_choreography_revisions_processing_failure_code_check CHECK (((processing_failure_code IS NULL) OR is_dance_identifier(processing_failure_code))),
+    CONSTRAINT dance_choreography_revisions_reference_video_audio_revisi_check CHECK (((reference_video_audio_revision >= 1) AND (reference_video_audio_revision <= '9007199254740991'::bigint))),
+    CONSTRAINT dance_choreography_revisions_reference_video_object_ref_check CHECK (is_dance_identifier(reference_video_object_ref, 2048)),
+    CONSTRAINT dance_choreography_revisions_reference_video_sha256_check CHECK ((reference_video_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT dance_choreography_revisions_requested_end_ms_check CHECK (((requested_end_ms >= 1) AND (requested_end_ms <= '9007199254740991'::bigint))),
+    CONSTRAINT dance_choreography_revisions_requested_start_ms_check CHECK (((requested_start_ms >= 0) AND (requested_start_ms <= '9007199254740991'::bigint))),
+    CONSTRAINT dance_choreography_revisions_revision_check CHECK (((revision >= 1) AND (revision <= '9007199254740991'::bigint))),
+    CONSTRAINT dance_choreography_revisions_revision_terms_hash_check CHECK ((revision_terms_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT dance_choreography_revisions_scorer_contract_version_check CHECK (is_dance_identifier(scorer_contract_version)),
+    CONSTRAINT dance_choreography_revisions_status_check CHECK ((status = ANY (ARRAY['processing'::text, 'ready'::text, 'processing_failed'::text, 'disabled'::text, 'retired'::text]))),
+    CONSTRAINT dance_choreography_revisions_terminal_evidence_digest_check CHECK (((terminal_evidence_digest IS NULL) OR (terminal_evidence_digest ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT dance_revision_reference_binding CHECK (((reference_video_song_post_id = song_post_id) AND (reference_video_audio_revision = audio_revision))),
+    CONSTRAINT dance_revision_requested_interval CHECK (((requested_end_ms > requested_start_ms) AND (((requested_end_ms - requested_start_ms) >= 6000) AND ((requested_end_ms - requested_start_ms) <= 30000)))),
+    CONSTRAINT dance_revision_terminal_shape CHECK ((((status = 'processing'::text) AND (segment_id IS NULL) AND (reference_video_scored_start_ms IS NULL) AND (reference_video_scored_end_ms IS NULL) AND (alignment_metrics IS NULL) AND (reference_duration_ms IS NULL) AND (reference_width IS NULL) AND (reference_height IS NULL) AND (reference_frame_rate_numerator IS NULL) AND (reference_frame_rate_denominator IS NULL) AND (usable_frame_summary IS NULL) AND (alignment_accepted IS NULL) AND (time_stretch_detected IS NULL) AND (body_coverage_accepted IS NULL) AND (timeline_evidence_accepted IS NULL) AND (visibility_evidence_accepted IS NULL) AND (subject_continuity_accepted IS NULL) AND (meaningful_motion_accepted IS NULL) AND (terminal_evidence_digest IS NULL) AND (processing_failure_code IS NULL) AND (terminal_at IS NULL) AND (cutoff_reason IS NULL) AND (cutoff_at IS NULL)) OR ((status = 'processing_failed'::text) AND (segment_id IS NULL) AND (reference_video_scored_start_ms IS NULL) AND (reference_video_scored_end_ms IS NULL) AND (alignment_metrics IS NULL) AND (reference_duration_ms IS NULL) AND (reference_width IS NULL) AND (reference_height IS NULL) AND (reference_frame_rate_numerator IS NULL) AND (reference_frame_rate_denominator IS NULL) AND (usable_frame_summary IS NULL) AND (alignment_accepted IS NULL) AND (time_stretch_detected IS NULL) AND (body_coverage_accepted IS NULL) AND (timeline_evidence_accepted IS NULL) AND (visibility_evidence_accepted IS NULL) AND (subject_continuity_accepted IS NULL) AND (meaningful_motion_accepted IS NULL) AND (terminal_evidence_digest IS NOT NULL) AND (processing_failure_code IS NOT NULL) AND (terminal_at IS NOT NULL) AND (cutoff_reason IS NULL) AND (cutoff_at IS NULL)) OR ((status = ANY (ARRAY['ready'::text, 'disabled'::text, 'retired'::text])) AND (segment_id IS NOT NULL) AND (reference_video_scored_start_ms >= 0) AND (reference_video_scored_end_ms > reference_video_scored_start_ms) AND (alignment_metrics IS NOT NULL) AND (jsonb_typeof(alignment_metrics) = 'object'::text) AND (reference_duration_ms > 0) AND (reference_width > 0) AND (reference_height > 0) AND (reference_frame_rate_numerator > 0) AND (reference_frame_rate_denominator > 0) AND (usable_frame_summary IS NOT NULL) AND (jsonb_typeof(usable_frame_summary) = 'object'::text) AND (alignment_accepted IS TRUE) AND (time_stretch_detected IS FALSE) AND (body_coverage_accepted IS TRUE) AND (timeline_evidence_accepted IS TRUE) AND (visibility_evidence_accepted IS TRUE) AND (subject_continuity_accepted IS TRUE) AND (meaningful_motion_accepted IS TRUE) AND (terminal_evidence_digest IS NOT NULL) AND (processing_failure_code IS NULL) AND (terminal_at IS NOT NULL) AND (((status = 'ready'::text) AND (cutoff_reason IS NULL) AND (cutoff_at IS NULL)) OR ((status = ANY (ARRAY['disabled'::text, 'retired'::text])) AND (cutoff_reason IS NOT NULL) AND (cutoff_at IS NOT NULL))))))
+);
+
+CREATE TABLE dance_reference_actions (
+    actor_account_id text NOT NULL,
+    http_method text NOT NULL,
+    endpoint_template text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    result_kind text NOT NULL,
+    response_snapshot bytea NOT NULL,
+    response_snapshot_sha256 text NOT NULL,
+    choreography_id text,
+    choreography_revision bigint,
+    presentation_revision bigint,
+    committed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT dance_reference_action_result_shape CHECK ((((result_kind = 'accepted'::text) AND ((choreography_id IS NOT NULL) OR (presentation_revision IS NOT NULL))) OR ((result_kind = 'rejected'::text) AND (choreography_id IS NULL) AND (choreography_revision IS NULL) AND (presentation_revision IS NULL)))),
+    CONSTRAINT dance_reference_action_route_shape CHECK ((((http_method = 'POST'::text) AND (endpoint_template <> '/communities/:communityId/posts/:postId/dance/presentation'::text)) OR ((http_method = ANY (ARRAY['PUT'::text, 'DELETE'::text])) AND (endpoint_template = '/communities/:communityId/posts/:postId/dance/presentation'::text)))),
+    CONSTRAINT dance_reference_actions_check CHECK (((response_snapshot_sha256 ~ '^[0-9a-f]{64}$'::text) AND (encode(sha256(response_snapshot), 'hex'::text) = response_snapshot_sha256))),
+    CONSTRAINT dance_reference_actions_endpoint_template_check CHECK ((endpoint_template = ANY (ARRAY['/communities/:communityId/posts/:postId/dance/choreographies'::text, '/communities/:communityId/dance/choreographies/:choreographyId/revisions'::text, '/communities/:communityId/dance/choreographies/:choreographyId/disable'::text, '/communities/:communityId/dance/choreographies/:choreographyId/retire'::text, '/communities/:communityId/posts/:postId/dance/presentation'::text]))),
+    CONSTRAINT dance_reference_actions_http_method_check CHECK ((http_method = ANY (ARRAY['POST'::text, 'PUT'::text, 'DELETE'::text]))),
+    CONSTRAINT dance_reference_actions_idempotency_key_check CHECK (is_dance_identifier(idempotency_key, 128)),
+    CONSTRAINT dance_reference_actions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT dance_reference_actions_response_snapshot_check CHECK (((octet_length(response_snapshot) >= 1) AND (octet_length(response_snapshot) <= 1048576))),
+    CONSTRAINT dance_reference_actions_result_kind_check CHECK ((result_kind = ANY (ARRAY['accepted'::text, 'rejected'::text])))
+);
+
+CREATE TABLE dance_reference_artifacts (
+    artifact_id text NOT NULL,
+    choreography_id text NOT NULL,
+    revision bigint NOT NULL,
+    private_artifact_ref text NOT NULL,
+    artifact_sha256 text NOT NULL,
+    pose_model_version text NOT NULL,
+    pose_runtime_version text NOT NULL,
+    feature_schema_version text NOT NULL,
+    scorer_contract_version text NOT NULL,
+    integrity_policy_version text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT dance_reference_artifacts_artifact_id_check CHECK (is_dance_identifier(artifact_id)),
+    CONSTRAINT dance_reference_artifacts_artifact_sha256_check CHECK ((artifact_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT dance_reference_artifacts_feature_schema_version_check CHECK (is_dance_identifier(feature_schema_version)),
+    CONSTRAINT dance_reference_artifacts_integrity_policy_version_check CHECK (is_dance_identifier(integrity_policy_version)),
+    CONSTRAINT dance_reference_artifacts_pose_model_version_check CHECK (is_dance_identifier(pose_model_version)),
+    CONSTRAINT dance_reference_artifacts_pose_runtime_version_check CHECK (is_dance_identifier(pose_runtime_version)),
+    CONSTRAINT dance_reference_artifacts_private_artifact_ref_check CHECK (is_dance_identifier(private_artifact_ref, 2048)),
+    CONSTRAINT dance_reference_artifacts_scorer_contract_version_check CHECK (is_dance_identifier(scorer_contract_version))
+);
+
+CREATE TABLE dance_reference_outbox (
+    outbox_event_id text NOT NULL,
+    choreography_id text NOT NULL,
+    revision bigint NOT NULL,
+    event_type text NOT NULL,
+    effect_identity text NOT NULL,
+    payload jsonb NOT NULL,
+    payload_sha256 text NOT NULL,
+    state text DEFAULT 'pending'::text NOT NULL,
+    delivery_attempts integer DEFAULT 0 NOT NULL,
+    claim_owner text,
+    claim_fence bigint DEFAULT 0 NOT NULL,
+    lease_expires_at timestamp with time zone,
+    next_eligible_at timestamp with time zone,
+    delivered_at timestamp with time zone,
+    failure_code text,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT dance_reference_outbox_claim_fence_check CHECK (((claim_fence >= 0) AND (claim_fence <= '9007199254740991'::bigint))),
+    CONSTRAINT dance_reference_outbox_claim_owner_check CHECK (((claim_owner IS NULL) OR is_dance_identifier(claim_owner))),
+    CONSTRAINT dance_reference_outbox_delivery_attempts_check CHECK (((delivery_attempts >= 0) AND (delivery_attempts <= 3))),
+    CONSTRAINT dance_reference_outbox_effect_identity_check CHECK (is_dance_identifier(effect_identity, 512)),
+    CONSTRAINT dance_reference_outbox_event_type_check CHECK ((event_type = 'reference_processing'::text)),
+    CONSTRAINT dance_reference_outbox_failure_code_check CHECK (((failure_code IS NULL) OR is_dance_identifier(failure_code))),
+    CONSTRAINT dance_reference_outbox_outbox_event_id_check CHECK (is_dance_identifier(outbox_event_id)),
+    CONSTRAINT dance_reference_outbox_payload_check CHECK ((jsonb_typeof(payload) = 'object'::text)),
+    CONSTRAINT dance_reference_outbox_payload_hash CHECK ((encode(sha256(convert_to((payload)::text, 'UTF8'::name)), 'hex'::text) = payload_sha256)),
+    CONSTRAINT dance_reference_outbox_payload_sha256_check CHECK ((payload_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT dance_reference_outbox_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'running'::text, 'delivered'::text, 'failed'::text, 'exhausted'::text]))),
+    CONSTRAINT dance_reference_outbox_state_shape CHECK ((((state = 'pending'::text) AND (delivery_attempts = 0) AND (claim_owner IS NULL) AND (claim_fence = 0) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NULL) AND (delivered_at IS NULL) AND (failure_code IS NULL)) OR ((state = 'running'::text) AND ((delivery_attempts >= 1) AND (delivery_attempts <= 3)) AND (claim_owner IS NOT NULL) AND (claim_fence > 0) AND (lease_expires_at > updated_at) AND (next_eligible_at IS NULL) AND (delivered_at IS NULL) AND (failure_code IS NULL)) OR ((state = 'failed'::text) AND ((delivery_attempts >= 1) AND (delivery_attempts <= 2)) AND (claim_owner IS NULL) AND (claim_fence > 0) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NOT NULL) AND (delivered_at IS NULL) AND (failure_code IS NOT NULL)) OR ((state = 'delivered'::text) AND ((delivery_attempts >= 1) AND (delivery_attempts <= 3)) AND (claim_owner IS NULL) AND (claim_fence > 0) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NULL) AND (delivered_at IS NOT NULL) AND (failure_code IS NULL)) OR ((state = 'exhausted'::text) AND (delivery_attempts = 3) AND (claim_owner IS NULL) AND (claim_fence > 0) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NULL) AND (delivered_at IS NULL) AND (failure_code IS NOT NULL))))
+);
+
+CREATE TABLE dance_reference_processing_attempts (
+    processing_attempt_id text NOT NULL,
+    choreography_id text NOT NULL,
+    revision bigint NOT NULL,
+    attempt_number integer NOT NULL,
+    adapter_id text NOT NULL,
+    adapter_revision text NOT NULL,
+    input_digest text NOT NULL,
+    state text DEFAULT 'leased'::text NOT NULL,
+    lease_owner text,
+    lease_fence bigint DEFAULT 1 NOT NULL,
+    lease_expires_at timestamp with time zone,
+    result_digest text,
+    private_evidence_ref text,
+    failure_code text,
+    retryable boolean,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    completed_at timestamp with time zone,
+    CONSTRAINT dance_reference_processing_attempt_state_shape CHECK ((((state = 'leased'::text) AND (lease_owner IS NOT NULL) AND (lease_expires_at > updated_at) AND (result_digest IS NULL) AND (private_evidence_ref IS NULL) AND (failure_code IS NULL) AND (retryable IS NULL) AND (completed_at IS NULL)) OR ((state = 'succeeded'::text) AND (lease_owner IS NULL) AND (lease_expires_at IS NULL) AND (result_digest IS NOT NULL) AND (private_evidence_ref IS NOT NULL) AND (failure_code IS NULL) AND (retryable IS FALSE) AND (completed_at IS NOT NULL)) OR ((state = 'failed'::text) AND (lease_owner IS NULL) AND (lease_expires_at IS NULL) AND (result_digest IS NOT NULL) AND (private_evidence_ref IS NOT NULL) AND (failure_code IS NOT NULL) AND (retryable IS TRUE) AND (completed_at IS NOT NULL)) OR ((state = 'exhausted'::text) AND (lease_owner IS NULL) AND (lease_expires_at IS NULL) AND (result_digest IS NOT NULL) AND (private_evidence_ref IS NOT NULL) AND (failure_code IS NOT NULL) AND (retryable IS FALSE) AND (completed_at IS NOT NULL)))),
+    CONSTRAINT dance_reference_processing_attempt_time_order CHECK (((updated_at >= created_at) AND ((completed_at IS NULL) OR (completed_at >= created_at)))),
+    CONSTRAINT dance_reference_processing_attempts_adapter_id_check CHECK (is_dance_identifier(adapter_id)),
+    CONSTRAINT dance_reference_processing_attempts_adapter_revision_check CHECK (is_dance_identifier(adapter_revision)),
+    CONSTRAINT dance_reference_processing_attempts_attempt_number_check CHECK (((attempt_number >= 1) AND (attempt_number <= 3))),
+    CONSTRAINT dance_reference_processing_attempts_failure_code_check CHECK (((failure_code IS NULL) OR is_dance_identifier(failure_code))),
+    CONSTRAINT dance_reference_processing_attempts_input_digest_check CHECK ((input_digest ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT dance_reference_processing_attempts_lease_fence_check CHECK (((lease_fence >= 1) AND (lease_fence <= '9007199254740991'::bigint))),
+    CONSTRAINT dance_reference_processing_attempts_lease_owner_check CHECK (((lease_owner IS NULL) OR is_dance_identifier(lease_owner))),
+    CONSTRAINT dance_reference_processing_attempts_private_evidence_ref_check CHECK (((private_evidence_ref IS NULL) OR is_dance_identifier(private_evidence_ref, 2048))),
+    CONSTRAINT dance_reference_processing_attempts_processing_attempt_id_check CHECK (is_dance_identifier(processing_attempt_id)),
+    CONSTRAINT dance_reference_processing_attempts_result_digest_check CHECK (((result_digest IS NULL) OR (result_digest ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT dance_reference_processing_attempts_state_check CHECK ((state = ANY (ARRAY['leased'::text, 'succeeded'::text, 'failed'::text, 'exhausted'::text])))
+);
+
+CREATE TABLE dance_song_segments (
+    segment_id text NOT NULL,
+    community_id text NOT NULL,
+    song_post_id text NOT NULL,
+    song_submission_id text NOT NULL,
+    audio_revision bigint NOT NULL,
+    start_ms bigint NOT NULL,
+    end_ms bigint NOT NULL,
+    duration_ms bigint GENERATED ALWAYS AS ((end_ms - start_ms)) STORED,
+    canonical_audio_duration_ms bigint NOT NULL,
+    canonical_segment_audio_ref text NOT NULL,
+    canonical_segment_sha256 text NOT NULL,
+    extraction_policy_version text NOT NULL,
+    source_media_sha256 text NOT NULL,
+    segment_terms_hash text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT dance_song_segment_interval CHECK (((end_ms > start_ms) AND (end_ms <= canonical_audio_duration_ms) AND (((end_ms - start_ms) >= 6000) AND ((end_ms - start_ms) <= 30000)))),
+    CONSTRAINT dance_song_segments_audio_revision_check CHECK (((audio_revision >= 1) AND (audio_revision <= '9007199254740991'::bigint))),
+    CONSTRAINT dance_song_segments_canonical_audio_duration_ms_check CHECK (((canonical_audio_duration_ms >= 1) AND (canonical_audio_duration_ms <= '9007199254740991'::bigint))),
+    CONSTRAINT dance_song_segments_canonical_segment_audio_ref_check CHECK (is_dance_identifier(canonical_segment_audio_ref, 2048)),
+    CONSTRAINT dance_song_segments_canonical_segment_sha256_check CHECK ((canonical_segment_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT dance_song_segments_end_ms_check CHECK (((end_ms >= 1) AND (end_ms <= '9007199254740991'::bigint))),
+    CONSTRAINT dance_song_segments_extraction_policy_version_check CHECK (is_dance_identifier(extraction_policy_version)),
+    CONSTRAINT dance_song_segments_segment_id_check CHECK (is_dance_identifier(segment_id)),
+    CONSTRAINT dance_song_segments_segment_terms_hash_check CHECK ((segment_terms_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT dance_song_segments_source_media_sha256_check CHECK ((source_media_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT dance_song_segments_start_ms_check CHECK (((start_ms >= 0) AND (start_ms <= '9007199254740991'::bigint)))
+);
+
 CREATE TABLE data_registration_artifacts (
     artifact_id text NOT NULL,
     registration_operation_id text NOT NULL,
@@ -16131,15 +17459,53 @@ CREATE TABLE karaoke_attempts (
     evidence_summary jsonb NOT NULL,
     completed_at timestamp with time zone NOT NULL,
     created_at timestamp with time zone NOT NULL,
+    lyrics_score_bps integer NOT NULL,
+    timing_score_bps integer,
+    timing_trend text NOT NULL,
+    uncertain_line_count integer NOT NULL,
+    no_recognition_line_count integer NOT NULL,
+    low_confidence_line_count integer NOT NULL,
+    scoring_diagnostics jsonb NOT NULL,
+    transport_facts jsonb NOT NULL,
     CONSTRAINT karaoke_attempt_terminal_shape CHECK (((completed_at >= created_at) AND ((completion_reason = 'completed'::text) OR ((final_score_bps = 0) AND (scored_line_count = 0))))),
     CONSTRAINT karaoke_attempts_check CHECK (((line_count > 0) AND (scored_line_count <= line_count))),
+    CONSTRAINT karaoke_attempts_check1 CHECK (((uncertain_line_count >= 0) AND (uncertain_line_count <= line_count))),
+    CONSTRAINT karaoke_attempts_check2 CHECK (((no_recognition_line_count >= 0) AND (no_recognition_line_count <= line_count))),
+    CONSTRAINT karaoke_attempts_check3 CHECK (((low_confidence_line_count >= 0) AND (low_confidence_line_count <= line_count))),
+    CONSTRAINT karaoke_attempts_check4 CHECK (((jsonb_typeof(scoring_diagnostics) = 'object'::text) AND ((scoring_diagnostics ->> 'schema_version'::text) = '1'::text) AND (((scoring_diagnostics ->> 'scoring_version'::text))::integer = scoring_version) AND (jsonb_typeof((scoring_diagnostics -> 'line_diagnostics'::text)) = 'array'::text) AND (jsonb_array_length((scoring_diagnostics -> 'line_diagnostics'::text)) <= line_count) AND (octet_length((scoring_diagnostics)::text) <= 131072))),
     CONSTRAINT karaoke_attempts_completion_reason_check CHECK ((completion_reason = ANY (ARRAY['completed'::text, 'session_error'::text, 'provider_unavailable'::text, 'abandoned'::text]))),
     CONSTRAINT karaoke_attempts_evidence_summary_check CHECK ((jsonb_typeof(evidence_summary) = 'object'::text)),
     CONSTRAINT karaoke_attempts_final_score_bps_check CHECK (((final_score_bps >= 0) AND (final_score_bps <= 10000))),
+    CONSTRAINT karaoke_attempts_lyrics_score_bps_check CHECK (((lyrics_score_bps >= 0) AND (lyrics_score_bps <= 10000))),
     CONSTRAINT karaoke_attempts_scored_line_count_check CHECK ((scored_line_count >= 0)),
     CONSTRAINT karaoke_attempts_scoring_model_check CHECK (((btrim(scoring_model) <> ''::text) AND (scoring_model = btrim(scoring_model)) AND (octet_length(scoring_model) <= 256))),
     CONSTRAINT karaoke_attempts_scoring_provider_check CHECK (((btrim(scoring_provider) <> ''::text) AND (scoring_provider = btrim(scoring_provider)) AND (octet_length(scoring_provider) <= 128))),
-    CONSTRAINT karaoke_attempts_scoring_version_check CHECK ((scoring_version > 0))
+    CONSTRAINT karaoke_attempts_scoring_version_check CHECK ((scoring_version > 0)),
+    CONSTRAINT karaoke_attempts_timing_score_bps_check CHECK (((timing_score_bps >= 0) AND (timing_score_bps <= 10000))),
+    CONSTRAINT karaoke_attempts_timing_trend_check CHECK ((timing_trend = ANY (ARRAY['early'::text, 'late'::text, 'mixed'::text, 'on_time'::text]))),
+    CONSTRAINT karaoke_attempts_transport_facts_check CHECK (((jsonb_typeof(transport_facts) = 'object'::text) AND ((transport_facts ->> 'schema_version'::text) = '1'::text) AND (octet_length((transport_facts)::text) <= 4096)))
+);
+
+CREATE TABLE karaoke_recordings (
+    session_id text NOT NULL,
+    attempt_id text NOT NULL,
+    account_id text NOT NULL,
+    artifact_id text NOT NULL,
+    state text DEFAULT 'pending'::text NOT NULL,
+    object_ref text,
+    content_sha256 text,
+    byte_size bigint,
+    duration_ms integer,
+    failure_kind text,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    reconciled_at timestamp with time zone,
+    CONSTRAINT karaoke_recording_terminal_shape CHECK ((((state = 'pending'::text) AND (object_ref IS NULL) AND (content_sha256 IS NULL) AND (byte_size IS NULL) AND (duration_ms IS NULL) AND (failure_kind IS NULL) AND (reconciled_at IS NULL)) OR ((state = 'stored'::text) AND (object_ref IS NOT NULL) AND (content_sha256 IS NOT NULL) AND (byte_size IS NOT NULL) AND (duration_ms IS NOT NULL) AND (failure_kind IS NULL) AND (reconciled_at IS NOT NULL)) OR ((state = 'failed'::text) AND (object_ref IS NULL) AND (failure_kind IS NOT NULL) AND (reconciled_at IS NOT NULL)) OR ((state = 'deleted'::text) AND (object_ref IS NULL) AND (reconciled_at IS NOT NULL)))),
+    CONSTRAINT karaoke_recordings_artifact_id_check CHECK (((btrim(artifact_id) <> ''::text) AND (artifact_id = btrim(artifact_id)) AND (octet_length(artifact_id) <= 128))),
+    CONSTRAINT karaoke_recordings_byte_size_check CHECK ((byte_size > 0)),
+    CONSTRAINT karaoke_recordings_content_sha256_check CHECK ((content_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT karaoke_recordings_duration_ms_check CHECK ((duration_ms > 0)),
+    CONSTRAINT karaoke_recordings_failure_kind_check CHECK ((failure_kind = ANY (ARRAY['multipart_aborted'::text, 'multipart_failed'::text, 'reconciliation_failed'::text]))),
+    CONSTRAINT karaoke_recordings_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'stored'::text, 'failed'::text, 'deleted'::text])))
 );
 
 CREATE TABLE karaoke_sessions (
@@ -16161,16 +17527,251 @@ CREATE TABLE karaoke_sessions (
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     expires_at timestamp with time zone NOT NULL,
     completed_at timestamp with time zone,
+    playback_kind text DEFAULT 'full_mix'::text NOT NULL,
+    lyrics_revision bigint NOT NULL,
+    scoring_version integer DEFAULT 5 NOT NULL,
+    scoring_provider text DEFAULT 'elevenlabs'::text NOT NULL,
+    scoring_model text DEFAULT 'scribe_v2_realtime'::text NOT NULL,
+    line_snapshot jsonb NOT NULL,
+    client_context jsonb,
     CONSTRAINT karaoke_sessions_attempt_id_check CHECK (((btrim(attempt_id) <> ''::text) AND (attempt_id = btrim(attempt_id)) AND (octet_length(attempt_id) <= 128))),
     CONSTRAINT karaoke_sessions_audio_revision_check CHECK ((audio_revision > 0)),
+    CONSTRAINT karaoke_sessions_client_context_check CHECK (((jsonb_typeof(client_context) = 'object'::text) AND (octet_length((client_context)::text) <= 1024))),
     CONSTRAINT karaoke_sessions_endpoint_template_check CHECK ((endpoint_template = '/communities/:communityId/posts/:postId/karaoke/attempts'::text)),
     CONSTRAINT karaoke_sessions_idempotency_key_check CHECK (((btrim(idempotency_key) <> ''::text) AND (idempotency_key = btrim(idempotency_key)) AND (octet_length(idempotency_key) <= 128))),
     CONSTRAINT karaoke_sessions_karaoke_revision_id_check CHECK (((btrim(karaoke_revision_id) <> ''::text) AND (karaoke_revision_id = btrim(karaoke_revision_id)) AND (octet_length(karaoke_revision_id) <= 128))),
+    CONSTRAINT karaoke_sessions_line_snapshot_check CHECK (((jsonb_typeof(line_snapshot) = 'array'::text) AND ((jsonb_array_length(line_snapshot) >= 1) AND (jsonb_array_length(line_snapshot) <= 500)) AND (octet_length((line_snapshot)::text) <= 262144))),
+    CONSTRAINT karaoke_sessions_lyrics_revision_check CHECK ((lyrics_revision > 0)),
+    CONSTRAINT karaoke_sessions_playback_kind_check CHECK ((playback_kind = ANY (ARRAY['full_mix'::text, 'instrumental'::text]))),
     CONSTRAINT karaoke_sessions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT karaoke_sessions_scoring_model_check CHECK ((scoring_model = 'scribe_v2_realtime'::text)),
+    CONSTRAINT karaoke_sessions_scoring_provider_check CHECK ((scoring_provider = 'elevenlabs'::text)),
+    CONSTRAINT karaoke_sessions_scoring_version_check CHECK ((scoring_version = 5)),
     CONSTRAINT karaoke_sessions_session_id_check CHECK (((btrim(session_id) <> ''::text) AND (session_id = btrim(session_id)) AND (octet_length(session_id) <= 128))),
     CONSTRAINT karaoke_sessions_status_check CHECK ((status = ANY (ARRAY['active'::text, 'completed'::text]))),
     CONSTRAINT karaoke_sessions_time_shape CHECK (((expires_at > created_at) AND (((status = 'active'::text) AND (completed_at IS NULL)) OR ((status = 'completed'::text) AND (completed_at IS NOT NULL) AND (completed_at >= created_at))))),
     CONSTRAINT karaoke_sessions_timezone_check CHECK (((btrim(timezone) <> ''::text) AND (timezone = btrim(timezone)) AND (octet_length(timezone) <= 128)))
+);
+
+CREATE TABLE learner_audio_artifacts (
+    learner_audio_artifact_id text NOT NULL,
+    account_id text NOT NULL,
+    source_kind text NOT NULL,
+    attempt_ref text NOT NULL,
+    expected_object_ref text NOT NULL,
+    object_ref text,
+    content_digest text NOT NULL,
+    content_type text NOT NULL,
+    byte_size bigint NOT NULL,
+    duration_ms bigint NOT NULL,
+    platform_retention text NOT NULL,
+    provider_retention text NOT NULL,
+    recording_state text NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    deleted_at timestamp with time zone,
+    CONSTRAINT learner_audio_artifacts_byte_size_check CHECK ((byte_size > 0)),
+    CONSTRAINT learner_audio_artifacts_check CHECK (((recording_state = 'deleted'::text) = (deleted_at IS NOT NULL))),
+    CONSTRAINT learner_audio_artifacts_check1 CHECK (((recording_state = 'stored'::text) = (object_ref IS NOT NULL))),
+    CONSTRAINT learner_audio_artifacts_content_digest_check CHECK ((content_digest ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT learner_audio_artifacts_duration_ms_check CHECK ((duration_ms > 0)),
+    CONSTRAINT learner_audio_artifacts_learner_audio_artifact_id_check CHECK (((char_length(learner_audio_artifact_id) >= 1) AND (char_length(learner_audio_artifact_id) <= 256))),
+    CONSTRAINT learner_audio_artifacts_platform_retention_check CHECK ((platform_retention = ANY (ARRAY['private_learning'::text, 'ephemeral'::text]))),
+    CONSTRAINT learner_audio_artifacts_provider_retention_check CHECK ((provider_retention = 'not_stored'::text)),
+    CONSTRAINT learner_audio_artifacts_recording_state_check CHECK ((recording_state = ANY (ARRAY['pending'::text, 'stored'::text, 'failed'::text, 'deleted'::text]))),
+    CONSTRAINT learner_audio_artifacts_source_kind_check CHECK ((source_kind = ANY (ARRAY['study'::text, 'karaoke'::text])))
+);
+
+CREATE TABLE localization_lyric_line_lineage (
+    community_id text NOT NULL,
+    post_id text NOT NULL,
+    transition_kind text NOT NULL,
+    predecessor_line_id text NOT NULL,
+    successor_line_id text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT localization_lyric_line_lineage_check CHECK ((predecessor_line_id <> successor_line_id)),
+    CONSTRAINT localization_lyric_line_lineage_transition_kind_check CHECK ((transition_kind = ANY (ARRAY['split'::text, 'merge'::text, 'replaced'::text])))
+);
+
+CREATE TABLE localization_lyric_line_occurrences (
+    community_id text NOT NULL,
+    post_id text NOT NULL,
+    lyric_line_id text NOT NULL,
+    lifecycle_status text DEFAULT 'active'::text NOT NULL,
+    retirement_reason text,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    retired_at timestamp with time zone,
+    CONSTRAINT localization_lyric_line_occurrences_lifecycle_status_check CHECK ((lifecycle_status = ANY (ARRAY['active'::text, 'retired'::text]))),
+    CONSTRAINT localization_lyric_line_occurrences_lyric_line_id_check CHECK (((char_length(lyric_line_id) >= 1) AND (char_length(lyric_line_id) <= 256))),
+    CONSTRAINT localization_lyric_line_occurrences_retirement_reason_check CHECK ((retirement_reason = ANY (ARRAY['deleted'::text, 'split'::text, 'merged'::text, 'replaced'::text]))),
+    CONSTRAINT localization_lyric_line_retirement_shape CHECK ((((lifecycle_status = 'active'::text) AND (retirement_reason IS NULL) AND (retired_at IS NULL)) OR ((lifecycle_status = 'retired'::text) AND (retirement_reason IS NOT NULL) AND (retired_at IS NOT NULL))))
+);
+
+CREATE TABLE localization_lyric_line_study_units (
+    community_id text NOT NULL,
+    post_id text NOT NULL,
+    lyric_line_id text NOT NULL,
+    line_version bigint NOT NULL,
+    study_unit_id text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL
+);
+
+CREATE TABLE localization_lyric_line_versions (
+    community_id text NOT NULL,
+    post_id text NOT NULL,
+    lyric_line_id text NOT NULL,
+    line_version bigint NOT NULL,
+    canonical_text text NOT NULL,
+    source_language text NOT NULL,
+    source_hash text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT localization_lyric_line_versions_canonical_text_check CHECK ((char_length(canonical_text) > 0)),
+    CONSTRAINT localization_lyric_line_versions_line_version_check CHECK ((line_version > 0)),
+    CONSTRAINT localization_lyric_line_versions_source_hash_check CHECK ((source_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT localization_lyric_line_versions_source_language_check CHECK (((char_length(source_language) <= 64) AND (source_language ~ '^[a-z]{2,3}(?:-[A-Z][a-z]{3})?(?:-(?:[A-Z]{2}|[0-9]{3}))?(?:-[a-z0-9]{5,8}|-[0-9][a-z0-9]{3})*$'::text)))
+);
+
+CREATE TABLE localization_lyric_reconciliation_decisions (
+    reconciliation_id text NOT NULL,
+    community_id text NOT NULL,
+    post_id text NOT NULL,
+    from_lyrics_revision bigint NOT NULL,
+    to_lyrics_revision bigint NOT NULL,
+    prior_ordinal bigint NOT NULL,
+    candidate_ordinal bigint,
+    outcome text NOT NULL,
+    lyric_line_id text,
+    reason text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT localization_lyric_reconciliation_de_from_lyrics_revision_check CHECK ((from_lyrics_revision > 0)),
+    CONSTRAINT localization_lyric_reconciliation_decis_candidate_ordinal_check CHECK (((candidate_ordinal IS NULL) OR (candidate_ordinal > 0))),
+    CONSTRAINT localization_lyric_reconciliation_decis_reconciliation_id_check CHECK (((char_length(reconciliation_id) >= 1) AND (char_length(reconciliation_id) <= 256))),
+    CONSTRAINT localization_lyric_reconciliation_decisions_check CHECK ((to_lyrics_revision > from_lyrics_revision)),
+    CONSTRAINT localization_lyric_reconciliation_decisions_outcome_check CHECK ((outcome = ANY (ARRAY['retained'::text, 'retired'::text, 'uncertain'::text]))),
+    CONSTRAINT localization_lyric_reconciliation_decisions_prior_ordinal_check CHECK ((prior_ordinal > 0)),
+    CONSTRAINT localization_lyric_reconciliation_decisions_reason_check CHECK (((char_length(reason) >= 1) AND (char_length(reason) <= 512))),
+    CONSTRAINT localization_lyric_reconciliation_shape CHECK ((((outcome = 'retained'::text) AND (candidate_ordinal IS NOT NULL) AND (lyric_line_id IS NOT NULL)) OR ((outcome = 'retired'::text) AND (lyric_line_id IS NOT NULL)) OR ((outcome = 'uncertain'::text) AND (lyric_line_id IS NULL))))
+);
+
+CREATE TABLE localization_lyrics_revision_lines (
+    community_id text NOT NULL,
+    actor_user_id text NOT NULL,
+    post_id text NOT NULL,
+    lyrics_revision bigint NOT NULL,
+    ordinal bigint NOT NULL,
+    lyric_line_id text NOT NULL,
+    line_version bigint NOT NULL,
+    source_hash text NOT NULL,
+    submission_id text NOT NULL,
+    CONSTRAINT localization_lyrics_revision_lines_lyrics_revision_check CHECK ((lyrics_revision > 0)),
+    CONSTRAINT localization_lyrics_revision_lines_ordinal_check CHECK ((ordinal > 0))
+);
+
+CREATE TABLE localization_source_units (
+    source_unit_kind text NOT NULL,
+    source_unit_id text NOT NULL,
+    field_key text NOT NULL,
+    source_revision bigint NOT NULL,
+    source_language text NOT NULL,
+    source_language_policy_version text NOT NULL,
+    source_hash text NOT NULL,
+    hash_policy_version text NOT NULL,
+    canonical_value text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT localization_source_units_canonical_value_check CHECK ((char_length(canonical_value) > 0)),
+    CONSTRAINT localization_source_units_field_key_check CHECK (((char_length(field_key) >= 1) AND (char_length(field_key) <= 128))),
+    CONSTRAINT localization_source_units_hash_policy_version_check CHECK (((char_length(hash_policy_version) >= 1) AND (char_length(hash_policy_version) <= 128))),
+    CONSTRAINT localization_source_units_source_hash_check CHECK ((source_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT localization_source_units_source_language_check CHECK (((char_length(source_language) <= 64) AND (source_language ~ '^[a-z]{2,3}(?:-[A-Z][a-z]{3})?(?:-(?:[A-Z]{2}|[0-9]{3}))?(?:-[a-z0-9]{5,8}|-[0-9][a-z0-9]{3})*$'::text))),
+    CONSTRAINT localization_source_units_source_language_policy_version_check CHECK (((char_length(source_language_policy_version) >= 1) AND (char_length(source_language_policy_version) <= 128))),
+    CONSTRAINT localization_source_units_source_revision_check CHECK ((source_revision > 0)),
+    CONSTRAINT localization_source_units_source_unit_id_check CHECK (((char_length(source_unit_id) >= 1) AND (char_length(source_unit_id) <= 256))),
+    CONSTRAINT localization_source_units_source_unit_kind_check CHECK ((source_unit_kind = ANY (ARRAY['post'::text, 'comment'::text, 'community_text'::text, 'lyric_line'::text])))
+);
+
+CREATE TABLE localization_study_units (
+    community_id text NOT NULL,
+    post_id text NOT NULL,
+    study_unit_id text NOT NULL,
+    identity_normalization_revision text NOT NULL,
+    normalized_source_hash text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT localization_study_units_normalized_source_hash_check CHECK ((normalized_source_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT localization_study_units_study_unit_id_check CHECK (((char_length(study_unit_id) >= 1) AND (char_length(study_unit_id) <= 256)))
+);
+
+CREATE TABLE localization_translation_jobs (
+    translation_job_id text NOT NULL,
+    source_unit_kind text NOT NULL,
+    source_unit_id text NOT NULL,
+    field_key text NOT NULL,
+    source_revision bigint NOT NULL,
+    source_hash text NOT NULL,
+    target_language text NOT NULL,
+    translation_policy_version text NOT NULL,
+    prompt_revision text NOT NULL,
+    attempt_number bigint NOT NULL,
+    status text NOT NULL,
+    lease_token text,
+    lease_expires_at timestamp with time zone,
+    provider_request_id text,
+    deadline_at timestamp with time zone NOT NULL,
+    retryable boolean,
+    failure_reason text,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT localization_translation_job_lease_shape CHECK ((((status = 'leased'::text) AND (lease_token IS NOT NULL) AND (lease_expires_at IS NOT NULL)) OR ((status <> 'leased'::text) AND (lease_token IS NULL) AND (lease_expires_at IS NULL)))),
+    CONSTRAINT localization_translation_job_terminal_shape CHECK ((((status = ANY (ARRAY['failed'::text, 'stale'::text, 'policy_blocked'::text])) AND (retryable IS NOT NULL) AND (failure_reason IS NOT NULL)) OR ((status <> ALL (ARRAY['failed'::text, 'stale'::text, 'policy_blocked'::text])) AND (retryable IS NULL) AND (failure_reason IS NULL)))),
+    CONSTRAINT localization_translation_jobs_attempt_number_check CHECK ((attempt_number > 0)),
+    CONSTRAINT localization_translation_jobs_prompt_revision_check CHECK (((char_length(prompt_revision) >= 1) AND (char_length(prompt_revision) <= 128))),
+    CONSTRAINT localization_translation_jobs_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'leased'::text, 'succeeded'::text, 'failed'::text, 'stale'::text, 'policy_blocked'::text]))),
+    CONSTRAINT localization_translation_jobs_target_language_check CHECK (((char_length(target_language) <= 64) AND (target_language ~ '^[a-z]{2,3}(?:-[A-Z][a-z]{3})?(?:-(?:[A-Z]{2}|[0-9]{3}))?(?:-[a-z0-9]{5,8}|-[0-9][a-z0-9]{3})*$'::text))),
+    CONSTRAINT localization_translation_jobs_translation_job_id_check CHECK (((char_length(translation_job_id) >= 1) AND (char_length(translation_job_id) <= 256))),
+    CONSTRAINT localization_translation_jobs_translation_policy_version_check CHECK (((char_length(translation_policy_version) >= 1) AND (char_length(translation_policy_version) <= 128)))
+);
+
+CREATE TABLE localization_translation_selections (
+    source_unit_kind text NOT NULL,
+    source_unit_id text NOT NULL,
+    field_key text NOT NULL,
+    source_revision bigint NOT NULL,
+    source_hash text NOT NULL,
+    target_language text NOT NULL,
+    translation_policy_version text NOT NULL,
+    selected_translation_version_id text NOT NULL,
+    selected_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    selected_by text NOT NULL,
+    CONSTRAINT localization_translation_selections_selected_by_check CHECK (((char_length(selected_by) >= 1) AND (char_length(selected_by) <= 128)))
+);
+
+CREATE TABLE localization_translation_versions (
+    translation_version_id text NOT NULL,
+    source_unit_kind text NOT NULL,
+    source_unit_id text NOT NULL,
+    field_key text NOT NULL,
+    source_revision bigint NOT NULL,
+    source_hash text NOT NULL,
+    target_language text NOT NULL,
+    translation_policy_version text NOT NULL,
+    version_number bigint NOT NULL,
+    translated_value text NOT NULL,
+    translation_origin text NOT NULL,
+    provider_id text,
+    model_id text,
+    prompt_revision text,
+    generation_run_id text,
+    quality_policy_revision text NOT NULL,
+    moderation_result text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT localization_translation_machine_provenance CHECK ((((translation_origin = 'machine'::text) AND (provider_id IS NOT NULL) AND (model_id IS NOT NULL) AND (prompt_revision IS NOT NULL) AND (generation_run_id IS NOT NULL)) OR ((translation_origin = 'human'::text) AND (provider_id IS NULL) AND (model_id IS NULL) AND (prompt_revision IS NULL) AND (generation_run_id IS NULL)))),
+    CONSTRAINT localization_translation_versi_translation_policy_version_check CHECK (((char_length(translation_policy_version) >= 1) AND (char_length(translation_policy_version) <= 128))),
+    CONSTRAINT localization_translation_versions_moderation_result_check CHECK ((moderation_result = ANY (ARRAY['allow'::text, 'review_required'::text, 'blocked'::text]))),
+    CONSTRAINT localization_translation_versions_quality_policy_revision_check CHECK (((char_length(quality_policy_revision) >= 1) AND (char_length(quality_policy_revision) <= 128))),
+    CONSTRAINT localization_translation_versions_target_language_check CHECK (((char_length(target_language) <= 64) AND (target_language ~ '^[a-z]{2,3}(?:-[A-Z][a-z]{3})?(?:-(?:[A-Z]{2}|[0-9]{3}))?(?:-[a-z0-9]{5,8}|-[0-9][a-z0-9]{3})*$'::text))),
+    CONSTRAINT localization_translation_versions_translated_value_check CHECK ((char_length(translated_value) > 0)),
+    CONSTRAINT localization_translation_versions_translation_origin_check CHECK ((translation_origin = ANY (ARRAY['machine'::text, 'human'::text]))),
+    CONSTRAINT localization_translation_versions_translation_version_id_check CHECK (((char_length(translation_version_id) >= 1) AND (char_length(translation_version_id) <= 256))),
+    CONSTRAINT localization_translation_versions_version_number_check CHECK ((version_number > 0))
 );
 
 CREATE TABLE media_alignment_projections (
@@ -17203,19 +18804,19 @@ CREATE TABLE megapot_pool_drawings (
     cutoff_frozen_at timestamp with time zone,
     updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     terminal_at timestamp with time zone,
-    CONSTRAINT megapot_pool_drawing_effect_shape CHECK (((status = 'operational_hold'::text) OR ((status = ANY (ARRAY['entry_open'::text, 'cutoff_frozen'::text, 'closed_no_entries'::text, 'closed_unfunded'::text, 'closed_fallback_ineligible'::text, 'closed_fallback_unavailable'::text, 'closed_fallback_ceiling'::text])) AND (commitment_effect_id IS NULL) AND (purchase_effect_id IS NULL) AND (claim_effect_id IS NULL) AND (allocation_batch_id IS NULL)) OR ((status = 'committed'::text) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NULL) AND (claim_effect_id IS NULL) AND (allocation_batch_id IS NULL)) OR ((status = ANY (ARRAY['purchase_pending'::text, 'tickets_confirmed'::text, 'drawing_pending'::text, 'no_win'::text, 'winnings_detected'::text])) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NOT NULL) AND (claim_effect_id IS NULL) AND (allocation_batch_id IS NULL)) OR ((status = ANY (ARRAY['claim_pending'::text, 'claimed'::text])) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NOT NULL) AND (claim_effect_id IS NOT NULL) AND (allocation_batch_id IS NULL)) OR ((status = ANY (ARRAY['allocated'::text, 'credited'::text])) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NOT NULL) AND (claim_effect_id IS NOT NULL) AND (allocation_batch_id IS NOT NULL)))),
+    CONSTRAINT megapot_pool_drawing_effect_shape CHECK (((status = 'operational_hold'::text) OR ((status = ANY (ARRAY['entry_open'::text, 'cutoff_frozen'::text, 'closed_no_entries'::text, 'closed_unfunded'::text, 'closed_fallback_ineligible'::text, 'closed_fallback_unavailable'::text, 'closed_fallback_ceiling'::text])) AND (commitment_effect_id IS NULL) AND (purchase_effect_id IS NULL) AND (claim_effect_id IS NULL) AND (allocation_batch_id IS NULL)) OR ((status = ANY (ARRAY['committed'::text, 'closed_purchase_unavailable'::text])) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NULL) AND (claim_effect_id IS NULL) AND (allocation_batch_id IS NULL)) OR ((status = ANY (ARRAY['purchase_pending'::text, 'tickets_confirmed'::text, 'drawing_pending'::text, 'no_win'::text, 'winnings_detected'::text])) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NOT NULL) AND (claim_effect_id IS NULL) AND (allocation_batch_id IS NULL)) OR ((status = ANY (ARRAY['claim_pending'::text, 'claimed'::text])) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NOT NULL) AND (claim_effect_id IS NOT NULL) AND (allocation_batch_id IS NULL)) OR ((status = ANY (ARRAY['allocated'::text, 'credited'::text])) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NOT NULL) AND (claim_effect_id IS NOT NULL) AND (allocation_batch_id IS NOT NULL)))),
     CONSTRAINT megapot_pool_drawing_freeze_shape CHECK ((((status = 'entry_open'::text) AND (frozen_share_count IS NULL) AND (fallback_beneficiary IS NULL) AND (snapshot_id IS NULL) AND (cutoff_frozen_at IS NULL)) OR (status = 'operational_hold'::text) OR ((status <> ALL (ARRAY['entry_open'::text, 'operational_hold'::text])) AND (frozen_share_count IS NOT NULL) AND (frozen_share_count >= 0) AND (fallback_beneficiary IS NOT NULL) AND (cutoff_frozen_at IS NOT NULL)))),
-    CONSTRAINT megapot_pool_drawing_purchase_amount_shape CHECK (((status = 'operational_hold'::text) OR ((status = ANY (ARRAY['entry_open'::text, 'closed_no_entries'::text, 'closed_unfunded'::text, 'closed_fallback_ineligible'::text, 'closed_fallback_unavailable'::text, 'closed_fallback_ceiling'::text])) AND (reserved_ticket_cost_atomic = (0)::numeric) AND (actual_ticket_cost_atomic = (0)::numeric)) OR ((status = ANY (ARRAY['cutoff_frozen'::text, 'committed'::text, 'purchase_pending'::text])) AND (reserved_ticket_cost_atomic > (0)::numeric) AND (actual_ticket_cost_atomic = (0)::numeric)) OR ((status = ANY (ARRAY['tickets_confirmed'::text, 'drawing_pending'::text, 'no_win'::text, 'winnings_detected'::text, 'claim_pending'::text, 'claimed'::text, 'allocated'::text, 'credited'::text])) AND (reserved_ticket_cost_atomic > (0)::numeric) AND (actual_ticket_cost_atomic > (0)::numeric)))),
+    CONSTRAINT megapot_pool_drawing_purchase_amount_shape CHECK (((status = 'operational_hold'::text) OR ((status = ANY (ARRAY['entry_open'::text, 'closed_no_entries'::text, 'closed_unfunded'::text, 'closed_fallback_ineligible'::text, 'closed_fallback_unavailable'::text, 'closed_fallback_ceiling'::text])) AND (reserved_ticket_cost_atomic = (0)::numeric) AND (actual_ticket_cost_atomic = (0)::numeric)) OR ((status = ANY (ARRAY['cutoff_frozen'::text, 'committed'::text, 'purchase_pending'::text, 'closed_purchase_unavailable'::text])) AND (reserved_ticket_cost_atomic > (0)::numeric) AND (actual_ticket_cost_atomic = (0)::numeric)) OR ((status = ANY (ARRAY['tickets_confirmed'::text, 'drawing_pending'::text, 'no_win'::text, 'winnings_detected'::text, 'claim_pending'::text, 'claimed'::text, 'allocated'::text, 'credited'::text])) AND (reserved_ticket_cost_atomic > (0)::numeric) AND (actual_ticket_cost_atomic > (0)::numeric)))),
     CONSTRAINT megapot_pool_drawing_reservation CHECK (((actual_ticket_cost_atomic <= reserved_ticket_cost_atomic) AND (reserved_ticket_cost_atomic <= ticket_price_ceiling_atomic) AND (net_winnings_atomic <= gross_winnings_atomic))),
-    CONSTRAINT megapot_pool_drawing_snapshot_shape CHECK (((status = 'operational_hold'::text) OR ((status = ANY (ARRAY['entry_open'::text, 'closed_no_entries'::text, 'closed_unfunded'::text, 'closed_fallback_ineligible'::text, 'closed_fallback_unavailable'::text, 'closed_fallback_ceiling'::text])) AND (snapshot_id IS NULL)) OR ((status = ANY (ARRAY['cutoff_frozen'::text, 'committed'::text, 'purchase_pending'::text, 'tickets_confirmed'::text, 'drawing_pending'::text, 'no_win'::text, 'winnings_detected'::text, 'claim_pending'::text, 'claimed'::text, 'allocated'::text, 'credited'::text])) AND (snapshot_id IS NOT NULL)))),
-    CONSTRAINT megapot_pool_drawing_terminal_shape CHECK ((((status = ANY (ARRAY['no_win'::text, 'credited'::text, 'closed_no_entries'::text, 'closed_unfunded'::text, 'closed_fallback_ineligible'::text, 'closed_fallback_unavailable'::text, 'closed_fallback_ceiling'::text, 'operational_hold'::text])) AND (terminal_at IS NOT NULL)) OR ((status <> ALL (ARRAY['no_win'::text, 'credited'::text, 'closed_no_entries'::text, 'closed_unfunded'::text, 'closed_fallback_ineligible'::text, 'closed_fallback_unavailable'::text, 'closed_fallback_ceiling'::text, 'operational_hold'::text])) AND (terminal_at IS NULL)))),
+    CONSTRAINT megapot_pool_drawing_snapshot_shape CHECK (((status = 'operational_hold'::text) OR ((status = ANY (ARRAY['entry_open'::text, 'closed_no_entries'::text, 'closed_unfunded'::text, 'closed_fallback_ineligible'::text, 'closed_fallback_unavailable'::text, 'closed_fallback_ceiling'::text])) AND (snapshot_id IS NULL)) OR ((status = ANY (ARRAY['cutoff_frozen'::text, 'committed'::text, 'purchase_pending'::text, 'tickets_confirmed'::text, 'drawing_pending'::text, 'no_win'::text, 'winnings_detected'::text, 'claim_pending'::text, 'claimed'::text, 'allocated'::text, 'credited'::text, 'closed_purchase_unavailable'::text])) AND (snapshot_id IS NOT NULL)))),
+    CONSTRAINT megapot_pool_drawing_terminal_shape CHECK ((((status = ANY (ARRAY['no_win'::text, 'credited'::text, 'closed_no_entries'::text, 'closed_unfunded'::text, 'closed_fallback_ineligible'::text, 'closed_fallback_unavailable'::text, 'closed_fallback_ceiling'::text, 'closed_purchase_unavailable'::text, 'operational_hold'::text])) AND (terminal_at IS NOT NULL)) OR ((status <> ALL (ARRAY['no_win'::text, 'credited'::text, 'closed_no_entries'::text, 'closed_unfunded'::text, 'closed_fallback_ineligible'::text, 'closed_fallback_unavailable'::text, 'closed_fallback_ceiling'::text, 'closed_purchase_unavailable'::text, 'operational_hold'::text])) AND (terminal_at IS NULL)))),
     CONSTRAINT megapot_pool_drawing_time_order CHECK (((updated_at >= created_at) AND ((cutoff_frozen_at IS NULL) OR (cutoff_frozen_at >= created_at)) AND ((terminal_at IS NULL) OR (terminal_at >= created_at)))),
     CONSTRAINT megapot_pool_drawings_actual_ticket_cost_atomic_check CHECK ((actual_ticket_cost_atomic >= (0)::numeric)),
     CONSTRAINT megapot_pool_drawings_drawing_id_check CHECK ((drawing_id >= (0)::numeric)),
     CONSTRAINT megapot_pool_drawings_gross_winnings_atomic_check CHECK ((gross_winnings_atomic >= (0)::numeric)),
     CONSTRAINT megapot_pool_drawings_net_winnings_atomic_check CHECK ((net_winnings_atomic >= (0)::numeric)),
     CONSTRAINT megapot_pool_drawings_reserved_ticket_cost_atomic_check CHECK ((reserved_ticket_cost_atomic >= (0)::numeric)),
-    CONSTRAINT megapot_pool_drawings_status_check CHECK ((status = ANY (ARRAY['entry_open'::text, 'cutoff_frozen'::text, 'committed'::text, 'purchase_pending'::text, 'tickets_confirmed'::text, 'drawing_pending'::text, 'no_win'::text, 'winnings_detected'::text, 'claim_pending'::text, 'claimed'::text, 'allocated'::text, 'credited'::text, 'closed_no_entries'::text, 'closed_unfunded'::text, 'closed_fallback_ineligible'::text, 'closed_fallback_unavailable'::text, 'closed_fallback_ceiling'::text, 'operational_hold'::text]))),
+    CONSTRAINT megapot_pool_drawings_status_check CHECK ((status = ANY (ARRAY['entry_open'::text, 'cutoff_frozen'::text, 'committed'::text, 'purchase_pending'::text, 'tickets_confirmed'::text, 'drawing_pending'::text, 'no_win'::text, 'winnings_detected'::text, 'claim_pending'::text, 'claimed'::text, 'allocated'::text, 'credited'::text, 'closed_no_entries'::text, 'closed_unfunded'::text, 'closed_fallback_ineligible'::text, 'closed_fallback_unavailable'::text, 'closed_fallback_ceiling'::text, 'closed_purchase_unavailable'::text, 'operational_hold'::text]))),
     CONSTRAINT megapot_pool_drawings_ticket_price_ceiling_atomic_check CHECK ((ticket_price_ceiling_atomic > (0)::numeric)),
     CONSTRAINT megapot_pool_drawings_version_check CHECK ((version > 0))
 );
@@ -18228,8 +19829,8 @@ CREATE TABLE qualification_policy_versions (
     policy_kind text NOT NULL,
     policy_document jsonb NOT NULL,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-    CONSTRAINT qualification_policy_document_shape CHECK ((((policy_kind = 'study_session_first_pass_v2'::text) AND (policy_document = '{"required_correct_bps": 7000}'::jsonb)) OR ((policy_kind = 'karaoke_qualification_v1'::text) AND (policy_document = '{"minimum_coverage_bps": 8500, "minimum_final_score_bps": 7000, "minimum_scored_line_count": 5}'::jsonb)))),
-    CONSTRAINT qualification_policy_kind_shape CHECK ((((activity_key = 'study'::text) AND (policy_kind = 'study_session_first_pass_v2'::text)) OR ((activity_key = 'karaoke'::text) AND (policy_kind = 'karaoke_qualification_v1'::text)))),
+    CONSTRAINT qualification_policy_document_shape CHECK ((((policy_kind = 'study_session_first_pass_v2'::text) AND (policy_document = '{"required_correct_bps": 7000}'::jsonb)) OR ((policy_kind = 'karaoke_qualification_v1'::text) AND (policy_document = '{"minimum_coverage_bps": 8500, "minimum_final_score_bps": 7000, "minimum_scored_line_count": 5}'::jsonb)) OR ((policy_kind = 'karaoke_qualification_v2'::text) AND ((policy_document - 'eligible_playback_kinds'::text) = '{"minimum_coverage_bps": 8500, "minimum_final_score_bps": 7000, "minimum_scored_line_count": 5}'::jsonb) AND ((policy_document -> 'eligible_playback_kinds'::text) = ANY (ARRAY['["full_mix"]'::jsonb, '["instrumental"]'::jsonb, '["full_mix", "instrumental"]'::jsonb, '["instrumental", "full_mix"]'::jsonb]))))),
+    CONSTRAINT qualification_policy_kind_shape CHECK ((((activity_key = 'study'::text) AND (policy_kind = 'study_session_first_pass_v2'::text)) OR ((activity_key = 'karaoke'::text) AND (policy_kind = ANY (ARRAY['karaoke_qualification_v1'::text, 'karaoke_qualification_v2'::text]))))),
     CONSTRAINT qualification_policy_version_qualification_policy_version_check CHECK (((btrim(qualification_policy_version_id) <> ''::text) AND (qualification_policy_version_id = btrim(qualification_policy_version_id)) AND (octet_length(qualification_policy_version_id) <= 128))),
     CONSTRAINT qualification_policy_versions_policy_document_check CHECK ((jsonb_typeof(policy_document) = 'object'::text))
 );
@@ -18272,11 +19873,13 @@ CREATE TABLE reward_asset_whitelist (
     activated_at timestamp with time zone NOT NULL,
     retired_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    plain_erc20_verified_at timestamp with time zone NOT NULL,
     CONSTRAINT reward_asset_whitelist_asset_kind_check CHECK ((asset_kind = ANY (ARRAY['settlement_usdc'::text, 'bonus_asset'::text]))),
     CONSTRAINT reward_asset_whitelist_chain_id_check CHECK ((chain_id > 0)),
     CONSTRAINT reward_asset_whitelist_decimals_check CHECK (((decimals >= 0) AND (decimals <= 77))),
     CONSTRAINT reward_asset_whitelist_environment_chain CHECK ((((environment = 'production'::text) AND (chain_id = 8453)) OR ((environment = ANY (ARRAY['test'::text, 'staging'::text])) AND (chain_id = 84532)))),
     CONSTRAINT reward_asset_whitelist_environment_check CHECK ((environment = ANY (ARRAY['test'::text, 'staging'::text, 'production'::text]))),
+    CONSTRAINT reward_asset_whitelist_plain_erc20_verification_order CHECK ((plain_erc20_verified_at <= activated_at)),
     CONSTRAINT reward_asset_whitelist_policy_version_check CHECK (((btrim(policy_version) <> ''::text) AND (policy_version = btrim(policy_version)) AND (octet_length(policy_version) <= 128))),
     CONSTRAINT reward_asset_whitelist_status_check CHECK ((status = ANY (ARRAY['active'::text, 'retired'::text]))),
     CONSTRAINT reward_asset_whitelist_status_shape CHECK ((((status = 'active'::text) AND (retired_at IS NULL)) OR ((status = 'retired'::text) AND (retired_at IS NOT NULL) AND (retired_at >= activated_at)))),
@@ -18529,6 +20132,25 @@ CREATE TABLE schema_migrations (
     applied_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
+CREATE TABLE song_dance_presentations (
+    community_id text NOT NULL,
+    song_post_id text NOT NULL,
+    song_submission_id text NOT NULL,
+    audio_revision bigint NOT NULL,
+    presentation_revision bigint NOT NULL,
+    featured_choreography_id text,
+    featured_choreography_revision bigint,
+    song_owner_account_id text NOT NULL,
+    updated_by_account_id text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT song_dance_presentation_feature_shape CHECK (((featured_choreography_id IS NULL) = (featured_choreography_revision IS NULL))),
+    CONSTRAINT song_dance_presentation_owner CHECK ((song_owner_account_id = updated_by_account_id)),
+    CONSTRAINT song_dance_presentation_time_order CHECK ((updated_at >= created_at)),
+    CONSTRAINT song_dance_presentations_audio_revision_check CHECK (((audio_revision >= 1) AND (audio_revision <= '9007199254740991'::bigint))),
+    CONSTRAINT song_dance_presentations_presentation_revision_check CHECK (((presentation_revision >= 1) AND (presentation_revision <= '9007199254740991'::bigint)))
+);
+
 CREATE TABLE song_reward_bundle_claim_legs (
     account_id text NOT NULL,
     offer_id text NOT NULL,
@@ -18607,9 +20229,9 @@ CREATE TABLE song_reward_offer_actions (
     leg_id text,
     funding_effect_id text,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-    CONSTRAINT song_reward_offer_action_result_shape CHECK ((((endpoint_template = ANY (ARRAY['/communities/:communityId/posts/:postId/reward-offers'::text, '/reward-offers/:offerId/pause'::text, '/reward-offers/:offerId/end'::text])) AND (leg_id IS NULL) AND (funding_effect_id IS NULL)) OR ((endpoint_template = '/reward-offers/:offerId/megapot-pool-legs'::text) AND (leg_id IS NOT NULL) AND (funding_effect_id IS NULL)) OR ((endpoint_template = ANY (ARRAY['/reward-offer-legs/:legId/funding'::text, '/reward-offer-legs/:legId/funding/:fundingEffectId/observations'::text])) AND (leg_id IS NOT NULL) AND (funding_effect_id IS NOT NULL)))),
+    CONSTRAINT song_reward_offer_action_result_shape CHECK ((((endpoint_template = ANY (ARRAY['/communities/:communityId/posts/:postId/reward-offers'::text, '/reward-offers/:offerId/pause'::text, '/reward-offers/:offerId/end'::text])) AND (leg_id IS NULL) AND (funding_effect_id IS NULL)) OR ((endpoint_template = ANY (ARRAY['/reward-offers/:offerId/megapot-pool-legs'::text, '/reward-offers/:offerId/asset-bonus-legs'::text])) AND (leg_id IS NOT NULL) AND (funding_effect_id IS NULL)) OR ((endpoint_template = ANY (ARRAY['/reward-offer-legs/:legId/funding'::text, '/reward-offer-legs/:legId/funding/:fundingEffectId/observations'::text, '/asset-bonus-legs/:legId/funding/:fundingEffectId/observations'::text])) AND (leg_id IS NOT NULL) AND (funding_effect_id IS NOT NULL)))),
     CONSTRAINT song_reward_offer_actions_action_id_check CHECK (((btrim(action_id) <> ''::text) AND (action_id = btrim(action_id)) AND (octet_length(action_id) <= 128))),
-    CONSTRAINT song_reward_offer_actions_endpoint_template_check CHECK ((endpoint_template = ANY (ARRAY['/communities/:communityId/posts/:postId/reward-offers'::text, '/reward-offers/:offerId/megapot-pool-legs'::text, '/reward-offer-legs/:legId/funding'::text, '/reward-offer-legs/:legId/funding/:fundingEffectId/observations'::text, '/reward-offers/:offerId/pause'::text, '/reward-offers/:offerId/end'::text]))),
+    CONSTRAINT song_reward_offer_actions_endpoint_template_check CHECK ((endpoint_template = ANY (ARRAY['/communities/:communityId/posts/:postId/reward-offers'::text, '/reward-offers/:offerId/megapot-pool-legs'::text, '/reward-offers/:offerId/asset-bonus-legs'::text, '/reward-offer-legs/:legId/funding'::text, '/reward-offer-legs/:legId/funding/:fundingEffectId/observations'::text, '/asset-bonus-legs/:legId/funding/:fundingEffectId/observations'::text, '/reward-offers/:offerId/pause'::text, '/reward-offers/:offerId/end'::text]))),
     CONSTRAINT song_reward_offer_actions_idempotency_key_check CHECK (((btrim(idempotency_key) <> ''::text) AND (idempotency_key = btrim(idempotency_key)) AND (octet_length(idempotency_key) <= 128))),
     CONSTRAINT song_reward_offer_actions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text))
 );
@@ -18654,8 +20276,10 @@ CREATE TABLE song_reward_offer_legs (
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     activated_at timestamp with time zone,
     updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    token_symbol text,
+    asset_policy_version text,
     CONSTRAINT song_reward_leg_budget_conservation CHECK (((((reserved_atomic + spent_atomic) + fulfilled_atomic) + refunded_atomic) <= funded_atomic)),
-    CONSTRAINT song_reward_leg_kind_shape CHECK ((((kind = 'asset_bonus'::text) AND (amount_per_claim_atomic > (0)::numeric) AND (max_claims > 0) AND (tickets_per_drawing IS NULL) AND (max_ticket_price_atomic IS NULL) AND (entry_cutoff_seconds IS NULL) AND (beneficiary_algorithm_version IS NULL) AND (ticket_selection_version IS NULL) AND (attestation_id IS NULL) AND (participation_starts_drawing_id IS NULL) AND (eligible_activities IS NULL) AND (min_score_bps IS NULL) AND (empty_pool_policy IS NULL) AND (funding_source IS NULL) AND (fallback_beneficiary_account_id IS NULL) AND (fallback_payout_persona_id IS NULL) AND (referral_allocation_version IS NULL) AND (referral_policy_hash IS NULL) AND (referral_disclosed_at IS NULL) AND (legal_activation_gate = 'test_only'::text)) OR ((kind = 'megapot_pool'::text) AND (amount_per_claim_atomic IS NULL) AND (max_claims IS NULL) AND (tickets_per_drawing = 1) AND (max_ticket_price_atomic > (0)::numeric) AND (entry_cutoff_seconds > 0) AND (beneficiary_algorithm_version = 'equal_v1'::text) AND (ticket_selection_version = 'keccak_packed_v1'::text) AND (attestation_id IS NOT NULL) AND (participation_starts_drawing_id >= (0)::numeric) AND reward_distinct_nonempty_text_array(eligible_activities) AND ((min_score_bps >= 7000) AND (min_score_bps <= 10000)) AND (empty_pool_policy = ANY (ARRAY['no_purchase'::text, 'funder_fallback'::text])) AND (funding_source = ANY (ARRAY['leg_budget'::text, 'shared_sponsor_budget'::text]))))),
+    CONSTRAINT song_reward_leg_kind_shape CHECK ((((kind = 'asset_bonus'::text) AND (amount_per_claim_atomic > (0)::numeric) AND ((max_claims >= 1) AND (max_claims <= '9007199254740991'::bigint)) AND (token_symbol IS NOT NULL) AND (btrim(token_symbol) <> ''::text) AND (token_symbol = btrim(token_symbol)) AND (octet_length(token_symbol) <= 32) AND (asset_policy_version IS NOT NULL) AND (btrim(asset_policy_version) <> ''::text) AND (asset_policy_version = btrim(asset_policy_version)) AND (octet_length(asset_policy_version) <= 128) AND (tickets_per_drawing IS NULL) AND (max_ticket_price_atomic IS NULL) AND (entry_cutoff_seconds IS NULL) AND (beneficiary_algorithm_version IS NULL) AND (ticket_selection_version IS NULL) AND (attestation_id IS NULL) AND (participation_starts_drawing_id IS NULL) AND (eligible_activities IS NULL) AND (min_score_bps IS NULL) AND (empty_pool_policy IS NULL) AND (funding_source IS NULL) AND (fallback_beneficiary_account_id IS NULL) AND (fallback_payout_persona_id IS NULL) AND (referral_allocation_version IS NULL) AND (referral_policy_hash IS NULL) AND (referral_disclosed_at IS NULL) AND (legal_activation_gate = 'test_only'::text)) OR ((kind = 'megapot_pool'::text) AND (token_symbol IS NULL) AND (asset_policy_version IS NULL) AND (amount_per_claim_atomic IS NULL) AND (max_claims IS NULL) AND (tickets_per_drawing = 1) AND (max_ticket_price_atomic > (0)::numeric) AND (entry_cutoff_seconds > 0) AND (beneficiary_algorithm_version = 'equal_v1'::text) AND (ticket_selection_version = 'keccak_packed_v1'::text) AND (attestation_id IS NOT NULL) AND (participation_starts_drawing_id >= (0)::numeric) AND reward_distinct_nonempty_text_array(eligible_activities) AND ((min_score_bps >= 7000) AND (min_score_bps <= 10000)) AND (empty_pool_policy = ANY (ARRAY['no_purchase'::text, 'funder_fallback'::text])) AND (funding_source = ANY (ARRAY['leg_budget'::text, 'shared_sponsor_budget'::text]))))),
     CONSTRAINT song_reward_leg_terminal_shape CHECK ((((status = ANY (ARRAY['draft'::text, 'funding'::text, 'active'::text, 'paused'::text, 'operational_hold'::text])) AND (participation_ends_at IS NULL)) OR ((status = ANY (ARRAY['exhausted'::text, 'ended'::text])) AND (participation_ends_at IS NOT NULL)))),
     CONSTRAINT song_reward_leg_time_order CHECK (((participation_ends_at IS NULL) OR (participation_ends_at > participation_starts_at))),
     CONSTRAINT song_reward_offer_legs_chain_id_check CHECK ((chain_id > 0)),
@@ -18777,6 +20401,242 @@ CREATE TABLE sponsor_withdrawal_effects (
     CONSTRAINT sponsor_withdrawal_effects_destination_address_check CHECK ((destination_address ~ '^0x[0-9a-f]{40}$'::text))
 );
 
+CREATE TABLE study_attempts_v2 (
+    attempt_id text NOT NULL,
+    session_item_id text NOT NULL,
+    attempt_number bigint NOT NULL,
+    submission_kind text NOT NULL,
+    submission_evidence jsonb NOT NULL,
+    outcome text NOT NULL,
+    first_pass boolean NOT NULL,
+    attempt_state text NOT NULL,
+    feedback_kind text NOT NULL,
+    feedback_evidence jsonb NOT NULL,
+    grader_policy_revision text NOT NULL,
+    feedback_policy_revision text NOT NULL,
+    accepted_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    study_unit_id text NOT NULL,
+    exercise_kind text NOT NULL,
+    learning_language text DEFAULT 'en'::text NOT NULL,
+    target_language text,
+    learner_band text,
+    source_line_revision bigint NOT NULL,
+    language_profile_revision bigint,
+    localization_revision bigint,
+    grading_revision text NOT NULL,
+    review_schedule_version text DEFAULT 'study_review_schedule_v1'::text NOT NULL,
+    presented_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    answered_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    audio_byte_size bigint,
+    audio_duration_ms bigint,
+    provider_detected_language text,
+    provider_detected_language_confidence numeric(6,5),
+    token_diff jsonb,
+    learner_audio_artifact_id text,
+    CONSTRAINT study_attempt_audio_artifact_shape CHECK (((submission_kind = 'raw_audio'::text) = (learner_audio_artifact_id IS NOT NULL))),
+    CONSTRAINT study_attempt_audio_shape CHECK ((((submission_kind = 'raw_audio'::text) AND (audio_byte_size IS NOT NULL) AND (audio_duration_ms IS NOT NULL) AND (token_diff IS NOT NULL)) OR ((submission_kind = 'single_select'::text) AND (audio_byte_size IS NULL) AND (audio_duration_ms IS NULL) AND (token_diff IS NULL)))),
+    CONSTRAINT study_attempt_language_shape CHECK ((((exercise_kind = 'say_it_back'::text) AND (target_language IS NULL) AND (learner_band IS NULL)) OR ((exercise_kind = 'translation_choice'::text) AND (target_language IS NOT NULL) AND (target_language <> learning_language) AND (learner_band IS NOT NULL)))),
+    CONSTRAINT study_attempt_lifecycle_shape CHECK ((((attempt_state = 'retryable'::text) AND (outcome = 'incorrect'::text) AND (feedback_kind = 'none'::text)) OR (attempt_state = 'spent'::text))),
+    CONSTRAINT study_attempt_request_hash_shape CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT study_attempts_v2_attempt_id_check CHECK (((char_length(attempt_id) >= 1) AND (char_length(attempt_id) <= 256))),
+    CONSTRAINT study_attempts_v2_attempt_number_check CHECK ((attempt_number > 0)),
+    CONSTRAINT study_attempts_v2_attempt_state_check CHECK ((attempt_state = ANY (ARRAY['retryable'::text, 'spent'::text]))),
+    CONSTRAINT study_attempts_v2_audio_byte_size_check CHECK (((audio_byte_size >= 1) AND (audio_byte_size <= 524288))),
+    CONSTRAINT study_attempts_v2_audio_duration_ms_check CHECK (((audio_duration_ms >= 1) AND (audio_duration_ms <= 60000))),
+    CONSTRAINT study_attempts_v2_exercise_kind_check CHECK ((exercise_kind = ANY (ARRAY['say_it_back'::text, 'translation_choice'::text]))),
+    CONSTRAINT study_attempts_v2_feedback_evidence_check CHECK ((jsonb_typeof(feedback_evidence) = 'object'::text)),
+    CONSTRAINT study_attempts_v2_feedback_kind_check CHECK ((feedback_kind = ANY (ARRAY['none'::text, 'transcript_diff'::text, 'choice_reveal'::text, 'text_reveal'::text]))),
+    CONSTRAINT study_attempts_v2_language_profile_revision_check CHECK ((language_profile_revision > 0)),
+    CONSTRAINT study_attempts_v2_learner_band_check CHECK ((learner_band = ANY (ARRAY['A1'::text, 'A2'::text, 'B1'::text, 'B2'::text, 'C1'::text, 'C2'::text]))),
+    CONSTRAINT study_attempts_v2_learning_language_check CHECK ((learning_language = 'en'::text)),
+    CONSTRAINT study_attempts_v2_localization_revision_check CHECK ((localization_revision > 0)),
+    CONSTRAINT study_attempts_v2_outcome_check CHECK ((outcome = ANY (ARRAY['correct'::text, 'incorrect'::text]))),
+    CONSTRAINT study_attempts_v2_provider_detected_language_confidence_check CHECK (((provider_detected_language_confidence >= (0)::numeric) AND (provider_detected_language_confidence <= (1)::numeric))),
+    CONSTRAINT study_attempts_v2_review_schedule_version_check CHECK ((review_schedule_version = 'study_review_schedule_v1'::text)),
+    CONSTRAINT study_attempts_v2_source_line_revision_check CHECK ((source_line_revision > 0)),
+    CONSTRAINT study_attempts_v2_submission_evidence_check CHECK ((jsonb_typeof(submission_evidence) = 'object'::text)),
+    CONSTRAINT study_attempts_v2_submission_kind_check CHECK ((submission_kind = ANY (ARRAY['raw_audio'::text, 'single_select'::text]))),
+    CONSTRAINT study_attempts_v2_token_diff_check CHECK (((token_diff IS NULL) OR ((jsonb_typeof(token_diff) = 'object'::text) AND (octet_length((token_diff)::text) <= 32768))))
+);
+
+CREATE TABLE study_exercise_versions (
+    exercise_version_id text NOT NULL,
+    community_id text NOT NULL,
+    post_id text NOT NULL,
+    audio_revision bigint NOT NULL,
+    lyrics_revision bigint NOT NULL,
+    lyric_line_id text NOT NULL,
+    line_version bigint NOT NULL,
+    line_source_hash text NOT NULL,
+    exercise_review_key text NOT NULL,
+    exercise_type text NOT NULL,
+    exercise_variant text NOT NULL,
+    learning_language text NOT NULL,
+    target_language text,
+    learner_band text,
+    content_revision bigint NOT NULL,
+    presentation jsonb NOT NULL,
+    private_grader jsonb NOT NULL,
+    answer_visibility text NOT NULL,
+    feedback_release text NOT NULL,
+    grader_policy_revision text NOT NULL,
+    feedback_policy_revision text NOT NULL,
+    generation_kind text NOT NULL,
+    generation_run_id text NOT NULL,
+    producer_id text NOT NULL,
+    provider_model text,
+    prompt_revision text NOT NULL,
+    request_hash text NOT NULL,
+    raw_result_custody_ref text,
+    raw_result_digest text,
+    structural_validator_revision text NOT NULL,
+    semantic_validator_revision text NOT NULL,
+    safety_validator_revision text NOT NULL,
+    quality_validator_revision text NOT NULL,
+    quality_policy_revision text NOT NULL,
+    generated_at timestamp with time zone NOT NULL,
+    validated_at timestamp with time zone NOT NULL,
+    accepted_at timestamp with time zone NOT NULL,
+    retired_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    study_unit_id text NOT NULL,
+    language_profile_revision bigint,
+    CONSTRAINT study_exercise_acceptance_order CHECK (((generated_at <= validated_at) AND (validated_at <= accepted_at) AND ((retired_at IS NULL) OR (retired_at >= accepted_at)))),
+    CONSTRAINT study_exercise_disclosure_shape CHECK ((((exercise_type = 'say_it_back'::text) AND (answer_visibility = 'always_visible'::text) AND (feedback_release = 'every_graded_attempt'::text)) OR ((exercise_type = ANY (ARRAY['translation_choice'::text, 'typed_cloze'::text])) AND (answer_visibility = 'secret_until_spent'::text) AND (feedback_release = 'spent_only'::text)))),
+    CONSTRAINT study_exercise_generation_shape CHECK ((((generation_kind = 'deterministic'::text) AND (provider_model IS NULL)) OR ((generation_kind = 'provider_generated'::text) AND (provider_model IS NOT NULL)))),
+    CONSTRAINT study_exercise_language_shape CHECK ((((exercise_type = 'say_it_back'::text) AND (target_language IS NULL) AND (learner_band IS NULL)) OR ((exercise_type = 'translation_choice'::text) AND (target_language IS NOT NULL) AND (target_language <> learning_language) AND (learner_band IS NOT NULL)))),
+    CONSTRAINT study_exercise_raw_result_evidence CHECK (((raw_result_custody_ref IS NOT NULL) OR (raw_result_digest IS NOT NULL))),
+    CONSTRAINT study_exercise_versions_answer_visibility_check CHECK ((answer_visibility = ANY (ARRAY['always_visible'::text, 'secret_until_spent'::text]))),
+    CONSTRAINT study_exercise_versions_audio_revision_check CHECK ((audio_revision > 0)),
+    CONSTRAINT study_exercise_versions_content_revision_check CHECK ((content_revision > 0)),
+    CONSTRAINT study_exercise_versions_exercise_review_key_check CHECK (((char_length(exercise_review_key) >= 1) AND (char_length(exercise_review_key) <= 256))),
+    CONSTRAINT study_exercise_versions_exercise_type_check CHECK ((exercise_type = ANY (ARRAY['say_it_back'::text, 'translation_choice'::text]))),
+    CONSTRAINT study_exercise_versions_exercise_variant_check CHECK (((char_length(exercise_variant) >= 1) AND (char_length(exercise_variant) <= 128))),
+    CONSTRAINT study_exercise_versions_exercise_version_id_check CHECK (((char_length(exercise_version_id) >= 1) AND (char_length(exercise_version_id) <= 256))),
+    CONSTRAINT study_exercise_versions_feedback_release_check CHECK ((feedback_release = ANY (ARRAY['every_graded_attempt'::text, 'spent_only'::text]))),
+    CONSTRAINT study_exercise_versions_generation_kind_check CHECK ((generation_kind = ANY (ARRAY['deterministic'::text, 'provider_generated'::text]))),
+    CONSTRAINT study_exercise_versions_language_profile_revision_check CHECK ((language_profile_revision > 0)),
+    CONSTRAINT study_exercise_versions_learner_band_check CHECK ((learner_band = ANY (ARRAY['A1'::text, 'A2'::text, 'B1'::text, 'B2'::text, 'C1'::text, 'C2'::text]))),
+    CONSTRAINT study_exercise_versions_learning_language_check CHECK ((learning_language = 'en'::text)),
+    CONSTRAINT study_exercise_versions_line_source_hash_check CHECK ((line_source_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT study_exercise_versions_line_version_check CHECK ((line_version > 0)),
+    CONSTRAINT study_exercise_versions_lyrics_revision_check CHECK ((lyrics_revision > 0)),
+    CONSTRAINT study_exercise_versions_presentation_check CHECK ((jsonb_typeof(presentation) = 'object'::text)),
+    CONSTRAINT study_exercise_versions_private_grader_check CHECK ((jsonb_typeof(private_grader) = 'object'::text)),
+    CONSTRAINT study_exercise_versions_raw_result_digest_check CHECK (((raw_result_digest IS NULL) OR (raw_result_digest ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT study_exercise_versions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text))
+);
+
+CREATE TABLE study_language_profile_units (
+    community_id text NOT NULL,
+    post_id text NOT NULL,
+    lyrics_revision bigint NOT NULL,
+    language_profile_revision bigint NOT NULL,
+    study_unit_id text NOT NULL,
+    detected_languages jsonb NOT NULL,
+    dominant_language text,
+    mixed boolean NOT NULL,
+    vocable_only boolean NOT NULL,
+    confidence numeric(6,5),
+    proper_name_only boolean DEFAULT false NOT NULL,
+    CONSTRAINT study_language_profile_units_confidence_check CHECK (((confidence >= (0)::numeric) AND (confidence <= (1)::numeric))),
+    CONSTRAINT study_language_profile_units_detected_languages_check CHECK ((jsonb_typeof(detected_languages) = 'array'::text)),
+    CONSTRAINT study_language_profile_units_exclusive_nonlexical_kind_check CHECK ((NOT (vocable_only AND proper_name_only)))
+);
+
+CREATE TABLE study_language_profiles (
+    community_id text NOT NULL,
+    post_id text NOT NULL,
+    lyrics_revision bigint NOT NULL,
+    language_profile_revision bigint NOT NULL,
+    source_hash text NOT NULL,
+    provider_id text NOT NULL,
+    provider_model text NOT NULL,
+    prompt_revision text NOT NULL,
+    validator_revision text NOT NULL,
+    request_hash text NOT NULL,
+    accepted_at timestamp with time zone NOT NULL,
+    CONSTRAINT study_language_profiles_language_profile_revision_check CHECK ((language_profile_revision > 0)),
+    CONSTRAINT study_language_profiles_lyrics_revision_check CHECK ((lyrics_revision > 0)),
+    CONSTRAINT study_language_profiles_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT study_language_profiles_source_hash_check CHECK ((source_hash ~ '^[0-9a-f]{64}$'::text))
+);
+
+CREATE TABLE study_lesson_item_state_v2 (
+    session_item_id text NOT NULL,
+    session_id text NOT NULL,
+    original_ordinal bigint NOT NULL,
+    presentation_count bigint DEFAULT 0 NOT NULL,
+    last_queue_ordinal bigint,
+    mastered boolean DEFAULT false NOT NULL,
+    lesson_resolved boolean DEFAULT false NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT study_lesson_item_state_v2_check CHECK (((NOT mastered) OR lesson_resolved)),
+    CONSTRAINT study_lesson_item_state_v2_check1 CHECK (((presentation_count = 0) = (last_queue_ordinal IS NULL))),
+    CONSTRAINT study_lesson_item_state_v2_last_queue_ordinal_check CHECK (((last_queue_ordinal >= 0) AND (last_queue_ordinal <= 19))),
+    CONSTRAINT study_lesson_item_state_v2_original_ordinal_check CHECK (((original_ordinal >= 0) AND (original_ordinal <= 9))),
+    CONSTRAINT study_lesson_item_state_v2_presentation_count_check CHECK (((presentation_count >= 0) AND (presentation_count <= 3)))
+);
+
+CREATE TABLE study_presentations_v2 (
+    presentation_id text NOT NULL,
+    session_id text NOT NULL,
+    session_item_id text NOT NULL,
+    presentation_number bigint NOT NULL,
+    queue_ordinal bigint NOT NULL,
+    presented_at timestamp with time zone NOT NULL,
+    answered_at timestamp with time zone,
+    outcome text,
+    CONSTRAINT study_presentations_v2_check CHECK ((((answered_at IS NULL) AND (outcome IS NULL)) OR ((answered_at IS NOT NULL) AND (outcome IS NOT NULL)))),
+    CONSTRAINT study_presentations_v2_outcome_check CHECK ((outcome = ANY (ARRAY['correct'::text, 'incorrect'::text]))),
+    CONSTRAINT study_presentations_v2_presentation_id_check CHECK (((char_length(presentation_id) >= 1) AND (char_length(presentation_id) <= 256))),
+    CONSTRAINT study_presentations_v2_presentation_number_check CHECK (((presentation_number >= 1) AND (presentation_number <= 3))),
+    CONSTRAINT study_presentations_v2_queue_ordinal_check CHECK (((queue_ordinal >= 0) AND (queue_ordinal <= 19)))
+);
+
+CREATE TABLE study_review_items (
+    review_item_id text NOT NULL,
+    account_id text NOT NULL,
+    exercise_review_key text NOT NULL,
+    current_exercise_version_id text NOT NULL,
+    scheduler_policy_revision text NOT NULL,
+    scheduler_state jsonb NOT NULL,
+    lifecycle_status text DEFAULT 'active'::text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    retired_at timestamp with time zone,
+    community_id text NOT NULL,
+    post_id text NOT NULL,
+    study_unit_id text NOT NULL,
+    exercise_kind text NOT NULL,
+    learning_language text DEFAULT 'en'::text NOT NULL,
+    target_language text,
+    learner_band text,
+    repetitions bigint DEFAULT 0 NOT NULL,
+    lapses bigint DEFAULT 0 NOT NULL,
+    stability numeric(8,3) DEFAULT 1 NOT NULL,
+    difficulty numeric(5,3) DEFAULT 5 NOT NULL,
+    review_state text DEFAULT 'new'::text NOT NULL,
+    due_at timestamp with time zone,
+    last_reviewed_at timestamp with time zone,
+    CONSTRAINT study_review_items_difficulty_check CHECK (((difficulty >= (1)::numeric) AND (difficulty <= (10)::numeric))),
+    CONSTRAINT study_review_items_exercise_kind_check CHECK ((exercise_kind = ANY (ARRAY['say_it_back'::text, 'translation_choice'::text]))),
+    CONSTRAINT study_review_items_lapses_check CHECK ((lapses >= 0)),
+    CONSTRAINT study_review_items_learner_band_check CHECK ((learner_band = ANY (ARRAY['A1'::text, 'A2'::text, 'B1'::text, 'B2'::text, 'C1'::text, 'C2'::text]))),
+    CONSTRAINT study_review_items_learning_language_check CHECK ((learning_language = 'en'::text)),
+    CONSTRAINT study_review_items_lifecycle_status_check CHECK ((lifecycle_status = ANY (ARRAY['active'::text, 'retired'::text]))),
+    CONSTRAINT study_review_items_repetitions_check CHECK ((repetitions >= 0)),
+    CONSTRAINT study_review_items_review_item_id_check CHECK (((char_length(review_item_id) >= 1) AND (char_length(review_item_id) <= 256))),
+    CONSTRAINT study_review_items_review_state_check CHECK ((review_state = ANY (ARRAY['new'::text, 'learning'::text, 'relearning'::text, 'review'::text]))),
+    CONSTRAINT study_review_items_scheduler_state_check CHECK ((jsonb_typeof(scheduler_state) = 'object'::text)),
+    CONSTRAINT study_review_items_stability_check CHECK (((stability >= 0.25) AND (stability <= (365)::numeric))),
+    CONSTRAINT study_review_language_shape CHECK ((((exercise_kind = 'say_it_back'::text) AND (target_language IS NULL) AND (learner_band IS NULL)) OR ((exercise_kind = 'translation_choice'::text) AND (target_language IS NOT NULL) AND (target_language <> learning_language) AND (learner_band IS NOT NULL)))),
+    CONSTRAINT study_review_lifecycle_shape CHECK ((((lifecycle_status = 'active'::text) AND (retired_at IS NULL)) OR ((lifecycle_status = 'retired'::text) AND (retired_at IS NOT NULL)))),
+    CONSTRAINT study_review_scheduler_version CHECK ((scheduler_policy_revision = 'study_review_schedule_v1'::text))
+);
+
 CREATE TABLE study_session_answers (
     answer_id text NOT NULL,
     session_id text NOT NULL,
@@ -18816,6 +20676,23 @@ CREATE TABLE study_session_items (
     CONSTRAINT study_session_items_prompt_check CHECK ((jsonb_typeof(prompt) = 'object'::text)),
     CONSTRAINT study_session_items_session_item_id_check CHECK (((btrim(session_item_id) <> ''::text) AND (session_item_id = btrim(session_item_id)) AND (octet_length(session_item_id) <= 128))),
     CONSTRAINT study_session_items_source_item_key_check CHECK (((btrim(source_item_key) <> ''::text) AND (source_item_key = btrim(source_item_key)) AND (octet_length(source_item_key) <= 128)))
+);
+
+CREATE TABLE study_session_items_v2 (
+    session_item_id text NOT NULL,
+    session_id text NOT NULL,
+    ordinal bigint NOT NULL,
+    exercise_review_key text NOT NULL,
+    exercise_version_id text NOT NULL,
+    review_item_id text NOT NULL,
+    item_snapshot jsonb NOT NULL,
+    maximum_attempts bigint NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    account_id text NOT NULL,
+    CONSTRAINT study_session_items_v2_item_snapshot_check CHECK ((jsonb_typeof(item_snapshot) = 'object'::text)),
+    CONSTRAINT study_session_items_v2_maximum_attempts_check CHECK ((maximum_attempts = 3)),
+    CONSTRAINT study_session_items_v2_ordinal_check CHECK (((ordinal >= 0) AND (ordinal <= 9))),
+    CONSTRAINT study_session_items_v2_session_item_id_check CHECK (((char_length(session_item_id) >= 1) AND (char_length(session_item_id) <= 256)))
 );
 
 CREATE TABLE study_sessions (
@@ -18863,6 +20740,211 @@ CREATE TABLE study_sessions (
     CONSTRAINT study_sessions_status_check CHECK ((status = ANY (ARRAY['active'::text, 'completed'::text]))),
     CONSTRAINT study_sessions_terminal_shape CHECK ((((status = 'active'::text) AND (score_bps IS NULL) AND (streak_day IS NULL) AND (completed_at IS NULL)) OR ((status = 'completed'::text) AND (answered_exercise_count = qualifying_exercise_count) AND (score_bps = (floor(((10000.0 * (first_pass_correct)::numeric) / (qualifying_exercise_count)::numeric)))::integer) AND (streak_day IS NOT NULL) AND (completed_at IS NOT NULL) AND (completed_at >= created_at)))),
     CONSTRAINT study_sessions_timezone_check CHECK (((btrim(timezone) <> ''::text) AND (timezone = btrim(timezone)) AND (octet_length(timezone) <= 128)))
+);
+
+CREATE TABLE study_sessions_v2 (
+    session_id text NOT NULL,
+    account_id text NOT NULL,
+    persona_id text NOT NULL,
+    community_id text NOT NULL,
+    post_id text NOT NULL,
+    audio_revision bigint NOT NULL,
+    lyrics_revision bigint NOT NULL,
+    learning_language text NOT NULL,
+    target_language text,
+    learner_band text,
+    study_profile_revision bigint NOT NULL,
+    source_set_revision bigint NOT NULL,
+    selection_policy_revision text NOT NULL,
+    qualification_policy_revision text NOT NULL,
+    timezone text NOT NULL,
+    status text DEFAULT 'active'::text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    completed_at timestamp with time zone,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    language_profile_revision bigint,
+    expires_at timestamp with time zone DEFAULT (clock_timestamp() + '24:00:00'::interval) NOT NULL,
+    current_session_item_id text,
+    current_presented_at timestamp with time zone,
+    presentation_count bigint DEFAULT 0 NOT NULL,
+    completion_reason text,
+    CONSTRAINT study_session_completion_shape CHECK ((((status = 'active'::text) AND (completed_at IS NULL) AND (completion_reason IS NULL)) OR ((status = 'completed'::text) AND (completed_at IS NOT NULL) AND (completion_reason IS NOT NULL)))),
+    CONSTRAINT study_session_current_presentation_shape CHECK ((((status = 'active'::text) AND (current_session_item_id IS NOT NULL) AND (current_presented_at IS NOT NULL)) OR ((status = 'completed'::text) AND (current_session_item_id IS NULL) AND (current_presented_at IS NULL)))),
+    CONSTRAINT study_session_expiry_shape CHECK ((expires_at > created_at)),
+    CONSTRAINT study_session_language_shape CHECK ((((target_language IS NULL) AND (learner_band IS NULL)) OR ((target_language IS NOT NULL) AND (target_language <> learning_language) AND (learner_band IS NOT NULL)))),
+    CONSTRAINT study_session_request_hash_shape CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT study_sessions_v2_audio_revision_check CHECK ((audio_revision > 0)),
+    CONSTRAINT study_sessions_v2_completion_reason_check CHECK ((completion_reason = ANY (ARRAY['all_resolved'::text, 'presentation_budget'::text]))),
+    CONSTRAINT study_sessions_v2_language_profile_revision_check CHECK ((language_profile_revision > 0)),
+    CONSTRAINT study_sessions_v2_learner_band_check CHECK ((learner_band = ANY (ARRAY['A1'::text, 'A2'::text, 'B1'::text, 'B2'::text, 'C1'::text, 'C2'::text]))),
+    CONSTRAINT study_sessions_v2_learning_language_check CHECK ((learning_language = 'en'::text)),
+    CONSTRAINT study_sessions_v2_lyrics_revision_check CHECK ((lyrics_revision > 0)),
+    CONSTRAINT study_sessions_v2_presentation_count_check CHECK (((presentation_count >= 0) AND (presentation_count <= 20))),
+    CONSTRAINT study_sessions_v2_session_id_check CHECK (((char_length(session_id) >= 1) AND (char_length(session_id) <= 256))),
+    CONSTRAINT study_sessions_v2_source_set_revision_check CHECK ((source_set_revision > 0)),
+    CONSTRAINT study_sessions_v2_status_check CHECK ((status = ANY (ARRAY['active'::text, 'completed'::text]))),
+    CONSTRAINT study_sessions_v2_study_profile_revision_check CHECK ((study_profile_revision > 0))
+);
+
+CREATE TABLE study_spoken_answer_commands (
+    command_id text NOT NULL,
+    account_id text NOT NULL,
+    session_id text NOT NULL,
+    session_item_id text NOT NULL,
+    attempt_number bigint NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    audio_digest text NOT NULL,
+    audio_content_type text NOT NULL,
+    audio_byte_size bigint NOT NULL,
+    audio_duration_ms bigint NOT NULL,
+    attempt_id text NOT NULL,
+    learner_audio_artifact_id text NOT NULL,
+    lease_token text NOT NULL,
+    lease_expires_at timestamp with time zone NOT NULL,
+    state text NOT NULL,
+    provider_failure_kind text,
+    result_snapshot jsonb,
+    reserved_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    completed_at timestamp with time zone,
+    CONSTRAINT study_spoken_answer_commands_attempt_number_check CHECK (((attempt_number >= 1) AND (attempt_number <= 3))),
+    CONSTRAINT study_spoken_answer_commands_audio_byte_size_check CHECK (((audio_byte_size >= 1) AND (audio_byte_size <= 524288))),
+    CONSTRAINT study_spoken_answer_commands_audio_content_type_check CHECK ((audio_content_type = ANY (ARRAY['audio/webm'::text, 'audio/ogg'::text, 'audio/mp4'::text, 'audio/wav'::text]))),
+    CONSTRAINT study_spoken_answer_commands_audio_digest_check CHECK ((audio_digest ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT study_spoken_answer_commands_audio_duration_ms_check CHECK (((audio_duration_ms >= 1) AND (audio_duration_ms <= 60000))),
+    CONSTRAINT study_spoken_answer_commands_check CHECK ((lease_expires_at > reserved_at)),
+    CONSTRAINT study_spoken_answer_commands_check1 CHECK ((((state = 'reserved'::text) AND (provider_failure_kind IS NULL) AND (result_snapshot IS NULL) AND (completed_at IS NULL)) OR ((state = 'completed'::text) AND (provider_failure_kind IS NULL) AND (result_snapshot IS NOT NULL) AND (completed_at IS NOT NULL)) OR ((state = 'retryable_failed'::text) AND (provider_failure_kind IS NOT NULL) AND (result_snapshot IS NULL) AND (completed_at IS NOT NULL)))),
+    CONSTRAINT study_spoken_answer_commands_command_id_check CHECK (((char_length(command_id) >= 1) AND (char_length(command_id) <= 256))),
+    CONSTRAINT study_spoken_answer_commands_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT study_spoken_answer_commands_result_snapshot_check CHECK (((result_snapshot IS NULL) OR ((jsonb_typeof(result_snapshot) = 'object'::text) AND (octet_length((result_snapshot)::text) <= 131072)))),
+    CONSTRAINT study_spoken_answer_commands_state_check CHECK ((state = ANY (ARRAY['reserved'::text, 'completed'::text, 'retryable_failed'::text])))
+);
+
+CREATE TABLE study_translation_generation_items (
+    generation_run_id text NOT NULL,
+    community_id text NOT NULL,
+    post_id text NOT NULL,
+    study_unit_id text NOT NULL,
+    lyric_line_id text NOT NULL,
+    line_version bigint NOT NULL,
+    source_hash text NOT NULL,
+    item_ordinal bigint NOT NULL,
+    status text NOT NULL,
+    disposition_reason text,
+    translation_version_id text,
+    exercise_version_id text,
+    result_digest text NOT NULL,
+    accepted_at timestamp with time zone NOT NULL,
+    CONSTRAINT study_translation_generation_items_item_ordinal_check CHECK (((item_ordinal >= 0) AND (item_ordinal <= 255))),
+    CONSTRAINT study_translation_generation_items_line_version_check CHECK ((line_version > 0)),
+    CONSTRAINT study_translation_generation_items_result_digest_check CHECK ((result_digest ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT study_translation_generation_items_source_hash_check CHECK ((source_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT study_translation_generation_items_status_check CHECK ((status = ANY (ARRAY['ready'::text, 'not_applicable'::text, 'skipped'::text]))),
+    CONSTRAINT study_translation_item_result_shape CHECK ((((status = 'ready'::text) AND (disposition_reason IS NULL) AND (translation_version_id IS NOT NULL) AND (exercise_version_id IS NOT NULL)) OR ((status = ANY (ARRAY['not_applicable'::text, 'skipped'::text])) AND (disposition_reason IS NOT NULL) AND (translation_version_id IS NULL) AND (exercise_version_id IS NULL))))
+);
+
+CREATE TABLE study_translation_generation_runs (
+    generation_run_id text NOT NULL,
+    community_id text NOT NULL,
+    post_id text NOT NULL,
+    submission_id text NOT NULL,
+    audio_revision bigint NOT NULL,
+    analysis_revision bigint NOT NULL,
+    lyrics_revision bigint NOT NULL,
+    lyrics_source_hash text NOT NULL,
+    language_profile_revision bigint NOT NULL,
+    learning_language text NOT NULL,
+    target_language text NOT NULL,
+    learner_band text NOT NULL,
+    generator_policy_revision text NOT NULL,
+    prompt_revision text NOT NULL,
+    structural_validator_revision text NOT NULL,
+    semantic_validator_revision text NOT NULL,
+    safety_validator_revision text NOT NULL,
+    quality_policy_revision text NOT NULL,
+    rights_policy_revision text NOT NULL,
+    rights_evidence_ref text NOT NULL,
+    request_hash text NOT NULL,
+    status text NOT NULL,
+    attempt_number bigint NOT NULL,
+    lease_token text,
+    lease_expires_at timestamp with time zone,
+    provider_id text,
+    provider_model text,
+    provider_request_id text,
+    retryable boolean,
+    failure_reason text,
+    created_at timestamp with time zone NOT NULL,
+    updated_at timestamp with time zone NOT NULL,
+    completed_at timestamp with time zone,
+    CONSTRAINT study_translation_generation_ru_language_profile_revision_check CHECK ((language_profile_revision > 0)),
+    CONSTRAINT study_translation_generation_runs_analysis_revision_check CHECK ((analysis_revision > 0)),
+    CONSTRAINT study_translation_generation_runs_attempt_number_check CHECK ((attempt_number > 0)),
+    CONSTRAINT study_translation_generation_runs_audio_revision_check CHECK ((audio_revision > 0)),
+    CONSTRAINT study_translation_generation_runs_check CHECK ((target_language <> learning_language)),
+    CONSTRAINT study_translation_generation_runs_generation_run_id_check CHECK (((char_length(generation_run_id) >= 1) AND (char_length(generation_run_id) <= 256))),
+    CONSTRAINT study_translation_generation_runs_learner_band_check CHECK ((learner_band = ANY (ARRAY['A1'::text, 'A2'::text, 'B1'::text, 'B2'::text, 'C1'::text, 'C2'::text]))),
+    CONSTRAINT study_translation_generation_runs_learning_language_check CHECK ((learning_language = 'en'::text)),
+    CONSTRAINT study_translation_generation_runs_lyrics_revision_check CHECK ((lyrics_revision > 0)),
+    CONSTRAINT study_translation_generation_runs_lyrics_source_hash_check CHECK ((lyrics_source_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT study_translation_generation_runs_prompt_revision_check CHECK ((prompt_revision = 'song_study_translation_prompt_v1'::text)),
+    CONSTRAINT study_translation_generation_runs_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT study_translation_generation_runs_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'leased'::text, 'succeeded'::text, 'failed'::text, 'policy_blocked'::text, 'stale'::text]))),
+    CONSTRAINT study_translation_generation_structural_validator_revisio_check CHECK ((structural_validator_revision = 'study_translation_validator_v1'::text)),
+    CONSTRAINT study_translation_run_lease_shape CHECK ((((status = 'leased'::text) AND (lease_token IS NOT NULL) AND (lease_expires_at IS NOT NULL)) OR ((status <> 'leased'::text) AND (lease_token IS NULL) AND (lease_expires_at IS NULL)))),
+    CONSTRAINT study_translation_run_provider_shape CHECK ((((status = 'succeeded'::text) AND (provider_id IS NOT NULL) AND (provider_model IS NOT NULL)) OR (status <> 'succeeded'::text))),
+    CONSTRAINT study_translation_run_terminal_shape CHECK ((((status = ANY (ARRAY['failed'::text, 'policy_blocked'::text, 'stale'::text])) AND (retryable IS NOT NULL) AND (failure_reason IS NOT NULL) AND (completed_at IS NOT NULL)) OR ((status = 'succeeded'::text) AND (retryable IS NULL) AND (failure_reason IS NULL) AND (completed_at IS NOT NULL)) OR ((status = ANY (ARRAY['pending'::text, 'leased'::text])) AND (retryable IS NULL) AND (failure_reason IS NULL) AND (completed_at IS NULL)))),
+    CONSTRAINT study_translation_run_time_shape CHECK (((updated_at >= created_at) AND ((completed_at IS NULL) OR (completed_at >= created_at))))
+);
+
+CREATE TABLE study_translation_quality_policies (
+    target_language text NOT NULL,
+    quality_policy_revision text NOT NULL,
+    release_state text NOT NULL,
+    corpus_sample_count bigint NOT NULL,
+    source_binding_bps integer NOT NULL,
+    meaning_preservation_bps integer NOT NULL,
+    bilingual_rubric_bps integer NOT NULL,
+    critical_defect_count bigint NOT NULL,
+    accepted_at timestamp with time zone NOT NULL,
+    CONSTRAINT study_translation_active_quality_shape CHECK (((release_state <> 'active'::text) OR ((corpus_sample_count >= 100) AND (source_binding_bps = 10000) AND (meaning_preservation_bps = 10000) AND (bilingual_rubric_bps >= 9500) AND (critical_defect_count = 0)))),
+    CONSTRAINT study_translation_quality_polici_meaning_preservation_bps_check CHECK (((meaning_preservation_bps >= 0) AND (meaning_preservation_bps <= 10000))),
+    CONSTRAINT study_translation_quality_policie_quality_policy_revision_check CHECK (((char_length(quality_policy_revision) >= 1) AND (char_length(quality_policy_revision) <= 128))),
+    CONSTRAINT study_translation_quality_policies_bilingual_rubric_bps_check CHECK (((bilingual_rubric_bps >= 0) AND (bilingual_rubric_bps <= 10000))),
+    CONSTRAINT study_translation_quality_policies_corpus_sample_count_check CHECK ((corpus_sample_count >= 0)),
+    CONSTRAINT study_translation_quality_policies_critical_defect_count_check CHECK ((critical_defect_count >= 0)),
+    CONSTRAINT study_translation_quality_policies_release_state_check CHECK ((release_state = ANY (ARRAY['evaluation'::text, 'active'::text]))),
+    CONSTRAINT study_translation_quality_policies_source_binding_bps_check CHECK (((source_binding_bps >= 0) AND (source_binding_bps <= 10000))),
+    CONSTRAINT study_translation_quality_policies_target_language_check CHECK (((char_length(target_language) <= 64) AND (target_language ~ '^[a-z]{2,3}(?:-[A-Z][a-z]{3})?(?:-(?:[A-Z]{2}|[0-9]{3}))?(?:-[a-z0-9]{5,8}|-[0-9][a-z0-9]{3})*$'::text)))
+);
+
+CREATE TABLE study_translation_quality_registry (
+    target_language text NOT NULL,
+    quality_policy_revision text NOT NULL,
+    selected_at timestamp with time zone NOT NULL,
+    selected_by text NOT NULL,
+    CONSTRAINT study_translation_quality_registry_selected_by_check CHECK (((char_length(selected_by) >= 1) AND (char_length(selected_by) <= 128)))
+);
+
+CREATE TABLE study_unit_exercise_eligibility (
+    community_id text NOT NULL,
+    post_id text NOT NULL,
+    study_unit_id text NOT NULL,
+    exercise_kind text NOT NULL,
+    policy_revision text NOT NULL,
+    eligibility text NOT NULL,
+    ineligibility_reason text,
+    measured_token_count bigint NOT NULL,
+    measured_character_count bigint NOT NULL,
+    evaluated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT study_unit_exercise_eligibility_check CHECK ((((eligibility = 'eligible'::text) AND (ineligibility_reason IS NULL)) OR ((eligibility = 'ineligible'::text) AND (ineligibility_reason IS NOT NULL)))),
+    CONSTRAINT study_unit_exercise_eligibility_eligibility_check CHECK ((eligibility = ANY (ARRAY['eligible'::text, 'ineligible'::text]))),
+    CONSTRAINT study_unit_exercise_eligibility_exercise_kind_check CHECK ((exercise_kind = ANY (ARRAY['say_it_back'::text, 'translation_choice'::text]))),
+    CONSTRAINT study_unit_exercise_eligibility_ineligibility_reason_check CHECK (((ineligibility_reason IS NULL) OR (ineligibility_reason = 'spoken_recall_too_long'::text))),
+    CONSTRAINT study_unit_exercise_eligibility_measured_character_count_check CHECK ((measured_character_count >= 0)),
+    CONSTRAINT study_unit_exercise_eligibility_measured_token_count_check CHECK ((measured_token_count >= 0)),
+    CONSTRAINT study_unit_exercise_eligibility_policy_revision_check CHECK ((policy_revision = 'study_unit_eligibility_v1'::text))
 );
 
 CREATE TABLE subject_key_binding_events (
@@ -19113,6 +21195,9 @@ CREATE TABLE verification_start_reservations (
 
 ALTER TABLE ONLY account_aliases
     ADD CONSTRAINT account_aliases_pkey PRIMARY KEY (source_user_id);
+
+ALTER TABLE ONLY account_language_preferences
+    ADD CONSTRAINT account_language_preferences_pkey PRIMARY KEY (account_id);
 
 ALTER TABLE ONLY account_minimum_age_attestations
     ADD CONSTRAINT account_minimum_age_attestations_pkey PRIMARY KEY (account_id);
@@ -19621,6 +21706,60 @@ ALTER TABLE ONLY content_publication_outbox
 ALTER TABLE ONLY custody_solvency_observations
     ADD CONSTRAINT custody_solvency_observations_pkey PRIMARY KEY (observation_id);
 
+ALTER TABLE ONLY dance_choreographies
+    ADD CONSTRAINT dance_choreographies_choreography_id_community_id_song_post_key UNIQUE (choreography_id, community_id, song_post_id);
+
+ALTER TABLE ONLY dance_choreographies
+    ADD CONSTRAINT dance_choreographies_pkey PRIMARY KEY (choreography_id);
+
+ALTER TABLE ONLY dance_choreography_revisions
+    ADD CONSTRAINT dance_choreography_revisions_choreography_id_revision_commu_key UNIQUE (choreography_id, revision, community_id, song_post_id, audio_revision);
+
+ALTER TABLE ONLY dance_choreography_revisions
+    ADD CONSTRAINT dance_choreography_revisions_pkey PRIMARY KEY (choreography_id, revision);
+
+ALTER TABLE ONLY dance_choreography_revisions
+    ADD CONSTRAINT dance_choreography_revisions_revision_terms_hash_key UNIQUE (revision_terms_hash);
+
+ALTER TABLE ONLY dance_reference_actions
+    ADD CONSTRAINT dance_reference_actions_pkey PRIMARY KEY (actor_account_id, http_method, endpoint_template, idempotency_key);
+
+ALTER TABLE ONLY dance_reference_artifacts
+    ADD CONSTRAINT dance_reference_artifacts_choreography_id_revision_key UNIQUE (choreography_id, revision);
+
+ALTER TABLE ONLY dance_reference_artifacts
+    ADD CONSTRAINT dance_reference_artifacts_pkey PRIMARY KEY (artifact_id);
+
+ALTER TABLE ONLY dance_reference_artifacts
+    ADD CONSTRAINT dance_reference_artifacts_private_artifact_ref_artifact_sha_key UNIQUE (private_artifact_ref, artifact_sha256);
+
+ALTER TABLE ONLY dance_reference_outbox
+    ADD CONSTRAINT dance_reference_outbox_choreography_id_revision_event_type_key UNIQUE (choreography_id, revision, event_type);
+
+ALTER TABLE ONLY dance_reference_outbox
+    ADD CONSTRAINT dance_reference_outbox_effect_identity_key UNIQUE (effect_identity);
+
+ALTER TABLE ONLY dance_reference_outbox
+    ADD CONSTRAINT dance_reference_outbox_pkey PRIMARY KEY (outbox_event_id);
+
+ALTER TABLE ONLY dance_reference_processing_attempts
+    ADD CONSTRAINT dance_reference_processing_at_choreography_id_revision_atte_key UNIQUE (choreography_id, revision, attempt_number);
+
+ALTER TABLE ONLY dance_reference_processing_attempts
+    ADD CONSTRAINT dance_reference_processing_attempts_pkey PRIMARY KEY (processing_attempt_id);
+
+ALTER TABLE ONLY dance_song_segments
+    ADD CONSTRAINT dance_song_segments_community_id_song_post_id_audio_revisio_key UNIQUE (community_id, song_post_id, audio_revision, start_ms, end_ms, canonical_segment_sha256, extraction_policy_version);
+
+ALTER TABLE ONLY dance_song_segments
+    ADD CONSTRAINT dance_song_segments_pkey PRIMARY KEY (segment_id);
+
+ALTER TABLE ONLY dance_song_segments
+    ADD CONSTRAINT dance_song_segments_segment_id_community_id_song_post_id_au_key UNIQUE (segment_id, community_id, song_post_id, audio_revision);
+
+ALTER TABLE ONLY dance_song_segments
+    ADD CONSTRAINT dance_song_segments_segment_terms_hash_key UNIQUE (segment_terms_hash);
+
 ALTER TABLE ONLY data_registration_artifacts
     ADD CONSTRAINT data_registration_artifacts_pkey PRIMARY KEY (artifact_id);
 
@@ -19897,6 +22036,15 @@ ALTER TABLE ONLY karaoke_attempts
 ALTER TABLE ONLY karaoke_attempts
     ADD CONSTRAINT karaoke_attempts_session_id_key UNIQUE (session_id);
 
+ALTER TABLE ONLY karaoke_recordings
+    ADD CONSTRAINT karaoke_recordings_artifact_id_key UNIQUE (artifact_id);
+
+ALTER TABLE ONLY karaoke_recordings
+    ADD CONSTRAINT karaoke_recordings_attempt_id_key UNIQUE (attempt_id);
+
+ALTER TABLE ONLY karaoke_recordings
+    ADD CONSTRAINT karaoke_recordings_pkey PRIMARY KEY (session_id);
+
 ALTER TABLE ONLY karaoke_sessions
     ADD CONSTRAINT karaoke_sessions_attempt_binding_unique UNIQUE (session_id, attempt_id);
 
@@ -19908,6 +22056,63 @@ ALTER TABLE ONLY karaoke_sessions
 
 ALTER TABLE ONLY karaoke_sessions
     ADD CONSTRAINT karaoke_sessions_replay_unique UNIQUE (account_id, persona_id, endpoint_template, idempotency_key);
+
+ALTER TABLE ONLY learner_audio_artifacts
+    ADD CONSTRAINT learner_audio_artifacts_pkey PRIMARY KEY (learner_audio_artifact_id);
+
+ALTER TABLE ONLY learner_audio_artifacts
+    ADD CONSTRAINT learner_audio_artifacts_source_kind_attempt_ref_content_dig_key UNIQUE (source_kind, attempt_ref, content_digest);
+
+ALTER TABLE ONLY localization_lyric_line_lineage
+    ADD CONSTRAINT localization_lyric_line_lineage_pkey PRIMARY KEY (community_id, post_id, transition_kind, predecessor_line_id, successor_line_id);
+
+ALTER TABLE ONLY localization_lyric_line_occurrences
+    ADD CONSTRAINT localization_lyric_line_occurrences_pkey PRIMARY KEY (community_id, post_id, lyric_line_id);
+
+ALTER TABLE ONLY localization_lyric_line_study_units
+    ADD CONSTRAINT localization_lyric_line_study_units_pkey PRIMARY KEY (community_id, post_id, lyric_line_id, line_version);
+
+ALTER TABLE ONLY localization_lyric_line_versions
+    ADD CONSTRAINT localization_lyric_line_versi_community_id_post_id_lyric_li_key UNIQUE (community_id, post_id, lyric_line_id, line_version, source_hash);
+
+ALTER TABLE ONLY localization_lyric_line_versions
+    ADD CONSTRAINT localization_lyric_line_versions_pkey PRIMARY KEY (community_id, post_id, lyric_line_id, line_version);
+
+ALTER TABLE ONLY localization_lyric_reconciliation_decisions
+    ADD CONSTRAINT localization_lyric_reconciliation_decisions_pkey PRIMARY KEY (reconciliation_id);
+
+ALTER TABLE ONLY localization_lyrics_revision_lines
+    ADD CONSTRAINT localization_lyrics_revision__community_id_post_id_lyrics_r_key UNIQUE (community_id, post_id, lyrics_revision, lyric_line_id);
+
+ALTER TABLE ONLY localization_lyrics_revision_lines
+    ADD CONSTRAINT localization_lyrics_revision_lines_pkey PRIMARY KEY (community_id, post_id, lyrics_revision, ordinal);
+
+ALTER TABLE ONLY localization_source_units
+    ADD CONSTRAINT localization_source_units_pkey PRIMARY KEY (source_unit_kind, source_unit_id, field_key, source_revision, source_hash);
+
+ALTER TABLE ONLY localization_study_units
+    ADD CONSTRAINT localization_study_units_community_id_post_id_identity_norm_key UNIQUE NULLS NOT DISTINCT (community_id, post_id, identity_normalization_revision, normalized_source_hash);
+
+ALTER TABLE ONLY localization_study_units
+    ADD CONSTRAINT localization_study_units_pkey PRIMARY KEY (community_id, post_id, study_unit_id);
+
+ALTER TABLE ONLY localization_translation_jobs
+    ADD CONSTRAINT localization_translation_jobs_pkey PRIMARY KEY (translation_job_id);
+
+ALTER TABLE ONLY localization_translation_jobs
+    ADD CONSTRAINT localization_translation_jobs_source_unit_kind_source_unit__key UNIQUE (source_unit_kind, source_unit_id, field_key, source_revision, source_hash, target_language, translation_policy_version, prompt_revision, attempt_number);
+
+ALTER TABLE ONLY localization_translation_selections
+    ADD CONSTRAINT localization_translation_selections_pkey PRIMARY KEY (source_unit_kind, source_unit_id, field_key, source_revision, source_hash, target_language, translation_policy_version);
+
+ALTER TABLE ONLY localization_translation_versions
+    ADD CONSTRAINT localization_translation_vers_source_unit_kind_source_unit__key UNIQUE (source_unit_kind, source_unit_id, field_key, source_revision, source_hash, target_language, translation_policy_version, version_number);
+
+ALTER TABLE ONLY localization_translation_versions
+    ADD CONSTRAINT localization_translation_vers_translation_version_id_source_key UNIQUE (translation_version_id, source_unit_kind, source_unit_id, field_key, source_revision, source_hash, target_language, translation_policy_version);
+
+ALTER TABLE ONLY localization_translation_versions
+    ADD CONSTRAINT localization_translation_versions_pkey PRIMARY KEY (translation_version_id);
 
 ALTER TABLE ONLY media_alignment_projections
     ADD CONSTRAINT media_alignment_projections_community_id_actor_user_id_post_key UNIQUE (community_id, actor_user_id, post_id);
@@ -20536,6 +22741,9 @@ ALTER TABLE ONLY reward_uniqueness_authorities
 ALTER TABLE ONLY schema_migrations
     ADD CONSTRAINT schema_migrations_pkey PRIMARY KEY (version);
 
+ALTER TABLE ONLY song_dance_presentations
+    ADD CONSTRAINT song_dance_presentations_pkey PRIMARY KEY (community_id, song_post_id, audio_revision);
+
 ALTER TABLE ONLY song_reward_bundle_claim_legs
     ADD CONSTRAINT song_reward_bundle_claim_legs_credit_id_key UNIQUE (credit_id);
 
@@ -20575,6 +22783,60 @@ ALTER TABLE ONLY sponsor_daily_ticket_totals
 ALTER TABLE ONLY sponsor_withdrawal_effects
     ADD CONSTRAINT sponsor_withdrawal_effects_pkey PRIMARY KEY (withdrawal_effect_id);
 
+ALTER TABLE ONLY study_attempts_v2
+    ADD CONSTRAINT study_attempt_idempotency_unique UNIQUE (session_item_id, idempotency_key);
+
+ALTER TABLE ONLY study_attempts_v2
+    ADD CONSTRAINT study_attempts_v2_pkey PRIMARY KEY (attempt_id);
+
+ALTER TABLE ONLY study_attempts_v2
+    ADD CONSTRAINT study_attempts_v2_session_item_id_attempt_number_key UNIQUE (session_item_id, attempt_number);
+
+ALTER TABLE ONLY study_exercise_versions
+    ADD CONSTRAINT study_exercise_version_review_identity_unique UNIQUE (exercise_version_id, exercise_review_key);
+
+ALTER TABLE ONLY study_exercise_versions
+    ADD CONSTRAINT study_exercise_versions_exercise_review_key_content_revisio_key UNIQUE (exercise_review_key, content_revision);
+
+ALTER TABLE ONLY study_exercise_versions
+    ADD CONSTRAINT study_exercise_versions_pkey PRIMARY KEY (exercise_version_id);
+
+ALTER TABLE ONLY study_language_profile_units
+    ADD CONSTRAINT study_language_profile_units_pkey PRIMARY KEY (community_id, post_id, lyrics_revision, language_profile_revision, study_unit_id);
+
+ALTER TABLE ONLY study_language_profiles
+    ADD CONSTRAINT study_language_profiles_pkey PRIMARY KEY (community_id, post_id, lyrics_revision, language_profile_revision);
+
+ALTER TABLE ONLY study_lesson_item_state_v2
+    ADD CONSTRAINT study_lesson_item_state_v2_pkey PRIMARY KEY (session_item_id);
+
+ALTER TABLE ONLY study_lesson_item_state_v2
+    ADD CONSTRAINT study_lesson_item_state_v2_session_id_original_ordinal_key UNIQUE (session_id, original_ordinal);
+
+ALTER TABLE ONLY study_presentations_v2
+    ADD CONSTRAINT study_presentations_v2_pkey PRIMARY KEY (presentation_id);
+
+ALTER TABLE ONLY study_presentations_v2
+    ADD CONSTRAINT study_presentations_v2_session_id_queue_ordinal_key UNIQUE (session_id, queue_ordinal);
+
+ALTER TABLE ONLY study_presentations_v2
+    ADD CONSTRAINT study_presentations_v2_session_item_id_presentation_number_key UNIQUE (session_item_id, presentation_number);
+
+ALTER TABLE ONLY study_review_items
+    ADD CONSTRAINT study_review_identity_v2 UNIQUE NULLS NOT DISTINCT (account_id, post_id, study_unit_id, exercise_kind, learning_language, target_language, learner_band);
+
+ALTER TABLE ONLY study_review_items
+    ADD CONSTRAINT study_review_item_account_identity_unique UNIQUE (review_item_id, account_id, exercise_review_key);
+
+ALTER TABLE ONLY study_review_items
+    ADD CONSTRAINT study_review_items_account_id_exercise_review_key_key UNIQUE (account_id, exercise_review_key);
+
+ALTER TABLE ONLY study_review_items
+    ADD CONSTRAINT study_review_items_pkey PRIMARY KEY (review_item_id);
+
+ALTER TABLE ONLY study_sessions_v2
+    ADD CONSTRAINT study_session_account_identity_unique UNIQUE (session_id, account_id);
+
 ALTER TABLE ONLY study_session_answers
     ADD CONSTRAINT study_session_answers_answer_id_key UNIQUE (answer_id);
 
@@ -20583,6 +22845,9 @@ ALTER TABLE ONLY study_session_answers
 
 ALTER TABLE ONLY study_session_answers
     ADD CONSTRAINT study_session_answers_session_id_idempotency_key_key UNIQUE (session_id, idempotency_key);
+
+ALTER TABLE ONLY study_sessions_v2
+    ADD CONSTRAINT study_session_idempotency_unique UNIQUE (account_id, post_id, idempotency_key);
 
 ALTER TABLE ONLY study_session_items
     ADD CONSTRAINT study_session_items_pkey PRIMARY KEY (session_id, session_item_id);
@@ -20593,11 +22858,62 @@ ALTER TABLE ONLY study_session_items
 ALTER TABLE ONLY study_session_items
     ADD CONSTRAINT study_session_items_session_id_source_item_key_key UNIQUE (session_id, source_item_key);
 
+ALTER TABLE ONLY study_session_items_v2
+    ADD CONSTRAINT study_session_items_v2_pkey PRIMARY KEY (session_item_id);
+
+ALTER TABLE ONLY study_session_items_v2
+    ADD CONSTRAINT study_session_items_v2_session_id_exercise_review_key_key UNIQUE (session_id, exercise_review_key);
+
+ALTER TABLE ONLY study_session_items_v2
+    ADD CONSTRAINT study_session_items_v2_session_id_ordinal_key UNIQUE (session_id, ordinal);
+
 ALTER TABLE ONLY study_sessions
     ADD CONSTRAINT study_sessions_pkey PRIMARY KEY (session_id);
 
 ALTER TABLE ONLY study_sessions
     ADD CONSTRAINT study_sessions_replay_unique UNIQUE (account_id, persona_id, endpoint_template, idempotency_key);
+
+ALTER TABLE ONLY study_sessions_v2
+    ADD CONSTRAINT study_sessions_v2_pkey PRIMARY KEY (session_id);
+
+ALTER TABLE ONLY study_spoken_answer_commands
+    ADD CONSTRAINT study_spoken_answer_commands_attempt_id_key UNIQUE (attempt_id);
+
+ALTER TABLE ONLY study_spoken_answer_commands
+    ADD CONSTRAINT study_spoken_answer_commands_learner_audio_artifact_id_key UNIQUE (learner_audio_artifact_id);
+
+ALTER TABLE ONLY study_spoken_answer_commands
+    ADD CONSTRAINT study_spoken_answer_commands_pkey PRIMARY KEY (command_id);
+
+ALTER TABLE ONLY study_spoken_answer_commands
+    ADD CONSTRAINT study_spoken_answer_commands_session_id_idempotency_key_key UNIQUE (session_id, idempotency_key);
+
+ALTER TABLE ONLY study_spoken_answer_commands
+    ADD CONSTRAINT study_spoken_answer_commands_session_id_session_item_id_att_key UNIQUE (session_id, session_item_id, attempt_number);
+
+ALTER TABLE ONLY study_translation_generation_runs
+    ADD CONSTRAINT study_translation_generation__community_id_post_id_lyrics_r_key UNIQUE (community_id, post_id, lyrics_revision, language_profile_revision, target_language, learner_band, generator_policy_revision, prompt_revision, quality_policy_revision, attempt_number);
+
+ALTER TABLE ONLY study_translation_generation_runs
+    ADD CONSTRAINT study_translation_generation__generation_run_id_community_i_key UNIQUE (generation_run_id, community_id, post_id);
+
+ALTER TABLE ONLY study_translation_generation_items
+    ADD CONSTRAINT study_translation_generation__generation_run_id_item_ordina_key UNIQUE (generation_run_id, item_ordinal);
+
+ALTER TABLE ONLY study_translation_generation_items
+    ADD CONSTRAINT study_translation_generation_items_pkey PRIMARY KEY (generation_run_id, study_unit_id);
+
+ALTER TABLE ONLY study_translation_generation_runs
+    ADD CONSTRAINT study_translation_generation_runs_pkey PRIMARY KEY (generation_run_id);
+
+ALTER TABLE ONLY study_translation_quality_policies
+    ADD CONSTRAINT study_translation_quality_policies_pkey PRIMARY KEY (target_language, quality_policy_revision);
+
+ALTER TABLE ONLY study_translation_quality_registry
+    ADD CONSTRAINT study_translation_quality_registry_pkey PRIMARY KEY (target_language);
+
+ALTER TABLE ONLY study_unit_exercise_eligibility
+    ADD CONSTRAINT study_unit_exercise_eligibility_pkey PRIMARY KEY (community_id, post_id, study_unit_id, exercise_kind, policy_revision);
 
 ALTER TABLE ONLY subject_key_binding_events
     ADD CONSTRAINT subject_key_binding_events_event_subject_unique UNIQUE (binding_event_id, subject_key_id);
@@ -20817,7 +23133,19 @@ CREATE INDEX cpf_attempt_operator_actions_operation_idx ON community_purchase_fu
 
 CREATE INDEX cpf_attempts_selection_idx ON community_purchase_funding_reconciliation_attempts USING btree (next_attempt_at, operation_id) WHERE (escalated_at IS NULL);
 
+CREATE INDEX custody_solvency_observations_asset_latest_idx ON custody_solvency_observations USING btree (attestation_id, token_address, block_number DESC, observation_id);
+
 CREATE INDEX custody_solvency_observations_latest_idx ON custody_solvency_observations USING btree (attestation_id, block_number DESC, observation_id);
+
+CREATE INDEX dance_choreographies_song_ready_idx ON dance_choreographies USING btree (community_id, song_post_id, status, created_at, choreography_id);
+
+CREATE INDEX dance_choreography_revisions_ready_idx ON dance_choreography_revisions USING btree (community_id, song_post_id, audio_revision, status, choreography_id, revision);
+
+CREATE INDEX dance_reference_outbox_claim_idx ON dance_reference_outbox USING btree (state, next_eligible_at, lease_expires_at, created_at) WHERE (state = ANY (ARRAY['pending'::text, 'running'::text, 'failed'::text]));
+
+CREATE INDEX dance_reference_processing_attempts_lease_idx ON dance_reference_processing_attempts USING btree (state, lease_expires_at, created_at) WHERE (state = 'leased'::text);
+
+CREATE INDEX dance_song_segments_song_idx ON dance_song_segments USING btree (community_id, song_post_id, audio_revision, created_at, segment_id);
 
 CREATE INDEX data_registration_outbox_eligible_idx ON data_registration_outbox USING btree (state, next_eligible_at, lease_expires_at, outbox_id) WHERE (state = ANY (ARRAY['pending'::text, 'running'::text, 'failed'::text]));
 
@@ -20867,7 +23195,15 @@ CREATE INDEX identity_credentials_user_status_idx ON identity_credentials USING 
 
 CREATE INDEX karaoke_sessions_account_created_idx ON karaoke_sessions USING btree (account_id, created_at DESC, session_id);
 
+CREATE INDEX karaoke_sessions_live_account_idx ON karaoke_sessions USING btree (account_id, expires_at) WHERE (status = 'active'::text);
+
+CREATE INDEX karaoke_sessions_revision_score_idx ON karaoke_sessions USING btree (community_id, post_id, karaoke_revision_id, account_id);
+
+CREATE INDEX learner_audio_artifacts_stored_account_idx ON learner_audio_artifacts USING btree (account_id, created_at, learner_audio_artifact_id) WHERE (recording_state = 'stored'::text);
+
 CREATE INDEX media_post_submissions_author_idx ON media_post_submissions USING btree (community_id, actor_user_id, updated_at DESC, submission_id);
+
+CREATE UNIQUE INDEX media_post_submissions_localization_identity_uidx ON media_post_submissions USING btree (community_id, actor_user_id, post_id, submission_id);
 
 CREATE INDEX media_processing_attempts_claim_idx ON media_processing_attempts USING btree (state, next_eligible_at, lease_expires_at, attempt_id) WHERE (state = ANY (ARRAY['pending'::text, 'running'::text, 'retry_wait'::text, 'poll_wait'::text]));
 
@@ -20985,7 +23321,15 @@ CREATE INDEX song_streak_days_recompute_idx ON song_streak_days USING btree (acc
 
 CREATE INDEX song_streaks_live_leaderboard_idx ON song_streaks USING btree (community_id, post_id, current_count DESC, best_count DESC, started_day, account_id, active_until_at);
 
+CREATE INDEX study_lesson_item_state_queue_idx ON study_lesson_item_state_v2 USING btree (session_id, lesson_resolved, presentation_count, last_queue_ordinal, original_ordinal);
+
+CREATE INDEX study_review_items_due_selection_idx ON study_review_items USING btree (account_id, post_id, exercise_kind, lifecycle_status, due_at, created_at);
+
 CREATE INDEX study_sessions_account_created_idx ON study_sessions USING btree (account_id, created_at DESC, session_id);
+
+CREATE INDEX study_spoken_answer_commands_live_account_idx ON study_spoken_answer_commands USING btree (account_id, lease_expires_at) WHERE (state = 'reserved'::text);
+
+CREATE INDEX study_translation_generation_runs_dispatch_idx ON study_translation_generation_runs USING btree (status, created_at, generation_run_id) WHERE (status = ANY (ARRAY['pending'::text, 'leased'::text]));
 
 CREATE INDEX subject_key_binding_events_user_bound_idx ON subject_key_binding_events USING btree (user_id, bound_at DESC, binding_event_id);
 
@@ -21013,6 +23357,10 @@ CREATE UNIQUE INDEX verification_start_reservations_creation_idempotency_uidx ON
 
 CREATE INDEX verification_start_reservations_lease_idx ON verification_start_reservations USING btree (state, lease_expires_at);
 
+CREATE TRIGGER account_language_preferences_delete_guard BEFORE DELETE ON account_language_preferences FOR EACH ROW EXECUTE FUNCTION reject_localization_immutable_mutation();
+
+CREATE TRIGGER account_language_preferences_update_guard BEFORE UPDATE ON account_language_preferences FOR EACH ROW EXECUTE FUNCTION guard_account_language_preferences_update();
+
 CREATE TRIGGER account_minimum_age_attestation_guard_v1 BEFORE DELETE OR UPDATE ON account_minimum_age_attestations FOR EACH ROW EXECUTE FUNCTION guard_account_minimum_age_attestation_v1();
 
 CREATE TRIGGER account_streak_clocks_change_guard BEFORE INSERT OR DELETE OR UPDATE ON account_streak_clocks FOR EACH ROW EXECUTE FUNCTION guard_account_streak_clock();
@@ -21024,6 +23372,8 @@ CREATE TRIGGER action_grants_append_only BEFORE DELETE OR UPDATE ON action_grant
 CREATE TRIGGER active_subject_key_bindings_projection_only BEFORE INSERT OR DELETE OR UPDATE ON active_subject_key_bindings FOR EACH ROW EXECUTE FUNCTION gates_v2_active_binding_projection_guard();
 
 CREATE TRIGGER activity_qualifications_change_guard BEFORE INSERT OR DELETE OR UPDATE ON activity_qualifications FOR EACH ROW EXECUTE FUNCTION guard_activity_qualification();
+
+CREATE TRIGGER activity_qualifications_project_asset_bonus_claim AFTER INSERT ON activity_qualifications FOR EACH ROW EXECUTE FUNCTION project_asset_bonus_claim_from_qualification();
 
 CREATE TRIGGER activity_qualifications_project_megapot_share AFTER INSERT ON activity_qualifications FOR EACH ROW EXECUTE FUNCTION project_megapot_pool_share_from_qualification();
 
@@ -21245,6 +23595,24 @@ CREATE TRIGGER community_streaks_change_guard BEFORE DELETE OR UPDATE ON communi
 
 CREATE TRIGGER custody_solvency_observations_append_only BEFORE DELETE OR UPDATE ON custody_solvency_observations FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
 
+CREATE TRIGGER dance_choreographies_change_guard BEFORE INSERT OR DELETE OR UPDATE ON dance_choreographies FOR EACH ROW EXECUTE FUNCTION guard_dance_choreography();
+
+CREATE CONSTRAINT TRIGGER dance_choreographies_consistency AFTER INSERT OR UPDATE ON dance_choreographies DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_dance_choreography_consistency();
+
+CREATE TRIGGER dance_choreography_revisions_change_guard BEFORE INSERT OR DELETE OR UPDATE ON dance_choreography_revisions FOR EACH ROW EXECUTE FUNCTION guard_dance_choreography_revision();
+
+CREATE CONSTRAINT TRIGGER dance_choreography_revisions_consistency AFTER INSERT OR UPDATE ON dance_choreography_revisions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_dance_choreography_consistency();
+
+CREATE TRIGGER dance_reference_actions_append_only BEFORE DELETE OR UPDATE ON dance_reference_actions FOR EACH ROW EXECUTE FUNCTION reject_dance_reference_action_change();
+
+CREATE TRIGGER dance_reference_artifacts_change_guard BEFORE INSERT OR DELETE OR UPDATE ON dance_reference_artifacts FOR EACH ROW EXECUTE FUNCTION guard_dance_reference_artifact();
+
+CREATE TRIGGER dance_reference_outbox_change_guard BEFORE INSERT OR DELETE OR UPDATE ON dance_reference_outbox FOR EACH ROW EXECUTE FUNCTION guard_dance_reference_outbox();
+
+CREATE TRIGGER dance_reference_processing_attempts_change_guard BEFORE INSERT OR DELETE OR UPDATE ON dance_reference_processing_attempts FOR EACH ROW EXECUTE FUNCTION guard_dance_processing_attempt();
+
+CREATE TRIGGER dance_song_segments_change_guard BEFORE INSERT OR DELETE OR UPDATE ON dance_song_segments FOR EACH ROW EXECUTE FUNCTION guard_dance_song_segment();
+
 CREATE TRIGGER data_registration_artifacts_append_only BEFORE DELETE OR UPDATE ON data_registration_artifacts FOR EACH ROW EXECUTE FUNCTION guard_data_registration_append_only();
 
 CREATE TRIGGER data_registration_attempt_guard BEFORE INSERT OR DELETE OR UPDATE ON data_registration_signing_attempts FOR EACH ROW EXECUTE FUNCTION guard_data_registration_attempt();
@@ -21379,7 +23747,33 @@ CREATE TRIGGER identity_credentials_enforce_lifecycle BEFORE INSERT OR DELETE OR
 
 CREATE TRIGGER karaoke_attempts_change_guard BEFORE INSERT OR DELETE OR UPDATE ON karaoke_attempts FOR EACH ROW EXECUTE FUNCTION guard_karaoke_attempt();
 
+CREATE TRIGGER karaoke_recordings_change_guard BEFORE INSERT OR DELETE OR UPDATE ON karaoke_recordings FOR EACH ROW EXECUTE FUNCTION guard_karaoke_recording();
+
+CREATE TRIGGER karaoke_runtime_session_authority_guard BEFORE UPDATE ON karaoke_sessions FOR EACH ROW EXECUTE FUNCTION guard_karaoke_runtime_session_authority();
+
 CREATE TRIGGER karaoke_sessions_change_guard BEFORE INSERT OR DELETE OR UPDATE ON karaoke_sessions FOR EACH ROW EXECUTE FUNCTION guard_karaoke_session();
+
+CREATE TRIGGER karaoke_sessions_playback_kind_guard BEFORE UPDATE OF playback_kind ON karaoke_sessions FOR EACH ROW EXECUTE FUNCTION guard_karaoke_session_playback_kind();
+
+CREATE TRIGGER localization_lyric_line_delete_guard BEFORE DELETE ON localization_lyric_line_occurrences FOR EACH ROW EXECUTE FUNCTION reject_localization_immutable_mutation();
+
+CREATE TRIGGER localization_lyric_line_lifecycle_guard BEFORE UPDATE ON localization_lyric_line_occurrences FOR EACH ROW EXECUTE FUNCTION guard_localization_lyric_line_lifecycle();
+
+CREATE TRIGGER localization_lyric_line_lineage_immutable BEFORE DELETE OR UPDATE ON localization_lyric_line_lineage FOR EACH ROW EXECUTE FUNCTION reject_localization_immutable_mutation();
+
+CREATE TRIGGER localization_lyric_line_study_units_immutable BEFORE DELETE OR UPDATE ON localization_lyric_line_study_units FOR EACH ROW EXECUTE FUNCTION reject_localization_immutable_mutation();
+
+CREATE TRIGGER localization_lyric_line_versions_immutable BEFORE DELETE OR UPDATE ON localization_lyric_line_versions FOR EACH ROW EXECUTE FUNCTION reject_localization_immutable_mutation();
+
+CREATE TRIGGER localization_lyric_reconciliation_decisions_immutable BEFORE DELETE OR UPDATE ON localization_lyric_reconciliation_decisions FOR EACH ROW EXECUTE FUNCTION reject_localization_immutable_mutation();
+
+CREATE TRIGGER localization_lyrics_revision_lines_immutable BEFORE DELETE OR UPDATE ON localization_lyrics_revision_lines FOR EACH ROW EXECUTE FUNCTION reject_localization_immutable_mutation();
+
+CREATE TRIGGER localization_source_units_immutable BEFORE DELETE OR UPDATE ON localization_source_units FOR EACH ROW EXECUTE FUNCTION reject_localization_immutable_mutation();
+
+CREATE TRIGGER localization_study_units_immutable BEFORE DELETE OR UPDATE ON localization_study_units FOR EACH ROW EXECUTE FUNCTION reject_localization_immutable_mutation();
+
+CREATE TRIGGER localization_translation_versions_immutable BEFORE DELETE OR UPDATE ON localization_translation_versions FOR EACH ROW EXECUTE FUNCTION reject_localization_immutable_mutation();
 
 CREATE TRIGGER media_alignment_insert_guard BEFORE INSERT ON media_alignment_projections FOR EACH ROW EXECUTE FUNCTION validate_media_alignment_insert();
 
@@ -21703,6 +24097,8 @@ CREATE TRIGGER qualification_policy_versions_append_only BEFORE DELETE OR UPDATE
 
 CREATE TRIGGER reward_activity_availability_change_guard BEFORE INSERT OR DELETE OR UPDATE ON reward_activity_availability_observations FOR EACH ROW EXECUTE FUNCTION guard_reward_availability_observation();
 
+CREATE TRIGGER reward_asset_verification_change_guard BEFORE UPDATE ON reward_asset_whitelist FOR EACH ROW EXECUTE FUNCTION guard_reward_asset_verification_change();
+
 CREATE TRIGGER reward_asset_whitelist_change_guard BEFORE DELETE OR UPDATE ON reward_asset_whitelist FOR EACH ROW EXECUTE FUNCTION guard_reward_asset_whitelist_change();
 
 CREATE CONSTRAINT TRIGGER reward_chain_effect_transition_pair AFTER UPDATE ON reward_chain_effects DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_reward_chain_effect_transition();
@@ -21735,9 +24131,21 @@ CREATE CONSTRAINT TRIGGER route_v1_creation_intent_requirement_cardinality AFTER
 
 CREATE CONSTRAINT TRIGGER route_v1_creation_requirement_cardinality AFTER INSERT OR DELETE OR UPDATE ON community_creation_requirement_states DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_route_v1_creation_requirement_cardinality();
 
+CREATE TRIGGER song_dance_presentations_change_guard BEFORE INSERT OR DELETE OR UPDATE ON song_dance_presentations FOR EACH ROW EXECUTE FUNCTION guard_song_dance_presentation();
+
+CREATE CONSTRAINT TRIGGER song_reward_asset_leg_accounting AFTER UPDATE ON song_reward_offer_legs DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_asset_bonus_leg_accounting();
+
+CREATE CONSTRAINT TRIGGER song_reward_bundle_claim_leg_accounting AFTER INSERT ON song_reward_bundle_claim_legs DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_asset_bonus_leg_accounting();
+
+CREATE TRIGGER song_reward_bundle_claim_legs_change_guard BEFORE INSERT OR DELETE OR UPDATE ON song_reward_bundle_claim_legs FOR EACH ROW EXECUTE FUNCTION guard_song_reward_bundle_claim_leg();
+
+CREATE TRIGGER song_reward_bundle_claims_change_guard BEFORE INSERT OR DELETE OR UPDATE ON song_reward_bundle_claims FOR EACH ROW EXECUTE FUNCTION guard_song_reward_bundle_claim();
+
 CREATE TRIGGER song_reward_leg_funding_effects_change_guard BEFORE INSERT OR DELETE OR UPDATE ON song_reward_leg_funding_effects FOR EACH ROW EXECUTE FUNCTION guard_song_reward_funding_effect();
 
 CREATE TRIGGER song_reward_offer_actions_change_guard BEFORE INSERT OR DELETE OR UPDATE ON song_reward_offer_actions FOR EACH ROW EXECUTE FUNCTION guard_song_reward_offer_action();
+
+CREATE TRIGGER song_reward_offer_asset_legs_asset_guard BEFORE INSERT OR UPDATE ON song_reward_offer_legs FOR EACH ROW EXECUTE FUNCTION guard_asset_bonus_leg_asset();
 
 CREATE TRIGGER song_reward_offer_legs_change_guard BEFORE INSERT OR DELETE OR UPDATE ON song_reward_offer_legs FOR EACH ROW EXECUTE FUNCTION guard_song_reward_offer_leg();
 
@@ -21751,11 +24159,29 @@ CREATE TRIGGER song_streaks_change_guard BEFORE DELETE OR UPDATE ON song_streaks
 
 CREATE TRIGGER sponsor_daily_ticket_totals_change_guard BEFORE DELETE OR UPDATE ON sponsor_daily_ticket_totals FOR EACH ROW EXECUTE FUNCTION guard_sponsor_daily_totals();
 
+CREATE TRIGGER study_attempts_v2_immutable BEFORE DELETE OR UPDATE ON study_attempts_v2 FOR EACH ROW EXECUTE FUNCTION reject_localization_immutable_mutation();
+
+CREATE TRIGGER study_exercise_versions_immutable BEFORE DELETE OR UPDATE ON study_exercise_versions FOR EACH ROW EXECUTE FUNCTION reject_localization_immutable_mutation();
+
+CREATE TRIGGER study_language_profile_units_immutable BEFORE DELETE OR UPDATE ON study_language_profile_units FOR EACH ROW EXECUTE FUNCTION reject_localization_immutable_mutation();
+
+CREATE TRIGGER study_language_profiles_immutable BEFORE DELETE OR UPDATE ON study_language_profiles FOR EACH ROW EXECUTE FUNCTION reject_localization_immutable_mutation();
+
+CREATE TRIGGER study_presentations_v2_immutable BEFORE DELETE OR UPDATE ON study_presentations_v2 FOR EACH ROW EXECUTE FUNCTION reject_localization_immutable_mutation();
+
 CREATE TRIGGER study_session_answers_change_guard BEFORE INSERT OR DELETE OR UPDATE ON study_session_answers FOR EACH ROW EXECUTE FUNCTION guard_study_session_answer();
 
 CREATE TRIGGER study_session_items_change_guard BEFORE INSERT OR DELETE OR UPDATE ON study_session_items FOR EACH ROW EXECUTE FUNCTION guard_study_session_item();
 
+CREATE TRIGGER study_session_items_v2_immutable BEFORE DELETE OR UPDATE ON study_session_items_v2 FOR EACH ROW EXECUTE FUNCTION reject_localization_immutable_mutation();
+
 CREATE TRIGGER study_sessions_change_guard BEFORE INSERT OR DELETE OR UPDATE ON study_sessions FOR EACH ROW EXECUTE FUNCTION guard_study_session();
+
+CREATE TRIGGER study_translation_generation_items_immutable BEFORE DELETE OR UPDATE ON study_translation_generation_items FOR EACH ROW EXECUTE FUNCTION reject_localization_immutable_mutation();
+
+CREATE TRIGGER study_translation_quality_policies_immutable BEFORE DELETE OR UPDATE ON study_translation_quality_policies FOR EACH ROW EXECUTE FUNCTION reject_localization_immutable_mutation();
+
+CREATE TRIGGER study_unit_exercise_eligibility_immutable BEFORE DELETE OR UPDATE ON study_unit_exercise_eligibility FOR EACH ROW EXECUTE FUNCTION reject_localization_immutable_mutation();
 
 CREATE TRIGGER subject_key_binding_events_append_only BEFORE DELETE OR UPDATE ON subject_key_binding_events FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
@@ -21804,6 +24230,9 @@ CREATE TRIGGER text_moderation_policy_revisions_append_only BEFORE DELETE OR UPD
 CREATE TRIGGER used_action_grants_append_only BEFORE DELETE OR UPDATE ON used_action_grants FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
 CREATE TRIGGER users_provision_first_persona AFTER INSERT ON users FOR EACH ROW EXECUTE FUNCTION provision_first_persona_for_new_account();
+
+ALTER TABLE ONLY account_language_preferences
+    ADD CONSTRAINT account_language_preferences_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
 
 ALTER TABLE ONLY account_minimum_age_attestations
     ADD CONSTRAINT account_minimum_age_attestations_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
@@ -22441,6 +24870,45 @@ ALTER TABLE ONLY custody_solvency_observations
 ALTER TABLE ONLY custody_solvency_observations
     ADD CONSTRAINT custody_solvency_observations_attestation_id_fkey FOREIGN KEY (attestation_id) REFERENCES megapot_deployment_attestations(attestation_id);
 
+ALTER TABLE ONLY dance_choreographies
+    ADD CONSTRAINT dance_choreographies_community_id_song_post_id_fkey FOREIGN KEY (community_id, song_post_id) REFERENCES posts(community_id, post_id);
+
+ALTER TABLE ONLY dance_choreographies
+    ADD CONSTRAINT dance_choreographies_creator_account_id_creator_persona_id_fkey FOREIGN KEY (creator_account_id, creator_persona_id) REFERENCES personas(account_id, persona_id);
+
+ALTER TABLE ONLY dance_choreographies
+    ADD CONSTRAINT dance_choreographies_creator_account_id_fkey FOREIGN KEY (creator_account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY dance_choreographies
+    ADD CONSTRAINT dance_choreography_active_revision_fk FOREIGN KEY (choreography_id, active_revision) REFERENCES dance_choreography_revisions(choreography_id, revision) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY dance_choreography_revisions
+    ADD CONSTRAINT dance_choreography_revisions_choreography_id_community_id__fkey FOREIGN KEY (choreography_id, community_id, song_post_id) REFERENCES dance_choreographies(choreography_id, community_id, song_post_id);
+
+ALTER TABLE ONLY dance_choreography_revisions
+    ADD CONSTRAINT dance_choreography_revisions_community_id_reference_video__fkey FOREIGN KEY (community_id, reference_video_post_id) REFERENCES posts(community_id, post_id);
+
+ALTER TABLE ONLY dance_choreography_revisions
+    ADD CONSTRAINT dance_choreography_revisions_segment_id_community_id_song__fkey FOREIGN KEY (segment_id, community_id, song_post_id, audio_revision) REFERENCES dance_song_segments(segment_id, community_id, song_post_id, audio_revision);
+
+ALTER TABLE ONLY dance_reference_actions
+    ADD CONSTRAINT dance_reference_actions_actor_account_id_fkey FOREIGN KEY (actor_account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY dance_reference_artifacts
+    ADD CONSTRAINT dance_reference_artifacts_choreography_id_revision_fkey FOREIGN KEY (choreography_id, revision) REFERENCES dance_choreography_revisions(choreography_id, revision);
+
+ALTER TABLE ONLY dance_reference_outbox
+    ADD CONSTRAINT dance_reference_outbox_choreography_id_revision_fkey FOREIGN KEY (choreography_id, revision) REFERENCES dance_choreography_revisions(choreography_id, revision);
+
+ALTER TABLE ONLY dance_reference_processing_attempts
+    ADD CONSTRAINT dance_reference_processing_attemp_choreography_id_revision_fkey FOREIGN KEY (choreography_id, revision) REFERENCES dance_choreography_revisions(choreography_id, revision);
+
+ALTER TABLE ONLY dance_song_segments
+    ADD CONSTRAINT dance_song_segments_community_id_song_post_id_fkey FOREIGN KEY (community_id, song_post_id) REFERENCES posts(community_id, post_id);
+
+ALTER TABLE ONLY dance_song_segments
+    ADD CONSTRAINT dance_song_segments_song_submission_id_fkey FOREIGN KEY (song_submission_id) REFERENCES media_publication_projections(submission_id);
+
 ALTER TABLE ONLY data_registration_artifacts
     ADD CONSTRAINT data_registration_artifacts_registration_operation_id_fkey FOREIGN KEY (registration_operation_id) REFERENCES data_registration_operations(registration_operation_id);
 
@@ -22684,6 +25152,12 @@ ALTER TABLE ONLY identity_credentials
 ALTER TABLE ONLY karaoke_attempts
     ADD CONSTRAINT karaoke_attempts_session_id_attempt_id_fkey FOREIGN KEY (session_id, attempt_id) REFERENCES karaoke_sessions(session_id, attempt_id);
 
+ALTER TABLE ONLY karaoke_recordings
+    ADD CONSTRAINT karaoke_recordings_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY karaoke_recordings
+    ADD CONSTRAINT karaoke_recordings_session_id_attempt_id_fkey FOREIGN KEY (session_id, attempt_id) REFERENCES karaoke_sessions(session_id, attempt_id);
+
 ALTER TABLE ONLY karaoke_sessions
     ADD CONSTRAINT karaoke_sessions_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
 
@@ -22695,6 +25169,51 @@ ALTER TABLE ONLY karaoke_sessions
 
 ALTER TABLE ONLY karaoke_sessions
     ADD CONSTRAINT karaoke_sessions_qualification_policy_version_id_activity__fkey FOREIGN KEY (qualification_policy_version_id, activity_key) REFERENCES qualification_policy_versions(qualification_policy_version_id, activity_key);
+
+ALTER TABLE ONLY learner_audio_artifacts
+    ADD CONSTRAINT learner_audio_artifacts_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY localization_lyric_line_lineage
+    ADD CONSTRAINT localization_lyric_line_linea_community_id_post_id_predece_fkey FOREIGN KEY (community_id, post_id, predecessor_line_id) REFERENCES localization_lyric_line_occurrences(community_id, post_id, lyric_line_id);
+
+ALTER TABLE ONLY localization_lyric_line_lineage
+    ADD CONSTRAINT localization_lyric_line_linea_community_id_post_id_success_fkey FOREIGN KEY (community_id, post_id, successor_line_id) REFERENCES localization_lyric_line_occurrences(community_id, post_id, lyric_line_id);
+
+ALTER TABLE ONLY localization_lyric_line_occurrences
+    ADD CONSTRAINT localization_lyric_line_occurrences_community_id_post_id_fkey FOREIGN KEY (community_id, post_id) REFERENCES posts(community_id, post_id);
+
+ALTER TABLE ONLY localization_lyric_line_study_units
+    ADD CONSTRAINT localization_lyric_line_study_community_id_post_id_lyric_l_fkey FOREIGN KEY (community_id, post_id, lyric_line_id, line_version) REFERENCES localization_lyric_line_versions(community_id, post_id, lyric_line_id, line_version);
+
+ALTER TABLE ONLY localization_lyric_line_study_units
+    ADD CONSTRAINT localization_lyric_line_study_community_id_post_id_study_u_fkey FOREIGN KEY (community_id, post_id, study_unit_id) REFERENCES localization_study_units(community_id, post_id, study_unit_id);
+
+ALTER TABLE ONLY localization_lyric_line_versions
+    ADD CONSTRAINT localization_lyric_line_versi_community_id_post_id_lyric_l_fkey FOREIGN KEY (community_id, post_id, lyric_line_id) REFERENCES localization_lyric_line_occurrences(community_id, post_id, lyric_line_id);
+
+ALTER TABLE ONLY localization_lyric_reconciliation_decisions
+    ADD CONSTRAINT localization_lyric_reconciliation_dec_community_id_post_id_fkey FOREIGN KEY (community_id, post_id) REFERENCES posts(community_id, post_id);
+
+ALTER TABLE ONLY localization_lyrics_revision_lines
+    ADD CONSTRAINT localization_lyrics_revision__community_id_post_id_lyric_l_fkey FOREIGN KEY (community_id, post_id, lyric_line_id, line_version, source_hash) REFERENCES localization_lyric_line_versions(community_id, post_id, lyric_line_id, line_version, source_hash);
+
+ALTER TABLE ONLY localization_lyrics_revision_lines
+    ADD CONSTRAINT localization_lyrics_revision_lines_accepted_revision_fk FOREIGN KEY (submission_id, lyrics_revision) REFERENCES media_song_lyrics_revisions(submission_id, lyrics_revision);
+
+ALTER TABLE ONLY localization_lyrics_revision_lines
+    ADD CONSTRAINT localization_lyrics_revision_lines_submission_post_fk FOREIGN KEY (community_id, actor_user_id, post_id, submission_id) REFERENCES media_post_submissions(community_id, actor_user_id, post_id, submission_id);
+
+ALTER TABLE ONLY localization_study_units
+    ADD CONSTRAINT localization_study_units_community_id_post_id_fkey FOREIGN KEY (community_id, post_id) REFERENCES posts(community_id, post_id);
+
+ALTER TABLE ONLY localization_translation_jobs
+    ADD CONSTRAINT localization_translation_jobs_source_unit_kind_source_unit_fkey FOREIGN KEY (source_unit_kind, source_unit_id, field_key, source_revision, source_hash) REFERENCES localization_source_units(source_unit_kind, source_unit_id, field_key, source_revision, source_hash);
+
+ALTER TABLE ONLY localization_translation_selections
+    ADD CONSTRAINT localization_translation_sele_selected_translation_version_fkey FOREIGN KEY (selected_translation_version_id, source_unit_kind, source_unit_id, field_key, source_revision, source_hash, target_language, translation_policy_version) REFERENCES localization_translation_versions(translation_version_id, source_unit_kind, source_unit_id, field_key, source_revision, source_hash, target_language, translation_policy_version);
+
+ALTER TABLE ONLY localization_translation_versions
+    ADD CONSTRAINT localization_translation_vers_source_unit_kind_source_unit_fkey FOREIGN KEY (source_unit_kind, source_unit_id, field_key, source_revision, source_hash) REFERENCES localization_source_units(source_unit_kind, source_unit_id, field_key, source_revision, source_hash);
 
 ALTER TABLE ONLY media_alignment_projections
     ADD CONSTRAINT media_alignment_current_artifact_lyrics_fk FOREIGN KEY (current_artifact_ref, current_artifact_revision, community_id, actor_user_id, submission_id, operation_id, post_id, audio_revision, analysis_revision, canonical_audio_sha256, lyrics_revision) REFERENCES media_timed_lyrics_artifacts(artifact_ref, artifact_revision, community_id, actor_user_id, submission_id, operation_id, post_id, audio_revision, analysis_revision, canonical_audio_sha256, lyrics_revision);
@@ -23452,6 +25971,21 @@ ALTER TABLE ONLY reward_subject_consumptions
 ALTER TABLE ONLY reward_subject_consumptions
     ADD CONSTRAINT reward_subject_consumptions_receipt_fk FOREIGN KEY (evidence_receipt_id, subject_key_id, binding_event_id, binding_epoch, user_id) REFERENCES evidence_receipts(evidence_receipt_id, subject_key_id, subject_binding_event_id, subject_binding_epoch, user_id);
 
+ALTER TABLE ONLY song_dance_presentations
+    ADD CONSTRAINT song_dance_presentations_community_id_song_post_id_fkey FOREIGN KEY (community_id, song_post_id) REFERENCES posts(community_id, post_id);
+
+ALTER TABLE ONLY song_dance_presentations
+    ADD CONSTRAINT song_dance_presentations_featured_choreography_id_featured_fkey FOREIGN KEY (featured_choreography_id, featured_choreography_revision, community_id, song_post_id, audio_revision) REFERENCES dance_choreography_revisions(choreography_id, revision, community_id, song_post_id, audio_revision) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY song_dance_presentations
+    ADD CONSTRAINT song_dance_presentations_song_owner_account_id_fkey FOREIGN KEY (song_owner_account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY song_dance_presentations
+    ADD CONSTRAINT song_dance_presentations_song_submission_id_fkey FOREIGN KEY (song_submission_id) REFERENCES media_publication_projections(submission_id);
+
+ALTER TABLE ONLY song_dance_presentations
+    ADD CONSTRAINT song_dance_presentations_updated_by_account_id_fkey FOREIGN KEY (updated_by_account_id) REFERENCES users(user_id);
+
 ALTER TABLE ONLY song_reward_bundle_claim_legs
     ADD CONSTRAINT song_reward_bundle_claim_legs_account_id_offer_id_fkey FOREIGN KEY (account_id, offer_id) REFERENCES song_reward_bundle_claims(account_id, offer_id);
 
@@ -23560,11 +26094,77 @@ ALTER TABLE ONLY sponsor_withdrawal_effects
 ALTER TABLE ONLY sponsor_withdrawal_effects
     ADD CONSTRAINT sponsor_withdrawal_effects_withdrawal_effect_id_fkey FOREIGN KEY (withdrawal_effect_id) REFERENCES reward_chain_effects(effect_id);
 
+ALTER TABLE ONLY study_attempts_v2
+    ADD CONSTRAINT study_attempt_audio_artifact_fk FOREIGN KEY (learner_audio_artifact_id) REFERENCES learner_audio_artifacts(learner_audio_artifact_id);
+
+ALTER TABLE ONLY study_attempts_v2
+    ADD CONSTRAINT study_attempts_v2_session_item_id_fkey FOREIGN KEY (session_item_id) REFERENCES study_session_items_v2(session_item_id);
+
+ALTER TABLE ONLY study_exercise_versions
+    ADD CONSTRAINT study_exercise_unit_fk FOREIGN KEY (community_id, post_id, study_unit_id) REFERENCES localization_study_units(community_id, post_id, study_unit_id);
+
+ALTER TABLE ONLY study_exercise_versions
+    ADD CONSTRAINT study_exercise_versions_community_id_post_id_lyric_line_id_fkey FOREIGN KEY (community_id, post_id, lyric_line_id, line_version, line_source_hash) REFERENCES localization_lyric_line_versions(community_id, post_id, lyric_line_id, line_version, source_hash);
+
+ALTER TABLE ONLY study_language_profile_units
+    ADD CONSTRAINT study_language_profile_units_community_id_post_id_lyrics_r_fkey FOREIGN KEY (community_id, post_id, lyrics_revision, language_profile_revision) REFERENCES study_language_profiles(community_id, post_id, lyrics_revision, language_profile_revision);
+
+ALTER TABLE ONLY study_language_profile_units
+    ADD CONSTRAINT study_language_profile_units_community_id_post_id_study_un_fkey FOREIGN KEY (community_id, post_id, study_unit_id) REFERENCES localization_study_units(community_id, post_id, study_unit_id);
+
+ALTER TABLE ONLY study_language_profiles
+    ADD CONSTRAINT study_language_profiles_community_id_post_id_fkey FOREIGN KEY (community_id, post_id) REFERENCES posts(community_id, post_id);
+
+ALTER TABLE ONLY study_lesson_item_state_v2
+    ADD CONSTRAINT study_lesson_item_state_v2_session_id_fkey FOREIGN KEY (session_id) REFERENCES study_sessions_v2(session_id);
+
+ALTER TABLE ONLY study_lesson_item_state_v2
+    ADD CONSTRAINT study_lesson_item_state_v2_session_item_id_fkey FOREIGN KEY (session_item_id) REFERENCES study_session_items_v2(session_item_id);
+
+ALTER TABLE ONLY study_presentations_v2
+    ADD CONSTRAINT study_presentations_v2_session_id_fkey FOREIGN KEY (session_id) REFERENCES study_sessions_v2(session_id);
+
+ALTER TABLE ONLY study_presentations_v2
+    ADD CONSTRAINT study_presentations_v2_session_item_id_fkey FOREIGN KEY (session_item_id) REFERENCES study_session_items_v2(session_item_id);
+
+ALTER TABLE ONLY study_review_items
+    ADD CONSTRAINT study_review_current_version_identity_fk FOREIGN KEY (current_exercise_version_id, exercise_review_key) REFERENCES study_exercise_versions(exercise_version_id, exercise_review_key);
+
+ALTER TABLE ONLY study_review_items
+    ADD CONSTRAINT study_review_items_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY study_review_items
+    ADD CONSTRAINT study_review_items_current_exercise_version_id_fkey FOREIGN KEY (current_exercise_version_id) REFERENCES study_exercise_versions(exercise_version_id);
+
+ALTER TABLE ONLY study_review_items
+    ADD CONSTRAINT study_review_unit_fk FOREIGN KEY (community_id, post_id, study_unit_id) REFERENCES localization_study_units(community_id, post_id, study_unit_id);
+
 ALTER TABLE ONLY study_session_answers
     ADD CONSTRAINT study_session_answers_session_id_session_item_id_fkey FOREIGN KEY (session_id, session_item_id) REFERENCES study_session_items(session_id, session_item_id);
 
+ALTER TABLE ONLY study_sessions_v2
+    ADD CONSTRAINT study_session_current_item_fk FOREIGN KEY (current_session_item_id) REFERENCES study_lesson_item_state_v2(session_item_id) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY study_session_items_v2
+    ADD CONSTRAINT study_session_item_exercise_identity_fk FOREIGN KEY (exercise_version_id, exercise_review_key) REFERENCES study_exercise_versions(exercise_version_id, exercise_review_key);
+
+ALTER TABLE ONLY study_session_items_v2
+    ADD CONSTRAINT study_session_item_review_identity_fk FOREIGN KEY (review_item_id, account_id, exercise_review_key) REFERENCES study_review_items(review_item_id, account_id, exercise_review_key);
+
+ALTER TABLE ONLY study_session_items_v2
+    ADD CONSTRAINT study_session_item_session_account_fk FOREIGN KEY (session_id, account_id) REFERENCES study_sessions_v2(session_id, account_id);
+
 ALTER TABLE ONLY study_session_items
     ADD CONSTRAINT study_session_items_session_id_fkey FOREIGN KEY (session_id) REFERENCES study_sessions(session_id);
+
+ALTER TABLE ONLY study_session_items_v2
+    ADD CONSTRAINT study_session_items_v2_exercise_version_id_fkey FOREIGN KEY (exercise_version_id) REFERENCES study_exercise_versions(exercise_version_id);
+
+ALTER TABLE ONLY study_session_items_v2
+    ADD CONSTRAINT study_session_items_v2_review_item_id_fkey FOREIGN KEY (review_item_id) REFERENCES study_review_items(review_item_id);
+
+ALTER TABLE ONLY study_session_items_v2
+    ADD CONSTRAINT study_session_items_v2_session_id_fkey FOREIGN KEY (session_id) REFERENCES study_sessions_v2(session_id);
 
 ALTER TABLE ONLY study_sessions
     ADD CONSTRAINT study_sessions_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
@@ -23577,6 +26177,60 @@ ALTER TABLE ONLY study_sessions
 
 ALTER TABLE ONLY study_sessions
     ADD CONSTRAINT study_sessions_qualification_policy_version_id_activity_ke_fkey FOREIGN KEY (qualification_policy_version_id, activity_key) REFERENCES qualification_policy_versions(qualification_policy_version_id, activity_key);
+
+ALTER TABLE ONLY study_sessions_v2
+    ADD CONSTRAINT study_sessions_v2_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY study_sessions_v2
+    ADD CONSTRAINT study_sessions_v2_community_id_post_id_fkey FOREIGN KEY (community_id, post_id) REFERENCES posts(community_id, post_id);
+
+ALTER TABLE ONLY study_sessions_v2
+    ADD CONSTRAINT study_sessions_v2_persona_id_fkey FOREIGN KEY (persona_id) REFERENCES personas(persona_id);
+
+ALTER TABLE ONLY study_spoken_answer_commands
+    ADD CONSTRAINT study_spoken_answer_commands_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY study_spoken_answer_commands
+    ADD CONSTRAINT study_spoken_answer_commands_session_id_fkey FOREIGN KEY (session_id) REFERENCES study_sessions_v2(session_id);
+
+ALTER TABLE ONLY study_spoken_answer_commands
+    ADD CONSTRAINT study_spoken_answer_commands_session_item_id_fkey FOREIGN KEY (session_item_id) REFERENCES study_session_items_v2(session_item_id);
+
+ALTER TABLE ONLY study_spoken_answer_commands
+    ADD CONSTRAINT study_spoken_command_audio_artifact_fk FOREIGN KEY (learner_audio_artifact_id) REFERENCES learner_audio_artifacts(learner_audio_artifact_id) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY study_translation_generation_items
+    ADD CONSTRAINT study_translation_generation__community_id_post_id_lyric_l_fkey FOREIGN KEY (community_id, post_id, lyric_line_id, line_version, source_hash) REFERENCES localization_lyric_line_versions(community_id, post_id, lyric_line_id, line_version, source_hash);
+
+ALTER TABLE ONLY study_translation_generation_runs
+    ADD CONSTRAINT study_translation_generation__community_id_post_id_lyrics__fkey FOREIGN KEY (community_id, post_id, lyrics_revision, language_profile_revision) REFERENCES study_language_profiles(community_id, post_id, lyrics_revision, language_profile_revision);
+
+ALTER TABLE ONLY study_translation_generation_items
+    ADD CONSTRAINT study_translation_generation__community_id_post_id_study_u_fkey FOREIGN KEY (community_id, post_id, study_unit_id) REFERENCES localization_study_units(community_id, post_id, study_unit_id);
+
+ALTER TABLE ONLY study_translation_generation_items
+    ADD CONSTRAINT study_translation_generation__generation_run_id_community__fkey FOREIGN KEY (generation_run_id, community_id, post_id) REFERENCES study_translation_generation_runs(generation_run_id, community_id, post_id);
+
+ALTER TABLE ONLY study_translation_generation_runs
+    ADD CONSTRAINT study_translation_generation__target_language_quality_poli_fkey FOREIGN KEY (target_language, quality_policy_revision) REFERENCES study_translation_quality_policies(target_language, quality_policy_revision);
+
+ALTER TABLE ONLY study_translation_generation_items
+    ADD CONSTRAINT study_translation_generation_items_exercise_version_id_fkey FOREIGN KEY (exercise_version_id) REFERENCES study_exercise_versions(exercise_version_id);
+
+ALTER TABLE ONLY study_translation_generation_items
+    ADD CONSTRAINT study_translation_generation_items_translation_version_id_fkey FOREIGN KEY (translation_version_id) REFERENCES localization_translation_versions(translation_version_id);
+
+ALTER TABLE ONLY study_translation_generation_runs
+    ADD CONSTRAINT study_translation_generation_runs_community_id_post_id_fkey FOREIGN KEY (community_id, post_id) REFERENCES posts(community_id, post_id);
+
+ALTER TABLE ONLY study_translation_generation_runs
+    ADD CONSTRAINT study_translation_generation_runs_submission_id_fkey FOREIGN KEY (submission_id) REFERENCES media_post_submissions(submission_id);
+
+ALTER TABLE ONLY study_translation_quality_registry
+    ADD CONSTRAINT study_translation_quality_reg_target_language_quality_poli_fkey FOREIGN KEY (target_language, quality_policy_revision) REFERENCES study_translation_quality_policies(target_language, quality_policy_revision);
+
+ALTER TABLE ONLY study_unit_exercise_eligibility
+    ADD CONSTRAINT study_unit_exercise_eligibili_community_id_post_id_study_u_fkey FOREIGN KEY (community_id, post_id, study_unit_id) REFERENCES localization_study_units(community_id, post_id, study_unit_id);
 
 ALTER TABLE ONLY subject_key_binding_events
     ADD CONSTRAINT subject_key_binding_events_previous_fk FOREIGN KEY (previous_binding_event_id, subject_key_id) REFERENCES subject_key_binding_events(binding_event_id, subject_key_id);
