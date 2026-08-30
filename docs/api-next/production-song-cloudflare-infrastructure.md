@@ -2,7 +2,7 @@
 
 This record covers the disabled production infrastructure ceremony on
 2026-08-30. It is redacted operational evidence, not deployment or activation
-authority. The reviewed source is PR #175 at commit `338a982`.
+authority. The reviewed source is PR #175 at commit `2dfe149`.
 
 ## Fixed posture
 
@@ -57,6 +57,21 @@ first disabled deployment or to the already registered disabled-first
 deployment task. Until that authority is recorded, the production Workflows
 remain absent and all four production queues retain zero producers and zero
 consumers.
+
+The first disabled deployment was authorized and attempted after PR #175's
+check, PostgreSQL 17 and secret-boundary gates passed again. The production
+jobs cron contract was empty at that reviewed head. Wrangler rejected the
+media Worker before creating it because a first deployment must supply every
+name in `secrets.required`, and the five production media-provider credentials
+do not exist in the production Infisical scope. The same bootstrap boundary
+applies to DATA while `FILEBASE_IPFS_TOKEN` is absent and to jobs while
+`MEGAPOT_V2_RPC_URL` is absent.
+
+The failure created no Worker, Workflow, queue consumer or deployment. No
+placeholder was supplied, no staging credential was reused, and jobs and DATA
+were not attempted once the shared bootstrap condition was proven. The next
+step is the separately controlled credential ceremonies, followed by a fresh
+name-only inventory and another reviewed deployment attempt.
 
 ## Secret routing
 
