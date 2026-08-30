@@ -32,7 +32,7 @@ type Options = Readonly<{
 
 const usage = `usage:
   bun run generate:study-translation-candidates --songs-root <dir> --song <name> [--song <name> ...]
-    --target-language <bcp47> [--max-units <1-256>]
+    --target-language <bcp47> [--max-units <1-256; default 256>]
     [--execute --model <model> --provider <provider> --output <file> [--overwrite]]
 
 Without --execute the command performs a provider-free deterministic plan only.
@@ -50,7 +50,7 @@ export const parseStudyCorpusCandidateArguments = (arguments_: readonly string[]
   let songsRoot: string | null = null;
   const songs: string[] = [];
   let targetLanguage: string | null = null;
-  let maximumUnits = 10;
+  let maximumUnits = 256;
   let execute = false;
   let model: string | null = null;
   let provider: string | null = null;

@@ -106,6 +106,28 @@ describe("offline Study translation corpus candidates", () => {
     expect(first.selectedUnits[0]?.studyUnitId).toBe(first.contextLines[1]?.studyUnitId);
   });
 
+  test("includes all ordinary units by default and spreads an explicit smoke cap", () => {
+    const source = Array.from({ length: 9 }, (_, index) => `Line ${index + 1}`).join("\n");
+    const complete = planStudyCorpusSong({
+      songName: "Long Fixture",
+      lyrics: source,
+      maximumUnits: 256,
+    });
+    const smoke = planStudyCorpusSong({
+      songName: "Long Fixture",
+      lyrics: source,
+      maximumUnits: 3,
+    });
+    expect(complete.selectedUnits.map(({ sourceText }) => sourceText)).toEqual(
+      Array.from({ length: 9 }, (_, index) => `Line ${index + 1}`),
+    );
+    expect(smoke.selectedUnits.map(({ sourceText }) => sourceText)).toEqual([
+      "Line 1",
+      "Line 5",
+      "Line 9",
+    ]);
+  });
+
   test("builds a structurally validated corpus that remains pending human review", async () => {
     const candidate = plan();
     const analysis = analysisFor(candidate);
@@ -154,7 +176,7 @@ describe("offline Study translation corpus candidates", () => {
         "--target-language",
         "es",
       ]),
-    ).toMatchObject({ execute: false, maximumUnits: 10, targetLanguage: "es" });
+    ).toMatchObject({ execute: false, maximumUnits: 256, targetLanguage: "es" });
     expect(() =>
       parseStudyCorpusCandidateArguments([
         "--songs-root",

@@ -63,6 +63,18 @@ const digest = (value: unknown): string =>
 const stableId = (prefix: string, value: unknown): string =>
   `${prefix}_${digest(value).slice(0, 32)}`;
 
+const selectAcrossSong = <Value>(
+  values: readonly Value[],
+  maximumUnits: number,
+): readonly Value[] => {
+  if (values.length <= maximumUnits) return values;
+  if (maximumUnits === 1) return [values[Math.floor((values.length - 1) / 2)] as Value];
+  return Array.from({ length: maximumUnits }, (_, index) => {
+    const sourceIndex = Math.round((index * (values.length - 1)) / (maximumUnits - 1));
+    return values[sourceIndex] as Value;
+  });
+};
+
 export const planStudyCorpusSong = (input: {
   readonly songName: string;
   readonly lyrics: string;
@@ -112,16 +124,18 @@ export const planStudyCorpusSong = (input: {
     if (!firstByUnit.has(occurrence.studyUnitId))
       firstByUnit.set(occurrence.studyUnitId, occurrence);
   }
-  const selectedUnits = [...firstByUnit.values()].slice(0, input.maximumUnits).map((unit) => ({
-    studyUnitId: unit.studyUnitId,
-    lyricLineId: unit.lyricLineId,
-    lineVersion: unit.lineVersion,
-    sourceHash: unit.sourceHash,
-    sourceText: unit.sourceText,
-    previousContext: occurrences[unit.ordinal - 2]?.sourceText ?? null,
-    nextContext: occurrences[unit.ordinal]?.sourceText ?? null,
-    occurrenceCount: counts.get(unit.studyUnitId) ?? 1,
-  }));
+  const selectedUnits = selectAcrossSong([...firstByUnit.values()], input.maximumUnits).map(
+    (unit) => ({
+      studyUnitId: unit.studyUnitId,
+      lyricLineId: unit.lyricLineId,
+      lineVersion: unit.lineVersion,
+      sourceHash: unit.sourceHash,
+      sourceText: unit.sourceText,
+      previousContext: occurrences[unit.ordinal - 2]?.sourceText ?? null,
+      nextContext: occurrences[unit.ordinal]?.sourceText ?? null,
+      occurrenceCount: counts.get(unit.studyUnitId) ?? 1,
+    }),
+  );
   const contextLines = occurrences.map(
     ({ ordinal, lyricLineId, lineVersion, studyUnitId, sourceText }) => ({
       ordinal,
