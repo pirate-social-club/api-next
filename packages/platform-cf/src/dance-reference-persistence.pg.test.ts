@@ -1,6 +1,16 @@
 import { afterAll, describe, expect, test } from "bun:test";
+import {
+  type DanceReferenceOutcome,
+  type DanceReferenceProcessingBinding,
+  type FrozenDanceReferenceInput,
+  type PreparedDanceReferenceOperation,
+  runDanceReferenceProcessing,
+} from "@pirate/application/dance/reference-processing";
+import { Effect } from "effect";
 import { Client } from "pg";
 import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
+import { makeDanceReferenceProcessingStore } from "./dance-reference-processing-repository.ts";
+import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -12,7 +22,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_DANCE_REFERENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-dance-reference-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-dance-reference-suite-complete\n";
-const testCount = 2;
+const testCount = 6;
 let completedTestCount = 0;
 
 const HASH_A = "11".repeat(32);
@@ -190,6 +200,171 @@ async function insertOutbox(admin: Client): Promise<void> {
   );
 }
 
+function frozenReferenceInput(
+  overrides: Partial<FrozenDanceReferenceInput> = {},
+): FrozenDanceReferenceInput {
+  return {
+    version: "frozen-dance-reference-input-v1",
+    effectIdentity: "dance-reference-choreography-1-r1",
+    choreographyId: "choreography-1",
+    choreographyRevision: 1,
+    revisionTermsHash: HASH_C,
+    canonicalAudio: {
+      objectKey: "private/song-audio",
+      sha256: HASH_A,
+      durationMs: 180000,
+      audioRevision: 4,
+    },
+    referenceVideo: {
+      postId: "video-1",
+      objectKey: "private/reference/video-1",
+      sha256: HASH_B,
+      durationMs: 60000,
+    },
+    requestedStartMs: 10000,
+    requestedEndMs: 16000,
+    segmentTermsHash: HASH_B,
+    mirrorPolicy: "allowed",
+    outputs: {
+      segmentId: "segment-runtime-1",
+      segmentObjectKey: "private/dance/segment-runtime-1",
+      artifactId: "artifact-runtime-1",
+      artifactObjectKey: "private/dance/artifact-runtime-1",
+      evidenceObjectKey: "private/dance/evidence-runtime-1",
+    },
+    extraction: {
+      policyVersion: "extract-v1",
+      outputProfile: { sampleRateHz: 48000, channels: 1, codec: "flac" },
+    },
+    alignment: {
+      policyVersion: "alignment-v1",
+      adapterId: "fake-alignment",
+      adapterRevision: "adapter-v1",
+      limits: {
+        maximumAbsoluteOffsetMs: 15000,
+        maximumAbsoluteDriftMs: 50,
+        maximumAbsoluteSlopeDeltaPpm: 1000,
+        minimumOverallConfidenceBps: 8000,
+        minimumCoverageBps: 9000,
+        minimumSoundtrackMatchBps: 8000,
+      },
+    },
+    pose: {
+      modelVersion: "pose-v1",
+      runtimeVersion: "runtime-v1",
+      featureSchemaVersion: "features-v1",
+      scorerContractVersion: "scorer-v1",
+      fingerprintPolicyVersion: "fingerprint-v1",
+      integrityPolicyVersion: "integrity-v1",
+    },
+    qualityLimits: {
+      minimumUsableCoverageBps: 9000,
+      maximumMissingGapSlots: 3,
+      minimumBodyCoverageBps: 9000,
+      minimumVisibilityCoverageBps: 8500,
+      minimumMotionEnergyBps: 2000,
+      minimumSpatialExtentBps: 2000,
+    },
+    ownerPolicy: { revision: 7, hash: HASH_A },
+    ...overrides,
+  };
+}
+
+function preparedReference(
+  binding: DanceReferenceProcessingBinding,
+): PreparedDanceReferenceOperation {
+  return {
+    version: "prepared-dance-reference-operation-v1",
+    binding,
+    providerOperationId: `provider-${binding.requestId}`,
+  };
+}
+
+function readyReference(binding: DanceReferenceProcessingBinding): DanceReferenceOutcome {
+  return {
+    status: "ready",
+    binding,
+    segment: {
+      segmentId: "segment-runtime-1",
+      objectKey: "private/dance/segment-runtime-1",
+      sha256: HASH_D,
+      sourceSha256: HASH_A,
+      startMs: 10000,
+      endMs: 16000,
+      durationMs: 6000,
+      extractionPolicyVersion: "extract-v1",
+      segmentTermsHash: HASH_B,
+    },
+    alignment: {
+      videoSha256: HASH_B,
+      songAudioSha256: HASH_A,
+      requestedStartMs: 10000,
+      requestedEndMs: 16000,
+      referenceVideoScoredStartMs: 20000,
+      referenceVideoScoredEndMs: 26000,
+      detectedSongOffsetMs: 10000,
+      alignmentPolicyVersion: "alignment-v1",
+      alignmentRevision: "adapter-v1",
+      driftMetrics: {
+        maximumAbsoluteDriftMs: 20,
+        p95AbsoluteDriftMs: 10,
+        slopeDeltaPpm: 100,
+      },
+      confidenceMetrics: { overallBps: 9500, coverageBps: 9400, soundtrackMatchBps: 9300 },
+      continuousMapping: true,
+      timeStretchDetected: false,
+    },
+    artifact: {
+      artifactId: "artifact-runtime-1",
+      privateArtifactRef: "private/dance/artifact-runtime-1",
+      artifactSha256: HASH_C,
+      poseModelVersion: "pose-v1",
+      poseRuntimeVersion: "runtime-v1",
+      featureSchemaVersion: "features-v1",
+      scorerContractVersion: "scorer-v1",
+      integrityPolicyVersion: "integrity-v1",
+      referenceDurationMs: 6000,
+      width: 1920,
+      height: 1080,
+      frameRateNumerator: 30,
+      frameRateDenominator: 1,
+      usableFrameSummary: {
+        totalTimelineSlots: 180,
+        usableTimelineSlots: 171,
+        coverageBps: 9500,
+        maximumMissingGapSlots: 2,
+        bodyCoverageBps: 9400,
+        visibilityCoverageBps: 9200,
+        stablePrincipalTrackCount: 1,
+        subjectContinuityAmbiguous: false,
+        motionEnergyBps: 6000,
+        spatialExtentBps: 5000,
+      },
+    },
+    evidence: {
+      evidenceRef: "private/dance/evidence-runtime-1",
+      evidenceDigest: HASH_D,
+      resultDigest: HASH_C,
+      bodyCoverageAccepted: true,
+      timelineEvidenceAccepted: true,
+      visibilityEvidenceAccepted: true,
+      subjectContinuityAccepted: true,
+      meaningfulMotionAccepted: true,
+    },
+  };
+}
+
+function rejectedReference(binding: DanceReferenceProcessingBinding): DanceReferenceOutcome {
+  return {
+    status: "rejected",
+    binding,
+    reason: "insufficient_reference_evidence",
+    evidenceRef: "private/dance/evidence-rejected",
+    evidenceDigest: HASH_D,
+    resultDigest: HASH_C,
+  };
+}
+
 async function makeReady(admin: Client): Promise<void> {
   await admin.query(
     `INSERT INTO dance_reference_artifacts (
@@ -236,6 +411,274 @@ async function makeReady(admin: Client): Promise<void> {
 }
 
 suite("Dance reference shadow persistence", () => {
+  test("persists exact request and commits fake reference readiness atomically", async () => {
+    await withSchema("runtime_ready", async (admin, schema) => {
+      await insertProcessingGraph(admin, true);
+      const store = makeDanceReferenceProcessingStore(
+        makeDirectPostgresControlPlaneLayer(
+          connectionForSchema(connectionString as string, schema),
+        ),
+      );
+      const result = await runDanceReferenceProcessing(
+        {
+          choreographyId: "choreography-1",
+          choreographyRevision: 1,
+          workerId: "worker-ready",
+          leaseSeconds: 60,
+          adapterId: "fake-reference",
+          adapterRevision: "fake-v1",
+          frozenInput: frozenReferenceInput(),
+        },
+        {
+          store,
+          processor: {
+            prepareReference: (_input, binding) => Effect.succeed(preparedReference(binding)),
+            observeReference: (operation) => Effect.succeed(readyReference(operation.binding)),
+          },
+        },
+      );
+      expect(result).toEqual({ kind: "committed", status: "ready" });
+      const persisted = await admin.query(
+        `SELECT revision.status, choreography.status AS choreography_status,
+                outbox.state AS outbox_state, attempt.state AS attempt_state,
+                request.input_digest, attempt.prepared_operation->>'providerOperationId' AS provider_id,
+                artifact.private_artifact_ref
+           FROM dance_choreography_revisions revision
+           JOIN dance_choreographies choreography USING (choreography_id)
+           JOIN dance_reference_outbox outbox USING (choreography_id, revision)
+           JOIN dance_reference_processing_requests request USING (choreography_id, revision)
+           JOIN dance_reference_processing_attempts attempt USING (choreography_id, revision)
+           JOIN dance_reference_artifacts artifact USING (choreography_id, revision)`,
+      );
+      expect(persisted.rows).toEqual([
+        {
+          status: "ready",
+          choreography_status: "ready",
+          outbox_state: "delivered",
+          attempt_state: "succeeded",
+          input_digest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+          provider_id: expect.stringContaining("dance-reference-choreography-1-r1"),
+          private_artifact_ref: "private/dance/artifact-runtime-1",
+        },
+      ]);
+    });
+    completedTestCount += 1;
+  });
+
+  test("recovery reclaims one fenced attempt and reuses its prepared operation", async () => {
+    await withSchema("runtime_recovery", async (admin, schema) => {
+      await insertProcessingGraph(admin, true);
+      const store = makeDanceReferenceProcessingStore(
+        makeDirectPostgresControlPlaneLayer(
+          connectionForSchema(connectionString as string, schema),
+        ),
+      );
+      let prepareCalls = 0;
+      const first = await runDanceReferenceProcessing(
+        {
+          choreographyId: "choreography-1",
+          choreographyRevision: 1,
+          workerId: "worker-first",
+          leaseSeconds: 1,
+          adapterId: "fake-reference",
+          adapterRevision: "fake-v1",
+          frozenInput: frozenReferenceInput(),
+        },
+        {
+          store,
+          processor: {
+            prepareReference: (_input, binding) => {
+              prepareCalls += 1;
+              return Effect.succeed(preparedReference(binding));
+            },
+            observeReference: (operation) =>
+              Effect.succeed({ status: "pending", binding: operation.binding }),
+          },
+        },
+      );
+      expect(first).toEqual({ kind: "pending" });
+      const concurrent = await runDanceReferenceProcessing(
+        {
+          choreographyId: "choreography-1",
+          choreographyRevision: 1,
+          workerId: "worker-concurrent",
+          leaseSeconds: 60,
+          adapterId: "fake-reference",
+          adapterRevision: "fake-v1",
+        },
+        {
+          store,
+          processor: {
+            prepareReference: () => Effect.die("active lease must not invoke provider"),
+            observeReference: () => Effect.die("active lease must not invoke provider"),
+          },
+        },
+      );
+      expect(concurrent).toEqual({ kind: "busy" });
+      await admin.query("SELECT pg_sleep(1.05)");
+      const recovered = await runDanceReferenceProcessing(
+        {
+          choreographyId: "choreography-1",
+          choreographyRevision: 1,
+          workerId: "worker-recovery",
+          leaseSeconds: 60,
+          adapterId: "fake-reference",
+          adapterRevision: "fake-v1",
+        },
+        {
+          store,
+          processor: {
+            prepareReference: () => {
+              prepareCalls += 1;
+              return Effect.die("prepared operation must be reused");
+            },
+            observeReference: (operation) => Effect.succeed(readyReference(operation.binding)),
+          },
+        },
+      );
+      expect(recovered).toEqual({ kind: "committed", status: "ready" });
+      expect(prepareCalls).toBe(1);
+      const fence = await admin.query(
+        `SELECT lease_fence::text, state FROM dance_reference_processing_attempts`,
+      );
+      expect(fence.rows).toEqual([{ lease_fence: "2", state: "succeeded" }]);
+      await expect(
+        runDanceReferenceProcessing(
+          {
+            choreographyId: "choreography-1",
+            choreographyRevision: 1,
+            workerId: "worker-conflict",
+            leaseSeconds: 60,
+            adapterId: "fake-reference",
+            adapterRevision: "fake-v1",
+            frozenInput: frozenReferenceInput({ requestedEndMs: 17000 }),
+          },
+          {
+            store,
+            processor: {
+              prepareReference: () => Effect.die("must not run"),
+              observeReference: () => Effect.die("must not run"),
+            },
+          },
+        ),
+      ).rejects.toMatchObject({ reason: "identity-conflict" });
+    });
+    completedTestCount += 1;
+  });
+
+  test("retryable processing advances to one exact next attempt", async () => {
+    await withSchema("runtime_retry", async (admin, schema) => {
+      await insertProcessingGraph(admin, true);
+      const store = makeDanceReferenceProcessingStore(
+        makeDirectPostgresControlPlaneLayer(
+          connectionForSchema(connectionString as string, schema),
+        ),
+        { retryBaseMs: 1 },
+      );
+      const first = await runDanceReferenceProcessing(
+        {
+          choreographyId: "choreography-1",
+          choreographyRevision: 1,
+          workerId: "worker-retry-1",
+          leaseSeconds: 60,
+          adapterId: "fake-reference",
+          adapterRevision: "fake-v1",
+          frozenInput: frozenReferenceInput(),
+        },
+        {
+          store,
+          processor: {
+            prepareReference: (_input, binding) => Effect.succeed(preparedReference(binding)),
+            observeReference: (operation) =>
+              Effect.succeed({
+                status: "retryable_failure",
+                binding: operation.binding,
+                reason: "provider_timeout",
+                evidenceRef: "private/dance/evidence-timeout",
+                resultDigest: HASH_D,
+              }),
+          },
+        },
+      );
+      expect(first).toEqual({ kind: "committed", status: "failed" });
+      await admin.query("SELECT pg_sleep(1.05)");
+      const second = await runDanceReferenceProcessing(
+        {
+          choreographyId: "choreography-1",
+          choreographyRevision: 1,
+          workerId: "worker-retry-2",
+          leaseSeconds: 60,
+          adapterId: "fake-reference",
+          adapterRevision: "fake-v1",
+        },
+        {
+          store,
+          processor: {
+            prepareReference: (_input, binding) => Effect.succeed(preparedReference(binding)),
+            observeReference: (operation) => Effect.succeed(readyReference(operation.binding)),
+          },
+        },
+      );
+      expect(second).toEqual({ kind: "committed", status: "ready" });
+      const attempts = await admin.query(
+        `SELECT attempt_number, state FROM dance_reference_processing_attempts
+          ORDER BY attempt_number`,
+      );
+      expect(attempts.rows).toEqual([
+        { attempt_number: 1, state: "failed" },
+        { attempt_number: 2, state: "succeeded" },
+      ]);
+    });
+    completedTestCount += 1;
+  });
+
+  test("nonretryable rejection commits one failed revision without a ready artifact", async () => {
+    await withSchema("runtime_rejected", async (admin, schema) => {
+      await insertProcessingGraph(admin, true);
+      const store = makeDanceReferenceProcessingStore(
+        makeDirectPostgresControlPlaneLayer(
+          connectionForSchema(connectionString as string, schema),
+        ),
+      );
+      const result = await runDanceReferenceProcessing(
+        {
+          choreographyId: "choreography-1",
+          choreographyRevision: 1,
+          workerId: "worker-rejected",
+          leaseSeconds: 60,
+          adapterId: "fake-reference",
+          adapterRevision: "fake-v1",
+          frozenInput: frozenReferenceInput(),
+        },
+        {
+          store,
+          processor: {
+            prepareReference: (_input, binding) => Effect.succeed(preparedReference(binding)),
+            observeReference: (operation) => Effect.succeed(rejectedReference(operation.binding)),
+          },
+        },
+      );
+      expect(result).toEqual({ kind: "committed", status: "failed" });
+      const terminal = await admin.query(
+        `SELECT revision.status, outbox.state AS outbox_state,
+                attempt.state AS attempt_state,
+                (SELECT count(*)::text FROM dance_reference_artifacts) AS artifact_count
+           FROM dance_choreography_revisions revision
+           JOIN dance_reference_outbox outbox USING (choreography_id, revision)
+           JOIN dance_reference_processing_attempts attempt USING (choreography_id, revision)`,
+      );
+      expect(terminal.rows).toEqual([
+        {
+          status: "processing_failed",
+          outbox_state: "delivered",
+          attempt_state: "exhausted",
+          artifact_count: "0",
+        },
+      ]);
+    });
+    completedTestCount += 1;
+  });
+
   test("keeps Dance reserved while fencing segment, revision, cutoff, and presentation state", async () => {
     await withSchema("lifecycle", async (admin) => {
       const registry = await admin.query(

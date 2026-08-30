@@ -36,6 +36,7 @@
     "./money/community-purchase-funding-query": "./src/money/community-purchase-funding-query.ts",
     "./media/submission-service": "./src/media/submission-service.ts",
     "./media/submission-sealing": "./src/media/submission-sealing.ts",
+    "./dance/reference-processing": "./src/dance/reference-processing.ts",
     "./data/registration-persistence": "./src/data/registration-persistence.ts",
     "./data/registration-workflow": "./src/data/registration-workflow.ts",
     "./data/registration-workflow-queue": "./src/data/registration-workflow-queue.ts",

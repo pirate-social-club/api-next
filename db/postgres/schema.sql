@@ -3712,11 +3712,24 @@ BEGIN
       OLD.input_digest, OLD.created_at) THEN
       RAISE EXCEPTION 'Dance processing attempt identity is immutable';
     END IF;
+    IF OLD.prepared_operation IS NOT NULL AND ROW(
+      NEW.prepared_operation, NEW.prepared_operation_bytes, NEW.prepared_operation_sha256
+    ) IS DISTINCT FROM ROW(
+      OLD.prepared_operation, OLD.prepared_operation_bytes, OLD.prepared_operation_sha256
+    ) THEN
+      RAISE EXCEPTION 'Dance prepared operation is immutable';
+    END IF;
     IF NEW IS NOT DISTINCT FROM OLD THEN
       RETURN NEW;
     END IF;
     IF OLD.state = 'leased' AND NEW.state = 'leased' THEN
-      IF OLD.lease_expires_at > clock_timestamp()
+      IF OLD.prepared_operation IS NULL AND NEW.prepared_operation IS NOT NULL THEN
+        IF NEW.lease_owner <> OLD.lease_owner OR NEW.lease_fence <> OLD.lease_fence
+           OR NEW.lease_expires_at <> OLD.lease_expires_at
+           OR OLD.lease_expires_at <= clock_timestamp() OR NEW.updated_at <= OLD.updated_at THEN
+          RAISE EXCEPTION 'Dance prepared operation fence is stale';
+        END IF;
+      ELSIF OLD.lease_expires_at > clock_timestamp()
          OR NEW.lease_expires_at <= clock_timestamp()
          OR NEW.lease_fence <> OLD.lease_fence + 1
          OR NEW.updated_at <= OLD.updated_at THEN
@@ -3816,6 +3829,67 @@ BEGIN
     ELSE
       RAISE EXCEPTION 'Invalid Dance reference outbox transition';
     END IF;
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_dance_reference_processing_request() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  target dance_choreography_revisions%ROWTYPE;
+  outbox dance_reference_outbox%ROWTYPE;
+  publication media_publication_projections%ROWTYPE;
+  request_keys TEXT[];
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    RAISE EXCEPTION 'Dance reference processing requests are immutable';
+  END IF;
+  SELECT * INTO target FROM dance_choreography_revisions
+   WHERE choreography_id = NEW.choreography_id AND revision = NEW.revision FOR SHARE;
+  SELECT * INTO outbox FROM dance_reference_outbox
+   WHERE effect_identity = NEW.effect_identity FOR SHARE;
+  SELECT * INTO publication FROM media_publication_projections
+   WHERE community_id = target.community_id AND post_id = target.song_post_id
+     AND audio_revision = target.audio_revision FOR SHARE;
+  SELECT array_agg(key ORDER BY key) INTO request_keys
+    FROM jsonb_object_keys(NEW.request_material) AS key;
+  IF target.choreography_id IS NULL OR target.status <> 'processing'
+     OR outbox.choreography_id <> NEW.choreography_id OR outbox.revision <> NEW.revision
+     OR request_keys IS DISTINCT FROM ARRAY[
+       'alignment', 'canonicalAudio', 'choreographyId', 'choreographyRevision',
+       'effectIdentity', 'extraction', 'mirrorPolicy', 'outputs', 'ownerPolicy', 'pose',
+       'qualityLimits', 'referenceVideo', 'requestedEndMs', 'requestedStartMs', 'revisionTermsHash',
+       'segmentTermsHash', 'version'
+     ]::TEXT[]
+     OR NEW.request_material->>'version' <> 'frozen-dance-reference-input-v1'
+     OR NEW.request_material->>'effectIdentity' <> NEW.effect_identity
+     OR NEW.request_material->>'choreographyId' <> NEW.choreography_id
+     OR NEW.request_material->>'choreographyRevision' <> NEW.revision::TEXT
+     OR NEW.request_material->>'revisionTermsHash' <> target.revision_terms_hash
+     OR NEW.request_material->'canonicalAudio'->>'audioRevision' <> target.audio_revision::TEXT
+     OR NEW.request_material->'canonicalAudio'->>'objectKey' <> publication.audio_asset_ref
+     OR NEW.request_material->'canonicalAudio'->>'sha256' <> publication.canonical_audio_sha256
+     OR NEW.request_material->'referenceVideo'->>'postId' <> target.reference_video_post_id
+     OR NEW.request_material->'referenceVideo'->>'objectKey' <> target.reference_video_object_ref
+     OR NEW.request_material->'referenceVideo'->>'sha256' <> target.reference_video_sha256
+     OR NEW.request_material->>'requestedStartMs' <> target.requested_start_ms::TEXT
+     OR NEW.request_material->>'requestedEndMs' <> target.requested_end_ms::TEXT
+     OR NEW.request_material->>'mirrorPolicy' <> target.mirror_policy
+     OR NEW.request_material->'alignment'->>'policyVersion' <> target.alignment_policy_version
+     OR NEW.request_material->'alignment'->>'adapterId' <> target.alignment_adapter
+     OR NEW.request_material->'alignment'->>'adapterRevision' <> target.alignment_revision
+     OR NEW.request_material->'pose'->>'modelVersion' <> target.pose_model_version
+     OR NEW.request_material->'pose'->>'runtimeVersion' <> target.pose_runtime_version
+     OR NEW.request_material->'pose'->>'featureSchemaVersion' <> target.feature_schema_version
+     OR NEW.request_material->'pose'->>'scorerContractVersion' <> target.scorer_contract_version
+     OR NEW.request_material->'pose'->>'fingerprintPolicyVersion' <>
+        target.fingerprint_policy_version
+     OR NEW.request_material->'pose'->>'integrityPolicyVersion' <> target.integrity_policy_version
+     OR NEW.request_material->'ownerPolicy'->>'revision' <> target.owner_policy_revision::TEXT
+     OR NEW.request_material->'ownerPolicy'->>'hash' <> target.owner_policy_hash THEN
+    RAISE EXCEPTION 'Dance reference processing request is not exact revision authority';
   END IF;
   RETURN NEW;
 END
@@ -16416,6 +16490,9 @@ CREATE TABLE dance_reference_processing_attempts (
     lease_owner text,
     lease_fence bigint DEFAULT 1 NOT NULL,
     lease_expires_at timestamp with time zone,
+    prepared_operation jsonb,
+    prepared_operation_bytes bytea,
+    prepared_operation_sha256 text,
     result_digest text,
     private_evidence_ref text,
     failure_code text,
@@ -16423,7 +16500,8 @@ CREATE TABLE dance_reference_processing_attempts (
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     completed_at timestamp with time zone,
-    CONSTRAINT dance_reference_processing_attempt_state_shape CHECK ((((state = 'leased'::text) AND (lease_owner IS NOT NULL) AND (lease_expires_at > updated_at) AND (result_digest IS NULL) AND (private_evidence_ref IS NULL) AND (failure_code IS NULL) AND (retryable IS NULL) AND (completed_at IS NULL)) OR ((state = 'succeeded'::text) AND (lease_owner IS NULL) AND (lease_expires_at IS NULL) AND (result_digest IS NOT NULL) AND (private_evidence_ref IS NOT NULL) AND (failure_code IS NULL) AND (retryable IS FALSE) AND (completed_at IS NOT NULL)) OR ((state = 'failed'::text) AND (lease_owner IS NULL) AND (lease_expires_at IS NULL) AND (result_digest IS NOT NULL) AND (private_evidence_ref IS NOT NULL) AND (failure_code IS NOT NULL) AND (retryable IS TRUE) AND (completed_at IS NOT NULL)) OR ((state = 'exhausted'::text) AND (lease_owner IS NULL) AND (lease_expires_at IS NULL) AND (result_digest IS NOT NULL) AND (private_evidence_ref IS NOT NULL) AND (failure_code IS NOT NULL) AND (retryable IS FALSE) AND (completed_at IS NOT NULL)))),
+    CONSTRAINT dance_reference_processing_atte_prepared_operation_sha256_check CHECK (((prepared_operation_sha256 IS NULL) OR (prepared_operation_sha256 ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT dance_reference_processing_attempt_state_shape CHECK ((((state = 'leased'::text) AND (lease_owner IS NOT NULL) AND (lease_expires_at > updated_at) AND (result_digest IS NULL) AND (private_evidence_ref IS NULL) AND (failure_code IS NULL) AND (retryable IS NULL) AND (completed_at IS NULL) AND (((prepared_operation IS NULL) AND (prepared_operation_bytes IS NULL) AND (prepared_operation_sha256 IS NULL)) OR ((jsonb_typeof(prepared_operation) = 'object'::text) AND (prepared_operation_bytes IS NOT NULL) AND ((convert_from(prepared_operation_bytes, 'UTF8'::name))::jsonb = prepared_operation) AND (encode(sha256(prepared_operation_bytes), 'hex'::text) = prepared_operation_sha256)))) OR ((state = 'succeeded'::text) AND (lease_owner IS NULL) AND (lease_expires_at IS NULL) AND (result_digest IS NOT NULL) AND (private_evidence_ref IS NOT NULL) AND (failure_code IS NULL) AND (retryable IS FALSE) AND (completed_at IS NOT NULL)) OR ((state = 'failed'::text) AND (lease_owner IS NULL) AND (lease_expires_at IS NULL) AND (result_digest IS NOT NULL) AND (private_evidence_ref IS NOT NULL) AND (failure_code IS NOT NULL) AND (retryable IS TRUE) AND (completed_at IS NOT NULL)) OR ((state = 'exhausted'::text) AND (lease_owner IS NULL) AND (lease_expires_at IS NULL) AND (result_digest IS NOT NULL) AND (private_evidence_ref IS NOT NULL) AND (failure_code IS NOT NULL) AND (retryable IS FALSE) AND (completed_at IS NOT NULL)))),
     CONSTRAINT dance_reference_processing_attempt_time_order CHECK (((updated_at >= created_at) AND ((completed_at IS NULL) OR (completed_at >= created_at)))),
     CONSTRAINT dance_reference_processing_attempts_adapter_id_check CHECK (is_dance_identifier(adapter_id)),
     CONSTRAINT dance_reference_processing_attempts_adapter_revision_check CHECK (is_dance_identifier(adapter_revision)),
@@ -16436,6 +16514,21 @@ CREATE TABLE dance_reference_processing_attempts (
     CONSTRAINT dance_reference_processing_attempts_processing_attempt_id_check CHECK (is_dance_identifier(processing_attempt_id)),
     CONSTRAINT dance_reference_processing_attempts_result_digest_check CHECK (((result_digest IS NULL) OR (result_digest ~ '^[0-9a-f]{64}$'::text))),
     CONSTRAINT dance_reference_processing_attempts_state_check CHECK ((state = ANY (ARRAY['leased'::text, 'succeeded'::text, 'failed'::text, 'exhausted'::text])))
+);
+
+CREATE TABLE dance_reference_processing_requests (
+    choreography_id text NOT NULL,
+    revision bigint NOT NULL,
+    effect_identity text NOT NULL,
+    request_material jsonb NOT NULL,
+    canonical_request bytea NOT NULL,
+    input_digest text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT dance_reference_processing_request_digest CHECK ((((convert_from(canonical_request, 'UTF8'::name))::jsonb = request_material) AND (encode(sha256(canonical_request), 'hex'::text) = input_digest))),
+    CONSTRAINT dance_reference_processing_requests_effect_identity_check CHECK (is_dance_identifier(effect_identity, 512)),
+    CONSTRAINT dance_reference_processing_requests_input_digest_check CHECK ((input_digest ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT dance_reference_processing_requests_request_material_check CHECK ((jsonb_typeof(request_material) = 'object'::text)),
+    CONSTRAINT dance_reference_processing_requests_revision_check CHECK (((revision >= 1) AND (revision <= '9007199254740991'::bigint)))
 );
 
 CREATE TABLE dance_song_segments (
@@ -21748,6 +21841,15 @@ ALTER TABLE ONLY dance_reference_processing_attempts
 ALTER TABLE ONLY dance_reference_processing_attempts
     ADD CONSTRAINT dance_reference_processing_attempts_pkey PRIMARY KEY (processing_attempt_id);
 
+ALTER TABLE ONLY dance_reference_processing_requests
+    ADD CONSTRAINT dance_reference_processing_requests_effect_identity_key UNIQUE (effect_identity);
+
+ALTER TABLE ONLY dance_reference_processing_requests
+    ADD CONSTRAINT dance_reference_processing_requests_input_digest_key UNIQUE (input_digest);
+
+ALTER TABLE ONLY dance_reference_processing_requests
+    ADD CONSTRAINT dance_reference_processing_requests_pkey PRIMARY KEY (choreography_id, revision);
+
 ALTER TABLE ONLY dance_song_segments
     ADD CONSTRAINT dance_song_segments_community_id_song_post_id_audio_revisio_key UNIQUE (community_id, song_post_id, audio_revision, start_ms, end_ms, canonical_segment_sha256, extraction_policy_version);
 
@@ -23611,6 +23713,8 @@ CREATE TRIGGER dance_reference_outbox_change_guard BEFORE INSERT OR DELETE OR UP
 
 CREATE TRIGGER dance_reference_processing_attempts_change_guard BEFORE INSERT OR DELETE OR UPDATE ON dance_reference_processing_attempts FOR EACH ROW EXECUTE FUNCTION guard_dance_processing_attempt();
 
+CREATE TRIGGER dance_reference_processing_requests_change_guard BEFORE INSERT OR DELETE OR UPDATE ON dance_reference_processing_requests FOR EACH ROW EXECUTE FUNCTION guard_dance_reference_processing_request();
+
 CREATE TRIGGER dance_song_segments_change_guard BEFORE INSERT OR DELETE OR UPDATE ON dance_song_segments FOR EACH ROW EXECUTE FUNCTION guard_dance_song_segment();
 
 CREATE TRIGGER data_registration_artifacts_append_only BEFORE DELETE OR UPDATE ON data_registration_artifacts FOR EACH ROW EXECUTE FUNCTION guard_data_registration_append_only();
@@ -24902,6 +25006,12 @@ ALTER TABLE ONLY dance_reference_outbox
 
 ALTER TABLE ONLY dance_reference_processing_attempts
     ADD CONSTRAINT dance_reference_processing_attemp_choreography_id_revision_fkey FOREIGN KEY (choreography_id, revision) REFERENCES dance_choreography_revisions(choreography_id, revision);
+
+ALTER TABLE ONLY dance_reference_processing_requests
+    ADD CONSTRAINT dance_reference_processing_reques_choreography_id_revision_fkey FOREIGN KEY (choreography_id, revision) REFERENCES dance_choreography_revisions(choreography_id, revision);
+
+ALTER TABLE ONLY dance_reference_processing_requests
+    ADD CONSTRAINT dance_reference_processing_requests_effect_identity_fkey FOREIGN KEY (effect_identity) REFERENCES dance_reference_outbox(effect_identity);
 
 ALTER TABLE ONLY dance_song_segments
     ADD CONSTRAINT dance_song_segments_community_id_song_post_id_fkey FOREIGN KEY (community_id, song_post_id) REFERENCES posts(community_id, post_id);
