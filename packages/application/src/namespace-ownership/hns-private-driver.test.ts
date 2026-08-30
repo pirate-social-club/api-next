@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { buildHnsAuthoritativeDnsQueryV1 } from "./hns-authoritative-dns.ts";
 import {
+  decodeHnsPrivateDriverAuthoritativeAxfrResponseV1,
   decodeHnsPrivateDriverErrorV1,
   decodeHnsPrivateDriverRequestV1,
   decodeHnsPrivateDriverUpstreamContentType,
+  encodeHnsPrivateDriverAuthoritativeAxfrResponseV1,
   encodeHnsPrivateDriverErrorV1,
   encodeHnsPrivateDriverRequestV1,
   encodeHnsPrivateDriverUpstreamContentType,
@@ -54,8 +56,25 @@ function dnsRequest(): Uint8Array {
   });
 }
 
+function axfrRequest(): Uint8Array {
+  return encodeHnsPrivateDriverRequestV1({
+    exchange_kind: "authoritative_dns_tsig_axfr",
+    driver_reference: "authoritative-axfr:production",
+    view_id: "dns-view-a",
+    credential_reference: "tsig:jazleeuw-primary",
+    root_label: "jazleeuw",
+    authority_nameserver: "ns1.pirate",
+    authority_address_family: "GLUE4",
+    authority_address: "94.103.168.161",
+    response_message_max_bytes: 65_535,
+    response_total_max_bytes: 2_097_152,
+    response_max_messages: 64,
+    timeout_ms: 12_000,
+  });
+}
+
 describe("HNS private observer-driver wire", () => {
-  test("matches the ratified literal HSD and DNS request vectors", async () => {
+  test("matches the ratified literal HSD, DNS, and AXFR request vectors", async () => {
     const hsd = hsdRequest();
     expect(hsd.byteLength).toBe(260);
     expect(decoder.decode(hsd)).toBe(
@@ -77,6 +96,11 @@ describe("HNS private observer-driver wire", () => {
       "eb49edc484a056b319609b39d88b2331fa06c64e727f288974533a5f6eb79343",
     );
 
+    const axfr = axfrRequest();
+    expect(decoder.decode(axfr)).toBe(
+      '{"version":"pirate-hns-private-driver-request-v1","exchange_kind":"authoritative_dns_tsig_axfr","driver_reference":"authoritative-axfr:production","view_id":"dns-view-a","credential_reference":"tsig:jazleeuw-primary","root_label":"jazleeuw","authority_nameserver":"ns1.pirate","authority_address_family":"GLUE4","authority_address":"94.103.168.161","response_message_max_bytes":65535,"response_total_max_bytes":2097152,"response_max_messages":64,"timeout_ms":12000}',
+    );
+
     expect(decodeHnsPrivateDriverRequestV1(hsd)).toEqual({
       request: {
         version: HNS_PRIVATE_DRIVER_REQUEST_VERSION,
@@ -91,6 +115,9 @@ describe("HNS private observer-driver wire", () => {
     expect(decodeHnsPrivateDriverRequestV1(dns).request.exchange_kind).toBe(
       "authoritative_dns_tcp",
     );
+    expect(decodeHnsPrivateDriverRequestV1(axfr)).toEqual({
+      request: JSON.parse(decoder.decode(axfr)),
+    });
   });
 
   test("rejects member, byte, identity, bound, and timeout substitutions", () => {
@@ -120,6 +147,23 @@ describe("HNS private observer-driver wire", () => {
       JSON.stringify({ exchange_kind: valid.exchange_kind, version: valid.version, ...valid }),
     );
     expect(() => decodeHnsPrivateDriverRequestV1(reordered)).toThrow();
+
+    const validAxfr = JSON.parse(decoder.decode(axfrRequest())) as Record<string, unknown>;
+    for (const mutation of [
+      { ...validAxfr, credential_reference: "TSIG:primary" },
+      { ...validAxfr, root_label: "Other" },
+      { ...validAxfr, authority_nameserver: "ns1.pirate." },
+      { ...validAxfr, authority_address_family: "GLUE5" },
+      { ...validAxfr, response_message_max_bytes: 65_536 },
+      { ...validAxfr, response_total_max_bytes: 65_535 },
+      { ...validAxfr, response_total_max_bytes: 2_097_153 },
+      { ...validAxfr, response_max_messages: 513 },
+      { ...validAxfr, unknown: true },
+    ]) {
+      expect(() =>
+        decodeHnsPrivateDriverRequestV1(encoder.encode(JSON.stringify(mutation))),
+      ).toThrow();
+    }
   });
 
   test("pins exact error status pairs and upstream content-type encoding", () => {
@@ -148,5 +192,30 @@ describe("HNS private observer-driver wire", () => {
       decodeHnsPrivateDriverUpstreamContentType(encodeHnsPrivateDriverUpstreamContentType(value)),
     ).toBe(value);
     expect(() => decodeHnsPrivateDriverUpstreamContentType("YQ")).toThrow();
+  });
+
+  test("round-trips exact bounded AXFR request and response transcript bytes", () => {
+    const requestBytes = new Uint8Array([1, 2, 3]);
+    const responseSequenceBytes = new Uint8Array([0, 2, 4, 5]);
+    const encoded = encodeHnsPrivateDriverAuthoritativeAxfrResponseV1({
+      request_bytes: requestBytes,
+      response_sequence_bytes: responseSequenceBytes,
+    });
+    expect(decodeHnsPrivateDriverAuthoritativeAxfrResponseV1(encoded)).toEqual({
+      request_bytes: requestBytes,
+      response_sequence_bytes: responseSequenceBytes,
+    });
+    const trailing = new Uint8Array(encoded.byteLength + 1);
+    trailing.set(encoded);
+    expect(() => decodeHnsPrivateDriverAuthoritativeAxfrResponseV1(trailing)).toThrow();
+    const changedMagic = Uint8Array.from(encoded);
+    changedMagic[0] = (changedMagic[0] ?? 0) ^ 1;
+    expect(() => decodeHnsPrivateDriverAuthoritativeAxfrResponseV1(changedMagic)).toThrow();
+    expect(() =>
+      encodeHnsPrivateDriverAuthoritativeAxfrResponseV1({
+        request_bytes: new Uint8Array(),
+        response_sequence_bytes: responseSequenceBytes,
+      }),
+    ).toThrow();
   });
 });

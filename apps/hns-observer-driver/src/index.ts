@@ -54,6 +54,7 @@ export {
   makeHnsObserverDriverHsdHttpCapability,
 } from "./hsd-http.ts";
 export {
+  type HnsObserverDriverAxfrTarget,
   type HnsObserverDriverDnsView,
   type HnsObserverDriverService,
   makeHnsObserverDriverService,

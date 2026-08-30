@@ -31,8 +31,17 @@ The remaining source adapter must put each authority's framed response
 sequence into the detached transcript. The harness independently reconstructs
 both canonical zones, requires byte equality, derives the view digest, and
 builds the DNS persistence artifact from those bytes. The live-authority port
-has no zone-bytes or zone-digest input. These primitives are not yet exposed
-through the private-driver protocol, and no concrete operator command exists.
+has no zone-bytes or zone-digest input.
+
+The private driver exposes the authenticated transfer through a separate
+bounded protocol path. A request can select only a preconfigured root, view,
+nameserver, address, and non-secret credential reference. The connector and a
+cloned TSIG secret remain inside the driver; neither the request nor response
+carries the secret. A successful response contains the exact signed request
+and the exact framed, already authenticated response sequence. The Worker-side
+transport rechecks the closed response envelope and all bounds. This seam is
+not yet composed into the complete live-authority source, so no concrete
+operator command exists.
 
 The HSD transcript is a closed stable bracket, not only two resource reads. It
 contains tip information and the matching tip header before observation, the

@@ -1,7 +1,10 @@
 import {
+  decodeHnsPrivateDriverAuthoritativeAxfrResponseV1,
   decodeHnsPrivateDriverErrorV1,
   decodeHnsPrivateDriverUpstreamContentType,
   encodeHnsPrivateDriverRequestV1,
+  HNS_PRIVATE_DRIVER_AXFR_PATH,
+  HNS_PRIVATE_DRIVER_AXFR_RESPONSE_MAX_BYTES,
   HNS_PRIVATE_DRIVER_DNS_PATH,
   HNS_PRIVATE_DRIVER_ERROR_MAX_BYTES,
   HNS_PRIVATE_DRIVER_HSD_PATH,
@@ -14,6 +17,8 @@ import {
   HnsAuthoritativeDnsTransportErrorV1,
   type HnsAuthoritativeDnsTransportPortV1,
   HnsControlObserverHsdTransportError,
+  HnsPrivateDriverAuthoritativeAxfrTransportErrorV1,
+  type HnsPrivateDriverAuthoritativeAxfrTransportPortV1,
 } from "@pirate/application/namespace-ownership";
 import type { HnsControlObserverHsdPrivateCapability } from "./hns-control-observer-hsd-private-transport.ts";
 
@@ -329,6 +334,97 @@ export function makeHnsAuthoritativeDnsPrivateDriverTransport(input: {
         return bytes;
       } catch {
         throw new HnsAuthoritativeDnsTransportErrorV1(
+          request.signal.aborted ? "aborted" : "transport_error",
+        );
+      }
+    },
+  };
+}
+
+export function makeHnsAuthoritativeAxfrPrivateDriverTransport(input: {
+  readonly binding: HnsPrivateDriverBinding;
+  readonly driver_reference: string;
+  readonly timeout_ms: number;
+}): HnsPrivateDriverAuthoritativeAxfrTransportPortV1 {
+  const timeoutValid = validTimeout(input.timeout_ms);
+  return {
+    exchange: async (request) => {
+      if (
+        request.signal.aborted ||
+        !timeoutValid ||
+        request.driver_reference !== input.driver_reference
+      ) {
+        throw new HnsPrivateDriverAuthoritativeAxfrTransportErrorV1(
+          request.signal.aborted ? "aborted" : "transport_error",
+        );
+      }
+      let response: Response;
+      try {
+        const body = encodeHnsPrivateDriverRequestV1({
+          exchange_kind: "authoritative_dns_tsig_axfr",
+          driver_reference: input.driver_reference,
+          view_id: request.view_id,
+          credential_reference: request.credential_reference,
+          root_label: request.root_label,
+          authority_nameserver: request.authority_nameserver,
+          authority_address_family: request.authority_address_family,
+          authority_address: request.authority_address,
+          response_message_max_bytes: request.response_message_max_bytes,
+          response_total_max_bytes: request.response_total_max_bytes,
+          response_max_messages: request.response_max_messages,
+          timeout_ms: input.timeout_ms,
+        });
+        response = await fetchBound(
+          input.binding,
+          privateRequest(
+            HNS_PRIVATE_DRIVER_AXFR_PATH,
+            "application/octet-stream",
+            body,
+            request.signal,
+          ),
+          request.signal,
+        );
+      } catch {
+        throw new HnsPrivateDriverAuthoritativeAxfrTransportErrorV1(
+          request.signal.aborted ? "aborted" : "transport_error",
+        );
+      }
+      if (request.signal.aborted) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new HnsPrivateDriverAuthoritativeAxfrTransportErrorV1("aborted");
+      }
+      if (response.status !== 200) {
+        throw new HnsPrivateDriverAuthoritativeAxfrTransportErrorV1(
+          await driverErrorOutcome(response, request.signal),
+        );
+      }
+      if (
+        response.headers.get("content-type") !== "application/octet-stream" ||
+        response.headers.get(HNS_PRIVATE_DRIVER_PROTOCOL_HEADER) !== HNS_PRIVATE_DRIVER_PROTOCOL ||
+        !exactOwnedHeaders(response.headers, successProtocolHeaders) ||
+        response.headers.has(HNS_PRIVATE_DRIVER_UPSTREAM_STATUS_HEADER) ||
+        response.headers.has(HNS_PRIVATE_DRIVER_UPSTREAM_CONTENT_TYPE_HEADER)
+      ) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new HnsPrivateDriverAuthoritativeAxfrTransportErrorV1("transport_error");
+      }
+      try {
+        const bytes = await readBounded(
+          response,
+          HNS_PRIVATE_DRIVER_AXFR_RESPONSE_MAX_BYTES,
+          request.signal,
+        );
+        if (bytes.byteLength > HNS_PRIVATE_DRIVER_AXFR_RESPONSE_MAX_BYTES) {
+          throw new Error("AXFR response exceeds its bound");
+        }
+        const decoded = decodeHnsPrivateDriverAuthoritativeAxfrResponseV1(bytes);
+        if (request.signal.aborted) throw new DOMException("Aborted", "AbortError");
+        return {
+          request_bytes: Uint8Array.from(decoded.request_bytes),
+          response_sequence_bytes: Uint8Array.from(decoded.response_sequence_bytes),
+        };
+      } catch {
+        throw new HnsPrivateDriverAuthoritativeAxfrTransportErrorV1(
           request.signal.aborted ? "aborted" : "transport_error",
         );
       }
