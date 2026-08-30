@@ -1,4 +1,8 @@
-import { ControlPlaneDb } from "@pirate/application";
+import {
+  ControlPlaneDb,
+  type ControlPlaneResult,
+  type ControlPlaneStatement,
+} from "@pirate/application";
 import { Effect, Layer } from "effect";
 import { expect, test } from "vitest";
 import { makeControlPlaneOperatorControlPromotionStore } from "./operator-control-promotion-repository.ts";
@@ -8,7 +12,7 @@ test("operator promotion repository sends exact candidate bytes", async () => {
   const bytes = new TextEncoder().encode("candidate");
   const store = makeControlPlaneOperatorControlPromotionStore(
     Layer.succeed(ControlPlaneDb, {
-      execute: (statement) => {
+      execute: <Row = unknown>(statement: ControlPlaneStatement) => {
         calls.push(statement);
         return Effect.succeed({
           rows: [
@@ -20,9 +24,9 @@ test("operator promotion repository sends exact candidate bytes", async () => {
               binding_generation: "2",
               app_host_activation_generation: "12",
             },
-          ],
+          ] as readonly Row[],
           rowCount: 1,
-        });
+        } satisfies ControlPlaneResult<Row>);
       },
     }),
   );
