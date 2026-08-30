@@ -48,8 +48,13 @@ CREATE TABLE hns_operator_control_promotion_receipts (
     AND promoted_app_host_activation_generation = prior_app_host_activation_generation + 1
     AND promoted_binding_generation BETWEEN 2 AND 9007199254740991
   ),
+  -- Preserve the explicit size-range grouping so pg_get_constraintdef output
+  -- remains stable when the generated baseline is loaded into PostgreSQL 17.
   CONSTRAINT hns_operator_control_promotion_receipt_bytes_check CHECK (
-    octet_length(candidate_bytes) BETWEEN 1 AND 1048576
+    (
+      octet_length(candidate_bytes) >= 1
+      AND octet_length(candidate_bytes) <= 1048576
+    )
     AND encode(sha256(candidate_bytes), 'hex') = candidate_sha256
   ),
   CONSTRAINT hns_operator_control_promotion_receipt_time_check CHECK (
