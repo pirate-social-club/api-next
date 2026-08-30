@@ -27,6 +27,27 @@ export type HnsAuthoritySuccessorGenerationSnapshotV1 = Readonly<{
   successor_dns_latest_health_generation: number;
 }>;
 
+export type HnsAuthoritySuccessorGenerationReaderV1 = Readonly<{
+  read: (
+    identity: Readonly<{ canonical_root: string; normalized_app_host: string }>,
+    options: Readonly<{ signal: AbortSignal }>,
+  ) =>
+    | Promise<
+        Readonly<{
+          database_time: string;
+          snapshot: HnsAuthoritySuccessorGenerationSnapshotV1;
+        }>
+      >
+    | Readonly<{
+        database_time: string;
+        snapshot: HnsAuthoritySuccessorGenerationSnapshotV1;
+      }>;
+}>;
+
+export type HnsAuthoritySuccessorInventoryReaderV1 = Readonly<{
+  read: (options: Readonly<{ signal: AbortSignal }>) => Promise<Uint8Array>;
+}>;
+
 export type HnsAuthoritySuccessorGenerationsV1 = Readonly<{
   dns_activation_generation: number;
   app_host_activation_generation: number;

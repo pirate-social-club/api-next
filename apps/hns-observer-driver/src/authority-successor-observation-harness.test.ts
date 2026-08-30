@@ -401,8 +401,15 @@ test("derives the complete 6/10/1 package from live authority and row-identity p
     derived_ds: chainDs,
   });
   const generationReads: Array<readonly [string, string]> = [];
+  let inventoryReads = 0;
   const harnessSource = makeHnsAuthoritySuccessorObservationSourceV1({
     health_valid_for_seconds: 3_600,
+    inventory_reader: {
+      read: async () => {
+        inventoryReads += 1;
+        return inventoryBytes;
+      },
+    },
     live_authority: {
       observe: () => ({
         source_commit: "1".repeat(40),
@@ -432,7 +439,6 @@ test("derives the complete 6/10/1 package from live authority and row-identity p
         authority_address_provenance: authorityAddressProvenance,
         authority_views: [view("94.103.168.161"), view("81.15.150.159")],
         detached_transcript: detachedTranscript,
-        authority_inventory_bytes: inventoryBytes,
         zone_bytes: observedZoneBytes,
         dns_authority_reference: "dns-authority:jazleeuw",
         dnssec_keyset_reference: "dnssec-keyset:jazleeuw",
@@ -465,6 +471,7 @@ test("derives the complete 6/10/1 package from live authority and row-identity p
   });
 
   expect(generationReads).toEqual([["jazleeuw", "app.jazleeuw"]]);
+  expect(inventoryReads).toBe(1);
   expect(result.candidate.candidate.generations).toEqual({
     dns_activation_generation: 6,
     app_host_activation_generation: 10,

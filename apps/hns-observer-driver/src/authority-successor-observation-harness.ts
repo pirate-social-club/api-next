@@ -1,4 +1,5 @@
 import {
+  type HnsAuthoritySuccessorGenerationReaderV1 as ApplicationHnsAuthoritySuccessorGenerationReaderV1,
   decodeHnsAuthorityDetachedObserverEvidenceV1,
   encodeHnsAppHostTransitionDocumentV1,
   encodeHnsAuthorityDetachedObserverEvidenceV1,
@@ -10,6 +11,7 @@ import {
   type HnsAuthorityEmitChainRecordV1,
   type HnsAuthorityEmitViewV1,
   type HnsAuthoritySuccessorGenerationSnapshotV1,
+  type HnsAuthoritySuccessorInventoryReaderV1,
   prepareHnsAuthoritySuccessorCandidateV1,
   prepareHnsDnsZoneActivationDocumentV1,
 } from "@pirate/application/hns-host-persistence";
@@ -121,7 +123,6 @@ export type HnsAuthoritySuccessorLiveAuthorityObservationV1 = Readonly<{
   authority_address_provenance: HnsAuthorityAddressProvenanceV1;
   authority_views: readonly [HnsAuthorityEmitViewV1, HnsAuthorityEmitViewV1];
   detached_transcript: ReadonlyArray<HnsAuthoritySuccessorDetachedTranscriptEntryV1>;
-  authority_inventory_bytes: Uint8Array;
   zone_bytes: Uint8Array;
   dns_authority_reference: string;
   dnssec_keyset_reference: string;
@@ -138,22 +139,8 @@ export type HnsAuthoritySuccessorLiveAuthorityPortV1 = Readonly<{
     | HnsAuthoritySuccessorLiveAuthorityObservationV1;
 }>;
 
-export type HnsAuthoritySuccessorGenerationReaderV1 = Readonly<{
-  read: (
-    identity: Readonly<{ canonical_root: string; normalized_app_host: string }>,
-    options: Readonly<{ signal: AbortSignal }>,
-  ) =>
-    | Promise<
-        Readonly<{
-          database_time: string;
-          snapshot: HnsAuthoritySuccessorGenerationSnapshotV1;
-        }>
-      >
-    | Readonly<{
-        database_time: string;
-        snapshot: HnsAuthoritySuccessorGenerationSnapshotV1;
-      }>;
-}>;
+export type HnsAuthoritySuccessorGenerationReaderV1 =
+  ApplicationHnsAuthoritySuccessorGenerationReaderV1;
 
 function exactObject(
   value: unknown,
@@ -474,12 +461,13 @@ async function operationAuthority(
 /**
  * Composes the only production-shaped source accepted by the harness. Root,
  * row identities, generations, chain height, addresses, and observer
- * provenance are all derived from the two read-only ports rather than caller
+ * provenance are all derived from the three read-only ports rather than caller
  * arguments.
  */
 export function makeHnsAuthoritySuccessorObservationSourceV1(input: {
   readonly live_authority: HnsAuthoritySuccessorLiveAuthorityPortV1;
   readonly generation_reader: HnsAuthoritySuccessorGenerationReaderV1;
+  readonly inventory_reader: HnsAuthoritySuccessorInventoryReaderV1;
   readonly health_valid_for_seconds: number;
 }): HnsAuthoritySuccessorObservationSourceV1 {
   if (
@@ -504,6 +492,7 @@ export function makeHnsAuthoritySuccessorObservationSourceV1(input: {
       if (rootLabel !== HNS_JAZLEEUW_AUTHORITY_ROOT_LABEL) {
         throw new HnsAuthoritySuccessorObservationHarnessError("invalid_source_observation");
       }
+      const inventoryBytes = await input.inventory_reader.read({ signal });
       const generation = await input.generation_reader.read(
         { canonical_root: rootLabel, normalized_app_host: `app.${rootLabel}` },
         { signal },
@@ -511,7 +500,7 @@ export function makeHnsAuthoritySuccessorObservationSourceV1(input: {
       if (signal.aborted || !canonicalInstant(generation.database_time)) {
         throw new HnsAuthoritySuccessorObservationHarnessError("source_unavailable");
       }
-      const inventory = await decodeHnsAuthorityInventoryBytes(live.authority_inventory_bytes);
+      const inventory = await decodeHnsAuthorityInventoryBytes(inventoryBytes);
       const activeGlue = inventory.inventory.authoritative_nameserver_glue.filter(
         (entry) => entry.active,
       );
@@ -618,7 +607,7 @@ export function makeHnsAuthoritySuccessorObservationSourceV1(input: {
         expected_authority_addresses: [firstAddress, secondAddress],
         authority_views: live.authority_views,
         artifacts: {
-          authority_inventory: Uint8Array.from(live.authority_inventory_bytes),
+          authority_inventory: Uint8Array.from(inventoryBytes),
           dns_zone_activation: dnsDocumentBytes,
           app_host_activation: appHost,
           health_observation: health,

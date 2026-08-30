@@ -10,9 +10,11 @@ that document is emitted and performs no reservation or persistence.
 
 The concrete live-authority source adapter is not wired yet, so there is no
 operator command for the first stage. Do not assemble a source observation by
-hand or treat the pure harness tests as a live observation. A future adapter
-must derive every field from its read-only HSD, DNS, inventory, gateway, and
-database capabilities and must preserve their exact transcripts.
+hand or treat the pure harness tests as a live observation. The operator
+composition must derive chain, DNS, and gateway facts through that read-only
+adapter and preserve their exact transcripts. The platform PostgreSQL readers
+independently supply the current authority inventory and exact generation-row
+snapshot; neither fact may come from the live-authority adapter.
 
 The authority-successor emitter is the stdout-only second stage. It accepts
 only the canonical observation document produced by the harness, rechecks the
