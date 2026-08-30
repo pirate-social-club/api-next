@@ -203,13 +203,7 @@
         "ACRCLOUD_IDENTIFY_HOST": ""
       },
       "secrets": {
-        "required": [
-          "ACRCLOUD_ACCESS_KEY",
-          "ACRCLOUD_ACCESS_SECRET",
-          "ELEVENLABS_API_KEY",
-          "OPENAI_API_KEY",
-          "OPENROUTER_API_KEY"
-        ]
+        "required": []
       }
     }
   }

@@ -157,6 +157,18 @@ describe("disabled production song infrastructure", () => {
     });
   });
 
+  test("does not require a dormant production Megapot RPC", () => {
+    expect(configs.jobs.vars.MEGAPOT_REWARDS_ENABLED).toBe("false");
+    expect((configs.jobs.secrets as JsonRecord).required).toEqual([
+      "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
+    ]);
+  });
+
+  test("does not require provider credentials while media processing is disabled", () => {
+    expect(configs.media.vars.MEDIA_PROCESSING_ENABLED).toBe("false");
+    expect((configs.media.secrets as JsonRecord).required).toEqual([]);
+  });
+
   test("keeps browser CORS aligned with the reviewed production origins", async () => {
     const policy = JSON.parse(
       await Bun.file("infra/cloudflare/song-production/media-ingress-production-cors.json").text(),

@@ -279,10 +279,7 @@
         "MEGAPOT_SHARED_SPONSOR_DAILY_SPEND_CEILING_ATOMIC": "500000000"
       },
       "secrets": {
-        "required": [
-          "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
-          "MEGAPOT_V2_RPC_URL"
-        ]
+        "required": ["COMMUNITY_PURCHASE_FUNDING_RPC_URL"]
       }
     }
   },
