@@ -100,6 +100,7 @@ const participantPreflight = {
   audio_revision: 1,
   lyrics_revision: 1,
   study_exercise_count: 4,
+  study_due_exercise_count: 4,
   subject_key_id: "subject_key_1",
   binding_event_id: "binding_event_1",
   binding_epoch: 1,
@@ -325,6 +326,28 @@ describe("Base Sepolia Megapot golden flow", () => {
     expect(fetched).toBe(false);
   });
 
+  test("refuses an artifact with no selectable items or active typed session", async () => {
+    let fetched = false;
+    await expect(
+      runMegapotBaseSepoliaGolden(
+        input,
+        {
+          ...options,
+          participantPreflight: { ...participantPreflight, study_due_exercise_count: 0 },
+        },
+        {
+          fetcher: async () => {
+            fetched = true;
+            return json({});
+          },
+          sleep: async () => {},
+          now,
+        },
+      ),
+    ).rejects.toMatchObject({ code: "invalid-options" });
+    expect(fetched).toBe(false);
+  });
+
   test("checks a matching typed Study v2 session before the offer request", async () => {
     const paths: string[] = [];
     await expect(
@@ -347,6 +370,7 @@ describe("Base Sepolia Megapot golden flow", () => {
     const requests: Array<{ readonly url: string; readonly init?: RequestInit }> = [];
     const replayedPreflight = {
       ...participantPreflight,
+      study_due_exercise_count: 0,
       study_session_id: participantStudyV2Session.session_id,
     } as const;
     const responses = [

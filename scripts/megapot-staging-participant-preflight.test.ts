@@ -38,7 +38,17 @@ describe("Megapot staging participant preflight", () => {
       "exercise.lyrics_revision=publication.lyrics_revision",
       "exercise.exercise_type='say_it_back'",
       "exercise.retired_at IS NULL",
+      "review.account_id=$1",
+      "review.study_unit_id=exercise.study_unit_id",
+      "review.exercise_kind=exercise.exercise_type",
+      "review.lifecycle_status='active'",
+      "review.review_item_id IS NULL OR review.due_at <= clock_timestamp()",
       "content.study_exercise_count >= 4",
+      "active_study_session.session_id AS study_session_id",
+      "session.status='active'",
+      "session.expires_at > clock_timestamp()",
+      "count(DISTINCT item.session_item_id) >= 4",
+      "content.study_due_exercise_count >= 4 OR active_study_session.session_id IS NOT NULL",
     ]) {
       expect(megapotParticipantPreflightSql).toContain(fragment);
     }
