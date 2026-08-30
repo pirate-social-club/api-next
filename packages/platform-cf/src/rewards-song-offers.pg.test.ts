@@ -37,7 +37,7 @@ const sentinelPath =
   "/tmp/api-next-control-plane-postgres-rewards-song-offers-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-rewards-song-offers-suite-complete\n";
 const migrations = await loadPostgresMigrations();
-const testCount = 13;
+const testCount = 14;
 let completedTestCount = 0;
 
 const address = (byte: string): string => `0x${byte.repeat(40)}`;
@@ -1657,6 +1657,14 @@ suite("Postgres 17 Megapot rewards persistence", () => {
           reserved_atomic: "0",
         },
       ]);
+      await expect(
+        admin.query(
+          `UPDATE megapot_pool_drawings
+              SET version=version + 1, updated_at=updated_at + interval '1 microsecond'
+            WHERE pool_leg_id=$1 AND drawing_id=101`,
+          [legId],
+        ),
+      ).rejects.toThrow(/terminal Megapot pool drawing is immutable/);
       const projections = makeControlPlaneRewardProjectionStore(layer);
       await expect(
         Effect.runPromise(
@@ -2362,6 +2370,95 @@ suite("Postgres 17 Megapot rewards persistence", () => {
     completedTestCount += 1;
   });
 
+  test("rejects direct drawing attachment outside the active offer window", async () => {
+    await withSchema(async (admin) => {
+      await seedMegapotAuthority(admin);
+      const cases = [
+        {
+          suffix: "drawing-guard-paused",
+          offerStatus: "paused",
+          endsInMinutes: 120,
+          drawingInMinutes: 60,
+        },
+        {
+          suffix: "drawing-guard-expired",
+          offerStatus: "expired",
+          endsInMinutes: 120,
+          drawingInMinutes: 60,
+        },
+        {
+          suffix: "drawing-guard-after-end",
+          offerStatus: "active",
+          endsInMinutes: 30,
+          drawingInMinutes: 60,
+        },
+        {
+          suffix: "drawing-guard-past-cutoff",
+          offerStatus: "active",
+          endsInMinutes: 120,
+          drawingInMinutes: 4,
+        },
+      ] as const;
+
+      for (const [index, testCase] of cases.entries()) {
+        const identity = await seedSong(admin, testCase.suffix);
+        const { legId, offerId } = await seedActivePoolLeg(admin, identity, {
+          fallback: false,
+          suffix: testCase.suffix,
+          endsInMinutes: testCase.endsInMinutes,
+        });
+        if (testCase.offerStatus !== "active") {
+          await admin.query(
+            `UPDATE song_reward_offers
+                SET status=$2,
+                    terminal_at=CASE WHEN $2='expired' THEN clock_timestamp() ELSE NULL END,
+                    updated_at=updated_at + interval '1 microsecond'
+              WHERE offer_id=$1`,
+            [offerId, testCase.offerStatus],
+          );
+        }
+        const observationId = `observation-${testCase.suffix}`;
+        const drawingId = 201 + index;
+        await admin.query(
+          `INSERT INTO megapot_drawing_observations (
+             observation_id, attestation_id, chain_id, drawing_id,
+             ticket_price_atomic, drawing_time, ball_max, bonusball_max,
+             drawing_locked, referral_fee_wei, referral_win_share_wei,
+             block_number, block_hash, block_timestamp, confirmations,
+             observed_at, expires_at, raw_state_hash
+           ) VALUES (
+             $1, 'megapot-base-sepolia-v2', 84532, $2, 10000,
+             clock_timestamp() + make_interval(mins => $3), 25, 13, false,
+             100000000000000000, 100000000000000000, $4, $5,
+             clock_timestamp() - interval '1 minute', 3, clock_timestamp(),
+             clock_timestamp() + interval '2 hours', $6
+           )`,
+          [
+            observationId,
+            drawingId,
+            testCase.drawingInMinutes,
+            200 + index,
+            bytes32(String(index + 1)),
+            hash(String(index + 1)),
+          ],
+        );
+        await expect(
+          admin.query(
+            `INSERT INTO megapot_pool_drawings (
+               pool_leg_id, drawing_id, observation_id, status, version,
+               entry_cutoff_at, ticket_price_ceiling_atomic
+             ) SELECT $1, $2, $3, 'entry_open', 1,
+                      drawing_time - interval '300 seconds', 10000
+                 FROM megapot_drawing_observations
+                WHERE observation_id=$3`,
+            [legId, drawingId, observationId],
+          ),
+        ).rejects.toThrow(/Megapot pool drawing does not match live leg and observation/);
+      }
+    });
+    completedTestCount += 1;
+  });
+
   test("closes a due no-entry drawing without reserving ticket budget", async () => {
     await withSchema(async (admin, scopedConnection) => {
       const identity = await seedSong(admin, "cutoff-empty");
@@ -2387,16 +2484,21 @@ suite("Postgres 17 Megapot rewards persistence", () => {
          )`,
         [bytes32("6"), hash("6")],
       );
-      await admin.query(
-        `INSERT INTO megapot_pool_drawings (
-           pool_leg_id, drawing_id, observation_id, status,
-           entry_cutoff_at, ticket_price_ceiling_atomic
-         ) SELECT $1, 100, observation_id, 'entry_open',
-                  drawing_time - interval '300 seconds', 10000
-             FROM megapot_drawing_observations
-            WHERE observation_id='drawing-observation-cutoff-empty'`,
-        [legId],
-      );
+      await admin.query("SET session_replication_role = replica");
+      try {
+        await admin.query(
+          `INSERT INTO megapot_pool_drawings (
+             pool_leg_id, drawing_id, observation_id, status,
+             entry_cutoff_at, ticket_price_ceiling_atomic
+           ) SELECT $1, 100, observation_id, 'entry_open',
+                    drawing_time - interval '300 seconds', 10000
+               FROM megapot_drawing_observations
+              WHERE observation_id='drawing-observation-cutoff-empty'`,
+          [legId],
+        );
+      } finally {
+        await admin.query("SET session_replication_role = origin");
+      }
       const store = makeControlPlaneMegapotCutoffStore(
         makeDirectPostgresControlPlaneLayer(scopedConnection),
       );
@@ -2450,16 +2552,21 @@ suite("Postgres 17 Megapot rewards persistence", () => {
          )`,
         [bytes32("7"), hash("7")],
       );
-      await admin.query(
-        `INSERT INTO megapot_pool_drawings (
-           pool_leg_id, drawing_id, observation_id, status,
-           entry_cutoff_at, ticket_price_ceiling_atomic
-         ) SELECT $1, 100, observation_id, 'entry_open',
-                  drawing_time - interval '300 seconds', 10000
-             FROM megapot_drawing_observations
-            WHERE observation_id='drawing-observation-cutoff-fallback'`,
-        [legId],
-      );
+      await admin.query("SET session_replication_role = replica");
+      try {
+        await admin.query(
+          `INSERT INTO megapot_pool_drawings (
+             pool_leg_id, drawing_id, observation_id, status,
+             entry_cutoff_at, ticket_price_ceiling_atomic
+           ) SELECT $1, 100, observation_id, 'entry_open',
+                    drawing_time - interval '300 seconds', 10000
+               FROM megapot_drawing_observations
+              WHERE observation_id='drawing-observation-cutoff-fallback'`,
+          [legId],
+        );
+      } finally {
+        await admin.query("SET session_replication_role = origin");
+      }
       await admin.query(
         `INSERT INTO reward_eligibility_decisions (
            eligibility_decision_id, leg_id, account_id, persona_id, purpose,
