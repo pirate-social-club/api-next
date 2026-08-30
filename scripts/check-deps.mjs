@@ -83,6 +83,7 @@ const HNS_OWNER_VERIFIER_PLATFORM_SEAMS = new Set([
 ]);
 const HNS_PLATFORM_GATEWAY_PLATFORM_SEAMS = new Set([
   "@pirate/platform-cf/hns-community-app-gateway-authority-postgres",
+  "@pirate/platform-cf/hns-community-app-handle-gateway-authority-postgres",
   "@pirate/platform-cf/hns-forwarder-v3",
 ]);
 
