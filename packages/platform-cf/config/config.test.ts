@@ -92,6 +92,29 @@ describe("config system (000 §9)", () => {
     expect(Redacted.value(configured.MEGAPOT_CUSTODY_PRIVATE_KEY)).toBe(`0x${"1".repeat(64)}`);
   });
 
+  test("jobs composition permits an absent production Megapot RPC while rewards are disabled", () => {
+    const configured = loadConfigFrom(JobsWorkerConfig, {
+      API_NEXT_ENV: "production",
+      COMMUNITY_PURCHASE_FUNDING_RPC_URL: "https://rpc.invalid/",
+      MEGAPOT_REWARDS_ENABLED: "false",
+      MEGAPOT_CHAIN_ID: "8453",
+      MEGAPOT_ATTESTATION_ID: "megapot-base-sepolia-v2",
+      MEGAPOT_REQUIRED_CONFIRMATIONS: "3",
+      MEGAPOT_OBSERVATION_TTL_SECONDS: "300",
+      MEGAPOT_APPROVED_ALLOWANCE_ATOMIC: "1000000000",
+      MEGAPOT_PURCHASE_SAFETY_MARGIN_SECONDS: "120",
+      MEGAPOT_GAS_LIMIT_MULTIPLIER_BPS: "12000",
+      MEGAPOT_NATIVE_GAS_RESERVE_FLOOR_WEI: "1000000000000000",
+      MEGAPOT_EXTERNAL_SPONSOR_DAILY_TICKET_CEILING: "5",
+      MEGAPOT_EXTERNAL_SPONSOR_DAILY_SPEND_CEILING_ATOMIC: "50000000",
+      MEGAPOT_SHARED_SPONSOR_DAILY_TICKET_CEILING: "50",
+      MEGAPOT_SHARED_SPONSOR_DAILY_SPEND_CEILING_ATOMIC: "500000000",
+    });
+
+    expect(configured.MEGAPOT_REWARDS_ENABLED).toBe(false);
+    expect(Redacted.value(configured.MEGAPOT_V2_RPC_URL)).toBe("");
+  });
+
   test("Megapot runtime admits Base Sepolia only outside production", () => {
     expect(
       assertMegapotRewardRuntimePosture({

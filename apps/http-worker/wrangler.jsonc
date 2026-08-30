@@ -359,6 +359,14 @@
       ],
       "r2_buckets": [
         {
+          "binding": "MEDIA_INGRESS",
+          "bucket_name": "pirate-media-ingress-production"
+        },
+        {
+          "binding": "MEDIA_IMMUTABLE_ORIGINALS",
+          "bucket_name": "pirate-media-immutable-production"
+        },
+        {
           "binding": "LEARNER_AUDIO",
           "bucket_name": "pirate-learner-audio-production"
         }
@@ -372,8 +380,8 @@
         "MEGAPOT_ATTESTATION_ID": "megapot-base-sepolia-v2",
         "MEGAPOT_REQUIRED_CONFIRMATIONS": "3",
         "MEDIA_UPLOADS_ENABLED": "false",
-        "MEDIA_INGRESS_R2_ACCOUNT_ID": "",
-        "MEDIA_INGRESS_R2_BUCKET_NAME": "",
+        "MEDIA_INGRESS_R2_ACCOUNT_ID": "08a4c22cf52e2ecae883e36f80a33f4a",
+        "MEDIA_INGRESS_R2_BUCKET_NAME": "pirate-media-ingress-production",
         "REGISTRATION_IP_LIMIT": "5",
         "REGISTRATION_IP_WINDOW_SECONDS": "900",
         "REGISTRATION_APPLICATION_LIMIT": "100",
@@ -416,7 +424,9 @@
           "PIRATE_APP_JWT_PRIVATE_KEY",
           "PRIVY_APP_SECRET",
           "HNS_FORWARDER_V3_HMAC_KEY_REGISTRY",
-          "COMMUNITY_PURCHASE_FUNDING_RPC_URL"
+          "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
+          "MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID",
+          "MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY"
         ]
       }
     }

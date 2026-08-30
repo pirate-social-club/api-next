@@ -88,6 +88,7 @@ export const JobsWorkerConfig = Config.all({
   API_NEXT_ENV: AppEnv,
   COMMUNITY_PURCHASE_FUNDING_RPC_URL: secret("COMMUNITY_PURCHASE_FUNDING_RPC_URL"),
   ...MegapotRewardConfigFields,
+  MEGAPOT_V2_RPC_URL: secret("MEGAPOT_V2_RPC_URL").pipe(Config.withDefault(Redacted.make(""))),
   MEGAPOT_CUSTODY_PRIVATE_KEY: secret("MEGAPOT_CUSTODY_PRIVATE_KEY").pipe(
     Config.withDefault(Redacted.make("")),
   ),

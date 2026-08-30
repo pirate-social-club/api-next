@@ -432,6 +432,30 @@ secret may fall back to its staging value. Provisioning and synchronizing the
 exact Filebase token belongs to the production infrastructure ceremony, and
 its presence does not authorize provider traffic or DATA activation.
 
+### Production song-infrastructure secret boundary — 2026-08-30
+
+The production `/services/api-next` scope may hold the media-provider names
+`ACRCLOUD_ACCESS_KEY`, `ACRCLOUD_ACCESS_SECRET`, `ELEVENLABS_API_KEY`,
+`OPENAI_API_KEY`, and `OPENROUTER_API_KEY`. They may be synchronized only to
+the exact disabled production consumer that declares them. Their presence is
+not authority for a provider request, product traffic, or a flag change.
+
+The production HTTP Worker alone may receive
+`MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID` and
+`MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY`. They identify one Cloudflare R2
+credential with Object Read & Write access restricted to
+`pirate-media-ingress-production`; they never belong to the processor, jobs,
+or DATA Workers. The browser-facing bucket CORS policy permits only `PUT` from
+the reviewed production origins with the signed `Content-Type` header. The
+presigner credential does not authorize public listing, a public bucket, or
+enabling `MEDIA_UPLOADS_ENABLED`.
+
+Production media-provider and presigner names remain provisionable rather than
+completeness-required while their consumers are disabled. Enabling a consumer
+requires all of its declared names to hold reviewed, usable values and requires
+the separately authorized smoke and activation evidence. Blanket
+synchronization from the shared Infisical path remains forbidden.
+
 `OPENROUTER_API_KEY` names the actual credential boundary. A reviewed model
 change within OpenRouter does not require a new secret. Replacing OpenRouter
 with another classifier provider requires a separately reviewed binding.
