@@ -63,6 +63,13 @@ describe("disabled production song infrastructure", () => {
     expect(configs.jobs.triggers).toEqual({ crons: [] });
   });
 
+  test("keeps queue and schedule Workers off public workers.dev routes", () => {
+    for (const worker of [configs.jobs, configs.media, configs.data]) {
+      expect(worker.workers_dev).toBe(false);
+      expect(worker.preview_urls).toBe(false);
+    }
+  });
+
   test("reuses the reviewed production Hyperdrive everywhere", () => {
     for (const worker of [configs.http, configs.jobs, configs.media, configs.data]) {
       expect(worker.hyperdrive).toEqual([
