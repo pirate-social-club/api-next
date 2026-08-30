@@ -48,6 +48,7 @@
     "db:preflight:megapot-base-sepolia": "bun scripts/megapot-base-sepolia-preflight.ts",
     "db:bootstrap:megapot-base-sepolia": "bun scripts/bootstrap-megapot-base-sepolia.ts",
     "staging:golden:megapot-base-sepolia": "bun scripts/megapot-base-sepolia-golden.ts",
+    "deploy:worker": "bun scripts/deploy-worker-with-provenance.ts",
     "verify:postgres-sentinels": "bun scripts/verify-postgres-test-sentinels.ts"
   },
   "dependencies": {
