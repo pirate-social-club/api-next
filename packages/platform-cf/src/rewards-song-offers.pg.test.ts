@@ -197,7 +197,12 @@ async function seedMegapotAuthority(admin: Client): Promise<void> {
 async function seedActivePoolLeg(
   admin: Client,
   identity: SeedIdentity,
-  input: Readonly<{ fallback: boolean; suffix: string; expired?: boolean }> = {
+  input: Readonly<{
+    fallback: boolean;
+    suffix: string;
+    expired?: boolean;
+    endsInMinutes?: number;
+  }> = {
     fallback: false,
     suffix: "pool",
   },
@@ -245,7 +250,8 @@ async function seedActivePoolLeg(
        status, starts_at, ends_at, owner_policy_snapshot, terms_hash,
        reward_policy_version_id
      ) VALUES ($1, $2, $3, 3, $4, 'draft', clock_timestamp() - interval '1 day',
-       clock_timestamp() + CASE WHEN $7::boolean THEN interval '-1 hour' ELSE interval '10 days' END,
+       clock_timestamp() + CASE WHEN $7::boolean THEN interval '-1 hour'
+         ELSE make_interval(mins => COALESCE($8::integer, 14400)) END,
        '{"third_party_legs":"allowed"}'::jsonb, $5, $6)`,
     [
       offerId,
@@ -255,6 +261,7 @@ async function seedActivePoolLeg(
       hash("c"),
       rewardPolicyVersionId,
       input.expired ?? false,
+      input.endsInMinutes ?? null,
     ],
   );
   await admin.query(
@@ -2287,6 +2294,12 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         fallback: false,
         suffix: "drawing-observer",
       });
+      const endingIdentity = await seedSong(admin, "drawing-observer-ending");
+      const ending = await seedActivePoolLeg(admin, endingIdentity, {
+        fallback: false,
+        suffix: "drawing-observer-ending",
+        endsInMinutes: 30,
+      });
       const store = makeControlPlaneMegapotDrawingObservationStore(
         makeDirectPostgresControlPlaneLayer(scopedConnection),
       );
@@ -2339,6 +2352,12 @@ suite("Postgres 17 Megapot rewards persistence", () => {
           observation_id: observation.observationId,
         },
       ]);
+      const drawingsAfterOfferEnd = await admin.query(
+        `SELECT pool_leg_id
+           FROM megapot_pool_drawings WHERE pool_leg_id=$1 AND drawing_id=100`,
+        [ending.legId],
+      );
+      expect(drawingsAfterOfferEnd.rows).toEqual([]);
     });
     completedTestCount += 1;
   });
