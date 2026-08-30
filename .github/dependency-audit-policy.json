@@ -11,5 +11,13 @@
     "tr46",
     "viem"
   ],
-  "exceptions": []
+  "exceptions": [
+    {
+      "advisory": "GHSA-w5hq-g745-h8pq",
+      "package": "uuid",
+      "reason": "The pinned upstream dependency requires uuid 9 and has no patched compatible release.",
+      "reachability": "@selfxyz/anon-aadhaar-core@0.0.1 imports and calls only v4(); the affected v3/v5/v6 buffer APIs are not referenced.",
+      "expires": "2026-09-30"
+    }
+  ]
 }

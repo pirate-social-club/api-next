@@ -3,10 +3,12 @@ import { readdir, readFile } from "node:fs/promises";
 import { gzipSync } from "node:zlib";
 import {
   type AdvisoryFinding,
+  addDependencyAncestry,
   type DependencyAuditPolicy,
   decodeBunAuditOutput,
   evaluateAudit,
   normalizeBunAudit,
+  parseBunWhyDependencyPackages,
   parsePolicy,
 } from "./dependency-audit.ts";
 
@@ -72,6 +74,34 @@ describe("dependency advisory policy", () => {
     ]);
   });
 
+  test("parses full Bun dependency ancestry and reuses one lookup per package", () => {
+    const why = `uuid@9.0.1
+  └─ @selfxyz/anon-aadhaar-core@0.0.1 (requires ^9.0.0)
+     └─ @selfxyz/core@1.2.0-beta.1 (requires ^0.0.9)
+        └─ @pirate/platform-cf@workspace (requires 1.2.0-beta.1)
+`;
+    expect(parseBunWhyDependencyPackages(why)).toEqual([
+      "uuid",
+      "@selfxyz/anon-aadhaar-core",
+      "@selfxyz/core",
+      "@pirate/platform-cf",
+    ]);
+    let lookups = 0;
+    const enriched = addDependencyAncestry(
+      [finding("uuid", "GHSA-first", "moderate"), finding("uuid", "GHSA-second", "high")],
+      () => {
+        lookups += 1;
+        return why;
+      },
+    );
+    expect(lookups).toBe(1);
+    expect(enriched[0]?.dependencyAncestors).toEqual([
+      "@selfxyz/anon-aadhaar-core",
+      "@selfxyz/core",
+      "@pirate/platform-cf",
+    ]);
+  });
+
   test("blocks high findings globally and moderate request-path findings", () => {
     const evaluation = evaluateAudit(
       [
@@ -86,6 +116,22 @@ describe("dependency advisory policy", () => {
       "GHSA-request",
     ]);
     expect(evaluation.observed.map(({ advisory }) => advisory)).toEqual(["GHSA-observed"]);
+  });
+
+  test("applies the request-path threshold through transitive dependency ancestry", () => {
+    const transitive = addDependencyAncestry(
+      [finding("uuid", "GHSA-transitive", "moderate")],
+      () => `uuid@9.0.1
+  └─ @selfxyz/core@1.2.0-beta.1 (requires ^9.0.0)
+`,
+    );
+    const evaluation = evaluateAudit(transitive, {
+      ...policy(),
+      requestPathPackages: ["@selfxyz/core"],
+    });
+
+    expect(evaluation.blocking.map(({ advisory }) => advisory)).toEqual(["GHSA-transitive"]);
+    expect(evaluation.observed).toEqual([]);
   });
 
   test("requires time-bounded, matched reachability exceptions", () => {

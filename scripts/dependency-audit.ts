@@ -13,6 +13,7 @@ const severityRank: Readonly<Record<string, number>> = {
 
 export interface AdvisoryFinding {
   readonly advisory: string;
+  readonly dependencyAncestors?: readonly string[];
   readonly package: string;
   readonly severity: string;
   readonly title: string;
@@ -150,6 +151,42 @@ export function normalizeBunAudit(raw: string): readonly AdvisoryFinding[] {
   return findings;
 }
 
+function packageNameFromWhyLine(line: string): string | undefined {
+  const token = line.replace(/^[\s│├└─]+/u, "").split(/\s/u, 1)[0];
+  if (token === undefined || token === "") return undefined;
+  const versionSeparator = token.startsWith("@") ? token.indexOf("@", 1) : token.indexOf("@");
+  if (versionSeparator <= 0) return undefined;
+  return token.slice(0, versionSeparator);
+}
+
+export function parseBunWhyDependencyPackages(raw: string): readonly string[] {
+  return [
+    ...new Set(
+      raw
+        .split(/\r?\n/u)
+        .map(packageNameFromWhyLine)
+        .filter((name): name is string => name !== undefined),
+    ),
+  ];
+}
+
+export function addDependencyAncestry(
+  findings: readonly AdvisoryFinding[],
+  why: (packageName: string) => string,
+): readonly AdvisoryFinding[] {
+  const ancestry = new Map<string, readonly string[]>();
+  return findings.map((finding) => {
+    let dependencyAncestors = ancestry.get(finding.package);
+    if (dependencyAncestors === undefined) {
+      dependencyAncestors = parseBunWhyDependencyPackages(why(finding.package)).filter(
+        (packageName) => packageName !== finding.package,
+      );
+      ancestry.set(finding.package, dependencyAncestors);
+    }
+    return { ...finding, dependencyAncestors };
+  });
+}
+
 function dedupe(findings: readonly AdvisoryFinding[]): readonly AdvisoryFinding[] {
   const unique = new Map<string, AdvisoryFinding>();
   for (const finding of findings) {
@@ -157,6 +194,15 @@ function dedupe(findings: readonly AdvisoryFinding[]): readonly AdvisoryFinding[
     if (!unique.has(key)) unique.set(key, finding);
   }
   return [...unique.values()];
+}
+
+function requestPathMatches(
+  finding: AdvisoryFinding,
+  requestPathPackages: ReadonlySet<string>,
+): readonly string[] {
+  return [finding.package, ...(finding.dependencyAncestors ?? [])].filter((packageName) =>
+    requestPathPackages.has(packageName),
+  );
 }
 
 export function evaluateAudit(
@@ -178,7 +224,7 @@ export function evaluateAudit(
     const globallyBlocking =
       rank >= (severityRank[policy.globalThreshold] ?? Number.POSITIVE_INFINITY);
     const requestPathBlocking =
-      requestPathPackages.has(finding.package) &&
+      requestPathMatches(finding, requestPathPackages).length > 0 &&
       rank >= (severityRank[policy.requestPathThreshold] ?? Number.POSITIVE_INFINITY);
     if (!globallyBlocking && !requestPathBlocking) {
       observed.push(finding);
@@ -214,14 +260,17 @@ function renderReport(
     `request-path packages=${policy.requestPathPackages.join(",") || "none"}`,
     `scanned ${findings.length} advisory instance(s)`,
   ];
+  const requestPathPackages = new Set(policy.requestPathPackages);
   for (const finding of evaluation.blocking) {
+    const via = requestPathMatches(finding, requestPathPackages);
     lines.push(
-      `BLOCKING [${finding.severity}] ${finding.package} ${finding.advisory} — ${finding.title}`,
+      `BLOCKING [${finding.severity}] ${finding.package} ${finding.advisory}${via.length > 0 ? ` via ${via.join(",")}` : ""} — ${finding.title}`,
     );
   }
   for (const finding of evaluation.accepted) {
+    const via = requestPathMatches(finding, requestPathPackages);
     lines.push(
-      `accepted [${finding.severity}] ${finding.package} ${finding.advisory} — ${finding.exception.reachability} (expires ${finding.exception.expires})`,
+      `accepted [${finding.severity}] ${finding.package} ${finding.advisory}${via.length > 0 ? ` via ${via.join(",")}` : ""} — ${finding.exception.reachability} (expires ${finding.exception.expires})`,
     );
   }
   for (const finding of evaluation.observed) {
@@ -267,7 +316,23 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     );
   }
 
-  const findings = normalizeBunAudit(decodeBunAuditOutput(result.stdout));
+  const findings = addDependencyAncestry(
+    normalizeBunAudit(decodeBunAuditOutput(result.stdout)),
+    (packageName) => {
+      const why = spawnSync(process.execPath, ["pm", "why", packageName], {
+        cwd: repositoryRoot,
+        encoding: "utf8",
+        maxBuffer: 10 * 1024 * 1024,
+      });
+      if (why.error !== undefined) throw why.error;
+      if (why.status !== 0 || why.stdout.trim() === "") {
+        throw new Error(
+          `bun pm why ${packageName} failed (exit ${why.status ?? "unknown"}): ${why.stderr.slice(0, 400)}`,
+        );
+      }
+      return why.stdout;
+    },
+  );
   const evaluation = evaluateAudit(findings, policy);
   const report = renderReport(findings, policy, evaluation);
   console.log(report);
