@@ -148,6 +148,10 @@ function providerTransform(): MediaTransformService {
   return {
     probe: () => Effect.die(new Error("probe is delegated but unused by this test")),
     extractAudioSample: () => Effect.die(new Error("provider sample must not run")),
+    extractCanonicalAudioSegment: () =>
+      Effect.die(new Error("Dance segment extraction must not run")),
+    alignVideoSoundtrackToSong: () =>
+      Effect.die(new Error("Dance soundtrack alignment must not run")),
     cancelAssembly: () => Effect.succeed({ status: "unavailable", reason: "disabled" }),
   };
 }

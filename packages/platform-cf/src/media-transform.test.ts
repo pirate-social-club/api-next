@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import type {
   MediaTransformAudioSampleInput,
+  MediaTransformCanonicalAudioSegmentInput,
   MediaTransformProbeInput,
+  MediaTransformVideoSongAlignmentInput,
 } from "@pirate/application/media/transform";
 import { MediaTransformRequestInvalid } from "@pirate/application/media/transform";
 import { Effect, Fiber } from "effect";
@@ -69,6 +71,55 @@ const sampleInput: MediaTransformAudioSampleInput = {
   sourceDurationMs: 60_000,
   variant: "primary",
   attempt,
+};
+const danceBinding = {
+  version: "media-transform-dance-binding-v1",
+  operationId: "dance-reference:choreography-1:revision-1",
+  requestId: "dance-reference-attempt-1",
+  choreographyId: "choreography-1",
+  choreographyRevision: 1,
+  attemptNumber: 1,
+  inputDigest: "d".repeat(64),
+  adapterRevision: "dance-transform-driver-v1",
+} as const;
+const canonicalSegmentInput: MediaTransformCanonicalAudioSegmentInput = {
+  version: "media-transform-canonical-audio-segment-input-v1",
+  binding: danceBinding,
+  canonicalAudio: {
+    objectKey: "immutable/song-1/audio-r4.mp3",
+    sha256: "e".repeat(64),
+    durationMs: 180_000,
+    audioRevision: 4,
+  },
+  startMs: 10_000,
+  endMs: 16_000,
+  extractionPolicyVersion: "dance-segment-extraction-v1",
+  outputProfile: {
+    sampleRateHz: 44_100,
+    channels: 1,
+    codec: "pcm_s16le",
+  },
+};
+const alignmentInput: MediaTransformVideoSongAlignmentInput = {
+  version: "media-transform-video-song-alignment-input-v1",
+  binding: danceBinding,
+  video: {
+    objectKey: "immutable/video-1/original.mp4",
+    sha256: "f".repeat(64),
+    durationMs: 90_000,
+  },
+  songAudio: canonicalSegmentInput.canonicalAudio,
+  requestedStartMs: canonicalSegmentInput.startMs,
+  requestedEndMs: canonicalSegmentInput.endMs,
+  alignmentPolicyVersion: "dance-reference-alignment-v1",
+  limits: {
+    maximumAbsoluteOffsetMs: 30_000,
+    maximumAbsoluteDriftMs: 50,
+    maximumAbsoluteSlopeDeltaPpm: 100,
+    minimumOverallConfidenceBps: 9_000,
+    minimumCoverageBps: 9_500,
+    minimumSoundtrackMatchBps: 9_000,
+  },
 };
 
 function streamBody(bytes: Uint8Array): ReadableStream<Uint8Array> {
@@ -167,6 +218,16 @@ describe("disabled Transloadit composition", () => {
     ).toEqual({ status: "unavailable", reason: "disabled", attempt });
     expect(
       await Effect.runPromise(
+        disabledTransloaditMediaTransform.extractCanonicalAudioSegment(canonicalSegmentInput),
+      ),
+    ).toEqual({ status: "unavailable", reason: "disabled", binding: danceBinding });
+    expect(
+      await Effect.runPromise(
+        disabledTransloaditMediaTransform.alignVideoSoundtrackToSong(alignmentInput),
+      ),
+    ).toEqual({ status: "unavailable", reason: "disabled", binding: danceBinding });
+    expect(
+      await Effect.runPromise(
         disabledTransloaditMediaTransform.cancelAssembly({
           version: "media-transform-cancel-input-v1",
           requestId: "attempt-1",
@@ -187,6 +248,23 @@ describe("disabled Transloadit composition", () => {
       },
     });
     await Effect.runPromise(service.probe(probeInput));
+    expect(calls).toBe(0);
+  });
+
+  test("keeps both Dance capabilities inert even when the ACR transform is enabled", async () => {
+    let calls = 0;
+    const service = adapter(() => {
+      calls += 1;
+      return response(executing());
+    });
+    expect(
+      await Effect.runPromise(service.extractCanonicalAudioSegment(canonicalSegmentInput)),
+    ).toEqual({ status: "unavailable", reason: "disabled", binding: danceBinding });
+    expect(await Effect.runPromise(service.alignVideoSoundtrackToSong(alignmentInput))).toEqual({
+      status: "unavailable",
+      reason: "disabled",
+      binding: danceBinding,
+    });
     expect(calls).toBe(0);
   });
 });
