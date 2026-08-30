@@ -58,6 +58,7 @@ const HTTP_BINDING_KINDS = {
   HNS_COMMUNITY_APP_API_REPLAY: "platform",
   KARAOKE_ATTEMPT: "platform",
   HNS_COMMUNITY_APP_API_ENABLED: "var",
+  HNS_HANDLE_HOST_API_ENABLED: "var",
   HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN: "var",
   HNS_COMMUNITY_APP_API_ACCESS_ISSUER: "var",
   HNS_COMMUNITY_APP_API_ACCESS_JWKS_URL: "var",
@@ -489,7 +490,10 @@ const requiredNamesFor = (
   if (environment.vars.HNS_OWNERSHIP_ENABLED === "true") {
     required.push(...HTTP_HNS_REQUIRED);
   }
-  if (environment.vars.HNS_COMMUNITY_APP_API_ENABLED === "true") {
+  if (
+    environment.vars.HNS_COMMUNITY_APP_API_ENABLED === "true" ||
+    environment.vars.HNS_HANDLE_HOST_API_ENABLED === "true"
+  ) {
     required.push(...HTTP_HNS_COMMUNITY_APP_REQUIRED);
   }
   if (environment.vars.MEGAPOT_REWARDS_ENABLED === "true") {
