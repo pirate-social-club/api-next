@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   evaluateStudyTranslationCorpus,
+  STUDY_TRANSLATION_CORPUS_CANDIDATE_DOCUMENT_V1,
   STUDY_TRANSLATION_CORPUS_CATEGORIES,
   STUDY_TRANSLATION_CORPUS_V1,
 } from "./study-translation-corpus.ts";
@@ -55,6 +56,30 @@ describe("Study translation enablement corpus", () => {
     expect(evaluation.sampleCount).toBe(100);
     expect(evaluation.songCount).toBe(20);
     expect(evaluation.failures).toEqual([]);
+  });
+
+  test("evaluates a reviewable candidate document containing generated proposals", () => {
+    const corpus = reviewedCorpus();
+    const evaluation = evaluateStudyTranslationCorpus({
+      schema_revision: STUDY_TRANSLATION_CORPUS_CANDIDATE_DOCUMENT_V1,
+      planner_revision: "study_corpus_candidate_planner_v1",
+      corpus,
+      generated_songs: [
+        {
+          song_id: "song-0",
+          post_id: "post-0",
+          proposal: {
+            generation_run_id: "run-0",
+            provider_id: "provider-1",
+            provider_model: "model-1",
+            prompt_revision: STUDY_TRANSLATION_PROMPT_V2,
+            units: [],
+          },
+        },
+      ],
+    });
+    expect(evaluation.releaseState).toBe("eligible_for_human_activation");
+    expect(evaluation.corpusRevision).toBe("es-B1-reviewed-v1");
   });
 
   test("keeps a corpus in evaluation when any ratified threshold fails", () => {
