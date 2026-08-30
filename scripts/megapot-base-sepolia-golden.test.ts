@@ -100,6 +100,7 @@ const participantPreflight = {
   audio_revision: 1,
   lyrics_revision: 1,
   study_exercise_count: 4,
+  study_due_exercise_count: 4,
   subject_key_id: "subject_key_1",
   binding_event_id: "binding_event_1",
   binding_epoch: 1,

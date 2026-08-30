@@ -30,6 +30,9 @@ const ParticipantPreflight = Schema.Struct({
   study_exercise_count: Schema.Int.check(
     Schema.isBetween({ minimum: 4, maximum: Number.MAX_SAFE_INTEGER }),
   ),
+  study_due_exercise_count: Schema.Int.check(
+    Schema.isBetween({ minimum: 4, maximum: Number.MAX_SAFE_INTEGER }),
+  ),
   subject_key_id: EvidenceIdentifier,
   binding_event_id: EvidenceIdentifier,
   binding_epoch: Schema.Int.check(

@@ -111,7 +111,10 @@ export const megapotParticipantPreflightSql = `WITH exact_evidence AS (
 ), content AS (
   SELECT publication.audio_revision::integer AS audio_revision,
          publication.lyrics_revision::integer AS lyrics_revision,
-         count(DISTINCT exercise.exercise_review_key)::integer AS study_exercise_count
+         count(DISTINCT exercise.exercise_review_key)::integer AS study_exercise_count,
+         count(DISTINCT exercise.exercise_review_key) FILTER (
+           WHERE review.review_item_id IS NULL OR review.due_at <= clock_timestamp()
+         )::integer AS study_due_exercise_count
     FROM media_publication_projections publication
     JOIN media_post_submissions submission
       ON submission.submission_id=publication.submission_id
@@ -126,6 +129,15 @@ export const megapotParticipantPreflightSql = `WITH exact_evidence AS (
      AND exercise.target_language IS NULL
      AND exercise.learner_band IS NULL
      AND exercise.retired_at IS NULL
+   LEFT JOIN study_review_items review
+     ON review.account_id=$1
+    AND review.post_id=exercise.post_id
+    AND review.study_unit_id=exercise.study_unit_id
+    AND review.exercise_kind=exercise.exercise_type
+    AND review.learning_language=exercise.learning_language
+    AND review.target_language IS NOT DISTINCT FROM exercise.target_language
+    AND review.learner_band IS NOT DISTINCT FROM exercise.learner_band
+    AND review.lifecycle_status='active'
    WHERE publication.community_id=$3 AND publication.post_id=$4
      AND publication.lyrics_status='ready'
    GROUP BY publication.audio_revision, publication.lyrics_revision
@@ -140,6 +152,7 @@ SELECT 'megapot_participant_preflight_v1' AS object,
        $1::text AS account_id, persona.persona_id, membership.community_id,
        $4::text AS post_id, membership.membership_id,
        content.audio_revision, content.lyrics_revision, content.study_exercise_count,
+       content.study_due_exercise_count,
        evidence.subject_key_id, evidence.binding_event_id, evidence.binding_epoch,
        evidence.binding_group_id, evidence.evidence_receipt_id, evidence.evidence_hash,
        evidence.personhood_assertion_id, evidence.subject_unique_assertion_id,
@@ -155,6 +168,7 @@ SELECT 'megapot_participant_preflight_v1' AS object,
   CROSS JOIN one_evidence evidence
  WHERE persona.account_id=$1 AND persona.persona_id=$2 AND persona.status='active'
    AND content.study_exercise_count >= 4
+   AND content.study_due_exercise_count >= 4
    AND evidence.evidence_count=1`;
 
 export class MegapotParticipantPreflightFailed extends Error {
@@ -187,7 +201,7 @@ export async function loadMegapotParticipantPreflight(
   );
   if (rows.rows.length !== 1 || rows.rows[0] === undefined) {
     throw new MegapotParticipantPreflightFailed(
-      "Participant preflight failed: exact fresh Very evidence, active membership/persona, and four current Study exercises are required.",
+      "Participant preflight failed: exact fresh Very evidence, active membership/persona, and four currently due Study exercises are required.",
     );
   }
   return parseMegapotParticipantPreflight(rows.rows[0]);
