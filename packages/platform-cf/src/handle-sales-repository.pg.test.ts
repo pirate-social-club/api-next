@@ -32,7 +32,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_HANDLE_SALES_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-handle-sales-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-handle-sales-suite-complete\n";
-const testCount = 4;
+const testCount = 5;
 let completedTestCount = 0;
 
 const schemaIdentifier = (): string =>
@@ -75,7 +75,11 @@ const key = (byte: number): string =>
     .replaceAll("/", "_")
     .replace(/=+$/u, "");
 
-async function seedAccount(admin: Client, accountId: string): Promise<string> {
+async function seedAccount(
+  admin: Client,
+  accountId: string,
+  options: Readonly<{ humanEvidence?: boolean }> = {},
+): Promise<string> {
   await admin.query(`INSERT INTO users (user_id,status) VALUES ($1,'active')`, [accountId]);
   await activatePendingPersonaFixtures(admin);
   const result = await admin.query<{ readonly persona_id: string }>(
@@ -84,10 +88,11 @@ async function seedAccount(admin: Client, accountId: string): Promise<string> {
   );
   const personaId = result.rows[0]?.persona_id;
   if (personaId === undefined) throw new Error("first persona missing");
-  await admin.query("SET session_replication_role = replica");
-  try {
-    await admin.query(
-      `INSERT INTO evidence_receipts (
+  if (options.humanEvidence !== false) {
+    await admin.query("SET session_replication_role = replica");
+    try {
+      await admin.query(
+        `INSERT INTO evidence_receipts (
        evidence_receipt_id,proof_session_id,user_id,provider_id,issuer,method,scope_kind,
        issuer_rp_scope,issuer_rp_action_scope,protocol_version,environment,evidence_kind,
        evidence_hash,receipt_metadata,observed_at,expires_at,provenance_kind,
@@ -95,15 +100,16 @@ async function seedAccount(admin: Client, accountId: string): Promise<string> {
      ) VALUES ($1,$2,$3,'very.web','very','web','none',NULL,NULL,'v1','test',
                'very.web.server-verified.v1',$4,'{}'::jsonb,clock_timestamp(),
                clock_timestamp()+interval '1 hour','proof_session','managed','very:test','1')`,
-      [
-        `evidence-${accountId}`,
-        `proof-${accountId}`,
-        accountId,
-        createHash("sha256").update(accountId).digest("hex"),
-      ],
-    );
-  } finally {
-    await admin.query("SET session_replication_role = origin");
+        [
+          `evidence-${accountId}`,
+          `proof-${accountId}`,
+          accountId,
+          createHash("sha256").update(accountId).digest("hex"),
+        ],
+      );
+    } finally {
+      await admin.query("SET session_replication_role = origin");
+    }
   }
   return personaId;
 }
@@ -441,6 +447,99 @@ suite("community handle sales on PostgreSQL 17", () => {
       await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
       await admin.end();
     }
+    completedTestCount += 1;
+  }, 20_000);
+
+  test("issues a none-qualified free handle without human evidence", async () => {
+    await withSchema(async ({ admin, scopedConnection }) => {
+      await seedAccount(admin, "open-seller-account");
+      const buyerPersona = await seedAccount(admin, "open-buyer-account", {
+        humanEvidence: false,
+      });
+      const evidence = await admin.query<{ readonly count: number }>(
+        `SELECT count(*)::int AS count FROM evidence_receipts WHERE user_id=$1`,
+        ["open-buyer-account"],
+      );
+      expect(evidence.rows[0]?.count).toBe(0);
+
+      const communityId = "community_123e4567-e89b-42d3-a456-426614174057";
+      const activationId = await seedSaleNamespace(admin, "open-seller-account", communityId);
+      const store = makeControlPlaneHandleSalesStore(
+        makeDirectPostgresControlPlaneLayer(scopedConnection),
+      );
+      const sales = makeHandleSalesService(store);
+      const vault = makeHandleRecipientTokenVault({
+        hmacKeys: `h1:${key(21)}`,
+        envelopeKeys: `e1:${key(22)}`,
+      });
+      let sequence = 0;
+      const run = <A, E>(effect: Effect.Effect<A, E, IdGen | HandleRecipientTokenVault>) =>
+        Effect.runPromise(
+          effect.pipe(
+            Effect.provideService(IdGen, {
+              next: Effect.sync(() => `${++sequence}`.padStart(4, "0")),
+            }),
+            Effect.provideService(HandleRecipientTokenVault, vault),
+          ),
+        );
+
+      const offering = await run(
+        sales.createOffering({
+          accountId: "open-seller-account",
+          communityId,
+          idempotencyKey: "open-offering-key",
+          terms: terms(activationId),
+        }),
+      );
+      await run(
+        sales.confirmPersonaReuse({
+          accountId: "open-buyer-account",
+          personaId: buyerPersona,
+          offeringId: offering.offering.offering_id,
+          idempotencyKey: "open-link-key",
+        }),
+      );
+      const quote = await run(
+        sales.createQuote({
+          accountId: "open-buyer-account",
+          personaId: buyerPersona,
+          offeringId: offering.offering.offering_id,
+          desiredLabel: "openlabel",
+          idempotencyKey: "open-quote-key",
+        }),
+      );
+      if (quote.kind !== "quoted") throw new Error("expected an open quote");
+      expect(quote.quote.eligibility.evidence_use_ids).toEqual([]);
+
+      const reservation = await run(
+        sales.createReservation({
+          accountId: "open-buyer-account",
+          personaId: buyerPersona,
+          quoteId: quote.quote.quote_id,
+          expectedQuoteHash: quote.quote.quote_hash,
+          idempotencyKey: "open-reservation-key",
+        }),
+      );
+      const claim = await run(
+        sales.submitFreeClaim({
+          accountId: "open-buyer-account",
+          personaId: buyerPersona,
+          reservationId: reservation.reservation.reservation_id,
+          expectedReservationHash: reservation.reservation.reservation_hash,
+          idempotencyKey: "open-claim-key",
+        }),
+      );
+      expect(claim.claim).toMatchObject({
+        state: "issued",
+        display_identifier: "openlabel.charizard",
+        grant: { status: "active", owner_persona_id: buyerPersona },
+      });
+      const evidenceAfterClaim = await admin.query<{ readonly count: number }>(
+        `SELECT count(*)::int AS count FROM evidence_receipts WHERE user_id=$1`,
+        ["open-buyer-account"],
+      );
+      expect(evidenceAfterClaim.rows[0]?.count).toBe(0);
+    });
     completedTestCount += 1;
   }, 20_000);
 
