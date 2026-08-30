@@ -248,6 +248,25 @@ function validAuthorityAddressProvenance(value: unknown): value is HnsAuthorityA
   );
 }
 
+function validAuthorityView(value: unknown): value is HnsAuthorityEmitViewV1 {
+  return (
+    exactObject(value, [
+      "attestation_kind",
+      "authority_address",
+      "outcome",
+      "zone_bytes_digest",
+      "dnskey_key_tag",
+      "derived_ds",
+    ]) &&
+    value.attestation_kind === "operator_attested_authority_view_v1" &&
+    typeof value.authority_address === "string" &&
+    (value.outcome === "observed" || value.outcome === "unavailable") &&
+    (value.zone_bytes_digest === null || sha256HexValue(value.zone_bytes_digest)) &&
+    (value.dnskey_key_tag === null || Number.isSafeInteger(value.dnskey_key_tag)) &&
+    (value.derived_ds === null || Array.isArray(value.derived_ds))
+  );
+}
+
 function validArtifactsHex(
   value: unknown,
 ): value is Record<HnsAuthoritySuccessorArtifactNameV1, string> {
@@ -716,6 +735,7 @@ function structurallyValid(value: unknown): value is HnsAuthoritySuccessorObserv
     !value.expected_authority_addresses.every((entry) => typeof entry === "string") ||
     !Array.isArray(value.authority_views) ||
     value.authority_views.length !== 2 ||
+    !value.authority_views.every(validAuthorityView) ||
     !Array.isArray(value.detached_transcript) ||
     !validArtifactsHex(value.artifacts_hex)
   ) {

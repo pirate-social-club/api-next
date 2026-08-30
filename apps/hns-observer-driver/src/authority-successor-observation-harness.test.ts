@@ -27,17 +27,40 @@ import {
 const encoder = new TextEncoder();
 const candidateBytes = encoder.encode('{"candidate":"review-exact"}');
 const evidenceReference = "hns-detached-observation:main:jazleeuw-verified-01";
-const jazleeuwUpdate3ResourceHex =
-  "0001036e7331067069726174650001036e7332c0060601387069726174652d766572696669636174696f6e3d6e76735f3963633937306561653631393432313461643938613736626661356166336163002a7b0d0220ba5d84ad6e3e7ec452a569ee2e6c447ba2b9b533de65c58e59f2f0b7f0773045002a7b0d0430fde2c7af467092476b5572f9ac43fbbbbe82f63f7c785af984dc5884a2dae0384519dea6982fdbd19c375756b4ebaf70";
 const detachedTranscript = [
   {
     exchange_kind: "hns_rpc",
     vantage_reference: "observer-vantage:primary-hsd",
     subject_reference: "jazleeuw",
     query_reference: "getnameresource:jazleeuw",
-    request_bytes: encoder.encode('{"method":"getnameresource","params":["jazleeuw"]}'),
+    request_bytes: encoder.encode('{"method":"getnameresource","params":["jazleeuw",false]}'),
     response_bytes: encoder.encode(
-      JSON.stringify({ height: 344_448, resource: jazleeuwUpdate3ResourceHex }),
+      JSON.stringify({
+        result: {
+          records: [
+            { type: "NS", ns: "ns1.pirate." },
+            { type: "NS", ns: "ns2.pirate." },
+            { type: "TXT", txt: ["pirate-verification=nvs_9cc970eae6194214ad98a76bfa5af3ac"] },
+            {
+              type: "DS",
+              keyTag: 10875,
+              algorithm: 13,
+              digestType: 2,
+              digest: "ba5d84ad6e3e7ec452a569ee2e6c447ba2b9b533de65c58e59f2f0b7f0773045",
+            },
+            {
+              type: "DS",
+              keyTag: 10875,
+              algorithm: 13,
+              digestType: 4,
+              digest:
+                "fde2c7af467092476b5572f9ac43fbbbbe82f63f7c785af984dc5884a2dae0384519dea6982fdbd19c375756b4ebaf70",
+            },
+          ],
+        },
+        error: null,
+        id: null,
+      }),
     ),
   },
   {
@@ -45,8 +68,36 @@ const detachedTranscript = [
     vantage_reference: "observer-vantage:primary-hsd",
     subject_reference: "pirate",
     query_reference: "getnameresource:pirate",
-    request_bytes: encoder.encode('{"method":"getnameresource","params":["pirate"]}'),
-    response_bytes: encoder.encode('{"height":344448,"resource":"parent-resource"}'),
+    request_bytes: encoder.encode('{"method":"getnameresource","params":["pirate",false]}'),
+    response_bytes: encoder.encode(
+      JSON.stringify({
+        result: {
+          records: [
+            { type: "NS", ns: "ns1.pirate." },
+            { type: "NS", ns: "ns2.pirate." },
+            { type: "GLUE4", ns: "ns1.pirate.", address: "94.103.168.161" },
+            { type: "GLUE4", ns: "ns2.pirate.", address: "81.15.150.159" },
+            {
+              type: "DS",
+              keyTag: 34383,
+              algorithm: 13,
+              digestType: 2,
+              digest: "2c16acbc6081a8eeca4582ff967ebba29f30e2df5abd845dd2d1992449ebeecd",
+            },
+            {
+              type: "DS",
+              keyTag: 34383,
+              algorithm: 13,
+              digestType: 4,
+              digest:
+                "3c48cc64c1ed89b267850e3d97de40672c4be4ef4f0538c775c68412faa81dc3c5c65418aa24db3bdd7b5ffec8e64005",
+            },
+          ],
+        },
+        error: null,
+        id: null,
+      }),
+    ),
   },
   {
     exchange_kind: "child_authority_dns",
@@ -208,6 +259,7 @@ async function sourceObservation(): Promise<HnsAuthoritySuccessorSourceObservati
     detached_transcript: detachedTranscript,
   });
   const view = (authorityAddress: string) => ({
+    attestation_kind: "operator_attested_authority_view_v1" as const,
     authority_address: authorityAddress,
     outcome: "observed" as const,
     zone_bytes_digest: "c".repeat(64),
@@ -341,6 +393,7 @@ test("derives the complete 6/10/1 package from live authority and row-identity p
     authority_records: chainAuthorityRecords,
   });
   const view = (authorityAddress: string) => ({
+    attestation_kind: "operator_attested_authority_view_v1" as const,
     authority_address: authorityAddress,
     outcome: "observed" as const,
     zone_bytes_digest: zoneDigest,
@@ -430,9 +483,7 @@ test("derives the complete 6/10/1 package from live authority and row-identity p
   const hnsTranscript = detachedEvidence.detached_transcript.find(
     (entry) => entry.exchange_kind === "hns_rpc",
   );
-  expect(hnsTranscript?.response_hex).toContain(
-    bytesHex(encoder.encode(jazleeuwUpdate3ResourceHex)),
-  );
+  expect(hnsTranscript?.response_hex).toContain(bytesHex(encoder.encode("ns1.pirate.")));
   expect(emissions).toEqual([result.observation_document_bytes]);
 
   const firstAppArtifact = result.candidate.candidate.artifacts.find(

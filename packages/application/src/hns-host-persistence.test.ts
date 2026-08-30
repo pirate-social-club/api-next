@@ -32,21 +32,78 @@ async function digest(bytes: Uint8Array): Promise<string> {
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
 }
+const hsdResourceResponse = (records: ReadonlyArray<unknown>) =>
+  encoder.encode(JSON.stringify({ result: { records }, error: null, id: null }));
 const detachedTranscript = [
-  ["hns_rpc", "observer-vantage:primary-hsd", "jazleeuw", "getnameresource:jazleeuw"],
-  ["hns_rpc", "observer-vantage:primary-hsd", "pirate", "getnameresource:pirate"],
-  ["child_authority_dns", "deployment-vantage:primary", "94.103.168.161", "axfr"],
-  ["child_authority_dns", "deployment-vantage:secondary", "81.15.150.159", "axfr"],
-  ["parent_authority_dns", "deployment-vantage:primary-external", "pirate", "addresses"],
-  ["parent_authority_dns", "deployment-vantage:secondary-independent", "pirate", "addresses"],
-].map(([exchange_kind, vantage_reference, subject_reference, query_reference], index) => ({
-  exchange_kind: exchange_kind as "hns_rpc" | "child_authority_dns" | "parent_authority_dns",
-  vantage_reference: vantage_reference as string,
-  subject_reference: subject_reference as string,
-  query_reference: query_reference as string,
-  request_bytes: encoder.encode(`request-${index}`),
-  response_bytes: encoder.encode(`response-${index}`),
-}));
+  {
+    exchange_kind: "hns_rpc" as const,
+    vantage_reference: "observer-vantage:primary-hsd",
+    subject_reference: "jazleeuw",
+    query_reference: "getnameresource:jazleeuw",
+    request_bytes: encoder.encode('{"method":"getnameresource","params":["jazleeuw",false]}'),
+    response_bytes: hsdResourceResponse([
+      { type: "NS", ns: "ns1.pirate." },
+      { type: "NS", ns: "ns2.pirate." },
+      { type: "TXT", txt: ["pirate-verification=nvs_9cc970eae6194214ad98a76bfa5af3ac"] },
+      {
+        type: "DS",
+        keyTag: 10875,
+        algorithm: 13,
+        digestType: 2,
+        digest: "ba5d84ad6e3e7ec452a569ee2e6c447ba2b9b533de65c58e59f2f0b7f0773045",
+      },
+      {
+        type: "DS",
+        keyTag: 10875,
+        algorithm: 13,
+        digestType: 4,
+        digest:
+          "fde2c7af467092476b5572f9ac43fbbbbe82f63f7c785af984dc5884a2dae0384519dea6982fdbd19c375756b4ebaf70",
+      },
+    ]),
+  },
+  {
+    exchange_kind: "hns_rpc" as const,
+    vantage_reference: "observer-vantage:primary-hsd",
+    subject_reference: "pirate",
+    query_reference: "getnameresource:pirate",
+    request_bytes: encoder.encode('{"method":"getnameresource","params":["pirate",false]}'),
+    response_bytes: hsdResourceResponse([
+      { type: "NS", ns: "ns1.pirate." },
+      { type: "NS", ns: "ns2.pirate." },
+      { type: "GLUE4", ns: "ns1.pirate.", address: "94.103.168.161" },
+      { type: "GLUE4", ns: "ns2.pirate.", address: "81.15.150.159" },
+      {
+        type: "DS",
+        keyTag: 34383,
+        algorithm: 13,
+        digestType: 2,
+        digest: "2c16acbc6081a8eeca4582ff967ebba29f30e2df5abd845dd2d1992449ebeecd",
+      },
+      {
+        type: "DS",
+        keyTag: 34383,
+        algorithm: 13,
+        digestType: 4,
+        digest:
+          "3c48cc64c1ed89b267850e3d97de40672c4be4ef4f0538c775c68412faa81dc3c5c65418aa24db3bdd7b5ffec8e64005",
+      },
+    ]),
+  },
+  ...[
+    ["child_authority_dns", "deployment-vantage:primary", "94.103.168.161", "axfr"],
+    ["child_authority_dns", "deployment-vantage:secondary", "81.15.150.159", "axfr"],
+    ["parent_authority_dns", "deployment-vantage:primary-external", "pirate", "addresses"],
+    ["parent_authority_dns", "deployment-vantage:secondary-independent", "pirate", "addresses"],
+  ].map(([exchange_kind, vantage_reference, subject_reference, query_reference], index) => ({
+    exchange_kind: exchange_kind as "child_authority_dns" | "parent_authority_dns",
+    vantage_reference: vantage_reference as string,
+    subject_reference: subject_reference as string,
+    query_reference: query_reference as string,
+    request_bytes: encoder.encode(`request-${index}`),
+    response_bytes: encoder.encode(`response-${index}`),
+  })),
+];
 
 describe("HNS authority successor generation preparation", () => {
   test("predicts the fenced jazleeuw successor generations without a reservation", () => {
@@ -133,6 +190,7 @@ const jazleeuwUpdate3ResourceHex =
 const canonicalZoneBytes = new TextEncoder().encode("$ORIGIN jazleeuw.\n; canonical observation\n");
 const canonicalZoneDigest = "907702901595a5d159cf4d855a8a3c907cfda15cb96f2fa8888cde954d324bb6";
 const observedView = (authorityAddress: string) => ({
+  attestation_kind: "operator_attested_authority_view_v1" as const,
   authority_address: authorityAddress,
   outcome: "observed" as const,
   zone_bytes_digest: canonicalZoneDigest,
@@ -204,6 +262,38 @@ test("admits only two complete agreeing authority views with chain-matching DS",
   ).toHaveLength(2);
 });
 
+test("canonicalizes child view key order and refuses extra caller fields", () => {
+  const reordered = (authorityAddress: string) => ({
+    derived_ds: chainDs,
+    dnskey_key_tag: 10875,
+    zone_bytes_digest: canonicalZoneDigest,
+    outcome: "observed" as const,
+    authority_address: authorityAddress,
+    attestation_kind: "operator_attested_authority_view_v1" as const,
+  });
+  const result = requireHnsAuthorityEmitObservationV1({
+    expected_authority_addresses: ["94.103.168.161", "81.15.150.159"],
+    views: [reordered("94.103.168.161"), reordered("81.15.150.159")],
+    chain_ds: chainDs,
+  });
+  expect(Object.keys(result[0])).toEqual([
+    "attestation_kind",
+    "authority_address",
+    "outcome",
+    "zone_bytes_digest",
+    "dnskey_key_tag",
+    "derived_ds",
+  ]);
+  const viewWithExtra = { ...observedView("94.103.168.161"), unreviewed_extra: true };
+  expect(() =>
+    requireHnsAuthorityEmitObservationV1({
+      expected_authority_addresses: ["94.103.168.161", "81.15.150.159"],
+      views: [viewWithExtra, observedView("81.15.150.159")],
+      chain_ds: chainDs,
+    }),
+  ).toThrow("authority_view_mismatch");
+});
+
 test("refuses missing and unavailable authority views without partial emission", () => {
   const expected = ["94.103.168.161", "81.15.150.159"] as const;
   expect(() =>
@@ -219,6 +309,7 @@ test("refuses missing and unavailable authority views without partial emission",
       views: [
         observedView(expected[0]),
         {
+          attestation_kind: "operator_attested_authority_view_v1",
           authority_address: expected[1],
           outcome: "unavailable",
           zone_bytes_digest: null,
@@ -892,7 +983,46 @@ test("binds out-of-bailiwick addresses to the parent chain transcript and attest
         views: [
           {
             ...authorityAddressProvenance.views[0],
+            attested_derived_ds: [[34383, 13, 2, "f".repeat(64)], pirateChainDs[1]],
+          },
+          authorityAddressProvenance.views[1],
+        ],
+      },
+      "parent_view_attestation_mismatch",
+    ],
+    [
+      {
+        ...authorityAddressProvenance,
+        views: [
+          {
+            ...authorityAddressProvenance.views[0],
+            attested_dnskey_key_tag: 39280,
+          },
+          authorityAddressProvenance.views[1],
+        ],
+      },
+      "parent_view_attestation_mismatch",
+    ],
+    [
+      {
+        ...authorityAddressProvenance,
+        views: [
+          {
+            ...authorityAddressProvenance.views[0],
             vantage_reference: authorityAddressProvenance.views[1].vantage_reference,
+          },
+          authorityAddressProvenance.views[1],
+        ],
+      },
+      "parent_view_identity_mismatch",
+    ],
+    [
+      {
+        ...authorityAddressProvenance,
+        views: [
+          {
+            ...authorityAddressProvenance.views[0],
+            view_id: authorityAddressProvenance.views[1].view_id,
           },
           authorityAddressProvenance.views[1],
         ],
@@ -910,6 +1040,64 @@ test("binds out-of-bailiwick addresses to the parent chain transcript and attest
       }),
     ).rejects.toMatchObject({ reason });
   }
+
+  const changedParentNameserverRecords = pirateChainAuthorityRecords.map((record) =>
+    record[0] === "NS" && record[1] === "ns1.pirate" ? (["NS", "ns3.pirate"] as const) : record,
+  );
+  const changedParentNameserverDigest = await hnsChainAuthorityDigest({
+    chain_network: "main",
+    chain_genesis_block_hash: HNS_MAINNET_GENESIS_BLOCK_HASH,
+    root_label: "pirate",
+    ownership_source: "owner_authoritative_dns_txt",
+    authority_records: changedParentNameserverRecords,
+  });
+  const input = await canonicalCandidateInput();
+  const observer = await decodeHnsAuthorityDetachedObserverEvidenceV1(
+    input.artifacts.observer_evidence,
+  );
+  const changedTranscript = detachedTranscript.map((entry) =>
+    entry.exchange_kind === "hns_rpc" && entry.subject_reference === "pirate"
+      ? {
+          ...entry,
+          response_bytes: hsdResourceResponse([
+            { type: "NS", ns: "ns3.pirate." },
+            { type: "NS", ns: "ns2.pirate." },
+            { type: "GLUE4", ns: "ns1.pirate.", address: "94.103.168.161" },
+            { type: "GLUE4", ns: "ns2.pirate.", address: "81.15.150.159" },
+            {
+              type: "DS",
+              keyTag: 34383,
+              algorithm: 13,
+              digestType: 2,
+              digest: "2c16acbc6081a8eeca4582ff967ebba29f30e2df5abd845dd2d1992449ebeecd",
+            },
+            {
+              type: "DS",
+              keyTag: 34383,
+              algorithm: 13,
+              digestType: 4,
+              digest:
+                "3c48cc64c1ed89b267850e3d97de40672c4be4ef4f0538c775c68412faa81dc3c5c65418aa24db3bdd7b5ffec8e64005",
+            },
+          ]),
+        }
+      : entry,
+  );
+  const observerEvidence = await encodeHnsAuthorityDetachedObserverEvidenceV1({
+    ...observer,
+    detached_transcript: changedTranscript,
+  });
+  await expect(
+    prepareHnsAuthoritySuccessorCandidateV1({
+      ...input,
+      authority_address_provenance: {
+        ...authorityAddressProvenance,
+        parent_chain_authority_digest: changedParentNameserverDigest,
+        parent_chain_authority_records: changedParentNameserverRecords,
+      },
+      artifacts: { ...input.artifacts, observer_evidence: observerEvidence },
+    }),
+  ).rejects.toMatchObject({ reason: "parent_address_mismatch" });
 });
 
 test("refuses pointer drift independently of candidate byte identity", () => {
@@ -1109,6 +1297,15 @@ test("refuses canonical observer evidence that is not verified or bound to this 
       (entry: { exchange_kind: string; subject_reference: string }) =>
         entry.exchange_kind !== "hns_rpc" || entry.subject_reference !== "pirate",
     );
+  const childChainTranscript = missingParentChainTranscript.detached_transcript.find(
+    (entry: { exchange_kind: string; subject_reference: string }) =>
+      entry.exchange_kind === "hns_rpc" && entry.subject_reference === "jazleeuw",
+  );
+  if (childChainTranscript === undefined) throw new Error("missing child HSD transcript");
+  missingParentChainTranscript.detached_transcript.push({
+    ...childChainTranscript,
+    vantage_reference: "observer-vantage:secondary-hsd",
+  });
   missingParentChainTranscript.detached_transcript_sha256 = await digest(
     encoder.encode(
       JSON.stringify([
@@ -1125,7 +1322,7 @@ test("refuses canonical observer evidence that is not verified or bound to this 
         observer_evidence: encoder.encode(JSON.stringify(missingParentChainTranscript)),
       },
     }),
-  ).rejects.toThrow("observer_evidence_not_verified");
+  ).rejects.toThrow("observer_evidence_mismatch");
 
   const parentSource = new TextEncoder().encode(
     new TextDecoder()

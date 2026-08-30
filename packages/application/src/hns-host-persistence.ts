@@ -9,6 +9,7 @@ import {
   hnsChainAuthorityRecords,
   hnsControlIdentityDigest,
 } from "./namespace-ownership/hns-control-observer.ts";
+import { decodeStrictHnsJsonBytes } from "./namespace-ownership/hns-evidence.ts";
 import type { ControlPlaneError } from "./ports.ts";
 
 export type HnsDnsZoneActivationLifecycleStatusV1 = "active" | "suspended" | "revoked";
@@ -35,6 +36,7 @@ export type HnsAuthoritySuccessorGenerationsV1 = Readonly<{
 export type HnsAuthorityEmitDsV1 = readonly [number, 13, 2 | 4, string];
 export type HnsAuthorityEmitChainRecordV1 = HnsChainAuthorityRecord;
 export type HnsAuthorityEmitViewV1 = Readonly<{
+  attestation_kind: "operator_attested_authority_view_v1";
   authority_address: string;
   outcome: "observed" | "unavailable";
   zone_bytes_digest: string | null;
@@ -111,6 +113,7 @@ export const HNS_AUTHORITY_SUCCESSOR_CANDIDATE_VERSION =
 export const HNS_AUTHORITY_DETACHED_OBSERVER_EVIDENCE_VERSION =
   "pirate-hns-authority-detached-observer-evidence-v1" as const;
 export const HNS_AUTHORITY_SUCCESSOR_CHAIN_NETWORK = "main" as const;
+// HSD mainnet block 0 `hash` from handshake-org/hsd lib/protocol/genesis.js.
 export const HNS_MAINNET_GENESIS_BLOCK_HASH =
   "5b6ef2d3c1f3cdcadfd9a030ba1811efdd17740f14e166489760741d075992e0" as const;
 
@@ -427,10 +430,139 @@ export async function encodeHnsAuthorityDetachedObserverEvidenceV1(
   return bytes;
 }
 
+function canonicalHsdName(value: unknown): string {
+  if (
+    typeof value !== "string" ||
+    value !== value.toLowerCase() ||
+    !value.endsWith(".") ||
+    value.endsWith("..")
+  ) {
+    throw new HnsAuthorityEmitRefusal("observer_evidence_mismatch");
+  }
+  const canonical = value.slice(0, -1);
+  hnsChainAuthorityRecords("owner_authoritative_dns_txt", [["NS", canonical]]);
+  return canonical;
+}
+
+function decodeHsdTranscriptAuthorityRecords(
+  entry: HnsAuthorityEncodedTranscriptEntryV1,
+): ReadonlyArray<HnsChainAuthorityRecord> {
+  let request: unknown;
+  let response: unknown;
+  try {
+    request = decodeStrictHnsJsonBytes(bytesFromHex(entry.request_hex), 1_048_576);
+    response = decodeStrictHnsJsonBytes(bytesFromHex(entry.response_hex), 8 * 1_024 * 1_024);
+  } catch {
+    throw new HnsAuthorityEmitRefusal("observer_evidence_mismatch");
+  }
+  if (
+    !hasExactKeys(request, ["method", "params"]) ||
+    request.method !== "getnameresource" ||
+    !Array.isArray(request.params) ||
+    request.params.length !== 2 ||
+    request.params[0] !== entry.subject_reference ||
+    request.params[1] !== false ||
+    !hasExactKeys(response, ["result", "error", "id"]) ||
+    response.error !== null ||
+    response.id !== null ||
+    !hasExactKeys(response.result, ["records"]) ||
+    !Array.isArray(response.result.records)
+  ) {
+    throw new HnsAuthorityEmitRefusal("observer_evidence_mismatch");
+  }
+  const authorityRecords: HnsChainAuthorityRecord[] = [];
+  for (const unknownRecord of response.result.records) {
+    if (
+      unknownRecord === null ||
+      typeof unknownRecord !== "object" ||
+      Array.isArray(unknownRecord) ||
+      !("type" in unknownRecord)
+    ) {
+      throw new HnsAuthorityEmitRefusal("observer_evidence_mismatch");
+    }
+    const record = unknownRecord as Record<string, unknown>;
+    if (record.type === "TXT") {
+      if (
+        !hasExactKeys(record, ["type", "txt"]) ||
+        !Array.isArray(record.txt) ||
+        record.txt.length === 0 ||
+        record.txt.some(
+          (chunk) =>
+            typeof chunk !== "string" ||
+            new TextEncoder().encode(chunk).byteLength > 255 ||
+            [...chunk].some((character) => {
+              const point = character.codePointAt(0) ?? 0;
+              return point >= 0xd800 && point <= 0xdfff;
+            }),
+        )
+      ) {
+        throw new HnsAuthorityEmitRefusal("observer_evidence_mismatch");
+      }
+      continue;
+    }
+    if (record.type === "NS") {
+      if (!hasExactKeys(record, ["type", "ns"])) {
+        throw new HnsAuthorityEmitRefusal("observer_evidence_mismatch");
+      }
+      authorityRecords.push(["NS", canonicalHsdName(record.ns)]);
+      continue;
+    }
+    if (record.type === "GLUE4" || record.type === "GLUE6") {
+      if (!hasExactKeys(record, ["type", "ns", "address"]) || typeof record.address !== "string") {
+        throw new HnsAuthorityEmitRefusal("observer_evidence_mismatch");
+      }
+      authorityRecords.push([record.type, canonicalHsdName(record.ns), record.address]);
+      continue;
+    }
+    if (record.type === "SYNTH4" || record.type === "SYNTH6") {
+      if (!hasExactKeys(record, ["type", "address"]) || typeof record.address !== "string") {
+        throw new HnsAuthorityEmitRefusal("observer_evidence_mismatch");
+      }
+      hnsChainAuthorityRecords("owner_authoritative_dns_txt", [
+        [record.type === "SYNTH4" ? "GLUE4" : "GLUE6", "synth.invalid", record.address],
+      ]);
+      continue;
+    }
+    if (record.type === "DS") {
+      if (
+        !hasExactKeys(record, ["type", "keyTag", "algorithm", "digestType", "digest"]) ||
+        typeof record.keyTag !== "number" ||
+        typeof record.algorithm !== "number" ||
+        typeof record.digestType !== "number" ||
+        typeof record.digest !== "string"
+      ) {
+        throw new HnsAuthorityEmitRefusal("observer_evidence_mismatch");
+      }
+      authorityRecords.push([
+        "DS",
+        record.keyTag,
+        record.algorithm,
+        record.digestType,
+        record.digest.toLowerCase(),
+      ]);
+      continue;
+    }
+    throw new HnsAuthorityEmitRefusal("observer_evidence_mismatch");
+  }
+  try {
+    return hnsChainAuthorityRecords("owner_authoritative_dns_txt", authorityRecords);
+  } catch {
+    throw new HnsAuthorityEmitRefusal("observer_evidence_mismatch");
+  }
+}
+
+function sameChainAuthorityRecords(
+  left: ReadonlyArray<HnsChainAuthorityRecord>,
+  right: ReadonlyArray<HnsChainAuthorityRecord>,
+): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
 function requireDetachedTranscriptSemantics(
   evidence: HnsAuthorityDetachedObserverEvidenceV1,
   input: Readonly<{
     root_label: string;
+    chain_authority_records: ReadonlyArray<HnsChainAuthorityRecord>;
     expected_authority_addresses: readonly [string, string];
     authority_address_provenance: HnsAuthorityAddressProvenanceV1;
   }>,
@@ -468,6 +600,21 @@ function requireDetachedTranscriptSemantics(
         entry.query_reference !== `getnameresource:${entry.subject_reference}`
       ) {
         throw new HnsAuthorityEmitRefusal("observer_evidence_mismatch");
+      }
+      const transcriptRecords = decodeHsdTranscriptAuthorityRecords(entry);
+      const expectedRecords =
+        entry.subject_reference === input.root_label
+          ? input.chain_authority_records
+          : input.authority_address_provenance.source_kind ===
+              "detached_parent_authority_attestation_v1"
+            ? input.authority_address_provenance.parent_chain_authority_records
+            : [];
+      if (!sameChainAuthorityRecords(transcriptRecords, expectedRecords)) {
+        throw new HnsAuthorityEmitRefusal(
+          entry.subject_reference === input.root_label
+            ? "observer_evidence_mismatch"
+            : "parent_chain_anchor_mismatch",
+        );
       }
     } else if (entry.exchange_kind === "child_authority_dns") {
       if (!input.expected_authority_addresses.includes(entry.subject_reference)) {
@@ -696,6 +843,7 @@ export async function prepareHnsAuthoritySuccessorCandidateV1(
   });
   requireDetachedTranscriptSemantics(observation, {
     root_label: input.root_label,
+    chain_authority_records: chainAuthorityRecords,
     expected_authority_addresses: input.expected_authority_addresses,
     authority_address_provenance: authorityAddressProvenance,
   });
@@ -1060,7 +1208,7 @@ function validDsForKeyTag(records: ReadonlyArray<HnsAuthorityEmitDsV1>, keyTag: 
   );
 }
 
-/** Requires a complete, internally consistent two-authority DNSSEC observation. */
+/** Requires two complete, internally consistent operator-attested authority views. */
 export function requireHnsAuthorityEmitObservationV1(
   input: Readonly<{
     expected_authority_addresses: readonly [string, string];
@@ -1069,6 +1217,21 @@ export function requireHnsAuthorityEmitObservationV1(
   }>,
 ): readonly [HnsAuthorityEmitViewV1, HnsAuthorityEmitViewV1] {
   const [firstAddress, secondAddress] = input.expected_authority_addresses;
+  if (
+    input.views.some(
+      (view) =>
+        !hasExactKeys(view, [
+          "attestation_kind",
+          "authority_address",
+          "outcome",
+          "zone_bytes_digest",
+          "dnskey_key_tag",
+          "derived_ds",
+        ]) || view.attestation_kind !== "operator_attested_authority_view_v1",
+    )
+  ) {
+    throw new HnsAuthorityEmitRefusal("authority_view_mismatch");
+  }
   if (
     firstAddress === secondAddress ||
     input.views.length !== 2 ||
@@ -1106,7 +1269,24 @@ export function requireHnsAuthorityEmitObservationV1(
   ) {
     throw new HnsAuthorityEmitRefusal("dnskey_ds_mismatch");
   }
-  return [first, second];
+  return [
+    {
+      attestation_kind: first.attestation_kind,
+      authority_address: first.authority_address,
+      outcome: first.outcome,
+      zone_bytes_digest: first.zone_bytes_digest,
+      dnskey_key_tag: first.dnskey_key_tag,
+      derived_ds: first.derived_ds,
+    },
+    {
+      attestation_kind: second.attestation_kind,
+      authority_address: second.authority_address,
+      outcome: second.outcome,
+      zone_bytes_digest: second.zone_bytes_digest,
+      dnskey_key_tag: second.dnskey_key_tag,
+      derived_ds: second.derived_ds,
+    },
+  ];
 }
 
 function nonnegativeSafeInteger(value: number, label: string): number {
@@ -1436,6 +1616,15 @@ function exactObject(
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const actual = Object.keys(value);
   return actual.length === keys.length && actual.every((key, index) => key === keys[index]);
+}
+
+function hasExactKeys(
+  value: unknown,
+  keys: ReadonlyArray<string>,
+): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const actual = Object.keys(value);
+  return actual.length === keys.length && keys.every((key) => actual.includes(key));
 }
 
 function validIdentity(value: unknown): value is string {
