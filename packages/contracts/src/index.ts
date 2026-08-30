@@ -8,6 +8,7 @@ export * from "./community-moderation-runtime.ts";
 export * from "./community-purchase-funding.ts";
 export * from "./community-route-resolution.ts";
 export * from "./community-routes.ts";
+export * from "./dance.ts";
 export * from "./endpoint.ts";
 export * from "./errors.ts";
 export * from "./handle-sales.ts";

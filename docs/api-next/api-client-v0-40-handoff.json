@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.40.0",
+  "releaseType": "dance-reference-shadow-contracts",
+  "wireContract": "spec-021-dance-reference-shadow",
+  "sourceCommit": "pending-review",
+  "supersedes": "0.39.0; adds phase-6 Dance reference and presentation routes while Dance qualification remains reserved.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.40.0.tgz",
+    "sha256": "6a2f1a06354595717e4a9d8bc32dd3309a99a916fd85974c72b89c3984285969",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@cd459e6710f0e664c81afe7e4e56e7236c3bf496ada29280827418209ecd3858",
+    "openapiSha256": "cd459e6710f0e664c81afe7e4e56e7236c3bf496ada29280827418209ecd3858",
+    "clientSha256": "9503c37aefee2a6d829883f1d1aeae8e8bc137789d61fed869d0ca781b7013c3"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "passed",
+      "baselineCommit": "4b3191354a6d3984659a268e623bcc8c989f6fab",
+      "reason": "The release adds separate shadow-only Dance reference routes and does not widen qualification or funded activity enums."
+    },
+    "focusedContractSuites": "41 passed, 0 failed across Dance reference, qualification, song-offer, and code-generation contracts",
+    "fullUnitSuite": "2325 passed, 314 environment-gated PostgreSQL tests skipped, 0 failed",
+    "fullWorkerdSuite": "97 passed across 29 test files, 0 failed",
+    "packageVerifier": "passed",
+    "repositoryCheck": "pending; the base and this branch both report the same 73 unrelated HNS and WebCrypto TypeScript diagnostics"
+  }
+}
