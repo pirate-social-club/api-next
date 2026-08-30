@@ -10,24 +10,28 @@ import { makeControlPlaneOperatorControlPromotionStore } from "./operator-contro
 test("operator promotion repository sends exact candidate bytes", async () => {
   const calls: Array<{ readonly text: string; readonly values: readonly unknown[] }> = [];
   const bytes = new TextEncoder().encode("candidate");
+  const execute = <Row = unknown>(statement: ControlPlaneStatement) => {
+    calls.push(statement);
+    return Effect.succeed({
+      rows: [
+        {
+          outcome: "promoted",
+          receipt_id: "receipt-1",
+          evidence_ref: "evidence-1",
+          route_binding_id: "binding-1",
+          binding_generation: "2",
+          app_host_activation_generation: "12",
+        },
+      ] as unknown as readonly Row[],
+      rowCount: 1,
+    } satisfies ControlPlaneResult<Row>);
+  };
   const store = makeControlPlaneOperatorControlPromotionStore(
     Layer.succeed(ControlPlaneDb, {
-      execute: <Row = unknown>(statement: ControlPlaneStatement) => {
-        calls.push(statement);
-        return Effect.succeed({
-          rows: [
-            {
-              outcome: "promoted",
-              receipt_id: "receipt-1",
-              evidence_ref: "evidence-1",
-              route_binding_id: "binding-1",
-              binding_generation: "2",
-              app_host_activation_generation: "12",
-            },
-          ] as readonly Row[],
-          rowCount: 1,
-        } satisfies ControlPlaneResult<Row>);
-      },
+      execute,
+      withTransaction: <A, E, R>(
+        use: (transaction: { execute: typeof execute }) => Effect.Effect<A, E, R>,
+      ) => use({ execute }),
     }),
   );
   const outcome = await Effect.runPromise(
