@@ -208,7 +208,8 @@ export function makeControlPlaneMegapotWorkRepository() {
                       JOIN song_reward_offers offer ON offer.offer_id=leg.offer_id
                      WHERE funding.state='confirmed' AND leg.funded_atomic > 0
                        AND leg.status IN ('exhausted','ended')
-                       AND leg.funding_source='leg_budget' AND leg.reserved_atomic=0
+                       AND (leg.funding_source='leg_budget' OR leg.kind='asset_bonus')
+                       AND leg.reserved_atomic=0
                        AND offer.status IN ('exhausted','expired','ended')
                        AND leg.funded_atomic=(
                          SELECT sum(confirmed.confirmed_amount_atomic)
