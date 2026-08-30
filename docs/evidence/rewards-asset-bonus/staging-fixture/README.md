@@ -34,3 +34,6 @@ on-chain metadata reads, total supply and sponsor balance, and exact transfer
 balance deltas. Set `plain_erc20_verified_at` to the observation time and
 `activated_at` no earlier than that time. The policy version identifies the
 procedure; it does not replace the evidence.
+
+The completed Base Sepolia deployment and staging admission are recorded in
+[`deployment-2026-08-30.md`](./deployment-2026-08-30.md).
