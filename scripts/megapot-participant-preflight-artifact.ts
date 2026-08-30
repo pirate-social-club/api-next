@@ -31,7 +31,7 @@ const ParticipantPreflight = Schema.Struct({
     Schema.isBetween({ minimum: 4, maximum: Number.MAX_SAFE_INTEGER }),
   ),
   study_due_exercise_count: Schema.Int.check(
-    Schema.isBetween({ minimum: 4, maximum: Number.MAX_SAFE_INTEGER }),
+    Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
   ),
   subject_key_id: EvidenceIdentifier,
   binding_event_id: EvidenceIdentifier,
@@ -44,7 +44,7 @@ const ParticipantPreflight = Schema.Struct({
   personhood_assertion_id: EvidenceIdentifier,
   subject_unique_assertion_id: EvidenceIdentifier,
   evidence_expires_at: Schema.NullOr(CanonicalInstant),
-  study_session_id: Schema.optional(Identifier),
+  study_session_id: Schema.optional(Schema.NullOr(Identifier)),
 });
 
 export type MegapotParticipantPreflight = Schema.Schema.Type<typeof ParticipantPreflight>;
@@ -72,7 +72,8 @@ export function participantPreflightMatches(
     artifact.account_id === input.accountId &&
     artifact.persona_id === input.personaId &&
     artifact.community_id === input.communityId &&
-    artifact.post_id === input.postId
+    artifact.post_id === input.postId &&
+    (artifact.study_due_exercise_count >= 4 || artifact.study_session_id != null)
   );
 }
 

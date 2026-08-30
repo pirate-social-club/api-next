@@ -227,7 +227,7 @@ async function assertParticipantReady(
   }
 
   const session =
-    artifact.study_session_id === undefined
+    artifact.study_session_id == null
       ? await requestJson(
           dependencies,
           participantOptions(options),
