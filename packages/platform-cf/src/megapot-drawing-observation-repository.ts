@@ -264,6 +264,9 @@ export function makeControlPlaneMegapotDrawingObservationRepository() {
                           AND observation.drawing_time
                                 - make_interval(secs => leg.entry_cutoff_seconds)
                               > clock_timestamp()
+                          AND observation.drawing_time
+                                - make_interval(secs => leg.entry_cutoff_seconds)
+                              <= offer.ends_at
                        ON CONFLICT (pool_leg_id, drawing_id) DO NOTHING
                        RETURNING pool_leg_id`,
                 values: [text(row, "observation_id")],
