@@ -85,6 +85,7 @@
     "0082_study_translation_exercises.sql": "f21cb37b7f83dccf085906a69104e915f0142ff0a29e944c87cd2d0b266d4f69",
     "0083_learner_audio_deletion.sql": "e64265e6bf794319c544dfa7d803b84b381d6489c3128d981b2fe54fa681158b",
     "0084_study_language_profile_proper_names.sql": "f99d486922b84a85e05333aa4ceb83a2793bb8fe11de66f5d8b10fd768529dfa",
-    "0085_rewards_prebroadcast_purchase_terminal.sql": "9290143e9edbdf61a366d45065d65e48e2589127cc28b0230826f307732e1022"
+    "0085_rewards_prebroadcast_purchase_terminal.sql": "9290143e9edbdf61a366d45065d65e48e2589127cc28b0230826f307732e1022",
+    "0086_rewards_drawing_offer_window_guard.sql": "4bebbf006bd365c843c63ef691d1f76fa172f3629d91d78476fa71d9d1af0d48"
   }
 }
