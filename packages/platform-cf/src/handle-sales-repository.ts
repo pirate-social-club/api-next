@@ -2662,11 +2662,15 @@ export function makeControlPlaneHandleSalesRepository() {
               const now = instant(
                 one((yield* currentDatabaseTime(transaction)).rows, "database clock").database_now,
               );
-              const human = yield* activeHumanEvidence(transaction, input.accountId, now);
               const policyRow = requested.rows[0];
-              const humanMissing = human.rows[0] === undefined;
+              const policyKind = text(policyRow, "policy_kind");
+              const human =
+                policyKind === "none_v1"
+                  ? undefined
+                  : yield* activeHumanEvidence(transaction, input.accountId, now);
+              const humanMissing = human !== undefined && human.rows[0] === undefined;
               const qualificationMismatch =
-                text(policyRow, "policy_kind") === "curated_policy_v1" &&
+                policyKind === "curated_policy_v1" &&
                 text(policyRow, "subject_account_id") !== input.accountId;
               if (humanMissing || qualificationMismatch) {
                 const reason: "evidence_required" | "qualification_unsatisfied" = humanMissing
@@ -2748,7 +2752,7 @@ export function makeControlPlaneHandleSalesRepository() {
                 confirmationId = text(confirmation.rows[0], "confirmation_id");
                 confirmationHash = text(confirmation.rows[0], "confirmation_hash");
               }
-              const evidenceIds = human.rows.map((row) => text(row, "evidence_receipt_id"));
+              const evidenceIds = human?.rows.map((row) => text(row, "evidence_receipt_id")) ?? [];
               const quoteHash = handleQuoteV2Hash({
                 quote_id: input.quoteId,
                 offering_id: requestedOffering.offering_id,
@@ -2973,10 +2977,13 @@ export function makeControlPlaneHandleSalesRepository() {
                 readonly: false,
               });
               if (persona.rows[0] === undefined) return yield* reject("persona_unavailable");
-              const human = yield* activeHumanEvidence(transaction, input.accountId, now);
-              if (human.rows[0] === undefined) return yield* reject("evidence_required");
+              const policyKind = text(quoteRow, "policy_kind");
+              if (policyKind !== "none_v1") {
+                const human = yield* activeHumanEvidence(transaction, input.accountId, now);
+                if (human.rows[0] === undefined) return yield* reject("evidence_required");
+              }
               if (
-                text(quoteRow, "policy_kind") === "curated_policy_v1" &&
+                policyKind === "curated_policy_v1" &&
                 text(quoteRow, "subject_account_id") !== input.accountId
               ) {
                 return yield* reject("qualification_unsatisfied");
@@ -3277,10 +3284,13 @@ export function makeControlPlaneHandleSalesRepository() {
                 readonly: false,
               });
               if (persona.rows[0] === undefined) return yield* reject("persona_unavailable");
-              const human = yield* activeHumanEvidence(transaction, input.accountId, now);
-              if (human.rows[0] === undefined) return yield* reject("evidence_required");
+              const policyKind = text(row, "policy_kind");
+              if (policyKind !== "none_v1") {
+                const human = yield* activeHumanEvidence(transaction, input.accountId, now);
+                if (human.rows[0] === undefined) return yield* reject("evidence_required");
+              }
               if (
-                text(row, "policy_kind") === "curated_policy_v1" &&
+                policyKind === "curated_policy_v1" &&
                 text(row, "subject_account_id") !== input.accountId
               ) {
                 return yield* reject("qualification_unsatisfied");
