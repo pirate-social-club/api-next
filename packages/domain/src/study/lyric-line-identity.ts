@@ -11,6 +11,9 @@ export type StudyUnitSayItBackEligibilityV1 = Readonly<{
   tokenCount: number;
 }>;
 
+// Frozen from the 92-song production-near corpus. Re-measure when the catalog
+// grows materially; expanding this set changes materialized Study units and
+// requires a new eligibility-policy revision rather than an edit to v1.
 const STANDALONE_PARENTHESIZED_INSTRUMENTAL_DIRECTION =
   /^\(\s*instrumental(?:\s+solo|\s+breakdown(?:\s+with\s+vocal\s+chops)?)?\s*\)$/iu;
 
