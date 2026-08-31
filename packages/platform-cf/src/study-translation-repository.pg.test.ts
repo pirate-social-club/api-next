@@ -8,7 +8,7 @@ import {
 } from "@pirate/application";
 import { Effect } from "effect";
 import { Client } from "pg";
-import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
+import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { makeControlPlaneStudyLanguageProfileRepository } from "./study-language-profile-repository.ts";
 import {
@@ -44,7 +44,7 @@ suite("Study translation generation", () => {
     await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
     await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
     try {
-      await runPostgresMigrations({ connectionString: scoped });
+      await applyPostgresTestBaselineConnection({ connectionString: scoped });
       const lines = [
         "City lights are rising",
         "We keep moving forward",

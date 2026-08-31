@@ -3,7 +3,7 @@ import type { CommunityStore } from "@pirate/application";
 import { Effect } from "effect";
 import { Client } from "pg";
 
-import { runPostgresMigrations } from "../../../scripts/postgres-migrations";
+import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { makeControlPlaneCommunityStore } from "./community-repository.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 
@@ -65,7 +65,7 @@ async function insertCommunityOwner(admin: Client): Promise<void> {
 suite("Postgres 17 community repository", () => {
   test("keeps membership and follow state scoped to the requested community", async () => {
     await withSchema(async (connection, admin) => {
-      await runPostgresMigrations({ connectionString: connection });
+      await applyPostgresTestBaselineConnection({ connectionString: connection });
       await insertCommunityOwner(admin);
       await admin.query({
         text: `INSERT INTO communities
@@ -113,7 +113,7 @@ suite("Postgres 17 community repository", () => {
 
   test("makes join and follow idempotent while protecting active follows", async () => {
     await withSchema(async (connection, admin) => {
-      await runPostgresMigrations({ connectionString: connection });
+      await applyPostgresTestBaselineConnection({ connectionString: connection });
       await insertCommunityOwner(admin);
       await admin.query({
         text: `INSERT INTO communities
@@ -184,7 +184,7 @@ suite("Postgres 17 community repository", () => {
 
   test("fails closed when a gated community has no pinned policy", async () => {
     await withSchema(async (connection, admin) => {
-      await runPostgresMigrations({ connectionString: connection });
+      await applyPostgresTestBaselineConnection({ connectionString: connection });
       await insertCommunityOwner(admin);
       await admin.query({
         text: `INSERT INTO communities
@@ -212,7 +212,7 @@ suite("Postgres 17 community repository", () => {
 
   test("persists request notes, preserves explicit follows, and supports pending follow/unfollow", async () => {
     await withSchema(async (connection, admin) => {
-      await runPostgresMigrations({ connectionString: connection });
+      await applyPostgresTestBaselineConnection({ connectionString: connection });
       await insertCommunityOwner(admin);
       await admin.query({
         text: `INSERT INTO communities
@@ -292,7 +292,7 @@ suite("Postgres 17 community repository", () => {
 
   test("allows follow regardless of membership state while left members rejoin atomically", async () => {
     await withSchema(async (connection, admin) => {
-      await runPostgresMigrations({ connectionString: connection });
+      await applyPostgresTestBaselineConnection({ connectionString: connection });
       await insertCommunityOwner(admin);
       await admin.query({
         text: `INSERT INTO communities
@@ -351,7 +351,7 @@ suite("Postgres 17 community repository", () => {
 
   test("serializes concurrent join/follow/unfollow operations under the community lock", async () => {
     await withSchema(async (connection, admin) => {
-      await runPostgresMigrations({ connectionString: connection });
+      await applyPostgresTestBaselineConnection({ connectionString: connection });
       await insertCommunityOwner(admin);
       await admin.query({
         text: `INSERT INTO communities

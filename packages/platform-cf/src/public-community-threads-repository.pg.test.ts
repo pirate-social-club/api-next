@@ -2,10 +2,9 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { PublicCommunityThreadsRepositoryError } from "@pirate/application";
 import { Cause, Effect, Exit, Result } from "effect";
 import { Client } from "pg";
-import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
+import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
-import { applyPostgresMigrations } from "./postgres-migrations.ts";
 import { makeControlPlanePublicCommunityThreadsRepository } from "./public-community-threads-repository.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -20,8 +19,6 @@ const sentinelPath =
 const sentinelContents =
   "api-next-control-plane-postgres-public-community-threads-suite-complete\n";
 let completedTestCount = 0;
-
-const migrations = await loadPostgresMigrations();
 
 const schemaIdentifier = (): string =>
   `api_next_public_threads_${crypto.randomUUID().replaceAll("-", "")}`;
@@ -47,13 +44,7 @@ async function withSchema<A>(use: (connection: string, admin: Client) => Promise
 }
 
 async function apply(connection: string): Promise<void> {
-  await Effect.runPromise(
-    Effect.scoped(
-      applyPostgresMigrations(migrations).pipe(
-        Effect.provide(makeDirectPostgresControlPlaneLayer(connection)),
-      ),
-    ),
-  );
+  await applyPostgresTestBaselineConnection({ connectionString: connection });
 }
 
 const request = (communityRef: string, query: Record<string, unknown> = {}) => ({

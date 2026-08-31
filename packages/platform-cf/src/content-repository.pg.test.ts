@@ -4,7 +4,7 @@ import { castPostVote } from "@pirate/application/use-cases/content/cast-post-vo
 import { clearPostVote } from "@pirate/application/use-cases/content/clear-post-vote";
 import { Cause, Effect, Exit, Result } from "effect";
 import { Client } from "pg";
-import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
+import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { makeControlPlaneContentStore } from "./content-repository";
 import { createActivePersonaFixture } from "./persona-wallet.pg-fixture";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres";
@@ -51,7 +51,7 @@ async function withSchema<A>(use: (connection: string, admin: Client) => Promise
 }
 
 async function apply(connection: string): Promise<void> {
-  await runPostgresMigrations({ connectionString: connection });
+  await applyPostgresTestBaselineConnection({ connectionString: connection });
 }
 
 function failureOf<A, E>(exit: Exit.Exit<A, E>): E | undefined {

@@ -356,7 +356,8 @@ is still a later slice.
 
 ## Schema and extension guardrails
 
-`db/postgres/schema.sql` is the generated, schema-only fresh-database baseline;
+`db/postgres/schema.sql` is the generated fresh-database baseline, including
+migration-owned static seed rows;
 the forward migrations are authoritative and the artifact is regenerated with
 `bun run db:generate:baseline` and checked with `bun run check:baseline:fresh`.
 The reviewed

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Effect } from "effect";
 import { Client } from "pg";
-import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
+import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { makeControlPlaneLearnerAudioDeletionStore } from "./learner-audio-deletion-repository.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 
@@ -29,7 +29,7 @@ suite("learner audio deletion repository", () => {
     const scopedConnection = connectionForSchema(connectionString, schema);
 
     try {
-      await runPostgresMigrations({ connectionString: scopedConnection });
+      await applyPostgresTestBaselineConnection({ connectionString: scopedConnection });
       await admin.query("SET session_replication_role = replica");
       try {
         await admin.query(
@@ -178,7 +178,7 @@ suite("learner audio deletion repository", () => {
     const scopedConnection = connectionForSchema(connectionString, schema);
 
     try {
-      await runPostgresMigrations({ connectionString: scopedConnection });
+      await applyPostgresTestBaselineConnection({ connectionString: scopedConnection });
       await admin.query("SET session_replication_role = replica");
       try {
         await admin.query("INSERT INTO users (user_id) VALUES ('account-3'), ('account-4')");
@@ -197,9 +197,10 @@ suite("learner audio deletion repository", () => {
              command_id, account_id, session_id, session_item_id, attempt_number,
              idempotency_key, request_hash, audio_digest, audio_content_type,
              audio_byte_size, audio_duration_ms, attempt_id,
-             learner_audio_artifact_id, lease_token, lease_expires_at, state
+             learner_audio_artifact_id, lease_token, reserved_at, lease_expires_at, state
            ) VALUES ('command-3', 'account-3', 'session-3', 'item-3', 1, 'idem-3',
              $1, $2, 'audio/ogg', 100, 1000, 'attempt-3', 'pending-study', 'lease-3',
+             clock_timestamp() - interval '1 second',
              clock_timestamp() + interval '1 hour', 'reserved')`,
           ["e".repeat(64), "d".repeat(64)],
         );
@@ -207,10 +208,11 @@ suite("learner audio deletion repository", () => {
           `INSERT INTO karaoke_sessions (
              session_id, attempt_id, account_id, persona_id, community_id, post_id,
              audio_revision, karaoke_revision_id, qualification_policy_version_id,
-             idempotency_key, request_hash, timezone, status, expires_at
+             idempotency_key, request_hash, timezone, status, expires_at,
+             lyrics_revision, line_snapshot
            ) VALUES ('session-4', 'attempt-4', 'account-4', 'persona-4', 'community-4',
              'post-4', 1, 'revision-4', 'policy-4', 'idem-4', $1, 'UTC', 'active',
-             clock_timestamp() + interval '1 hour')`,
+             clock_timestamp() + interval '1 hour', 1, '[{}]'::jsonb)`,
           ["f".repeat(64)],
         );
       } finally {

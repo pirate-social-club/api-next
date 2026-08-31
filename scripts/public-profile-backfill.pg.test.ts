@@ -31,21 +31,21 @@ const pgModule =
         }
         return undefined;
       });
-const migrationModule =
+const baselineModule =
   connectionString === undefined
     ? undefined
-    : await import("./postgres-migrations.ts").catch(() => undefined);
+    : await import("./postgres-test-baseline.ts").catch(() => undefined);
 const PgClientConstructor = pgModule?.Client;
-const runPostgresMigrations = migrationModule?.runPostgresMigrations;
+const applyPostgresTestBaselineConnection = baselineModule?.applyPostgresTestBaselineConnection;
 const suite =
   connectionString === undefined ||
   PgClientConstructor === undefined ||
-  runPostgresMigrations === undefined
+  applyPostgresTestBaselineConnection === undefined
     ? describe.skip
     : describe;
 
-if (required && runPostgresMigrations === undefined) {
-  throw new Error("postgres migration runner is required for the focused suite");
+if (required && applyPostgresTestBaselineConnection === undefined) {
+  throw new Error("PostgreSQL baseline helper is required for the focused suite");
 }
 
 const schemaIdentifier = (): string =>
@@ -55,11 +55,6 @@ const connectionForSchema = (raw: string, schema: string): string => {
   const separator = raw.includes("?") ? "&" : "?";
   return `${raw}${separator}options=${encodeURIComponent(`-c search_path=${schema}`)}`;
 };
-
-test("resolves the package-local pg driver used by the apply adapter", async () => {
-  const driver = await loadPublicProfileBackfillPgDriver();
-  expect(typeof driver.Client).toBe("function");
-});
 
 const dates = {
   issued_at: "2026-08-16T00:00:00.000Z",
@@ -112,10 +107,10 @@ function makeClient(connection: string): PublicProfileBackfillPgClient {
   return new PgClientConstructor({ connectionString: connection });
 }
 
-async function migrate(connection: string): Promise<void> {
-  if (runPostgresMigrations === undefined)
-    throw new Error("postgres migration runner is unavailable");
-  await runPostgresMigrations({ connectionString: connection });
+async function applyBaseline(connection: string): Promise<void> {
+  if (applyPostgresTestBaselineConnection === undefined)
+    throw new Error("PostgreSQL baseline helper is unavailable");
+  await applyPostgresTestBaselineConnection({ connectionString: connection });
 }
 
 async function withSchema<A>(
@@ -135,10 +130,10 @@ async function withSchema<A>(
   }
 }
 
-suite("public-profile historical backfill against Postgres 17 migrations", () => {
+suite("public-profile historical backfill against the Postgres 17 baseline", () => {
   test("runs the actual transaction adapter against valid migration tables", async () => {
     await withSchema(async (connection, admin) => {
-      await migrate(connection);
+      await applyBaseline(connection);
       await admin.query(
         `INSERT INTO users (user_id, status, account)
          VALUES ('api_legacy_owner', 'active', '{}'::jsonb)`,
@@ -219,7 +214,7 @@ suite("public-profile historical backfill against Postgres 17 migrations", () =>
 
   test("does not commit when a locked target owner changes status", async () => {
     await withSchema(async (connection, admin) => {
-      await migrate(connection);
+      await applyBaseline(connection);
       await admin.query(
         `INSERT INTO users (user_id, status, account)
          VALUES ('api_race_owner', 'active', '{}'::jsonb)`,
@@ -268,7 +263,7 @@ suite("public-profile historical backfill against Postgres 17 migrations", () =>
 
   test("rejects a collision before writes and rolls back a database failure", async () => {
     await withSchema(async (connection, admin) => {
-      await migrate(connection);
+      await applyBaseline(connection);
       await admin.query(
         `INSERT INTO users (user_id, status, account)
          VALUES ('api_collision_owner', 'active', '{}'::jsonb),

@@ -105,15 +105,21 @@ describe("Postgres suite sentinel verification", () => {
     await expect(verifyPostgresTestSentinels(sentinels)).rejects.toThrow("persona");
   });
 
+  test("runs the complete tracked PostgreSQL inventory through the dedicated runner", async () => {
+    const workflow = await readFile(
+      new URL("../.github/workflows/ci.yml", import.meta.url),
+      "utf8",
+    );
+
+    expect(workflow).toContain("bun run test:postgres");
+  });
+
   test("keeps persona and text-submission persistence fail-closed in Postgres CI", async () => {
     const workflow = await readFile(
       new URL("../.github/workflows/ci.yml", import.meta.url),
       "utf8",
     );
 
-    for (const suite of ["persona-repository", "text-submission-repository"]) {
-      expect(workflow).toContain(`packages/platform-cf/src/${suite}.pg.test.ts`);
-    }
     for (const marker of ["persona", "text-submission"]) {
       expect(
         workflow.match(
@@ -129,7 +135,6 @@ describe("Postgres suite sentinel verification", () => {
       "utf8",
     );
 
-    expect(workflow).toContain("packages/platform-cf/src/rewards-qualification.pg.test.ts");
     expect(
       workflow.match(
         /\/tmp\/api-next-control-plane-postgres-rewards-qualification-suite-complete/gu,
@@ -143,7 +148,6 @@ describe("Postgres suite sentinel verification", () => {
       "utf8",
     );
 
-    expect(workflow).toContain("packages/platform-cf/src/rewards-song-offers.pg.test.ts");
     expect(workflow).toContain(
       "CONTROL_PLANE_POSTGRES_REWARDS_SONG_OFFERS_TEST_SENTINEL: " +
         "/tmp/api-next-control-plane-postgres-rewards-song-offers-suite-complete",
@@ -159,7 +163,6 @@ describe("Postgres suite sentinel verification", () => {
       "utf8",
     );
 
-    expect(workflow).toContain("packages/platform-cf/src/dance-reference-persistence.pg.test.ts");
     expect(workflow).toContain(
       "CONTROL_PLANE_POSTGRES_DANCE_REFERENCE_TEST_SENTINEL: " +
         "/tmp/api-next-control-plane-postgres-dance-reference-suite-complete",
@@ -175,7 +178,6 @@ describe("Postgres suite sentinel verification", () => {
       "utf8",
     );
 
-    expect(workflow).toContain("packages/platform-cf/src/gates-v2-community.pg.test.ts");
     expect(workflow).toContain(
       "CONTROL_PLANE_POSTGRES_GATES_V2_COMMUNITY_TEST_SENTINEL: " +
         "/tmp/api-next-control-plane-postgres-gates-v2-community-suite-complete",
@@ -191,9 +193,6 @@ describe("Postgres suite sentinel verification", () => {
       "utf8",
     );
 
-    for (const suite of ["community-creation-repository", "community-route-repository"]) {
-      expect(workflow).toContain(`packages/platform-cf/src/${suite}.pg.test.ts`);
-    }
     for (const marker of ["community-creation", "canonical-route"]) {
       expect(
         workflow.match(
@@ -209,9 +208,6 @@ describe("Postgres suite sentinel verification", () => {
       "utf8",
     );
 
-    expect(workflow).toContain(
-      "packages/platform-cf/src/hns-control-observer-repository.pg.test.ts",
-    );
     expect(
       workflow.match(/\/tmp\/api-next-control-plane-postgres-hns-observer-suite-complete/gu),
     ).toHaveLength(2);
@@ -223,9 +219,6 @@ describe("Postgres suite sentinel verification", () => {
       "utf8",
     );
 
-    expect(workflow).toContain(
-      "packages/platform-cf/src/hns-host-persistence-repository.pg.test.ts",
-    );
     expect(
       workflow.match(
         /\/tmp\/api-next-control-plane-postgres-hns-host-persistence-suite-complete/gu,
@@ -239,7 +232,6 @@ describe("Postgres suite sentinel verification", () => {
       "utf8",
     );
 
-    expect(workflow).toContain("packages/platform-cf/src/handle-sales-repository.pg.test.ts");
     expect(workflow).toContain(
       "CONTROL_PLANE_POSTGRES_HANDLE_SALES_TEST_SENTINEL: " +
         "/tmp/api-next-control-plane-postgres-handle-sales-suite-complete",
@@ -255,9 +247,6 @@ describe("Postgres suite sentinel verification", () => {
       "utf8",
     );
 
-    expect(workflow).toContain(
-      "packages/platform-cf/src/community-moderation-foundation.pg.test.ts",
-    );
     expect(workflow).toContain(
       "CONTROL_PLANE_POSTGRES_COMMUNITY_MODERATION_TEST_SENTINEL: " +
         "/tmp/api-next-control-plane-postgres-community-moderation-suite-complete",
@@ -276,9 +265,6 @@ describe("Postgres suite sentinel verification", () => {
     );
 
     expect(workflow).toContain(
-      "packages/platform-cf/src/platform-pirate-handle-repository.pg.test.ts",
-    );
-    expect(workflow).toContain(
       "CONTROL_PLANE_POSTGRES_PLATFORM_PIRATE_RENAME_TEST_SENTINEL: " +
         "/tmp/api-next-control-plane-postgres-platform-pirate-rename-suite-complete",
     );
@@ -295,7 +281,6 @@ describe("Postgres suite sentinel verification", () => {
       "utf8",
     );
 
-    expect(workflow).toContain("packages/platform-cf/src/media-persistence.pg.test.ts");
     expect(workflow).toContain(
       "CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL: " +
         "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete",
@@ -311,7 +296,6 @@ describe("Postgres suite sentinel verification", () => {
       "utf8",
     );
 
-    expect(workflow).toContain("packages/platform-cf/src/optional-route-v2-migration.pg.test.ts");
     expect(workflow).toContain(
       "CONTROL_PLANE_POSTGRES_OPTIONAL_ROUTE_V2_TEST_SENTINEL: " +
         "/tmp/api-next-control-plane-postgres-optional-route-v2-suite-complete",

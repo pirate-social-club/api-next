@@ -11,7 +11,7 @@ import {
 } from "@pirate/application";
 import { Effect } from "effect";
 import { Client } from "pg";
-import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
+import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import {
   HNS_COMMUNITY_APP_GATEWAY_AUTHORITY_READINESS_HOST,
   makePostgresHnsCommunityAppGatewayAuthorityV1,
@@ -199,7 +199,7 @@ async function dnsDocument(inventoryDigest: string, generation: number, zoneRevi
 suite("HNS first-party host persistence on PostgreSQL 17", () => {
   test("resolves through the exact read-only role with an empty caller search path", async () => {
     await withSchema(async (connection, admin) => {
-      await runPostgresMigrations({ connectionString: connection });
+      await applyPostgresTestBaselineConnection({ connectionString: connection });
       const schema = String(
         (await admin.query("SELECT current_schema() AS schema")).rows[0]?.schema,
       );
@@ -250,7 +250,7 @@ suite("HNS first-party host persistence on PostgreSQL 17", () => {
 
   test("replays exactly and fails route, DNS, delegation, DS, generation, and time drift closed", async () => {
     await withSchema(async (connection, admin) => {
-      await runPostgresMigrations({ connectionString: connection });
+      await applyPostgresTestBaselineConnection({ connectionString: connection });
       const inventoryDigest = await seedInventory(admin);
       const { activation, communityId, operatorStore } = await seedOperatorRoute(connection, admin);
       const runtime = makeDirectPostgresControlPlaneLayer(connection);
@@ -487,7 +487,7 @@ suite("HNS first-party host persistence on PostgreSQL 17", () => {
 
   test("rejects stale finalizers and contradictory exact documents", async () => {
     await withSchema(async (connection, admin) => {
-      await runPostgresMigrations({ connectionString: connection });
+      await applyPostgresTestBaselineConnection({ connectionString: connection });
       const inventoryDigest = await seedInventory(admin);
       const repository = makeControlPlaneHnsFirstPartyHostPersistenceRepository(
         makeDirectPostgresControlPlaneLayer(connection),

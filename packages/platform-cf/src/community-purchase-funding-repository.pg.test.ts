@@ -11,7 +11,7 @@ import {
 } from "@pirate/domain";
 import { Effect } from "effect";
 import { Client } from "pg";
-import { runPostgresMigrations } from "../../../scripts/postgres-migrations";
+import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import {
   makeControlPlaneCommunityPurchaseFundingAdmissionStore,
   makeControlPlaneCommunityPurchaseFundingAttemptStore,
@@ -68,7 +68,7 @@ async function withSchema<A>(use: (connection: string, admin: Client) => Promise
   await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
   try {
     const connection = connectionForSchema(connectionString, schema);
-    await runPostgresMigrations({ connectionString: connection });
+    await applyPostgresTestBaselineConnection({ connectionString: connection });
     await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
     await admin.query("INSERT INTO users (user_id) VALUES ('user_1'), ('user_2')");
     await admin.query(`INSERT INTO communities (

@@ -16,7 +16,7 @@ import {
 import { Effect } from "effect";
 import { Client } from "pg";
 
-import { runPostgresMigrations } from "../../../scripts/postgres-migrations";
+import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { seedCuratedAge18Policy } from "../../../scripts/seed-gates-v2-age18";
 import { makeCommunityJoinIntentResolver } from "./community-join-intent-resolver.ts";
 import { makeControlPlaneCommunityStore } from "./community-repository.ts";
@@ -62,7 +62,7 @@ async function withSchema<A>(use: (connection: string, admin: Client) => Promise
   await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
   await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
   try {
-    await runPostgresMigrations({
+    await applyPostgresTestBaselineConnection({
       connectionString: connectionForSchema(connectionString, schema),
     });
     await admin.query("INSERT INTO users (user_id) VALUES ('user-a')");

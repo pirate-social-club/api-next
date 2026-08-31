@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Client } from "pg";
-import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
+import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -25,7 +25,7 @@ suite("Study v2 Postgres foundation", () => {
     await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
 
     try {
-      await runPostgresMigrations({
+      await applyPostgresTestBaselineConnection({
         connectionString: connectionForSchema(connectionString, schema),
       });
       const hash = "a".repeat(64);

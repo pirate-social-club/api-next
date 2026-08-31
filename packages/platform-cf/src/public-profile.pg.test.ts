@@ -3,7 +3,7 @@ import { getPublicProfileByHandle } from "@pirate/application/use-cases/public-p
 import { platformPirateHandleStateV1Hash, platformPirateLabelPolicyV1 } from "@pirate/domain";
 import { Effect } from "effect";
 import { Client } from "pg";
-import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
+import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { makeControlPlaneIdentityStore } from "./identity-repository.ts";
 import { createWalletBackedAccountFixture } from "./persona-wallet.pg-fixture.ts";
 import { makeControlPlanePlatformPirateHandleStore } from "./platform-pirate-handle-repository.ts";
@@ -114,7 +114,7 @@ async function expectDeferredFailure(
 suite("Postgres 17 public profile by handle", () => {
   test("maintains current and redirect labels, returns creators, and uses the handle index", async () => {
     await withSchema(async (connection, admin) => {
-      await runPostgresMigrations({ connectionString: connection });
+      await applyPostgresTestBaselineConnection({ connectionString: connection });
       const runtime = makeDirectPostgresControlPlaneLayer(connection);
       const identityStore = makeControlPlaneIdentityStore(runtime);
       const publicProfileStore = makeControlPlanePublicProfileStore(runtime, identityStore);
@@ -237,7 +237,7 @@ suite("Postgres 17 public profile by handle", () => {
 
   test("redacts deleted accounts and unresolved aliases as not found", async () => {
     await withSchema(async (connection, admin) => {
-      await runPostgresMigrations({ connectionString: connection });
+      await applyPostgresTestBaselineConnection({ connectionString: connection });
       const runtime = makeDirectPostgresControlPlaneLayer(connection);
       const identityStore = makeControlPlaneIdentityStore(runtime);
       const publicProfileStore = makeControlPlanePublicProfileStore(runtime, identityStore);
@@ -257,7 +257,7 @@ suite("Postgres 17 public profile by handle", () => {
 
   test("enforces active ownership and direct same-owner redirect history at commit", async () => {
     await withSchema(async (connection, admin) => {
-      await runPostgresMigrations({ connectionString: connection });
+      await applyPostgresTestBaselineConnection({ connectionString: connection });
       const runtime = makeDirectPostgresControlPlaneLayer(connection);
       const identityStore = makeControlPlaneIdentityStore(runtime);
       const upsertAccount = identityStore.upsertAccount;

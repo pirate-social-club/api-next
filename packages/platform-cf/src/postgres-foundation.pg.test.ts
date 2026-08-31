@@ -28,9 +28,6 @@ const sentinelPath =
   "/tmp/api-next-control-plane-postgres-foundation-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-foundation-suite-complete\n";
 let completedTestCount = 0;
-const baselineSql = await Bun.file(
-  new URL("../../../db/postgres/schema.sql", import.meta.url),
-).text();
 const migrationSql = await Bun.file(
   new URL("../../../db/postgres/migrations/0001_v1_product_slice.sql", import.meta.url),
 ).text();
@@ -786,6 +783,7 @@ interface SchemaCatalog {
   readonly columns: readonly Record<string, unknown>[];
   readonly indexes: readonly Record<string, unknown>[];
   readonly constraints: readonly Record<string, unknown>[];
+  readonly functions: readonly Record<string, unknown>[];
 }
 
 async function catalogForSchema(admin: Client, schema: string): Promise<SchemaCatalog> {
@@ -826,6 +824,20 @@ async function catalogForSchema(admin: Client, schema: string): Promise<SchemaCa
      ORDER BY relation.relname, constraint_name`,
     [schema],
   );
+  const functions = await admin.query<{
+    readonly function_name: string;
+    readonly identity_arguments: string;
+    readonly configuration: readonly string[] | null;
+  }>(
+    `SELECT procedure.proname AS function_name,
+            pg_get_function_identity_arguments(procedure.oid) AS identity_arguments,
+            procedure.proconfig AS configuration
+     FROM pg_proc AS procedure
+     JOIN pg_namespace AS namespace ON namespace.oid = procedure.pronamespace
+     WHERE namespace.nspname = $1
+     ORDER BY function_name, identity_arguments`,
+    [schema],
+  );
   return {
     tables: tables.rows,
     columns: columns.rows,
@@ -836,6 +848,10 @@ async function catalogForSchema(admin: Client, schema: string): Promise<SchemaCa
     constraints: constraints.rows.map((constraint) => ({
       ...constraint,
       definition: constraint.definition.replaceAll(`${schema}.`, ""),
+    })),
+    functions: functions.rows.map((procedure) => ({
+      ...procedure,
+      configuration: procedure.configuration?.map((value) => value.replaceAll(schema, "<schema>")),
     })),
   };
 }
@@ -1057,8 +1073,63 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       await admin.query(`CREATE SCHEMA ${quoteIdentifier(baselineSchema)}`);
       try {
         await admin.query(`SET search_path TO ${quoteIdentifier(baselineSchema)}`);
-        await admin.query(baselineSql);
+        const baselineSql = await Bun.file(
+          new URL("../../../db/postgres/schema.sql", import.meta.url),
+        ).text();
+        const bodyCheckSetting = "SET check_function_bodies = false;";
+        const bodyCheckSettingEnd = baselineSql.indexOf(bodyCheckSetting) + bodyCheckSetting.length;
+        expect(bodyCheckSettingEnd).toBeGreaterThan(bodyCheckSetting.length);
+        // Keep the session settings in their own autocommit round trip. A
+        // regression to SET LOCAL then expires before functions are replayed.
+        await admin.query(baselineSql.slice(0, bodyCheckSettingEnd));
+        await admin.query(baselineSql.slice(bodyCheckSettingEnd));
+        const checkFunctionBodies = await admin.query<{
+          readonly check_function_bodies: string;
+        }>("SHOW check_function_bodies");
+        expect(checkFunctionBodies.rows).toEqual([{ check_function_bodies: "on" }]);
         expect(migratedCatalog).toEqual(await catalogForSchema(admin, baselineSchema));
+        const resolverConfiguration = await admin.query<{
+          readonly function_name: string;
+          readonly configuration: readonly string[] | null;
+        }>(
+          `SELECT procedure.proname AS function_name,
+                  procedure.proconfig AS configuration
+             FROM pg_proc AS procedure
+             JOIN pg_namespace AS namespace ON namespace.oid = procedure.pronamespace
+            WHERE namespace.nspname = $1
+              AND procedure.proname = ANY($2::text[])
+            ORDER BY function_name`,
+          [
+            baselineSchema,
+            [
+              "effective_active_route",
+              "effective_route_authority_v2",
+              "resolve_hns_community_app_host_authority_v1",
+            ],
+          ],
+        );
+        expect(resolverConfiguration.rows).toEqual([
+          {
+            function_name: "effective_active_route",
+            configuration: [`search_path=${baselineSchema}, pg_temp`],
+          },
+          {
+            function_name: "effective_route_authority_v2",
+            configuration: [`search_path=${baselineSchema}, pg_temp`],
+          },
+          {
+            function_name: "resolve_hns_community_app_host_authority_v1",
+            configuration: [`search_path=${baselineSchema}, pg_temp`],
+          },
+        ]);
+        await admin.query("SET search_path TO ''");
+        const resolverProbe = await admin.query(
+          `SELECT *
+             FROM ${quoteIdentifier(baselineSchema)}.resolve_hns_community_app_host_authority_v1(
+               'app.missing', clock_timestamp()
+             )`,
+        );
+        expect(resolverProbe.rows).toEqual([]);
       } finally {
         await admin.query(`DROP SCHEMA ${quoteIdentifier(baselineSchema)} CASCADE`);
         await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);

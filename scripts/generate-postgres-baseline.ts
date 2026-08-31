@@ -2,6 +2,11 @@ import { createHash } from "node:crypto";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Client } from "pg";
+import {
+  normalizePostgresBaselineDump,
+  normalizePostgresBaselineSeedDump,
+} from "./postgres-baseline-normalization.ts";
 import { runPostgresMigrations } from "./postgres-migrations.ts";
 
 const root = new URL("../", import.meta.url);
@@ -9,6 +14,34 @@ const defaultOutput = new URL("db/postgres/schema.sql", root);
 const postgresImage = process.env.CONTROL_PLANE_POSTGRES_IMAGE?.trim() || "postgres:17";
 const localPassword = "postgres";
 const migrationsDirectory = new URL("../db/postgres/migrations/", import.meta.url);
+const baselineSeedTables = [
+  "activity_registry",
+  "handle_account_directory_bindings",
+  "handle_issuance_driver_revisions",
+  "handle_pricing_revisions",
+  "handle_qualification_policy_revisions",
+  "handle_reserved_label_revisions",
+  "moderation_platform_floor_category_decisions",
+  "moderation_platform_floor_current",
+  "moderation_platform_floor_revisions",
+  "platform_pirate_label_policy_revisions",
+  "qualification_policy_versions",
+  "text_moderation_policy_current",
+  "text_moderation_policy_revisions",
+] as const;
+
+export function assertPostgresBaselineSeedInventory(actualTables: readonly string[]): void {
+  const expected = [...baselineSeedTables].sort();
+  const actual = [...new Set(actualTables)].sort();
+  const missing = expected.filter((table) => !actual.includes(table));
+  const unexpected = actual.filter(
+    (table) => !expected.includes(table as (typeof expected)[number]),
+  );
+  if (missing.length === 0 && unexpected.length === 0) return;
+  throw new Error(
+    `Postgres baseline seed inventory drifted: missing=${missing.join(",") || "none"}; unexpected=${unexpected.join(",") || "none"}`,
+  );
+}
 
 type CommandResult = {
   readonly exitCode: number;
@@ -80,6 +113,8 @@ async function removeSocketDirectory(socketDirectory: string): Promise<void> {
     "docker",
     "run",
     "--rm",
+    "--cpus=1",
+    "--memory=512m",
     "--user",
     "0:0",
     "--volume",
@@ -107,6 +142,8 @@ async function startLocalPostgres(): Promise<{
         "run",
         "--detach",
         "--rm",
+        "--cpus=1",
+        "--memory=512m",
         "--name",
         container,
         "--env",
@@ -121,6 +158,7 @@ async function startLocalPostgres(): Promise<{
     );
 
     for (let attempt = 0; attempt < 60; attempt += 1) {
+      const logs = await runCommand(["docker", "logs", container]);
       const readiness = await runCommand([
         "docker",
         "exec",
@@ -129,7 +167,10 @@ async function startLocalPostgres(): Promise<{
         "--username=postgres",
         "--dbname=postgres",
       ]);
-      if (readiness.exitCode === 0) {
+      if (
+        readiness.exitCode === 0 &&
+        `${logs.stdout}\n${logs.stderr}`.includes("PostgreSQL init process complete")
+      ) {
         return {
           container,
           connectionString: `postgres://postgres:${localPassword}@localhost/postgres?host=${encodeURIComponent(socketDirectory)}`,
@@ -146,18 +187,104 @@ async function startLocalPostgres(): Promise<{
   }
 }
 
-async function dumpLocalPostgres(container: string): Promise<string> {
+function connectionForBaselineGeneration(connectionString: string): string {
+  const url = new URL(connectionString);
+  const existingOptions = url.searchParams.get("options")?.trim();
+  url.searchParams.set(
+    "options",
+    [existingOptions, "-c timezone=UTC", "-c search_path=public"].filter(Boolean).join(" "),
+  );
+  return url.toString();
+}
+
+async function withPostgresClient<A>(
+  connectionString: string,
+  use: (client: Client) => Promise<A>,
+): Promise<A> {
+  const client = new Client({ connectionString });
+  await client.connect();
+  try {
+    await client.query("SET TIME ZONE 'UTC'");
+    return await use(client);
+  } finally {
+    await client.end();
+  }
+}
+
+async function assertEmptyGeneratorDatabase(connectionString: string): Promise<void> {
+  const relations = await withPostgresClient(connectionString, (client) =>
+    client.query<{ readonly relation_name: string }>(
+      `SELECT pg_catalog.format('%I.%I', namespace.nspname, relation.relname) AS relation_name
+         FROM pg_catalog.pg_class AS relation
+         JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+        WHERE namespace.nspname !~ '^pg_'
+          AND namespace.nspname <> 'information_schema'
+          AND relation.relkind = ANY (ARRAY['r', 'p', 'v', 'm', 'S', 'f']::"char"[])
+        ORDER BY relation_name`,
+    ),
+  );
+  if (relations.rows.length === 0) return;
+  const preview = relations.rows
+    .slice(0, 10)
+    .map((row) => row.relation_name)
+    .join(", ");
+  const remainder = relations.rows.length - 10;
+  throw new Error(
+    `Postgres baseline generation requires an empty database; found ${preview}${remainder > 0 ? ` and ${remainder} more` : ""}`,
+  );
+}
+
+async function nonemptyPublicTables(connectionString: string): Promise<readonly string[]> {
+  return withPostgresClient(connectionString, async (client) => {
+    const tables = await client.query<{ readonly table_name: string }>(
+      `SELECT relation.relname AS table_name
+         FROM pg_catalog.pg_class AS relation
+         JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+        WHERE namespace.nspname = 'public'
+          AND relation.relkind = ANY (ARRAY['r', 'p']::"char"[])
+          AND relation.relname <> 'schema_migrations'
+        ORDER BY table_name`,
+    );
+    const nonempty: string[] = [];
+    for (const { table_name: tableName } of tables.rows) {
+      const identifier = `"${tableName.replaceAll('"', '""')}"`;
+      const result = await client.query<{ readonly nonempty: boolean }>(
+        `SELECT EXISTS (SELECT FROM public.${identifier} LIMIT 1) AS nonempty`,
+      );
+      if (result.rows[0]?.nonempty === true) nonempty.push(tableName);
+    }
+    return nonempty;
+  });
+}
+
+function seedDumpArguments(): readonly string[] {
+  return [
+    "--data-only",
+    "--inserts",
+    ...baselineSeedTables.map((table) => `--table=public.${table}`),
+  ];
+}
+
+type DumpSection = "pre-data" | "seed" | "post-data";
+
+function dumpArguments(section: DumpSection): readonly string[] {
+  return section === "seed" ? seedDumpArguments() : ["--schema-only", `--section=${section}`];
+}
+
+async function dumpLocalPostgres(container: string, section: DumpSection): Promise<string> {
   return checkedCommand(
     [
       "docker",
       "exec",
       "--env",
       `PGPASSWORD=${localPassword}`,
+      "--env",
+      "PGOPTIONS=-c timezone=UTC",
       container,
       "pg_dump",
       "--username=postgres",
       "--dbname=postgres",
-      "--schema-only",
+      ...dumpArguments(section),
       "--no-owner",
       "--no-privileges",
       "--no-comments",
@@ -166,18 +293,28 @@ async function dumpLocalPostgres(container: string): Promise<string> {
   );
 }
 
-async function dumpSuppliedPostgres(connectionString: string): Promise<string> {
+async function dumpSuppliedPostgres(
+  connectionString: string,
+  section: DumpSection,
+): Promise<string> {
+  if (process.env.CONTROL_PLANE_POSTGRES_SERVER_DUMP === "1") {
+    return dumpSuppliedPostgresFromServer(connectionString, section);
+  }
   return checkedCommand(
     [
       "docker",
       "run",
       "--rm",
+      "--cpus=1",
+      "--memory=512m",
       "--network",
       "host",
+      "--env",
+      "PGOPTIONS=-c timezone=UTC",
       postgresImage,
       "pg_dump",
       connectionString,
-      "--schema-only",
+      ...dumpArguments(section),
       "--no-owner",
       "--no-privileges",
       "--no-comments",
@@ -186,93 +323,60 @@ async function dumpSuppliedPostgres(connectionString: string): Promise<string> {
   );
 }
 
-function normalizeDump(dump: string): string {
-  const lines = dump.replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\n");
-  const normalized: string[] = [];
-  let dollarDelimiter: string | undefined;
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
 
-  for (const line of lines) {
-    const topLevel = dollarDelimiter === undefined;
-    const trimmed = line.trim();
+async function dumpSuppliedPostgresFromServer(
+  connectionString: string,
+  section: DumpSection,
+): Promise<string> {
+  return withPostgresClient(connectionString, async (client) => {
+    const authority = await client.query<{
+      readonly current_database: string;
+      readonly current_user: string;
+    }>("SELECT current_database(), current_user");
+    const current = authority.rows[0];
     if (
-      topLevel &&
-      (trimmed.startsWith("--") ||
-        trimmed.startsWith("\\restrict ") ||
-        trimmed.startsWith("\\unrestrict ") ||
-        (trimmed.startsWith("SET ") && trimmed !== "SET check_function_bodies = false;") ||
-        trimmed.startsWith("SELECT pg_catalog.set_config('search_path'") ||
-        /^CREATE SCHEMA public;$/i.test(trimmed) ||
-        /^ALTER SCHEMA public OWNER TO /i.test(trimmed) ||
-        /^ALTER .* OWNER TO /i.test(trimmed) ||
-        /^GRANT /i.test(trimmed) ||
-        /^REVOKE /i.test(trimmed))
+      current === undefined ||
+      current.current_user !== "postgres" ||
+      current.current_database !== "postgres"
     ) {
-      continue;
+      throw new Error(
+        "server-side Postgres baseline dump requires the dedicated postgres test database and superuser",
+      );
     }
 
-    normalized.push(
-      line
-        .replaceAll(/"public"\.|\bpublic\./g, "")
-        .replaceAll(
-          /\(\(octet_length\(upstream_session_ref\) >= 1\) AND \(octet_length\(upstream_session_ref\) <= 16384\)\)/g,
-          "(octet_length(upstream_session_ref) BETWEEN 1 AND 16384)",
-        )
-        // pg_dump adds a grouping pair around the first expanded BETWEEN in
-        // these multi-term checks. Replaying that dump then retains the pair,
-        // while the migration catalog has the equivalent flat AND tree.
-        .replaceAll(
-          "CHECK ((((expected_activation_generation >= 0) AND (expected_activation_generation <= '9007199254740991'::bigint)) AND",
-          "CHECK (((expected_activation_generation >= 0) AND (expected_activation_generation <= '9007199254740991'::bigint) AND",
-        )
-        .replaceAll(
-          "CHECK ((((octet_length(activation_document_bytes) >= 1) AND (octet_length(activation_document_bytes) <= 65536)) AND",
-          "CHECK (((octet_length(activation_document_bytes) >= 1) AND (octet_length(activation_document_bytes) <= 65536) AND",
-        )
-        .replaceAll(
-          "CHECK ((((dns_zone_activation_generation >= 1) AND (dns_zone_activation_generation <= '9007199254740991'::bigint)) AND",
-          "CHECK (((dns_zone_activation_generation >= 1) AND (dns_zone_activation_generation <= '9007199254740991'::bigint) AND",
-        )
-        .replaceAll(
-          "CHECK ((((health_generation >= 1) AND (health_generation <= '9007199254740991'::bigint)) AND",
-          "CHECK (((health_generation >= 1) AND (health_generation <= '9007199254740991'::bigint) AND",
-        )
-        .replaceAll(
-          "(expected_activation_generation >= 0) AND (expected_activation_generation <= '9007199254740991'::bigint)",
-          "(expected_activation_generation BETWEEN 0 AND '9007199254740991'::bigint)",
-        )
-        .replaceAll(
-          "(octet_length(activation_document_bytes) >= 1) AND (octet_length(activation_document_bytes) <= 65536)",
-          "(octet_length(activation_document_bytes) BETWEEN 1 AND 65536)",
-        )
-        .replaceAll(
-          "(dns_zone_activation_generation >= 1) AND (dns_zone_activation_generation <= '9007199254740991'::bigint)",
-          "(dns_zone_activation_generation BETWEEN 1 AND '9007199254740991'::bigint)",
-        )
-        .replaceAll(
-          "(health_generation >= 1) AND (health_generation <= '9007199254740991'::bigint)",
-          "(health_generation BETWEEN 1 AND '9007199254740991'::bigint)",
-        ),
-    );
-
-    const delimiter = line.match(/\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/)?.[0];
-    if (dollarDelimiter === undefined) {
-      dollarDelimiter = delimiter;
-    } else if (line.includes(dollarDelimiter)) {
-      dollarDelimiter = undefined;
+    const outputPath = `/tmp/api-next-postgres-baseline-${process.pid}-${Date.now()}-${section}.sql`;
+    const command = [
+      "PGOPTIONS=-c\\ timezone=UTC",
+      "pg_dump",
+      `--username=${shellQuote(current.current_user)}`,
+      `--dbname=${shellQuote(current.current_database)}`,
+      ...dumpArguments(section).map((argument) => shellQuote(argument)),
+      "--no-owner",
+      "--no-privileges",
+      "--no-comments",
+      ">",
+      shellQuote(outputPath),
+    ].join(" ");
+    const cleanup = `rm -f ${shellQuote(outputPath)}`;
+    try {
+      await client.query(`COPY (SELECT '') TO PROGRAM $baseline_dump$${command}$baseline_dump$`);
+      const result = await client.query<{ readonly dump: string }>(
+        "SELECT pg_catalog.pg_read_file($1) AS dump",
+        [outputPath],
+      );
+      const dump = result.rows[0]?.dump;
+      if (dump === undefined)
+        throw new Error("server-side Postgres baseline dump returned no data");
+      return dump;
+    } finally {
+      await client.query(
+        `COPY (SELECT '') TO PROGRAM $baseline_cleanup$${cleanup}$baseline_cleanup$`,
+      );
     }
-  }
-
-  const body = normalized
-    .join("\n")
-    .replaceAll(/\n{3,}/g, "\n\n")
-    .trim();
-  return [
-    "-- GENERATED FILE. DO NOT EDIT. Regenerate with bun run db:generate:baseline.",
-    "-- Source of truth: db/postgres/migrations/*.sql",
-    "",
-    body,
-    "",
-  ].join("\n");
+  });
 }
 
 export async function generatePostgresBaseline(
@@ -292,18 +396,34 @@ export async function generatePostgresBaseline(
       connectionString = local.connectionString;
     }
 
+    connectionString = connectionForBaselineGeneration(connectionString);
+    await assertEmptyGeneratorDatabase(connectionString);
     await runPostgresMigrations({ connectionString });
-    const dump =
+    assertPostgresBaselineSeedInventory(await nonemptyPublicTables(connectionString));
+    const preDataDump =
       container === undefined
-        ? await dumpSuppliedPostgres(connectionString)
-        : await dumpLocalPostgres(container);
+        ? await dumpSuppliedPostgres(connectionString, "pre-data")
+        : await dumpLocalPostgres(container, "pre-data");
+    const seedDump =
+      container === undefined
+        ? await dumpSuppliedPostgres(connectionString, "seed")
+        : await dumpLocalPostgres(container, "seed");
+    const postDataDump =
+      container === undefined
+        ? await dumpSuppliedPostgres(connectionString, "post-data")
+        : await dumpLocalPostgres(container, "post-data");
     const migrationFingerprintAfter = await migrationHistoryFingerprint();
     if (migrationFingerprintBefore !== migrationFingerprintAfter) {
       throw new Error(
         "Postgres migration history changed during baseline generation; no baseline was written. Rebase and regenerate.",
       );
     }
-    await writeFile(outputPath, normalizeDump(dump));
+    await writeFile(
+      outputPath,
+      normalizePostgresBaselineDump(
+        `${preDataDump}\n${normalizePostgresBaselineSeedDump(seedDump)}\n${postDataDump}`,
+      ),
+    );
   } finally {
     if (container !== undefined) {
       await runCommand(["docker", "rm", "--force", container]);
@@ -331,5 +451,3 @@ if (import.meta.main) {
     process.exitCode = 1;
   }
 }
-
-export { normalizeDump };

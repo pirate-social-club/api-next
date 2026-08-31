@@ -3,9 +3,8 @@ import type { ProviderSessionStart } from "@pirate/application/verification";
 import type { ProofSession } from "@pirate/domain/verification";
 import { Effect } from "effect";
 import { Client } from "pg";
-import { loadPostgresMigrations } from "../../../scripts/postgres-migrations";
+import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres";
-import { applyPostgresMigrations } from "./postgres-migrations";
 import { makeControlPlaneVerificationSessionStartStore } from "./verification-start-repository";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -47,14 +46,7 @@ async function withSchema<A>(use: (connection: string, admin: Client) => Promise
   await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
   try {
     const scoped = connectionForSchema(connectionString, schema);
-    const migrations = await loadPostgresMigrations();
-    await Effect.runPromise(
-      Effect.scoped(
-        applyPostgresMigrations(migrations).pipe(
-          Effect.provide(makeDirectPostgresControlPlaneLayer(scoped)),
-        ),
-      ),
-    );
+    await applyPostgresTestBaselineConnection({ connectionString: scoped });
     await admin.query("INSERT INTO users (user_id) VALUES ('user-a'), ('user-b')");
     return await use(scoped, admin);
   } finally {
