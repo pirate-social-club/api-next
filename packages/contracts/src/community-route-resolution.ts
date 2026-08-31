@@ -2,7 +2,6 @@ import { Schema } from "effect";
 import { Auth } from "./auth.ts";
 import { CurrentCommunityResourceV2 } from "./community-creation.ts";
 import {
-  CommunityCanonicalRouteV1,
   CommunityCanonicalRouteV2,
   CommunityRouteContractParseOptions,
 } from "./community-routes.ts";
@@ -15,20 +14,6 @@ export const CanonicalCommunityRoutePathV1 = Schema.Struct({
 export type CanonicalCommunityRoutePathV1 = Schema.Schema.Type<
   typeof CanonicalCommunityRoutePathV1
 >;
-
-/** Historical route-v1 response retained for replay and package compatibility. */
-export const CanonicalCommunityRouteResolutionV1 = Schema.Struct({
-  community_id: Schema.NonEmptyString,
-  canonical_route: CommunityCanonicalRouteV1,
-});
-export type CanonicalCommunityRouteResolutionV1 = Schema.Schema.Type<
-  typeof CanonicalCommunityRouteResolutionV1
->;
-
-export const decodeCanonicalCommunityRouteResolutionV1 = Schema.decodeUnknownSync(
-  CanonicalCommunityRouteResolutionV1,
-  CommunityRouteContractParseOptions,
-);
 
 export const CanonicalCommunityRouteResolutionV2 = Schema.Struct({
   community_id: Schema.NonEmptyString,

@@ -1,5 +1,5 @@
+import type { CommunityCreationProviderBinding } from "@pirate/domain";
 import { ProviderConfigurationRef } from "@pirate/domain/verification";
-import type { CommunityCreationRepositoryOptions } from "@pirate/platform-cf/community-creation-repository";
 import type {
   HnsOwnerTransport,
   PlatformNamespaceOwnershipProviderOptions,
@@ -25,9 +25,7 @@ export type HnsOwnershipCompositionDependencies = Readonly<{
 }>;
 
 export type HnsOwnershipComposition = Readonly<{
-  readonly namespace_provider_bindings: NonNullable<
-    CommunityCreationRepositoryOptions["namespace_provider_bindings"]
-  >;
+  readonly namespace_provider_bindings: readonly CommunityCreationProviderBinding[];
   readonly provider_registry_options: PlatformNamespaceOwnershipProviderOptions;
 }>;
 
