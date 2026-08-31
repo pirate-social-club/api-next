@@ -399,6 +399,34 @@ suite("Study translation generation", () => {
             .pipe(Effect.provide(runtime)),
         ),
       );
+      expect(
+        (
+          await admin.query(
+            `SELECT timezone FROM account_streak_clocks WHERE account_id='study-account'`,
+          )
+        ).rows,
+      ).toEqual([{ timezone: "UTC" }]);
+      await expect(
+        Effect.runPromise(
+          Effect.scoped(
+            study
+              .startSession({
+                accountId: "study-account",
+                communityId: "study-community",
+                createdAt: "2026-08-29T12:02:01.000Z",
+                targetLanguage: "es",
+                idempotencyKey: "study-session-timezone-conflict",
+                learnerBand: "B1",
+                personaId: "study-persona",
+                postId: "study-post",
+                requestHash: "4".repeat(64),
+                sessionId: "study-session-timezone-conflict",
+                timezone: "Asia/Tbilisi",
+              })
+              .pipe(Effect.provide(runtime)),
+          ),
+        ),
+      ).rejects.toMatchObject({ reason: "invalid-input" });
       expect(session.items).toHaveLength(4);
       for (const item of session.items) {
         expect(item.exercise_type).toBe("translation_choice");

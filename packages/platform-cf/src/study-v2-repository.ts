@@ -413,6 +413,30 @@ export const makeControlPlaneStudyV2Repository = () => ({
               });
               return session ?? (yield* Effect.fail(failed("invalid-row")));
             }
+            const clock = yield* transaction.execute<Row>({
+              label: "study-v2.start.clock",
+              text: `SELECT timezone FROM account_streak_clocks
+                      WHERE account_id=$1 FOR UPDATE`,
+              values: [input.accountId],
+              readonly: false,
+            });
+            if (clock.rows.length > 1) return yield* Effect.fail(failed("invalid-row"));
+            const pinnedTimezone =
+              clock.rows.length === 0 ? null : text(clock.rows[0] as Row, "timezone");
+            if (pinnedTimezone !== null && input.timezone !== pinnedTimezone) {
+              return yield* rejected("invalid-input");
+            }
+            const timezone = pinnedTimezone ?? input.timezone;
+            if (pinnedTimezone === null) {
+              yield* transaction.execute({
+                label: "study-v2.start.clock-pin",
+                text: `INSERT INTO account_streak_clocks (
+                         account_id, timezone, timezone_updated_at, next_change_allowed_at
+                       ) VALUES ($1,$2,$3::timestamptz,$3::timestamptz + interval '7 days')`,
+                values: [input.accountId, timezone, input.createdAt],
+                readonly: false,
+              });
+            }
             const exercises = yield* exerciseRows(transaction, {
               accountId: input.accountId,
               communityId: input.communityId,
@@ -446,7 +470,7 @@ export const makeControlPlaneStudyV2Repository = () => ({
                 integer(first, "lyrics_revision"),
                 input.targetLanguage,
                 input.learnerBand,
-                input.timezone,
+                timezone,
                 input.idempotencyKey,
                 input.requestHash,
                 input.createdAt,
