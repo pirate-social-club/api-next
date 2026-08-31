@@ -297,9 +297,6 @@ async function dumpSuppliedPostgres(
   connectionString: string,
   section: DumpSection,
 ): Promise<string> {
-  if (process.env.CONTROL_PLANE_POSTGRES_SERVER_DUMP === "1") {
-    return dumpSuppliedPostgresFromServer(connectionString, section);
-  }
   return checkedCommand(
     [
       "docker",
@@ -321,62 +318,6 @@ async function dumpSuppliedPostgres(
     ],
     "dumping supplied Postgres schema",
   );
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", `'"'"'`)}'`;
-}
-
-async function dumpSuppliedPostgresFromServer(
-  connectionString: string,
-  section: DumpSection,
-): Promise<string> {
-  return withPostgresClient(connectionString, async (client) => {
-    const authority = await client.query<{
-      readonly current_database: string;
-      readonly current_user: string;
-    }>("SELECT current_database(), current_user");
-    const current = authority.rows[0];
-    if (
-      current === undefined ||
-      current.current_user !== "postgres" ||
-      current.current_database !== "postgres"
-    ) {
-      throw new Error(
-        "server-side Postgres baseline dump requires the dedicated postgres test database and superuser",
-      );
-    }
-
-    const outputPath = `/tmp/api-next-postgres-baseline-${process.pid}-${Date.now()}-${section}.sql`;
-    const command = [
-      "PGOPTIONS=-c\\ timezone=UTC",
-      "pg_dump",
-      `--username=${shellQuote(current.current_user)}`,
-      `--dbname=${shellQuote(current.current_database)}`,
-      ...dumpArguments(section).map((argument) => shellQuote(argument)),
-      "--no-owner",
-      "--no-privileges",
-      "--no-comments",
-      ">",
-      shellQuote(outputPath),
-    ].join(" ");
-    const cleanup = `rm -f ${shellQuote(outputPath)}`;
-    try {
-      await client.query(`COPY (SELECT '') TO PROGRAM $baseline_dump$${command}$baseline_dump$`);
-      const result = await client.query<{ readonly dump: string }>(
-        "SELECT pg_catalog.pg_read_file($1) AS dump",
-        [outputPath],
-      );
-      const dump = result.rows[0]?.dump;
-      if (dump === undefined)
-        throw new Error("server-side Postgres baseline dump returned no data");
-      return dump;
-    } finally {
-      await client.query(
-        `COPY (SELECT '') TO PROGRAM $baseline_cleanup$${cleanup}$baseline_cleanup$`,
-      );
-    }
-  });
 }
 
 export async function generatePostgresBaseline(

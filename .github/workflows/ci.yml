@@ -87,7 +87,6 @@ jobs:
         env:
           CONTROL_PLANE_POSTGRES_GENERATOR_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
           CONTROL_PLANE_POSTGRES_IMAGE: postgres:17@sha256:67f41722b7a8cbdb868a44a4995c846eddfdc2973bccb291ce937dce88ad5675
-          CONTROL_PLANE_POSTGRES_SERVER_DUMP: "1"
         run: bun run check:baseline:fresh
       - name: Remove stale completion sentinel
         run: >-
