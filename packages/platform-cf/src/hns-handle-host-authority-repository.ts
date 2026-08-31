@@ -164,9 +164,16 @@ export function makeControlPlaneHnsHandlePersonaHostAuthoritySource(
                           ) AS namespace_authority_effective,
                           handle_grant.grant_id AS handle_grant_id,
                           handle_grant.grant_generation AS handle_grant_generation,
-                          handle_grant.status='active'
+                          activation.status='active'
+                            AND grant_activation.status='active'
+                            AND grant_activation.sale_namespace_activation_generation
+                                <= activation.sale_namespace_activation_generation
+                            AND grant_activation.community_id=activation.community_id
+                            AND grant_activation.family=activation.family
+                            AND grant_activation.canonical_root=activation.canonical_root
+                            AND handle_grant.status='active'
                             AND handle_grant.sale_namespace_activation_generation
-                                = activation.sale_namespace_activation_generation
+                                = grant_activation.sale_namespace_activation_generation
                             AND handle_grant.community_id=activation.community_id
                             AND handle_grant.namespace_root=activation.canonical_root
                             AND handle_grant.family='hns'
@@ -214,6 +221,11 @@ export function makeControlPlaneHnsHandlePersonaHostAuthoritySource(
                      CROSS JOIN authority_clock
                      JOIN personas AS persona
                        ON persona.persona_id=handle_grant.owner_persona_id
+                     JOIN community_handle_sale_namespace_activation_revisions AS grant_activation
+                       ON grant_activation.sale_namespace_activation_id
+                           = handle_grant.sale_namespace_activation_id
+                      AND grant_activation.sale_namespace_activation_generation
+                           = handle_grant.sale_namespace_activation_generation
                      JOIN community_handle_sale_namespace_activation_current AS current_activation
                        ON current_activation.sale_namespace_activation_id
                            = handle_grant.sale_namespace_activation_id

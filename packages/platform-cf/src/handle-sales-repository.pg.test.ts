@@ -304,6 +304,73 @@ async function seedHealthySaleDependencies(admin: Client, sellerId: string, comm
   return { namespaceAuthorityReference, dnsZoneActivationId, zoneDigest };
 }
 
+async function seedHealthyDnsSuccessor(admin: Client, dnsZoneActivationId: string) {
+  const activationBytes = Buffer.from("handle-sales-live-dns-activation-v2");
+  const activationDigest = createHash("sha256").update(activationBytes).digest("hex");
+  const zoneBytes = Buffer.from("$ORIGIN charizard.\n; handle-sales-live-v2\n");
+  const zoneDigest = createHash("sha256").update(zoneBytes).digest("hex");
+  const gatewayReference = "gateway-deployment:handle-sales-live-v2";
+  const gatewaySpki = "8".repeat(64);
+  await admin.query("SET session_replication_role = replica");
+  try {
+    await admin.query(
+      `INSERT INTO hns_dns_zone_activation_revisions (
+         dns_zone_activation_id,dns_zone_activation_generation,activation_document_bytes,
+         activation_document_digest,canonical_root,dns_authority_kind,dns_authority_reference,
+         dns_authority_generation,pirate_dns_authority_inventory_reference,
+         pirate_dns_authority_inventory_version,pirate_dns_authority_inventory_digest,
+         zone_revision,zone_bytes,zone_bytes_digest,dnssec_keyset_reference,
+         dnssec_keyset_version,gateway_deployment_reference,gateway_certificate_spki_sha256,
+         stable_chain_delegation_snapshot_reference,stable_chain_delegation_snapshot_digest,
+         status,reason_code,activated_at,suspended_at,revoked_at
+       )
+       SELECT dns_zone_activation_id,2,$2,$3,canonical_root,dns_authority_kind,
+              dns_authority_reference,dns_authority_generation,
+              pirate_dns_authority_inventory_reference,pirate_dns_authority_inventory_version,
+              pirate_dns_authority_inventory_digest,2,$4,$5,dnssec_keyset_reference,
+              dnssec_keyset_version,$6,$7,stable_chain_delegation_snapshot_reference,
+              stable_chain_delegation_snapshot_digest,'active',NULL,activated_at,NULL,NULL
+         FROM hns_dns_zone_activation_revisions
+        WHERE dns_zone_activation_id=$1 AND dns_zone_activation_generation=1`,
+      [
+        dnsZoneActivationId,
+        activationBytes,
+        activationDigest,
+        zoneBytes,
+        zoneDigest,
+        gatewayReference,
+        gatewaySpki,
+      ],
+    );
+    await admin.query(
+      `UPDATE hns_dns_zone_activation_current
+          SET current_generation=2,updated_at=clock_timestamp()
+        WHERE dns_zone_activation_id=$1`,
+      [dnsZoneActivationId],
+    );
+    await admin.query(
+      `INSERT INTO hns_dns_zone_health_observations (
+         dns_zone_activation_id,activation_generation,health_generation,
+         stable_chain_delegation_snapshot_reference,stable_chain_delegation_snapshot_digest,
+         observed_zone_bytes_digest,observed_dnssec_keyset_reference,
+         observed_dnssec_keyset_version,observed_gateway_deployment_reference,
+         observed_gateway_certificate_spki_sha256,delegation_matches,ds_authenticates_zone,
+         retained_zone_digest_matches,gateway_healthy,checked_at,valid_until
+       )
+       SELECT dns_zone_activation_id,2,1,stable_chain_delegation_snapshot_reference,
+              stable_chain_delegation_snapshot_digest,$2,dnssec_keyset_reference,
+              dnssec_keyset_version,$3,$4,TRUE,TRUE,TRUE,TRUE,clock_timestamp(),
+              clock_timestamp()+interval '1 hour'
+         FROM hns_dns_zone_activation_revisions
+        WHERE dns_zone_activation_id=$1 AND dns_zone_activation_generation=2`,
+      [dnsZoneActivationId, zoneDigest, gatewayReference, gatewaySpki],
+    );
+  } finally {
+    await admin.query("SET session_replication_role = origin");
+  }
+  return { zoneDigest, gatewayReference, gatewaySpki };
+}
+
 const terms = (activationId: string) =>
   ({
     sale_namespace_activation_id: activationId,
@@ -1452,6 +1519,128 @@ suite("community handle sales on PostgreSQL 17", () => {
         dns_zone: { gateway_health: "healthy" },
       });
       expect(resolveActiveHnsHostAuthority(activeAuthority)).not.toBeNull();
+
+      const successor = await seedHealthyDnsSuccessor(admin, dependencies.dnsZoneActivationId);
+      const refreshedAuthorityInput = {
+        ...authorityInput,
+        expectedDnsZoneActivationGeneration: 2,
+      } as const;
+      const refreshed = await run(
+        sales.reviseSaleNamespace({
+          accountId: "activation-seller",
+          communityId,
+          activationId: activation.activation.sale_namespace_activation_id,
+          expectedActivationHash: activation.activation.sale_namespace_activation_hash,
+          requestedStatus: "active",
+          idempotencyKey: "activation-authority-refresh-key",
+          ...refreshedAuthorityInput,
+        }),
+      );
+      expect(refreshed.activation).toMatchObject({
+        sale_namespace_activation_generation: 2,
+        status: "active",
+        serving: { dns_zone_activation_generation: 2 },
+        activated_at: activation.activation.activated_at,
+      });
+      await expect(
+        run(
+          sales.reviseSaleNamespace({
+            accountId: "activation-seller",
+            communityId,
+            activationId: activation.activation.sale_namespace_activation_id,
+            expectedActivationHash: activation.activation.sale_namespace_activation_hash,
+            requestedStatus: "active",
+            idempotencyKey: "activation-authority-refresh-key",
+            ...refreshedAuthorityInput,
+          }),
+        ),
+      ).resolves.toMatchObject({ replayed: true, activation: refreshed.activation });
+      const refreshedAuthority = await Effect.runPromise(
+        authoritySource.resolve("livehost.charizard"),
+      );
+      expect(refreshedAuthority).toMatchObject({
+        variant: "handle_persona_v1",
+        sale_namespace_activation_generation: 2,
+        sale_namespace_dns_zone_generation: 2,
+        sale_namespace_gateway_deployment_reference: successor.gatewayReference,
+        handle_grant_id: claim.claim.grant?.grant_id,
+        handle_grant_active: true,
+        dns_zone: {
+          dns_zone_activation_generation: 2,
+          gateway_deployment_reference: successor.gatewayReference,
+          gateway_health: "healthy",
+        },
+      });
+      expect(resolveActiveHnsHostAuthority(refreshedAuthority)).not.toBeNull();
+      await expect(
+        run(
+          sales.getPublicGrant({
+            family: "hns",
+            namespaceRoot: "charizard",
+            handleLabel: "livehost",
+          }),
+        ),
+      ).resolves.toMatchObject({ host: { kind: "available" } });
+      await expect(
+        run(sales.listPersonaGrants({ personaId: sellerPersona })),
+      ).resolves.toMatchObject({
+        items: [{ grant_id: claim.claim.grant?.grant_id, host: { kind: "available" } }],
+      });
+      await expect(
+        run(sales.listManagementOfferings({ accountId: "activation-seller", communityId })),
+      ).resolves.toMatchObject({
+        items: [{ effectiveness: { kind: "effective_v1" } }],
+      });
+      const refreshBuyerPersona = await seedAccount(admin, "refresh-buyer");
+      await run(
+        sales.confirmPersonaReuse({
+          accountId: "refresh-buyer",
+          personaId: refreshBuyerPersona,
+          offeringId: offering.offering.offering_id,
+          idempotencyKey: "post-refresh-link-key",
+        }),
+      );
+      const refreshQuote = await run(
+        sales.createQuote({
+          accountId: "refresh-buyer",
+          personaId: refreshBuyerPersona,
+          offeringId: offering.offering.offering_id,
+          desiredLabel: "afterref",
+          idempotencyKey: "post-refresh-quote-key",
+        }),
+      );
+      if (refreshQuote.kind !== "quoted") throw new Error("expected a post-refresh quote");
+      const refreshReservation = await run(
+        sales.createReservation({
+          accountId: "refresh-buyer",
+          personaId: refreshBuyerPersona,
+          quoteId: refreshQuote.quote.quote_id,
+          expectedQuoteHash: refreshQuote.quote.quote_hash,
+          idempotencyKey: "post-refresh-reservation-key",
+        }),
+      );
+      const refreshClaim = await run(
+        sales.submitFreeClaim({
+          accountId: "refresh-buyer",
+          personaId: refreshBuyerPersona,
+          reservationId: refreshReservation.reservation.reservation_id,
+          expectedReservationHash: refreshReservation.reservation.reservation_hash,
+          idempotencyKey: "post-refresh-claim-key",
+        }),
+      );
+      expect(refreshClaim.claim.grant).toMatchObject({
+        sale_namespace_activation_generation: 1,
+        handle: { handle_label: "afterref" },
+      });
+      const postRefreshAuthority = await Effect.runPromise(
+        authoritySource.resolve("afterref.charizard"),
+      );
+      expect(postRefreshAuthority).toMatchObject({
+        sale_namespace_activation_generation: 2,
+        handle_grant_id: refreshClaim.claim.grant?.grant_id,
+        handle_grant_active: true,
+      });
+      expect(resolveActiveHnsHostAuthority(postRefreshAuthority)).not.toBeNull();
       await expect(
         Effect.runPromise(authoritySource.resolve("unknown.charizard")),
       ).resolves.toBeNull();
@@ -1525,10 +1714,16 @@ suite("community handle sales on PostgreSQL 17", () => {
            observed_dnssec_keyset_version,observed_gateway_deployment_reference,
            observed_gateway_certificate_spki_sha256,delegation_matches,ds_authenticates_zone,
            retained_zone_digest_matches,gateway_healthy,checked_at,valid_until
-         ) VALUES ($1,1,2,'hns-delegation-snapshot:handle-sales-live',$2,$3,
-                   'dnssec-keyset:charizard','1','gateway-deployment:handle-sales-live',$4,
+         ) VALUES ($1,2,2,'hns-delegation-snapshot:handle-sales-live',$2,$3,
+                   'dnssec-keyset:charizard','1',$4,$5,
                    FALSE,TRUE,TRUE,TRUE,clock_timestamp(),clock_timestamp()+interval '1 hour')`,
-        [dependencies.dnsZoneActivationId, "7".repeat(64), dependencies.zoneDigest, "6".repeat(64)],
+        [
+          dependencies.dnsZoneActivationId,
+          "7".repeat(64),
+          successor.zoneDigest,
+          successor.gatewayReference,
+          successor.gatewaySpki,
+        ],
       );
       await expect(run(sales.listSaleNamespaces({ communityId }))).resolves.toEqual({
         items: [],
@@ -1588,14 +1783,14 @@ suite("community handle sales on PostgreSQL 17", () => {
           accountId: "activation-seller",
           communityId,
           activationId: activation.activation.sale_namespace_activation_id,
-          expectedActivationHash: activation.activation.sale_namespace_activation_hash,
+          expectedActivationHash: refreshed.activation.sale_namespace_activation_hash,
           requestedStatus: "suspended",
           idempotencyKey: "activation-suspend-key",
-          ...authorityInput,
+          ...refreshedAuthorityInput,
         }),
       );
       expect(suspended.activation).toMatchObject({
-        sale_namespace_activation_generation: 2,
+        sale_namespace_activation_generation: 3,
         status: "suspended",
       });
       await expect(
@@ -1622,10 +1817,16 @@ suite("community handle sales on PostgreSQL 17", () => {
            observed_dnssec_keyset_version,observed_gateway_deployment_reference,
            observed_gateway_certificate_spki_sha256,delegation_matches,ds_authenticates_zone,
            retained_zone_digest_matches,gateway_healthy,checked_at,valid_until
-         ) VALUES ($1,1,3,'hns-delegation-snapshot:handle-sales-live',$2,$3,
-                   'dnssec-keyset:charizard','1','gateway-deployment:handle-sales-live',$4,
+         ) VALUES ($1,2,3,'hns-delegation-snapshot:handle-sales-live',$2,$3,
+                   'dnssec-keyset:charizard','1',$4,$5,
                    TRUE,TRUE,TRUE,TRUE,clock_timestamp(),clock_timestamp()+interval '1 hour')`,
-        [dependencies.dnsZoneActivationId, "7".repeat(64), dependencies.zoneDigest, "6".repeat(64)],
+        [
+          dependencies.dnsZoneActivationId,
+          "7".repeat(64),
+          successor.zoneDigest,
+          successor.gatewayReference,
+          successor.gatewaySpki,
+        ],
       );
       const restored = await run(
         sales.reviseSaleNamespace({
@@ -1635,11 +1836,11 @@ suite("community handle sales on PostgreSQL 17", () => {
           expectedActivationHash: suspended.activation.sale_namespace_activation_hash,
           requestedStatus: "active",
           idempotencyKey: "activation-restore-key",
-          ...authorityInput,
+          ...refreshedAuthorityInput,
         }),
       );
       expect(restored.activation).toMatchObject({
-        sale_namespace_activation_generation: 3,
+        sale_namespace_activation_generation: 4,
         status: "active",
       });
       const revoked = await run(
@@ -1650,11 +1851,11 @@ suite("community handle sales on PostgreSQL 17", () => {
           expectedActivationHash: restored.activation.sale_namespace_activation_hash,
           requestedStatus: "revoked",
           idempotencyKey: "activation-revoke-key",
-          ...authorityInput,
+          ...refreshedAuthorityInput,
         }),
       );
       expect(revoked.activation).toMatchObject({
-        sale_namespace_activation_generation: 4,
+        sale_namespace_activation_generation: 5,
         status: "revoked",
       });
       await expect(
@@ -1691,7 +1892,7 @@ suite("community handle sales on PostgreSQL 17", () => {
             expectedActivationHash: revoked.activation.sale_namespace_activation_hash,
             requestedStatus: "active",
             idempotencyKey: "activation-illegal-restore-key",
-            ...authorityInput,
+            ...refreshedAuthorityInput,
           }),
         ),
       ).rejects.toMatchObject({

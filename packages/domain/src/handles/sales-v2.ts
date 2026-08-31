@@ -842,6 +842,15 @@ export function assertRequestedOfferingIsEffectiveV2(input: {
 
 export type HandleSaleActivationStatusV1 = "pending" | "active" | "suspended" | "revoked";
 
+export type HandleSaleActivationAuthorityBindingV1 = Readonly<{
+  namespace_authority_reference: string;
+  namespace_authority_generation: number;
+  dns_zone_activation_id: string;
+  dns_zone_activation_generation: number;
+}>;
+
+export type HandleSaleActivationRevisionKindV1 = "state_transition" | "authority_refresh";
+
 export function transitionHandleSaleActivationV1(
   current: HandleSaleActivationStatusV1,
   requested: HandleSaleActivationStatusV1,
@@ -850,4 +859,58 @@ export function transitionHandleSaleActivationV1(
   if (current === requested) throw new TypeError("Sale activation transition must advance state");
   if (requested === "pending") throw new TypeError("Sale activation cannot return to pending");
   return requested;
+}
+
+export function classifyHandleSaleActivationRevisionV1(input: {
+  current_status: HandleSaleActivationStatusV1;
+  requested_status: HandleSaleActivationStatusV1;
+  current_authority: HandleSaleActivationAuthorityBindingV1;
+  requested_authority: HandleSaleActivationAuthorityBindingV1;
+}): HandleSaleActivationRevisionKindV1 {
+  for (const [name, binding] of [
+    ["current", input.current_authority],
+    ["requested", input.requested_authority],
+  ] as const) {
+    requireIdentifier(binding.namespace_authority_reference, `${name} namespace authority`);
+    requireRevision(binding.namespace_authority_generation, `${name} namespace generation`);
+    requireIdentifier(binding.dns_zone_activation_id, `${name} DNS activation`);
+    requireRevision(binding.dns_zone_activation_generation, `${name} DNS generation`);
+  }
+  if (input.current_status !== input.requested_status) {
+    transitionHandleSaleActivationV1(input.current_status, input.requested_status);
+    return "state_transition";
+  }
+  if (input.current_status !== "active") {
+    throw new TypeError("Only an active sale activation can refresh authority in place");
+  }
+  const namespaceChanged =
+    input.current_authority.namespace_authority_reference !==
+      input.requested_authority.namespace_authority_reference ||
+    input.current_authority.namespace_authority_generation !==
+      input.requested_authority.namespace_authority_generation;
+  const dnsChanged =
+    input.current_authority.dns_zone_activation_id !==
+      input.requested_authority.dns_zone_activation_id ||
+    input.current_authority.dns_zone_activation_generation !==
+      input.requested_authority.dns_zone_activation_generation;
+  if (!namespaceChanged && !dnsChanged) {
+    throw new TypeError("Sale activation authority refresh must advance authority");
+  }
+  if (
+    input.current_authority.namespace_authority_reference ===
+      input.requested_authority.namespace_authority_reference &&
+    input.requested_authority.namespace_authority_generation <
+      input.current_authority.namespace_authority_generation
+  ) {
+    throw new TypeError("Sale activation namespace authority cannot regress");
+  }
+  if (
+    input.current_authority.dns_zone_activation_id ===
+      input.requested_authority.dns_zone_activation_id &&
+    input.requested_authority.dns_zone_activation_generation <
+      input.current_authority.dns_zone_activation_generation
+  ) {
+    throw new TypeError("Sale activation DNS authority cannot regress");
+  }
+  return "authority_refresh";
 }

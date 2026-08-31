@@ -4,6 +4,7 @@ import {
   assertHandleOfferingCombinationV2,
   assertRequestedOfferingIsEffectiveV2,
   classifyEffectiveHandleOfferingV2,
+  classifyHandleSaleActivationRevisionV1,
   type HandleLabelScopeV2,
   handleAccountAllowlistPolicyHash,
   handleAccountAllowlistPolicyRequestV1Hash,
@@ -786,5 +787,54 @@ describe("handle sales policy", () => {
     expect(transitionHandleSaleActivationV1("active", "suspended")).toBe("suspended");
     expect(transitionHandleSaleActivationV1("suspended", "active")).toBe("active");
     expect(() => transitionHandleSaleActivationV1("revoked", "active")).toThrow();
+  });
+
+  test("classifies active authority refreshes without weakening lifecycle fences", () => {
+    const currentAuthority = {
+      namespace_authority_reference: "namespace-evidence-v1",
+      namespace_authority_generation: 2,
+      dns_zone_activation_id: "dns-zone-v1",
+      dns_zone_activation_generation: 8,
+    } as const;
+    expect(
+      classifyHandleSaleActivationRevisionV1({
+        current_status: "active",
+        requested_status: "active",
+        current_authority: currentAuthority,
+        requested_authority: { ...currentAuthority, dns_zone_activation_generation: 9 },
+      }),
+    ).toBe("authority_refresh");
+    expect(
+      classifyHandleSaleActivationRevisionV1({
+        current_status: "active",
+        requested_status: "suspended",
+        current_authority: currentAuthority,
+        requested_authority: currentAuthority,
+      }),
+    ).toBe("state_transition");
+    expect(() =>
+      classifyHandleSaleActivationRevisionV1({
+        current_status: "active",
+        requested_status: "active",
+        current_authority: currentAuthority,
+        requested_authority: currentAuthority,
+      }),
+    ).toThrow("must advance authority");
+    expect(() =>
+      classifyHandleSaleActivationRevisionV1({
+        current_status: "active",
+        requested_status: "active",
+        current_authority: currentAuthority,
+        requested_authority: { ...currentAuthority, dns_zone_activation_generation: 7 },
+      }),
+    ).toThrow("cannot regress");
+    expect(() =>
+      classifyHandleSaleActivationRevisionV1({
+        current_status: "suspended",
+        requested_status: "suspended",
+        current_authority: currentAuthority,
+        requested_authority: { ...currentAuthority, dns_zone_activation_generation: 9 },
+      }),
+    ).toThrow("Only an active");
   });
 });
