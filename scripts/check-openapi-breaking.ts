@@ -20,64 +20,188 @@ export function selectBaselineSha(input: BaselineSelectionInput): string {
   return sha;
 }
 
-export interface Deprecations {
-  readonly deprecatedOperations: readonly {
-    readonly operationId: string;
-    readonly reason: string;
-  }[];
+export interface BreakingChangeWaiver {
+  readonly baselineSha: string;
+  readonly expectedViolations: readonly string[];
+  readonly kind: "clean-break" | "deprecation";
+  readonly operationId: string;
+  readonly reason: string;
+}
+
+export interface BreakingChangePolicy {
   /**
-   * Coordinator-approved operation-wide contract transitions. Unlike a
-   * deprecation, the route remains available; every diff for the operation is
-   * intentionally reviewed as part of the named clean break.
+   * One-time allowances for an exact reviewed diff against an exact baseline.
+   * Remove each entry after its transition lands; a later baseline never
+   * inherits the allowance.
    */
-  readonly cleanBreakOperations?: readonly {
-    readonly operationId: string;
-    readonly reason: string;
-  }[];
+  readonly breakingChangeWaivers: readonly BreakingChangeWaiver[];
+}
+
+const FULL_COMMIT_SHA = /^[0-9a-f]{40}$/;
+
+function validateBreakingChangePolicy(
+  policy: BreakingChangePolicy,
+): readonly BreakingChangeWaiver[] {
+  const candidate = policy as unknown as Record<string, unknown>;
+  if ("cleanBreakOperations" in candidate || "deprecatedOperations" in candidate) {
+    throw new Error(
+      "Legacy operation-wide breaking-change allowances are forbidden; use breakingChangeWaivers",
+    );
+  }
+  if (!Array.isArray(candidate.breakingChangeWaivers)) {
+    throw new Error("breakingChangeWaivers must be an array");
+  }
+
+  const operationIds = new Set<string>();
+  for (const [index, raw] of candidate.breakingChangeWaivers.entries()) {
+    if (typeof raw !== "object" || raw === null) {
+      throw new Error(`breakingChangeWaivers[${index}] must be an object`);
+    }
+    const waiver = raw as Record<string, unknown>;
+    const label = `breakingChangeWaivers[${index}]`;
+    if (typeof waiver.operationId !== "string" || waiver.operationId.trim() === "") {
+      throw new Error(`${label}.operationId must be a non-empty string`);
+    }
+    if (operationIds.has(waiver.operationId)) {
+      throw new Error(`Duplicate breaking-change waiver for operation ${waiver.operationId}`);
+    }
+    operationIds.add(waiver.operationId);
+    if (waiver.kind !== "clean-break" && waiver.kind !== "deprecation") {
+      throw new Error(`${label}.kind must be clean-break or deprecation`);
+    }
+    if (typeof waiver.baselineSha !== "string" || !FULL_COMMIT_SHA.test(waiver.baselineSha)) {
+      throw new Error(`${label}.baselineSha must be a full lowercase commit SHA`);
+    }
+    if (typeof waiver.reason !== "string" || waiver.reason.trim() === "") {
+      throw new Error(`${label}.reason must be a non-empty string`);
+    }
+    if (!Array.isArray(waiver.expectedViolations) || waiver.expectedViolations.length === 0) {
+      throw new Error(`${label}.expectedViolations must be a non-empty array`);
+    }
+    const expected = new Set<string>();
+    for (const violation of waiver.expectedViolations) {
+      if (typeof violation !== "string" || violation.trim() === "") {
+        throw new Error(`${label}.expectedViolations must contain only non-empty strings`);
+      }
+      if (expected.has(violation)) {
+        throw new Error(`${label}.expectedViolations contains a duplicate: ${violation}`);
+      }
+      expected.add(violation);
+    }
+  }
+  return candidate.breakingChangeWaivers as unknown as readonly BreakingChangeWaiver[];
+}
+
+function sorted(values: Iterable<string>): readonly string[] {
+  return [...values].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+}
+
+function formatMismatch(label: string, values: readonly string[]): string {
+  return values.length === 0
+    ? `${label}: none`
+    : `${label}:\n${values.map((v) => `  - ${v}`).join("\n")}`;
+}
+
+export function classifyBreakingViolationOperationKey(
+  violation: string,
+  operationKeys: Iterable<string>,
+): string | undefined {
+  const matches = [...operationKeys].filter(
+    (key) =>
+      violation === `operation removed: ${key}` ||
+      violation.startsWith(`operation id changed on ${key}:`) ||
+      violation.startsWith(`request ${key}:`) ||
+      violation.startsWith(`request ${key} parameter `) ||
+      violation === `request body removed on ${key}` ||
+      violation === `request body became required on ${key}` ||
+      violation === `required request body added on ${key}` ||
+      violation.startsWith(`response status removed on ${key}:`) ||
+      violation.startsWith(`response body removed on ${key} status `) ||
+      violation.startsWith(`response ${key}:`) ||
+      violation.startsWith(`response ${key} status `) ||
+      violation.startsWith(`error code removed on ${key} status `),
+  );
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 export function filterAllowedBreakingChanges(
   oldDoc: OpenApiDocument,
   newDoc: OpenApiDocument,
-  deprecations: Deprecations,
+  policy: BreakingChangePolicy,
+  baselineSha: string,
 ): readonly string[] {
-  const declared = new Set(deprecations.deprecatedOperations.map((entry) => entry.operationId));
-  const cleanBreaks = new Set(
-    (deprecations.cleanBreakOperations ?? []).map((entry) => entry.operationId),
-  );
+  if (!FULL_COMMIT_SHA.test(baselineSha)) {
+    throw new Error(`Resolved baseline SHA must be a full lowercase commit SHA: ${baselineSha}`);
+  }
+  const waivers = validateBreakingChangePolicy(policy);
+  const violations = diffBreaking(oldDoc, newDoc);
 
   // Map "METHOD /path" of removed operations back to their old operation ids
   // so a declared deprecation can retire exactly one entry.
   const operationIds = new Map<string, string>();
+  const operationKeysById = new Map<string, string[]>();
   for (const [route, methods] of Object.entries(oldDoc.paths)) {
     for (const [method, operation] of Object.entries(methods)) {
       const id = (operation as Record<string, unknown>).operationId;
-      if (typeof id === "string") operationIds.set(`${method.toUpperCase()} ${route}`, id);
+      if (typeof id === "string") {
+        const key = `${method.toUpperCase()} ${route}`;
+        operationIds.set(key, id);
+        operationKeysById.set(id, [...(operationKeysById.get(id) ?? []), key]);
+      }
     }
   }
 
-  const operationKey = (violation: string): string | undefined => {
-    const requiredBody = violation.match(/^request body became required on ([A-Z]+ \/[^\s:]+)$/);
-    if (requiredBody?.[1] !== undefined) return requiredBody[1];
-    const match = violation.match(
-      /^(?:operation removed: |operation id changed on |request |response status removed on |response |error code removed on )([A-Z]+ \/[^\s:]+)(?: status \d+)?(?::|$)/,
-    );
-    return match?.[1];
+  const operationId = (violation: string): string | undefined => {
+    const key = classifyBreakingViolationOperationKey(violation, operationIds.keys());
+    return key === undefined ? undefined : operationIds.get(key);
   };
+  const allowed = new Set<string>();
 
-  // A coordinator-recorded deprecation is an explicit contract transition:
-  // every break for that retired operation is reviewed as one unit. All
-  // operations without a matching entry remain fully gate-protected.
-  return diffBreaking(oldDoc, newDoc).filter((violation) => {
-    const key = operationKey(violation);
-    const operationId = key === undefined ? undefined : operationIds.get(key);
-    return (
-      key === undefined || (!declared.has(operationId ?? "") && !cleanBreaks.has(operationId ?? ""))
+  for (const waiver of waivers) {
+    if (waiver.baselineSha !== baselineSha) continue;
+    const keys = operationKeysById.get(waiver.operationId) ?? [];
+    if (keys.length !== 1) {
+      throw new Error(
+        `Breaking-change waiver operation ${waiver.operationId} resolves to ${keys.length} baseline operations`,
+      );
+    }
+
+    const expected = sorted(waiver.expectedViolations);
+    for (const violation of expected) {
+      if (operationId(violation) !== waiver.operationId) {
+        throw new Error(
+          `Breaking-change waiver for ${waiver.operationId} includes a violation for another or unknown operation: ${violation}`,
+        );
+      }
+    }
+    const observed = sorted(
+      violations.filter((violation) => operationId(violation) === waiver.operationId),
     );
-  });
+    const observedSet = new Set(observed);
+    const expectedSet = new Set(expected);
+    const missing = expected.filter((violation) => !observedSet.has(violation));
+    const unexpected = observed.filter((violation) => !expectedSet.has(violation));
+    if (missing.length > 0 || unexpected.length > 0) {
+      throw new Error(
+        [
+          `Breaking-change waiver mismatch for ${waiver.operationId} at baseline ${baselineSha}`,
+          formatMismatch("Missing expected violations", missing),
+          formatMismatch("Unexpected violations", unexpected),
+        ].join("\n"),
+      );
+    }
+    for (const violation of observed) allowed.add(violation);
+  }
+
+  return sorted(violations.filter((violation) => !allowed.has(violation)));
 }
 
-function readBaselineDocument(baseSha: string, documentPath: string): string | undefined {
+interface BaselineDocument {
+  readonly resolvedSha: string;
+  readonly text?: string;
+}
+
+function readBaselineDocument(baseSha: string, documentPath: string): BaselineDocument {
   if (baseSha.trim() === "" || baseSha.startsWith("-")) {
     throw new Error(`Invalid baseline SHA: ${JSON.stringify(baseSha)}`);
   }
@@ -98,7 +222,7 @@ function readBaselineDocument(baseSha: string, documentPath: string): string | u
     encoding: "utf8",
     maxBuffer: MAX_BASELINE_DOCUMENT_BYTES,
   });
-  if (show.status === 0) return show.stdout;
+  if (show.status === 0) return { resolvedSha, text: show.stdout };
 
   const tree = spawnSync("git", ["ls-tree", "-r", "--name-only", resolvedSha, "--", documentPath], {
     encoding: "utf8",
@@ -107,7 +231,7 @@ function readBaselineDocument(baseSha: string, documentPath: string): string | u
   if (tree.status !== 0) {
     throw new Error(`Unable to inspect baseline tree ${resolvedSha}: ${tree.stderr.trim()}`);
   }
-  if (tree.stdout.trim() === "") return undefined;
+  if (tree.stdout.trim() === "") return { resolvedSha };
 
   throw new Error(`Unable to read ${documentPath} from baseline commit ${resolvedSha}`);
 }
@@ -123,24 +247,24 @@ async function main(): Promise<void> {
     throw new Error("Usage: bun scripts/check-openapi-breaking.ts --base-sha <commit>");
   }
   const baseSha = args[1];
-  const oldText = readBaselineDocument(baseSha, path);
-  if (oldText === undefined) {
+  const baseline = readBaselineDocument(baseSha, path);
+  if (baseline.text === undefined) {
     console.log(`No ${path} existed at baseline ${baseSha}; treating as bootstrap.`);
     return;
   }
 
-  const oldDoc = JSON.parse(oldText) as OpenApiDocument;
+  const oldDoc = JSON.parse(baseline.text) as OpenApiDocument;
   const newDoc = JSON.parse(
     await readFile(process.env.OPENAPI_DOCUMENT_PATH ?? path, "utf8"),
   ) as OpenApiDocument;
-  const deprecations = JSON.parse(
+  const policy = JSON.parse(
     await readFile(
-      process.env.OPENAPI_DEPRECATIONS_PATH ??
-        new URL("../packages/contracts/deprecations.json", import.meta.url),
+      process.env.OPENAPI_BREAKING_CHANGE_POLICY_PATH ??
+        new URL("../packages/contracts/breaking-change-waivers.json", import.meta.url),
       "utf8",
     ),
-  ) as Deprecations;
-  const breaks = filterAllowedBreakingChanges(oldDoc, newDoc, deprecations);
+  ) as BreakingChangePolicy;
+  const breaks = filterAllowedBreakingChanges(oldDoc, newDoc, policy, baseline.resolvedSha);
   if (breaks.length > 0) {
     console.error(
       "Breaking OpenAPI changes detected (000 §5: append-only within a major version):",
