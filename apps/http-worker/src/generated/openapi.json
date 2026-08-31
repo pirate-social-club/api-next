@@ -8286,6 +8286,547 @@
         ]
       }
     },
+    "/internal/hns-edge-status": {
+      "post": {
+        "operationId": "post_internalHnsEdgeStatus",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "version": {
+                    "type": "string",
+                    "enum": [
+                      "pirate-hns-edge-status-v1"
+                    ]
+                  },
+                  "observer_id": {
+                    "type": "string",
+                    "enum": [
+                      "pirate-hns-primary-vps-v1"
+                    ]
+                  },
+                  "root": {
+                    "type": "string",
+                    "enum": [
+                      "jazleeuw"
+                    ]
+                  },
+                  "observed_at_unix_seconds": {
+                    "type": "integer",
+                    "allOf": [
+                      {
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      }
+                    ]
+                  },
+                  "authority_views": {
+                    "type": "array",
+                    "prefixItems": [
+                      {
+                        "$ref": "#/$defs/Objects_"
+                      },
+                      {
+                        "$ref": "#/$defs/Objects_"
+                      }
+                    ],
+                    "maxItems": 2,
+                    "minItems": 2
+                  },
+                  "app": {
+                    "type": "object",
+                    "properties": {
+                      "certificate_not_after_unix_seconds": {
+                        "type": "integer",
+                        "allOf": [
+                          {
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          }
+                        ]
+                      },
+                      "served_spki_sha256": {
+                        "type": "string",
+                        "allOf": [
+                          {
+                            "pattern": "^[0-9a-f]{64}$"
+                          }
+                        ]
+                      },
+                      "primary_tlsa_spki_sha256": {
+                        "type": "string",
+                        "allOf": [
+                          {
+                            "pattern": "^[0-9a-f]{64}$"
+                          }
+                        ]
+                      },
+                      "secondary_tlsa_spki_sha256": {
+                        "type": "string",
+                        "allOf": [
+                          {
+                            "pattern": "^[0-9a-f]{64}$"
+                          }
+                        ]
+                      },
+                      "http_status": {
+                        "type": "integer",
+                        "allOf": [
+                          {
+                            "minimum": 100,
+                            "maximum": 599
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "certificate_not_after_unix_seconds",
+                      "served_spki_sha256",
+                      "primary_tlsa_spki_sha256",
+                      "secondary_tlsa_spki_sha256",
+                      "http_status"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "failed_units": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "maxLength": 256
+                        },
+                        {
+                          "pattern": "^[A-Za-z0-9][A-Za-z0-9@_.:-]*$"
+                        }
+                      ]
+                    },
+                    "allOf": [
+                      {
+                        "maxItems": 32
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "version",
+                  "observer_id",
+                  "root",
+                  "observed_at_unix_seconds",
+                  "authority_views",
+                  "app",
+                  "failed_units"
+                ],
+                "additionalProperties": false,
+                "$defs": {
+                  "Objects_": {
+                    "type": "object",
+                    "properties": {
+                      "view_id": {
+                        "type": "string",
+                        "enum": [
+                          "primary",
+                          "secondary"
+                        ]
+                      },
+                      "zone_serial": {
+                        "type": "integer",
+                        "allOf": [
+                          {
+                            "minimum": 0,
+                            "maximum": 4294967295
+                          }
+                        ]
+                      },
+                      "rrsig_remaining_seconds": {
+                        "type": "object",
+                        "properties": {
+                          "dnskey": {
+                            "type": "integer",
+                            "allOf": [
+                              {
+                                "minimum": 0,
+                                "maximum": 31622400
+                              }
+                            ]
+                          },
+                          "soa": {
+                            "type": "integer",
+                            "allOf": [
+                              {
+                                "minimum": 0,
+                                "maximum": 31622400
+                              }
+                            ]
+                          },
+                          "app_a": {
+                            "type": "integer",
+                            "allOf": [
+                              {
+                                "minimum": 0,
+                                "maximum": 31622400
+                              }
+                            ]
+                          },
+                          "app_tlsa": {
+                            "type": "integer",
+                            "allOf": [
+                              {
+                                "minimum": 0,
+                                "maximum": 31622400
+                              }
+                            ]
+                          },
+                          "wildcard_tlsa": {
+                            "type": "integer",
+                            "allOf": [
+                              {
+                                "minimum": 0,
+                                "maximum": 31622400
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "dnskey",
+                          "soa",
+                          "app_a",
+                          "app_tlsa",
+                          "wildcard_tlsa"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "required": [
+                      "view_id",
+                      "zone_serial",
+                      "rrsig_remaining_seconds"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              }
+            }
+          },
+          "x-max-body-bytes": 8192
+        },
+        "responses": {
+          "202": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "accepted": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "observed_at_unix_seconds": {
+                      "type": "integer",
+                      "allOf": [
+                        {
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "accepted",
+                    "observed_at_unix_seconds"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "409": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "conflict"
+            ]
+          },
+          "500": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ]
+          },
+          "502": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "provider_unavailable"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "sharedSecret",
+            "name": "hns-edge-status"
+          }
+        },
+        "x-errors": [
+          "AuthError",
+          "BadRequest",
+          "Conflict",
+          "ProviderUnavailable",
+          "InternalError"
+        ]
+      }
+    },
     "/communities/{communityId}/canonical-route/ownership-recovery/start": {
       "post": {
         "operationId": "post_communitiesCommunityIdCanonicalRouteOwnershipRecoveryStart",

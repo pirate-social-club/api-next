@@ -33,6 +33,11 @@ import {
   verifyHnsCommunityAppApiRequest,
 } from "./hns-community-app-api-transport.ts";
 import {
+  disabledProductionHnsEdgeStatusComposition,
+  type HnsEdgeStatusComposition,
+  serveHnsEdgeStatusPage,
+} from "./hns-edge-status-page.ts";
+import {
   disabledProductionHnsHandleHostApiComposition,
   type HnsHandleHostApiComposition,
 } from "./hns-handle-host-api-composition.ts";
@@ -119,6 +124,7 @@ export interface HttpWorkerConfig {
 
 export interface HttpWorkerOptions {
   readonly config?: HttpWorkerConfig;
+  readonly hnsEdgeStatus?: HnsEdgeStatusComposition;
   readonly handlers?: Readonly<Record<string, EndpointHandler>>;
   /** Application use cases are installed by generated route name. */
   readonly sessionExchange?: SessionExchangeServices;
@@ -638,6 +644,7 @@ const validateHandlerStatus = (endpoint: EndpointDefinition, status: number): vo
 };
 
 export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWorkerEnv> {
+  const hnsEdgeStatus = options.hnsEdgeStatus ?? disabledProductionHnsEdgeStatusComposition;
   const hnsCommunityAppApi =
     options.hnsCommunityAppApi ?? disabledProductionHnsCommunityAppApiComposition;
   const hnsHandleHostApi =
@@ -670,6 +677,18 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
   app.use("*", async (context, next) => {
     const requestUrl = new URL(context.req.raw.url);
     const pathname = requestUrl.pathname;
+    if (pathname === "/admin/hns") {
+      if (context.req.raw.method !== "GET") {
+        return new Response("Method not allowed", {
+          status: 405,
+          headers: { allow: "GET", "cache-control": "no-store" },
+        });
+      }
+      if (!hnsEdgeStatus.enabled) {
+        return new Response("Not found", { status: 404, headers: { "cache-control": "no-store" } });
+      }
+      return serveHnsEdgeStatusPage(context.req.raw, hnsEdgeStatus);
+    }
     const privateAuthorityRequest = pathname === "/internal/hns/solid-host-authority/v2/resolve";
     const privateHandleAuthorityRequest =
       pathname === "/internal/hns/solid-handle-host-authority/v1/resolve";

@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.42.0",
+  "releaseType": "hns-edge-status-operations",
+  "wireContract": "hns-edge-status-v1",
+  "sourceCommit": "pending-review",
+  "supersedes": "0.41.0; adds the private typed HNS edge status heartbeat while retaining the previous internal alert contract as an uninstalled compatibility surface.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.42.0.tgz",
+    "sha256": "762eff5c9500dd466e9feb2e373a7f59c0193f0129c8ad1e0ddc477886583f39",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@ef21a6882f0dc3b5a1e69d141f9287d96b27f0f65c1c0d54ff7c37a1a533ef24",
+    "openapiSha256": "ef21a6882f0dc3b5a1e69d141f9287d96b27f0f65c1c0d54ff7c37a1a533ef24",
+    "clientSha256": "2399f3db82b0fcc6706dc6e48cbb2d6af117b2d378506d734578a930cee01219"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "passed",
+      "baselineCommit": "origin/main",
+      "reason": "The new endpoint is private and additive."
+    },
+    "focusedContractSuites": "34 passed across HNS status contracts, application semantics, KV storage, HTTP and production composition, configuration, and binding invariants",
+    "fullUnitSuite": "not run locally because the host had less than 3 GiB available with swap saturated",
+    "fullWorkerdSuite": "not run locally; the reused dependency tree does not expose the cloudflare:workers unit-test alias to this worktree",
+    "packageVerifier": "passed",
+    "repositoryCheck": "contract freshness, Knip ratchet, dependency boundary, HTTP import boundary, migration ledger, config, focused tests, and diff checks passed; both TypeScript projects had no diagnostics in lane-owned files but the full commands remain red on main's existing ArrayBufferLike and DOM type conflict"
+  }
+}

@@ -62,6 +62,11 @@ export {
   makeCloudflareAccessJwtValidatorV1,
 } from "./cloudflare-access-jwt";
 export {
+  HNS_EDGE_STATUS_KV_KEY,
+  type HnsEdgeStatusKvNamespace,
+  makeCloudflareHnsEdgeStatusStore,
+} from "./hns-edge-status-kv.ts";
+export {
   makeControlPlaneCommunityModerationRepository,
   makeControlPlaneCommunityModerationStore,
 } from "./community-moderation-repository.ts";
