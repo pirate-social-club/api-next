@@ -60,6 +60,20 @@
         "binding": "DATA_REGISTRATION_QUEUE",
         "queue": "pirate-data-registration-development"
       }
+    ],
+    "consumers": [
+      {
+        "queue": "pirate-media-processing-development-dlq",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 5
+      },
+      {
+        "queue": "pirate-data-registration-development-dlq",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 5
+      }
     ]
   },
   "vars": {
@@ -148,6 +162,20 @@
           {
             "binding": "DATA_REGISTRATION_QUEUE",
             "queue": "pirate-data-registration-staging"
+          }
+        ],
+        "consumers": [
+          {
+            "queue": "pirate-media-processing-staging-dlq",
+            "max_batch_size": 10,
+            "max_batch_timeout": 5,
+            "max_retries": 5
+          },
+          {
+            "queue": "pirate-data-registration-staging-dlq",
+            "max_batch_size": 10,
+            "max_batch_timeout": 5,
+            "max_retries": 5
           }
         ]
       },
@@ -253,6 +281,20 @@
           {
             "binding": "DATA_REGISTRATION_QUEUE",
             "queue": "pirate-data-registration-production"
+          }
+        ],
+        "consumers": [
+          {
+            "queue": "pirate-media-processing-production-dlq",
+            "max_batch_size": 10,
+            "max_batch_timeout": 5,
+            "max_retries": 5
+          },
+          {
+            "queue": "pirate-data-registration-production-dlq",
+            "max_batch_size": 10,
+            "max_batch_timeout": 5,
+            "max_retries": 5
           }
         ]
       },
