@@ -24,6 +24,14 @@ const alias = {
     "../../packages/application/src/data/registration-persistence.ts",
     import.meta.url,
   ).pathname,
+  "@pirate/application/dance/reference-processing-wakeup": new URL(
+    "../../packages/application/src/dance/reference-processing-wakeup.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/application/dance/reference-processing": new URL(
+    "../../packages/application/src/dance/reference-processing.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/application/verification": new URL(
     "../../packages/application/src/verification/index.ts",
     import.meta.url,
@@ -70,6 +78,10 @@ const alias = {
   ).pathname,
   "@pirate/platform-cf/data-registration-repository": new URL(
     "../../packages/platform-cf/src/data-registration-repository.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/dance-reference-processing-repository": new URL(
+    "../../packages/platform-cf/src/dance-reference-processing-repository.ts",
     import.meta.url,
   ).pathname,
   "@pirate/platform-cf": new URL("../../packages/platform-cf/src/index.ts", import.meta.url)

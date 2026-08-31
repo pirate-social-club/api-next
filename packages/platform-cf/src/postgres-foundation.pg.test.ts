@@ -833,7 +833,10 @@ async function catalogForSchema(admin: Client, schema: string): Promise<SchemaCa
       ...index,
       indexdef: index.indexdef.replaceAll(`${schema}.`, ""),
     })),
-    constraints: constraints.rows,
+    constraints: constraints.rows.map((constraint) => ({
+      ...constraint,
+      definition: constraint.definition.replaceAll(`${schema}.`, ""),
+    })),
   };
 }
 
@@ -1160,6 +1163,14 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "community_streaks",
         "content_publication_outbox",
         "custody_solvency_observations",
+        "dance_choreographies",
+        "dance_choreography_revisions",
+        "dance_reference_actions",
+        "dance_reference_artifacts",
+        "dance_reference_outbox",
+        "dance_reference_processing_attempts",
+        "dance_reference_processing_requests",
+        "dance_song_segments",
         "data_registration_artifacts",
         "data_registration_attempt_transitions",
         "data_registration_command_replays",
@@ -1319,6 +1330,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "reward_subject_consumptions",
         "reward_uniqueness_authorities",
         "schema_migrations",
+        "song_dance_presentations",
         "song_reward_bundle_claim_legs",
         "song_reward_bundle_claims",
         "song_reward_leg_funding_effects",
@@ -1482,6 +1494,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "community_route_revalidation_snapshot_append_only",
         "community_streak_days_append_only",
         "custody_solvency_observations_append_only",
+        "dance_reference_actions_append_only",
         "data_registration_artifacts_append_only",
         "data_registration_pins_append_only",
         "data_registration_receipts_append_only",

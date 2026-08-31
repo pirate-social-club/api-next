@@ -3555,6 +3555,410 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION guard_dance_choreography() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  target dance_choreography_revisions%ROWTYPE;
+  song posts%ROWTYPE;
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'Dance choreographies cannot be deleted';
+  END IF;
+  IF TG_OP = 'INSERT' THEN
+    IF NOT active_owned_persona(NEW.creator_account_id, NEW.creator_persona_id) THEN
+      RAISE EXCEPTION 'Dance choreography requires an active owned persona';
+    END IF;
+    SELECT * INTO song FROM posts
+     WHERE community_id = NEW.community_id AND post_id = NEW.song_post_id FOR SHARE;
+    IF song.post_id IS NULL OR song.post_type <> 'song' OR song.status <> 'published' THEN
+      RAISE EXCEPTION 'Dance choreography requires a published song';
+    END IF;
+  ELSE
+    IF ROW(NEW.choreography_id, NEW.community_id, NEW.song_post_id,
+      NEW.creator_account_id, NEW.creator_persona_id, NEW.created_at)
+      IS DISTINCT FROM ROW(OLD.choreography_id, OLD.community_id, OLD.song_post_id,
+      OLD.creator_account_id, OLD.creator_persona_id, OLD.created_at) THEN
+      RAISE EXCEPTION 'Dance choreography identity is immutable';
+    END IF;
+    IF NEW IS NOT DISTINCT FROM OLD THEN
+      RETURN NEW;
+    END IF;
+    IF NEW.version <> OLD.version + 1 OR NEW.updated_at <= OLD.updated_at THEN
+      RAISE EXCEPTION 'Dance choreography update requires the next version';
+    END IF;
+    IF NOT (
+      (OLD.status = 'draft' AND NEW.status IN ('processing', 'disabled', 'retired'))
+      OR (OLD.status = 'processing' AND NEW.status IN ('processing', 'ready', 'disabled', 'retired'))
+      OR (OLD.status = 'ready' AND NEW.status IN ('ready', 'disabled'))
+      OR (OLD.status = 'disabled' AND NEW.status = 'retired')
+    ) THEN
+      RAISE EXCEPTION 'Invalid Dance choreography transition';
+    END IF;
+  END IF;
+  IF NEW.active_revision IS NOT NULL THEN
+    SELECT * INTO target FROM dance_choreography_revisions
+     WHERE choreography_id = NEW.choreography_id AND revision = NEW.active_revision;
+    IF target.choreography_id IS NULL OR target.status <> 'ready' THEN
+      RAISE EXCEPTION 'Dance active revision must be ready';
+    END IF;
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_dance_choreography_revision() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  aggregate dance_choreographies%ROWTYPE;
+  reference_post posts%ROWTYPE;
+  selected_segment dance_song_segments%ROWTYPE;
+  artifact dance_reference_artifacts%ROWTYPE;
+  latest_revision BIGINT;
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'Dance choreography revisions cannot be deleted';
+  END IF;
+  SELECT * INTO aggregate FROM dance_choreographies
+   WHERE choreography_id = NEW.choreography_id FOR SHARE;
+  SELECT * INTO reference_post FROM posts
+   WHERE community_id = NEW.community_id AND post_id = NEW.reference_video_post_id FOR SHARE;
+  IF aggregate.choreography_id IS NULL
+     OR aggregate.community_id <> NEW.community_id OR aggregate.song_post_id <> NEW.song_post_id
+     OR reference_post.post_id IS NULL OR reference_post.post_type <> 'video'
+     OR reference_post.status <> 'published' OR reference_post.visibility <> 'public' THEN
+    RAISE EXCEPTION 'Dance revision requires exact aggregate and published reference video';
+  END IF;
+  IF TG_OP = 'INSERT' THEN
+    IF aggregate.status NOT IN ('processing', 'ready') THEN
+      RAISE EXCEPTION 'Dance choreography is not open for a revision append';
+    END IF;
+    IF NEW.aggregate_version <> aggregate.version THEN
+      RAISE EXCEPTION 'Dance revision append requires the current aggregate version';
+    END IF;
+    SELECT max(existing.revision) INTO latest_revision
+      FROM dance_choreography_revisions AS existing
+     WHERE existing.choreography_id = NEW.choreography_id;
+    IF NEW.revision <> COALESCE(latest_revision, 0) + 1 THEN
+      RAISE EXCEPTION 'Dance revisions must append in order';
+    END IF;
+  END IF;
+  IF TG_OP = 'UPDATE' THEN
+    IF OLD.status = 'processing' AND aggregate.status IN ('disabled', 'retired') THEN
+      RAISE EXCEPTION 'Disabled or retired Dance choreography rejects late processing';
+    END IF;
+    IF ROW(NEW.choreography_id, NEW.revision, NEW.aggregate_version,
+      NEW.community_id, NEW.song_post_id,
+      NEW.audio_revision, NEW.requested_start_ms, NEW.requested_end_ms,
+      NEW.reference_video_post_id, NEW.reference_video_song_post_id,
+      NEW.reference_video_audio_revision, NEW.reference_video_object_ref,
+      NEW.reference_video_sha256, NEW.mirror_policy, NEW.alignment_policy_version,
+      NEW.alignment_adapter, NEW.alignment_revision, NEW.pose_model_version,
+      NEW.pose_runtime_version, NEW.feature_schema_version, NEW.scorer_contract_version,
+      NEW.fingerprint_policy_version, NEW.integrity_policy_version,
+      NEW.owner_policy_revision, NEW.owner_policy_hash, NEW.revision_terms_hash, NEW.created_at)
+      IS DISTINCT FROM ROW(OLD.choreography_id, OLD.revision, OLD.aggregate_version,
+      OLD.community_id,
+      OLD.song_post_id, OLD.audio_revision, OLD.requested_start_ms, OLD.requested_end_ms,
+      OLD.reference_video_post_id, OLD.reference_video_song_post_id,
+      OLD.reference_video_audio_revision, OLD.reference_video_object_ref,
+      OLD.reference_video_sha256, OLD.mirror_policy, OLD.alignment_policy_version,
+      OLD.alignment_adapter, OLD.alignment_revision, OLD.pose_model_version,
+      OLD.pose_runtime_version, OLD.feature_schema_version, OLD.scorer_contract_version,
+      OLD.fingerprint_policy_version, OLD.integrity_policy_version,
+      OLD.owner_policy_revision, OLD.owner_policy_hash, OLD.revision_terms_hash, OLD.created_at) THEN
+      RAISE EXCEPTION 'Dance revision terms are immutable';
+    END IF;
+    IF NEW IS NOT DISTINCT FROM OLD THEN
+      RETURN NEW;
+    END IF;
+    IF NOT (
+      (OLD.status = 'processing' AND NEW.status IN ('ready', 'processing_failed'))
+      OR (OLD.status = 'ready' AND NEW.status IN ('disabled', 'retired'))
+    ) THEN
+      RAISE EXCEPTION 'Invalid Dance revision transition';
+    END IF;
+  END IF;
+  IF NEW.status IN ('ready', 'disabled', 'retired') THEN
+    IF NEW.status = 'ready' AND aggregate.status IN ('disabled', 'retired') THEN
+      RAISE EXCEPTION 'Disabled or retired Dance choreography cannot become ready';
+    END IF;
+    SELECT * INTO selected_segment FROM dance_song_segments WHERE segment_id = NEW.segment_id;
+    SELECT * INTO artifact FROM dance_reference_artifacts
+     WHERE choreography_id = NEW.choreography_id AND revision = NEW.revision;
+    IF selected_segment.segment_id IS NULL
+       OR selected_segment.community_id <> NEW.community_id
+       OR selected_segment.song_post_id <> NEW.song_post_id
+       OR selected_segment.audio_revision <> NEW.audio_revision
+       OR selected_segment.start_ms <> NEW.requested_start_ms
+       OR selected_segment.end_ms <> NEW.requested_end_ms
+       OR NEW.reference_video_scored_end_ms - NEW.reference_video_scored_start_ms
+          <> selected_segment.duration_ms
+       OR artifact.artifact_id IS NULL THEN
+      RAISE EXCEPTION 'Ready Dance revision lacks exact segment, window, or artifact';
+    END IF;
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_dance_processing_attempt() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  target dance_choreography_revisions%ROWTYPE;
+  latest dance_reference_processing_attempts%ROWTYPE;
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'Dance processing attempts cannot be deleted';
+  END IF;
+  IF TG_OP = 'INSERT' THEN
+    SELECT * INTO target FROM dance_choreography_revisions
+     WHERE choreography_id = NEW.choreography_id AND revision = NEW.revision FOR SHARE;
+    SELECT * INTO latest FROM dance_reference_processing_attempts
+     WHERE choreography_id = NEW.choreography_id AND revision = NEW.revision
+     ORDER BY attempt_number DESC LIMIT 1 FOR SHARE;
+    IF target.choreography_id IS NULL OR target.status <> 'processing'
+       OR NEW.attempt_number <> COALESCE(latest.attempt_number, 0) + 1
+       OR NEW.lease_expires_at <= clock_timestamp()
+       OR (latest.processing_attempt_id IS NOT NULL
+         AND (latest.state <> 'failed' OR latest.retryable IS NOT TRUE)) THEN
+      RAISE EXCEPTION 'Dance processing attempt is not the exact next retry';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF TG_OP = 'UPDATE' THEN
+    IF ROW(NEW.processing_attempt_id, NEW.choreography_id, NEW.revision,
+      NEW.attempt_number, NEW.adapter_id, NEW.adapter_revision,
+      NEW.input_digest, NEW.created_at)
+      IS DISTINCT FROM ROW(OLD.processing_attempt_id, OLD.choreography_id, OLD.revision,
+      OLD.attempt_number, OLD.adapter_id, OLD.adapter_revision,
+      OLD.input_digest, OLD.created_at) THEN
+      RAISE EXCEPTION 'Dance processing attempt identity is immutable';
+    END IF;
+    IF OLD.prepared_operation IS NOT NULL AND ROW(
+      NEW.prepared_operation, NEW.prepared_operation_bytes, NEW.prepared_operation_sha256
+    ) IS DISTINCT FROM ROW(
+      OLD.prepared_operation, OLD.prepared_operation_bytes, OLD.prepared_operation_sha256
+    ) THEN
+      RAISE EXCEPTION 'Dance prepared operation is immutable';
+    END IF;
+    IF NEW IS NOT DISTINCT FROM OLD THEN
+      RETURN NEW;
+    END IF;
+    IF OLD.state = 'leased' AND NEW.state = 'leased' THEN
+      IF OLD.prepared_operation IS NULL AND NEW.prepared_operation IS NOT NULL THEN
+        IF NEW.lease_owner <> OLD.lease_owner OR NEW.lease_fence <> OLD.lease_fence
+           OR NEW.lease_expires_at <> OLD.lease_expires_at
+           OR OLD.lease_expires_at <= clock_timestamp() OR NEW.updated_at <= OLD.updated_at THEN
+          RAISE EXCEPTION 'Dance prepared operation fence is stale';
+        END IF;
+      ELSIF OLD.lease_expires_at > clock_timestamp()
+         AND NEW.lease_owner = OLD.lease_owner
+         AND NEW.lease_fence = OLD.lease_fence
+         AND NEW.lease_expires_at > OLD.lease_expires_at
+         AND NEW.updated_at > OLD.updated_at THEN
+        NULL;
+      ELSIF OLD.lease_expires_at > clock_timestamp()
+         OR NEW.lease_expires_at <= clock_timestamp()
+         OR NEW.lease_fence <> OLD.lease_fence + 1
+         OR NEW.updated_at <= OLD.updated_at THEN
+        RAISE EXCEPTION 'Dance processing lease cannot be reclaimed';
+      END IF;
+    ELSIF OLD.state = 'leased' AND NEW.state IN ('succeeded', 'failed', 'exhausted') THEN
+      IF OLD.lease_expires_at <= clock_timestamp()
+         OR NEW.lease_fence <> OLD.lease_fence OR NEW.updated_at <= OLD.updated_at THEN
+        RAISE EXCEPTION 'Dance processing terminal fence is stale';
+      END IF;
+    ELSE
+      RAISE EXCEPTION 'Invalid Dance processing attempt transition';
+    END IF;
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_dance_reference_artifact() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  target dance_choreography_revisions%ROWTYPE;
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    RAISE EXCEPTION 'Dance reference artifacts are immutable';
+  END IF;
+  SELECT * INTO target FROM dance_choreography_revisions
+   WHERE choreography_id = NEW.choreography_id AND revision = NEW.revision FOR SHARE;
+  IF target.choreography_id IS NULL
+     OR target.pose_model_version <> NEW.pose_model_version
+     OR target.pose_runtime_version <> NEW.pose_runtime_version
+     OR target.feature_schema_version <> NEW.feature_schema_version
+     OR target.scorer_contract_version <> NEW.scorer_contract_version
+     OR target.integrity_policy_version <> NEW.integrity_policy_version THEN
+    RAISE EXCEPTION 'Dance reference artifact does not match revision terms';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_dance_reference_outbox() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  target dance_choreography_revisions%ROWTYPE;
+  payload_keys TEXT[];
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'Dance reference outbox rows cannot be deleted';
+  END IF;
+  IF TG_OP = 'INSERT' THEN
+    SELECT * INTO target FROM dance_choreography_revisions
+     WHERE choreography_id = NEW.choreography_id AND revision = NEW.revision FOR SHARE;
+    SELECT array_agg(key ORDER BY key) INTO payload_keys FROM jsonb_object_keys(NEW.payload) AS key;
+    IF target.choreography_id IS NULL OR target.status <> 'processing'
+       OR payload_keys IS DISTINCT FROM
+          ARRAY['choreography_id', 'effect_identity', 'revision', 'revision_terms_hash']::TEXT[]
+       OR NEW.payload->>'choreography_id' <> NEW.choreography_id
+       OR NEW.payload->>'effect_identity' <> NEW.effect_identity
+       OR NEW.payload->>'revision' <> NEW.revision::TEXT
+       OR NEW.payload->>'revision_terms_hash' <> target.revision_terms_hash THEN
+      RAISE EXCEPTION 'Dance reference outbox payload is not exact processing authority';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF TG_OP = 'UPDATE' THEN
+    IF ROW(NEW.outbox_event_id, NEW.choreography_id, NEW.revision, NEW.event_type,
+      NEW.effect_identity, NEW.payload, NEW.payload_sha256, NEW.created_at)
+      IS DISTINCT FROM ROW(OLD.outbox_event_id, OLD.choreography_id, OLD.revision,
+      OLD.event_type, OLD.effect_identity, OLD.payload, OLD.payload_sha256, OLD.created_at) THEN
+      RAISE EXCEPTION 'Dance reference outbox identity is immutable';
+    END IF;
+    IF NEW IS NOT DISTINCT FROM OLD THEN
+      RETURN NEW;
+    END IF;
+    IF OLD.state IN ('pending', 'failed') AND NEW.state = 'running' THEN
+      IF (OLD.state = 'failed' AND OLD.next_eligible_at > clock_timestamp())
+         OR NEW.lease_expires_at <= clock_timestamp()
+         OR NEW.delivery_attempts <> OLD.delivery_attempts + 1
+         OR NEW.claim_fence <> OLD.claim_fence + 1 OR NEW.updated_at <= OLD.updated_at THEN
+        RAISE EXCEPTION 'Dance outbox claim fence is invalid';
+      END IF;
+    ELSIF OLD.state = 'running' AND NEW.state = 'running' THEN
+      IF OLD.lease_expires_at > clock_timestamp()
+         AND NEW.claim_owner = OLD.claim_owner
+         AND NEW.delivery_attempts = OLD.delivery_attempts
+         AND NEW.claim_fence = OLD.claim_fence
+         AND NEW.lease_expires_at > OLD.lease_expires_at
+         AND NEW.updated_at > OLD.updated_at THEN
+        NULL;
+      ELSIF OLD.lease_expires_at > clock_timestamp()
+         OR NEW.lease_expires_at <= clock_timestamp()
+         OR NEW.delivery_attempts <> OLD.delivery_attempts + 1
+         OR NEW.claim_fence <> OLD.claim_fence + 1 OR NEW.updated_at <= OLD.updated_at THEN
+        RAISE EXCEPTION 'Dance outbox lease cannot be reclaimed or renewed';
+      END IF;
+    ELSIF OLD.state = 'running' AND NEW.state IN ('delivered', 'failed', 'exhausted') THEN
+      IF OLD.lease_expires_at <= clock_timestamp()
+         OR NEW.delivery_attempts <> OLD.delivery_attempts
+         OR NEW.claim_fence <> OLD.claim_fence OR NEW.updated_at <= OLD.updated_at THEN
+        RAISE EXCEPTION 'Dance outbox terminal fence is invalid';
+      END IF;
+    ELSE
+      RAISE EXCEPTION 'Invalid Dance reference outbox transition';
+    END IF;
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_dance_reference_processing_request() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  target dance_choreography_revisions%ROWTYPE;
+  outbox dance_reference_outbox%ROWTYPE;
+  publication media_publication_projections%ROWTYPE;
+  request_keys TEXT[];
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    RAISE EXCEPTION 'Dance reference processing requests are immutable';
+  END IF;
+  SELECT * INTO target FROM dance_choreography_revisions
+   WHERE choreography_id = NEW.choreography_id AND revision = NEW.revision FOR SHARE;
+  SELECT * INTO outbox FROM dance_reference_outbox
+   WHERE effect_identity = NEW.effect_identity FOR SHARE;
+  SELECT * INTO publication FROM media_publication_projections
+   WHERE community_id = target.community_id AND post_id = target.song_post_id
+     AND audio_revision = target.audio_revision FOR SHARE;
+  SELECT array_agg(key ORDER BY key) INTO request_keys
+    FROM jsonb_object_keys(NEW.request_material) AS key;
+  IF target.choreography_id IS NULL OR target.status <> 'processing'
+     OR outbox.choreography_id <> NEW.choreography_id OR outbox.revision <> NEW.revision
+     OR request_keys IS DISTINCT FROM ARRAY[
+       'alignment', 'canonicalAudio', 'choreographyId', 'choreographyRevision',
+       'effectIdentity', 'extraction', 'mirrorPolicy', 'outputs', 'ownerPolicy', 'pose',
+       'qualityLimits', 'referenceVideo', 'requestedEndMs', 'requestedStartMs', 'revisionTermsHash',
+       'segmentTermsHash', 'version'
+     ]::TEXT[]
+     OR NEW.request_material->>'version' <> 'frozen-dance-reference-input-v1'
+     OR NEW.request_material->>'effectIdentity' <> NEW.effect_identity
+     OR NEW.request_material->>'choreographyId' <> NEW.choreography_id
+     OR NEW.request_material->>'choreographyRevision' <> NEW.revision::TEXT
+     OR NEW.request_material->>'revisionTermsHash' <> target.revision_terms_hash
+     OR NEW.request_material->'canonicalAudio'->>'audioRevision' <> target.audio_revision::TEXT
+     OR NEW.request_material->'canonicalAudio'->>'objectKey' <> publication.audio_asset_ref
+     OR NEW.request_material->'canonicalAudio'->>'sha256' <> publication.canonical_audio_sha256
+     OR NEW.request_material->'referenceVideo'->>'postId' <> target.reference_video_post_id
+     OR NEW.request_material->'referenceVideo'->>'objectKey' <> target.reference_video_object_ref
+     OR NEW.request_material->'referenceVideo'->>'sha256' <> target.reference_video_sha256
+     OR NEW.request_material->>'requestedStartMs' <> target.requested_start_ms::TEXT
+     OR NEW.request_material->>'requestedEndMs' <> target.requested_end_ms::TEXT
+     OR NEW.request_material->>'mirrorPolicy' <> target.mirror_policy
+     OR NEW.request_material->'alignment'->>'policyVersion' <> target.alignment_policy_version
+     OR NEW.request_material->'alignment'->>'adapterId' <> target.alignment_adapter
+     OR NEW.request_material->'alignment'->>'adapterRevision' <> target.alignment_revision
+     OR NEW.request_material->'pose'->>'modelVersion' <> target.pose_model_version
+     OR NEW.request_material->'pose'->>'runtimeVersion' <> target.pose_runtime_version
+     OR NEW.request_material->'pose'->>'featureSchemaVersion' <> target.feature_schema_version
+     OR NEW.request_material->'pose'->>'scorerContractVersion' <> target.scorer_contract_version
+     OR NEW.request_material->'pose'->>'fingerprintPolicyVersion' <>
+        target.fingerprint_policy_version
+     OR NEW.request_material->'pose'->>'integrityPolicyVersion' <> target.integrity_policy_version
+     OR NEW.request_material->'ownerPolicy'->>'revision' <> target.owner_policy_revision::TEXT
+     OR NEW.request_material->'ownerPolicy'->>'hash' <> target.owner_policy_hash THEN
+    RAISE EXCEPTION 'Dance reference processing request is not exact revision authority';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_dance_song_segment() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  publication media_publication_projections%ROWTYPE;
+  song posts%ROWTYPE;
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    RAISE EXCEPTION 'Dance song segments are immutable';
+  END IF;
+  SELECT * INTO publication FROM media_publication_projections
+   WHERE submission_id = NEW.song_submission_id FOR SHARE;
+  SELECT * INTO song FROM posts
+   WHERE community_id = NEW.community_id AND post_id = NEW.song_post_id FOR SHARE;
+  IF publication.submission_id IS NULL OR song.post_id IS NULL
+     OR publication.community_id <> NEW.community_id
+     OR publication.post_id <> NEW.song_post_id
+     OR publication.audio_revision <> NEW.audio_revision
+     OR publication.canonical_audio_sha256 <> NEW.source_media_sha256
+     OR song.post_type <> 'song' OR song.status <> 'published' THEN
+    RAISE EXCEPTION 'Dance segment requires exact published canonical song audio';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
 CREATE FUNCTION guard_data_registration_append_only() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -6375,6 +6779,60 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION guard_song_dance_presentation() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  publication media_publication_projections%ROWTYPE;
+  target dance_choreography_revisions%ROWTYPE;
+  aggregate dance_choreographies%ROWTYPE;
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'Song Dance presentations cannot be deleted';
+  END IF;
+  SELECT * INTO publication FROM media_publication_projections
+   WHERE submission_id = NEW.song_submission_id FOR SHARE;
+  IF publication.submission_id IS NULL
+     OR publication.community_id <> NEW.community_id
+     OR publication.post_id <> NEW.song_post_id
+     OR publication.audio_revision <> NEW.audio_revision
+     OR publication.actor_account_id <> NEW.song_owner_account_id
+     OR NEW.updated_by_account_id <> NEW.song_owner_account_id THEN
+    RAISE EXCEPTION 'Song Dance presentation requires exact song-owner authority';
+  END IF;
+  IF TG_OP = 'UPDATE' THEN
+    IF ROW(NEW.community_id, NEW.song_post_id, NEW.song_submission_id,
+      NEW.audio_revision, NEW.song_owner_account_id, NEW.created_at)
+      IS DISTINCT FROM ROW(OLD.community_id, OLD.song_post_id, OLD.song_submission_id,
+      OLD.audio_revision, OLD.song_owner_account_id, OLD.created_at) THEN
+      RAISE EXCEPTION 'Song Dance presentation identity is immutable';
+    END IF;
+    IF NEW IS NOT DISTINCT FROM OLD THEN
+      RETURN NEW;
+    END IF;
+    IF NEW.presentation_revision <> OLD.presentation_revision + 1
+       OR NEW.updated_at <= OLD.updated_at THEN
+      RAISE EXCEPTION 'Song Dance presentation requires the next revision';
+    END IF;
+  END IF;
+  IF NEW.featured_choreography_id IS NOT NULL THEN
+    SELECT * INTO target FROM dance_choreography_revisions
+     WHERE choreography_id = NEW.featured_choreography_id
+       AND revision = NEW.featured_choreography_revision;
+    SELECT * INTO aggregate FROM dance_choreographies
+     WHERE choreography_id = NEW.featured_choreography_id;
+    IF target.choreography_id IS NULL OR target.status <> 'ready'
+       OR aggregate.status <> 'ready'
+       OR target.community_id <> NEW.community_id
+       OR target.song_post_id <> NEW.song_post_id
+       OR target.audio_revision <> NEW.audio_revision THEN
+      RAISE EXCEPTION 'Featured Dance presentation target is not selectable';
+    END IF;
+  END IF;
+  RETURN NEW;
+END
+$$;
+
 CREATE FUNCTION guard_song_rating_lowering_v1() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -7462,6 +7920,14 @@ BEGIN
   RETURN NEW;
 END;
 $_$;
+
+CREATE FUNCTION is_dance_identifier(value text, maximum_octets integer DEFAULT 256) RETURNS boolean
+    LANGUAGE sql IMMUTABLE STRICT
+    AS $$
+  SELECT btrim(value) <> ''
+     AND value = btrim(value)
+     AND octet_length(value) <= maximum_octets
+$$;
 
 CREATE FUNCTION is_hns_host_persistence_identity(input_value text, maximum_bytes integer) RETURNS boolean
     LANGUAGE sql IMMUTABLE
@@ -9157,6 +9623,14 @@ CREATE FUNCTION reject_community_route_operator_override_audit_change() RETURNS 
 BEGIN
   RAISE EXCEPTION 'community route operator override audit is append-only';
 END;
+$$;
+
+CREATE FUNCTION reject_dance_reference_action_change() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'Dance reference actions are append-only';
+END
 $$;
 
 CREATE FUNCTION reject_handle_sales_append_only_change_v1() RETURNS trigger
@@ -11437,6 +11911,37 @@ EXCEPTION WHEN others THEN
   RETURN FALSE;
 END;
 $_$;
+
+CREATE FUNCTION validate_dance_choreography_consistency() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  target_id TEXT;
+  aggregate dance_choreographies%ROWTYPE;
+  ready_count BIGINT;
+BEGIN
+  target_id := NEW.choreography_id;
+  SELECT * INTO aggregate FROM dance_choreographies
+   WHERE choreography_id = target_id;
+  IF aggregate.choreography_id IS NULL THEN
+    RETURN NULL;
+  END IF;
+  SELECT count(*) INTO ready_count FROM dance_choreography_revisions
+   WHERE choreography_id = target_id AND status = 'ready';
+  IF aggregate.status = 'ready' THEN
+    IF ready_count = 0 OR NOT EXISTS (
+      SELECT 1 FROM dance_choreography_revisions
+       WHERE choreography_id = target_id
+         AND revision = aggregate.active_revision AND status = 'ready'
+    ) THEN
+      RAISE EXCEPTION 'Ready Dance choreography requires an exact ready active revision';
+    END IF;
+  ELSIF aggregate.status IN ('draft', 'processing') AND ready_count <> 0 THEN
+    RAISE EXCEPTION 'Non-ready Dance choreography cannot retain a ready revision';
+  END IF;
+  RETURN NULL;
+END
+$$;
 
 CREATE FUNCTION validate_handle_claim_insert_v2() RETURNS trigger
     LANGUAGE plpgsql
@@ -16321,6 +16826,270 @@ CREATE TABLE custody_solvency_observations (
     CONSTRAINT custody_solvency_observations_token_address_check CHECK ((token_address ~ '^0x[0-9a-f]{40}$'::text))
 );
 
+CREATE TABLE dance_choreographies (
+    choreography_id text NOT NULL,
+    community_id text NOT NULL,
+    song_post_id text NOT NULL,
+    creator_account_id text NOT NULL,
+    creator_persona_id text NOT NULL,
+    version bigint DEFAULT 1 NOT NULL,
+    status text NOT NULL,
+    active_revision bigint,
+    disabled_reason text,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    disabled_at timestamp with time zone,
+    retired_at timestamp with time zone,
+    CONSTRAINT dance_choreographies_active_revision_check CHECK (((active_revision >= 1) AND (active_revision <= '9007199254740991'::bigint))),
+    CONSTRAINT dance_choreographies_choreography_id_check CHECK (is_dance_identifier(choreography_id)),
+    CONSTRAINT dance_choreographies_disabled_reason_check CHECK ((disabled_reason = ANY (ARRAY['rights'::text, 'safety'::text]))),
+    CONSTRAINT dance_choreographies_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'processing'::text, 'ready'::text, 'disabled'::text, 'retired'::text]))),
+    CONSTRAINT dance_choreographies_version_check CHECK (((version >= 1) AND (version <= '9007199254740991'::bigint))),
+    CONSTRAINT dance_choreography_state_shape CHECK ((((status = 'draft'::text) AND (active_revision IS NULL) AND (disabled_reason IS NULL) AND (disabled_at IS NULL) AND (retired_at IS NULL)) OR ((status = 'processing'::text) AND (active_revision IS NULL) AND (disabled_reason IS NULL) AND (disabled_at IS NULL) AND (retired_at IS NULL)) OR ((status = 'ready'::text) AND (active_revision IS NOT NULL) AND (disabled_reason IS NULL) AND (disabled_at IS NULL) AND (retired_at IS NULL)) OR ((status = 'disabled'::text) AND (disabled_reason IS NOT NULL) AND (disabled_at IS NOT NULL) AND (retired_at IS NULL)) OR ((status = 'retired'::text) AND (retired_at IS NOT NULL) AND (((disabled_reason IS NULL) AND (disabled_at IS NULL)) OR ((disabled_reason IS NOT NULL) AND (disabled_at IS NOT NULL)))))),
+    CONSTRAINT dance_choreography_time_order CHECK (((updated_at >= created_at) AND ((disabled_at IS NULL) OR (disabled_at >= created_at)) AND ((retired_at IS NULL) OR (retired_at >= created_at))))
+);
+
+CREATE TABLE dance_choreography_revisions (
+    choreography_id text NOT NULL,
+    revision bigint NOT NULL,
+    aggregate_version bigint NOT NULL,
+    community_id text NOT NULL,
+    song_post_id text NOT NULL,
+    audio_revision bigint NOT NULL,
+    requested_start_ms bigint NOT NULL,
+    requested_end_ms bigint NOT NULL,
+    segment_id text,
+    reference_video_post_id text NOT NULL,
+    reference_video_song_post_id text NOT NULL,
+    reference_video_audio_revision bigint NOT NULL,
+    reference_video_object_ref text NOT NULL,
+    reference_video_sha256 text NOT NULL,
+    mirror_policy text NOT NULL,
+    alignment_policy_version text NOT NULL,
+    alignment_adapter text NOT NULL,
+    alignment_revision text NOT NULL,
+    pose_model_version text NOT NULL,
+    pose_runtime_version text NOT NULL,
+    feature_schema_version text NOT NULL,
+    scorer_contract_version text NOT NULL,
+    fingerprint_policy_version text NOT NULL,
+    integrity_policy_version text NOT NULL,
+    owner_policy_revision bigint NOT NULL,
+    owner_policy_hash text NOT NULL,
+    revision_terms_hash text NOT NULL,
+    status text DEFAULT 'processing'::text NOT NULL,
+    reference_video_scored_start_ms bigint,
+    reference_video_scored_end_ms bigint,
+    alignment_metrics jsonb,
+    reference_duration_ms bigint,
+    reference_width integer,
+    reference_height integer,
+    reference_frame_rate_numerator integer,
+    reference_frame_rate_denominator integer,
+    usable_frame_summary jsonb,
+    alignment_accepted boolean,
+    time_stretch_detected boolean,
+    body_coverage_accepted boolean,
+    timeline_evidence_accepted boolean,
+    visibility_evidence_accepted boolean,
+    subject_continuity_accepted boolean,
+    meaningful_motion_accepted boolean,
+    terminal_evidence_digest text,
+    processing_failure_code text,
+    cutoff_reason text,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    terminal_at timestamp with time zone,
+    cutoff_at timestamp with time zone,
+    CONSTRAINT dance_choreography_revisions_aggregate_version_check CHECK (((aggregate_version >= 1) AND (aggregate_version <= '9007199254740991'::bigint))),
+    CONSTRAINT dance_choreography_revisions_alignment_adapter_check CHECK (is_dance_identifier(alignment_adapter)),
+    CONSTRAINT dance_choreography_revisions_alignment_policy_version_check CHECK (is_dance_identifier(alignment_policy_version)),
+    CONSTRAINT dance_choreography_revisions_alignment_revision_check CHECK (is_dance_identifier(alignment_revision)),
+    CONSTRAINT dance_choreography_revisions_audio_revision_check CHECK (((audio_revision >= 1) AND (audio_revision <= '9007199254740991'::bigint))),
+    CONSTRAINT dance_choreography_revisions_cutoff_reason_check CHECK ((cutoff_reason = ANY (ARRAY['rights'::text, 'safety'::text, 'retired'::text]))),
+    CONSTRAINT dance_choreography_revisions_feature_schema_version_check CHECK (is_dance_identifier(feature_schema_version)),
+    CONSTRAINT dance_choreography_revisions_fingerprint_policy_version_check CHECK (is_dance_identifier(fingerprint_policy_version)),
+    CONSTRAINT dance_choreography_revisions_integrity_policy_version_check CHECK (is_dance_identifier(integrity_policy_version)),
+    CONSTRAINT dance_choreography_revisions_mirror_policy_check CHECK ((mirror_policy = ANY (ARRAY['strict'::text, 'allowed'::text]))),
+    CONSTRAINT dance_choreography_revisions_owner_policy_hash_check CHECK ((owner_policy_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT dance_choreography_revisions_owner_policy_revision_check CHECK (((owner_policy_revision >= 1) AND (owner_policy_revision <= '9007199254740991'::bigint))),
+    CONSTRAINT dance_choreography_revisions_pose_model_version_check CHECK (is_dance_identifier(pose_model_version)),
+    CONSTRAINT dance_choreography_revisions_pose_runtime_version_check CHECK (is_dance_identifier(pose_runtime_version)),
+    CONSTRAINT dance_choreography_revisions_processing_failure_code_check CHECK (((processing_failure_code IS NULL) OR is_dance_identifier(processing_failure_code))),
+    CONSTRAINT dance_choreography_revisions_reference_video_audio_revisi_check CHECK (((reference_video_audio_revision >= 1) AND (reference_video_audio_revision <= '9007199254740991'::bigint))),
+    CONSTRAINT dance_choreography_revisions_reference_video_object_ref_check CHECK (is_dance_identifier(reference_video_object_ref, 2048)),
+    CONSTRAINT dance_choreography_revisions_reference_video_sha256_check CHECK ((reference_video_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT dance_choreography_revisions_requested_end_ms_check CHECK (((requested_end_ms >= 1) AND (requested_end_ms <= '9007199254740991'::bigint))),
+    CONSTRAINT dance_choreography_revisions_requested_start_ms_check CHECK (((requested_start_ms >= 0) AND (requested_start_ms <= '9007199254740991'::bigint))),
+    CONSTRAINT dance_choreography_revisions_revision_check CHECK (((revision >= 1) AND (revision <= '9007199254740991'::bigint))),
+    CONSTRAINT dance_choreography_revisions_revision_terms_hash_check CHECK ((revision_terms_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT dance_choreography_revisions_scorer_contract_version_check CHECK (is_dance_identifier(scorer_contract_version)),
+    CONSTRAINT dance_choreography_revisions_status_check CHECK ((status = ANY (ARRAY['processing'::text, 'ready'::text, 'processing_failed'::text, 'disabled'::text, 'retired'::text]))),
+    CONSTRAINT dance_choreography_revisions_terminal_evidence_digest_check CHECK (((terminal_evidence_digest IS NULL) OR (terminal_evidence_digest ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT dance_revision_reference_binding CHECK (((reference_video_song_post_id = song_post_id) AND (reference_video_audio_revision = audio_revision))),
+    CONSTRAINT dance_revision_requested_interval CHECK (((requested_end_ms > requested_start_ms) AND (((requested_end_ms - requested_start_ms) >= 6000) AND ((requested_end_ms - requested_start_ms) <= 30000)))),
+    CONSTRAINT dance_revision_terminal_shape CHECK ((((status = 'processing'::text) AND (segment_id IS NULL) AND (reference_video_scored_start_ms IS NULL) AND (reference_video_scored_end_ms IS NULL) AND (alignment_metrics IS NULL) AND (reference_duration_ms IS NULL) AND (reference_width IS NULL) AND (reference_height IS NULL) AND (reference_frame_rate_numerator IS NULL) AND (reference_frame_rate_denominator IS NULL) AND (usable_frame_summary IS NULL) AND (alignment_accepted IS NULL) AND (time_stretch_detected IS NULL) AND (body_coverage_accepted IS NULL) AND (timeline_evidence_accepted IS NULL) AND (visibility_evidence_accepted IS NULL) AND (subject_continuity_accepted IS NULL) AND (meaningful_motion_accepted IS NULL) AND (terminal_evidence_digest IS NULL) AND (processing_failure_code IS NULL) AND (terminal_at IS NULL) AND (cutoff_reason IS NULL) AND (cutoff_at IS NULL)) OR ((status = 'processing_failed'::text) AND (segment_id IS NULL) AND (reference_video_scored_start_ms IS NULL) AND (reference_video_scored_end_ms IS NULL) AND (alignment_metrics IS NULL) AND (reference_duration_ms IS NULL) AND (reference_width IS NULL) AND (reference_height IS NULL) AND (reference_frame_rate_numerator IS NULL) AND (reference_frame_rate_denominator IS NULL) AND (usable_frame_summary IS NULL) AND (alignment_accepted IS NULL) AND (time_stretch_detected IS NULL) AND (body_coverage_accepted IS NULL) AND (timeline_evidence_accepted IS NULL) AND (visibility_evidence_accepted IS NULL) AND (subject_continuity_accepted IS NULL) AND (meaningful_motion_accepted IS NULL) AND (terminal_evidence_digest IS NOT NULL) AND (processing_failure_code IS NOT NULL) AND (terminal_at IS NOT NULL) AND (cutoff_reason IS NULL) AND (cutoff_at IS NULL)) OR ((status = ANY (ARRAY['ready'::text, 'disabled'::text, 'retired'::text])) AND (segment_id IS NOT NULL) AND (reference_video_scored_start_ms >= 0) AND (reference_video_scored_end_ms > reference_video_scored_start_ms) AND (alignment_metrics IS NOT NULL) AND (jsonb_typeof(alignment_metrics) = 'object'::text) AND (reference_duration_ms > 0) AND (reference_width > 0) AND (reference_height > 0) AND (reference_frame_rate_numerator > 0) AND (reference_frame_rate_denominator > 0) AND (usable_frame_summary IS NOT NULL) AND (jsonb_typeof(usable_frame_summary) = 'object'::text) AND (alignment_accepted IS TRUE) AND (time_stretch_detected IS FALSE) AND (body_coverage_accepted IS TRUE) AND (timeline_evidence_accepted IS TRUE) AND (visibility_evidence_accepted IS TRUE) AND (subject_continuity_accepted IS TRUE) AND (meaningful_motion_accepted IS TRUE) AND (terminal_evidence_digest IS NOT NULL) AND (processing_failure_code IS NULL) AND (terminal_at IS NOT NULL) AND (((status = 'ready'::text) AND (cutoff_reason IS NULL) AND (cutoff_at IS NULL)) OR ((status = ANY (ARRAY['disabled'::text, 'retired'::text])) AND (cutoff_reason IS NOT NULL) AND (cutoff_at IS NOT NULL))))))
+);
+
+CREATE TABLE dance_reference_actions (
+    actor_account_id text NOT NULL,
+    http_method text NOT NULL,
+    endpoint_template text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    result_kind text NOT NULL,
+    response_snapshot bytea NOT NULL,
+    response_snapshot_sha256 text NOT NULL,
+    choreography_id text,
+    choreography_revision bigint,
+    presentation_revision bigint,
+    committed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT dance_reference_action_result_shape CHECK ((((result_kind = 'accepted'::text) AND ((choreography_id IS NOT NULL) OR (presentation_revision IS NOT NULL))) OR ((result_kind = 'rejected'::text) AND (choreography_id IS NULL) AND (choreography_revision IS NULL) AND (presentation_revision IS NULL)))),
+    CONSTRAINT dance_reference_action_route_shape CHECK ((((http_method = 'POST'::text) AND (endpoint_template <> '/communities/:communityId/posts/:postId/dance/presentation'::text)) OR ((http_method = ANY (ARRAY['PUT'::text, 'DELETE'::text])) AND (endpoint_template = '/communities/:communityId/posts/:postId/dance/presentation'::text)))),
+    CONSTRAINT dance_reference_actions_check CHECK (((response_snapshot_sha256 ~ '^[0-9a-f]{64}$'::text) AND (encode(sha256(response_snapshot), 'hex'::text) = response_snapshot_sha256))),
+    CONSTRAINT dance_reference_actions_endpoint_template_check CHECK ((endpoint_template = ANY (ARRAY['/communities/:communityId/posts/:postId/dance/choreographies'::text, '/communities/:communityId/dance/choreographies/:choreographyId/revisions'::text, '/communities/:communityId/dance/choreographies/:choreographyId/disable'::text, '/communities/:communityId/dance/choreographies/:choreographyId/retire'::text, '/communities/:communityId/posts/:postId/dance/presentation'::text]))),
+    CONSTRAINT dance_reference_actions_http_method_check CHECK ((http_method = ANY (ARRAY['POST'::text, 'PUT'::text, 'DELETE'::text]))),
+    CONSTRAINT dance_reference_actions_idempotency_key_check CHECK (is_dance_identifier(idempotency_key, 128)),
+    CONSTRAINT dance_reference_actions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT dance_reference_actions_response_snapshot_check CHECK (((octet_length(response_snapshot) >= 1) AND (octet_length(response_snapshot) <= 1048576))),
+    CONSTRAINT dance_reference_actions_result_kind_check CHECK ((result_kind = ANY (ARRAY['accepted'::text, 'rejected'::text])))
+);
+
+CREATE TABLE dance_reference_artifacts (
+    artifact_id text NOT NULL,
+    choreography_id text NOT NULL,
+    revision bigint NOT NULL,
+    private_artifact_ref text NOT NULL,
+    artifact_sha256 text NOT NULL,
+    pose_model_version text NOT NULL,
+    pose_runtime_version text NOT NULL,
+    feature_schema_version text NOT NULL,
+    scorer_contract_version text NOT NULL,
+    integrity_policy_version text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT dance_reference_artifacts_artifact_id_check CHECK (is_dance_identifier(artifact_id)),
+    CONSTRAINT dance_reference_artifacts_artifact_sha256_check CHECK ((artifact_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT dance_reference_artifacts_feature_schema_version_check CHECK (is_dance_identifier(feature_schema_version)),
+    CONSTRAINT dance_reference_artifacts_integrity_policy_version_check CHECK (is_dance_identifier(integrity_policy_version)),
+    CONSTRAINT dance_reference_artifacts_pose_model_version_check CHECK (is_dance_identifier(pose_model_version)),
+    CONSTRAINT dance_reference_artifacts_pose_runtime_version_check CHECK (is_dance_identifier(pose_runtime_version)),
+    CONSTRAINT dance_reference_artifacts_private_artifact_ref_check CHECK (is_dance_identifier(private_artifact_ref, 2048)),
+    CONSTRAINT dance_reference_artifacts_scorer_contract_version_check CHECK (is_dance_identifier(scorer_contract_version))
+);
+
+CREATE TABLE dance_reference_outbox (
+    outbox_event_id text NOT NULL,
+    choreography_id text NOT NULL,
+    revision bigint NOT NULL,
+    event_type text NOT NULL,
+    effect_identity text NOT NULL,
+    payload jsonb NOT NULL,
+    payload_sha256 text NOT NULL,
+    state text DEFAULT 'pending'::text NOT NULL,
+    delivery_attempts integer DEFAULT 0 NOT NULL,
+    claim_owner text,
+    claim_fence bigint DEFAULT 0 NOT NULL,
+    lease_expires_at timestamp with time zone,
+    next_eligible_at timestamp with time zone,
+    delivered_at timestamp with time zone,
+    failure_code text,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT dance_reference_outbox_claim_fence_check CHECK (((claim_fence >= 0) AND (claim_fence <= '9007199254740991'::bigint))),
+    CONSTRAINT dance_reference_outbox_claim_owner_check CHECK (((claim_owner IS NULL) OR is_dance_identifier(claim_owner))),
+    CONSTRAINT dance_reference_outbox_delivery_attempts_check CHECK (((delivery_attempts >= 0) AND (delivery_attempts <= 3))),
+    CONSTRAINT dance_reference_outbox_effect_identity_check CHECK (is_dance_identifier(effect_identity, 512)),
+    CONSTRAINT dance_reference_outbox_event_type_check CHECK ((event_type = 'reference_processing'::text)),
+    CONSTRAINT dance_reference_outbox_failure_code_check CHECK (((failure_code IS NULL) OR is_dance_identifier(failure_code))),
+    CONSTRAINT dance_reference_outbox_outbox_event_id_check CHECK (is_dance_identifier(outbox_event_id)),
+    CONSTRAINT dance_reference_outbox_payload_check CHECK ((jsonb_typeof(payload) = 'object'::text)),
+    CONSTRAINT dance_reference_outbox_payload_hash CHECK ((encode(sha256(convert_to((payload)::text, 'UTF8'::name)), 'hex'::text) = payload_sha256)),
+    CONSTRAINT dance_reference_outbox_payload_sha256_check CHECK ((payload_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT dance_reference_outbox_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'running'::text, 'delivered'::text, 'failed'::text, 'exhausted'::text]))),
+    CONSTRAINT dance_reference_outbox_state_shape CHECK ((((state = 'pending'::text) AND (delivery_attempts = 0) AND (claim_owner IS NULL) AND (claim_fence = 0) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NULL) AND (delivered_at IS NULL) AND (failure_code IS NULL)) OR ((state = 'running'::text) AND ((delivery_attempts >= 1) AND (delivery_attempts <= 3)) AND (claim_owner IS NOT NULL) AND (claim_fence > 0) AND (lease_expires_at > updated_at) AND (next_eligible_at IS NULL) AND (delivered_at IS NULL) AND (failure_code IS NULL)) OR ((state = 'failed'::text) AND ((delivery_attempts >= 1) AND (delivery_attempts <= 2)) AND (claim_owner IS NULL) AND (claim_fence > 0) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NOT NULL) AND (delivered_at IS NULL) AND (failure_code IS NOT NULL)) OR ((state = 'delivered'::text) AND ((delivery_attempts >= 1) AND (delivery_attempts <= 3)) AND (claim_owner IS NULL) AND (claim_fence > 0) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NULL) AND (delivered_at IS NOT NULL) AND (failure_code IS NULL)) OR ((state = 'exhausted'::text) AND (delivery_attempts = 3) AND (claim_owner IS NULL) AND (claim_fence > 0) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NULL) AND (delivered_at IS NULL) AND (failure_code IS NOT NULL))))
+);
+
+CREATE TABLE dance_reference_processing_attempts (
+    processing_attempt_id text NOT NULL,
+    choreography_id text NOT NULL,
+    revision bigint NOT NULL,
+    attempt_number integer NOT NULL,
+    adapter_id text NOT NULL,
+    adapter_revision text NOT NULL,
+    input_digest text NOT NULL,
+    state text DEFAULT 'leased'::text NOT NULL,
+    lease_owner text,
+    lease_fence bigint DEFAULT 1 NOT NULL,
+    lease_expires_at timestamp with time zone,
+    prepared_operation jsonb,
+    prepared_operation_bytes bytea,
+    prepared_operation_sha256 text,
+    result_digest text,
+    private_evidence_ref text,
+    failure_code text,
+    retryable boolean,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    completed_at timestamp with time zone,
+    CONSTRAINT dance_reference_processing_atte_prepared_operation_sha256_check CHECK (((prepared_operation_sha256 IS NULL) OR (prepared_operation_sha256 ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT dance_reference_processing_attempt_state_shape CHECK ((((state = 'leased'::text) AND (lease_owner IS NOT NULL) AND (lease_expires_at > updated_at) AND (result_digest IS NULL) AND (private_evidence_ref IS NULL) AND (failure_code IS NULL) AND (retryable IS NULL) AND (completed_at IS NULL) AND (((prepared_operation IS NULL) AND (prepared_operation_bytes IS NULL) AND (prepared_operation_sha256 IS NULL)) OR ((jsonb_typeof(prepared_operation) = 'object'::text) AND (prepared_operation_bytes IS NOT NULL) AND ((convert_from(prepared_operation_bytes, 'UTF8'::name))::jsonb = prepared_operation) AND (encode(sha256(prepared_operation_bytes), 'hex'::text) = prepared_operation_sha256)))) OR ((state = 'succeeded'::text) AND (lease_owner IS NULL) AND (lease_expires_at IS NULL) AND (result_digest IS NOT NULL) AND (private_evidence_ref IS NOT NULL) AND (failure_code IS NULL) AND (retryable IS FALSE) AND (completed_at IS NOT NULL)) OR ((state = 'failed'::text) AND (lease_owner IS NULL) AND (lease_expires_at IS NULL) AND (result_digest IS NOT NULL) AND (private_evidence_ref IS NOT NULL) AND (failure_code IS NOT NULL) AND (retryable IS TRUE) AND (completed_at IS NOT NULL)) OR ((state = 'exhausted'::text) AND (lease_owner IS NULL) AND (lease_expires_at IS NULL) AND (result_digest IS NOT NULL) AND (private_evidence_ref IS NOT NULL) AND (failure_code IS NOT NULL) AND (retryable IS FALSE) AND (completed_at IS NOT NULL)))),
+    CONSTRAINT dance_reference_processing_attempt_time_order CHECK (((updated_at >= created_at) AND ((completed_at IS NULL) OR (completed_at >= created_at)))),
+    CONSTRAINT dance_reference_processing_attempts_adapter_id_check CHECK (is_dance_identifier(adapter_id)),
+    CONSTRAINT dance_reference_processing_attempts_adapter_revision_check CHECK (is_dance_identifier(adapter_revision)),
+    CONSTRAINT dance_reference_processing_attempts_attempt_number_check CHECK (((attempt_number >= 1) AND (attempt_number <= 3))),
+    CONSTRAINT dance_reference_processing_attempts_failure_code_check CHECK (((failure_code IS NULL) OR is_dance_identifier(failure_code))),
+    CONSTRAINT dance_reference_processing_attempts_input_digest_check CHECK ((input_digest ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT dance_reference_processing_attempts_lease_fence_check CHECK (((lease_fence >= 1) AND (lease_fence <= '9007199254740991'::bigint))),
+    CONSTRAINT dance_reference_processing_attempts_lease_owner_check CHECK (((lease_owner IS NULL) OR is_dance_identifier(lease_owner))),
+    CONSTRAINT dance_reference_processing_attempts_private_evidence_ref_check CHECK (((private_evidence_ref IS NULL) OR is_dance_identifier(private_evidence_ref, 2048))),
+    CONSTRAINT dance_reference_processing_attempts_processing_attempt_id_check CHECK (is_dance_identifier(processing_attempt_id)),
+    CONSTRAINT dance_reference_processing_attempts_result_digest_check CHECK (((result_digest IS NULL) OR (result_digest ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT dance_reference_processing_attempts_state_check CHECK ((state = ANY (ARRAY['leased'::text, 'succeeded'::text, 'failed'::text, 'exhausted'::text])))
+);
+
+CREATE TABLE dance_reference_processing_requests (
+    choreography_id text NOT NULL,
+    revision bigint NOT NULL,
+    effect_identity text NOT NULL,
+    request_material jsonb NOT NULL,
+    canonical_request bytea NOT NULL,
+    input_digest text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT dance_reference_processing_request_digest CHECK ((((convert_from(canonical_request, 'UTF8'::name))::jsonb = request_material) AND (encode(sha256(canonical_request), 'hex'::text) = input_digest))),
+    CONSTRAINT dance_reference_processing_requests_effect_identity_check CHECK (is_dance_identifier(effect_identity, 512)),
+    CONSTRAINT dance_reference_processing_requests_input_digest_check CHECK ((input_digest ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT dance_reference_processing_requests_request_material_check CHECK ((jsonb_typeof(request_material) = 'object'::text)),
+    CONSTRAINT dance_reference_processing_requests_revision_check CHECK (((revision >= 1) AND (revision <= '9007199254740991'::bigint)))
+);
+
+CREATE TABLE dance_song_segments (
+    segment_id text NOT NULL,
+    community_id text NOT NULL,
+    song_post_id text NOT NULL,
+    song_submission_id text NOT NULL,
+    audio_revision bigint NOT NULL,
+    start_ms bigint NOT NULL,
+    end_ms bigint NOT NULL,
+    duration_ms bigint GENERATED ALWAYS AS ((end_ms - start_ms)) STORED,
+    canonical_audio_duration_ms bigint NOT NULL,
+    canonical_segment_audio_ref text NOT NULL,
+    canonical_segment_sha256 text NOT NULL,
+    extraction_policy_version text NOT NULL,
+    source_media_sha256 text NOT NULL,
+    segment_terms_hash text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT dance_song_segment_interval CHECK (((end_ms > start_ms) AND (end_ms <= canonical_audio_duration_ms) AND (((end_ms - start_ms) >= 6000) AND ((end_ms - start_ms) <= 30000)))),
+    CONSTRAINT dance_song_segments_audio_revision_check CHECK (((audio_revision >= 1) AND (audio_revision <= '9007199254740991'::bigint))),
+    CONSTRAINT dance_song_segments_canonical_audio_duration_ms_check CHECK (((canonical_audio_duration_ms >= 1) AND (canonical_audio_duration_ms <= '9007199254740991'::bigint))),
+    CONSTRAINT dance_song_segments_canonical_segment_audio_ref_check CHECK (is_dance_identifier(canonical_segment_audio_ref, 2048)),
+    CONSTRAINT dance_song_segments_canonical_segment_sha256_check CHECK ((canonical_segment_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT dance_song_segments_end_ms_check CHECK (((end_ms >= 1) AND (end_ms <= '9007199254740991'::bigint))),
+    CONSTRAINT dance_song_segments_extraction_policy_version_check CHECK (is_dance_identifier(extraction_policy_version)),
+    CONSTRAINT dance_song_segments_segment_id_check CHECK (is_dance_identifier(segment_id)),
+    CONSTRAINT dance_song_segments_segment_terms_hash_check CHECK ((segment_terms_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT dance_song_segments_source_media_sha256_check CHECK ((source_media_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT dance_song_segments_start_ms_check CHECK (((start_ms >= 0) AND (start_ms <= '9007199254740991'::bigint)))
+);
+
 CREATE TABLE data_registration_artifacts (
     artifact_id text NOT NULL,
     registration_operation_id text NOT NULL,
@@ -20020,6 +20789,25 @@ CREATE TABLE schema_migrations (
     applied_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
+CREATE TABLE song_dance_presentations (
+    community_id text NOT NULL,
+    song_post_id text NOT NULL,
+    song_submission_id text NOT NULL,
+    audio_revision bigint NOT NULL,
+    presentation_revision bigint NOT NULL,
+    featured_choreography_id text,
+    featured_choreography_revision bigint,
+    song_owner_account_id text NOT NULL,
+    updated_by_account_id text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT song_dance_presentation_feature_shape CHECK (((featured_choreography_id IS NULL) = (featured_choreography_revision IS NULL))),
+    CONSTRAINT song_dance_presentation_owner CHECK ((song_owner_account_id = updated_by_account_id)),
+    CONSTRAINT song_dance_presentation_time_order CHECK ((updated_at >= created_at)),
+    CONSTRAINT song_dance_presentations_audio_revision_check CHECK (((audio_revision >= 1) AND (audio_revision <= '9007199254740991'::bigint))),
+    CONSTRAINT song_dance_presentations_presentation_revision_check CHECK (((presentation_revision >= 1) AND (presentation_revision <= '9007199254740991'::bigint)))
+);
+
 CREATE TABLE song_reward_bundle_claim_legs (
     account_id text NOT NULL,
     offer_id text NOT NULL,
@@ -21583,6 +22371,69 @@ ALTER TABLE ONLY content_publication_outbox
 ALTER TABLE ONLY custody_solvency_observations
     ADD CONSTRAINT custody_solvency_observations_pkey PRIMARY KEY (observation_id);
 
+ALTER TABLE ONLY dance_choreographies
+    ADD CONSTRAINT dance_choreographies_choreography_id_community_id_song_post_key UNIQUE (choreography_id, community_id, song_post_id);
+
+ALTER TABLE ONLY dance_choreographies
+    ADD CONSTRAINT dance_choreographies_pkey PRIMARY KEY (choreography_id);
+
+ALTER TABLE ONLY dance_choreography_revisions
+    ADD CONSTRAINT dance_choreography_revisions_choreography_id_revision_commu_key UNIQUE (choreography_id, revision, community_id, song_post_id, audio_revision);
+
+ALTER TABLE ONLY dance_choreography_revisions
+    ADD CONSTRAINT dance_choreography_revisions_pkey PRIMARY KEY (choreography_id, revision);
+
+ALTER TABLE ONLY dance_choreography_revisions
+    ADD CONSTRAINT dance_choreography_revisions_revision_terms_hash_key UNIQUE (revision_terms_hash);
+
+ALTER TABLE ONLY dance_reference_actions
+    ADD CONSTRAINT dance_reference_actions_pkey PRIMARY KEY (actor_account_id, http_method, endpoint_template, idempotency_key);
+
+ALTER TABLE ONLY dance_reference_artifacts
+    ADD CONSTRAINT dance_reference_artifacts_choreography_id_revision_key UNIQUE (choreography_id, revision);
+
+ALTER TABLE ONLY dance_reference_artifacts
+    ADD CONSTRAINT dance_reference_artifacts_pkey PRIMARY KEY (artifact_id);
+
+ALTER TABLE ONLY dance_reference_artifacts
+    ADD CONSTRAINT dance_reference_artifacts_private_artifact_ref_artifact_sha_key UNIQUE (private_artifact_ref, artifact_sha256);
+
+ALTER TABLE ONLY dance_reference_outbox
+    ADD CONSTRAINT dance_reference_outbox_choreography_id_revision_event_type_key UNIQUE (choreography_id, revision, event_type);
+
+ALTER TABLE ONLY dance_reference_outbox
+    ADD CONSTRAINT dance_reference_outbox_effect_identity_key UNIQUE (effect_identity);
+
+ALTER TABLE ONLY dance_reference_outbox
+    ADD CONSTRAINT dance_reference_outbox_pkey PRIMARY KEY (outbox_event_id);
+
+ALTER TABLE ONLY dance_reference_processing_attempts
+    ADD CONSTRAINT dance_reference_processing_at_choreography_id_revision_atte_key UNIQUE (choreography_id, revision, attempt_number);
+
+ALTER TABLE ONLY dance_reference_processing_attempts
+    ADD CONSTRAINT dance_reference_processing_attempts_pkey PRIMARY KEY (processing_attempt_id);
+
+ALTER TABLE ONLY dance_reference_processing_requests
+    ADD CONSTRAINT dance_reference_processing_requests_effect_identity_key UNIQUE (effect_identity);
+
+ALTER TABLE ONLY dance_reference_processing_requests
+    ADD CONSTRAINT dance_reference_processing_requests_input_digest_key UNIQUE (input_digest);
+
+ALTER TABLE ONLY dance_reference_processing_requests
+    ADD CONSTRAINT dance_reference_processing_requests_pkey PRIMARY KEY (choreography_id, revision);
+
+ALTER TABLE ONLY dance_song_segments
+    ADD CONSTRAINT dance_song_segments_community_id_song_post_id_audio_revisio_key UNIQUE (community_id, song_post_id, audio_revision, start_ms, end_ms, canonical_segment_sha256, extraction_policy_version);
+
+ALTER TABLE ONLY dance_song_segments
+    ADD CONSTRAINT dance_song_segments_pkey PRIMARY KEY (segment_id);
+
+ALTER TABLE ONLY dance_song_segments
+    ADD CONSTRAINT dance_song_segments_segment_id_community_id_song_post_id_au_key UNIQUE (segment_id, community_id, song_post_id, audio_revision);
+
+ALTER TABLE ONLY dance_song_segments
+    ADD CONSTRAINT dance_song_segments_segment_terms_hash_key UNIQUE (segment_terms_hash);
+
 ALTER TABLE ONLY data_registration_artifacts
     ADD CONSTRAINT data_registration_artifacts_pkey PRIMARY KEY (artifact_id);
 
@@ -22576,6 +23427,9 @@ ALTER TABLE ONLY reward_uniqueness_authorities
 ALTER TABLE ONLY schema_migrations
     ADD CONSTRAINT schema_migrations_pkey PRIMARY KEY (version);
 
+ALTER TABLE ONLY song_dance_presentations
+    ADD CONSTRAINT song_dance_presentations_pkey PRIMARY KEY (community_id, song_post_id, audio_revision);
+
 ALTER TABLE ONLY song_reward_bundle_claim_legs
     ADD CONSTRAINT song_reward_bundle_claim_legs_credit_id_key UNIQUE (credit_id);
 
@@ -22970,6 +23824,16 @@ CREATE INDEX cpf_attempts_selection_idx ON community_purchase_funding_reconcilia
 CREATE INDEX custody_solvency_observations_asset_latest_idx ON custody_solvency_observations USING btree (attestation_id, token_address, block_number DESC, observation_id);
 
 CREATE INDEX custody_solvency_observations_latest_idx ON custody_solvency_observations USING btree (attestation_id, block_number DESC, observation_id);
+
+CREATE INDEX dance_choreographies_song_ready_idx ON dance_choreographies USING btree (community_id, song_post_id, status, created_at, choreography_id);
+
+CREATE INDEX dance_choreography_revisions_ready_idx ON dance_choreography_revisions USING btree (community_id, song_post_id, audio_revision, status, choreography_id, revision);
+
+CREATE INDEX dance_reference_outbox_claim_idx ON dance_reference_outbox USING btree (state, next_eligible_at, lease_expires_at, created_at) WHERE (state = ANY (ARRAY['pending'::text, 'running'::text, 'failed'::text]));
+
+CREATE INDEX dance_reference_processing_attempts_lease_idx ON dance_reference_processing_attempts USING btree (state, lease_expires_at, created_at) WHERE (state = 'leased'::text);
+
+CREATE INDEX dance_song_segments_song_idx ON dance_song_segments USING btree (community_id, song_post_id, audio_revision, created_at, segment_id);
 
 CREATE INDEX data_registration_outbox_eligible_idx ON data_registration_outbox USING btree (state, next_eligible_at, lease_expires_at, outbox_id) WHERE (state = ANY (ARRAY['pending'::text, 'running'::text, 'failed'::text]));
 
@@ -23418,6 +24282,26 @@ CREATE TRIGGER community_streak_days_append_only BEFORE DELETE OR UPDATE ON comm
 CREATE TRIGGER community_streaks_change_guard BEFORE DELETE OR UPDATE ON community_streaks FOR EACH ROW EXECUTE FUNCTION guard_streak_projection();
 
 CREATE TRIGGER custody_solvency_observations_append_only BEFORE DELETE OR UPDATE ON custody_solvency_observations FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
+
+CREATE TRIGGER dance_choreographies_change_guard BEFORE INSERT OR DELETE OR UPDATE ON dance_choreographies FOR EACH ROW EXECUTE FUNCTION guard_dance_choreography();
+
+CREATE CONSTRAINT TRIGGER dance_choreographies_consistency AFTER INSERT OR UPDATE ON dance_choreographies DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_dance_choreography_consistency();
+
+CREATE TRIGGER dance_choreography_revisions_change_guard BEFORE INSERT OR DELETE OR UPDATE ON dance_choreography_revisions FOR EACH ROW EXECUTE FUNCTION guard_dance_choreography_revision();
+
+CREATE CONSTRAINT TRIGGER dance_choreography_revisions_consistency AFTER INSERT OR UPDATE ON dance_choreography_revisions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_dance_choreography_consistency();
+
+CREATE TRIGGER dance_reference_actions_append_only BEFORE DELETE OR UPDATE ON dance_reference_actions FOR EACH ROW EXECUTE FUNCTION reject_dance_reference_action_change();
+
+CREATE TRIGGER dance_reference_artifacts_change_guard BEFORE INSERT OR DELETE OR UPDATE ON dance_reference_artifacts FOR EACH ROW EXECUTE FUNCTION guard_dance_reference_artifact();
+
+CREATE TRIGGER dance_reference_outbox_change_guard BEFORE INSERT OR DELETE OR UPDATE ON dance_reference_outbox FOR EACH ROW EXECUTE FUNCTION guard_dance_reference_outbox();
+
+CREATE TRIGGER dance_reference_processing_attempts_change_guard BEFORE INSERT OR DELETE OR UPDATE ON dance_reference_processing_attempts FOR EACH ROW EXECUTE FUNCTION guard_dance_processing_attempt();
+
+CREATE TRIGGER dance_reference_processing_requests_change_guard BEFORE INSERT OR DELETE OR UPDATE ON dance_reference_processing_requests FOR EACH ROW EXECUTE FUNCTION guard_dance_reference_processing_request();
+
+CREATE TRIGGER dance_song_segments_change_guard BEFORE INSERT OR DELETE OR UPDATE ON dance_song_segments FOR EACH ROW EXECUTE FUNCTION guard_dance_song_segment();
 
 CREATE TRIGGER data_registration_artifacts_append_only BEFORE DELETE OR UPDATE ON data_registration_artifacts FOR EACH ROW EXECUTE FUNCTION guard_data_registration_append_only();
 
@@ -23938,6 +24822,8 @@ CREATE TRIGGER reward_uniqueness_authorities_append_only BEFORE DELETE OR UPDATE
 CREATE CONSTRAINT TRIGGER route_v1_creation_intent_requirement_cardinality AFTER INSERT OR UPDATE ON community_creation_intents DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_route_v1_creation_requirement_cardinality();
 
 CREATE CONSTRAINT TRIGGER route_v1_creation_requirement_cardinality AFTER INSERT OR DELETE OR UPDATE ON community_creation_requirement_states DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_route_v1_creation_requirement_cardinality();
+
+CREATE TRIGGER song_dance_presentations_change_guard BEFORE INSERT OR DELETE OR UPDATE ON song_dance_presentations FOR EACH ROW EXECUTE FUNCTION guard_song_dance_presentation();
 
 CREATE CONSTRAINT TRIGGER song_reward_asset_leg_accounting AFTER UPDATE ON song_reward_offer_legs DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_asset_bonus_leg_accounting();
 
@@ -24678,6 +25564,51 @@ ALTER TABLE ONLY custody_solvency_observations
 
 ALTER TABLE ONLY custody_solvency_observations
     ADD CONSTRAINT custody_solvency_observations_attestation_id_fkey FOREIGN KEY (attestation_id) REFERENCES megapot_deployment_attestations(attestation_id);
+
+ALTER TABLE ONLY dance_choreographies
+    ADD CONSTRAINT dance_choreographies_community_id_song_post_id_fkey FOREIGN KEY (community_id, song_post_id) REFERENCES posts(community_id, post_id);
+
+ALTER TABLE ONLY dance_choreographies
+    ADD CONSTRAINT dance_choreographies_creator_account_id_creator_persona_id_fkey FOREIGN KEY (creator_account_id, creator_persona_id) REFERENCES personas(account_id, persona_id);
+
+ALTER TABLE ONLY dance_choreographies
+    ADD CONSTRAINT dance_choreographies_creator_account_id_fkey FOREIGN KEY (creator_account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY dance_choreographies
+    ADD CONSTRAINT dance_choreography_active_revision_fk FOREIGN KEY (choreography_id, active_revision) REFERENCES dance_choreography_revisions(choreography_id, revision) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY dance_choreography_revisions
+    ADD CONSTRAINT dance_choreography_revisions_choreography_id_community_id__fkey FOREIGN KEY (choreography_id, community_id, song_post_id) REFERENCES dance_choreographies(choreography_id, community_id, song_post_id);
+
+ALTER TABLE ONLY dance_choreography_revisions
+    ADD CONSTRAINT dance_choreography_revisions_community_id_reference_video__fkey FOREIGN KEY (community_id, reference_video_post_id) REFERENCES posts(community_id, post_id);
+
+ALTER TABLE ONLY dance_choreography_revisions
+    ADD CONSTRAINT dance_choreography_revisions_segment_id_community_id_song__fkey FOREIGN KEY (segment_id, community_id, song_post_id, audio_revision) REFERENCES dance_song_segments(segment_id, community_id, song_post_id, audio_revision);
+
+ALTER TABLE ONLY dance_reference_actions
+    ADD CONSTRAINT dance_reference_actions_actor_account_id_fkey FOREIGN KEY (actor_account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY dance_reference_artifacts
+    ADD CONSTRAINT dance_reference_artifacts_choreography_id_revision_fkey FOREIGN KEY (choreography_id, revision) REFERENCES dance_choreography_revisions(choreography_id, revision);
+
+ALTER TABLE ONLY dance_reference_outbox
+    ADD CONSTRAINT dance_reference_outbox_choreography_id_revision_fkey FOREIGN KEY (choreography_id, revision) REFERENCES dance_choreography_revisions(choreography_id, revision);
+
+ALTER TABLE ONLY dance_reference_processing_attempts
+    ADD CONSTRAINT dance_reference_processing_attemp_choreography_id_revision_fkey FOREIGN KEY (choreography_id, revision) REFERENCES dance_choreography_revisions(choreography_id, revision);
+
+ALTER TABLE ONLY dance_reference_processing_requests
+    ADD CONSTRAINT dance_reference_processing_reques_choreography_id_revision_fkey FOREIGN KEY (choreography_id, revision) REFERENCES dance_choreography_revisions(choreography_id, revision);
+
+ALTER TABLE ONLY dance_reference_processing_requests
+    ADD CONSTRAINT dance_reference_processing_requests_effect_identity_fkey FOREIGN KEY (effect_identity) REFERENCES dance_reference_outbox(effect_identity);
+
+ALTER TABLE ONLY dance_song_segments
+    ADD CONSTRAINT dance_song_segments_community_id_song_post_id_fkey FOREIGN KEY (community_id, song_post_id) REFERENCES posts(community_id, post_id);
+
+ALTER TABLE ONLY dance_song_segments
+    ADD CONSTRAINT dance_song_segments_song_submission_id_fkey FOREIGN KEY (song_submission_id) REFERENCES media_publication_projections(submission_id);
 
 ALTER TABLE ONLY data_registration_artifacts
     ADD CONSTRAINT data_registration_artifacts_registration_operation_id_fkey FOREIGN KEY (registration_operation_id) REFERENCES data_registration_operations(registration_operation_id);
@@ -25749,6 +26680,21 @@ ALTER TABLE ONLY reward_subject_consumptions
 
 ALTER TABLE ONLY reward_subject_consumptions
     ADD CONSTRAINT reward_subject_consumptions_receipt_fk FOREIGN KEY (evidence_receipt_id, subject_key_id, binding_event_id, binding_epoch, user_id) REFERENCES evidence_receipts(evidence_receipt_id, subject_key_id, subject_binding_event_id, subject_binding_epoch, user_id);
+
+ALTER TABLE ONLY song_dance_presentations
+    ADD CONSTRAINT song_dance_presentations_community_id_song_post_id_fkey FOREIGN KEY (community_id, song_post_id) REFERENCES posts(community_id, post_id);
+
+ALTER TABLE ONLY song_dance_presentations
+    ADD CONSTRAINT song_dance_presentations_featured_choreography_id_featured_fkey FOREIGN KEY (featured_choreography_id, featured_choreography_revision, community_id, song_post_id, audio_revision) REFERENCES dance_choreography_revisions(choreography_id, revision, community_id, song_post_id, audio_revision) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY song_dance_presentations
+    ADD CONSTRAINT song_dance_presentations_song_owner_account_id_fkey FOREIGN KEY (song_owner_account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY song_dance_presentations
+    ADD CONSTRAINT song_dance_presentations_song_submission_id_fkey FOREIGN KEY (song_submission_id) REFERENCES media_publication_projections(submission_id);
+
+ALTER TABLE ONLY song_dance_presentations
+    ADD CONSTRAINT song_dance_presentations_updated_by_account_id_fkey FOREIGN KEY (updated_by_account_id) REFERENCES users(user_id);
 
 ALTER TABLE ONLY song_reward_bundle_claim_legs
     ADD CONSTRAINT song_reward_bundle_claim_legs_account_id_offer_id_fkey FOREIGN KEY (account_id, offer_id) REFERENCES song_reward_bundle_claims(account_id, offer_id);

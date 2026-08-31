@@ -97,6 +97,30 @@ function bindPhysicalR2Keys(transform: MediaTransformService): MediaTransformSer
           source: { objectKey: mediaProcessingPhysicalObjectKey(input.source.objectKey) },
         }),
       ),
+    extractCanonicalAudioSegment: (input) =>
+      Effect.suspend(() =>
+        transform.extractCanonicalAudioSegment({
+          ...input,
+          canonicalAudio: {
+            ...input.canonicalAudio,
+            objectKey: mediaProcessingPhysicalObjectKey(input.canonicalAudio.objectKey),
+          },
+        }),
+      ),
+    alignVideoSoundtrackToSong: (input) =>
+      Effect.suspend(() =>
+        transform.alignVideoSoundtrackToSong({
+          ...input,
+          video: {
+            ...input.video,
+            objectKey: mediaProcessingPhysicalObjectKey(input.video.objectKey),
+          },
+          songAudio: {
+            ...input.songAudio,
+            objectKey: mediaProcessingPhysicalObjectKey(input.songAudio.objectKey),
+          },
+        }),
+      ),
     cancelAssembly: (input) => transform.cancelAssembly(input),
   };
 }

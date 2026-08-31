@@ -495,6 +495,10 @@ function providers(
           },
         });
       },
+      extractCanonicalAudioSegment: (input) =>
+        Effect.succeed({ status: "unavailable", reason: "disabled", binding: input.binding }),
+      alignVideoSoundtrackToSong: (input) =>
+        Effect.succeed({ status: "unavailable", reason: "disabled", binding: input.binding }),
       cancelAssembly: () => Effect.succeed({ status: "unavailable", reason: "disabled" }),
     },
     artifactReader: {

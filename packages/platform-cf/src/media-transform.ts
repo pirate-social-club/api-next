@@ -578,7 +578,13 @@ function invalidConfigurationService(
   reason: ConstructorParameters<typeof MediaTransformRequestInvalid>[0]["reason"],
 ): MediaTransformService {
   const failure = () => Effect.fail(new MediaTransformRequestInvalid({ reason }));
-  return { probe: failure, extractAudioSample: failure, cancelAssembly: failure };
+  return {
+    probe: failure,
+    extractAudioSample: failure,
+    extractCanonicalAudioSegment: failure,
+    alignVideoSoundtrackToSong: failure,
+    cancelAssembly: failure,
+  };
 }
 
 function operationEffect(
@@ -612,6 +618,10 @@ export function makeTransloaditMediaTransform(
         Effect.succeed({ status: "unavailable", reason: "disabled", attempt: input.attempt }),
       extractAudioSample: (input) =>
         Effect.succeed({ status: "unavailable", reason: "disabled", attempt: input.attempt }),
+      extractCanonicalAudioSegment: (input) =>
+        Effect.succeed({ status: "unavailable", reason: "disabled", binding: input.binding }),
+      alignVideoSoundtrackToSong: (input) =>
+        Effect.succeed({ status: "unavailable", reason: "disabled", binding: input.binding }),
       cancelAssembly: () => Effect.succeed({ status: "unavailable", reason: "disabled" } as const),
     };
   }
@@ -639,6 +649,10 @@ export function makeTransloaditMediaTransform(
         MediaTransformRequestInvalid
       >;
     },
+    extractCanonicalAudioSegment: (input) =>
+      Effect.succeed({ status: "unavailable", reason: "disabled", binding: input.binding }),
+    alignVideoSoundtrackToSong: (input) =>
+      Effect.succeed({ status: "unavailable", reason: "disabled", binding: input.binding }),
     cancelAssembly: (input) => {
       const snapshot = snapshotCancelInput(input);
       if (!snapshot.ok) {

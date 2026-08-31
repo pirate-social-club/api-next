@@ -17,6 +17,17 @@ import {
 } from "./community-creation.ts";
 import * as money from "./community-purchase-funding.ts";
 import { GetCanonicalCommunityRoute } from "./community-route-resolution.ts";
+import {
+  AppendDanceChoreographyRevision,
+  ClearSongDancePresentation,
+  CreateDanceChoreography,
+  DisableDanceChoreography,
+  GetDanceChoreographyProcessing,
+  GetDanceChoreographyRevision,
+  ListReadyDanceChoreographies,
+  RetireDanceChoreography,
+  SetSongDancePresentation,
+} from "./dance.ts";
 import { handleSalesRegistry } from "./handle-sales.ts";
 import { DeliverHnsEdgeAlert } from "./hns-edge-alerts.ts";
 import { PollHnsOwnerRecovery, StartHnsOwnerRecovery } from "./hns-owner-recovery.ts";
@@ -95,6 +106,15 @@ export const registry = {
   GetKaraokeReadiness,
   GetKaraokeAttempt,
   GetKaraokeLeaderboard,
+  CreateDanceChoreography,
+  GetDanceChoreographyProcessing,
+  AppendDanceChoreographyRevision,
+  DisableDanceChoreography,
+  RetireDanceChoreography,
+  ListReadyDanceChoreographies,
+  GetDanceChoreographyRevision,
+  SetSongDancePresentation,
+  ClearSongDancePresentation,
   DeleteMyLearnerAudio,
   StartStudySession,
   GetStudySession,

@@ -196,6 +196,13 @@ export const POSTGRES_TEST_SENTINELS: readonly PostgresSentinel[] = [
       "/tmp/api-next-control-plane-postgres-platform-pirate-rename-suite-complete",
     contents: "api-next-control-plane-postgres-platform-pirate-rename-suite-complete\n",
   },
+  {
+    name: "postgres Dance reference shadow persistence",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_DANCE_REFERENCE_TEST_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-dance-reference-suite-complete",
+    contents: "api-next-control-plane-postgres-dance-reference-suite-complete\n",
+  },
 ];
 
 export async function verifyPostgresTestSentinels(

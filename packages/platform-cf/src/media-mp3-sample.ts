@@ -743,6 +743,8 @@ export function makeR2Mp3SampleMediaTransform(
           ),
         );
       }),
+    extractCanonicalAudioSegment: input.providerTransform.extractCanonicalAudioSegment,
+    alignVideoSoundtrackToSong: input.providerTransform.alignVideoSoundtrackToSong,
     cancelAssembly: input.providerTransform.cancelAssembly,
   };
 }
