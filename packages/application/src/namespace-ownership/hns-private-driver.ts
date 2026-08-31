@@ -17,11 +17,20 @@ export const HNS_PRIVATE_DRIVER_ORIGIN = "http://hns-observer-driver.internal" a
 export const HNS_PRIVATE_DRIVER_HSD_PATH = "/internal/hns-observer-driver/v1/hsd" as const;
 export const HNS_PRIVATE_DRIVER_DNS_PATH =
   "/internal/hns-observer-driver/v1/authoritative-dns" as const;
+export const HNS_PRIVATE_DRIVER_AXFR_PATH =
+  "/internal/hns-observer-driver/v1/authoritative-axfr" as const;
 export const HNS_PRIVATE_DRIVER_REQUEST_MAX_BYTES = 12_288 as const;
 export const HNS_PRIVATE_DRIVER_ERROR_MAX_BYTES = 256 as const;
 export const HNS_PRIVATE_DRIVER_TIMEOUT_MAX_MS = 12_000 as const;
 export const HNS_PRIVATE_DRIVER_HSD_RESPONSE_MAX_BYTES = 1_048_576 as const;
 export const HNS_PRIVATE_DRIVER_DNS_RESPONSE_MAX_BYTES = 65_535 as const;
+export const HNS_PRIVATE_DRIVER_AXFR_MESSAGE_MAX_BYTES = 65_535 as const;
+export const HNS_PRIVATE_DRIVER_AXFR_MESSAGE_MAX_COUNT = 512 as const;
+export const HNS_PRIVATE_DRIVER_AXFR_TOTAL_MAX_BYTES = 2 * 1_048_576;
+export const HNS_PRIVATE_DRIVER_AXFR_SEQUENCE_MAX_BYTES =
+  HNS_PRIVATE_DRIVER_AXFR_TOTAL_MAX_BYTES + 2 * HNS_PRIVATE_DRIVER_AXFR_MESSAGE_MAX_COUNT;
+export const HNS_PRIVATE_DRIVER_AXFR_RESPONSE_MAX_BYTES =
+  HNS_PRIVATE_DRIVER_AXFR_SEQUENCE_MAX_BYTES + HNS_PRIVATE_DRIVER_AXFR_MESSAGE_MAX_BYTES + 256;
 
 export const HNS_PRIVATE_DRIVER_PROTOCOL_HEADER = "Pirate-HNS-Driver-Protocol" as const;
 export const HNS_PRIVATE_DRIVER_UPSTREAM_STATUS_HEADER =
@@ -54,14 +63,68 @@ export type HnsPrivateDriverAuthoritativeDnsRequestV1 = Readonly<{
   readonly timeout_ms: number;
 }>;
 
+export type HnsPrivateDriverAuthoritativeAxfrRequestV1 = Readonly<{
+  readonly version: typeof HNS_PRIVATE_DRIVER_REQUEST_VERSION;
+  readonly exchange_kind: "authoritative_dns_tsig_axfr";
+  readonly driver_reference: string;
+  readonly view_id: string;
+  readonly credential_reference: string;
+  readonly root_label: string;
+  readonly authority_nameserver: string;
+  readonly authority_address_family: HnsAuthoritativeDnsAddressFamilyV1;
+  readonly authority_address: string;
+  readonly response_message_max_bytes: number;
+  readonly response_total_max_bytes: number;
+  readonly response_max_messages: number;
+  readonly timeout_ms: number;
+}>;
+
 export type HnsPrivateDriverRequestV1 =
   | HnsPrivateDriverHsdRequestV1
-  | HnsPrivateDriverAuthoritativeDnsRequestV1;
+  | HnsPrivateDriverAuthoritativeDnsRequestV1
+  | HnsPrivateDriverAuthoritativeAxfrRequestV1;
 
-export type HnsPrivateDriverDecodedRequestV1 = Readonly<{
-  readonly request: HnsPrivateDriverRequestV1;
+export type HnsPrivateDriverDecodedRequestV1 =
+  | Readonly<{
+      readonly request: HnsPrivateDriverHsdRequestV1 | HnsPrivateDriverAuthoritativeDnsRequestV1;
+      readonly request_bytes: Uint8Array;
+    }>
+  | Readonly<{
+      readonly request: HnsPrivateDriverAuthoritativeAxfrRequestV1;
+    }>;
+
+export type HnsPrivateDriverAuthoritativeAxfrResponseV1 = Readonly<{
   readonly request_bytes: Uint8Array;
+  readonly response_sequence_bytes: Uint8Array;
 }>;
+
+export type HnsPrivateDriverAuthoritativeAxfrExchangeInputV1 = Readonly<{
+  readonly driver_reference: string;
+  readonly view_id: string;
+  readonly credential_reference: string;
+  readonly root_label: string;
+  readonly authority_nameserver: string;
+  readonly authority_address_family: HnsAuthoritativeDnsAddressFamilyV1;
+  readonly authority_address: string;
+  readonly response_message_max_bytes: number;
+  readonly response_total_max_bytes: number;
+  readonly response_max_messages: number;
+  readonly signal: AbortSignal;
+}>;
+
+export type HnsPrivateDriverAuthoritativeAxfrTransportPortV1 = Readonly<{
+  readonly exchange: (
+    input: HnsPrivateDriverAuthoritativeAxfrExchangeInputV1,
+  ) => Promise<HnsPrivateDriverAuthoritativeAxfrResponseV1>;
+}>;
+
+export class HnsPrivateDriverAuthoritativeAxfrTransportErrorV1 extends Error {
+  readonly name = "HnsPrivateDriverAuthoritativeAxfrTransportErrorV1";
+
+  constructor(readonly outcome: "timeout" | "transport_error" | "aborted") {
+    super(outcome);
+  }
+}
 
 export type HnsPrivateDriverErrorCodeV1 =
   | "invalid_request"
@@ -89,6 +152,7 @@ const sha256Pattern = /^[0-9a-f]{64}$/u;
 const canonicalDnsNamePattern =
   /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$/u;
 const canonicalBase64Pattern = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u;
+const axfrResponseMagic = encoder.encode("pirate-hns-private-driver-axfr-response-v1\0");
 const errorStatus = {
   invalid_request: 400,
   request_too_large: 413,
@@ -263,12 +327,52 @@ function decodeDnsRequest(value: Record<string, unknown>): HnsPrivateDriverDecod
   };
 }
 
+function decodeAxfrRequest(value: Record<string, unknown>): HnsPrivateDriverDecodedRequestV1 {
+  if (
+    !hasExactKeys(value, [
+      "version",
+      "exchange_kind",
+      "driver_reference",
+      "view_id",
+      "credential_reference",
+      "root_label",
+      "authority_nameserver",
+      "authority_address_family",
+      "authority_address",
+      "response_message_max_bytes",
+      "response_total_max_bytes",
+      "response_max_messages",
+      "timeout_ms",
+    ]) ||
+    value.exchange_kind !== "authoritative_dns_tsig_axfr" ||
+    !validCommonRequest(value) ||
+    typeof value.view_id !== "string" ||
+    !viewIdPattern.test(value.view_id) ||
+    typeof value.credential_reference !== "string" ||
+    !driverReferencePattern.test(value.credential_reference) ||
+    typeof value.root_label !== "string" ||
+    !validCommunityRouteRoot("hns", value.root_label) ||
+    typeof value.authority_nameserver !== "string" ||
+    !canonicalDnsNamePattern.test(value.authority_nameserver) ||
+    (value.authority_address_family !== "GLUE4" && value.authority_address_family !== "GLUE6") ||
+    !safeText(value.authority_address, 45) ||
+    !positiveInteger(value.response_message_max_bytes, HNS_PRIVATE_DRIVER_AXFR_MESSAGE_MAX_BYTES) ||
+    !positiveInteger(value.response_total_max_bytes, HNS_PRIVATE_DRIVER_AXFR_TOTAL_MAX_BYTES) ||
+    value.response_total_max_bytes < value.response_message_max_bytes + 2 ||
+    !positiveInteger(value.response_max_messages, HNS_PRIVATE_DRIVER_AXFR_MESSAGE_MAX_COUNT)
+  ) {
+    throw new HnsPrivateDriverWireError("HNS private AXFR driver request is invalid");
+  }
+  return { request: value as HnsPrivateDriverAuthoritativeAxfrRequestV1 };
+}
+
 export function decodeHnsPrivateDriverRequestV1(value: unknown): HnsPrivateDriverDecodedRequestV1 {
   const decoded = decodeStrictHnsJsonBytes(value, HNS_PRIVATE_DRIVER_REQUEST_MAX_BYTES);
   if (!isRecord(decoded)) throw new HnsPrivateDriverWireError("HNS private-driver body is invalid");
-  return decoded.exchange_kind === "hsd_json_rpc"
-    ? decodeHsdRequest(decoded)
-    : decodeDnsRequest(decoded);
+  if (decoded.exchange_kind === "hsd_json_rpc") return decodeHsdRequest(decoded);
+  if (decoded.exchange_kind === "authoritative_dns_tcp") return decodeDnsRequest(decoded);
+  if (decoded.exchange_kind === "authoritative_dns_tsig_axfr") return decodeAxfrRequest(decoded);
+  throw new HnsPrivateDriverWireError("HNS private-driver exchange kind is invalid");
 }
 
 export function encodeHnsPrivateDriverRequestV1(
@@ -276,7 +380,8 @@ export function encodeHnsPrivateDriverRequestV1(
     | (Omit<HnsPrivateDriverHsdRequestV1, "version" | "request_bytes_base64"> &
         Readonly<{ readonly request_bytes: Uint8Array }>)
     | (Omit<HnsPrivateDriverAuthoritativeDnsRequestV1, "version" | "request_bytes_base64"> &
-        Readonly<{ readonly request_bytes: Uint8Array }>),
+        Readonly<{ readonly request_bytes: Uint8Array }>)
+    | Omit<HnsPrivateDriverAuthoritativeAxfrRequestV1, "version">,
 ): Uint8Array {
   const value =
     input.exchange_kind === "hsd_json_rpc"
@@ -288,24 +393,126 @@ export function encodeHnsPrivateDriverRequestV1(
           response_max_bytes: input.response_max_bytes,
           timeout_ms: input.timeout_ms,
         }
-      : {
-          version: HNS_PRIVATE_DRIVER_REQUEST_VERSION,
-          exchange_kind: input.exchange_kind,
-          driver_reference: input.driver_reference,
-          view_id: input.view_id,
-          query_kind: input.query_kind,
-          root_label: input.root_label,
-          chain_authority_digest: input.chain_authority_digest,
-          authority_nameserver: input.authority_nameserver,
-          authority_address_family: input.authority_address_family,
-          authority_address: input.authority_address,
-          request_bytes_base64: encodeBase64(input.request_bytes),
-          response_max_bytes: input.response_max_bytes,
-          timeout_ms: input.timeout_ms,
-        };
+      : input.exchange_kind === "authoritative_dns_tcp"
+        ? {
+            version: HNS_PRIVATE_DRIVER_REQUEST_VERSION,
+            exchange_kind: input.exchange_kind,
+            driver_reference: input.driver_reference,
+            view_id: input.view_id,
+            query_kind: input.query_kind,
+            root_label: input.root_label,
+            chain_authority_digest: input.chain_authority_digest,
+            authority_nameserver: input.authority_nameserver,
+            authority_address_family: input.authority_address_family,
+            authority_address: input.authority_address,
+            request_bytes_base64: encodeBase64(input.request_bytes),
+            response_max_bytes: input.response_max_bytes,
+            timeout_ms: input.timeout_ms,
+          }
+        : {
+            version: HNS_PRIVATE_DRIVER_REQUEST_VERSION,
+            exchange_kind: input.exchange_kind,
+            driver_reference: input.driver_reference,
+            view_id: input.view_id,
+            credential_reference: input.credential_reference,
+            root_label: input.root_label,
+            authority_nameserver: input.authority_nameserver,
+            authority_address_family: input.authority_address_family,
+            authority_address: input.authority_address,
+            response_message_max_bytes: input.response_message_max_bytes,
+            response_total_max_bytes: input.response_total_max_bytes,
+            response_max_messages: input.response_max_messages,
+            timeout_ms: input.timeout_ms,
+          };
   const bytes = encoder.encode(JSON.stringify(value));
   decodeHnsPrivateDriverRequestV1(bytes);
   return bytes;
+}
+
+function readUint16(bytes: Uint8Array, offset: number): number {
+  if (offset < 0 || offset + 2 > bytes.byteLength) {
+    throw new HnsPrivateDriverWireError("HNS private AXFR response is truncated");
+  }
+  return ((bytes[offset] ?? 0) << 8) | (bytes[offset + 1] ?? 0);
+}
+
+function readUint32(bytes: Uint8Array, offset: number): number {
+  if (offset < 0 || offset + 4 > bytes.byteLength) {
+    throw new HnsPrivateDriverWireError("HNS private AXFR response is truncated");
+  }
+  return (
+    (bytes[offset] ?? 0) * 0x1000000 +
+    ((bytes[offset + 1] ?? 0) << 16) +
+    ((bytes[offset + 2] ?? 0) << 8) +
+    (bytes[offset + 3] ?? 0)
+  );
+}
+
+export function encodeHnsPrivateDriverAuthoritativeAxfrResponseV1(
+  input: HnsPrivateDriverAuthoritativeAxfrResponseV1,
+): Uint8Array {
+  const requestBytes = Uint8Array.from(input.request_bytes);
+  const sequenceBytes = Uint8Array.from(input.response_sequence_bytes);
+  if (
+    requestBytes.byteLength === 0 ||
+    requestBytes.byteLength > HNS_PRIVATE_DRIVER_AXFR_MESSAGE_MAX_BYTES ||
+    sequenceBytes.byteLength === 0 ||
+    sequenceBytes.byteLength > HNS_PRIVATE_DRIVER_AXFR_SEQUENCE_MAX_BYTES
+  ) {
+    throw new HnsPrivateDriverWireError("HNS private AXFR response exceeds its bounds");
+  }
+  const bytes = new Uint8Array(
+    axfrResponseMagic.byteLength + 2 + requestBytes.byteLength + 4 + sequenceBytes.byteLength,
+  );
+  bytes.set(axfrResponseMagic, 0);
+  let offset = axfrResponseMagic.byteLength;
+  bytes[offset] = (requestBytes.byteLength >>> 8) & 0xff;
+  bytes[offset + 1] = requestBytes.byteLength & 0xff;
+  offset += 2;
+  bytes.set(requestBytes, offset);
+  offset += requestBytes.byteLength;
+  bytes[offset] = (sequenceBytes.byteLength >>> 24) & 0xff;
+  bytes[offset + 1] = (sequenceBytes.byteLength >>> 16) & 0xff;
+  bytes[offset + 2] = (sequenceBytes.byteLength >>> 8) & 0xff;
+  bytes[offset + 3] = sequenceBytes.byteLength & 0xff;
+  bytes.set(sequenceBytes, offset + 4);
+  return bytes;
+}
+
+export function decodeHnsPrivateDriverAuthoritativeAxfrResponseV1(
+  value: unknown,
+): HnsPrivateDriverAuthoritativeAxfrResponseV1 {
+  if (!(value instanceof Uint8Array)) {
+    throw new HnsPrivateDriverWireError("HNS private AXFR response is invalid");
+  }
+  const bytes = Uint8Array.from(value);
+  if (
+    bytes.byteLength <= axfrResponseMagic.byteLength + 6 ||
+    !axfrResponseMagic.every((byte, index) => bytes[index] === byte)
+  ) {
+    throw new HnsPrivateDriverWireError("HNS private AXFR response is invalid");
+  }
+  let offset = axfrResponseMagic.byteLength;
+  const requestLength = readUint16(bytes, offset);
+  offset += 2;
+  if (requestLength === 0 || offset + requestLength + 4 > bytes.byteLength) {
+    throw new HnsPrivateDriverWireError("HNS private AXFR response is invalid");
+  }
+  const requestBytes = bytes.slice(offset, offset + requestLength);
+  offset += requestLength;
+  const sequenceLength = readUint32(bytes, offset);
+  offset += 4;
+  if (
+    sequenceLength === 0 ||
+    sequenceLength > HNS_PRIVATE_DRIVER_AXFR_SEQUENCE_MAX_BYTES ||
+    offset + sequenceLength !== bytes.byteLength
+  ) {
+    throw new HnsPrivateDriverWireError("HNS private AXFR response is invalid");
+  }
+  return {
+    request_bytes: requestBytes,
+    response_sequence_bytes: bytes.slice(offset),
+  };
 }
 
 export function hnsPrivateDriverErrorStatus(error: HnsPrivateDriverErrorCodeV1): number {

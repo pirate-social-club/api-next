@@ -86,6 +86,7 @@ describe("Infisical secret drift audit", () => {
       "ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_SECRET",
       "ZKPASSPORT_VERIFIER_SHARED_SECRET",
       "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
+      "HNS_EDGE_ALERT_TOKEN",
     ]);
     expect(report.acceptedDrift).toHaveLength(0);
   });
@@ -220,13 +221,14 @@ describe("Infisical secret drift audit", () => {
     ]);
   });
 
-  test("allows production DATA secret names without requiring them before ceremony", () => {
+  test("allows production song-runtime provisioning names without requiring them before ceremony", () => {
     const prodBase = emptySnapshot("prod");
     const requiredRuntimeNames = [
       "PIRATE_APP_JWT_PRIVATE_KEY",
       "PRIVY_APP_SECRET",
       "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
       "MEGAPOT_V2_RPC_URL",
+      "HNS_EDGE_ALERT_TOKEN",
     ];
     const withoutSigner: InfisicalSnapshot = {
       ...prodBase,
@@ -249,6 +251,13 @@ describe("Infisical secret drift audit", () => {
           ...requiredRuntimeNames,
           "DATA_REGISTRATION_PRODUCTION_AENEID_PRIVATE_KEY",
           "FILEBASE_IPFS_TOKEN",
+          "ACRCLOUD_ACCESS_KEY",
+          "ACRCLOUD_ACCESS_SECRET",
+          "ELEVENLABS_API_KEY",
+          "OPENAI_API_KEY",
+          "OPENROUTER_API_KEY",
+          "MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID",
+          "MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY",
         ],
       },
     };

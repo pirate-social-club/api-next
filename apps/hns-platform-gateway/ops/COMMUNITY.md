@@ -16,6 +16,24 @@ bun run --cwd apps/hns-platform-gateway build:community-vps-bundle
 sha256sum apps/hns-platform-gateway/dist/pirate-hns-community-app-gateway.mjs
 ```
 
+The combined production replacement is built with:
+
+```bash
+bun run --cwd apps/hns-platform-gateway build:combined-vps-bundle
+```
+
+It emits `dist/pirate-hns-community-app-handle-gateway.mjs`. Install that
+artifact under the existing production unit's expected
+`bin/pirate-hns-community-app-gateway.mjs` release path, together with compact
+bytes derived from `community/deployment-manifest.combined.template.json`.
+The combined schema binds both exact gateway profiles and computes
+`hns-community-app-handle-gateway-sha256:<manifest_sha256>`. It reserves the
+exact `app.<root>` label for the interactive community service and sends every
+other two-label authority to the read-only handle service; each child service
+still performs its complete request and SNI admission independently. The
+legacy community-only manifest remains accepted by the legacy bundle for
+rollback.
+
 The build embeds the exact source commit and reports the bundle SHA-256. Copy
 `community/deployment-manifest.template.json` for production or production
 shadow. Copy `community/deployment-manifest.staging-shadow.template.json` only

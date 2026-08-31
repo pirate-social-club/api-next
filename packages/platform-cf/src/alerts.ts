@@ -190,7 +190,7 @@ export type OperationsBalanceSnapshotFields = Readonly<{
 
 export type MegapotRewardsCycleSnapshotFields = Readonly<{
   readonly event: "megapot.rewards.cycle";
-  readonly schema_version: 1;
+  readonly schema_version: 2;
   readonly emitted_at: string;
   readonly environment: string;
   readonly worker_version_id: string;
@@ -210,6 +210,15 @@ export type MegapotRewardsCycleSnapshotFields = Readonly<{
   readonly paid_count: number;
   readonly failure_count: number;
   readonly failure_tags: readonly string[];
+  readonly liveness_status: "available" | "unavailable";
+  readonly aged_pending_threshold_seconds: number;
+  readonly aged_pending_total_count: number | null;
+  readonly aged_chain_effect_count: number | null;
+  readonly aged_funding_effect_count: number | null;
+  readonly aged_drawing_count: number | null;
+  readonly aged_credit_count: number | null;
+  readonly aged_refund_liability_count: number | null;
+  readonly oldest_aged_pending_seconds: number | null;
   readonly outcome: "healthy" | "degraded";
   readonly sampled: false;
 }>;

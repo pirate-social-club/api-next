@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import {
   activateOperatorManagedRoute,
+  encodeHnsAppHostTransitionDocumentV1,
   encodeHnsDnsHealthDocumentV1,
   encodeHnsDnsZoneActivationDocumentV1,
   encodeHnsDnsZonePersistenceDocumentV1,
@@ -256,23 +257,15 @@ suite("HNS first-party host persistence on PostgreSQL 17", () => {
       const repository = makeControlPlaneHnsFirstPartyHostPersistenceRepository(runtime);
       const source = makeControlPlaneHnsCommunityAppHostAuthoritySource(runtime);
       const firstDocument = await dnsDocument(inventoryDigest, 1);
-      const firstDocumentDigest = await sha256(firstDocument.activation_document_bytes);
-      const reservationInput = {
-        operation_id: "dns-zone-operation-1",
-        idempotency_key: "dns-zone-key-1",
-        activation_document_digest: firstDocumentDigest,
-        dns_zone_activation_id: firstDocument.dns_zone_activation_id,
-        expected_activation_generation: 0,
-        lease_seconds: 30,
-      } as const;
+      const firstReviewedBytes = encodeHnsDnsZonePersistenceDocumentV1(firstDocument);
       const reservation = await Effect.runPromise(
-        repository.store.reserveDnsZoneActivation(reservationInput),
+        repository.store.reserveDnsZoneActivation(firstReviewedBytes, 30),
       );
       await expect(
         Effect.runPromise(
           repository.store.finalizeDnsZoneActivation({
             reservation,
-            reviewed_document_bytes: encodeHnsDnsZonePersistenceDocumentV1(firstDocument),
+            reviewed_document_bytes: firstReviewedBytes,
           }),
         ),
       ).resolves.toEqual({
@@ -281,14 +274,14 @@ suite("HNS first-party host persistence on PostgreSQL 17", () => {
         activation_generation: 1,
       });
       const replay = await Effect.runPromise(
-        repository.store.reserveDnsZoneActivation(reservationInput),
+        repository.store.reserveDnsZoneActivation(firstReviewedBytes, 30),
       );
       expect(replay).toMatchObject({ outcome: "replayed", activation_generation: 1 });
       await expect(
         Effect.runPromise(
           repository.store.finalizeDnsZoneActivation({
             reservation: replay,
-            reviewed_document_bytes: encodeHnsDnsZonePersistenceDocumentV1(firstDocument),
+            reviewed_document_bytes: firstReviewedBytes,
           }),
         ),
       ).resolves.toMatchObject({ outcome: "replayed", activation_generation: 1 });
@@ -316,25 +309,30 @@ suite("HNS first-party host persistence on PostgreSQL 17", () => {
       await Effect.runPromise(
         repository.store.recordDnsZoneHealth(encodeHnsDnsHealthDocumentV1(healthy)),
       );
-      await expect(
-        Effect.runPromise(
-          repository.store.activateCommunityAppHost({
-            operation_id: "app-host-operation-1",
-            idempotency_key: "app-host-key-1",
-            request_hash: "2".repeat(64),
-            app_host_activation_id: "app-host-activation-jazleeuw",
-            community_id: communityId,
-            canonical_root: "jazleeuw",
-            route_binding_id: activation.route_binding_id,
-            route_authority_kind: "operator_managed_route_v1",
-            route_authority_reference: activation.operator_route_activation_id,
-            route_authority_generation: 1,
-            dns_zone_activation_id: firstDocument.dns_zone_activation_id,
-            dns_zone_activation_generation: 1,
-            gateway_deployment_reference: gatewayReference,
-          }),
-        ),
-      ).resolves.toMatchObject({ outcome: "activated", app_host_activation_generation: 1 });
+      const appActivation = await admin.query(
+        `SELECT * FROM activate_hns_community_app_host_v1(
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::bigint, $11, $12::bigint, $13
+        )`,
+        [
+          "app-host-operation-1",
+          "app-host-key-1",
+          "2".repeat(64),
+          "app-host-activation-jazleeuw",
+          communityId,
+          "jazleeuw",
+          activation.route_binding_id,
+          "operator_managed_route_v1",
+          activation.operator_route_activation_id,
+          1,
+          firstDocument.dns_zone_activation_id,
+          1,
+          gatewayReference,
+        ],
+      );
+      expect(appActivation.rows[0]).toMatchObject({
+        outcome: "activated",
+        app_host_activation_generation: "1",
+      });
       const active = await Effect.runPromise(source.resolve("app.jazleeuw"));
       expect(active).not.toBeNull();
       expect(
@@ -392,20 +390,14 @@ suite("HNS first-party host persistence on PostgreSQL 17", () => {
       ).toBeFalse();
 
       const secondDocument = await dnsDocument(inventoryDigest, 2);
+      const secondReviewedBytes = encodeHnsDnsZonePersistenceDocumentV1(secondDocument);
       const secondReservation = await Effect.runPromise(
-        repository.store.reserveDnsZoneActivation({
-          operation_id: "dns-zone-operation-2",
-          idempotency_key: "dns-zone-key-2",
-          activation_document_digest: await sha256(secondDocument.activation_document_bytes),
-          dns_zone_activation_id: secondDocument.dns_zone_activation_id,
-          expected_activation_generation: 1,
-          lease_seconds: 30,
-        }),
+        repository.store.reserveDnsZoneActivation(secondReviewedBytes, 30),
       );
       await Effect.runPromise(
         repository.store.finalizeDnsZoneActivation({
           reservation: secondReservation,
-          reviewed_document_bytes: encodeHnsDnsZonePersistenceDocumentV1(secondDocument),
+          reviewed_document_bytes: secondReviewedBytes,
         }),
       );
       const staleGeneration = await Effect.runPromise(source.resolve("app.jazleeuw"));
@@ -418,16 +410,43 @@ suite("HNS first-party host persistence on PostgreSQL 17", () => {
           isHnsCommunityAppHostAuthorityActive(staleGeneration),
       ).toBeFalse();
 
-      await Effect.runPromise(
-        repository.store.changeDnsZoneStatus({
-          operation_id: "dns-zone-revoke-operation",
-          idempotency_key: "dns-zone-revoke-key",
-          request_hash: "4".repeat(64),
-          dns_zone_activation_id: secondDocument.dns_zone_activation_id,
-          expected_activation_generation: 2,
-          target_status: "revoked",
-          reason_code: "authority-retired",
-        }),
+      await expect(
+        Effect.runPromise(
+          repository.store.changeCommunityAppHostStatus(
+            encodeHnsAppHostTransitionDocumentV1({
+              operation_id: "app-host-active-refresh-operation",
+              idempotency_key: "app-host-active-refresh-key",
+              request_hash: "9".repeat(64),
+              app_host_activation_id: "app-host-activation-jazleeuw",
+              expected_activation_generation: 1,
+              target_status: "active",
+              reason_code: "canonical-authority",
+            }),
+          ),
+        ),
+      ).resolves.toMatchObject({
+        outcome: "changed",
+        app_host_activation_generation: 2,
+        status: "active",
+      });
+      const refreshedGeneration = await Effect.runPromise(source.resolve("app.jazleeuw"));
+      expect(refreshedGeneration).toMatchObject({
+        app_host_activation_generation: 2,
+        activation_dns_zone_generation: 2,
+        dns_zone: { dns_zone_activation_generation: 2 },
+      });
+
+      await admin.query(
+        "SELECT * FROM change_hns_dns_zone_activation_status_v1($1, $2, $3, $4, $5::bigint, $6, $7)",
+        [
+          "dns-zone-revoke-operation",
+          "dns-zone-revoke-key",
+          "4".repeat(64),
+          secondDocument.dns_zone_activation_id,
+          2,
+          "revoked",
+          "authority-retired",
+        ],
       );
       const dnsRevoked = await Effect.runPromise(source.resolve("app.jazleeuw"));
       expect(dnsRevoked).toMatchObject({ dns_zone: { status: "revoked" } });
@@ -474,20 +493,13 @@ suite("HNS first-party host persistence on PostgreSQL 17", () => {
         makeDirectPostgresControlPlaneLayer(connection),
       );
       const document = await dnsDocument(inventoryDigest, 1);
-      const reservationInput = {
-        operation_id: "stale-finalizer-operation",
-        idempotency_key: "stale-finalizer-key",
-        activation_document_digest: await sha256(document.activation_document_bytes),
-        dns_zone_activation_id: document.dns_zone_activation_id,
-        expected_activation_generation: 0,
-        lease_seconds: 4,
-      } as const;
+      const reviewedBytes = encodeHnsDnsZonePersistenceDocumentV1(document);
       const stale = await Effect.runPromise(
-        repository.store.reserveDnsZoneActivation(reservationInput),
+        repository.store.reserveDnsZoneActivation(reviewedBytes, 4),
       );
       await admin.query("SELECT pg_sleep(4.1)");
       const current = await Effect.runPromise(
-        repository.store.reserveDnsZoneActivation(reservationInput),
+        repository.store.reserveDnsZoneActivation(reviewedBytes, 4),
       );
       expect(current.fence_token).toBe(stale.fence_token + 1);
       await expect(

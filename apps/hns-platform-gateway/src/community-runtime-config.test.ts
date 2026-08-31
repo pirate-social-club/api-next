@@ -9,6 +9,7 @@ import {
   HNS_COMMUNITY_APP_GATEWAY_STAGING_DEPLOYMENT_SCHEMA,
   HNS_COMMUNITY_APP_GATEWAY_STAGING_INGRESS_CONTRACT,
   HNS_COMMUNITY_APP_GATEWAY_TLS_TERMINATOR_CONTRACT,
+  HNS_COMMUNITY_APP_HANDLE_GATEWAY_DEPLOYMENT_SCHEMA,
   type HnsCommunityAppGatewayDeploymentMode,
   loadHnsCommunityAppGatewayRuntimeConfigurationV1,
 } from "./community-runtime-config.ts";
@@ -91,6 +92,21 @@ async function manifest(
   );
 }
 
+async function combinedManifest(
+  overrides: Readonly<Record<string, unknown>> = {},
+): Promise<string> {
+  const base = JSON.parse(await manifest("production")) as Record<string, unknown>;
+  return JSON.stringify({
+    ...base,
+    schema: HNS_COMMUNITY_APP_HANDLE_GATEWAY_DEPLOYMENT_SCHEMA,
+    routing_contract: "app-or-handle-host-v1",
+    handle_profile_version: "pirate-hns-community-handle-persona-public-gateway-v1",
+    handle_profile_utf8_bytes: 447,
+    handle_profile_sha256: "156487e5aff120efa08c1af0dce5a54d42ce32100f1cfb93de350ceac446c37b",
+    ...overrides,
+  });
+}
+
 function credentials(overrides: Readonly<Record<string, string>> = {}): Record<string, string> {
   const registry = JSON.stringify({
     schema: "pirate-hns-forwarder-v3-key-registry-v1",
@@ -133,6 +149,21 @@ async function load(
       await manifest(input.manifest_mode ?? mode, input.manifest_overrides),
     ),
     bundle_bytes: input.bundle_bytes ?? bundleBytes,
+    api_next_source_commit: sourceCommit,
+    read_credential: (name) => {
+      const value = values[name];
+      if (value === undefined) throw new Error("missing test credential");
+      return encoder.encode(value);
+    },
+  });
+}
+
+async function loadCombined(overrides: Readonly<Record<string, unknown>> = {}) {
+  const values = credentials();
+  return loadHnsCommunityAppGatewayRuntimeConfigurationV1({
+    mode: "production",
+    manifest_bytes: encoder.encode(await combinedManifest(overrides)),
+    bundle_bytes: bundleBytes,
     api_next_source_commit: sourceCommit,
     read_credential: (name) => {
       const value = values[name];
@@ -191,6 +222,25 @@ describe("community gateway deployment configuration", () => {
       { production_gateway_listener: "127.0.0.1:4069" },
     ]) {
       await expect(load({ mode: "staging-shadow", manifest_overrides })).rejects.toThrow(
+        "configuration is incomplete or invalid",
+      );
+    }
+  });
+
+  test("binds both profiles into a distinct combined deployment reference", async () => {
+    const manifestText = await combinedManifest();
+    const configuration = await loadCombined();
+    expect(configuration.manifest.schema).toBe(HNS_COMMUNITY_APP_HANDLE_GATEWAY_DEPLOYMENT_SCHEMA);
+    expect(configuration.gateway_deployment_reference).toBe(
+      `hns-community-app-handle-gateway-sha256:${await sha256(encoder.encode(manifestText))}`,
+    );
+    for (const overrides of [
+      { routing_contract: "community-only-v1" },
+      { handle_profile_utf8_bytes: 446 },
+      { handle_profile_sha256: "0".repeat(64) },
+      { handle_profile_version: "other" },
+    ]) {
+      await expect(loadCombined(overrides)).rejects.toThrow(
         "configuration is incomplete or invalid",
       );
     }

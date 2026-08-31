@@ -111,6 +111,7 @@
     "OPENAI_MODERATION_TIMEOUT_MS": "10000",
     "HNS_OWNERSHIP_ENABLED": "false",
     "HNS_COMMUNITY_APP_API_ENABLED": "false",
+    "HNS_HANDLE_HOST_API_ENABLED": "false",
     "HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN": "",
     "HNS_COMMUNITY_APP_API_ACCESS_ISSUER": "",
     "HNS_COMMUNITY_APP_API_ACCESS_JWKS_URL": "",
@@ -244,6 +245,7 @@
         "VERY_WEB_BRIDGE_API_URL": "https://bridge.very.org/api/v1",
         "HNS_OWNERSHIP_ENABLED": "false",
         "HNS_COMMUNITY_APP_API_ENABLED": "false",
+        "HNS_HANDLE_HOST_API_ENABLED": "false",
         "HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN": "",
         "HNS_COMMUNITY_APP_API_ACCESS_ISSUER": "",
         "HNS_COMMUNITY_APP_API_ACCESS_JWKS_URL": "",
@@ -359,8 +361,23 @@
       ],
       "r2_buckets": [
         {
+          "binding": "MEDIA_INGRESS",
+          "bucket_name": "pirate-media-ingress-production"
+        },
+        {
+          "binding": "MEDIA_IMMUTABLE_ORIGINALS",
+          "bucket_name": "pirate-media-immutable-production"
+        },
+        {
           "binding": "LEARNER_AUDIO",
           "bucket_name": "pirate-learner-audio-production"
+        }
+      ],
+      "send_email": [
+        {
+          "name": "HNS_EDGE_ALERT_EMAIL",
+          "destination_address": "piratesocialclub@proton.me",
+          "allowed_sender_addresses": ["alerts@pirate.sc"]
         }
       ],
       "vars": {
@@ -372,8 +389,8 @@
         "MEGAPOT_ATTESTATION_ID": "megapot-base-sepolia-v2",
         "MEGAPOT_REQUIRED_CONFIRMATIONS": "3",
         "MEDIA_UPLOADS_ENABLED": "false",
-        "MEDIA_INGRESS_R2_ACCOUNT_ID": "",
-        "MEDIA_INGRESS_R2_BUCKET_NAME": "",
+        "MEDIA_INGRESS_R2_ACCOUNT_ID": "08a4c22cf52e2ecae883e36f80a33f4a",
+        "MEDIA_INGRESS_R2_BUCKET_NAME": "pirate-media-ingress-production",
         "REGISTRATION_IP_LIMIT": "5",
         "REGISTRATION_IP_WINDOW_SECONDS": "900",
         "REGISTRATION_APPLICATION_LIMIT": "100",
@@ -390,6 +407,7 @@
         "OPENAI_MODERATION_TIMEOUT_MS": "10000",
         "HNS_OWNERSHIP_ENABLED": "false",
         "HNS_COMMUNITY_APP_API_ENABLED": "true",
+        "HNS_HANDLE_HOST_API_ENABLED": "true",
         "HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN": "https://hns-community-api.pirate.sc",
         "HNS_COMMUNITY_APP_API_ACCESS_ISSUER": "https://piratesocialclub.cloudflareaccess.com",
         "HNS_COMMUNITY_APP_API_ACCESS_JWKS_URL": "https://piratesocialclub.cloudflareaccess.com/cdn-cgi/access/certs",
@@ -416,7 +434,10 @@
           "PIRATE_APP_JWT_PRIVATE_KEY",
           "PRIVY_APP_SECRET",
           "HNS_FORWARDER_V3_HMAC_KEY_REGISTRY",
-          "COMMUNITY_PURCHASE_FUNDING_RPC_URL"
+          "HNS_EDGE_ALERT_TOKEN",
+          "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
+          "MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID",
+          "MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY"
         ]
       }
     }

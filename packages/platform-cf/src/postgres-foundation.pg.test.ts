@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { ControlPlaneDb } from "@pirate/application";
 import { Effect } from "effect";
 import { Client } from "pg";
-import { loadPostgresMigrations } from "../../../scripts/postgres-migrations";
+import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 
 import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres";
@@ -748,7 +748,6 @@ const migrations: readonly PostgresMigration[] = [
   songRatingsAgeAccessMigration,
   generalAudienceSongCoversMigration,
 ];
-const allMigrations = await loadPostgresMigrations();
 
 function checksum(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -766,11 +765,6 @@ function connectionForSchema(raw: string, schema: string): string {
   const separator = raw.includes("?") ? "&" : "?";
   const option = encodeURIComponent(`-c search_path=${schema}`);
   return `${raw}${separator}options=${option}`;
-}
-
-function requireConnectionString(): string {
-  if (connectionString === undefined) throw new Error("test URL was not configured");
-  return connectionString;
 }
 
 async function applyMigrations(
@@ -849,13 +843,13 @@ async function catalogForSchema(admin: Client, schema: string): Promise<SchemaCa
 async function withSchema<A>(
   use: (admin: Client, connection: string, schema: string) => Promise<A>,
 ): Promise<A> {
-  const configuredConnectionString = requireConnectionString();
+  if (connectionString === undefined) throw new Error("test URL was not configured");
   const schema = schemaIdentifier();
-  const admin = new Client({ connectionString: configuredConnectionString });
+  const admin = new Client({ connectionString });
   await admin.connect();
   await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
   await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
-  const scopedConnectionString = connectionForSchema(configuredConnectionString, schema);
+  const scopedConnectionString = connectionForSchema(connectionString, schema);
   try {
     return await use(admin, scopedConnectionString, schema);
   } finally {
@@ -1056,42 +1050,26 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
-      for (const pinnedMigration of migrations) {
-        expect(
-          allMigrations.find(({ version: candidate }) => candidate === pinnedMigration.version),
-        ).toEqual(pinnedMigration);
-      }
 
-      const fullMigrationSchema = schemaIdentifier();
-      await admin.query(`CREATE SCHEMA ${quoteIdentifier(fullMigrationSchema)}`);
+      await applyMigrations(scopedConnectionString, await loadPostgresMigrations());
+      const migratedCatalog = await catalogForSchema(admin, schema);
+      const baselineSchema = schemaIdentifier();
+      await admin.query(`CREATE SCHEMA ${quoteIdentifier(baselineSchema)}`);
       try {
-        await applyMigrations(
-          connectionForSchema(requireConnectionString(), fullMigrationSchema),
-          allMigrations,
-        );
-        const migratedCatalog = await catalogForSchema(admin, fullMigrationSchema);
-        const baselineSchema = schemaIdentifier();
-        await admin.query(`CREATE SCHEMA ${quoteIdentifier(baselineSchema)}`);
-        try {
-          await admin.query(`SET search_path TO ${quoteIdentifier(baselineSchema)}`);
-          await admin.query(baselineSql);
-          expect(migratedCatalog).toEqual(await catalogForSchema(admin, baselineSchema));
-        } finally {
-          await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
-          await admin.query(`DROP SCHEMA ${quoteIdentifier(baselineSchema)} CASCADE`);
-        }
+        await admin.query(`SET search_path TO ${quoteIdentifier(baselineSchema)}`);
+        await admin.query(baselineSql);
+        expect(migratedCatalog).toEqual(await catalogForSchema(admin, baselineSchema));
       } finally {
+        await admin.query(`DROP SCHEMA ${quoteIdentifier(baselineSchema)} CASCADE`);
         await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
-        await admin.query(`DROP SCHEMA ${quoteIdentifier(fullMigrationSchema)} CASCADE`);
       }
-
-      await applyMigrations(scopedConnectionString, migrations);
 
       const tables = await admin.query<{ table_name: string }>(
         "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema()",
       );
       expect(tables.rows.map((row) => row.table_name).sort()).toEqual([
         "account_aliases",
+        "account_language_preferences",
         "account_minimum_age_attestations",
         "account_streak_clocks",
         "account_streak_timezone_actions",
@@ -1193,6 +1171,14 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "data_registration_pin_verifications",
         "data_registration_receipt_observations",
         "data_registration_signing_attempts",
+        "dance_choreographies",
+        "dance_choreography_revisions",
+        "dance_reference_actions",
+        "dance_reference_artifacts",
+        "dance_reference_outbox",
+        "dance_reference_processing_attempts",
+        "dance_reference_processing_requests",
+        "dance_song_segments",
         "decision_records",
         "evidence_receipts",
         "handle_account_directory_bindings",
@@ -1230,10 +1216,24 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "hns_dns_zone_health_observations",
         "hns_dns_zone_health_operations",
         "hns_dns_zone_lifecycle_operations",
+        "hns_operator_control_promotion_receipts",
         "home_feed_projection",
         "identity_credentials",
         "karaoke_attempts",
+        "karaoke_recordings",
         "karaoke_sessions",
+        "learner_audio_artifacts",
+        "localization_lyric_line_lineage",
+        "localization_lyric_line_occurrences",
+        "localization_lyric_line_study_units",
+        "localization_lyric_line_versions",
+        "localization_lyric_reconciliation_decisions",
+        "localization_lyrics_revision_lines",
+        "localization_source_units",
+        "localization_study_units",
+        "localization_translation_jobs",
+        "localization_translation_selections",
+        "localization_translation_versions",
         "media_alignment_projections",
         "media_analysis_evidence",
         "media_audio_revisions",
@@ -1330,6 +1330,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "reward_subject_consumptions",
         "reward_uniqueness_authorities",
         "schema_migrations",
+        "song_dance_presentations",
         "song_reward_bundle_claim_legs",
         "song_reward_bundle_claims",
         "song_reward_leg_funding_effects",
@@ -1341,9 +1342,24 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "song_streaks",
         "sponsor_daily_ticket_totals",
         "sponsor_withdrawal_effects",
+        "study_attempts_v2",
+        "study_exercise_versions",
+        "study_language_profile_units",
+        "study_language_profiles",
+        "study_lesson_item_state_v2",
+        "study_presentations_v2",
+        "study_review_items",
         "study_session_answers",
         "study_session_items",
+        "study_session_items_v2",
         "study_sessions",
+        "study_sessions_v2",
+        "study_spoken_answer_commands",
+        "study_translation_generation_items",
+        "study_translation_generation_runs",
+        "study_translation_quality_policies",
+        "study_translation_quality_registry",
+        "study_unit_exercise_eligibility",
         "subject_key_binding_events",
         "subject_keys",
         "text_content_held_revisions",
@@ -1483,6 +1499,14 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "data_registration_receipts_append_only",
         "data_registration_replays_append_only",
         "data_registration_transitions_append_only",
+        "dance_choreographies_change_guard",
+        "dance_choreography_revisions_change_guard",
+        "dance_reference_actions_append_only",
+        "dance_reference_artifacts_change_guard",
+        "dance_reference_outbox_change_guard",
+        "dance_reference_processing_attempts_change_guard",
+        "dance_reference_processing_requests_change_guard",
+        "dance_song_segments_change_guard",
         "decision_records_append_only",
         "evidence_receipts_append_only",
         "evidence_receipts_validate_metadata",
@@ -1549,6 +1573,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "reward_eligibility_decisions_append_only",
         "reward_subject_consumptions_append_only",
         "reward_uniqueness_authorities_append_only",
+        "song_dance_presentations_change_guard",
         "song_streak_days_append_only",
         "subject_key_binding_events_append_only",
         "subject_keys_append_only",

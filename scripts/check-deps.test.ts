@@ -252,7 +252,7 @@ describe("provider dependency boundary", () => {
       "packages/platform-cf/src/verification/providers/contract-fixture.ts":
         'import type { VerificationProviderAdapter } from "@pirate/application/verification";\nexport type Fixture = VerificationProviderAdapter;\n',
       "apps/hns-platform-gateway/src/allowed.ts":
-        'import { makeHnsForwarderV3Gateway } from "@pirate/platform-cf/hns-forwarder-v3";\nimport { makePostgresHnsCommunityAppGatewayAuthorityV1 } from "@pirate/platform-cf/hns-community-app-gateway-authority-postgres";\nexport const allowed = [makeHnsForwarderV3Gateway, makePostgresHnsCommunityAppGatewayAuthorityV1];\n',
+        'import { makeHnsForwarderV3Gateway } from "@pirate/platform-cf/hns-forwarder-v3";\nimport { makePostgresHnsCommunityAppGatewayAuthorityV1 } from "@pirate/platform-cf/hns-community-app-gateway-authority-postgres";\nimport { makePostgresHnsCommunityAppHandleGatewayAuthorityV1 } from "@pirate/platform-cf/hns-community-app-handle-gateway-authority-postgres";\nexport const allowed = [makeHnsForwarderV3Gateway, makePostgresHnsCommunityAppGatewayAuthorityV1, makePostgresHnsCommunityAppHandleGatewayAuthorityV1];\n',
       "apps/hns-platform-gateway/src/forbidden.ts":
         'import { makeControlPlanePostgres } from "@pirate/platform-cf/postgres";\nexport const forbidden = makeControlPlanePostgres;\n',
     });

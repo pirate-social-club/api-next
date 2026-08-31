@@ -1,6 +1,7 @@
 import {
   ControlPlaneDb,
   type ControlPlaneError,
+  ControlPlaneStatementFailed,
   decodeHnsAppHostTransitionDocumentV1,
   decodeHnsDnsHealthDocumentV1,
   decodeHnsDnsZonePersistenceDocumentV1,
@@ -16,7 +17,6 @@ import {
   type HnsFirstPartyHostPersistenceStoreV1,
   type HnsForwarderGatewayAuthoritySourceV1,
   type HnsForwarderWorkerAuthoritySourceV1,
-  type HnsLifecycleOutcomeV1,
 } from "@pirate/application";
 import { Effect, type Layer } from "effect";
 
@@ -121,8 +121,51 @@ export async function hnsDnsZoneFinalizationStatementFromReviewedDocument(
   );
 }
 
+/** Derives the complete reservation identity and generation fence from reviewed DNS bytes. */
+export async function hnsDnsZoneReservationStatementFromReviewedDocument(
+  bytes: Uint8Array,
+  leaseSeconds: number,
+) {
+  if (!Number.isSafeInteger(leaseSeconds) || leaseSeconds < 4 || leaseSeconds > 60) {
+    throw new TypeError("HNS DNS activation reservation lease is invalid");
+  }
+  const document = await decodeHnsDnsZonePersistenceDocumentV1(bytes);
+  if (document.dns_authority_generation <= 0) {
+    throw new TypeError("HNS DNS activation reservation generation is invalid");
+  }
+  const digest = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", Uint8Array.from(document.activation_document_bytes)),
+  );
+  const activationDocumentDigest = [...digest]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+  const operationId = `hns-dns-zone-activation:${activationDocumentDigest}`;
+  return {
+    label: "hns.hosts.dns-zone.reserve",
+    text: "SELECT * FROM reserve_hns_dns_zone_activation_v1($1, $2, $3, $4, $5::bigint, $6::integer)",
+    values: [
+      operationId,
+      operationId,
+      activationDocumentDigest,
+      document.dns_zone_activation_id,
+      document.dns_authority_generation - 1,
+      leaseSeconds,
+    ],
+    readonly: false,
+  } as const;
+}
+
 export function hnsAppHostTransitionStatementFromReviewedDocument(bytes: Uint8Array) {
   return appHostTransitionStatement(decodeHnsAppHostTransitionDocumentV1(bytes));
+}
+
+function invalidReviewedDocument(label: string): ControlPlaneError {
+  return new ControlPlaneStatementFailed({
+    label,
+    sqlState: null,
+    constraint: null,
+    outcomeCertainty: "not-started",
+  });
 }
 
 function identity(value: unknown): string | null {
@@ -166,6 +209,25 @@ function decodeGenerationSnapshot(row: Row): HnsAuthoritySuccessorGenerationSnap
     app_host_current_generation: app,
     successor_dns_latest_health_generation: health,
   };
+}
+
+function canonicalInstant(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    Number.isFinite(Date.parse(value)) &&
+    new Date(Date.parse(value)).toISOString() === value
+  );
+}
+
+function decodeGenerationObservation(row: Row): Readonly<{
+  database_time: string;
+  snapshot: HnsAuthoritySuccessorGenerationSnapshotV1;
+}> {
+  const databaseTime = row.database_time;
+  if (!canonicalInstant(databaseTime)) {
+    throw new Error("HNS successor generation observation database time is invalid");
+  }
+  return { database_time: databaseTime, snapshot: decodeGenerationSnapshot(row) };
 }
 
 function optionalPositiveInteger(value: unknown): number | null | undefined {
@@ -230,26 +292,6 @@ function decodeDnsOutcome(row: Row): HnsDnsZoneActivationOutcomeV1 {
 
 function lifecycleStatus(value: unknown): "active" | "suspended" | "revoked" | null {
   return value === "active" || value === "suspended" || value === "revoked" ? value : null;
-}
-
-function decodeLifecycle(row: Row): HnsLifecycleOutcomeV1 {
-  const activationId = identity(row.activation_id);
-  const generation = positiveInteger(row.activation_generation);
-  const status = lifecycleStatus(row.status);
-  if (
-    (row.outcome !== "changed" && row.outcome !== "replayed") ||
-    activationId === null ||
-    generation === null ||
-    status === null
-  ) {
-    throw new Error("HNS DNS lifecycle transition returned an invalid row");
-  }
-  return {
-    outcome: row.outcome,
-    activation_id: activationId,
-    activation_generation: generation,
-    status,
-  };
 }
 
 function decodeHealth(row: Row): HnsDnsZoneHealthOutcomeV1 {
@@ -382,12 +424,18 @@ function decodeAuthority(row: Row): HnsCommunityAppHostAuthorityStateV1 {
 
 export interface HnsFirstPartyHostPersistenceRepositoryV1 {
   readonly store: HnsFirstPartyHostPersistenceStoreV1;
-  readonly readSuccessorGenerationSnapshot: (
+  readonly readSuccessorGenerationObservation: (
     input: Readonly<{
-      dns_zone_activation_id: string;
-      app_host_activation_id: string;
+      canonical_root: string;
+      normalized_app_host: string;
     }>,
-  ) => Effect.Effect<HnsAuthoritySuccessorGenerationSnapshotV1, ControlPlaneError>;
+  ) => Effect.Effect<
+    Readonly<{
+      database_time: string;
+      snapshot: HnsAuthoritySuccessorGenerationSnapshotV1;
+    }>,
+    ControlPlaneError
+  >;
   readonly resolveCommunityAppHost: (
     normalizedHost: string,
   ) => Effect.Effect<HnsCommunityAppHostAuthorityStateV1 | null, ControlPlaneError>;
@@ -419,90 +467,59 @@ export function makeControlPlaneHnsFirstPartyHostPersistenceRepository(
     );
 
   const store: HnsFirstPartyHostPersistenceStoreV1 = {
-    reserveDnsZoneActivation: (input) =>
-      execute(
-        {
-          label: "hns.hosts.dns-zone.reserve",
-          text: "SELECT * FROM reserve_hns_dns_zone_activation_v1($1, $2, $3, $4, $5::bigint, $6::integer)",
-          values: [
-            input.operation_id,
-            input.idempotency_key,
-            input.activation_document_digest,
-            input.dns_zone_activation_id,
-            input.expected_activation_generation,
-            input.lease_seconds,
-          ],
-          readonly: false,
-        },
-        decodeReservation,
+    reserveDnsZoneActivation: (reviewedDocumentBytes, leaseSeconds) =>
+      Effect.flatMap(
+        Effect.tryPromise({
+          try: () =>
+            hnsDnsZoneReservationStatementFromReviewedDocument(reviewedDocumentBytes, leaseSeconds),
+          catch: () => invalidReviewedDocument("hns.hosts.dns-zone.reserve.reviewed-document"),
+        }),
+        (statement) => execute(statement, decodeReservation),
       ),
     finalizeDnsZoneActivation: ({ reservation, reviewed_document_bytes }) =>
       Effect.flatMap(
-        Effect.promise(() =>
-          hnsDnsZoneFinalizationStatementFromReviewedDocument(reservation, reviewed_document_bytes),
-        ),
+        Effect.tryPromise({
+          try: () =>
+            hnsDnsZoneFinalizationStatementFromReviewedDocument(
+              reservation,
+              reviewed_document_bytes,
+            ),
+          catch: () => invalidReviewedDocument("hns.hosts.dns-zone.finalize.reviewed-document"),
+        }),
         (statement) => execute(statement, decodeDnsOutcome),
       ),
-    changeDnsZoneStatus: (input) =>
-      execute(
-        {
-          label: "hns.hosts.dns-zone.change-status",
-          text: "SELECT * FROM change_hns_dns_zone_activation_status_v1($1, $2, $3, $4, $5::bigint, $6, $7)",
-          values: [
-            input.operation_id,
-            input.idempotency_key,
-            input.request_hash,
-            input.dns_zone_activation_id,
-            input.expected_activation_generation,
-            input.target_status,
-            input.reason_code,
-          ],
-          readonly: false,
-        },
-        decodeLifecycle,
-      ),
     recordDnsZoneHealth: (reviewedDocumentBytes) =>
-      execute(hnsDnsHealthStatementFromReviewedDocument(reviewedDocumentBytes), decodeHealth),
-    activateCommunityAppHost: (input) =>
-      execute(
-        {
-          label: "hns.hosts.community-app.activate",
-          text: `SELECT * FROM activate_hns_community_app_host_v1(
-            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::bigint, $11, $12::bigint, $13
-          )`,
-          values: [
-            input.operation_id,
-            input.idempotency_key,
-            input.request_hash,
-            input.app_host_activation_id,
-            input.community_id,
-            input.canonical_root,
-            input.route_binding_id,
-            input.route_authority_kind,
-            input.route_authority_reference,
-            input.route_authority_generation,
-            input.dns_zone_activation_id,
-            input.dns_zone_activation_generation,
-            input.gateway_deployment_reference,
-          ],
-          readonly: false,
-        },
-        decodeAppOutcome,
+      Effect.flatMap(
+        Effect.try({
+          try: () => hnsDnsHealthStatementFromReviewedDocument(reviewedDocumentBytes),
+          catch: () =>
+            invalidReviewedDocument("hns.hosts.dns-zone.record-health.reviewed-document"),
+        }),
+        (statement) => execute(statement, decodeHealth),
       ),
     changeCommunityAppHostStatus: (reviewedDocumentBytes) =>
-      execute(
-        hnsAppHostTransitionStatementFromReviewedDocument(reviewedDocumentBytes),
-        decodeAppOutcome,
+      Effect.flatMap(
+        Effect.try({
+          try: () => hnsAppHostTransitionStatementFromReviewedDocument(reviewedDocumentBytes),
+          catch: () =>
+            invalidReviewedDocument("hns.hosts.community-app.change-status.reviewed-document"),
+        }),
+        (statement) => execute(statement, decodeAppOutcome),
       ),
   };
 
   return {
     store,
-    readSuccessorGenerationSnapshot: (input) =>
+    readSuccessorGenerationObservation: (input) =>
       execute(
         {
           label: "hns.hosts.successor-generations.read",
-          text: `SELECT dns.dns_zone_activation_id,
+          text: `WITH db_clock AS (
+                    SELECT date_trunc('milliseconds', clock_timestamp()) AS database_time
+                  )
+                 SELECT to_char(db_clock.database_time AT TIME ZONE 'UTC',
+                                'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS database_time,
+                        dns.dns_zone_activation_id,
                         dns.current_generation AS dns_current_generation,
                         app.app_host_activation_id,
                         app.current_generation AS app_host_current_generation,
@@ -513,13 +530,18 @@ export function makeControlPlaneHnsFirstPartyHostPersistenceRepository(
                              AND health.activation_generation = dns.current_generation + 1
                         ), 0) AS successor_dns_latest_health_generation
                    FROM hns_dns_zone_activation_current AS dns
-                   JOIN hns_community_app_host_activation_current AS app ON TRUE
-                  WHERE dns.dns_zone_activation_id = $1
-                    AND app.app_host_activation_id = $2`,
-          values: [input.dns_zone_activation_id, input.app_host_activation_id],
+                   JOIN hns_community_app_host_activation_current AS app
+                     ON app.normalized_host = $2
+                   JOIN hns_community_app_host_activation_revisions AS app_revision
+                     ON app_revision.app_host_activation_id = app.app_host_activation_id
+                    AND app_revision.app_host_activation_generation = app.current_generation
+                    AND app_revision.canonical_root = dns.canonical_root
+                   CROSS JOIN db_clock
+                  WHERE dns.canonical_root = $1`,
+          values: [input.canonical_root, input.normalized_app_host],
           readonly: true,
         },
-        decodeGenerationSnapshot,
+        decodeGenerationObservation,
       ),
     resolveCommunityAppHost: (normalizedHost) =>
       Effect.provide(runtime)(

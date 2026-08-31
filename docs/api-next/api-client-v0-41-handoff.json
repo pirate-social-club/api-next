@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.41.0",
+  "releaseType": "dance-reference-shadow-contracts",
+  "wireContract": "spec-021-dance-reference-shadow",
+  "sourceCommit": "pending-review",
+  "supersedes": "0.40.0; adds phase-6 Dance reference and presentation routes while Dance qualification remains reserved.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.41.0.tgz",
+    "sha256": "35a57f2ce58c234ff23d3fe7de541a96199ffcd699a2a4bd3164006dac961d37",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@c1f518d79a0fdf51206db0847b8867a714ef091b5c39e088a6bd9574d0831c8e",
+    "openapiSha256": "c1f518d79a0fdf51206db0847b8867a714ef091b5c39e088a6bd9574d0831c8e",
+    "clientSha256": "7e739f87194f98a88ad6299a65299ca29eb95e79319d7a525c7a5b3e90fa0a12"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "passed",
+      "baselineCommit": "main",
+      "reason": "The release adds separate shadow-only Dance reference routes and does not widen qualification or funded activity enums."
+    },
+    "focusedContractSuites": "45 passed across Dance reference, qualification, code-generation, migration, sealed-authority, and production-null suites",
+    "fullUnitSuite": "2477 passed and 326 PostgreSQL-dependent tests skipped; one dependency-walker fixture exceeded its fixed five-second timeout under local codedrive contention while the standalone dependency lint passed across all 900 files",
+    "fullWorkerdSuite": "the merged Dance wake-up fixture passed 2 tests with one worker; the pre-merge four-pool matrix passed 42, 46, 2, and 9 tests serially",
+    "packageVerifier": "passed",
+    "repositoryCheck": "merged-tree contract freshness, additive OpenAPI, baseline freshness, migration ledger, both TypeScript projects, binding, creator, dependency, and HTTP boundaries passed; full aggregate rerun deferred while host swap remained saturated"
+  }
+}

@@ -37,7 +37,7 @@ const sentinelPath =
   "/tmp/api-next-control-plane-postgres-rewards-song-offers-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-rewards-song-offers-suite-complete\n";
 const migrations = await loadPostgresMigrations();
-const testCount = 15;
+const testCount = 16;
 let completedTestCount = 0;
 
 const address = (byte: string): string => `0x${byte.repeat(40)}`;
@@ -597,7 +597,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
     completedTestCount += 1;
   });
 
-  test("adds only an exact active whitelisted asset-bonus tuple", async () => {
+  test("adds only an exact active asset bonus and selects its terminal balance for refund", async () => {
     await withSchema(async (admin, scopedConnection) => {
       const identity = await seedSong(admin, "asset-command", address("d"));
       await seedMegapotAuthority(admin);
@@ -744,6 +744,49 @@ suite("Postgres 17 Megapot rewards persistence", () => {
           }),
         ),
       ).resolves.toEqual({ replayed: false });
+
+      const fundingStore = makeControlPlaneRewardFundingStore(
+        makeDirectPostgresControlPlaneLayer(scopedConnection),
+      );
+      await Effect.runPromise(
+        fundingStore.bindTransaction({
+          fundingEffectId: funding.fundingEffectId,
+          transactionHash: bytes32("1"),
+        }),
+      );
+      await Effect.runPromise(
+        fundingStore.confirm({
+          fundingEffectId: funding.fundingEffectId,
+          transactionHash: bytes32("1"),
+          transferLogIndex: 1,
+          amountAtomic: 1_000n,
+          blockNumber: 151n,
+          blockHash: bytes32("2"),
+          observationHash: hash("2"),
+          confirmedAt: new Date().toISOString(),
+        }),
+      );
+      await admin.query(
+        `UPDATE song_reward_offer_legs
+            SET status='ended',participation_ends_at=clock_timestamp(),
+                updated_at=clock_timestamp() + interval '1 millisecond'
+          WHERE leg_id=$1`,
+        [added.leg.legId],
+      );
+      await admin.query(
+        `UPDATE song_reward_offers
+            SET status='ended',terminal_at=clock_timestamp(),
+                updated_at=clock_timestamp() + interval '1 millisecond'
+          WHERE offer_id=$1`,
+        [opened.offer.offerId],
+      );
+      await expect(
+        Effect.runPromise(
+          makeControlPlaneMegapotWorkStore(
+            makeDirectPostgresControlPlaneLayer(scopedConnection),
+          ).loadRefunds(10),
+        ),
+      ).resolves.toEqual([funding.fundingEffectId]);
 
       await admin.query(
         `UPDATE reward_asset_whitelist SET status='retired',retired_at=clock_timestamp()
@@ -2864,6 +2907,151 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         beneficiaryCount: 0,
       });
       await expect(Effect.runPromise(coordinator.freezeDue())).resolves.toEqual([]);
+    });
+    completedTestCount += 1;
+  });
+
+  test("projects only rewards work beyond the fixed liveness grace period", async () => {
+    await withSchema(async (admin, scopedConnection) => {
+      const identity = await seedSong(admin, "aged-pending");
+      await seedMegapotAuthority(admin);
+      const { legId } = await seedActivePoolLeg(admin, identity, {
+        fallback: false,
+        suffix: "aged-pending",
+      });
+
+      await admin.query("SET session_replication_role = replica");
+      try {
+        await admin.query(
+          `INSERT INTO reward_chain_effects (
+             effect_id,effect_kind,state,version,chain_id,signer_address,target_address,
+             reserved_amount_atomic,nonce,created_at,updated_at
+           ) VALUES
+             ('aged-chain-effect','reward_payout','nonce_reserved',2,84532,$1,$2,
+                1000,1,clock_timestamp()-interval '20 minutes',
+                clock_timestamp()-interval '11 minutes'),
+             ('recent-chain-effect','reward_payout','nonce_reserved',2,84532,$1,$2,
+                1000,2,clock_timestamp()-interval '1 minute',clock_timestamp())`,
+          [address("4"), address("1")],
+        );
+        await admin.query(
+          `INSERT INTO song_reward_leg_funding_effects (
+             funding_effect_id,leg_id,funder_account_id,chain_id,token_address,
+             sender_address,recipient_address,expected_amount_atomic,
+             required_confirmations,state,transaction_hash,created_at,updated_at
+           ) VALUES (
+             'aged-funding-effect',$1,$2,84532,$3,$4,$5,1000,3,'confirming',$6,
+             clock_timestamp()-interval '20 minutes',
+             clock_timestamp()-interval '11 minutes'
+           )`,
+          [legId, identity.accountId, address("1"), address("6"), address("4"), bytes32("a")],
+        );
+        await admin.query(
+          `INSERT INTO reward_ledger_credits (
+             credit_id,account_id,payout_persona_id,chain_id,token_address,
+             amount_atomic,source_kind,source_reference,state,created_at,updated_at
+           ) VALUES (
+             'aged-credit',$1,$2,84532,$3,1000,'asset_bonus','aged-credit-source',
+             'credited',clock_timestamp()-interval '20 minutes',
+             clock_timestamp()-interval '11 minutes'
+           )`,
+          [identity.accountId, identity.personaId, address("1")],
+        );
+        await admin.query(
+          `INSERT INTO megapot_drawing_observations (
+             observation_id,attestation_id,chain_id,drawing_id,ticket_price_atomic,
+             drawing_time,ball_max,bonusball_max,drawing_locked,referral_fee_wei,
+             referral_win_share_wei,block_number,block_hash,block_timestamp,
+             confirmations,observed_at,expires_at,raw_state_hash
+           ) VALUES
+             ('observation-cutoff-aged','megapot-base-sepolia-v2',84532,201,10000,
+                clock_timestamp()-interval '6 minutes',25,13,false,
+                100000000000000000,100000000000000000,201,$1,
+                clock_timestamp()-interval '1 hour',3,clock_timestamp(),
+                clock_timestamp()+interval '1 hour',$2),
+             ('observation-drawing-aged','megapot-base-sepolia-v2',84532,203,10000,
+                clock_timestamp()-interval '11 minutes',25,13,false,
+                100000000000000000,100000000000000000,203,$3,
+                clock_timestamp()-interval '1 hour',3,clock_timestamp(),
+                clock_timestamp()+interval '1 hour',$4),
+             ('observation-drawing-future','megapot-base-sepolia-v2',84532,204,10000,
+                clock_timestamp()+interval '30 minutes',25,13,false,
+                100000000000000000,100000000000000000,204,$5,
+                clock_timestamp()-interval '1 hour',3,clock_timestamp(),
+                clock_timestamp()+interval '1 hour',$6)`,
+          [bytes32("1"), hash("1"), bytes32("3"), hash("3"), bytes32("4"), hash("4")],
+        );
+        await admin.query(
+          `INSERT INTO megapot_pool_drawings (
+             pool_leg_id,drawing_id,observation_id,status,version,entry_cutoff_at,
+             ticket_price_ceiling_atomic,reserved_ticket_cost_atomic,
+             actual_ticket_cost_atomic,frozen_share_count,fallback_beneficiary,
+             snapshot_id,commitment_effect_id,purchase_effect_id,cutoff_frozen_at,
+             created_at,updated_at
+           ) VALUES
+             ($1,201,'observation-cutoff-aged','entry_open',1,
+                clock_timestamp()-interval '11 minutes',10000,0,0,
+                NULL,NULL,NULL,NULL,NULL,NULL,
+                clock_timestamp()-interval '20 minutes',clock_timestamp()),
+             ($1,203,'observation-drawing-aged','drawing_pending',5,
+                clock_timestamp()-interval '16 minutes',10000,10000,10000,
+                1,false,'snapshot-aged','commitment-aged','purchase-aged',
+                clock_timestamp()-interval '19 minutes',
+                clock_timestamp()-interval '20 minutes',clock_timestamp()),
+             ($1,204,'observation-drawing-future','drawing_pending',5,
+                clock_timestamp()+interval '25 minutes',10000,10000,10000,
+                1,false,'snapshot-future','commitment-future','purchase-future',
+                clock_timestamp()-interval '19 minutes',
+                clock_timestamp()-interval '20 minutes',
+                clock_timestamp()-interval '20 minutes')`,
+          [legId],
+        );
+      } finally {
+        await admin.query("SET session_replication_role = origin");
+      }
+
+      const refundIdentity = await seedSong(admin, "aged-refund");
+      const terminal = await seedActivePoolLeg(admin, refundIdentity, {
+        fallback: false,
+        suffix: "aged-refund",
+      });
+      await admin.query("SET session_replication_role = replica");
+      try {
+        await admin.query(
+          `UPDATE song_reward_offer_legs
+              SET status='ended',participation_ends_at=clock_timestamp()-interval '11 minutes',
+                  created_at=clock_timestamp()-interval '1 day',
+                  activated_at=clock_timestamp()-interval '23 hours',
+                  updated_at=clock_timestamp()-interval '11 minutes'
+            WHERE leg_id=$1`,
+          [terminal.legId],
+        );
+        await admin.query(
+          `UPDATE song_reward_offers
+              SET status='expired',terminal_at=clock_timestamp()-interval '11 minutes',
+                  created_at=clock_timestamp()-interval '1 day',
+                  activated_at=clock_timestamp()-interval '23 hours',
+                  updated_at=clock_timestamp()-interval '11 minutes'
+            WHERE offer_id=$1`,
+          [terminal.offerId],
+        );
+      } finally {
+        await admin.query("SET session_replication_role = origin");
+      }
+
+      const pending = await Effect.runPromise(
+        makeControlPlaneMegapotWorkStore(
+          makeDirectPostgresControlPlaneLayer(scopedConnection),
+        ).loadAgedPending(600),
+      );
+      expect(pending.map(({ family, count }) => ({ family, count }))).toEqual([
+        { family: "chain_effects", count: 1 },
+        { family: "credits", count: 1 },
+        { family: "drawings", count: 2 },
+        { family: "funding_effects", count: 1 },
+        { family: "refund_liabilities", count: 1 },
+      ]);
+      expect(pending.every((entry) => entry.oldestAgeSeconds >= 600)).toBe(true);
     });
     completedTestCount += 1;
   });

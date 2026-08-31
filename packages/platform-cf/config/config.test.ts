@@ -92,6 +92,29 @@ describe("config system (000 §9)", () => {
     expect(Redacted.value(configured.MEGAPOT_CUSTODY_PRIVATE_KEY)).toBe(`0x${"1".repeat(64)}`);
   });
 
+  test("jobs composition permits an absent production Megapot RPC while rewards are disabled", () => {
+    const configured = loadConfigFrom(JobsWorkerConfig, {
+      API_NEXT_ENV: "production",
+      COMMUNITY_PURCHASE_FUNDING_RPC_URL: "https://rpc.invalid/",
+      MEGAPOT_REWARDS_ENABLED: "false",
+      MEGAPOT_CHAIN_ID: "8453",
+      MEGAPOT_ATTESTATION_ID: "megapot-base-sepolia-v2",
+      MEGAPOT_REQUIRED_CONFIRMATIONS: "3",
+      MEGAPOT_OBSERVATION_TTL_SECONDS: "300",
+      MEGAPOT_APPROVED_ALLOWANCE_ATOMIC: "1000000000",
+      MEGAPOT_PURCHASE_SAFETY_MARGIN_SECONDS: "120",
+      MEGAPOT_GAS_LIMIT_MULTIPLIER_BPS: "12000",
+      MEGAPOT_NATIVE_GAS_RESERVE_FLOOR_WEI: "1000000000000000",
+      MEGAPOT_EXTERNAL_SPONSOR_DAILY_TICKET_CEILING: "5",
+      MEGAPOT_EXTERNAL_SPONSOR_DAILY_SPEND_CEILING_ATOMIC: "50000000",
+      MEGAPOT_SHARED_SPONSOR_DAILY_TICKET_CEILING: "50",
+      MEGAPOT_SHARED_SPONSOR_DAILY_SPEND_CEILING_ATOMIC: "500000000",
+    });
+
+    expect(configured.MEGAPOT_REWARDS_ENABLED).toBe(false);
+    expect(Redacted.value(configured.MEGAPOT_V2_RPC_URL)).toBe("");
+  });
+
   test("Megapot runtime admits Base Sepolia only outside production", () => {
     expect(
       assertMegapotRewardRuntimePosture({
@@ -206,6 +229,7 @@ describe("config system (000 §9)", () => {
       HNS_OWNERSHIP_CONFIGURATION_REFERENCE: "",
       HNS_OWNERSHIP_CONFIGURATION_VERSION: "",
       HNS_COMMUNITY_APP_API_ENABLED: false,
+      HNS_HANDLE_HOST_API_ENABLED: false,
       HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN: "",
       HNS_COMMUNITY_APP_API_ACCESS_ISSUER: "",
       HNS_COMMUNITY_APP_API_ACCESS_JWKS_URL: "",
@@ -261,6 +285,7 @@ describe("config system (000 §9)", () => {
 
     for (const environment of [config, config.env?.staging]) {
       expect(environment?.vars?.HNS_COMMUNITY_APP_API_ENABLED).toBe("false");
+      expect(environment?.vars?.HNS_HANDLE_HOST_API_ENABLED).toBe("false");
       expect(environment?.vars?.HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN).toBe("");
       expect(environment?.vars?.HNS_COMMUNITY_APP_API_ACCESS_ISSUER).toBe("");
       expect(environment?.vars?.HNS_COMMUNITY_APP_API_ACCESS_JWKS_URL).toBe("");
@@ -277,6 +302,7 @@ describe("config system (000 §9)", () => {
     }
     const production = config.env?.production;
     expect(production?.vars?.HNS_COMMUNITY_APP_API_ENABLED).toBe("true");
+    expect(production?.vars?.HNS_HANDLE_HOST_API_ENABLED).toBe("true");
     expect(production?.vars?.HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN).toBe(
       "https://hns-community-api.pirate.sc",
     );
@@ -371,6 +397,12 @@ describe("config system (000 §9)", () => {
             readonly id?: string;
             readonly localConnectionString?: string;
           }[];
+          readonly send_email?: readonly {
+            readonly name?: string;
+            readonly destination_address?: string;
+            readonly allowed_sender_addresses?: readonly string[];
+          }[];
+          readonly secrets?: { readonly required?: readonly string[] };
           readonly vars?: Record<string, string>;
         };
       };
@@ -388,6 +420,14 @@ describe("config system (000 §9)", () => {
         localConnectionString: "postgres://postgres:postgres@127.0.0.1:5432/postgres",
       },
     ]);
+    expect(production?.send_email).toEqual([
+      {
+        name: "HNS_EDGE_ALERT_EMAIL",
+        destination_address: "piratesocialclub@proton.me",
+        allowed_sender_addresses: ["alerts@pirate.sc"],
+      },
+    ]);
+    expect(production?.secrets?.required).toContain("HNS_EDGE_ALERT_TOKEN");
     expect(production?.vars?.PIRATE_API_PUBLIC_ORIGIN).toBe("https://api-next.pirate.sc");
     expect(production?.vars?.CORS_ORIGIN).toBe(
       "https://app.pirate,https://pirate.app,https://pirate.sc",

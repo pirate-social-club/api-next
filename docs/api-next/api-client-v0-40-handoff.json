@@ -3,13 +3,13 @@
   "kind": "api-client-release-handoff",
   "package": "@pirate/api-client",
   "version": "0.40.0",
-  "releaseType": "dance-reference-shadow-contracts",
-  "wireContract": "spec-021-dance-reference-shadow",
+  "releaseType": "hns-edge-alert-ingress",
+  "wireContract": "api-next-operator-hns-edge-alert-v1",
   "sourceCommit": "pending-review",
-  "supersedes": "0.39.0; adds phase-6 Dance reference and presentation routes while Dance qualification remains reserved.",
+  "supersedes": "0.39.0; adds the bearer-authenticated, exact-JSON HNS edge alert ingress used by the authoritative DNS monitoring sink.",
   "artifact": {
     "path": "artifacts/api-client/pirate-api-client-0.40.0.tgz",
-    "sha256": "6a2f1a06354595717e4a9d8bc32dd3309a99a916fd85974c72b89c3984285969",
+    "sha256": "86e4da1751e592a01e9d37f7381e37ef6774311e20832f5f57c13c830001cfdf",
     "contents": [
       "package/package.json",
       "package/src/generated/client.ts",
@@ -18,21 +18,21 @@
     ]
   },
   "provenance": {
-    "sourceIdentifier": "api-next-contracts@cd459e6710f0e664c81afe7e4e56e7236c3bf496ada29280827418209ecd3858",
-    "openapiSha256": "cd459e6710f0e664c81afe7e4e56e7236c3bf496ada29280827418209ecd3858",
-    "clientSha256": "9503c37aefee2a6d829883f1d1aeae8e8bc137789d61fed869d0ca781b7013c3"
+    "sourceIdentifier": "api-next-contracts@362fda01515b9cb46a6ec09ab040d3c7d98b21153d82e638830076de1e75dea5",
+    "openapiSha256": "362fda01515b9cb46a6ec09ab040d3c7d98b21153d82e638830076de1e75dea5",
+    "clientSha256": "be92427183ee938d21e9f992e81143aa73fd7d3ad3e79498049dcf66d16a9a36"
   },
   "verification": {
     "checkFresh": "passed",
     "checkBreaking": {
       "status": "passed",
-      "baselineCommit": "4b3191354a6d3984659a268e623bcc8c989f6fab",
-      "reason": "The release adds separate shadow-only Dance reference routes and does not widen qualification or funded activity enums."
+      "baselineCommit": "origin/main",
+      "reason": "The release adds one operator-only endpoint and does not alter an existing operation."
     },
-    "focusedContractSuites": "41 passed, 0 failed across Dance reference, qualification, song-offer, and code-generation contracts",
-    "fullUnitSuite": "2325 passed, 314 environment-gated PostgreSQL tests skipped, 0 failed",
-    "fullWorkerdSuite": "97 passed across 29 test files, 0 failed",
+    "focusedContractSuites": "11 HNS edge alert tests and 29 binding, configuration, and secret-boundary tests passed locally",
+    "fullUnitSuite": "2382 passed, 314 PostgreSQL-dependent tests skipped, 0 failed",
+    "fullWorkerdSuite": "97 passed across scheduled, HTTP, Self, and HNS verifier suites; the Self suite passed on an exact-command retry after transient import timeouts",
     "packageVerifier": "passed",
-    "repositoryCheck": "pending; the base and this branch both report the same 73 unrelated HNS and WebCrypto TypeScript diagnostics"
+    "repositoryCheck": "passed"
   }
 }

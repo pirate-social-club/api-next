@@ -88,6 +88,7 @@ export const JobsWorkerConfig = Config.all({
   API_NEXT_ENV: AppEnv,
   COMMUNITY_PURCHASE_FUNDING_RPC_URL: secret("COMMUNITY_PURCHASE_FUNDING_RPC_URL"),
   ...MegapotRewardConfigFields,
+  MEGAPOT_V2_RPC_URL: secret("MEGAPOT_V2_RPC_URL").pipe(Config.withDefault(Redacted.make(""))),
   MEGAPOT_CUSTODY_PRIVATE_KEY: secret("MEGAPOT_CUSTODY_PRIVATE_KEY").pipe(
     Config.withDefault(Redacted.make("")),
   ),
@@ -189,6 +190,9 @@ export const HttpWorkerConfig = Config.all({
   HNS_COMMUNITY_APP_API_ENABLED: Config.boolean("HNS_COMMUNITY_APP_API_ENABLED").pipe(
     Config.withDefault(false),
   ),
+  HNS_HANDLE_HOST_API_ENABLED: Config.boolean("HNS_HANDLE_HOST_API_ENABLED").pipe(
+    Config.withDefault(false),
+  ),
   HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN: Config.string(
     "HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN",
   ).pipe(Config.withDefault("")),
@@ -216,6 +220,7 @@ export const HttpWorkerConfig = Config.all({
   HNS_FORWARDER_V3_FUTURE_CLOCK_SKEW_SECONDS: Config.int(
     "HNS_FORWARDER_V3_FUTURE_CLOCK_SKEW_SECONDS",
   ).pipe(Config.withDefault(-1)),
+  HNS_EDGE_ALERT_TOKEN: secret("HNS_EDGE_ALERT_TOKEN").pipe(Config.withDefault(Redacted.make(""))),
   VERIFICATION_CALLBACK_CREDENTIAL_HEADERS: Config.string(
     "VERIFICATION_CALLBACK_CREDENTIAL_HEADERS",
   ).pipe(Config.withDefault("")),

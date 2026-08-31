@@ -29,6 +29,7 @@ import {
   SetSongDancePresentation,
 } from "./dance.ts";
 import { handleSalesRegistry } from "./handle-sales.ts";
+import { DeliverHnsEdgeAlert } from "./hns-edge-alerts.ts";
 import { PollHnsOwnerRecovery, StartHnsOwnerRecovery } from "./hns-owner-recovery.ts";
 import {
   CreateKaraokeAttempt,
@@ -86,6 +87,7 @@ export const registry = {
   UpdateCommunityCreationIntent,
   CommitCommunityCreationIntent,
   GetCanonicalCommunityRoute,
+  DeliverHnsEdgeAlert,
   StartHnsOwnerRecovery,
   PollHnsOwnerRecovery,
   ...handleSalesRegistry,
