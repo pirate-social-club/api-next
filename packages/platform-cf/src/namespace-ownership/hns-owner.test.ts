@@ -135,11 +135,21 @@ async function targetV3Response(
       expires_at: "2026-08-20T13:00:00.000Z",
     });
   }
-  if (status === "rejected" || status === "pending") {
+  if (status === "rejected") {
     return encodeHnsOwnerTargetObservationV3({
-      status,
+      status: "rejected",
       observation_contract_version: "pirate-hns-target-observation-v3",
-      reason_code: status === "rejected" ? "root_absent" : "txt_absent",
+      reason_code: "root_absent",
+      observer_snapshot_sha256: snapshot,
+      observer_result_sha256: observerResult,
+      provider_evidence_ref: `hns-observer-v2:sha256:${observerResult}:hns-observer:regtest:snapshot-01`,
+    });
+  }
+  if (status === "pending") {
+    return encodeHnsOwnerTargetObservationV3({
+      status: "pending",
+      observation_contract_version: "pirate-hns-target-observation-v3",
+      reason_code: "txt_absent",
       observer_snapshot_sha256: snapshot,
       observer_result_sha256: observerResult,
       provider_evidence_ref: `hns-observer-v2:sha256:${observerResult}:hns-observer:regtest:snapshot-01`,

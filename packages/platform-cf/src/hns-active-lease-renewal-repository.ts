@@ -558,7 +558,7 @@ function makeStore(db: ControlPlaneDb["Service"]): HnsActiveLeaseRenewalStore {
             admission === null || admission === undefined
               ? null
               : safeInteger(admission.consumed_count);
-          if (admission === undefined || consumed === null)
+          if (admission === null || admission === undefined || consumed === null)
             return yield* Effect.fail(storageFailure());
           if (consumed >= 3) return { kind: "budget_exhausted" } as const;
           if (timestampValue(admission, "live_lease") !== null)

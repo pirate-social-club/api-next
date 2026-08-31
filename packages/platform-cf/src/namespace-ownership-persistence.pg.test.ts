@@ -2284,6 +2284,7 @@ suite("Postgres namespace ownership persistence foundation", () => {
         result_hash: SHA_C,
         expired_result_hash: SHA_B,
         attempt: reserved.reservation,
+        target_response: null,
       } as const;
       expect(await Effect.runPromise(Effect.scoped(completionStore.reject(rejected)))).toEqual({
         kind: "committed",

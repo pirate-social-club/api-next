@@ -122,7 +122,7 @@ export type NamespaceOwnershipVerifiedCompletion = Readonly<{
   readonly envelope: HnsOwnershipEvidenceEnvelope;
   readonly observation: unknown;
   readonly raw_response_bytes: Uint8Array;
-  readonly control_identity: Readonly<{
+  readonly control_identity?: Readonly<{
     readonly ownership_source: "hns_parent_chain_txt" | "owner_authoritative_dns_txt";
     readonly root_label: string;
     readonly txt_name: string;
