@@ -92,6 +92,41 @@ describe("Study source item v2", () => {
     ).toThrow();
   });
 
+  test("accepts the v2 spoken grader only with its matching immutable policy", () => {
+    const spoken = {
+      ...item,
+      source_item_key: "line-1-spoken",
+      exercise_type: "say_it_back",
+      exercise_variant: "spoken-recall-v2",
+      languages: { learning_language: "en", target_language: null },
+      learner_band: null,
+      language_profile_revision: null,
+      presentation: {
+        kind: "say_it_back",
+        reference_text: "Hold on to the night",
+        capture: "microphone_audio",
+      },
+      private_grader: {
+        kind: "source_token_phonetic_v2",
+        reference_text: "Hold on to the night",
+        tokenizer_policy_revision: "script_aware_token_phonetic_v2",
+      },
+      answer_visibility: "always_visible",
+      feedback_release: "every_graded_attempt",
+      grader_policy_revision: "script_aware_token_phonetic_v2",
+      provenance: { ...item.provenance, kind: "deterministic", provider_model: null },
+    } as const;
+    expect(Schema.decodeUnknownSync(StudySourceItemV2)(spoken).private_grader.kind).toBe(
+      "source_token_phonetic_v2",
+    );
+    expect(() =>
+      Schema.decodeUnknownSync(StudySourceItemV2)({
+        ...spoken,
+        grader_policy_revision: "script_aware_token_diff_v1",
+      }),
+    ).toThrow();
+  });
+
   test("rejects two versions of one review key in a source set", () => {
     expect(() =>
       Schema.decodeUnknownSync(StudySourceSetV2)({

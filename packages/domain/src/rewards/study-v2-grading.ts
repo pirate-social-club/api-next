@@ -1,3 +1,19 @@
+import { phoneticStreamSimilarity } from "../study/english-phonetics.ts";
+
+export const STUDY_TRANSCRIPT_GRADER_POLICY_V1 = "script_aware_token_diff_v1" as const;
+export const STUDY_TRANSCRIPT_GRADER_POLICY_V2 = "script_aware_token_phonetic_v2" as const;
+
+export type StudyTranscriptGraderPolicyRevision =
+  | typeof STUDY_TRANSCRIPT_GRADER_POLICY_V1
+  | typeof STUDY_TRANSCRIPT_GRADER_POLICY_V2;
+export type StudyTranscriptMatchKind = "exact" | "phonetic" | "none";
+
+export const studyTranscriptReviewGrade = (
+  matchKind: StudyTranscriptMatchKind,
+  attemptNumber: number,
+): "again" | "hard" | "good" =>
+  matchKind === "none" ? "again" : matchKind === "exact" && attemptNumber === 1 ? "good" : "hard";
+
 export type StudyTokenPositionV2 = Readonly<{ token: string; position: number }>;
 export type StudyTokenSubstitutionV2 = Readonly<{
   expected: StudyTokenPositionV2;
@@ -6,12 +22,13 @@ export type StudyTokenSubstitutionV2 = Readonly<{
 
 export type StudyTranscriptGradeV2 = Readonly<{
   correct: boolean;
+  matchKind: StudyTranscriptMatchKind;
   heardTranscript: string;
   matched: readonly StudyTokenPositionV2[];
   missing: readonly StudyTokenPositionV2[];
   extra: readonly string[];
   substituted: readonly StudyTokenSubstitutionV2[];
-  policyRevision: "script_aware_token_diff_v1";
+  policyRevision: StudyTranscriptGraderPolicyRevision;
 }>;
 
 const normalizeText = (value: string): string =>
@@ -76,6 +93,7 @@ export const gradeTranscriptV2 = (
   reference: string,
   heardTranscript: string,
   dominantLanguage: string | null,
+  policyRevision: StudyTranscriptGraderPolicyRevision,
 ): StudyTranscriptGradeV2 => {
   const expected = tokens(reference, dominantLanguage);
   const actual = tokens(heardTranscript, dominantLanguage);
@@ -138,16 +156,32 @@ export const gradeTranscriptV2 = (
   missing.reverse();
   extra.reverse();
   substituted.reverse();
+  const exact = missing.length === 0 && extra.length === 0 && substituted.length === 0;
+  const english = dominantLanguage?.split("-", 1)[0] === "en";
+  const phonetic =
+    !exact && english && policyRevision === STUDY_TRANSCRIPT_GRADER_POLICY_V2
+      ? phoneticStreamSimilarity(expected, actual)
+      : null;
+  // Ported calibration: the floor accepts short inflection/fragmentation errors,
+  // while the cap prevents long lines from absorbing semantic substitutions.
+  const phoneticBudget =
+    phonetic === null ? 0 : Math.max(2, Math.min(Math.floor(0.15 * phonetic.length), 4));
+  const matchKind: StudyTranscriptMatchKind = exact
+    ? "exact"
+    : phonetic?.available === true && phonetic.distance <= phoneticBudget
+      ? "phonetic"
+      : "none";
   return {
-    correct: missing.length === 0 && extra.length === 0 && substituted.length === 0,
+    correct: matchKind !== "none",
+    matchKind,
     heardTranscript,
-    matched,
-    missing,
-    extra,
-    substituted,
-    policyRevision: "script_aware_token_diff_v1",
+    matched: matchKind === "phonetic" ? [] : matched,
+    missing: matchKind === "phonetic" ? [] : missing,
+    extra: matchKind === "phonetic" ? [] : extra,
+    substituted: matchKind === "phonetic" ? [] : substituted,
+    policyRevision,
   };
 };
 
 export const gradeEnglishTranscriptV2 = (reference: string, heardTranscript: string) =>
-  gradeTranscriptV2(reference, heardTranscript, "en");
+  gradeTranscriptV2(reference, heardTranscript, "en", STUDY_TRANSCRIPT_GRADER_POLICY_V2);

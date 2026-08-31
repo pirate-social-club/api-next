@@ -12,7 +12,11 @@ import {
   StudySessionItemV2,
   StudySessionV2,
 } from "@pirate/contracts";
-import { gradeExactChoiceV2, scheduleStudyReviewV1 } from "@pirate/domain";
+import {
+  gradeExactChoiceV2,
+  scheduleStudyReviewV1,
+  studyTranscriptReviewGrade,
+} from "@pirate/domain";
 import { Effect, type Layer, Schema } from "effect";
 import { recordQualificationProjections } from "./activity-qualification-repository.ts";
 import { lockLearnerAudioAccount } from "./learner-audio-account-lock.ts";
@@ -574,9 +578,14 @@ export const makeControlPlaneStudyV2Repository = () => ({
         const row = selected.rows[0] as Row;
         const item = decode(StudySessionItemV2, json(row.item_snapshot));
         const grader = json(row.private_grader) as Record<string, unknown>;
+        const supportedSpokenGrader =
+          (grader.kind === "source_token_diff_v1" &&
+            item.grader_policy_revision === "script_aware_token_diff_v1") ||
+          (grader.kind === "source_token_phonetic_v2" &&
+            item.grader_policy_revision === "script_aware_token_phonetic_v2");
         if (
           item.exercise_type !== "say_it_back" ||
-          grader.kind !== "source_token_diff_v1" ||
+          !supportedSpokenGrader ||
           typeof grader.reference_text !== "string"
         ) {
           return yield* rejected("submission-kind-mismatch");
@@ -924,6 +933,9 @@ export const makeControlPlaneStudyV2Repository = () => ({
             if (item.exercise_type !== "say_it_back") {
               return yield* rejected("submission-kind-mismatch");
             }
+            if (input.grade.policyRevision !== item.grader_policy_revision) {
+              return yield* rejected("submission-kind-mismatch");
+            }
             if (text(selectedRow, "current_session_item_id") !== input.sessionItemId) {
               return yield* rejected("attempt-conflict");
             }
@@ -950,6 +962,7 @@ export const makeControlPlaneStudyV2Repository = () => ({
             if (artifact.rows.length !== 1) return yield* rejected("command-in-flight");
             const feedback = {
               kind: "transcript_diff" as const,
+              match_kind: input.grade.matchKind,
               heard_transcript: input.grade.heardTranscript,
               matched: input.grade.matched,
               missing: input.grade.missing,
@@ -961,6 +974,7 @@ export const makeControlPlaneStudyV2Repository = () => ({
               policy_revision: input.grade.policyRevision,
             };
             const tokenDiff = {
+              match_kind: input.grade.matchKind,
               matched: input.grade.matched.map(({ position }) => position),
               missing: input.grade.missing.map(({ position }) => position),
               extra: input.grade.extra,
@@ -1036,11 +1050,10 @@ export const makeControlPlaneStudyV2Repository = () => ({
               ],
               readonly: false,
             });
-            const reviewGrade = input.grade.correct
-              ? input.attemptNumber === 1
-                ? "good"
-                : "hard"
-              : "again";
+            const reviewGrade = studyTranscriptReviewGrade(
+              input.grade.matchKind,
+              input.attemptNumber,
+            );
             const review = scheduleStudyReviewV1(
               {
                 difficulty: number(selectedRow, "difficulty"),
