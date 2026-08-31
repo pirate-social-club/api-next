@@ -71,6 +71,7 @@ describe("Megapot rewards scheduled cycle", () => {
         refunded: 1,
         paid: 0,
         failures: ["RewardRefundRejected"],
+        failureDiagnostics: [],
         agedPending: [
           { family: "chain_effects", count: 2, oldestAgeSeconds: 1_200 },
           { family: "refund_liabilities", count: 1, oldestAgeSeconds: 900 },
@@ -94,7 +95,7 @@ describe("Megapot rewards scheduled cycle", () => {
         event: "megapot.rewards.cycle",
         fields: expect.objectContaining({
           event: "megapot.rewards.cycle",
-          schema_version: 2,
+          schema_version: 3,
           environment: "staging",
           worker_version_id: "worker-version-1",
           duration_ms: 1_234,
@@ -104,6 +105,7 @@ describe("Megapot rewards scheduled cycle", () => {
           refunded_count: 1,
           failure_count: 1,
           failure_tags: ["RewardRefundRejected"],
+          failure_diagnostics: [],
           liveness_status: "available",
           aged_pending_threshold_seconds: 600,
           aged_pending_total_count: 3,
@@ -136,6 +138,7 @@ describe("Megapot rewards scheduled cycle", () => {
           refunded: 0,
           paid: 0,
           failures: [],
+          failureDiagnostics: [],
           agedPending: [],
         },
         {
@@ -172,6 +175,7 @@ describe("Megapot rewards scheduled cycle", () => {
           refunded: 0,
           paid: 0,
           failures: [],
+          failureDiagnostics: [],
           agedPending: null,
         },
         {
@@ -235,6 +239,7 @@ describe("Megapot rewards scheduled cycle", () => {
       refunded: 1,
       paid: 1,
       failures: [],
+      failureDiagnostics: [],
       agedPending: [],
     });
   });
@@ -329,6 +334,67 @@ describe("Megapot rewards scheduled cycle", () => {
     );
     expect(result.paid).toBe(1);
     expect(result.failures).toContain("RewardPayoutRejected");
+    expect(result.failureDiagnostics).toEqual([]);
+  });
+
+  test("retains only allow-listed refund coordinator reasons and phases", async () => {
+    const { runtime, work } = fixture("confirmed");
+    const cases = [
+      ["configuration", "invalid_config"],
+      ["preflight", "deployment_attestation_mismatch"],
+      ["preflight", "gas_floor_insufficient"],
+      ["preflight", "production_disabled"],
+      ["prepare", "signer_mismatch"],
+      ["receipt", "receipt_evidence_invalid"],
+      ["preflight", "solvency_insufficient"],
+    ] as const;
+    const result = await Effect.runPromise(
+      runMegapotRewardsCycle({
+        work: {
+          ...work,
+          loadRefunds: () => Effect.succeed(cases.map((_, index) => `funding-${index}`)),
+        },
+        runtime: {
+          ...runtime,
+          refund: (fundingEffectId) => {
+            const index = Number(fundingEffectId.replace("funding-", ""));
+            const [phase, reason] = cases[index] ?? cases[0];
+            return Effect.fail({
+              _tag: "RewardRefundCoordinatorFailed" as const,
+              phase,
+              reason,
+            });
+          },
+        },
+      }),
+    );
+
+    expect(result.refunded).toBe(0);
+    expect(result.failures).toEqual(cases.map(() => "RewardRefundCoordinatorFailed"));
+    expect(result.failureDiagnostics).toEqual(
+      cases.map(([phase, reason]) => `RewardRefundCoordinatorFailed:${phase}:${reason}`),
+    );
+  });
+
+  test("fails closed to the outer tag for unrecognized refund diagnostics", async () => {
+    const { runtime, work } = fixture("confirmed");
+    const result = await Effect.runPromise(
+      runMegapotRewardsCycle({
+        work,
+        runtime: {
+          ...runtime,
+          refund: () =>
+            Effect.fail({
+              _tag: "RewardRefundCoordinatorFailed" as const,
+              phase: "hostile-phase",
+              reason: "secret-provider-detail",
+            }),
+        },
+      }),
+    );
+
+    expect(result.failures).toContain("RewardRefundCoordinatorFailed");
+    expect(result.failureDiagnostics).toEqual([]);
   });
 
   test("continues return-side work while the contract rolls to its next drawing", async () => {
