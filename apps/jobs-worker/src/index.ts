@@ -64,7 +64,6 @@ import {
   runSongPipelineOutboxAlertTick,
 } from "./song-pipeline-outbox-alerts";
 import {
-  collectSongMaintenanceObservationAlert,
   collectSongPipelineTerminalAlerts,
   handleSongPipelineDlqBatch,
 } from "./song-pipeline-terminal-alerts";
@@ -137,7 +136,6 @@ export interface JobsWorkerEnv
   readonly MEGAPOT_COMMITMENTS?: R2Bucket;
   readonly API_NEXT_ENV?: string;
   readonly COMMUNITY_MAINTENANCE_ENABLED?: string;
-  readonly SONG_MAINTENANCE_OBSERVATION_ENABLED?: string;
   readonly COMMUNITY_PURCHASE_FUNDING_RPC_URL?: string;
   readonly MEGAPOT_REWARDS_ENABLED?: string;
   readonly MEGAPOT_CHAIN_ID?: string;
@@ -167,7 +165,6 @@ function loadJobsWorkerConfig(env: JobsWorkerEnv): JobsWorkerConfigValue {
     return loadConfigFrom(JobsWorkerConfig, {
       API_NEXT_ENV: env.API_NEXT_ENV,
       COMMUNITY_MAINTENANCE_ENABLED: env.COMMUNITY_MAINTENANCE_ENABLED,
-      SONG_MAINTENANCE_OBSERVATION_ENABLED: env.SONG_MAINTENANCE_OBSERVATION_ENABLED,
       COMMUNITY_PURCHASE_FUNDING_RPC_URL: env.COMMUNITY_PURCHASE_FUNDING_RPC_URL,
       MEGAPOT_REWARDS_ENABLED: env.MEGAPOT_REWARDS_ENABLED,
       MEGAPOT_CHAIN_ID: env.MEGAPOT_CHAIN_ID,
@@ -804,14 +801,9 @@ export default {
                     : { compensateSnapshot: sink.delivery.compensate }),
                 },
               ),
-              collectSongMaintenanceObservationAlert({
-                enabled: config.SONG_MAINTENANCE_OBSERVATION_ENABLED,
-                environment: config.API_NEXT_ENV,
-                media: env.MEDIA_PROCESSING_WORKFLOW,
-              }),
             ],
             { concurrency: 1 },
-          ).pipe(Effect.map(([terminal, outbox, observation]) => terminal + outbox + observation)),
+          ).pipe(Effect.map(([terminal, outbox]) => terminal + outbox)),
         ),
       );
     }

@@ -11,11 +11,8 @@ import {
 import type { CloudflareDataRegistrationWorkflowBinding } from "../../../packages/platform-cf/src/data/registration-workflow-cloudflare.ts";
 import type { CloudflareMediaWorkflowBinding } from "../../../packages/platform-cf/src/media-processing-cloudflare.ts";
 import {
-  collectSongMaintenanceObservationAlert,
   collectSongPipelineTerminalAlerts,
   handleSongPipelineDlqBatch,
-  SONG_MAINTENANCE_OBSERVATION_OPERATION_ID,
-  SONG_MAINTENANCE_OBSERVATION_WORKFLOW_ID,
 } from "./song-pipeline-terminal-alerts.ts";
 
 function runtime(
@@ -41,88 +38,6 @@ const dataWorkflow = (status: string): CloudflareDataRegistrationWorkflowBinding
 });
 
 describe("song pipeline terminal alert collectors", () => {
-  test("emits the production observation only after the opaque revision-ceiling identity is absent", async () => {
-    const requested: string[] = [];
-    const logs: PipelineLogFields[] = [];
-    const binding: CloudflareMediaWorkflowBinding = {
-      get: async (instanceId) => {
-        requested.push(instanceId);
-        throw new Error("instance does not exist");
-      },
-      createBatch: async () => {
-        throw new Error("the observation must never create a Workflow");
-      },
-    };
-
-    const emitted = await Effect.runPromise(
-      alertTick(
-        {
-          environment: "production",
-          log: (_event, fields) => logs.push(fields),
-        },
-        collectSongMaintenanceObservationAlert({
-          enabled: true,
-          environment: "production",
-          media: binding,
-        }),
-      ),
-    );
-
-    expect(emitted).toBe(1);
-    expect(requested).toEqual([SONG_MAINTENANCE_OBSERVATION_WORKFLOW_ID]);
-    expect(logs).toContainEqual(
-      expect.objectContaining({
-        event: "pipeline.alert",
-        severity: "high",
-        key: "song-pipeline:media-replacement-limit-reached",
-        operation_id: SONG_MAINTENANCE_OBSERVATION_OPERATION_ID,
-        workflow_revision: 4,
-        failure_class: "workflow_missing_at_replacement_limit",
-        outcome: "terminal",
-      }),
-    );
-  });
-
-  test("keeps the observation inert when disabled and fails closed if its identity exists", async () => {
-    let reads = 0;
-    const binding = mediaWorkflow("running");
-    const counted: CloudflareMediaWorkflowBinding = {
-      ...binding,
-      get: async (instanceId) => {
-        reads += 1;
-        return binding.get(instanceId);
-      },
-    };
-
-    expect(
-      await Effect.runPromise(
-        alertTick(
-          {},
-          collectSongMaintenanceObservationAlert({
-            enabled: false,
-            environment: "production",
-            media: counted,
-          }),
-        ),
-      ),
-    ).toBe(0);
-    expect(reads).toBe(0);
-
-    await expect(
-      Effect.runPromise(
-        alertTick(
-          {},
-          collectSongMaintenanceObservationAlert({
-            enabled: true,
-            environment: "production",
-            media: counted,
-          }),
-        ),
-      ),
-    ).rejects.toThrow("Workflow identity unexpectedly exists");
-    expect(reads).toBe(1);
-  });
-
   test("emits each authoritative terminal condition with redacted correlation", async () => {
     const statements: ControlPlaneStatement[] = [];
     const logs: PipelineLogFields[] = [];
@@ -497,7 +412,7 @@ describe("song pipeline Queue DLQ collector", () => {
     expect(diagnostics).toEqual(["song-pipeline DLQ authority query unavailable"]);
   });
 
-  test("declares both DLQ consumers in every environment while production observation is scheduled", async () => {
+  test("declares both DLQ consumers in every environment while production cron stays empty", async () => {
     const wrangler = BunRuntime.JSONC.parse(
       await BunRuntime.file(new URL("../wrangler.jsonc", import.meta.url)).text(),
     ) as {
@@ -522,6 +437,6 @@ describe("song pipeline Queue DLQ collector", () => {
         `pirate-media-processing-${environment}-dlq`,
       ]);
     }
-    expect(wrangler.env?.production?.triggers?.crons).toEqual(["* * * * *"]);
+    expect(wrangler.env?.production?.triggers?.crons).toEqual([]);
   });
 });
