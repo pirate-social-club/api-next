@@ -4,7 +4,10 @@ import { ControlPlaneDb } from "@pirate/application";
 import { Effect } from "effect";
 import { Client } from "pg";
 import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
-
+import {
+  readHnsResolverParityBehavior,
+  seedHnsResolverParityFixture,
+} from "./hns-resolver-parity.pg-fixture";
 import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres";
 import {
@@ -903,7 +906,7 @@ async function expectPostgresFailure(
 }
 
 suite("Postgres 17 product and gates v2 foundation", () => {
-  test("applies all migrations and matches the cumulative schema source", async () => {
+  test("matches migration and normalized-baseline catalogs and HNS resolver behavior", async () => {
     await withSchema(async (admin, scopedConnectionString, schema) => {
       expect(checksum(migrationSql)).toBe(migration.checksum);
       expect(checksum(identityMigrationSql)).toBe(identityMigration.checksum);
@@ -1122,14 +1125,31 @@ suite("Postgres 17 product and gates v2 foundation", () => {
             configuration: [`search_path=${baselineSchema}, pg_temp`],
           },
         ]);
+        await seedHnsResolverParityFixture(admin, schema);
+        await seedHnsResolverParityFixture(admin, baselineSchema);
         await admin.query("SET search_path TO ''");
-        const resolverProbe = await admin.query(
-          `SELECT *
-             FROM ${quoteIdentifier(baselineSchema)}.resolve_hns_community_app_host_authority_v1(
-               'app.missing', clock_timestamp()
-             )`,
+        // A hostile temporary relation would win under PostgreSQL's implicit
+        // pg_temp precedence. Both migration and normalized-baseline functions
+        // must instead resolve their captured installation schema first.
+        await admin.query("CREATE TEMP TABLE communities (hostile_shadow TEXT)");
+        const databaseNow = new Date("2026-08-31T00:00:00.000Z");
+        const migratedBehavior = await readHnsResolverParityBehavior(admin, schema, databaseNow);
+        const baselineBehavior = await readHnsResolverParityBehavior(
+          admin,
+          baselineSchema,
+          databaseNow,
         );
-        expect(resolverProbe.rows).toEqual([]);
+        expect(baselineBehavior).toEqual(migratedBehavior);
+        expect(baselineBehavior.activeRoutes).toHaveLength(1);
+        expect(baselineBehavior.routeAuthorities).toHaveLength(1);
+        expect(baselineBehavior.appHostAuthorities).toHaveLength(1);
+        expect(baselineBehavior.appHostAuthorities[0]).toMatchObject({
+          normalized_host: "app.parity",
+          route_binding_current: true,
+          route_authority_effective: true,
+          gateway_health: "unavailable",
+        });
+        await admin.query("DROP TABLE pg_temp.communities");
       } finally {
         await admin.query(`DROP SCHEMA ${quoteIdentifier(baselineSchema)} CASCADE`);
         await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
