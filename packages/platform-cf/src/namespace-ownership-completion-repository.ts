@@ -1340,7 +1340,7 @@ function finalizeTerminal(
       });
       if (snapshot.rowCount !== 1) return yield* Effect.fail(storageFailure());
       const controlIdentity = input.verified.control_identity;
-      if (controlIdentity !== null) {
+      if (controlIdentity !== null && controlIdentity !== undefined) {
         const identity = yield* transaction.execute({
           label: "namespace-ownership.completion.insert-control-identity",
           text: `INSERT INTO community_route_hns_control_identities (
