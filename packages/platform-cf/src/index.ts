@@ -62,11 +62,6 @@ export {
   makeCloudflareAccessJwtValidatorV1,
 } from "./cloudflare-access-jwt";
 export {
-  HNS_EDGE_STATUS_KV_KEY,
-  type HnsEdgeStatusKvNamespace,
-  makeCloudflareHnsEdgeStatusStore,
-} from "./hns-edge-status-kv.ts";
-export {
   makeControlPlaneCommunityModerationRepository,
   makeControlPlaneCommunityModerationStore,
 } from "./community-moderation-repository.ts";
@@ -140,6 +135,11 @@ export {
   makeHnsAuthoritySuccessorInventoryReaderFromResolverV1,
   makeHnsAuthoritySuccessorPostgresReadersV1,
 } from "./hns-authority-successor-postgres.ts";
+export {
+  HNS_EDGE_STATUS_KV_KEY,
+  type HnsEdgeStatusKvNamespace,
+  makeCloudflareHnsEdgeStatusStore,
+} from "./hns-edge-status-kv.ts";
 export {
   HNS_COMMUNITY_APP_API_REPLAY_SCOPE,
   type HnsForwarderReplayStoreNamespace,
