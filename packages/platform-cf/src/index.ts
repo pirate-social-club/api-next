@@ -292,6 +292,12 @@ export {
   makeControlPlaneRouteRevalidationStartRepository,
   makeControlPlaneRouteRevalidationStartStore,
 } from "./route-revalidation-start-repository";
+export { makeControlPlaneHnsActiveLeaseRenewalStore } from "./hns-active-lease-renewal-repository.ts";
+export { makeControlPlaneHnsOwnerRecoveryPollStore } from "./hns-owner-recovery-poll-repository.ts";
+export {
+  makeControlPlaneHnsOwnerRecoveryAuthorityResolver,
+  makeControlPlaneHnsOwnerRecoveryStartStore,
+} from "./hns-owner-recovery-start-repository.ts";
 export {
   MAX_SESSION_TOKEN_LENGTH,
   makeSessionCrypto,

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  encodeHnsOwnerTargetObservationV3,
   makeNamespaceOwnershipProviderRegistry,
   NamespaceOwnershipProviderInvalidResponse,
   NamespaceOwnershipProviderObservationRejected,
@@ -93,6 +94,81 @@ function targetResponse(overrides: Readonly<Record<string, unknown>> = {}) {
       ...overrides,
     }),
   );
+}
+
+async function targetV3Response(
+  status: "verified" | "rejected" | "pending" | "unavailable" | "ineligible",
+): Promise<Uint8Array> {
+  const observerResult = "5".repeat(64);
+  const snapshot = "9".repeat(64);
+  if (status === "verified") {
+    const challengeValue = "pirate-verification=nvs_01";
+    const challengeHash = [
+      ...new Uint8Array(
+        await crypto.subtle.digest("SHA-256", new TextEncoder().encode(challengeValue)),
+      ),
+    ]
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join("");
+    return encodeHnsOwnerTargetObservationV3({
+      status,
+      observation_contract_version: "pirate-hns-target-observation-v3",
+      provider_evidence_ref: `hns-observer-v2:sha256:${observerResult}:hns-observer:regtest:snapshot-01`,
+      upstream_session_ref: "nvs_01",
+      ownership_source: "owner_authoritative_dns_txt",
+      challenge_name: "_pirate.xn--pokmon-dva",
+      challenge_value: challengeValue,
+      expected_txt_value_sha256: challengeHash,
+      control_identity_digest: "7".repeat(64),
+      chain_authority_digest: "8".repeat(64),
+      observer_snapshot_sha256: snapshot,
+      observer_result_sha256: observerResult,
+      root_exists: true,
+      root_control_verified: true,
+      expiry_horizon_sufficient: true,
+      chain_network: "regtest",
+      chain_anchor_height: 123456,
+      chain_anchor_block_hash: "4".repeat(64),
+      chain_anchor_median_time: 1769999900,
+      expiry_height: 200000,
+      observed_at: "2026-08-20T11:00:00.000Z",
+      expires_at: "2026-08-20T13:00:00.000Z",
+    });
+  }
+  if (status === "rejected" || status === "pending") {
+    return encodeHnsOwnerTargetObservationV3({
+      status,
+      observation_contract_version: "pirate-hns-target-observation-v3",
+      reason_code: status === "rejected" ? "root_absent" : "txt_absent",
+      observer_snapshot_sha256: snapshot,
+      observer_result_sha256: observerResult,
+      provider_evidence_ref: `hns-observer-v2:sha256:${observerResult}:hns-observer:regtest:snapshot-01`,
+    });
+  }
+  if (status === "unavailable") {
+    return encodeHnsOwnerTargetObservationV3({
+      status,
+      observation_contract_version: "pirate-hns-target-observation-v3",
+      reason_code: "authority_inventory_unavailable",
+      retry_after_seconds: 5,
+      observer_snapshot_sha256: snapshot,
+      diagnostic_ref: "hns-observer:regtest:snapshot-01",
+    });
+  }
+  return encodeHnsOwnerTargetObservationV3({
+    status,
+    observation_contract_version: "pirate-hns-target-observation-v3",
+    reason_code: "owner_authoritative_source_ineligible",
+    ownership_source: "owner_authoritative_dns_txt",
+    root_label: "xn--pokmon-dva",
+    chain_authority_digest: "8".repeat(64),
+    authority_inventory_reference: "authority-inventory:regtest-current",
+    authority_inventory_version: "authority-inventory-v1",
+    authority_inventory_digest: "a".repeat(64),
+    observer_snapshot_sha256: snapshot,
+    observer_result_sha256: observerResult,
+    diagnostic_ref: "hns-observer:regtest:snapshot-01",
+  });
 }
 
 function transport(
@@ -399,6 +475,39 @@ describe("injected HNS owner adapter", () => {
     await expect(
       Effect.runPromise(provider.start(startInput, startContext)),
     ).rejects.toBeInstanceOf(NamespaceOwnershipProviderInvalidResponse);
+  });
+
+  test("returns every strict target-v3 disposition with its exact response authority", async () => {
+    for (const status of [
+      "verified",
+      "rejected",
+      "pending",
+      "unavailable",
+      "ineligible",
+    ] as const) {
+      const bytes = await targetV3Response(status);
+      const provider = makeHnsOwnerAdapter({
+        transport: transport({ bytes }),
+        provider_configuration,
+        environments: ["staging"],
+        now: () => now,
+        target_observation_contract: "v3",
+      });
+      const started = await Effect.runPromise(provider.start(startInput, startContext));
+      const result = await Effect.runPromise(
+        provider.complete(
+          { session: started.session, submission: { channel: "poll_result", payload: {} } },
+          completeContext,
+        ),
+      );
+      expect(result.status).toBe(status);
+      expect((result as { readonly raw_response_bytes: Uint8Array }).raw_response_bytes).toEqual(
+        bytes,
+      );
+      expect(result).toMatchObject({
+        observation: { observation_contract_version: "pirate-hns-target-observation-v3" },
+      });
+    }
   });
 });
 

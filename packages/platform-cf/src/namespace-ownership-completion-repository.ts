@@ -450,6 +450,12 @@ function insertTerminalResult(
     readonly evidence_ref: string | null;
     readonly evidence_digest: string | null;
     readonly provider_identity_digest: string | null;
+    readonly target_response: Readonly<{
+      readonly observation_contract_version: "pirate-hns-target-observation-v3";
+      readonly status: "rejected" | "ineligible";
+      readonly provider_response_sha256: string;
+      readonly raw_response_bytes: Uint8Array;
+    }> | null;
   },
 ): Effect.Effect<void, NamespaceOwnershipCompletionStorageFailed | ControlPlaneError> {
   return Effect.gen(function* () {
@@ -461,12 +467,14 @@ function insertTerminalResult(
                provider_configuration_version, callback_idempotency_key,
                callback_request_hash, outcome_status, result_hash, evidence_ref,
                evidence_digest, provider_identity_digest, terminal_at, satisfied_at,
-               namespace_session_id, completion_attempt_id, submission_channel
+               namespace_session_id, completion_attempt_id, submission_channel,
+               target_observation_contract_version, target_response_status,
+               provider_response_sha256, raw_provider_response_bytes
              ) VALUES (
                $1, $2, $3, 'namespace_ownership', $4, $5, $6, $7, $8, $9,
                $10, $11, $12, $13, $14, $15, $16,
                CASE WHEN $11 = 'satisfied' THEN $16::timestamptz ELSE NULL END,
-               $17, $18, 'poll_result'
+               $17, $18, 'poll_result', $19, $20, $21, $22
              ) ON CONFLICT (ceremony_intent_id) DO NOTHING`,
       values: [
         input.stored.session.ceremony_intent_id,
@@ -487,6 +495,10 @@ function insertTerminalResult(
         input.terminal_at,
         input.stored.namespace_session_id,
         input.attempt_id,
+        input.target_response?.observation_contract_version ?? null,
+        input.target_response?.status ?? null,
+        input.target_response?.provider_response_sha256 ?? null,
+        input.target_response?.raw_response_bytes ?? null,
       ],
       readonly: false,
     });
@@ -569,6 +581,7 @@ function expireWithoutAttempt(
       evidence_ref: null,
       evidence_digest: null,
       provider_identity_digest: null,
+      target_response: null,
     });
     yield* transitionTerminal(transaction, {
       stored: input.stored,
@@ -771,6 +784,7 @@ function expireReservedAttempt(
       evidence_ref: null,
       evidence_digest: null,
       provider_identity_digest: null,
+      target_response: null,
     });
     yield* transitionTerminal(transaction, {
       stored: input.stored,
@@ -1325,6 +1339,29 @@ function finalizeTerminal(
         readonly: false,
       });
       if (snapshot.rowCount !== 1) return yield* Effect.fail(storageFailure());
+      const controlIdentity = input.verified.control_identity;
+      if (controlIdentity !== null) {
+        const identity = yield* transaction.execute({
+          label: "namespace-ownership.completion.insert-control-identity",
+          text: `INSERT INTO community_route_hns_control_identities (
+                   evidence_ref, ownership_source, root_label, txt_name,
+                   expected_txt_value_sha256, control_identity_digest,
+                   chain_authority_digest, provider_evidence_ref
+                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          values: [
+            envelope.evidence_ref,
+            controlIdentity.ownership_source,
+            controlIdentity.root_label,
+            controlIdentity.txt_name,
+            controlIdentity.expected_txt_value_sha256,
+            controlIdentity.control_identity_digest,
+            controlIdentity.chain_authority_digest,
+            controlIdentity.provider_evidence_ref,
+          ],
+          readonly: false,
+        });
+        if (identity.rowCount !== 1) return yield* Effect.fail(storageFailure());
+      }
     }
     const outcome = input.kind === "verified" ? "satisfied" : "failed";
     const envelope = input.kind === "verified" ? input.verified.envelope : null;
@@ -1339,6 +1376,7 @@ function finalizeTerminal(
       evidence_ref: envelope?.evidence_ref ?? null,
       evidence_digest: envelope?.evidence_digest ?? null,
       provider_identity_digest: envelope?.provider_identity_digest ?? null,
+      target_response: input.kind === "rejected" ? input.target_response : null,
     });
     yield* transitionTerminal(transaction, {
       stored: authority.stored,
