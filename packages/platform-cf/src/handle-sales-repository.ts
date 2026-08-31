@@ -28,6 +28,7 @@ import {
   assertCanonicalHnsHandleLabelV2,
   assertHandleOfferingCombinationV2,
   classifyEffectiveHandleOfferingV2,
+  classifyHandleSaleActivationRevisionV1,
   handleAccountAllowlistPolicyHash,
   handleAccountAllowlistPolicyRequestV2Hash,
   handleClaimRequestHash,
@@ -43,7 +44,6 @@ import {
   handleReservationV2Hash,
   handleSaleNamespaceActivationHash,
   resolvedHandleAccountCap,
-  transitionHandleSaleActivationV1,
 } from "@pirate/domain";
 import { Effect, type Layer } from "effect";
 import { publicPersonaFromSql } from "./public-persona-projection.ts";
@@ -1350,7 +1350,25 @@ export function makeControlPlaneHandleSalesRepository() {
                 return yield* reject("sale_namespace_inactive", true);
               }
               yield* Effect.try({
-                try: () => transitionHandleSaleActivationV1(prior.status, input.requestedStatus),
+                try: () =>
+                  classifyHandleSaleActivationRevisionV1({
+                    current_status: prior.status,
+                    requested_status: input.requestedStatus,
+                    current_authority: {
+                      namespace_authority_reference:
+                        prior.namespace_authority.namespace_authority_reference,
+                      namespace_authority_generation:
+                        prior.namespace_authority.namespace_authority_generation,
+                      dns_zone_activation_id: prior.serving.dns_zone_activation_id,
+                      dns_zone_activation_generation: prior.serving.dns_zone_activation_generation,
+                    },
+                    requested_authority: {
+                      namespace_authority_reference: input.namespaceAuthorityReference,
+                      namespace_authority_generation: input.expectedNamespaceAuthorityGeneration,
+                      dns_zone_activation_id: input.dnsZoneActivationId,
+                      dns_zone_activation_generation: input.expectedDnsZoneActivationGeneration,
+                    },
+                  }),
                 catch: () => reject("sale_namespace_inactive"),
               });
               const authority = yield* transaction.execute<Row>({
@@ -2317,8 +2335,6 @@ export function makeControlPlaneHandleSalesRepository() {
                                 WHEN offering.status <> 'active' THEN 'offering_inactive'
                                 WHEN activation.sale_namespace_activation_id IS NULL
                                   OR activation.status <> 'active'
-                                  OR activation.sale_namespace_activation_generation
-                                     <> offering.sale_namespace_activation_generation
                                   OR dependency.namespace_authority_current IS DISTINCT FROM TRUE
                                   OR dependency.dns_zone_current IS DISTINCT FROM TRUE
                                   OR dependency.dns_delegation_current IS DISTINCT FROM TRUE
@@ -3554,8 +3570,21 @@ export function makeControlPlaneHandleSalesRepository() {
                             SELECT 1 FROM effective_community_handle_sale_namespace_v1(
                               handle_grant.sale_namespace_activation_id,$2::timestamptz
                             ) AS effective
-                            WHERE effective.sale_namespace_activation_generation
-                                  = handle_grant.sale_namespace_activation_generation
+                            JOIN community_handle_sale_namespace_activation_revisions
+                              AS grant_activation
+                              ON grant_activation.sale_namespace_activation_id
+                                   = handle_grant.sale_namespace_activation_id
+                             AND grant_activation.sale_namespace_activation_generation
+                                   = handle_grant.sale_namespace_activation_generation
+                            WHERE grant_activation.status='active'
+                              AND grant_activation.community_id=handle_grant.community_id
+                              AND grant_activation.family=handle_grant.family
+                              AND grant_activation.canonical_root=handle_grant.namespace_root
+                              AND grant_activation.community_id=effective.community_id
+                              AND grant_activation.family=effective.family
+                              AND grant_activation.canonical_root=effective.canonical_root
+                              AND effective.sale_namespace_activation_generation
+                                  >= handle_grant.sale_namespace_activation_generation
                           ) AS activation_effective
                      FROM handle_grants AS handle_grant
                      JOIN personas AS persona ON persona.persona_id=handle_grant.owner_persona_id
@@ -3621,8 +3650,21 @@ export function makeControlPlaneHandleSalesRepository() {
                             SELECT 1 FROM effective_community_handle_sale_namespace_v1(
                               handle_grant.sale_namespace_activation_id,clock_timestamp()
                             ) AS effective
-                            WHERE effective.sale_namespace_activation_generation
-                                  = handle_grant.sale_namespace_activation_generation
+                            JOIN community_handle_sale_namespace_activation_revisions
+                              AS grant_activation
+                              ON grant_activation.sale_namespace_activation_id
+                                   = handle_grant.sale_namespace_activation_id
+                             AND grant_activation.sale_namespace_activation_generation
+                                   = handle_grant.sale_namespace_activation_generation
+                            WHERE grant_activation.status='active'
+                              AND grant_activation.community_id=handle_grant.community_id
+                              AND grant_activation.family=handle_grant.family
+                              AND grant_activation.canonical_root=handle_grant.namespace_root
+                              AND grant_activation.community_id=effective.community_id
+                              AND grant_activation.family=effective.family
+                              AND grant_activation.canonical_root=effective.canonical_root
+                              AND effective.sale_namespace_activation_generation
+                                  >= handle_grant.sale_namespace_activation_generation
                           ) AS activation_effective
                      FROM handle_grants AS handle_grant
                      JOIN personas AS persona ON persona.persona_id=handle_grant.owner_persona_id
@@ -3658,8 +3700,21 @@ export function makeControlPlaneHandleSalesRepository() {
                                 SELECT 1 FROM effective_community_handle_sale_namespace_v1(
                                   persona_grant.sale_namespace_activation_id,clock_timestamp()
                                 ) AS effective
-                                WHERE effective.sale_namespace_activation_generation
-                                      = persona_grant.sale_namespace_activation_generation
+                                JOIN community_handle_sale_namespace_activation_revisions
+                                  AS grant_activation
+                                  ON grant_activation.sale_namespace_activation_id
+                                       = persona_grant.sale_namespace_activation_id
+                                 AND grant_activation.sale_namespace_activation_generation
+                                       = persona_grant.sale_namespace_activation_generation
+                                WHERE grant_activation.status='active'
+                                  AND grant_activation.community_id=persona_grant.community_id
+                                  AND grant_activation.family=persona_grant.family
+                                  AND grant_activation.canonical_root=persona_grant.namespace_root
+                                  AND grant_activation.community_id=effective.community_id
+                                  AND grant_activation.family=effective.family
+                                  AND grant_activation.canonical_root=effective.canonical_root
+                                  AND effective.sale_namespace_activation_generation
+                                      >= persona_grant.sale_namespace_activation_generation
                               ) AS activation_effective
                          FROM handle_grants AS persona_grant
                         WHERE persona_grant.owner_persona_id=persona.persona_id
