@@ -7,6 +7,11 @@ import { AuthError, InternalError, NotFound, ProviderUnavailable } from "@pirate
 import type { StudyGenerationWorkflowPayload } from "./study-generation-workflow.ts";
 import { type EndpointHandler, type Principal, withEndpointResult } from "./transport.ts";
 
+type StudyGenerationPolicyRevisions = Pick<
+  StudyGenerationWorkflowPayload,
+  "generatorPolicyRevision" | "promptRevision" | "qualityPolicyRevision"
+>;
+
 const accountId = (principal: Principal | null): string => {
   if (principal === null || (principal.kind !== "user" && principal.kind !== "admin")) {
     throw new AuthError({ message: "Authentication required" });
@@ -30,7 +35,10 @@ export const makeStudyGenerationHandlers = (services: {
   readonly launch: (
     instanceId: string,
     payload: StudyGenerationWorkflowPayload,
-  ) => Promise<"created" | "already_exists">;
+  ) => Promise<"created" | "already_exists" | "restarted" | "resumed">;
+  readonly resolveTranslationPolicy: (input: {
+    readonly targetLanguage: string;
+  }) => Promise<StudyGenerationPolicyRevisions>;
 }): Readonly<{ RequestStudyGenerationV2: EndpointHandler }> => ({
   RequestStudyGenerationV2: async (request) => {
     accountId(request.principal);
@@ -52,6 +60,14 @@ export const makeStudyGenerationHandlers = (services: {
       throw new InternalError({ message: "Study generation planning failed" });
     }
     const authority = resolution.state === "ready" ? resolution.outcome : resolution.request;
+    let generationPolicy: StudyGenerationPolicyRevisions;
+    try {
+      generationPolicy = await services.resolveTranslationPolicy({
+        targetLanguage: body.target_language,
+      });
+    } catch {
+      throw new ProviderUnavailable({ message: "Study generation policy is unavailable" });
+    }
     const payload: StudyGenerationWorkflowPayload = {
       communityId: path.communityId,
       postId: path.postId,
@@ -59,6 +75,7 @@ export const makeStudyGenerationHandlers = (services: {
       sourceHash: authority.sourceHash,
       targetLanguage: body.target_language,
       learnerBand: body.learner_band,
+      ...generationPolicy,
     };
     try {
       await services.launch(instanceId(payload), payload);

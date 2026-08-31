@@ -507,8 +507,8 @@ export const makeControlPlaneKaraokeRepository = () => ({
                          byte_size, duration_ms, platform_retention, provider_retention,
                          recording_state, expires_at, created_at
                        ) VALUES ($1,$2,'karaoke',$3,$4,$5,$6,'audio/L16;rate=16000;channels=1',
-                         $7,$8,'private_learning','not_stored','stored',
-                         $9::timestamptz + interval '24 months',$9::timestamptz)
+                         $7,$8,'private_learning',$9,'stored',
+                         $10::timestamptz + interval '24 months',$10::timestamptz)
                        ON CONFLICT (learner_audio_artifact_id) DO NOTHING`,
                 values: [
                   input.artifactId,
@@ -519,6 +519,7 @@ export const makeControlPlaneKaraokeRepository = () => ({
                   input.result.contentSha256,
                   input.result.byteSize,
                   input.result.durationMs,
+                  input.providerRetention,
                   input.reconciledAt,
                 ],
                 readonly: false,

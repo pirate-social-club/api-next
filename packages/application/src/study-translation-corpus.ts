@@ -9,6 +9,8 @@ import {
 export const STUDY_TRANSLATION_CORPUS_V1 = "study_translation_corpus_v1" as const;
 export const STUDY_TRANSLATION_CORPUS_CANDIDATE_DOCUMENT_V1 =
   "study_translation_corpus_candidate_document_v1" as const;
+export const STUDY_TRANSLATION_CORPUS_EVALUATOR_V1 =
+  "study_translation_corpus_evaluator_v1" as const;
 
 export const STUDY_TRANSLATION_CORPUS_CATEGORIES = [
   "ordinary",
@@ -95,6 +97,7 @@ export type StudyTranslationCorpusCandidateDocumentV1 = Schema.Schema.Type<
 >;
 
 export type StudyTranslationCorpusEvaluation = Readonly<{
+  evaluatorRevision: typeof STUDY_TRANSLATION_CORPUS_EVALUATOR_V1;
   schemaRevision: typeof STUDY_TRANSLATION_CORPUS_V1 | null;
   corpusRevision: string | null;
   targetLanguage: string | null;
@@ -111,6 +114,7 @@ export type StudyTranslationCorpusEvaluation = Readonly<{
 }>;
 
 const invalidEvaluation = (): StudyTranslationCorpusEvaluation => ({
+  evaluatorRevision: STUDY_TRANSLATION_CORPUS_EVALUATOR_V1,
   schemaRevision: null,
   corpusRevision: null,
   targetLanguage: null,
@@ -196,6 +200,7 @@ export const evaluateStudyTranslationCorpus = (
 
   const eligibleForHumanActivation = failures.length === 0;
   return {
+    evaluatorRevision: STUDY_TRANSLATION_CORPUS_EVALUATOR_V1,
     schemaRevision: corpus.schema_revision,
     corpusRevision: corpus.corpus_revision,
     targetLanguage: corpus.target_language,

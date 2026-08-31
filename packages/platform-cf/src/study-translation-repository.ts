@@ -3,6 +3,7 @@ import {
   ControlPlaneDb,
   type ControlPlaneError,
   type ControlPlaneTransaction,
+  STUDY_TRANSLATION_GENERATOR_POLICY_V1,
   STUDY_TRANSLATION_PROMPT_V2,
   STUDY_TRANSLATION_VALIDATOR_V2,
   type StudyTranslationGenerationOutcome,
@@ -15,7 +16,6 @@ import { Effect, type Layer } from "effect";
 type Row = Readonly<Record<string, unknown>>;
 
 const RIGHTS_POLICY_REVISION = "translated_lyrics_acr_original_v1" as const;
-const GENERATOR_POLICY_REVISION = "study_translation_generation_v1" as const;
 const SEMANTIC_VALIDATOR_REVISION = "study_translation_semantic_review_v1" as const;
 const SAFETY_VALIDATOR_REVISION = "study_translation_safety_v1" as const;
 const TRANSLATION_POLICY_REVISION = "study_translation_choice_v1" as const;
@@ -235,6 +235,13 @@ export const makeControlPlaneStudyTranslationRepository = () => ({
             const authority = yield* authorityRows(transaction, input);
             if (authority.rows.length !== 1) return yield* failed("policy-blocked");
             const row = authority.rows[0] as Row;
+            if (
+              input.generatorPolicyRevision !== STUDY_TRANSLATION_GENERATOR_POLICY_V1 ||
+              input.promptRevision !== STUDY_TRANSLATION_PROMPT_V2 ||
+              input.qualityPolicyRevision !== text(row, "quality_policy_revision")
+            ) {
+              return yield* failed("policy-blocked");
+            }
             const identity = yield* transaction.execute<Row>({
               label: "study-translation.run.latest",
               text: `SELECT generation_run_id, status, retryable, attempt_number
@@ -251,9 +258,9 @@ export const makeControlPlaneStudyTranslationRepository = () => ({
                 integer(row, "language_profile_revision"),
                 input.targetLanguage,
                 input.learnerBand,
-                GENERATOR_POLICY_REVISION,
-                STUDY_TRANSLATION_PROMPT_V2,
-                text(row, "quality_policy_revision"),
+                input.generatorPolicyRevision,
+                input.promptRevision,
+                input.qualityPolicyRevision,
               ],
               readonly: false,
             });
@@ -307,8 +314,8 @@ export const makeControlPlaneStudyTranslationRepository = () => ({
               learningLanguage: "en",
               targetLanguage: input.targetLanguage,
               learnerBand: input.learnerBand,
-              promptRevision: STUDY_TRANSLATION_PROMPT_V2,
-              qualityPolicyRevision: text(row, "quality_policy_revision"),
+              promptRevision: input.promptRevision,
+              qualityPolicyRevision: input.qualityPolicyRevision,
               rightsPolicyRevision: RIGHTS_POLICY_REVISION,
               contextLines: context.rows.map((line) => ({
                 ordinal: integer(line, "ordinal"),
@@ -360,8 +367,8 @@ export const makeControlPlaneStudyTranslationRepository = () => ({
                 languageProfileRevision,
                 input.targetLanguage,
                 input.learnerBand,
-                GENERATOR_POLICY_REVISION,
-                STUDY_TRANSLATION_PROMPT_V2,
+                input.generatorPolicyRevision,
+                input.promptRevision,
                 STUDY_TRANSLATION_VALIDATOR_V2,
                 SEMANTIC_VALIDATOR_REVISION,
                 SAFETY_VALIDATOR_REVISION,
@@ -728,3 +735,33 @@ export const makeControlPlaneStudyTranslationStore = (
     fail: (input) => provide(repository.fail(input)),
   };
 };
+
+export const makeControlPlaneStudyTranslationPolicyResolver = (
+  runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+) => ({
+  resolve: (input: { readonly targetLanguage: string }) =>
+    mapErrors(
+      Effect.provide(runtime)(
+        Effect.gen(function* () {
+          const db = yield* ControlPlaneDb;
+          const selected = yield* db.execute<Row>({
+            label: "study-translation.policy.active",
+            text: `SELECT quality.quality_policy_revision
+                     FROM study_translation_quality_registry registry
+                     JOIN study_translation_quality_policies quality
+                       ON quality.target_language=registry.target_language
+                      AND quality.quality_policy_revision=registry.quality_policy_revision
+                    WHERE registry.target_language=$1 AND quality.release_state='active'`,
+            values: [input.targetLanguage],
+            readonly: true,
+          });
+          if (selected.rows.length !== 1) return yield* failed("policy-blocked");
+          return {
+            generatorPolicyRevision: STUDY_TRANSLATION_GENERATOR_POLICY_V1,
+            promptRevision: STUDY_TRANSLATION_PROMPT_V2,
+            qualityPolicyRevision: text(selected.rows[0] as Row, "quality_policy_revision"),
+          } as const;
+        }),
+      ),
+    ),
+});

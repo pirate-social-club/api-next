@@ -83,6 +83,8 @@ export type KaraokeRecordingResult =
       failureKind: "multipart_aborted" | "multipart_failed" | "reconciliation_failed";
     }>;
 
+export type KaraokeProviderRetention = "not_stored" | "stored";
+
 export interface KaraokeAttemptStore {
   readonly reserveSession: (input: {
     readonly accountId: string;
@@ -124,6 +126,7 @@ export interface KaraokeAttemptStore {
     readonly artifactId: string;
     readonly attemptId: string;
     readonly reconciledAt: string;
+    readonly providerRetention: KaraokeProviderRetention;
     readonly result: KaraokeRecordingResult;
     readonly sessionId: string;
   }) => Effect.Effect<void, KaraokeFailure>;

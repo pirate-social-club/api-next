@@ -3,6 +3,7 @@ import {
   evaluateStudyTranslationCorpus,
   STUDY_TRANSLATION_CORPUS_CANDIDATE_DOCUMENT_V1,
   STUDY_TRANSLATION_CORPUS_CATEGORIES,
+  STUDY_TRANSLATION_CORPUS_EVALUATOR_V1,
   STUDY_TRANSLATION_CORPUS_V1,
 } from "./study-translation-corpus.ts";
 import {
@@ -52,6 +53,7 @@ describe("Study translation enablement corpus", () => {
   test("reports reviewed evidence as eligible without activating anything", () => {
     const evaluation = evaluateStudyTranslationCorpus(reviewedCorpus());
     expect(evaluation.releaseState).toBe("eligible_for_human_activation");
+    expect(evaluation.evaluatorRevision).toBe(STUDY_TRANSLATION_CORPUS_EVALUATOR_V1);
     expect(evaluation.eligibleForHumanActivation).toBe(true);
     expect(evaluation.sampleCount).toBe(100);
     expect(evaluation.songCount).toBe(20);
