@@ -73,7 +73,10 @@ const authoritySelect = `
     provider.provider_configuration_kind,
     provider.provider_configuration_reference,
     provider.provider_configuration_version,
-    configuration.provider_configuration_digest,
+    COALESCE(
+      provider.provider_configuration_digest,
+      configuration.provider_configuration_digest
+    ) AS provider_configuration_digest,
     provider.environment,
     b.family,
     b.root_label,
@@ -91,6 +94,7 @@ const authoritySelect = `
     SELECT s.provider_configuration_kind,
            s.provider_configuration_ref AS provider_configuration_reference,
            s.provider_configuration_version,
+           NULL::text AS provider_configuration_digest,
            s.environment
       FROM namespace_ownership_evidence_snapshots AS s
      WHERE s.evidence_ref = e.evidence_ref
@@ -98,6 +102,7 @@ const authoritySelect = `
     SELECT s.provider_configuration_kind,
            s.provider_configuration_reference,
            s.provider_configuration_version,
+           s.provider_configuration_digest,
            s.environment
       FROM community_route_revalidation_evidence_snapshots AS s
      WHERE s.evidence_ref = e.evidence_ref
@@ -105,16 +110,50 @@ const authoritySelect = `
     SELECT s.provider_configuration_kind,
            s.provider_configuration_reference,
            s.provider_configuration_version,
+           s.provider_configuration_digest,
            s.environment
       FROM community_route_active_lease_renewal_evidence_snapshots AS s
      WHERE s.evidence_ref = e.evidence_ref
+    UNION ALL
+    SELECT 'managed'::text,
+           observer.value ->> 'provider_configuration_reference',
+           observer.value ->> 'provider_configuration_version',
+           observer.value ->> 'provider_configuration_digest',
+           observer.value ->> 'environment'
+      FROM hns_operator_control_promotion_receipts AS receipt
+      JOIN LATERAL (
+        SELECT artifact,
+               convert_from(
+                 decode(artifact ->> 'bytes_hex', 'hex'),
+                 'UTF8'
+               )::jsonb AS value
+          FROM jsonb_array_elements(
+                 convert_from(receipt.candidate_bytes, 'UTF8')::jsonb -> 'artifacts'
+               ) AS artifact
+         WHERE artifact ->> 'name' = 'observer_evidence'
+      ) AS observer ON TRUE
+     WHERE receipt.receipt_id = e.operator_control_promotion_receipt_id
+       AND receipt.evidence_ref = e.evidence_ref
+       AND e.origin = 'operator_control_observation'
+       AND receipt.observer_evidence_sha256 = observer.artifact ->> 'sha256'
+       AND receipt.observer_evidence_reference = observer.value ->> 'evidence_reference'
+       AND e.provider_binding_hash = observer.value ->> 'provider_configuration_digest'
+       AND observer.value ->> 'status' = 'verified'
   ) AS provider ON TRUE
-  JOIN hns_control_observer_configurations AS configuration
+  LEFT JOIN hns_control_observer_configurations AS configuration
     ON configuration.provider_configuration_reference = provider.provider_configuration_reference
    AND configuration.provider_configuration_version = provider.provider_configuration_version
+   AND (
+     provider.provider_configuration_digest IS NULL
+     OR configuration.provider_configuration_digest = provider.provider_configuration_digest
+   )
  WHERE b.route_binding_id = $1
    AND c.status = 'active'
    AND b.family = 'hns'
+   AND (
+     provider.provider_configuration_digest IS NOT NULL
+     OR configuration.provider_configuration_digest IS NOT NULL
+   )
    AND b.ownership_status = 'verified'
    AND b.route_lifecycle_status = 'active'
    AND e.binding_generation = b.binding_generation

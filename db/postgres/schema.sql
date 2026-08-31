@@ -4774,7 +4774,7 @@ DECLARE
   prior_session community_route_revalidation_sessions%ROWTYPE;
   renewal_attempt community_route_active_lease_renewal_attempts%ROWTYPE;
   renewal_record community_route_active_lease_renewals%ROWTYPE;
-  configuration_exists BOOLEAN;
+  provider_authority_exists BOOLEAN;
 BEGIN
   IF TG_OP = 'DELETE' THEN
     RAISE EXCEPTION 'owner recovery start reservations cannot be deleted';
@@ -4788,12 +4788,55 @@ BEGIN
     SELECT * INTO binding_record FROM community_canonical_route_bindings
      WHERE route_binding_id = NEW.route_binding_id
        AND community_id = NEW.community_id FOR UPDATE;
-    SELECT EXISTS (
-      SELECT 1 FROM hns_control_observer_configurations
-       WHERE provider_configuration_reference = NEW.provider_configuration_reference
-         AND provider_configuration_version = NEW.provider_configuration_version
-         AND provider_configuration_digest = NEW.provider_configuration_digest
-    ) INTO configuration_exists;
+    SELECT (
+      EXISTS (
+        SELECT 1 FROM hns_control_observer_configurations
+         WHERE provider_configuration_reference = NEW.provider_configuration_reference
+           AND provider_configuration_version = NEW.provider_configuration_version
+           AND provider_configuration_digest = NEW.provider_configuration_digest
+      )
+      OR EXISTS (
+        SELECT 1
+          FROM community_route_lifecycle_transitions AS transition
+          JOIN community_route_ownership_evidence AS evidence
+            ON evidence.evidence_ref = transition.expected_verified_evidence_ref
+          JOIN hns_operator_control_promotion_receipts AS receipt
+            ON receipt.receipt_id = evidence.operator_control_promotion_receipt_id
+           AND receipt.evidence_ref = evidence.evidence_ref
+          JOIN LATERAL (
+            SELECT artifact,
+                   convert_from(
+                     decode(artifact ->> 'bytes_hex', 'hex'),
+                     'UTF8'
+                   )::jsonb AS value
+              FROM jsonb_array_elements(
+                     convert_from(receipt.candidate_bytes, 'UTF8')::jsonb -> 'artifacts'
+                   ) AS artifact
+             WHERE artifact ->> 'name' = 'observer_evidence'
+          ) AS observer ON TRUE
+         WHERE NEW.recovery_authority_kind = 'database_time_expiry_transition'
+           AND transition.route_lifecycle_transition_id = NEW.recovery_authority_reference
+           AND transition.community_id = NEW.community_id
+           AND transition.route_binding_id = NEW.route_binding_id
+           AND transition.resulting_binding_generation = NEW.expected_binding_generation
+           AND evidence.origin = 'operator_control_observation'
+           AND evidence.family = NEW.family
+           AND evidence.root_label = NEW.root_label
+           AND evidence.provider_id = NEW.provider_id
+           AND evidence.provider_binding_hash = NEW.provider_binding_hash
+           AND receipt.observer_evidence_sha256 = observer.artifact ->> 'sha256'
+           AND receipt.observer_evidence_reference = observer.value ->> 'evidence_reference'
+           AND observer.value ->> 'status' = 'verified'
+           AND NEW.provider_configuration_kind = 'managed'
+           AND observer.value ->> 'provider_configuration_reference'
+                 = NEW.provider_configuration_reference
+           AND observer.value ->> 'provider_configuration_version'
+                 = NEW.provider_configuration_version
+           AND observer.value ->> 'provider_configuration_digest'
+                 = NEW.provider_configuration_digest
+           AND observer.value ->> 'environment' = NEW.environment
+      )
+    ) INTO provider_authority_exists;
     IF community_record.community_id IS NULL
       OR community_record.status <> 'active'
       OR community_record.created_by_user_id IS DISTINCT FROM NEW.principal_id
@@ -4807,7 +4850,7 @@ BEGIN
       OR binding_record.root_label_display IS DISTINCT FROM NEW.root_label_display
       OR binding_record.path_segment IS DISTINCT FROM NEW.path_segment
       OR NEW.provider_id <> 'hns.owner.v1'
-      OR NOT configuration_exists
+      OR NOT provider_authority_exists
       OR NEW.state <> 'acquired'
       OR NEW.fence_token <> 1
       OR NEW.lease_expires_at <= db_now
