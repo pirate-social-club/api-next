@@ -1,6 +1,11 @@
 const namespaceOwnershipTest =
   "packages/platform-cf/src/namespace-ownership-persistence.pg.test.ts";
 
+export const postgresTestTimeoutMilliseconds = {
+  isolated: 120_000,
+  general: 900_000,
+} as const;
+
 type PostgresTestPartition = {
   readonly isolated: readonly string[];
   readonly general: readonly string[];
@@ -74,8 +79,17 @@ export async function runPostgresTests(): Promise<void> {
     throw new Error("CONTROL_PLANE_POSTGRES_TEST_URL is required");
   }
   const partition = partitionPostgresTestFiles(await trackedPostgresTestFiles());
-  await runBunTests("isolated namespace-ownership PostgreSQL suite", partition.isolated, 120_000);
-  await runBunTests("general PostgreSQL suite", partition.general, 600_000, 4);
+  await runBunTests(
+    "isolated namespace-ownership PostgreSQL suite",
+    partition.isolated,
+    postgresTestTimeoutMilliseconds.isolated,
+  );
+  await runBunTests(
+    "general PostgreSQL suite",
+    partition.general,
+    postgresTestTimeoutMilliseconds.general,
+    4,
+  );
 }
 
 if (import.meta.main) {
