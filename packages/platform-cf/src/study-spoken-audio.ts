@@ -9,7 +9,7 @@ import { Effect } from "effect";
 export const ELEVENLABS_STUDY_BATCH_ENDPOINT =
   "https://api.elevenlabs.io/v1/speech-to-text?enable_logging=false" as const;
 export const ELEVENLABS_STUDY_BATCH_LOGGED_ENDPOINT =
-  "https://api.elevenlabs.io/v1/speech-to-text" as const;
+  "https://api.elevenlabs.io/v1/speech-to-text?enable_logging=true" as const;
 export const ELEVENLABS_STUDY_BATCH_MODEL = "scribe_v2" as const;
 export const ELEVENLABS_STUDY_BATCH_ADAPTER_REVISION =
   "elevenlabs_study_batch_scribe_v2@1" as const;
@@ -98,8 +98,10 @@ export function makeElevenLabsStudyBatchTranscriber(
     options.enableLogging === true
       ? ELEVENLABS_STUDY_BATCH_LOGGED_ENDPOINT
       : ELEVENLABS_STUDY_BATCH_ENDPOINT;
+  const providerRetention = options.enableLogging === true ? "stored" : "not_stored";
   const timeoutMs = options.timeoutMs ?? TIMEOUT_MS;
   return {
+    providerRetention,
     transcribe: ({ audio, contentType, languageHint }) =>
       Effect.tryPromise({
         try: async () => {
@@ -147,7 +149,7 @@ export function makeElevenLabsStudyBatchTranscriber(
 export function makeFakeStudyBatchTranscriber(
   transcript: StudyBatchTranscript,
 ): StudyBatchTranscriber {
-  return { transcribe: () => Effect.succeed(transcript) };
+  return { providerRetention: "not_stored", transcribe: () => Effect.succeed(transcript) };
 }
 
 export interface StudyAudioBucket {

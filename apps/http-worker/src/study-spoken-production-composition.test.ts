@@ -40,6 +40,7 @@ describe("Study spoken production composition", () => {
     expect(storedObjects).toHaveLength(0);
 
     if (study === undefined) throw new Error("Study speech must be enabled in this fixture");
+    expect(study.transcriber.providerRetention).toBe("not_stored");
     await expect(
       Effect.runPromise(
         study.transcriber.transcribe({
@@ -82,6 +83,9 @@ describe("Study spoken production composition", () => {
         },
       );
       if (study === undefined) throw new Error("Study speech must be enabled in this fixture");
+      expect(study.transcriber.providerRetention).toBe(
+        API_NEXT_ENV === "staging" ? "stored" : "not_stored",
+      );
       await Effect.runPromise(
         study.transcriber.transcribe({
           audio: new Uint8Array([1]),
@@ -90,7 +94,7 @@ describe("Study spoken production composition", () => {
         }),
       );
     }
-    expect(urls[0]).not.toContain("enable_logging=false");
+    expect(urls[0]).toContain("enable_logging=true");
     expect(urls[1]).toContain("enable_logging=false");
   });
 });

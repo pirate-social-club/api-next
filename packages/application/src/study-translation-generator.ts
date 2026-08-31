@@ -10,6 +10,7 @@ export const STUDY_TRANSLATION_PROMPT_V1 = "song_study_translation_prompt_v1" as
 export const STUDY_TRANSLATION_VALIDATOR_V1 = "study_translation_validator_v1" as const;
 export const STUDY_TRANSLATION_PROMPT_V2 = "song_study_translation_prompt_v2" as const;
 export const STUDY_TRANSLATION_VALIDATOR_V2 = "study_translation_validator_v2" as const;
+export const STUDY_TRANSLATION_GENERATOR_POLICY_V1 = "study_translation_generation_v1" as const;
 export type StudyTranslationPromptRevision =
   | typeof STUDY_TRANSLATION_PROMPT_V1
   | typeof STUDY_TRANSLATION_PROMPT_V2;
@@ -344,6 +345,9 @@ export interface StudyTranslationGenerationStore {
     readonly postId: string;
     readonly targetLanguage: string;
     readonly learnerBand: Schema.Schema.Type<typeof StudyLearnerBandV2>;
+    readonly generatorPolicyRevision: typeof STUDY_TRANSLATION_GENERATOR_POLICY_V1;
+    readonly promptRevision: typeof STUDY_TRANSLATION_PROMPT_V2;
+    readonly qualityPolicyRevision: string;
     readonly generationRunId: string;
     readonly leaseToken: string;
     readonly requestedAt: string;
@@ -375,6 +379,9 @@ export const makeStudyTranslationGenerationService = (
     readonly postId: string;
     readonly targetLanguage: string;
     readonly learnerBand: Schema.Schema.Type<typeof StudyLearnerBandV2>;
+    readonly generatorPolicyRevision: typeof STUDY_TRANSLATION_GENERATOR_POLICY_V1;
+    readonly promptRevision: typeof STUDY_TRANSLATION_PROMPT_V2;
+    readonly qualityPolicyRevision: string;
   }) =>
     Effect.gen(function* () {
       const ids = yield* IdGen;
@@ -387,7 +394,7 @@ export const makeStudyTranslationGenerationService = (
         generationRunId,
         leaseToken,
         requestedAt: instant(requestedAtMs),
-        leaseExpiresAt: instant(requestedAtMs + 5 * 60_000),
+        leaseExpiresAt: instant(requestedAtMs + 6 * 60_000),
       });
       if (reservation.state === "terminal") return reservation.outcome;
       const proposal = yield* generator.generate(reservation.request).pipe(

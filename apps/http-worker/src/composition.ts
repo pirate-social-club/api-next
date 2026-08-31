@@ -149,6 +149,7 @@ import {
 } from "@pirate/platform-cf/study-generation-workflow-cloudflare";
 import { makeControlPlaneStudyLanguageProfileStore } from "@pirate/platform-cf/study-language-profile-repository";
 import type { StudyAudioBucket, StudyBatchFetch } from "@pirate/platform-cf/study-spoken-audio";
+import { makeControlPlaneStudyTranslationPolicyResolver } from "@pirate/platform-cf/study-translation-repository";
 import { makeControlPlaneStudyV2Store } from "@pirate/platform-cf/study-v2-repository";
 import { makeControlPlaneTextSubmissionStore } from "@pirate/platform-cf/text-submission-repository";
 import {
@@ -942,10 +943,12 @@ export async function createProductionHttpWorker(
       return {};
     }
     const profiles = makeControlPlaneStudyLanguageProfileStore(controlPlane);
+    const translationPolicy = makeControlPlaneStudyTranslationPolicyResolver(controlPlane);
     const launcher = makeCloudflareStudyGenerationWorkflowLauncher(workflow);
     return makeStudyGenerationHandlers({
       resolveProfile: (input) =>
         Effect.runPromise(profiles.resolve(input)) as Promise<StudyLanguageProfileResolution>,
+      resolveTranslationPolicy: (input) => Effect.runPromise(translationPolicy.resolve(input)),
       launch: launcher.create,
     });
   })();

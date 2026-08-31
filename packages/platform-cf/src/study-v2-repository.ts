@@ -741,7 +741,7 @@ export const makeControlPlaneStudyV2Repository = () => ({
                          byte_size, duration_ms, platform_retention, provider_retention,
                          recording_state, expires_at
                        ) VALUES ($1,$2,'study',$3,$4,NULL,$5,$6,$7,$8,
-                         'private_learning','not_stored','pending',
+                         'private_learning',$9,'pending',
                          clock_timestamp() + interval '24 months')`,
                 values: [
                   input.artifactId,
@@ -752,6 +752,7 @@ export const makeControlPlaneStudyV2Repository = () => ({
                   input.audioContentType,
                   input.audioByteSize,
                   input.audioDurationMs,
+                  input.providerRetention,
                 ],
                 readonly: false,
               });

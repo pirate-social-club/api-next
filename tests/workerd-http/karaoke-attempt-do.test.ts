@@ -19,6 +19,10 @@ type ArchiveHarness = {
   finishArchive(): Promise<KaraokeRecordingResult>;
 };
 
+type RetentionHarness = {
+  recordProviderRetention(retention: "not_stored" | "stored"): void;
+};
+
 const abandonedSummary: KaraokeSessionSummary = {
   confidenceMean: null,
   finalScore: 0,
@@ -141,6 +145,24 @@ describe("Karaoke attempt Durable Object", () => {
       async (instance) => await (instance as unknown as ArchiveHarness).finishArchive(),
     );
     expect(cached).toEqual(result);
+  });
+
+  it("persists a provider zero-retention refusal monotonically", async () => {
+    const sessionId = `karaoke-retention-${crypto.randomUUID()}`;
+    const stub = env.KARAOKE_ATTEMPT.getByName(sessionId);
+    await stub.initialize(authority(sessionId));
+    await runInDurableObject(stub, async (instance, state) => {
+      const retention = () =>
+        state.storage.sql
+          .exec<{ retention: string }>(
+            "SELECT retention FROM karaoke_provider_retention WHERE id=1",
+          )
+          .one().retention;
+      expect(retention()).toBe("not_stored");
+      (instance as unknown as RetentionHarness).recordProviderRetention("stored");
+      (instance as unknown as RetentionHarness).recordProviderRetention("not_stored");
+      expect(retention()).toBe("stored");
+    });
   });
 
   it("aborts an open multipart upload after archival fails", async () => {

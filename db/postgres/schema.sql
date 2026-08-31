@@ -17275,7 +17275,7 @@ CREATE TABLE hns_operator_control_promotion_receipts (
     expires_at timestamp with time zone NOT NULL,
     committed_at timestamp with time zone NOT NULL,
     CONSTRAINT hns_operator_control_promotion_r_observer_evidence_sha256_check CHECK ((observer_evidence_sha256 ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT hns_operator_control_promotion_receipt_bytes_check CHECK ((((octet_length(candidate_bytes) >= 1) AND (octet_length(candidate_bytes) <= 1048576)) AND (encode(sha256(candidate_bytes), 'hex'::text) = candidate_sha256))),
+    CONSTRAINT hns_operator_control_promotion_receipt_bytes_check CHECK (((octet_length(candidate_bytes) >= 1) AND (octet_length(candidate_bytes) <= 1048576) AND (encode(sha256(candidate_bytes), 'hex'::text) = candidate_sha256))),
     CONSTRAINT hns_operator_control_promotion_receipt_generation_check CHECK (((dns_zone_activation_generation BETWEEN 1 AND '9007199254740991'::bigint) AND ((prior_app_host_activation_generation >= 1) AND (prior_app_host_activation_generation <= '9007199254740990'::bigint)) AND (promoted_app_host_activation_generation = (prior_app_host_activation_generation + 1)) AND ((promoted_binding_generation >= 2) AND (promoted_binding_generation <= '9007199254740991'::bigint)))),
     CONSTRAINT hns_operator_control_promotion_receipt_identity_check CHECK ((is_hns_host_persistence_identity(receipt_id, 256) AND is_hns_host_persistence_identity(operation_id, 256) AND is_hns_host_persistence_identity(operator_principal_id, 512) AND is_hns_host_persistence_identity(idempotency_key, 512) AND is_community_route_root_label('hns'::text, canonical_root) AND is_hns_host_persistence_identity(observer_evidence_reference, 424) AND is_hns_host_persistence_identity(dns_zone_activation_id, 256) AND is_hns_host_persistence_identity(app_host_activation_id, 256) AND is_hns_host_persistence_identity(evidence_ref, 512))),
     CONSTRAINT hns_operator_control_promotion_receipt_time_check CHECK (((verified_at <= committed_at) AND (expires_at > committed_at))),
@@ -17443,7 +17443,7 @@ CREATE TABLE learner_audio_artifacts (
     CONSTRAINT learner_audio_artifacts_duration_ms_check CHECK ((duration_ms > 0)),
     CONSTRAINT learner_audio_artifacts_learner_audio_artifact_id_check CHECK (((char_length(learner_audio_artifact_id) >= 1) AND (char_length(learner_audio_artifact_id) <= 256))),
     CONSTRAINT learner_audio_artifacts_platform_retention_check CHECK ((platform_retention = ANY (ARRAY['private_learning'::text, 'ephemeral'::text]))),
-    CONSTRAINT learner_audio_artifacts_provider_retention_check CHECK ((provider_retention = 'not_stored'::text)),
+    CONSTRAINT learner_audio_artifacts_provider_retention_check CHECK ((provider_retention = ANY (ARRAY['not_stored'::text, 'stored'::text]))),
     CONSTRAINT learner_audio_artifacts_recording_state_check CHECK ((recording_state = ANY (ARRAY['pending'::text, 'stored'::text, 'failed'::text, 'deleted'::text]))),
     CONSTRAINT learner_audio_artifacts_source_kind_check CHECK ((source_kind = ANY (ARRAY['study'::text, 'karaoke'::text])))
 );
@@ -20735,12 +20735,12 @@ CREATE TABLE study_translation_generation_runs (
     CONSTRAINT study_translation_generation_runs_learning_language_check CHECK ((learning_language = 'en'::text)),
     CONSTRAINT study_translation_generation_runs_lyrics_revision_check CHECK ((lyrics_revision > 0)),
     CONSTRAINT study_translation_generation_runs_lyrics_source_hash_check CHECK ((lyrics_source_hash ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT study_translation_generation_runs_prompt_revision_check CHECK ((prompt_revision = 'song_study_translation_prompt_v1'::text)),
+    CONSTRAINT study_translation_generation_runs_prompt_revision_check CHECK ((prompt_revision = ANY (ARRAY['song_study_translation_prompt_v1'::text, 'song_study_translation_prompt_v2'::text]))),
     CONSTRAINT study_translation_generation_runs_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT study_translation_generation_runs_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'leased'::text, 'succeeded'::text, 'failed'::text, 'policy_blocked'::text, 'stale'::text]))),
-    CONSTRAINT study_translation_generation_structural_validator_revisio_check CHECK ((structural_validator_revision = 'study_translation_validator_v1'::text)),
     CONSTRAINT study_translation_run_lease_shape CHECK ((((status = 'leased'::text) AND (lease_token IS NOT NULL) AND (lease_expires_at IS NOT NULL)) OR ((status <> 'leased'::text) AND (lease_token IS NULL) AND (lease_expires_at IS NULL)))),
     CONSTRAINT study_translation_run_provider_shape CHECK ((((status = 'succeeded'::text) AND (provider_id IS NOT NULL) AND (provider_model IS NOT NULL)) OR (status <> 'succeeded'::text))),
+    CONSTRAINT study_translation_run_structural_validator_check CHECK ((structural_validator_revision = ANY (ARRAY['study_translation_validator_v1'::text, 'study_translation_validator_v2'::text]))),
     CONSTRAINT study_translation_run_terminal_shape CHECK ((((status = ANY (ARRAY['failed'::text, 'policy_blocked'::text, 'stale'::text])) AND (retryable IS NOT NULL) AND (failure_reason IS NOT NULL) AND (completed_at IS NOT NULL)) OR ((status = 'succeeded'::text) AND (retryable IS NULL) AND (failure_reason IS NULL) AND (completed_at IS NOT NULL)) OR ((status = ANY (ARRAY['pending'::text, 'leased'::text])) AND (retryable IS NULL) AND (failure_reason IS NULL) AND (completed_at IS NULL)))),
     CONSTRAINT study_translation_run_time_shape CHECK (((updated_at >= created_at) AND ((completed_at IS NULL) OR (completed_at >= created_at))))
 );
@@ -20755,7 +20755,13 @@ CREATE TABLE study_translation_quality_policies (
     bilingual_rubric_bps integer NOT NULL,
     critical_defect_count bigint NOT NULL,
     accepted_at timestamp with time zone NOT NULL,
-    CONSTRAINT study_translation_active_quality_shape CHECK (((release_state <> 'active'::text) OR ((corpus_sample_count >= 100) AND (source_binding_bps = 10000) AND (meaning_preservation_bps = 10000) AND (bilingual_rubric_bps >= 9500) AND (critical_defect_count = 0)))),
+    corpus_revision text,
+    reviewed_file_sha256 text,
+    reviewer_role text,
+    evaluator_revision text,
+    CONSTRAINT study_translation_active_quality_shape CHECK (((release_state <> 'active'::text) OR ((corpus_sample_count >= 100) AND (source_binding_bps = 10000) AND (meaning_preservation_bps = 10000) AND (bilingual_rubric_bps >= 9500) AND (critical_defect_count = 0) AND (corpus_revision IS NOT NULL) AND (reviewed_file_sha256 IS NOT NULL) AND (reviewer_role IS NOT NULL) AND (evaluator_revision IS NOT NULL)))),
+    CONSTRAINT study_translation_quality_corpus_revision_check CHECK (((corpus_revision IS NULL) OR ((char_length(corpus_revision) >= 1) AND (char_length(corpus_revision) <= 256)))),
+    CONSTRAINT study_translation_quality_evaluator_revision_check CHECK (((evaluator_revision IS NULL) OR ((char_length(evaluator_revision) >= 1) AND (char_length(evaluator_revision) <= 128)))),
     CONSTRAINT study_translation_quality_polici_meaning_preservation_bps_check CHECK (((meaning_preservation_bps >= 0) AND (meaning_preservation_bps <= 10000))),
     CONSTRAINT study_translation_quality_policie_quality_policy_revision_check CHECK (((char_length(quality_policy_revision) >= 1) AND (char_length(quality_policy_revision) <= 128))),
     CONSTRAINT study_translation_quality_policies_bilingual_rubric_bps_check CHECK (((bilingual_rubric_bps >= 0) AND (bilingual_rubric_bps <= 10000))),
@@ -20763,7 +20769,9 @@ CREATE TABLE study_translation_quality_policies (
     CONSTRAINT study_translation_quality_policies_critical_defect_count_check CHECK ((critical_defect_count >= 0)),
     CONSTRAINT study_translation_quality_policies_release_state_check CHECK ((release_state = ANY (ARRAY['evaluation'::text, 'active'::text]))),
     CONSTRAINT study_translation_quality_policies_source_binding_bps_check CHECK (((source_binding_bps >= 0) AND (source_binding_bps <= 10000))),
-    CONSTRAINT study_translation_quality_policies_target_language_check CHECK (((char_length(target_language) <= 64) AND (target_language ~ '^[a-z]{2,3}(?:-[A-Z][a-z]{3})?(?:-(?:[A-Z]{2}|[0-9]{3}))?(?:-[a-z0-9]{5,8}|-[0-9][a-z0-9]{3})*$'::text)))
+    CONSTRAINT study_translation_quality_policies_target_language_check CHECK (((char_length(target_language) <= 64) AND (target_language ~ '^[a-z]{2,3}(?:-[A-Z][a-z]{3})?(?:-(?:[A-Z]{2}|[0-9]{3}))?(?:-[a-z0-9]{5,8}|-[0-9][a-z0-9]{3})*$'::text))),
+    CONSTRAINT study_translation_quality_reviewed_file_sha256_check CHECK (((reviewed_file_sha256 IS NULL) OR (reviewed_file_sha256 ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT study_translation_quality_reviewer_role_check CHECK (((reviewer_role IS NULL) OR ((char_length(reviewer_role) >= 1) AND (char_length(reviewer_role) <= 128))))
 );
 
 CREATE TABLE study_translation_quality_registry (
