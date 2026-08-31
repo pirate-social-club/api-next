@@ -92,6 +92,7 @@
     "0089_hns_app_host_active_refresh.sql": "a2b620bf31ef26f9ca7004fac2db4c385ce67ab6cd5d931fb8119b0caf08efad",
     "0090_hns_operator_route_control_promotion.sql": "6015d7ff968adc93d433b1cce9ab39ee8a653db9071005a1e7581f8f3239d191",
     "0091_study_runtime_seam_hardening.sql": "c43c90ac75b30d5189c8930427027c130fab6d02226f94b3f876039c6e3ba006",
-    "0092_dance_reference_shadow.sql": "af0c57a819ccd1d95e6d2f8d512ede1131ad64f95bbd4b415747cda808dfd4a3"
+    "0092_hns_sale_namespace_active_refresh.sql": "3719f3e50ae0823c0b59aff93ca0c21161558403b626b410717de71b2ee2729d",
+    "0093_dance_reference_shadow.sql": "af0c57a819ccd1d95e6d2f8d512ede1131ad64f95bbd4b415747cda808dfd4a3"
   }
 }

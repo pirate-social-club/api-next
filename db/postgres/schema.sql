@@ -10905,8 +10905,30 @@ BEGIN
     IF prior.status = 'revoked' THEN
       RAISE EXCEPTION 'revoked handle sale namespace is terminal';
     END IF;
-    IF NEW.status = 'pending' OR NEW.status = prior.status THEN
+    IF NEW.status = 'pending' THEN
       RAISE EXCEPTION 'handle sale namespace revision must advance state';
+    END IF;
+    IF NEW.status = prior.status THEN
+      IF NEW.status <> 'active' THEN
+        RAISE EXCEPTION 'handle sale namespace revision must advance state';
+      END IF;
+      IF NEW.activated_at <> prior.activated_at THEN
+        RAISE EXCEPTION 'active handle sale namespace refresh must preserve activation time';
+      END IF;
+      IF NEW.namespace_authority_reference = prior.namespace_authority_reference
+        AND NEW.namespace_authority_generation = prior.namespace_authority_generation
+        AND NEW.dns_zone_activation_id = prior.dns_zone_activation_id
+        AND NEW.dns_zone_activation_generation = prior.dns_zone_activation_generation THEN
+        RAISE EXCEPTION 'active handle sale namespace refresh must advance authority';
+      END IF;
+      IF NEW.namespace_authority_reference = prior.namespace_authority_reference
+        AND NEW.namespace_authority_generation < prior.namespace_authority_generation THEN
+        RAISE EXCEPTION 'active handle sale namespace namespace authority cannot regress';
+      END IF;
+      IF NEW.dns_zone_activation_id = prior.dns_zone_activation_id
+        AND NEW.dns_zone_activation_generation < prior.dns_zone_activation_generation THEN
+        RAISE EXCEPTION 'active handle sale namespace DNS authority cannot regress';
+      END IF;
     END IF;
   END IF;
 
