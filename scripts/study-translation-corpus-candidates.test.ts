@@ -4,8 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   evaluateStudyTranslationCorpus,
+  evaluateStudyTranslationCorpusV2,
   STUDY_LANGUAGE_PROFILE_PROMPT_V2,
   STUDY_LANGUAGE_PROFILE_VALIDATOR_V2,
+  STUDY_TRANSLATION_CORPUS_EVALUATOR_V2,
+  STUDY_TRANSLATION_LIBRARY_MEASUREMENT_V1,
   STUDY_TRANSLATION_PROMPT_V2,
   type StudyLanguageProfileAnalysis,
   type StudyTranslationGenerationProposal,
@@ -18,7 +21,12 @@ import {
   writeStudyCorpusCandidate,
 } from "./generate-study-translation-corpus-candidates.ts";
 import {
+  makeZhHansB1ApplicabilityPolicyV1,
+  measureStudySongLibraryV1,
+} from "./study-translation-corpus-applicability.ts";
+import {
   buildStudyTranslationCorpusCandidateDocument,
+  buildStudyTranslationCorpusCandidateDocumentV2,
   makeOfflineTranslationRequest,
   planStudyCorpusSong,
   studyTranslationCorpusQuotaReport,
@@ -166,6 +174,46 @@ describe("offline Study translation corpus candidates", () => {
     expect(report.missingCategories).toContain("mixed_language");
   });
 
+  test("builds v2 evidence for the explicit dual-AI review method", () => {
+    const candidate = plan();
+    const analysis = analysisFor(candidate);
+    const request = makeOfflineTranslationRequest({
+      plan: candidate,
+      analysis,
+      targetLanguage: "zh-Hans",
+    });
+    const proposal = proposalFor(request);
+    const applicabilityPolicy = makeZhHansB1ApplicabilityPolicyV1({
+      measurement_revision: STUDY_TRANSLATION_LIBRARY_MEASUREMENT_V1,
+      library_sha256: "a".repeat(64),
+      song_directory_count: 97,
+      lyrics_file_count: 94,
+      target_script_predicate: "unicode_script_han_v1",
+      target_script_song_count: 0,
+    });
+
+    const candidateDocument = buildStudyTranslationCorpusCandidateDocumentV2({
+      generatedSongs: [{ plan: candidate, analysis, request, proposal }],
+      targetLanguage: "zh-Hans",
+      applicabilityPolicy,
+    });
+    expect(candidateDocument.corpus).toMatchObject({
+      evaluator_revision: STUDY_TRANSLATION_CORPUS_EVALUATOR_V2,
+      reviewer_role: "dual_ai_review",
+      review_method: "dual_ai_review_v1",
+      reviewed_at: "pending",
+    });
+    expect(candidateDocument.corpus.items.every(({ reviewed }) => !reviewed)).toBe(true);
+    expect(candidateDocument.corpus.items.every((item) => !("human_reviewed" in item))).toBe(true);
+    expect(evaluateStudyTranslationCorpus(candidateDocument).failures).toEqual([
+      "invalid_corpus_format",
+    ]);
+    const evaluation = evaluateStudyTranslationCorpusV2(candidateDocument);
+    expect(evaluation.releaseState).toBe("evaluation");
+    expect(evaluation.failures).toContain("review_incomplete");
+    expect(evaluation.notApplicableCategories).toEqual(["already_target_language"]);
+  });
+
   test("parses only explicit bounded execution arguments", () => {
     expect(
       parseStudyCorpusCandidateArguments([
@@ -232,6 +280,42 @@ describe("offline Study translation corpus candidates", () => {
         }),
       ).rejects.toMatchObject({ code: "EEXIST" });
       expect(JSON.parse(await readFile(outputPath, "utf8"))).toEqual({ first: true });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("binds a provider-free plan to the measured library and rejects drift", async () => {
+    const root = await mkdtemp(join(tmpdir(), "study-corpus-policy-"));
+    try {
+      const songDirectory = join(root, "Fixture Song");
+      await mkdir(songDirectory);
+      const lyricsPath = join(songDirectory, "lyrics.txt");
+      await writeFile(lyricsPath, lyrics, "utf8");
+      const policy = makeZhHansB1ApplicabilityPolicyV1(await measureStudySongLibraryV1(root));
+      const policyPath = join(root, "policy.json");
+      await writeFile(policyPath, JSON.stringify(policy), "utf8");
+      const arguments_ = [
+        "--songs-root",
+        root,
+        "--song",
+        "Fixture Song",
+        "--target-language",
+        "zh-Hans",
+        "--applicability-policy",
+        policyPath,
+      ] as const;
+
+      await expect(runStudyCorpusCandidateCommand(arguments_)).resolves.toMatchObject({
+        mode: "plan",
+        applicability_policy_revision: policy.policy_revision,
+        library_sha256: policy.library_measurement.library_sha256,
+      });
+
+      await writeFile(lyricsPath, `${lyrics}\nchanged`, "utf8");
+      await expect(runStudyCorpusCandidateCommand(arguments_)).rejects.toThrow(
+        "song library changed after applicability measurement",
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }

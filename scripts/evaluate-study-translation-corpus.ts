@@ -1,4 +1,9 @@
-import { evaluateStudyTranslationCorpus } from "@pirate/application";
+import {
+  evaluateStudyTranslationCorpus,
+  evaluateStudyTranslationCorpusV2,
+  STUDY_TRANSLATION_CORPUS_CANDIDATE_DOCUMENT_V2,
+  STUDY_TRANSLATION_CORPUS_V2,
+} from "@pirate/application";
 
 const inputPath = process.argv[2];
 if (inputPath === undefined || inputPath.length === 0) {
@@ -9,6 +14,23 @@ if (inputPath === undefined || inputPath.length === 0) {
 const input = await Bun.file(inputPath)
   .json()
   .catch(() => undefined);
-const evaluation = evaluateStudyTranslationCorpus(input);
+const inputRevision =
+  typeof input === "object" && input !== null && "schema_revision" in input
+    ? input.schema_revision
+    : null;
+const isV2 =
+  inputRevision === STUDY_TRANSLATION_CORPUS_V2 ||
+  inputRevision === STUDY_TRANSLATION_CORPUS_CANDIDATE_DOCUMENT_V2;
+const evaluation = isV2
+  ? evaluateStudyTranslationCorpusV2(input)
+  : evaluateStudyTranslationCorpus(input);
 console.log(JSON.stringify(evaluation, null, 2));
-process.exit(evaluation.eligibleForHumanActivation ? 0 : 1);
+process.exit(
+  "eligibleForActivation" in evaluation
+    ? evaluation.eligibleForActivation
+      ? 0
+      : 1
+    : evaluation.eligibleForHumanActivation
+      ? 0
+      : 1,
+);
