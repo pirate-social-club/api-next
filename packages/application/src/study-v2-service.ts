@@ -6,7 +6,13 @@ import type {
   StudySessionItemV2,
   StudySessionV2,
 } from "@pirate/contracts";
-import { gradeTranscriptV2, type StudyTranscriptGradeV2 } from "@pirate/domain";
+import {
+  gradeTranscriptV2,
+  STUDY_TRANSCRIPT_GRADER_POLICY_V1,
+  STUDY_TRANSCRIPT_GRADER_POLICY_V2,
+  type StudyTranscriptGraderPolicyRevision,
+  type StudyTranscriptGradeV2,
+} from "@pirate/domain";
 import { Data, Effect } from "effect";
 import { Clock, IdGen } from "./ports.ts";
 import { canonicalBodyHash } from "./use-cases/content/common.ts";
@@ -190,6 +196,13 @@ const hash = (value: unknown) =>
 
 const instant = (milliseconds: number): string => new Date(milliseconds).toISOString();
 
+const transcriptGraderPolicy = (
+  revision: string,
+): Effect.Effect<StudyTranscriptGraderPolicyRevision, StudyV2CommandRejected> =>
+  revision === STUDY_TRANSCRIPT_GRADER_POLICY_V1 || revision === STUDY_TRANSCRIPT_GRADER_POLICY_V2
+    ? Effect.succeed(revision)
+    : Effect.fail(rejected("submission-kind-mismatch"));
+
 const sha256Hex = (bytes: Uint8Array) =>
   Effect.tryPromise({
     try: () => crypto.subtle.digest("SHA-256", bytes),
@@ -329,6 +342,7 @@ export const makeStudyV2Service = (
         contentDigest: audioDigest,
       });
       const acceptedAt = instant(yield* clock.now);
+      const graderPolicy = yield* transcriptGraderPolicy(context.item.grader_policy_revision);
       return yield* store.completeSpokenAnswer({
         ...input,
         acceptedAt,
@@ -343,6 +357,7 @@ export const makeStudyV2Service = (
           context.referenceText,
           transcript.transcript,
           context.dominantLanguage,
+          graderPolicy,
         ),
         providerDetectedLanguage: transcript.detectedLanguage,
         providerDetectedLanguageConfidence: transcript.detectedLanguageConfidence,

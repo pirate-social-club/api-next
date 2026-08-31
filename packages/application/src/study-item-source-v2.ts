@@ -20,6 +20,11 @@ export const StudyPrivateGraderV2 = Schema.Union([
     tokenizer_policy_revision: Identifier,
   }),
   Schema.Struct({
+    kind: Schema.Literal("source_token_phonetic_v2"),
+    reference_text: Text,
+    tokenizer_policy_revision: Identifier,
+  }),
+  Schema.Struct({
     kind: Schema.Literal("exact_choice_v1"),
     correct_choice_key: Identifier,
     correct_text: Text,
@@ -69,10 +74,29 @@ export const StudySourceItemV2 = Schema.Struct({
     if (item.exercise_type !== item.presentation.kind) {
       return "Exercise and presentation kinds must match";
     }
-    const graderKind =
-      item.exercise_type === "say_it_back" ? "source_token_diff_v1" : "exact_choice_v1";
-    if (item.private_grader.kind !== graderKind) {
+    const graderKindMatches =
+      item.exercise_type === "say_it_back"
+        ? item.private_grader.kind === "source_token_diff_v1" ||
+          item.private_grader.kind === "source_token_phonetic_v2"
+        : item.private_grader.kind === "exact_choice_v1";
+    if (!graderKindMatches) {
       return "Exercise and private grader kinds must match";
+    }
+    if (
+      item.exercise_type === "say_it_back" &&
+      (item.private_grader.kind === "source_token_diff_v1" ||
+        item.private_grader.kind === "source_token_phonetic_v2")
+    ) {
+      const expectedPolicy =
+        item.private_grader.kind === "source_token_diff_v1"
+          ? "script_aware_token_diff_v1"
+          : "script_aware_token_phonetic_v2";
+      if (
+        item.grader_policy_revision !== expectedPolicy ||
+        item.private_grader.tokenizer_policy_revision !== expectedPolicy
+      ) {
+        return "Say-it-back private grader and policy revisions must match";
+      }
     }
     if (
       item.exercise_type === "translation_choice" &&
