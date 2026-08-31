@@ -94,3 +94,16 @@ be proven, stop this lane and do not authorize the canary.
 Activation, natural-tick, synthetic-alert, suppression, cleanup and rollback
 identifiers are appended here only after each read-back succeeds. Until then,
 the recorded baseline above is the latest production evidence.
+
+Activation deployment `49d2c3c9-3dbb-4bed-ba34-fa96d209c69b` placed version
+`91d8db41-340d-4b0a-9e90-98a1d7c53e5e` at 100 percent from merged commit
+`c243fa5853ce75758904aee3472fa9831530f1d9`. Version read-back confirmed the
+production environment, reviewed Hyperdrive and Workflow bindings, community,
+HNS and Megapot false, jobs-side media and DATA true, and the synthetic marker
+false.
+
+Live-tail read-back recorded a natural scheduled invocation at
+`2026-08-31T11:34:10Z`. Its exact version was `91d8db41-340d-4b0a-9e90-98a1d7c53e5e`,
+its cron was `* * * * *`, its outcome was `ok`, and it contained no exception or
+custom alert log. This natural invocation preceded the reviewed change that
+enables the synthetic marker.
