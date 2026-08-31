@@ -3,14 +3,20 @@ import {
   STUDY_LANGUAGE_PROFILE_PROMPT_V2,
   STUDY_LANGUAGE_PROFILE_VALIDATOR_V2,
   STUDY_TRANSLATION_CORPUS_CANDIDATE_DOCUMENT_V1,
+  STUDY_TRANSLATION_CORPUS_CANDIDATE_DOCUMENT_V2,
   STUDY_TRANSLATION_CORPUS_CATEGORIES,
+  STUDY_TRANSLATION_CORPUS_EVALUATOR_V2,
   STUDY_TRANSLATION_CORPUS_V1,
+  STUDY_TRANSLATION_CORPUS_V2,
   STUDY_TRANSLATION_PROMPT_V2,
   STUDY_TRANSLATION_VALIDATOR_V2,
   type StudyLanguageProfileAnalysis,
   type StudyLanguageProfileRequest,
+  type StudyTranslationApplicabilityPolicyV2,
   type StudyTranslationCorpusCandidateDocumentV1,
+  type StudyTranslationCorpusCandidateDocumentV2,
   type StudyTranslationCorpusV1,
+  type StudyTranslationCorpusV2,
   type StudyTranslationGenerationProposal,
   type StudyTranslationGenerationRequest,
 } from "@pirate/application";
@@ -18,9 +24,11 @@ import { acceptedLyricLines, canonicalJson, normalizeLyricLineIdentityV1 } from 
 
 export const STUDY_CORPUS_CANDIDATE_PLANNER_V1 = "study_corpus_candidate_planner_v1" as const;
 export const STUDY_CORPUS_PENDING_REVIEWER = "pending_bilingual_reviewer" as const;
+export const STUDY_CORPUS_DUAL_AI_REVIEWER = "dual_ai_review" as const;
 
 type CorpusCategory = (typeof STUDY_TRANSLATION_CORPUS_CATEGORIES)[number];
 type CorpusItem = StudyTranslationCorpusV1["items"][number];
+type CorpusItemV2 = StudyTranslationCorpusV2["items"][number];
 
 export type PlannedStudyUnit = Readonly<{
   studyUnitId: string;
@@ -314,6 +322,60 @@ export const buildStudyTranslationCorpusCandidateDocument = (input: {
   schema_revision: STUDY_TRANSLATION_CORPUS_CANDIDATE_DOCUMENT_V1,
   planner_revision: STUDY_CORPUS_CANDIDATE_PLANNER_V1,
   corpus: buildUnreviewedStudyTranslationCorpus(input),
+  generated_songs: input.generatedSongs.map(({ plan, proposal }) => ({
+    song_id: plan.songId,
+    post_id: plan.postId,
+    proposal,
+  })),
+});
+
+export const buildUnreviewedStudyTranslationCorpusV2 = (input: {
+  readonly generatedSongs: readonly GeneratedCorpusSong[];
+  readonly targetLanguage: string;
+  readonly applicabilityPolicy: StudyTranslationApplicabilityPolicyV2;
+}): StudyTranslationCorpusV2 => {
+  if (
+    input.targetLanguage !== input.applicabilityPolicy.target_language ||
+    input.applicabilityPolicy.learner_band !== "B1"
+  ) {
+    throw new TypeError("applicability policy does not match the corpus target");
+  }
+  const v1 = buildUnreviewedStudyTranslationCorpus(input);
+  const items: CorpusItemV2[] = v1.items.map(({ human_reviewed, ...item }) => {
+    if (human_reviewed) throw new TypeError("candidate corpus must remain unreviewed");
+    return { ...item, reviewed: false };
+  });
+  return {
+    schema_revision: STUDY_TRANSLATION_CORPUS_V2,
+    evaluator_revision: STUDY_TRANSLATION_CORPUS_EVALUATOR_V2,
+    corpus_revision: stableId("offline_corpus", {
+      evaluatorRevision: STUDY_TRANSLATION_CORPUS_EVALUATOR_V2,
+      targetLanguage: input.targetLanguage,
+      learnerBand: "B1",
+      applicabilityPolicy: input.applicabilityPolicy,
+      generationRuns: input.generatedSongs.map(({ proposal }) => proposal.generation_run_id),
+      items: items.map(({ candidate_hash }) => candidate_hash),
+    }),
+    target_language: input.targetLanguage,
+    learner_band: "B1",
+    prompt_revision: STUDY_TRANSLATION_PROMPT_V2,
+    validator_revision: STUDY_TRANSLATION_VALIDATOR_V2,
+    reviewer_role: STUDY_CORPUS_DUAL_AI_REVIEWER,
+    review_method: "dual_ai_review_v1",
+    reviewed_at: "pending",
+    applicability_policy: input.applicabilityPolicy,
+    items,
+  };
+};
+
+export const buildStudyTranslationCorpusCandidateDocumentV2 = (input: {
+  readonly generatedSongs: readonly GeneratedCorpusSong[];
+  readonly targetLanguage: string;
+  readonly applicabilityPolicy: StudyTranslationApplicabilityPolicyV2;
+}): StudyTranslationCorpusCandidateDocumentV2 => ({
+  schema_revision: STUDY_TRANSLATION_CORPUS_CANDIDATE_DOCUMENT_V2,
+  planner_revision: STUDY_CORPUS_CANDIDATE_PLANNER_V1,
+  corpus: buildUnreviewedStudyTranslationCorpusV2(input),
   generated_songs: input.generatedSongs.map(({ plan, proposal }) => ({
     song_id: plan.songId,
     post_id: plan.postId,

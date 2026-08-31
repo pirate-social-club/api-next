@@ -1,21 +1,24 @@
 import { open, readFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import {
-  evaluateStudyTranslationCorpus,
+  evaluateStudyTranslationCorpusV2,
   makeStudyLanguageProfileAnalyzer,
+  StudyTranslationApplicabilityPolicyV2,
+  type StudyTranslationApplicabilityPolicyV2 as StudyTranslationApplicabilityPolicyV2Type,
   validateStudyTranslationProposal,
 } from "@pirate/application";
+import { canonicalJson } from "@pirate/domain";
 import {
   makeOpenRouterStudyLanguageProfileTransport,
   makeOpenRouterStudyTranslationTransport,
 } from "@pirate/platform-cf/study-openrouter-generation";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
+import { measureStudySongLibraryV1 } from "./study-translation-corpus-applicability.ts";
 import {
-  buildStudyTranslationCorpusCandidateDocument,
+  buildStudyTranslationCorpusCandidateDocumentV2,
   type GeneratedCorpusSong,
   makeOfflineTranslationRequest,
   planStudyCorpusSong,
-  studyTranslationCorpusQuotaReport,
 } from "./study-translation-corpus-candidates.ts";
 
 type Options = Readonly<{
@@ -27,12 +30,14 @@ type Options = Readonly<{
   model: string | null;
   provider: string | null;
   outputPath: string | null;
+  applicabilityPolicyPath: string | null;
   overwrite: boolean;
 }>;
 
 const usage = `usage:
   bun run generate:study-translation-candidates --songs-root <dir> --song <name> [--song <name> ...]
     --target-language <bcp47> [--max-units <1-256; default 256>]
+    [--applicability-policy <file>]
     [--execute --model <model> --provider <provider> --output <file> [--overwrite]]
 
 Without --execute the command performs a provider-free deterministic plan only.
@@ -55,6 +60,7 @@ export const parseStudyCorpusCandidateArguments = (arguments_: readonly string[]
   let model: string | null = null;
   let provider: string | null = null;
   let outputPath: string | null = null;
+  let applicabilityPolicyPath: string | null = null;
   let overwrite = false;
   for (let index = 0; index < arguments_.length; index += 1) {
     const flag = arguments_[index];
@@ -69,7 +75,9 @@ export const parseStudyCorpusCandidateArguments = (arguments_: readonly string[]
     } else if (flag === "--model") model = valueAfter(arguments_, index++, flag);
     else if (flag === "--provider") provider = valueAfter(arguments_, index++, flag);
     else if (flag === "--output") outputPath = valueAfter(arguments_, index++, flag);
-    else throw new TypeError(`unknown argument: ${flag ?? ""}`);
+    else if (flag === "--applicability-policy") {
+      applicabilityPolicyPath = valueAfter(arguments_, index++, flag);
+    } else throw new TypeError(`unknown argument: ${flag ?? ""}`);
   }
   if (
     songsRoot === null ||
@@ -90,6 +98,7 @@ export const parseStudyCorpusCandidateArguments = (arguments_: readonly string[]
     (model === null ||
       provider === null ||
       outputPath === null ||
+      applicabilityPolicyPath === null ||
       model !== model.trim() ||
       provider !== provider.trim())
   ) {
@@ -105,8 +114,19 @@ export const parseStudyCorpusCandidateArguments = (arguments_: readonly string[]
     model,
     provider,
     outputPath: outputPath === null ? null : resolve(outputPath),
+    applicabilityPolicyPath:
+      applicabilityPolicyPath === null ? null : resolve(applicabilityPolicyPath),
     overwrite,
   };
+};
+
+const loadApplicabilityPolicy = async (
+  path: string,
+): Promise<StudyTranslationApplicabilityPolicyV2Type> => {
+  const unknownPolicy: unknown = JSON.parse(await readFile(path, "utf8"));
+  return Schema.decodeUnknownSync(StudyTranslationApplicabilityPolicyV2, {
+    onExcessProperty: "error",
+  })(unknownPolicy);
 };
 
 const loadPlans = async (options: Options) => {
@@ -146,12 +166,32 @@ export const runStudyCorpusCandidateCommand = async (
 ): Promise<Readonly<Record<string, unknown>>> => {
   const options = parseStudyCorpusCandidateArguments(arguments_);
   const plans = await loadPlans(options);
+  const applicabilityPolicy =
+    options.applicabilityPolicyPath === null
+      ? null
+      : await loadApplicabilityPolicy(options.applicabilityPolicyPath);
+  if (
+    applicabilityPolicy !== null &&
+    applicabilityPolicy.target_language !== options.targetLanguage
+  ) {
+    throw new TypeError("applicability policy target does not match the requested target");
+  }
+  if (applicabilityPolicy !== null) {
+    const currentMeasurement = await measureStudySongLibraryV1(options.songsRoot);
+    if (
+      canonicalJson(currentMeasurement) !== canonicalJson(applicabilityPolicy.library_measurement)
+    ) {
+      throw new TypeError("song library changed after applicability measurement");
+    }
+  }
   const planSummary = {
     mode: options.execute ? "execute" : "plan",
     target_language: options.targetLanguage,
     learner_band: "B1",
     song_count: plans.length,
     selected_unit_count: plans.reduce((sum, plan) => sum + plan.selectedUnits.length, 0),
+    applicability_policy_revision: applicabilityPolicy?.policy_revision ?? null,
+    library_sha256: applicabilityPolicy?.library_measurement.library_sha256 ?? null,
     songs: plans.map((plan, index) => ({
       name: options.songs[index],
       song_id: plan.songId,
@@ -161,6 +201,9 @@ export const runStudyCorpusCandidateCommand = async (
     })),
   } as const;
   if (!options.execute) return planSummary;
+  if (applicabilityPolicy === null) {
+    throw new TypeError("provider execution requires an applicability policy");
+  }
 
   const apiKey = exactCredential(environment.OPENROUTER_API_KEY);
   const providerOptions = {
@@ -195,12 +238,13 @@ export const runStudyCorpusCandidateCommand = async (
     );
     generatedSongs.push({ plan, analysis, request, proposal });
   }
-  const candidateDocument = buildStudyTranslationCorpusCandidateDocument({
+  const candidateDocument = buildStudyTranslationCorpusCandidateDocumentV2({
     generatedSongs,
     targetLanguage: options.targetLanguage,
+    applicabilityPolicy,
   });
-  const evaluation = evaluateStudyTranslationCorpus(candidateDocument);
-  if (evaluation.schemaRevision === null || evaluation.eligibleForHumanActivation) {
+  const evaluation = evaluateStudyTranslationCorpusV2(candidateDocument);
+  if (evaluation.schemaRevision === null || evaluation.eligibleForActivation) {
     throw new TypeError("unreviewed corpus did not remain in evaluation");
   }
   await writeStudyCorpusCandidate({
@@ -212,7 +256,14 @@ export const runStudyCorpusCandidateCommand = async (
     ...planSummary,
     output_path: options.outputPath,
     corpus_revision: candidateDocument.corpus.corpus_revision,
-    quota_report: studyTranslationCorpusQuotaReport(candidateDocument.corpus),
+    quota_report: {
+      sample_count: evaluation.sampleCount,
+      song_count: evaluation.songCount,
+      categories: evaluation.categoryQuotas,
+      missing_required_categories: evaluation.missingRequiredCategories,
+      opportunistic_shortfalls: evaluation.opportunisticShortfalls,
+      not_applicable_categories: evaluation.notApplicableCategories,
+    },
     evaluation,
   };
 };

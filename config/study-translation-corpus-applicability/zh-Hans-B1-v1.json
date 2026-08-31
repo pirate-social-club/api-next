@@ -1,0 +1,114 @@
+{
+  "policy_revision": "study_translation_zh_hans_b1_applicability_v1",
+  "evaluator_revision": "study_translation_corpus_evaluator_v2",
+  "target_language": "zh-Hans",
+  "learner_band": "B1",
+  "minimum_corpus_sample_count": 200,
+  "minimum_corpus_song_count": 25,
+  "library_measurement": {
+    "measurement_revision": "study_translation_library_measurement_v1",
+    "library_sha256": "39329d18f868865ba3b496206c6178628ff99b8390054ab77d93badec457d4ff",
+    "song_directory_count": 97,
+    "lyrics_file_count": 94,
+    "target_script_predicate": "unicode_script_han_v1",
+    "target_script_song_count": 0
+  },
+  "categories": [
+    {
+      "category": "ordinary",
+      "applicability": "required",
+      "minimum_sample_count": 10,
+      "reason": "common_taxonomy_target_10"
+    },
+    {
+      "category": "short_line",
+      "applicability": "required",
+      "minimum_sample_count": 10,
+      "reason": "common_taxonomy_target_10"
+    },
+    {
+      "category": "repeated_chorus",
+      "applicability": "required",
+      "minimum_sample_count": 10,
+      "reason": "common_taxonomy_target_10"
+    },
+    {
+      "category": "contraction",
+      "applicability": "required",
+      "minimum_sample_count": 10,
+      "reason": "common_taxonomy_target_10"
+    },
+    {
+      "category": "idiom",
+      "applicability": "required",
+      "minimum_sample_count": 20,
+      "reason": "prompt_risk_category_target_20"
+    },
+    {
+      "category": "slang",
+      "applicability": "required",
+      "minimum_sample_count": 20,
+      "reason": "prompt_risk_category_target_20"
+    },
+    {
+      "category": "metaphor",
+      "applicability": "required",
+      "minimum_sample_count": 10,
+      "reason": "common_taxonomy_target_10"
+    },
+    {
+      "category": "profanity",
+      "applicability": "required",
+      "minimum_sample_count": 10,
+      "reason": "common_taxonomy_target_10"
+    },
+    {
+      "category": "proper_name",
+      "applicability": "required",
+      "minimum_sample_count": 10,
+      "reason": "common_taxonomy_target_10"
+    },
+    {
+      "category": "punctuation",
+      "applicability": "required",
+      "minimum_sample_count": 10,
+      "reason": "common_taxonomy_target_10"
+    },
+    {
+      "category": "mixed_language",
+      "applicability": "required",
+      "minimum_sample_count": 20,
+      "reason": "prompt_risk_category_target_20"
+    },
+    {
+      "category": "vocable_only",
+      "applicability": "required",
+      "minimum_sample_count": 10,
+      "reason": "common_taxonomy_target_10"
+    },
+    {
+      "category": "already_target_language",
+      "applicability": "not_applicable",
+      "minimum_sample_count": 0,
+      "reason": "current_library_contains_no_han_script_source_song"
+    },
+    {
+      "category": "ambiguity",
+      "applicability": "required",
+      "minimum_sample_count": 20,
+      "reason": "prompt_risk_category_target_20"
+    },
+    {
+      "category": "gender_or_formality",
+      "applicability": "opportunistic",
+      "minimum_sample_count": 20,
+      "reason": "mandarin_lyrics_rarely_expose_a_natural_gender_or_formality_contrast"
+    },
+    {
+      "category": "instruction_like_lyric",
+      "applicability": "required",
+      "minimum_sample_count": 20,
+      "reason": "prompt_risk_category_target_20"
+    }
+  ]
+}
