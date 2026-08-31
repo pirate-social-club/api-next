@@ -210,7 +210,7 @@ const ownerRecoveryAuthoritySql = `
    WHERE candidate.provider_id = 'hns.owner.v1'
    LIMIT 2`;
 
-export function hnsOwnerRecoveryAuthorityFromRow(
+function hnsOwnerRecoveryAuthorityFromRow(
   row: HnsOwnerRecoveryRow,
 ): HnsOwnerRecoveryAuthorityV1 | null {
   const expectedGeneration = hnsOwnerRecoveryInteger(row.expected_binding_generation);
@@ -304,7 +304,7 @@ export function queryHnsOwnerRecoveryAuthority(
     );
 }
 
-export const hnsOwnerRecoveryStoredSelect = `
+const hnsOwnerRecoveryStoredSelect = `
   SELECT s.route_revalidation_id AS route_recovery_id,
          s.revalidation_session_id AS session_id,
          s.principal_id AS actor_id, s.community_id, s.route_binding_id,
@@ -381,7 +381,7 @@ function terminalFromRow(
   return { idempotency_key: idempotencyKey, poll_hash: pollHash, result_hash: resultHash, result };
 }
 
-export function hnsOwnerRecoveryStoredFromRow(
+function hnsOwnerRecoveryStoredFromRow(
   row: HnsOwnerRecoveryRow,
 ): HnsOwnerRecoveryStoredPoll | null {
   const generation = hnsOwnerRecoveryInteger(row.expected_binding_generation);
