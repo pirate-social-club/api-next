@@ -20,6 +20,7 @@
     "./hns-host-persistence": "./src/hns-host-persistence.ts",
     "./hns-host-serving": "./src/hns-host-serving.ts",
     "./use-cases/hns-edge-alerts": "./src/use-cases/hns-edge-alerts.ts",
+    "./use-cases/hns-edge-status": "./src/use-cases/hns-edge-status.ts",
     "./namespace-ownership": "./src/namespace-ownership/index.ts",
     "./namespace-ownership-start": "./src/namespace-ownership/start.ts",
     "./namespace-ownership-completion": "./src/namespace-ownership/completion.ts",

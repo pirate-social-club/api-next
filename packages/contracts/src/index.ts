@@ -13,6 +13,7 @@ export * from "./endpoint.ts";
 export * from "./errors.ts";
 export * from "./handle-sales.ts";
 export * from "./hns-edge-alerts.ts";
+export * from "./hns-edge-status.ts";
 export * from "./hns-owner-recovery.ts";
 export * from "./karaoke.ts";
 export * from "./language.ts";

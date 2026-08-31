@@ -120,6 +120,10 @@
     "HNS_FORWARDER_V3_KEY_REGISTRY_VERSION": "",
     "HNS_FORWARDER_V3_FRESHNESS_WINDOW_SECONDS": "0",
     "HNS_FORWARDER_V3_FUTURE_CLOCK_SKEW_SECONDS": "-1",
+    "HNS_EDGE_STATUS_ENABLED": "false",
+    "HNS_EDGE_STATUS_ACCESS_ISSUER": "",
+    "HNS_EDGE_STATUS_ACCESS_JWKS_URL": "",
+    "HNS_EDGE_STATUS_ACCESS_AUDIENCE": "",
     // Reviewed inventory: development currently has no additional internal
     // credential headers beyond the platform denylist.
     "VERIFICATION_CALLBACK_CREDENTIAL_HEADERS": "",
@@ -254,6 +258,10 @@
         "HNS_FORWARDER_V3_KEY_REGISTRY_VERSION": "",
         "HNS_FORWARDER_V3_FRESHNESS_WINDOW_SECONDS": "0",
         "HNS_FORWARDER_V3_FUTURE_CLOCK_SKEW_SECONDS": "-1",
+        "HNS_EDGE_STATUS_ENABLED": "false",
+        "HNS_EDGE_STATUS_ACCESS_ISSUER": "",
+        "HNS_EDGE_STATUS_ACCESS_JWKS_URL": "",
+        "HNS_EDGE_STATUS_ACCESS_AUDIENCE": "",
         "ZKPASSPORT_ENABLED": "true",
         "ZKPASSPORT_DOMAIN": "web-next-staging.pirate.sc",
         "ZKPASSPORT_NAME": "Pirate",
@@ -373,13 +381,6 @@
           "bucket_name": "pirate-learner-audio-production"
         }
       ],
-      "send_email": [
-        {
-          "name": "HNS_EDGE_ALERT_EMAIL",
-          "destination_address": "piratesocialclub@proton.me",
-          "allowed_sender_addresses": ["alerts@pirate.sc"]
-        }
-      ],
       "vars": {
         "API_NEXT_ENV": "production",
         "STUDY_GENERATION_ENABLED": "false",
@@ -416,6 +417,10 @@
         "HNS_FORWARDER_V3_KEY_REGISTRY_VERSION": "2026-08-28-02",
         "HNS_FORWARDER_V3_FRESHNESS_WINDOW_SECONDS": "300",
         "HNS_FORWARDER_V3_FUTURE_CLOCK_SKEW_SECONDS": "5",
+        "HNS_EDGE_STATUS_ENABLED": "false",
+        "HNS_EDGE_STATUS_ACCESS_ISSUER": "",
+        "HNS_EDGE_STATUS_ACCESS_JWKS_URL": "",
+        "HNS_EDGE_STATUS_ACCESS_AUDIENCE": "",
         "PIRATE_APP_JWT_ISSUER": "api-next-session-production",
         "PIRATE_APP_JWT_AUDIENCE": "api-next-browser-production",
         "PIRATE_APP_JWT_SCOPE": "api-next-browser-session-production",

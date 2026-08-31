@@ -12,6 +12,7 @@
     "./hns-handle-host-api": "./src/hns-handle-host-api.ts",
     "./hns-forwarder-v3": "./src/hns-forwarder-v3.ts",
     "./hns-edge-alert-email": "./src/hns-edge-alert-email.ts",
+    "./hns-edge-status-kv": "./src/hns-edge-status-kv.ts",
     "./hns-forwarder-replay-store": "./src/hns-forwarder-replay-store.ts",
     "./hns-forwarder-replay-store-do": "./src/hns-forwarder-replay-store-do.ts",
     "./hns-authority-successor-postgres": "./src/hns-authority-successor-postgres.ts",

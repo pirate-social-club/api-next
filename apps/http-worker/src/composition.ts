@@ -68,10 +68,7 @@ import { makeDanceReferenceStore } from "@pirate/platform-cf/dance-reference-aut
 import { makeControlPlaneFeedStore } from "@pirate/platform-cf/feed-repository";
 import { makeHandleRecipientTokenVault } from "@pirate/platform-cf/handle-recipient-token-vault";
 import { makeControlPlaneHandleSalesStore } from "@pirate/platform-cf/handle-sales-repository";
-import {
-  type HnsEdgeAlertEmailClient,
-  makeCloudflareHnsEdgeAlertSink,
-} from "@pirate/platform-cf/hns-edge-alert-email";
+import type { HnsEdgeStatusKvNamespace } from "@pirate/platform-cf/hns-edge-status-kv";
 import type { HnsForwarderReplayStoreNamespace } from "@pirate/platform-cf/hns-forwarder-replay-store";
 import { makeControlPlaneHnsHandlePersonaHostAuthoritySource } from "@pirate/platform-cf/hns-handle-host-authority-repository";
 import { makeControlPlaneHnsCommunityAppHostAuthoritySource } from "@pirate/platform-cf/hns-host-persistence-repository";
@@ -182,7 +179,8 @@ import { makeProductionDanceReferenceServices } from "./dance-reference-producti
 import { makeHandleSalesHandlers } from "./handle-sales-handlers.ts";
 import { makeProductionHnsCommunityAppApiComposition } from "./hns-community-app-api-production-composition.ts";
 import { hnsEdgeAlertBearerMatches, isHnsEdgeAlertTokenConfigured } from "./hns-edge-alert-auth.ts";
-import { makeHnsEdgeAlertHandlers } from "./hns-edge-alert-handlers.ts";
+import { makeHnsEdgeStatusHandlers } from "./hns-edge-status-handlers.ts";
+import { makeProductionHnsEdgeStatusComposition } from "./hns-edge-status-production-composition.ts";
 import { makeProductionHnsHandleHostApiComposition } from "./hns-handle-host-api-production-composition.ts";
 import { makeHnsOwnershipComposition } from "./hns-ownership-composition.ts";
 import { makeKaraokeHandlers, makeKaraokeReadinessHandlers } from "./karaoke-handlers.ts";
@@ -260,7 +258,11 @@ export interface HttpWorkerBindings {
   readonly HNS_FORWARDER_V3_FRESHNESS_WINDOW_SECONDS?: string;
   readonly HNS_FORWARDER_V3_FUTURE_CLOCK_SKEW_SECONDS?: string;
   readonly HNS_EDGE_ALERT_TOKEN?: string;
-  readonly HNS_EDGE_ALERT_EMAIL?: HnsEdgeAlertEmailClient;
+  readonly HNS_EDGE_STATUS?: HnsEdgeStatusKvNamespace;
+  readonly HNS_EDGE_STATUS_ENABLED?: string;
+  readonly HNS_EDGE_STATUS_ACCESS_ISSUER?: string;
+  readonly HNS_EDGE_STATUS_ACCESS_JWKS_URL?: string;
+  readonly HNS_EDGE_STATUS_ACCESS_AUDIENCE?: string;
   readonly VERIFICATION_CALLBACK_CREDENTIAL_HEADERS?: string;
   readonly PIRATE_APP_JWT_PRIVATE_KEY?: string;
   readonly PIRATE_APP_JWT_PUBLIC_KEY?: string;
@@ -395,6 +397,10 @@ function configSource(bindings: HttpWorkerBindings): Record<string, string | und
     HNS_FORWARDER_V3_FRESHNESS_WINDOW_SECONDS: bindings.HNS_FORWARDER_V3_FRESHNESS_WINDOW_SECONDS,
     HNS_FORWARDER_V3_FUTURE_CLOCK_SKEW_SECONDS: bindings.HNS_FORWARDER_V3_FUTURE_CLOCK_SKEW_SECONDS,
     HNS_EDGE_ALERT_TOKEN: bindings.HNS_EDGE_ALERT_TOKEN,
+    HNS_EDGE_STATUS_ENABLED: bindings.HNS_EDGE_STATUS_ENABLED,
+    HNS_EDGE_STATUS_ACCESS_ISSUER: bindings.HNS_EDGE_STATUS_ACCESS_ISSUER,
+    HNS_EDGE_STATUS_ACCESS_JWKS_URL: bindings.HNS_EDGE_STATUS_ACCESS_JWKS_URL,
+    HNS_EDGE_STATUS_ACCESS_AUDIENCE: bindings.HNS_EDGE_STATUS_ACCESS_AUDIENCE,
     VERIFICATION_CALLBACK_CREDENTIAL_HEADERS: bindings.VERIFICATION_CALLBACK_CREDENTIAL_HEADERS,
     PIRATE_APP_JWT_PRIVATE_KEY: bindings.PIRATE_APP_JWT_PRIVATE_KEY,
     PIRATE_APP_JWT_PUBLIC_KEY: bindings.PIRATE_APP_JWT_PUBLIC_KEY,
@@ -552,12 +558,7 @@ export async function createProductionHttpWorker(
   );
   const veryWebSealingKey = decodeVeryOauthSealingKey(Redacted.value(config.VERY_WEB_SEALING_KEY));
   const hnsEdgeAlertToken = Redacted.value(config.HNS_EDGE_ALERT_TOKEN);
-  const hnsEdgeAlertsEnabled = config.API_NEXT_ENV === "production";
-  if (
-    hnsEdgeAlertsEnabled &&
-    (!isHnsEdgeAlertTokenConfigured(hnsEdgeAlertToken) ||
-      bindings.HNS_EDGE_ALERT_EMAIL === undefined)
-  ) {
+  if (config.HNS_EDGE_STATUS_ENABLED && !isHnsEdgeAlertTokenConfigured(hnsEdgeAlertToken)) {
     throw new Error("HTTP worker configuration is incomplete or invalid");
   }
   const previousSigningFields = [
@@ -648,6 +649,10 @@ export async function createProductionHttpWorker(
   const hnsHandleHostApi = makeProductionHnsHandleHostApiComposition({
     config,
     authority_source: makeControlPlaneHnsHandlePersonaHostAuthoritySource(controlPlane),
+  });
+  const hnsEdgeStatus = makeProductionHnsEdgeStatusComposition({
+    config,
+    ...(bindings.HNS_EDGE_STATUS === undefined ? {} : { namespace: bindings.HNS_EDGE_STATUS }),
   });
   const identityStore = makeControlPlaneIdentityStore(controlPlane);
   const resolvePrivyCredentialAccount = makeControlPlaneCredentialCanonicalResolver(controlPlane, {
@@ -971,10 +976,9 @@ export async function createProductionHttpWorker(
           clock: { now: Effect.sync(() => Date.now()) },
           store: makeControlPlaneLearnerAudioDeletionStore(controlPlane, bindings.LEARNER_AUDIO),
         });
-  const hnsEdgeAlertHandlers =
-    !hnsEdgeAlertsEnabled || bindings.HNS_EDGE_ALERT_EMAIL === undefined
-      ? {}
-      : makeHnsEdgeAlertHandlers(makeCloudflareHnsEdgeAlertSink(bindings.HNS_EDGE_ALERT_EMAIL));
+  const hnsEdgeStatusHandlers = hnsEdgeStatus.enabled
+    ? makeHnsEdgeStatusHandlers(hnsEdgeStatus)
+    : {};
   const karaokeReadinessHandlers = makeKaraokeReadinessHandlers(
     makeControlPlaneKaraokeReadinessStore(controlPlane),
   );
@@ -1128,16 +1132,18 @@ export async function createProductionHttpWorker(
     readonly credentials: { readonly authorization?: string; readonly sessionCookie?: string };
   }) => {
     if (endpoint.auth.policy.kind === "sharedSecret") {
+      const policyName = endpoint.auth.policy.name;
+      const acceptedPolicy = policyName === "hns-edge-alert" || policyName === "hns-edge-status";
       if (
-        endpoint.auth.policy.name !== "hns-edge-alert" ||
+        !acceptedPolicy ||
         !(await hnsEdgeAlertBearerMatches(credentials.authorization, hnsEdgeAlertToken))
       ) {
         throw new AuthError({ message: "Authentication failed" });
       }
       return {
         kind: "device" as const,
-        subject: "hns-edge-alert",
-        scopes: ["hns-edge-alert:deliver"],
+        subject: policyName,
+        scopes: [`${policyName}:deliver`],
       };
     }
     return Effect.runPromise(
@@ -1162,6 +1168,7 @@ export async function createProductionHttpWorker(
     config: { corsOrigin: config.CORS_ORIGIN },
     hnsCommunityAppApi,
     hnsHandleHostApi,
+    hnsEdgeStatus,
     handlers: {
       ...productHandlers,
       ...communityCreationHandlers,
@@ -1176,7 +1183,7 @@ export async function createProductionHttpWorker(
       ...studyV2Handlers,
       ...studyGenerationHandlers,
       ...learnerAudioHandlers,
-      ...hnsEdgeAlertHandlers,
+      ...hnsEdgeStatusHandlers,
       ...handleSalesHandlers,
       ...platformPirateHandleHandlers,
       ...songRewardOfferHandlers,
@@ -1194,11 +1201,12 @@ export async function createProductionHttpWorker(
       Effect.runPromise(
         Effect.gen(function* () {
           if (endpoint.auth.policy.kind === "sharedSecret") {
+            const policyName = endpoint.auth.policy.name;
             if (
-              endpoint.auth.policy.name === "hns-edge-alert" &&
+              (policyName === "hns-edge-alert" || policyName === "hns-edge-status") &&
               input.principal?.kind === "device" &&
-              input.principal.subject === "hns-edge-alert" &&
-              input.principal.scopes?.includes("hns-edge-alert:deliver") === true
+              input.principal.subject === policyName &&
+              input.principal.scopes?.includes(`${policyName}:deliver`) === true
             ) {
               return;
             }
