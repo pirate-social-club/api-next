@@ -233,6 +233,7 @@ export const StudyFeedbackV2 = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("none") }),
   Schema.Struct({
     kind: Schema.Literal("transcript_diff"),
+    match_kind: Schema.optional(Schema.Literals(["exact", "phonetic", "none"])),
     heard_transcript: BoundedTranscript,
     matched: Schema.Array(TokenSpan).check(Schema.isMaxLength(256)),
     missing: Schema.Array(TokenSpan).check(Schema.isMaxLength(256)),

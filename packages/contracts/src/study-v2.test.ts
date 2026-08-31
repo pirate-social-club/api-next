@@ -4,6 +4,7 @@ import {
   RequestStudyGenerationV2,
   STUDY_EXERCISE_REVIEW_KEY_MAX_LENGTH,
   StudyAnswerSubmissionV2,
+  StudyFeedbackV2,
   StudySessionItemV2,
   StudySessionV2,
   SubmitStudyAnswerV2,
@@ -135,6 +136,25 @@ describe("Study v2 contracts after spec 019", () => {
     expect(errors.map((ErrorType) => new ErrorType({} as never).code)).toContain(
       "provider_unavailable",
     );
+  });
+
+  test("admits current transcript match kinds while preserving stored pre-phonetic replay", () => {
+    const feedback = {
+      kind: "transcript_diff",
+      heard_transcript: "Hold on",
+      matched: [{ token: "hold", position: 0 }],
+      missing: [],
+      extra: [],
+      substituted: [],
+      policy_revision: "script_aware_token_phonetic_v2",
+    } as const;
+
+    expect(decode(StudyFeedbackV2, { ...feedback, match_kind: "phonetic" })).toMatchObject({
+      kind: "transcript_diff",
+      match_kind: "phonetic",
+    });
+    expect(decode(StudyFeedbackV2, feedback).kind).toBe("transcript_diff");
+    expect(() => decode(StudyFeedbackV2, { ...feedback, match_kind: "approximate" })).toThrow();
   });
 
   test("reports demand-driven translation generation as processing", () => {
