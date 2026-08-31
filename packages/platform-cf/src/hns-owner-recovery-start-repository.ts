@@ -58,8 +58,8 @@ function makeAuthorityResolver(db: ControlPlaneDb["Service"]): HnsOwnerRecoveryA
 
 function makeStartStore(db: ControlPlaneDb["Service"]): HnsOwnerRecoveryStartStore {
   const replay: HnsOwnerRecoveryStartStore["replay"] = (input) =>
-    db
-      .execute<HnsOwnerRecoveryRow>({
+    Effect.gen(function* () {
+      const result = yield* db.execute<HnsOwnerRecoveryRow>({
         label: "hns-owner-recovery.start-replay",
         text: `SELECT route_revalidation_id, revalidation_session_id,
                       start_idempotency_key, public_start_hash, state,
@@ -71,57 +71,51 @@ function makeStartStore(db: ControlPlaneDb["Service"]): HnsOwnerRecoveryStartSto
                 LIMIT 2`,
         values: [input.actor_id, input.community_id, input.expected_generation],
         readonly: true,
-      })
-      .pipe(
-        Effect.flatMap((result) => {
-          if (result.rows.length > 1) return Effect.succeed({ kind: "conflict" } as const);
-          const row = result.rows[0];
-          if (row === undefined) return Effect.succeed({ kind: "none" } as const);
-          if (hnsOwnerRecoveryString(row, "start_idempotency_key") !== input.idempotency_key) {
-            return Effect.succeed({ kind: "conflict" } as const);
-          }
-          const recoveryId = hnsOwnerRecoveryString(row, "route_revalidation_id");
-          const sessionId = hnsOwnerRecoveryString(row, "revalidation_session_id");
-          const state = hnsOwnerRecoveryString(row, "state");
-          if (recoveryId === null || sessionId === null || state === null) {
-            return Effect.fail(storageFailure());
-          }
-          if (state === "finalized") {
-            return loadHnsOwnerRecoveryStored(
-              db,
-              `WHERE s.route_revalidation_id = $1
+      });
+      if (result.rows.length > 1) return { kind: "conflict" } as const;
+      const row = result.rows[0];
+      if (row === undefined) return { kind: "none" } as const;
+      if (hnsOwnerRecoveryString(row, "start_idempotency_key") !== input.idempotency_key) {
+        return { kind: "conflict" } as const;
+      }
+      const recoveryId = hnsOwnerRecoveryString(row, "route_revalidation_id");
+      const sessionId = hnsOwnerRecoveryString(row, "revalidation_session_id");
+      const state = hnsOwnerRecoveryString(row, "state");
+      if (recoveryId === null || sessionId === null || state === null) {
+        return yield* Effect.fail(storageFailure());
+      }
+      if (state === "finalized") {
+        const stored = yield* loadHnsOwnerRecoveryStored(
+          db,
+          `WHERE s.route_revalidation_id = $1
                  AND s.revalidation_session_id = $2
                  AND s.operation_mode = 'same_root_recovery'`,
-              [recoveryId, sessionId],
-              true,
-            ).pipe(
-              Effect.flatMap((stored) =>
-                stored === null || stored === undefined
-                  ? Effect.fail(storageFailure())
-                  : Effect.succeed({ kind: "replay", stored } as const),
-              ),
-            );
-          }
-          const lease = hnsOwnerRecoveryTimestamp(row, "lease_expires_at");
-          const now = hnsOwnerRecoveryTimestamp(row, "database_now");
-          if (
-            state === "acquired" &&
-            lease !== null &&
-            now !== null &&
-            Date.parse(lease) > Date.parse(now)
-          ) {
-            return Effect.succeed({
-              kind: "in_flight",
-              retry_after_seconds: Math.max(
-                1,
-                Math.ceil((Date.parse(lease) - Date.parse(now)) / 1_000),
-              ),
-            } as const);
-          }
-          return Effect.succeed({ kind: "none" } as const);
-        }),
-        Effect.mapError(() => storageFailure()),
-      );
+          [recoveryId, sessionId],
+          true,
+        );
+        if (stored === null || stored === undefined) {
+          return yield* Effect.fail(storageFailure());
+        }
+        return { kind: "replay", stored } as const;
+      }
+      const lease = hnsOwnerRecoveryTimestamp(row, "lease_expires_at");
+      const now = hnsOwnerRecoveryTimestamp(row, "database_now");
+      if (
+        state === "acquired" &&
+        lease !== null &&
+        now !== null &&
+        Date.parse(lease) > Date.parse(now)
+      ) {
+        return {
+          kind: "in_flight",
+          retry_after_seconds: Math.max(
+            1,
+            Math.ceil((Date.parse(lease) - Date.parse(now)) / 1_000),
+          ),
+        } as const;
+      }
+      return { kind: "none" } as const;
+    }).pipe(Effect.mapError(() => storageFailure()));
 
   const reserve: HnsOwnerRecoveryStartStore["reserve"] = (input) =>
     db
