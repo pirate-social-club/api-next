@@ -63,6 +63,10 @@ import {
   collectSongPipelineOutboxAlerts,
   runSongPipelineOutboxAlertTick,
 } from "./song-pipeline-outbox-alerts";
+import {
+  collectSongPipelineTerminalAlerts,
+  handleSongPipelineDlqBatch,
+} from "./song-pipeline-terminal-alerts";
 
 export { ScheduledCronLockDO } from "@pirate/platform-cf";
 export {
@@ -148,6 +152,11 @@ export interface JobsWorkerEnv
   readonly MEGAPOT_EXTERNAL_SPONSOR_DAILY_SPEND_CEILING_ATOMIC?: string;
   readonly MEGAPOT_SHARED_SPONSOR_DAILY_TICKET_CEILING?: string;
   readonly MEGAPOT_SHARED_SPONSOR_DAILY_SPEND_CEILING_ATOMIC?: string;
+}
+
+function makeJobsAlertSink(env: JobsWorkerEnv): AlertSink {
+  const deliveryStub = env.CRON_LOCK.getByName(`${CRON_LOCK_NAME}:alerts`);
+  return makeConfiguredAlertSink(env, makeAlertDeliveryLedger(deliveryStub));
 }
 
 function loadJobsWorkerConfig(env: JobsWorkerEnv): JobsWorkerConfigValue {
@@ -702,13 +711,22 @@ export default {
   async fetch(request: Request, env: JobsWorkerEnv) {
     return handleMegapotPublicCommitment(request, env.MEGAPOT_COMMITMENTS);
   },
+  async queue(batch: MessageBatch<unknown>, env: JobsWorkerEnv) {
+    if (env.CONTROL_PLANE === undefined) {
+      throw new Error("CONTROL_PLANE Hyperdrive binding is required for jobs-worker");
+    }
+    await handleSongPipelineDlqBatch(batch, {
+      runtime: makeHyperdriveControlPlaneLayer(env.CONTROL_PLANE),
+      sink: makeJobsAlertSink(env),
+      environment: env.API_NEXT_ENV ?? "unknown",
+    });
+  },
   async scheduled(event: ScheduledEvent, env: JobsWorkerEnv, ctx: ExecutionContext) {
     if (env.CONTROL_PLANE === undefined) {
       throw new Error("CONTROL_PLANE Hyperdrive binding is required for jobs-worker");
     }
     const config = loadJobsWorkerConfig(env);
-    const deliveryStub = env.CRON_LOCK.getByName(`${CRON_LOCK_NAME}:alerts`);
-    const sink = makeConfiguredAlertSink(env, makeAlertDeliveryLedger(deliveryStub));
+    const sink = makeJobsAlertSink(env);
     const dataBalance = makeDataRegistrationBalanceConfig(env);
     const hns = makeHnsRouteRevalidationComposition(env);
     const megapot = makeMegapotOptions(env, config);
@@ -743,22 +761,42 @@ export default {
       scheduledWork.push(
         runSongPipelineOutboxAlertTick(
           sink,
-          collectSongPipelineOutboxAlerts(
-            runtime,
-            {
-              media: mediaMaintenance !== null,
-              data: dataRegistrationMaintenance !== null,
-            },
-            {
-              scheduledTime: event.scheduledTime,
-              environment: config.API_NEXT_ENV,
-              ...(sink.log === undefined ? {} : { log: sink.log }),
-              ...(sink.delivery === undefined ? {} : { claimSnapshot: sink.delivery.markSent }),
-              ...(sink.delivery === undefined
-                ? {}
-                : { compensateSnapshot: sink.delivery.compensate }),
-            },
-          ),
+          Effect.all(
+            [
+              collectSongPipelineTerminalAlerts(
+                runtime,
+                {
+                  media: mediaMaintenance !== null,
+                  data: dataRegistrationMaintenance !== null,
+                },
+                {
+                  ...(env.MEDIA_PROCESSING_WORKFLOW === undefined
+                    ? {}
+                    : { media: env.MEDIA_PROCESSING_WORKFLOW }),
+                  ...(env.DATA_REGISTRATION_WORKFLOW === undefined
+                    ? {}
+                    : { data: env.DATA_REGISTRATION_WORKFLOW }),
+                },
+              ),
+              collectSongPipelineOutboxAlerts(
+                runtime,
+                {
+                  media: mediaMaintenance !== null,
+                  data: dataRegistrationMaintenance !== null,
+                },
+                {
+                  scheduledTime: event.scheduledTime,
+                  environment: config.API_NEXT_ENV,
+                  ...(sink.log === undefined ? {} : { log: sink.log }),
+                  ...(sink.delivery === undefined ? {} : { claimSnapshot: sink.delivery.markSent }),
+                  ...(sink.delivery === undefined
+                    ? {}
+                    : { compensateSnapshot: sink.delivery.compensate }),
+                },
+              ),
+            ],
+            { concurrency: 1 },
+          ).pipe(Effect.map(([terminal, outbox]) => terminal + outbox)),
         ),
       );
     }
