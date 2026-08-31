@@ -168,6 +168,14 @@ export function makeHnsCommunityHandleGatewayService(input: {
         } catch (error) {
           if (terminal === "caller") throw new HnsCommunityHandleGatewayCallerAbort();
           if (terminal === "deadline") return redacted(504);
+          if (error instanceof HnsCommunityHandleGatewayUpstreamError) {
+            console.error(
+              JSON.stringify({
+                event: "hns_community_handle_gateway_upstream_refused",
+                reason: error.reason,
+              }),
+            );
+          }
           return redacted(error instanceof HnsCommunityHandleGatewayUpstreamError ? 502 : 503);
         }
       } finally {

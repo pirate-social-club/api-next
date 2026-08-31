@@ -226,6 +226,33 @@ describe("HNS community handle-persona gateway", () => {
     }
   });
 
+  test("strips the Cloudflare Access cookie and still refuses application cookies", async () => {
+    const accessHeaders = new Headers();
+    accessHeaders.append(
+      "set-cookie",
+      "CF_Authorization=access-value; Path=/; Secure; HttpOnly; SameSite=None",
+    );
+    const access = composition(state, () => new Response("profile", { headers: accessHeaders }));
+    if (!access.enabled) throw new Error("expected enabled composition");
+    const accepted = await access.service.handle(request());
+    expect(accepted.status).toBe(200);
+    expect(accepted.headers.get("set-cookie")).toBeNull();
+    expect(await accepted.text()).toBe("profile");
+
+    const applicationHeaders = new Headers();
+    applicationHeaders.append(
+      "set-cookie",
+      "CF_Authorization=access-value; Path=/; Secure; HttpOnly; SameSite=None",
+    );
+    applicationHeaders.append("set-cookie", "session=private; Path=/; Secure; HttpOnly");
+    const application = composition(
+      state,
+      () => new Response("private", { headers: applicationHeaders }),
+    );
+    if (!application.enabled) throw new Error("expected enabled composition");
+    expect((await application.service.handle(request())).status).toBe(502);
+  });
+
   test("retains first-terminal deadline and caller-abort behavior", async () => {
     let fireDeadline: () => void = () => undefined;
     const service = makeHnsCommunityHandleGatewayService({
