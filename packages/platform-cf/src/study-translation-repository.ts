@@ -5,6 +5,7 @@ import {
   type ControlPlaneTransaction,
   STUDY_TRANSLATION_GENERATOR_POLICY_V1,
   STUDY_TRANSLATION_PROMPT_V2,
+  STUDY_TRANSLATION_PROMPT_V3,
   STUDY_TRANSLATION_VALIDATOR_V2,
   type StudyTranslationGenerationOutcome,
   type StudyTranslationGenerationRequest,
@@ -237,7 +238,8 @@ export const makeControlPlaneStudyTranslationRepository = () => ({
             const row = authority.rows[0] as Row;
             if (
               input.generatorPolicyRevision !== STUDY_TRANSLATION_GENERATOR_POLICY_V1 ||
-              input.promptRevision !== STUDY_TRANSLATION_PROMPT_V2 ||
+              (input.promptRevision !== STUDY_TRANSLATION_PROMPT_V2 &&
+                input.promptRevision !== STUDY_TRANSLATION_PROMPT_V3) ||
               input.qualityPolicyRevision !== text(row, "quality_policy_revision")
             ) {
               return yield* failed("policy-blocked");
@@ -746,7 +748,7 @@ export const makeControlPlaneStudyTranslationPolicyResolver = (
           const db = yield* ControlPlaneDb;
           const selected = yield* db.execute<Row>({
             label: "study-translation.policy.active",
-            text: `SELECT quality.quality_policy_revision
+            text: `SELECT quality.quality_policy_revision, quality.prompt_revision
                      FROM study_translation_quality_registry registry
                      JOIN study_translation_quality_policies quality
                        ON quality.target_language=registry.target_language
@@ -756,10 +758,18 @@ export const makeControlPlaneStudyTranslationPolicyResolver = (
             readonly: true,
           });
           if (selected.rows.length !== 1) return yield* failed("policy-blocked");
+          const row = selected.rows[0] as Row;
+          const promptRevision = text(row, "prompt_revision");
+          if (
+            promptRevision !== STUDY_TRANSLATION_PROMPT_V2 &&
+            promptRevision !== STUDY_TRANSLATION_PROMPT_V3
+          ) {
+            return yield* failed("invalid-row");
+          }
           return {
             generatorPolicyRevision: STUDY_TRANSLATION_GENERATOR_POLICY_V1,
-            promptRevision: STUDY_TRANSLATION_PROMPT_V2,
-            qualityPolicyRevision: text(selected.rows[0] as Row, "quality_policy_revision"),
+            promptRevision,
+            qualityPolicyRevision: text(row, "quality_policy_revision"),
           } as const;
         }),
       ),

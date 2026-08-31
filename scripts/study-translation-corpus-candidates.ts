@@ -9,6 +9,7 @@ import {
   STUDY_TRANSLATION_CORPUS_V1,
   STUDY_TRANSLATION_CORPUS_V2,
   STUDY_TRANSLATION_PROMPT_V2,
+  STUDY_TRANSLATION_PROMPT_V3,
   STUDY_TRANSLATION_VALIDATOR_V2,
   type StudyLanguageProfileAnalysis,
   type StudyLanguageProfileRequest,
@@ -206,7 +207,7 @@ export const makeOfflineTranslationRequest = (input: {
     lyricsSourceHash: input.plan.lyricsSourceHash,
     targetLanguage: input.targetLanguage,
     learnerBand: "B1",
-    promptRevision: STUDY_TRANSLATION_PROMPT_V2,
+    promptRevision: STUDY_TRANSLATION_PROMPT_V3,
   });
   return {
     generationRunId,
@@ -218,7 +219,7 @@ export const makeOfflineTranslationRequest = (input: {
     learningLanguage: "en",
     targetLanguage: input.targetLanguage,
     learnerBand: "B1",
-    promptRevision: STUDY_TRANSLATION_PROMPT_V2,
+    promptRevision: STUDY_TRANSLATION_PROMPT_V3,
     qualityPolicyRevision: "offline_evaluation_v1",
     rightsPolicyRevision: "accepted_lyrics_offline_evaluation_v1",
     contextLines: input.plan.contextLines,
@@ -307,7 +308,8 @@ export const buildUnreviewedStudyTranslationCorpus = (input: {
     }),
     target_language: input.targetLanguage,
     learner_band: "B1",
-    prompt_revision: STUDY_TRANSLATION_PROMPT_V2,
+    prompt_revision:
+      input.generatedSongs[0]?.proposal.prompt_revision ?? STUDY_TRANSLATION_PROMPT_V2,
     validator_revision: STUDY_TRANSLATION_VALIDATOR_V2,
     reviewer_role: STUDY_CORPUS_PENDING_REVIEWER,
     reviewed_at: "pending",
@@ -358,7 +360,8 @@ export const buildUnreviewedStudyTranslationCorpusV2 = (input: {
     }),
     target_language: input.targetLanguage,
     learner_band: "B1",
-    prompt_revision: STUDY_TRANSLATION_PROMPT_V2,
+    prompt_revision:
+      input.generatedSongs[0]?.proposal.prompt_revision ?? STUDY_TRANSLATION_PROMPT_V3,
     validator_revision: STUDY_TRANSLATION_VALIDATOR_V2,
     reviewer_role: STUDY_CORPUS_DUAL_AI_REVIEWER,
     review_method: "dual_ai_review_v1",

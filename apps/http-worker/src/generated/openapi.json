@@ -74006,7 +74006,8 @@
                             "provider_retention": {
                               "type": "string",
                               "enum": [
-                                "not_stored"
+                                "not_stored",
+                                "stored"
                               ]
                             },
                             "platform_retention": {

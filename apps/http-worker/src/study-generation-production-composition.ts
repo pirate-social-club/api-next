@@ -78,7 +78,9 @@ export const makeStudyGenerationWorkflowComposition = (env: StudyGenerationRunti
       readonly targetLanguage: string;
       readonly learnerBand: "A1" | "A2" | "B1" | "B2" | "C1" | "C2";
       readonly generatorPolicyRevision: "study_translation_generation_v1";
-      readonly promptRevision: "song_study_translation_prompt_v2";
+      readonly promptRevision:
+        | "song_study_translation_prompt_v2"
+        | "song_study_translation_prompt_v3";
       readonly qualityPolicyRevision: string;
     }) =>
       Effect.runPromise(

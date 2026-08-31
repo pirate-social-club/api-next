@@ -667,6 +667,16 @@ describe("source-to-Wrangler binding contract", () => {
     ]);
   });
 
+  test("declares the active ElevenLabs speech credential only in staging", () => {
+    expect(declaredEnvironment(configs.http, "development").secrets).not.toContain(
+      "ELEVENLABS_API_KEY",
+    );
+    expect(declaredEnvironment(configs.http, "staging").secrets).toContain("ELEVENLABS_API_KEY");
+    expect(declaredEnvironment(configs.http, "production").secrets).not.toContain(
+      "ELEVENLABS_API_KEY",
+    );
+  });
+
   test("API_NEXT_ENV is explicit and uses the canonical vocabulary", () => {
     const violations: string[] = [];
     for (const worker of ["http", "jobs"] as const) {

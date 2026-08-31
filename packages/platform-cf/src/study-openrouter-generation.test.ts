@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   makeStudyLanguageProfileAnalyzer,
   makeStudyTranslationGenerator,
-  STUDY_TRANSLATION_PROMPT_V2,
+  STUDY_TRANSLATION_PROMPT_V3,
   type StudyTranslationGenerationRequest,
 } from "@pirate/application";
 import { Effect, Exit } from "effect";
@@ -31,6 +31,11 @@ const response = (output: unknown): Response =>
     }),
     { status: 200, headers: { "content-type": "application/json" } },
   );
+
+const requiredBody = (body: Uint8Array | null): Uint8Array => {
+  if (body === null) throw new Error("request body was not captured");
+  return body;
+};
 
 describe("OpenRouter Study generation", () => {
   test("sends one quoted whole-song profile request with strict provider posture", async () => {
@@ -134,6 +139,7 @@ describe("OpenRouter Study generation", () => {
   });
 
   test("binds provider output to the server-owned translation envelope", async () => {
+    let capturedBody: Uint8Array | null = null;
     const request: StudyTranslationGenerationRequest = {
       generationRunId: "run-1",
       communityId: "community-1",
@@ -144,7 +150,7 @@ describe("OpenRouter Study generation", () => {
       learningLanguage: "en",
       targetLanguage: "es",
       learnerBand: "B1",
-      promptRevision: STUDY_TRANSLATION_PROMPT_V2,
+      promptRevision: STUDY_TRANSLATION_PROMPT_V3,
       qualityPolicyRevision: "quality-es-b1-evaluation-v1",
       rightsPolicyRevision: "translated-lyrics-original-v1",
       contextLines: [
@@ -181,10 +187,12 @@ describe("OpenRouter Study generation", () => {
       model: "google/gemini-test",
       providerPolicy,
       accountPluginsDisabled: true,
-      fetch: async () =>
-        response({
+      fetch: async (_input, init) => {
+        capturedBody = init.body as Uint8Array;
+        return response({
           generation_run_id: "hostile-run-id",
           provider_id: "hostile-provider-id",
+          ignored_padding: "x".repeat(5_000),
           units: [
             {
               status: "ready",
@@ -212,7 +220,8 @@ describe("OpenRouter Study generation", () => {
               preserved_source_fragments: [{ text: "Seoul", reason: "proper_name" }],
             },
           ],
-        }),
+        });
+      },
     });
     const generator = makeStudyTranslationGenerator(transport, {
       review: () => Effect.succeed("accepted"),
@@ -221,6 +230,17 @@ describe("OpenRouter Study generation", () => {
     expect(proposal.generation_run_id).toBe("run-1");
     expect(proposal.provider_id).toBe("google-vertex");
     expect(proposal.provider_model).toBe("google/gemini-test");
+    expect(proposal.prompt_revision).toBe(STUDY_TRANSLATION_PROMPT_V3);
+    const body = JSON.parse(new TextDecoder().decode(requiredBody(capturedBody))) as {
+      messages: readonly { readonly content: unknown }[];
+    };
+    const systemPrompt = String(body.messages[0]?.content);
+    expect(systemPrompt).toContain('"source_hash"');
+    expect(systemPrompt).toContain('"proper_name_only"');
+    expect(systemPrompt).toContain('"preserved_source_fragments"');
+    expect(systemPrompt).toContain("shared syntactic frame");
+    expect(systemPrompt).toContain("silently back-translate all four choices");
+    expect(systemPrompt).not.toContain('"correct_choice"');
   });
 
   test("is disabled without exact authority and bounds response bodies", async () => {

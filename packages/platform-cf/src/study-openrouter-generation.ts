@@ -2,8 +2,9 @@ import {
   STUDY_LANGUAGE_PROFILE_PROMPT_V2,
   STUDY_LANGUAGE_PROFILE_SYSTEM_PROMPT_V2,
   STUDY_LANGUAGE_PROFILE_VALIDATOR_V2,
-  STUDY_TRANSLATION_PROMPT_V2,
+  STUDY_TRANSLATION_PROMPT_V3,
   STUDY_TRANSLATION_SYSTEM_PROMPT_V2,
+  STUDY_TRANSLATION_SYSTEM_PROMPT_V3,
   type StudyLanguageProfileAnalysis,
   type StudyLanguageProfileRequest,
   type StudyLanguageProfileTransport,
@@ -55,7 +56,7 @@ const DEFAULT_LIMITS: StudyOpenRouterLimits = {
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder("utf-8", { fatal: true });
 
-const BoundedText = Schema.NonEmptyString.check(Schema.isMaxLength(4_096));
+const BoundedProviderContent = Schema.NonEmptyString.check(Schema.isMaxLength(512 * 1024));
 const Identifier = Schema.NonEmptyString.check(Schema.isMaxLength(256));
 const Confidence = Schema.NullOr(Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 1 })));
 const LanguageUnit = Schema.Struct({
@@ -78,7 +79,7 @@ const ProviderEnvelope = Schema.StructWithRest(
     choices: Schema.Array(
       Schema.StructWithRest(
         Schema.Struct({
-          message: Schema.StructWithRest(Schema.Struct({ content: BoundedText }), [
+          message: Schema.StructWithRest(Schema.Struct({ content: BoundedProviderContent }), [
             Schema.Record(Schema.String, Schema.Unknown),
           ]),
         }),
@@ -123,12 +124,119 @@ const languageOutputSchema = {
   },
 } as const;
 
+const translationEchoRequired = [
+  "study_unit_id",
+  "lyric_line_id",
+  "line_version",
+  "source_hash",
+  "source_text",
+  "target_language",
+  "learner_band",
+  "detected_languages",
+  "dominant_language",
+  "mixed",
+  "vocable_only",
+  "proper_name_only",
+] as const;
+
+const translationEchoProperties = {
+  study_unit_id: { type: "string" },
+  lyric_line_id: { type: "string" },
+  line_version: { type: "integer", minimum: 1 },
+  source_hash: { type: "string", pattern: "^[0-9a-f]{64}$" },
+  source_text: { type: "string" },
+  target_language: { type: "string" },
+  learner_band: { enum: ["A1", "A2", "B1", "B2", "C1", "C2"] },
+  detected_languages: { type: "array", maxItems: 8, items: { type: "string" } },
+  dominant_language: { type: ["string", "null"] },
+  mixed: { type: "boolean" },
+  vocable_only: { type: "boolean" },
+  proper_name_only: { type: "boolean" },
+} as const;
+
 const translationOutputSchema = {
   type: "object",
   additionalProperties: false,
   required: ["units"],
   properties: {
-    units: { type: "array", maxItems: 256, items: { type: "object" } },
+    units: {
+      type: "array",
+      maxItems: 256,
+      items: {
+        oneOf: [
+          {
+            type: "object",
+            additionalProperties: false,
+            required: [
+              "status",
+              ...translationEchoRequired,
+              "question",
+              "translation",
+              "distractors",
+              "explanation",
+              "whole_line_translated",
+              "preserved_source_fragments",
+            ],
+            properties: {
+              status: { const: "ready" },
+              ...translationEchoProperties,
+              question: { type: "string" },
+              translation: { type: "string" },
+              distractors: {
+                type: "array",
+                minItems: 3,
+                maxItems: 3,
+                items: { type: "string" },
+              },
+              explanation: { type: "string" },
+              whole_line_translated: { type: "boolean" },
+              preserved_source_fragments: {
+                type: "array",
+                maxItems: 32,
+                items: {
+                  type: "object",
+                  additionalProperties: false,
+                  required: ["text", "reason"],
+                  properties: {
+                    text: { type: "string" },
+                    reason: {
+                      enum: ["proper_name", "vocable", "already_target_language"],
+                    },
+                  },
+                },
+              },
+            },
+          },
+          {
+            type: "object",
+            additionalProperties: false,
+            required: ["status", ...translationEchoRequired, "reason"],
+            properties: {
+              status: { const: "not_applicable" },
+              ...translationEchoProperties,
+              reason: { enum: ["same_target_language", "vocable_only", "proper_name_only"] },
+            },
+          },
+          {
+            type: "object",
+            additionalProperties: false,
+            required: ["status", ...translationEchoRequired, "reason"],
+            properties: {
+              status: { const: "skipped" },
+              ...translationEchoProperties,
+              reason: {
+                enum: [
+                  "not_learning_language",
+                  "generation_uncertain",
+                  "unsafe_for_exercise",
+                  "quality_failed",
+                ],
+              },
+            },
+          },
+        ],
+      },
+    },
   },
 } as const;
 
@@ -401,7 +509,9 @@ export const makeOpenRouterStudyTranslationTransport = (
     }
     const body = requestBody(
       options,
-      STUDY_TRANSLATION_SYSTEM_PROMPT_V2,
+      request.promptRevision === STUDY_TRANSLATION_PROMPT_V3
+        ? STUDY_TRANSLATION_SYSTEM_PROMPT_V3
+        : STUDY_TRANSLATION_SYSTEM_PROMPT_V2,
       translationOutputSchema,
       translationPayload(request),
     );
@@ -413,7 +523,7 @@ export const makeOpenRouterStudyTranslationTransport = (
         generation_run_id: request.generationRunId,
         provider_id: result.providerId,
         provider_model: result.providerModel,
-        prompt_revision: STUDY_TRANSLATION_PROMPT_V2,
+        prompt_revision: request.promptRevision,
         units:
           result.output !== null && typeof result.output === "object" && "units" in result.output
             ? (result.output as { readonly units: unknown }).units

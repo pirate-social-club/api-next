@@ -21,7 +21,7 @@ export type JsonKaraokeScoringPolicy =
       kind: "enabled";
       provider: KaraokeScoringSttProvider;
       model: string;
-      retention: "not_stored";
+      retention: "not_stored" | "stored";
       voiceCoachEnabled?: boolean;
     };
 
@@ -31,7 +31,7 @@ export type PublicKaraokeScoringPolicy =
       kind: "enabled";
       provider: KaraokeScoringSttProvider;
       model: string;
-      retention: "not_stored";
+      retention: "not_stored" | "stored";
       voice_coach_enabled?: boolean;
     };
 
@@ -150,11 +150,11 @@ function deserializeScoringPolicy(value: unknown, path: string): StoredKaraokeSe
     return { kind: "disabled" };
   }
   if (value.kind === "enabled") {
-    if (value.retention !== "not_stored") {
+    if (value.retention !== "not_stored" && value.retention !== "stored") {
       throw new KaraokeSnapshotValidationError(
         "invalid_policy",
         `${path}.retention`,
-        `retention must be "not_stored"`,
+        `retention must be "not_stored" or "stored"`,
       );
     }
     if (typeof value.provider !== "string" || value.provider.length === 0) {
@@ -182,7 +182,7 @@ function deserializeScoringPolicy(value: unknown, path: string): StoredKaraokeSe
       kind: "enabled",
       model: value.model,
       provider: value.provider as KaraokeScoringSttProvider,
-      retention: "not_stored",
+      retention: value.retention,
     };
     if (typeof value.voiceCoachEnabled === "boolean") {
       policy.voiceCoachEnabled = value.voiceCoachEnabled;
@@ -204,13 +204,13 @@ function serializeScoringPolicy(policy: StoredKaraokeSessionPolicy): JsonKaraoke
     kind: "enabled";
     provider: KaraokeScoringSttProvider;
     model: string;
-    retention: "not_stored";
+    retention: "not_stored" | "stored";
     voiceCoachEnabled?: boolean;
   } = {
     kind: "enabled",
     model: policy.model,
     provider: policy.provider,
-    retention: "not_stored",
+    retention: policy.retention,
   };
   if (policy.voiceCoachEnabled !== undefined) {
     json.voiceCoachEnabled = policy.voiceCoachEnabled;
@@ -481,13 +481,13 @@ export function serializeKaraokeScoringPolicyForApi(
     kind: "enabled";
     provider: KaraokeScoringSttProvider;
     model: string;
-    retention: "not_stored";
+    retention: "not_stored" | "stored";
     voice_coach_enabled?: boolean;
   } = {
     kind: "enabled",
     model: policy.model,
     provider: policy.provider,
-    retention: "not_stored",
+    retention: policy.retention,
   };
   if (policy.voiceCoachEnabled !== undefined) {
     result.voice_coach_enabled = policy.voiceCoachEnabled;

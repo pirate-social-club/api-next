@@ -23040,7 +23040,7 @@ CREATE TABLE study_translation_generation_runs (
     CONSTRAINT study_translation_generation_runs_learning_language_check CHECK ((learning_language = 'en'::text)),
     CONSTRAINT study_translation_generation_runs_lyrics_revision_check CHECK ((lyrics_revision > 0)),
     CONSTRAINT study_translation_generation_runs_lyrics_source_hash_check CHECK ((lyrics_source_hash ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT study_translation_generation_runs_prompt_revision_check CHECK ((prompt_revision = ANY (ARRAY['song_study_translation_prompt_v1'::text, 'song_study_translation_prompt_v2'::text]))),
+    CONSTRAINT study_translation_generation_runs_prompt_revision_check CHECK ((prompt_revision = ANY (ARRAY['song_study_translation_prompt_v1'::text, 'song_study_translation_prompt_v2'::text, 'song_study_translation_prompt_v3'::text]))),
     CONSTRAINT study_translation_generation_runs_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT study_translation_generation_runs_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'leased'::text, 'succeeded'::text, 'failed'::text, 'policy_blocked'::text, 'stale'::text]))),
     CONSTRAINT study_translation_run_lease_shape CHECK ((((status = 'leased'::text) AND (lease_token IS NOT NULL) AND (lease_expires_at IS NOT NULL)) OR ((status <> 'leased'::text) AND (lease_token IS NULL) AND (lease_expires_at IS NULL)))),
@@ -23064,7 +23064,8 @@ CREATE TABLE study_translation_quality_policies (
     reviewed_file_sha256 text,
     reviewer_role text,
     evaluator_revision text,
-    CONSTRAINT study_translation_active_quality_shape CHECK (((release_state <> 'active'::text) OR ((corpus_sample_count >= 100) AND (source_binding_bps = 10000) AND (meaning_preservation_bps = 10000) AND (bilingual_rubric_bps >= 9500) AND (critical_defect_count = 0) AND (corpus_revision IS NOT NULL) AND (reviewed_file_sha256 IS NOT NULL) AND (reviewer_role IS NOT NULL) AND (evaluator_revision IS NOT NULL)))),
+    prompt_revision text,
+    CONSTRAINT study_translation_active_quality_shape CHECK (((release_state <> 'active'::text) OR ((corpus_sample_count >= 200) AND (source_binding_bps = 10000) AND (meaning_preservation_bps = 10000) AND (bilingual_rubric_bps >= 9500) AND (critical_defect_count = 0) AND (corpus_revision IS NOT NULL) AND (reviewed_file_sha256 IS NOT NULL) AND (reviewer_role IS NOT NULL) AND (evaluator_revision IS NOT NULL) AND (prompt_revision IS NOT NULL)))),
     CONSTRAINT study_translation_quality_corpus_revision_check CHECK (((corpus_revision IS NULL) OR ((char_length(corpus_revision) >= 1) AND (char_length(corpus_revision) <= 256)))),
     CONSTRAINT study_translation_quality_evaluator_revision_check CHECK (((evaluator_revision IS NULL) OR ((char_length(evaluator_revision) >= 1) AND (char_length(evaluator_revision) <= 128)))),
     CONSTRAINT study_translation_quality_polici_meaning_preservation_bps_check CHECK (((meaning_preservation_bps >= 0) AND (meaning_preservation_bps <= 10000))),
@@ -23075,6 +23076,7 @@ CREATE TABLE study_translation_quality_policies (
     CONSTRAINT study_translation_quality_policies_release_state_check CHECK ((release_state = ANY (ARRAY['evaluation'::text, 'active'::text]))),
     CONSTRAINT study_translation_quality_policies_source_binding_bps_check CHECK (((source_binding_bps >= 0) AND (source_binding_bps <= 10000))),
     CONSTRAINT study_translation_quality_policies_target_language_check CHECK (((char_length(target_language) <= 64) AND (target_language ~ '^[a-z]{2,3}(?:-[A-Z][a-z]{3})?(?:-(?:[A-Z]{2}|[0-9]{3}))?(?:-[a-z0-9]{5,8}|-[0-9][a-z0-9]{3})*$'::text))),
+    CONSTRAINT study_translation_quality_prompt_revision_check CHECK (((prompt_revision IS NULL) OR (prompt_revision = ANY (ARRAY['song_study_translation_prompt_v2'::text, 'song_study_translation_prompt_v3'::text])))),
     CONSTRAINT study_translation_quality_reviewed_file_sha256_check CHECK (((reviewed_file_sha256 IS NULL) OR (reviewed_file_sha256 ~ '^[0-9a-f]{64}$'::text))),
     CONSTRAINT study_translation_quality_reviewer_role_check CHECK (((reviewer_role IS NULL) OR ((char_length(reviewer_role) >= 1) AND (char_length(reviewer_role) <= 128))))
 );

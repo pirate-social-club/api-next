@@ -28,7 +28,7 @@ export const KaraokeScoringPolicy = Schema.Union([
     kind: Schema.Literal("enabled"),
     provider: KaraokeScoringProvider,
     model: Schema.String,
-    provider_retention: Schema.Literal("not_stored"),
+    provider_retention: Schema.Literals(["not_stored", "stored"]),
     platform_retention: Schema.Literal("private_learning"),
     voice_coach_enabled: Schema.optional(Schema.Boolean),
   }),

@@ -95,6 +95,7 @@
     "0092_hns_sale_namespace_active_refresh.sql": "3719f3e50ae0823c0b59aff93ca0c21161558403b626b410717de71b2ee2729d",
     "0093_study_spoken_phonetic_parity.sql": "011eed958c509fafcad6a3c2dc1bcc1ea72d54486c37354665fb6e43c61db0c7",
     "0094_dance_reference_shadow.sql": "af0c57a819ccd1d95e6d2f8d512ede1131ad64f95bbd4b415747cda808dfd4a3",
-    "0095_hns_outer_operations.sql": "739d115516286cadec790eb6623e4321336aed655ab6d9a07f7a4923c1b93bb3"
+    "0095_hns_outer_operations.sql": "739d115516286cadec790eb6623e4321336aed655ab6d9a07f7a4923c1b93bb3",
+    "0096_study_translation_prompt_v3.sql": "30cf9030e7f63d82c26d22db43dcd3d13b8670b198ab4084596f6b7b7958a946"
   }
 }
