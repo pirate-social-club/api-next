@@ -35,6 +35,7 @@ export type {
   NamespaceOwnershipCompletionServices,
   NamespaceOwnershipCompletionStore,
   NamespaceOwnershipStoredCompletion,
+  NamespaceOwnershipTargetV3TerminalResponse,
   NamespaceOwnershipTerminalStatus,
   NamespaceOwnershipVerifiedCompletion,
 } from "./completion.ts";
@@ -110,6 +111,7 @@ export {
   mapHnsActiveLeaseRenewalObservationForRequest,
   resolveHnsActiveLeaseRenewalControlIdentity,
 } from "./hns-active-lease-renewal.ts";
+export * from "./hns-active-lease-renewal-operation.ts";
 export type {
   HnsAuthoritativeDnsAddressFamilyV1,
   HnsAuthoritativeDnsAuthorityTupleV1,
@@ -311,6 +313,7 @@ export type {
   HnsOwnerTargetVerifiedObservationV3,
 } from "./hns-control-observer-v2.ts";
 export {
+  buildHnsOwnershipEvidenceFromTargetV3,
   decodeHnsActiveLeaseRenewalIneligibleResponseV2Bytes,
   decodeHnsControlObservationCompatibleResultBytes,
   decodeHnsControlObservationResultV2Bytes,

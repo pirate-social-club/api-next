@@ -1,5 +1,5 @@
 import type { HnsPollResultCompletionResponseV1 } from "@pirate/contracts";
-import { Data, Effect, Option, Schema } from "effect";
+import { Data, Effect, Option, Predicate, Schema } from "effect";
 import {
   type NamespaceOwnershipProviderFailure,
   NamespaceOwnershipProviderInvalidResponse,
@@ -8,6 +8,11 @@ import {
   NamespaceOwnershipProviderUnavailable,
   type NamespaceOwnershipSession,
 } from "./adapter.ts";
+import {
+  buildHnsOwnershipEvidenceFromTargetV3,
+  decodeHnsOwnerTargetObservationV3Bytes,
+  hnsCreationSourceIneligibleResultV2Hash,
+} from "./hns-control-observer-v2.ts";
 import {
   buildHnsOwnershipEvidence,
   decodeHnsOwnerResponseBytes,
@@ -117,6 +122,22 @@ export type NamespaceOwnershipVerifiedCompletion = Readonly<{
   readonly envelope: HnsOwnershipEvidenceEnvelope;
   readonly observation: unknown;
   readonly raw_response_bytes: Uint8Array;
+  readonly control_identity: Readonly<{
+    readonly ownership_source: "hns_parent_chain_txt" | "owner_authoritative_dns_txt";
+    readonly root_label: string;
+    readonly txt_name: string;
+    readonly expected_txt_value_sha256: string;
+    readonly control_identity_digest: string;
+    readonly chain_authority_digest: string;
+    readonly provider_evidence_ref: string;
+  }> | null;
+}>;
+
+export type NamespaceOwnershipTargetV3TerminalResponse = Readonly<{
+  readonly observation_contract_version: "pirate-hns-target-observation-v3";
+  readonly status: "rejected" | "ineligible";
+  readonly provider_response_sha256: string;
+  readonly raw_response_bytes: Uint8Array;
 }>;
 
 export interface NamespaceOwnershipCompletionStore {
@@ -165,6 +186,7 @@ export interface NamespaceOwnershipCompletionStore {
     readonly result_hash: string;
     readonly expired_result_hash: string;
     readonly attempt: NamespaceOwnershipCompletionAttemptReservation;
+    readonly target_response: NamespaceOwnershipTargetV3TerminalResponse | null;
   }) => Effect.Effect<
     NamespaceOwnershipCompletionFinalizeOutcome,
     NamespaceOwnershipCompletionStorageFailed
@@ -636,6 +658,7 @@ export const completeNamespaceOwnership = Effect.fn("completeNamespaceOwnership"
         result_hash: resultHash,
         expired_result_hash: expiredResultHash,
         attempt,
+        target_response: null,
       });
       return yield* finalizeResponse(stored, outcome, "rejected");
     }
@@ -678,10 +701,155 @@ export const completeNamespaceOwnership = Effect.fn("completeNamespaceOwnership"
       NAMESPACE_OWNERSHIP_COMPLETION_RETRY_AFTER_SECONDS,
     );
   }
+  if (providerResult.value.status === "unavailable") {
+    const settled = yield* settleRetryableAttempt(
+      input,
+      stored,
+      completionRequestHash,
+      expiredResultHash,
+      attempt,
+      services.store,
+    );
+    if (settled !== null) return settled;
+    return response(
+      stored,
+      "unavailable",
+      false,
+      null,
+      providerResult.value.retry_after_seconds ??
+        NAMESPACE_OWNERSHIP_COMPLETION_RETRY_AFTER_SECONDS,
+    );
+  }
+  if (providerResult.value.status === "rejected" || providerResult.value.status === "ineligible") {
+    const terminalValue = providerResult.value;
+    const terminalResponse = yield* Effect.tryPromise({
+      try: async () => {
+        const decoded = await decodeHnsOwnerTargetObservationV3Bytes(
+          terminalValue.raw_response_bytes,
+        );
+        if (
+          decoded.response.status !== terminalValue.status ||
+          decoded.response_sha256 !== terminalValue.provider_response_sha256
+        ) {
+          throw new TypeError("Target-v3 terminal response authority is inconsistent");
+        }
+        return decoded;
+      },
+      catch: () =>
+        new NamespaceOwnershipProviderInvalidResponse({
+          provider_id: stored.session.provider_id,
+          operation: "complete",
+        }),
+    }).pipe(
+      Effect.matchEffect({
+        onSuccess: (value) => Effect.succeed({ kind: "success" as const, value }),
+        onFailure: (error) => Effect.succeed({ kind: "failure" as const, error }),
+      }),
+    );
+    if (terminalResponse.kind === "failure") {
+      const settled = yield* settleRetryableAttempt(
+        input,
+        stored,
+        completionRequestHash,
+        expiredResultHash,
+        attempt,
+        services.store,
+      );
+      if (settled !== null) return settled;
+      return yield* terminalResponse.error;
+    }
+    const resultHash =
+      terminalValue.status === "ineligible"
+        ? yield* Effect.tryPromise({
+            try: () =>
+              hnsCreationSourceIneligibleResultV2Hash({
+                ceremony_intent_id: input.ceremony_intent_id,
+                session_id: input.session_id,
+                expected_revision: input.expected_revision,
+                idempotency_key: input.idempotency_key,
+                completion_request_hash: completionRequestHash,
+                provider_response_sha256: terminalResponse.value.response_sha256,
+              }),
+            catch: () =>
+              new NamespaceOwnershipProviderInvalidResponse({
+                provider_id: stored.session.provider_id,
+                operation: "complete",
+              }),
+          })
+        : yield* Effect.promise(() =>
+            hnsTerminalResultHash(
+              terminalHashInput(input, completionRequestHash, "rejected", null),
+            ),
+          );
+    const outcome = yield* services.store.reject({
+      actor_id: input.actor_id,
+      expected: stored,
+      idempotency_key: input.idempotency_key,
+      completion_request_hash: completionRequestHash,
+      result_hash: resultHash,
+      expired_result_hash: expiredResultHash,
+      attempt,
+      target_response: {
+        observation_contract_version: "pirate-hns-target-observation-v3",
+        status: terminalValue.status,
+        provider_response_sha256: terminalResponse.value.response_sha256,
+        raw_response_bytes: terminalResponse.value.response_bytes,
+      },
+    });
+    return yield* finalizeResponse(stored, outcome, "rejected");
+  }
   const verifiedProviderResult = providerResult.value;
 
   const evidenceBuild = yield* Effect.tryPromise({
     try: async () => {
+      if (
+        Predicate.isObject(verifiedProviderResult.observation) &&
+        verifiedProviderResult.observation.observation_contract_version ===
+          "pirate-hns-target-observation-v3"
+      ) {
+        const decodedRaw = await decodeHnsOwnerTargetObservationV3Bytes(
+          verifiedProviderResult.raw_response_bytes,
+        );
+        if (
+          decodedRaw.response.status !== "verified" ||
+          decodedRaw.response.provider_evidence_ref !==
+            verifiedProviderResult.provider_evidence_ref ||
+          decodedRaw.response.observed_at !== verifiedProviderResult.observed_at ||
+          decodedRaw.response.expires_at !== verifiedProviderResult.expires_at
+        ) {
+          throw new TypeError("HNS target-v3 metadata does not match its exact response bytes");
+        }
+        const envelope = await buildHnsOwnershipEvidenceFromTargetV3({
+          actor_id: stored.session.actor_id,
+          creation_intent_id: stored.session.creation_intent_id,
+          ceremony_intent_id: stored.session.ceremony_intent_id,
+          requirement_hash: stored.session.requirement_hash,
+          generation: stored.session.generation,
+          provider_id: stored.session.provider_id,
+          provider_binding_hash: stored.session.provider_binding_hash,
+          provider_configuration: stored.session.provider_configuration,
+          protocol_version: stored.session.protocol_version,
+          environment: stored.session.environment,
+          route: stored.session.route,
+          request_hash: stored.session.request_hash,
+          upstream_session_ref: stored.session.upstream_session_ref,
+          evidence_ref: attempt.evidence_ref,
+          raw_response_bytes: verifiedProviderResult.raw_response_bytes,
+        });
+        return {
+          envelope,
+          observation: decodedRaw.response,
+          control_identity: {
+            ownership_source: decodedRaw.response.ownership_source,
+            root_label: stored.session.route.root_label,
+            txt_name: decodedRaw.response.challenge_name,
+            expected_txt_value_sha256: decodedRaw.response.expected_txt_value_sha256,
+            control_identity_digest: decodedRaw.response.control_identity_digest,
+            chain_authority_digest: decodedRaw.response.chain_authority_digest,
+            provider_evidence_ref: decodedRaw.response.provider_evidence_ref,
+          },
+        };
+      }
       const decodedRaw = decodeHnsOwnerResponseBytes(verifiedProviderResult.raw_response_bytes);
       if (
         decodedRaw.response.status !== "verified" ||
@@ -709,7 +877,25 @@ export const completeNamespaceOwnership = Effect.fn("completeNamespaceOwnership"
         evidence_ref: attempt.evidence_ref,
         raw_response_bytes: verifiedProviderResult.raw_response_bytes,
       });
-      return { envelope, observation: decodedRaw.response };
+      const controlIdentity =
+        "control_identity_digest" in decodedRaw.response &&
+        "chain_authority_digest" in decodedRaw.response &&
+        "expected_txt_value_sha256" in decodedRaw.response
+          ? {
+              ownership_source: decodedRaw.response.ownership_source,
+              root_label: stored.session.route.root_label,
+              txt_name: decodedRaw.response.challenge_name,
+              expected_txt_value_sha256: decodedRaw.response.expected_txt_value_sha256,
+              control_identity_digest: decodedRaw.response.control_identity_digest,
+              chain_authority_digest: decodedRaw.response.chain_authority_digest,
+              provider_evidence_ref: decodedRaw.response.provider_evidence_ref,
+            }
+          : null;
+      return {
+        envelope,
+        observation: decodedRaw.response,
+        control_identity: controlIdentity,
+      };
     },
     catch: () => undefined,
   }).pipe(
@@ -749,6 +935,7 @@ export const completeNamespaceOwnership = Effect.fn("completeNamespaceOwnership"
       envelope,
       observation: evidenceBuild.value.observation,
       raw_response_bytes: verifiedProviderResult.raw_response_bytes,
+      control_identity: evidenceBuild.value.control_identity,
     },
   });
   return yield* finalizeResponse(stored, outcome, "verified");

@@ -16,6 +16,14 @@ const PositiveMilliseconds = Schema.Int.check(
   ),
 );
 
+const PositiveRetrySeconds = Schema.Int.check(
+  Schema.makeFilter((value) =>
+    Number.isSafeInteger(value) && value >= 1 && value <= 3_600
+      ? undefined
+      : "Expected a retry delay from one second through one hour",
+  ),
+);
+
 const CanonicalNonEmptyString = Schema.NonEmptyString.check(
   Schema.makeFilter((value) =>
     value.trim() === value ? undefined : "Expected a non-empty value without edge whitespace",
@@ -225,6 +233,35 @@ export type NamespaceOwnershipProviderCompleteContext = Schema.Schema.Type<
 
 export const NamespaceOwnershipProviderCompleteResult = Schema.Union([
   Schema.Struct({ status: Schema.Literal("pending") }),
+  Schema.Struct({
+    status: Schema.Literal("pending"),
+    observation_contract_version: Schema.Literal("pirate-hns-target-observation-v3"),
+    raw_response_bytes: BoundedRawResponseBytes,
+    provider_response_sha256: Sha256Hex,
+    observation: BoundedSubmissionPayload,
+  }),
+  Schema.Struct({
+    status: Schema.Literal("rejected"),
+    observation_contract_version: Schema.Literal("pirate-hns-target-observation-v3"),
+    raw_response_bytes: BoundedRawResponseBytes,
+    provider_response_sha256: Sha256Hex,
+    observation: BoundedSubmissionPayload,
+  }),
+  Schema.Struct({
+    status: Schema.Literal("unavailable"),
+    observation_contract_version: Schema.Literal("pirate-hns-target-observation-v3"),
+    raw_response_bytes: BoundedRawResponseBytes,
+    provider_response_sha256: Sha256Hex,
+    observation: BoundedSubmissionPayload,
+    retry_after_seconds: Schema.NullOr(PositiveRetrySeconds),
+  }),
+  Schema.Struct({
+    status: Schema.Literal("ineligible"),
+    observation_contract_version: Schema.Literal("pirate-hns-target-observation-v3"),
+    raw_response_bytes: BoundedRawResponseBytes,
+    provider_response_sha256: Sha256Hex,
+    observation: BoundedSubmissionPayload,
+  }),
   /**
    * Raw provider evidence is intentionally not an ownership envelope.  The
    * completion reservation supplies `evidence_ref`; the application evidence

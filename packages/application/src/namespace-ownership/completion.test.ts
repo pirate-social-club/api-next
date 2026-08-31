@@ -24,6 +24,11 @@ import {
   type NamespaceOwnershipCompletionStore,
   type NamespaceOwnershipStoredCompletion,
 } from "./completion.ts";
+import {
+  decodeHnsOwnerTargetObservationV3Bytes,
+  encodeHnsOwnerTargetObservationV3,
+  hnsCreationSourceIneligibleResultV2Hash,
+} from "./hns-control-observer-v2.ts";
 import { hnsNamespaceStartHash, hnsOwnerChallengeValue } from "./hns-evidence.ts";
 import { makeNamespaceOwnershipProviderRegistry } from "./registry.ts";
 
@@ -166,6 +171,7 @@ async function services(options: {
     complete: 0,
   };
   let capturedVerified: Parameters<NamespaceOwnershipCompletionStore["verify"]>[0] | undefined;
+  let capturedRejected: Parameters<NamespaceOwnershipCompletionStore["reject"]>[0] | undefined;
   let capturedReserve: Parameters<NamespaceOwnershipCompletionStore["reserve"]>[0] | undefined;
   const store: NamespaceOwnershipCompletionStore = {
     load: () => {
@@ -181,8 +187,9 @@ async function services(options: {
       calls.release += 1;
       return Effect.succeed(options.release ?? { kind: "released" as const });
     },
-    reject: () => {
+    reject: (input) => {
       calls.reject += 1;
+      capturedRejected = input;
       return Effect.succeed(options.finalize ?? { kind: "committed", result_hash: "8".repeat(64) });
     },
     consume: () => {
@@ -208,6 +215,7 @@ async function services(options: {
   return {
     calls,
     capturedReserve: () => capturedReserve,
+    capturedRejected: () => capturedRejected,
     capturedVerified: () => capturedVerified,
     value: {
       store,
@@ -430,6 +438,55 @@ describe("namespace ownership poll completion", () => {
       result_hash: "8".repeat(64),
     });
     expect(context.calls).toMatchObject({ reject: 1, release: 0, verify: 0, complete: 1 });
+  });
+
+  test("retains and hashes an exact target-v3 source-ineligible terminal response", async () => {
+    const bytes = await encodeHnsOwnerTargetObservationV3({
+      status: "ineligible",
+      observation_contract_version: "pirate-hns-target-observation-v3",
+      reason_code: "owner_authoritative_source_ineligible",
+      ownership_source: "owner_authoritative_dns_txt",
+      root_label: route.root_label,
+      chain_authority_digest: "6".repeat(64),
+      authority_inventory_reference: "authority-inventory:regtest-current",
+      authority_inventory_version: "authority-inventory-v1",
+      authority_inventory_digest: "7".repeat(64),
+      observer_snapshot_sha256: "8".repeat(64),
+      observer_result_sha256: "9".repeat(64),
+      diagnostic_ref: "hns-observer:regtest:snapshot-01",
+    });
+    const decoded = await decodeHnsOwnerTargetObservationV3Bytes(bytes);
+    const initial = await stored();
+    const context = await services({
+      initial,
+      provider: {
+        status: "ineligible",
+        observation_contract_version: "pirate-hns-target-observation-v3",
+        raw_response_bytes: bytes,
+        provider_response_sha256: decoded.response_sha256,
+        observation: decoded.response,
+      },
+    });
+    const result = await Effect.runPromise(completeNamespaceOwnership(request, context.value));
+    const expectedHash = await hnsCreationSourceIneligibleResultV2Hash({
+      ceremony_intent_id: request.ceremony_intent_id,
+      session_id: request.session_id,
+      expected_revision: request.expected_revision,
+      idempotency_key: request.idempotency_key,
+      completion_request_hash: await hnsCompletionRequestHash(request),
+      provider_response_sha256: decoded.response_sha256,
+    });
+    expect(result).toMatchObject({ status: "rejected", replayed: false });
+    expect(context.capturedRejected()).toMatchObject({
+      result_hash: expectedHash,
+      target_response: {
+        observation_contract_version: "pirate-hns-target-observation-v3",
+        status: "ineligible",
+        provider_response_sha256: decoded.response_sha256,
+      },
+    });
+    expect(context.capturedRejected()?.target_response?.raw_response_bytes).toEqual(bytes);
+    expect(context.calls).toMatchObject({ reject: 1, release: 0, verify: 0 });
   });
 
   test("preserves the persisted status when a different finalizer receives terminal replay", async () => {
