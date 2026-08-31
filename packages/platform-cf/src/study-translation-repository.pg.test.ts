@@ -191,10 +191,11 @@ suite("Study translation generation", () => {
                target_language, quality_policy_revision, release_state, corpus_sample_count,
                source_binding_bps, meaning_preservation_bps, bilingual_rubric_bps,
                critical_defect_count, corpus_revision, reviewed_file_sha256,
-               reviewer_role, evaluator_revision, accepted_at
-             ) VALUES ('es','study-translation-quality-es-v1','active',100,10000,10000,9500,0,
+               reviewer_role, evaluator_revision, prompt_revision, accepted_at
+             ) VALUES ('es','study-translation-quality-es-v1','active',200,10000,10000,9500,0,
                'study-translation-corpus-es-b1-v1',repeat('f',64),'bilingual_reviewer',
-               'study_translation_corpus_evaluator_v1',clock_timestamp())`,
+               'study_translation_corpus_evaluator_v1','song_study_translation_prompt_v2',
+               clock_timestamp())`,
         );
         await admin.query(
           `INSERT INTO study_translation_quality_registry (
