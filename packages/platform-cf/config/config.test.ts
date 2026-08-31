@@ -65,7 +65,6 @@ describe("config system (000 §9)", () => {
     const configured = loadConfigFrom(JobsWorkerConfig, {
       API_NEXT_ENV: "staging",
       COMMUNITY_MAINTENANCE_ENABLED: "true",
-      SONG_MAINTENANCE_OBSERVATION_ENABLED: "false",
       COMMUNITY_PURCHASE_FUNDING_RPC_URL: "https://funding-rpc.test",
       MEGAPOT_REWARDS_ENABLED: "true",
       MEGAPOT_CHAIN_ID: "84532",
@@ -98,7 +97,6 @@ describe("config system (000 §9)", () => {
     const configured = loadConfigFrom(JobsWorkerConfig, {
       API_NEXT_ENV: "production",
       COMMUNITY_MAINTENANCE_ENABLED: "false",
-      SONG_MAINTENANCE_OBSERVATION_ENABLED: "true",
       COMMUNITY_PURCHASE_FUNDING_RPC_URL: "https://rpc.invalid/",
       MEGAPOT_REWARDS_ENABLED: "false",
       MEGAPOT_CHAIN_ID: "8453",
@@ -117,7 +115,6 @@ describe("config system (000 §9)", () => {
 
     expect(configured.MEGAPOT_REWARDS_ENABLED).toBe(false);
     expect(configured.COMMUNITY_MAINTENANCE_ENABLED).toBe(false);
-    expect(configured.SONG_MAINTENANCE_OBSERVATION_ENABLED).toBe(true);
     expect(Redacted.value(configured.MEGAPOT_V2_RPC_URL)).toBe("");
   });
 

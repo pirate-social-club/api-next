@@ -81,9 +81,9 @@ keys, version IDs and source commits.
 
 The rollback is a separate reviewed source change restoring production
 `crons: []`, `MEDIA_PROCESSING_ENABLED=false`,
-`DATA_REGISTRATION_ENABLED=false` and
-`SONG_MAINTENANCE_OBSERVATION_ENABLED=false`. Deploy that exact merged commit;
-a source-only revert is not sufficient.
+`DATA_REGISTRATION_ENABLED=false`, and removing the temporary observation
+variable, function and tests entirely. Deploy that exact merged commit; a
+source-only revert is not sufficient.
 
 Read back the deployed version, empty schedule and false flags. Re-run the
 read-only database authority counts and inspect the two DLQs. If rollback cannot
@@ -107,3 +107,34 @@ Live-tail read-back recorded a natural scheduled invocation at
 its cron was `* * * * *`, its outcome was `ok`, and it contained no exception or
 custom alert log. This natural invocation preceded the reviewed change that
 enables the synthetic marker.
+
+Synthetic deployment `28b5008c-bc43-4e7c-9560-d362655e1cfb` placed version
+`ad32dbbf-e6d7-49a5-8300-93e92b6e88a1` at 100 percent from merged commit
+`7de35ce14218a238e9498abb797771349a5aca3d`. Version read-back confirmed the
+same minute cron and runtime boundaries with only the synthetic marker changed
+to true.
+
+Persisted Workers Logs query run `109a45pfmh129vdivvxfho52` read 3,763,676
+rows and returned 29 retained events matching only the opaque operation ID. On
+version `ad32dbbf-e6d7-49a5-8300-93e92b6e88a1`, it proved the high
+`pipeline.alert` transition at `2026-08-31T11:52:15.045Z` and the distinct
+`pipeline.alert.suppression` event at `2026-08-31T11:53:13.998Z`. Both records
+used operation ID `production-maintenance-observation-20260831`, workflow
+revision 4, key `song-pipeline:media-replacement-limit-reached`, production
+environment, media subsystem, terminal outcome and failure class
+`workflow_missing_at_replacement_limit`; the second record was explicitly
+`suppressed`. The query retained no credential or unrelated source content.
+
+Read-only database checks after both natural and synthetic observation found
+zero media submissions, media attempts, media outbox rows, DATA operations and
+DATA outbox rows. No production song row or transaction evidence was created.
+
+Persisted health query run `w0g2xzb101ck6bmvdfandon7` proved 31 natural
+`healthy` snapshots for each of the media and DATA subsystems. The first pair
+was emitted at `2026-08-31T11:35:10Z` on the pre-synthetic activation version;
+the latest observed pair remained healthy with all pending, in-flight,
+retrying, exhausted and terminal counts at zero. Balance query run
+`9a1hcd7c10oyap0s59jt2h5c` proved 32 natural production snapshots for the
+Aeneid DATA signer. Its latest record was `fresh` and `sufficient` on chain
+1315 with a reserve ratio of 210,000 basis points. These queries retained only
+redacted counts, statuses, timestamps and version identifiers.
