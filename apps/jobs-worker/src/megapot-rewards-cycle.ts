@@ -59,8 +59,26 @@ export type MegapotRewardsCycleSummary = Readonly<{
   refunded: number;
   paid: number;
   failures: readonly string[];
+  failureDiagnostics: readonly string[];
   agedPending: readonly MegapotAgedPending[] | null;
 }>;
+
+const REFUND_COORDINATOR_FAILURE_REASONS = [
+  "deployment_attestation_mismatch",
+  "gas_floor_insufficient",
+  "invalid_config",
+  "production_disabled",
+  "receipt_evidence_invalid",
+  "signer_mismatch",
+  "solvency_insufficient",
+] as const;
+
+const REFUND_COORDINATOR_FAILURE_PHASES = [
+  "configuration",
+  "preflight",
+  "prepare",
+  "receipt",
+] as const;
 
 const AGED_PENDING_FAMILIES = [
   "chain_effects",
@@ -139,7 +157,7 @@ export function writeMegapotRewardsCycleSnapshot(
         : Math.max(...summary.agedPending.map((entry) => entry.oldestAgeSeconds));
     writer("megapot.rewards.cycle", {
       event: "megapot.rewards.cycle",
-      schema_version: 2,
+      schema_version: 3,
       emitted_at: input.emittedAt,
       environment: input.environment,
       worker_version_id: input.workerVersion.id,
@@ -159,6 +177,7 @@ export function writeMegapotRewardsCycleSnapshot(
       paid_count: summary.paid,
       failure_count: summary.failures.length,
       failure_tags: summary.failures,
+      failure_diagnostics: summary.failureDiagnostics,
       liveness_status: livenessAvailable ? "available" : "unavailable",
       aged_pending_threshold_seconds: MEGAPOT_REWARDS_AGED_PENDING_THRESHOLD_SECONDS,
       aged_pending_total_count: agedTotal,
@@ -199,6 +218,29 @@ function failureTag(error: unknown): string {
   return "MegapotRewardsCycleExpectedFailure";
 }
 
+function memberOf<const Values extends readonly string[]>(
+  value: unknown,
+  values: Values,
+): value is Values[number] {
+  return typeof value === "string" && values.includes(value);
+}
+
+function failureDiagnostic(error: unknown): string | null {
+  if (
+    typeof error !== "object" ||
+    error === null ||
+    !("_tag" in error) ||
+    error._tag !== "RewardRefundCoordinatorFailed" ||
+    !("reason" in error) ||
+    !memberOf(error.reason, REFUND_COORDINATOR_FAILURE_REASONS) ||
+    !("phase" in error) ||
+    !memberOf(error.phase, REFUND_COORDINATOR_FAILURE_PHASES)
+  ) {
+    return null;
+  }
+  return `${error._tag}:${error.phase}:${error.reason}`;
+}
+
 const partition = <A, B>(values: readonly A[], f: (value: A) => Effect.Effect<B, unknown>) =>
   Effect.partition(values, f, { concurrency: 1 });
 
@@ -213,8 +255,15 @@ export function runMegapotRewardsCycle(input: {
       return yield* Effect.fail(new Error("invalid Megapot rewards cycle limit"));
     }
     const failures: string[] = [];
+    const failureDiagnostics: string[] = [];
     const recordFailures = (values: readonly unknown[]) => {
       failures.push(...values.map(failureTag));
+      failureDiagnostics.push(
+        ...values.flatMap((error) => {
+          const diagnostic = failureDiagnostic(error);
+          return diagnostic === null ? [] : [diagnostic];
+        }),
+      );
     };
 
     const pending = yield* input.work.loadChainEffects(limit);
@@ -304,6 +353,7 @@ export function runMegapotRewardsCycle(input: {
       refunded: refunded.length,
       paid: paid.length,
       failures,
+      failureDiagnostics,
       agedPending,
     };
   });
