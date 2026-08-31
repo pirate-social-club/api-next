@@ -76,36 +76,78 @@ const ownerRecoveryAuthoritySql = `
            source.provider_configuration_kind,
            source.provider_configuration_reference,
            source.provider_configuration_version,
-           configuration.provider_configuration_digest,
+           COALESCE(
+             source.provider_configuration_digest,
+             configuration.provider_configuration_digest
+           ) AS provider_configuration_digest,
            source.environment
       FROM community_route_ownership_evidence AS e
       JOIN LATERAL (
         SELECT s.provider_configuration_kind,
                s.provider_configuration_ref AS provider_configuration_reference,
-               s.provider_configuration_version, s.environment
+               s.provider_configuration_version,
+               NULL::text AS provider_configuration_digest,
+               s.environment
           FROM namespace_ownership_evidence_snapshots AS s
          WHERE s.evidence_ref = e.evidence_ref
         UNION ALL
         SELECT s.provider_configuration_kind,
                s.provider_configuration_reference,
-               s.provider_configuration_version, s.environment
+               s.provider_configuration_version,
+               s.provider_configuration_digest,
+               s.environment
           FROM community_route_revalidation_evidence_snapshots AS s
          WHERE s.evidence_ref = e.evidence_ref
         UNION ALL
         SELECT s.provider_configuration_kind,
                s.provider_configuration_reference,
-               s.provider_configuration_version, s.environment
+               s.provider_configuration_version,
+               s.provider_configuration_digest,
+               s.environment
           FROM community_route_active_lease_renewal_evidence_snapshots AS s
          WHERE s.evidence_ref = e.evidence_ref
+        UNION ALL
+        SELECT 'managed'::text,
+               observer.value ->> 'provider_configuration_reference',
+               observer.value ->> 'provider_configuration_version',
+               observer.value ->> 'provider_configuration_digest',
+               observer.value ->> 'environment'
+          FROM hns_operator_control_promotion_receipts AS receipt
+          JOIN LATERAL (
+            SELECT artifact,
+                   convert_from(
+                     decode(artifact ->> 'bytes_hex', 'hex'),
+                     'UTF8'
+                   )::jsonb AS value
+              FROM jsonb_array_elements(
+                     convert_from(receipt.candidate_bytes, 'UTF8')::jsonb -> 'artifacts'
+                   ) AS artifact
+             WHERE artifact ->> 'name' = 'observer_evidence'
+          ) AS observer ON TRUE
+         WHERE receipt.receipt_id = e.operator_control_promotion_receipt_id
+           AND receipt.evidence_ref = e.evidence_ref
+           AND e.origin = 'operator_control_observation'
+           AND receipt.observer_evidence_sha256 = observer.artifact ->> 'sha256'
+           AND receipt.observer_evidence_reference = observer.value ->> 'evidence_reference'
+           AND e.provider_binding_hash = observer.value ->> 'provider_configuration_digest'
+           AND observer.value ->> 'status' = 'verified'
       ) AS source ON TRUE
-      JOIN hns_control_observer_configurations AS configuration
+      LEFT JOIN hns_control_observer_configurations AS configuration
         ON configuration.provider_configuration_reference =
              source.provider_configuration_reference
        AND configuration.provider_configuration_version =
              source.provider_configuration_version
+       AND (
+         source.provider_configuration_digest IS NULL
+         OR configuration.provider_configuration_digest = source.provider_configuration_digest
+       )
      WHERE e.family = 'hns'
        AND e.provider_id = 'hns.owner.v1'
        AND e.provider_configuration_version = source.provider_configuration_version
+       AND (
+         source.provider_configuration_digest IS NOT NULL
+         OR configuration.provider_configuration_digest IS NOT NULL
+       )
   ), candidates AS (
     SELECT 'database_time_expiry_transition'::text AS recovery_authority_kind,
            transition.route_lifecycle_transition_id AS recovery_authority_reference,
@@ -200,7 +242,7 @@ const ownerRecoveryAuthoritySql = `
          route.family, route.root_label, route.root_label_display, route.path_segment
     FROM current_route AS route
     JOIN candidates AS candidate ON TRUE
-    JOIN hns_control_observer_configurations AS configuration
+    LEFT JOIN hns_control_observer_configurations AS configuration
       ON configuration.provider_configuration_reference =
            candidate.provider_configuration_reference
      AND configuration.provider_configuration_version =
@@ -208,6 +250,10 @@ const ownerRecoveryAuthoritySql = `
      AND configuration.provider_configuration_digest =
            candidate.provider_configuration_digest
    WHERE candidate.provider_id = 'hns.owner.v1'
+     AND (
+       candidate.recovery_authority_kind = 'database_time_expiry_transition'
+       OR configuration.provider_configuration_digest IS NOT NULL
+     )
    LIMIT 2`;
 
 function hnsOwnerRecoveryAuthorityFromRow(
