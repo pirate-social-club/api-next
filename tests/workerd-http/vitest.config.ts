@@ -6,6 +6,10 @@ const alias = {
     "../../packages/application/src/use-cases/hns-edge-alerts.ts",
     import.meta.url,
   ).pathname,
+  "@pirate/application/use-cases/hns-edge-status": new URL(
+    "../../packages/application/src/use-cases/hns-edge-status.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/application/use-cases/content/community-moderation-runtime": new URL(
     "../../packages/application/src/use-cases/content/community-moderation-runtime.ts",
     import.meta.url,
