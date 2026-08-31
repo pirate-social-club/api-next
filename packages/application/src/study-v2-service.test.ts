@@ -8,7 +8,10 @@ import {
   type StudyV2Store,
 } from "./study-v2-service.ts";
 
-const item = (ordinal: number): StudySessionItemV2 => ({
+const item = (
+  ordinal: number,
+  graderPolicyRevision = "script_aware_token_diff_v1",
+): StudySessionItemV2 => ({
   object: "study_session_item_v2",
   session_item_id: `item-${ordinal}`,
   ordinal,
@@ -35,7 +38,7 @@ const item = (ordinal: number): StudySessionItemV2 => ({
   },
   answer_visibility: "always_visible",
   feedback_release: "every_graded_attempt",
-  grader_policy_revision: "script_aware_token_diff_v1",
+  grader_policy_revision: graderPolicyRevision,
   feedback_policy_revision: "feedback-v1",
   quality_policy_revision: "quality-v1",
   maximum_attempts: 3,
@@ -176,6 +179,87 @@ describe("Study spoken answer command", () => {
     expect(transcriptions).toBe(1);
     expect(archives).toBe(1);
     expect(recordedArchives).toEqual([{ state: "failed", objectRef: null }]);
+  });
+
+  test("grades new spoken items phonetically while preserving the immutable policy revision", async () => {
+    let completedGrade: Parameters<StudyV2Store["completeSpokenAnswer"]>[0]["grade"] | null = null;
+    const v2Item = item(0, "script_aware_token_phonetic_v2");
+    const unused = () => Effect.die("unused Study store operation");
+    const store: StudyV2Store = {
+      getAvailability: unused,
+      startSession: unused,
+      getSession: unused,
+      submitAnswer: unused,
+      loadSpokenAnswerContext: () =>
+        Effect.succeed({ item: v2Item, referenceText: "hold me close", dominantLanguage: "en" }),
+      reserveSpokenAnswer: (input) =>
+        Effect.succeed({
+          state: "reserved",
+          commandId: input.commandId,
+          leaseToken: input.leaseToken,
+          attemptId: input.attemptId,
+          artifactId: input.artifactId,
+        }),
+      failSpokenAnswer: () => Effect.void,
+      completeSpokenAnswer: (input) => {
+        completedGrade = input.grade;
+        return Effect.succeed({
+          object: "study_answer_result_v2",
+          session_item_id: input.sessionItemId,
+          attempt_number: input.attemptNumber,
+          exercise_type: "say_it_back",
+          outcome: "correct",
+          first_pass: true,
+          attempt_state: "spent",
+          feedback: {
+            kind: "transcript_diff",
+            heard_transcript: input.grade.heardTranscript,
+            matched: input.grade.matched,
+            missing: input.grade.missing,
+            extra: input.grade.extra,
+            substituted: input.grade.substituted,
+            policy_revision: input.grade.policyRevision,
+          },
+          session: { ...session, items: [v2Item, item(1), item(2), item(3)] },
+        });
+      },
+    };
+    const service = makeStudyV2Service(store, {
+      transcriber: {
+        providerRetention: "not_stored",
+        transcribe: () =>
+          Effect.succeed({
+            transcript: "hold me closed",
+            detectedLanguage: "en",
+            detectedLanguageConfidence: 0.99,
+          }),
+      },
+      archive: { store: () => Effect.succeed({ state: "failed", objectRef: null }) },
+    });
+    let id = 0;
+    await Effect.runPromise(
+      service
+        .submitSpokenAnswer({
+          accountId: "account-1",
+          attemptNumber: 1,
+          audio: new Uint8Array([1]),
+          audioContentType: "audio/webm",
+          audioDurationMs: 500,
+          communityId: "community-1",
+          idempotencyKey: "phonetic-1",
+          sessionId: "session-1",
+          sessionItemId: "item-0",
+        })
+        .pipe(
+          Effect.provideService(Clock, { now: Effect.succeed(Date.UTC(2026, 7, 29)) }),
+          Effect.provideService(IdGen, { next: Effect.sync(() => String(++id)) }),
+        ),
+    );
+    expect(completedGrade).toMatchObject({
+      correct: true,
+      matchKind: "phonetic",
+      policyRevision: "script_aware_token_phonetic_v2",
+    });
   });
 
   test("binds provider retention into the reserved command identity", async () => {
