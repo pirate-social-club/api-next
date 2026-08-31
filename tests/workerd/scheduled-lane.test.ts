@@ -44,6 +44,8 @@ function scheduledWorkerEnv(hns: Partial<JobsWorkerEnv> = {}): JobsWorkerEnv {
       connectionString: "postgres://postgres:postgres@127.0.0.1:5432/postgres",
     },
     API_NEXT_ENV: "development",
+    COMMUNITY_MAINTENANCE_ENABLED: "true",
+    SONG_MAINTENANCE_OBSERVATION_ENABLED: "false",
     COMMUNITY_PURCHASE_FUNDING_RPC_URL: "https://rpc.invalid/",
     MEGAPOT_REWARDS_ENABLED: "false",
     MEGAPOT_CHAIN_ID: "84532",
@@ -88,6 +90,19 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
         declaration.writes.some((table) => fundingWrites.has(table)),
       ),
     ).toEqual([funding]);
+  });
+
+  it("can isolate production song maintenance from unrelated community jobs", () => {
+    const declarations = makeJobsWorkerDeclarations(
+      {},
+      "https://rpc.invalid/",
+      { enabled: false },
+      "production",
+      null,
+      false,
+    );
+
+    expect(declarations).toEqual([]);
   });
 
   it("registers the Megapot custody machine as one exclusive writer lane", async () => {

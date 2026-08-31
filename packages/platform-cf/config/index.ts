@@ -86,6 +86,8 @@ export const MoneyPathConfig = Config.all({
 
 export const JobsWorkerConfig = Config.all({
   API_NEXT_ENV: AppEnv,
+  COMMUNITY_MAINTENANCE_ENABLED: Config.boolean("COMMUNITY_MAINTENANCE_ENABLED"),
+  SONG_MAINTENANCE_OBSERVATION_ENABLED: Config.boolean("SONG_MAINTENANCE_OBSERVATION_ENABLED"),
   COMMUNITY_PURCHASE_FUNDING_RPC_URL: secret("COMMUNITY_PURCHASE_FUNDING_RPC_URL"),
   ...MegapotRewardConfigFields,
   MEGAPOT_V2_RPC_URL: secret("MEGAPOT_V2_RPC_URL").pipe(Config.withDefault(Redacted.make(""))),

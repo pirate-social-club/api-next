@@ -187,6 +187,62 @@ const missingWorkflowCeilingAlert = (subsystem: Subsystem, row: WorkflowCeilingR
   outcome: "terminal" as const,
 });
 
+export const SONG_MAINTENANCE_OBSERVATION_OPERATION_ID =
+  "production-maintenance-observation-20260831" as const;
+export const SONG_MAINTENANCE_OBSERVATION_WORKFLOW_ID =
+  `media-${SONG_MAINTENANCE_OBSERVATION_OPERATION_ID}-r${SONG_WORKFLOW_MAX_REVISION}` as const;
+
+/**
+ * Emits the temporary production proof only after the platform confirms that
+ * the opaque revision-ceiling Workflow identity does not exist. The marker is
+ * configuration-only: this path never creates a Workflow or writes product
+ * state, and removal of the activation overlay removes the fixture entirely.
+ */
+export function collectSongMaintenanceObservationAlert(
+  input: Readonly<{
+    enabled: boolean;
+    environment: "development" | "staging" | "production";
+    media: CloudflareMediaWorkflowBinding | undefined;
+  }>,
+) {
+  if (!input.enabled) return Effect.succeed(0);
+  return Effect.gen(function* () {
+    if (input.environment !== "production" || input.media === undefined) {
+      return yield* Effect.fail(
+        new Error("song maintenance observation requires the production media Workflow binding"),
+      );
+    }
+    const media = input.media;
+
+    // Cloudflare documents `get` as throwing for a nonexistent or invalid ID.
+    // This source-owned constant is valid, so a throw proves the bounded
+    // synthetic identity is absent; a returned instance fails closed.
+    const missing = yield* Effect.promise(async () => {
+      try {
+        await media.get(SONG_MAINTENANCE_OBSERVATION_WORKFLOW_ID);
+        return false;
+      } catch {
+        return true;
+      }
+    });
+    if (!missing) {
+      return yield* Effect.fail(
+        new Error("song maintenance observation Workflow identity unexpectedly exists"),
+      );
+    }
+
+    const collector = yield* AlertCollector;
+    yield* collector.emit(
+      missingWorkflowCeilingAlert("media", {
+        operation_id: SONG_MAINTENANCE_OBSERVATION_OPERATION_ID,
+        workflow_revision: String(SONG_WORKFLOW_MAX_REVISION),
+        workflow_instance_id: SONG_MAINTENANCE_OBSERVATION_WORKFLOW_ID,
+      }),
+    );
+    return 1;
+  });
+}
+
 const queueDlqAlert = (subsystem: Subsystem, row: DlqAuthorityRow) => ({
   key: `song-pipeline:${subsystem}-queue-dlq`,
   severity: "high" as const,

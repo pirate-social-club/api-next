@@ -78,6 +78,8 @@
   },
   "vars": {
     "API_NEXT_ENV": "development",
+    "COMMUNITY_MAINTENANCE_ENABLED": "true",
+    "SONG_MAINTENANCE_OBSERVATION_ENABLED": "false",
     "MEDIA_PROCESSING_ENABLED": "false",
     "DATA_REGISTRATION_ENABLED": "false",
     "DATA_REGISTRATION_RPC_URL": "",
@@ -181,6 +183,8 @@
       },
       "vars": {
         "API_NEXT_ENV": "staging",
+        "COMMUNITY_MAINTENANCE_ENABLED": "true",
+        "SONG_MAINTENANCE_OBSERVATION_ENABLED": "false",
         "MEDIA_PROCESSING_ENABLED": "true",
         "DATA_REGISTRATION_ENABLED": "true",
         "DATA_REGISTRATION_RPC_URL": "https://aeneid.storyrpc.io",
@@ -248,7 +252,7 @@
         ]
       },
       "triggers": {
-        "crons": []
+        "crons": ["* * * * *"]
       },
       "hyperdrive": [
         {
@@ -300,8 +304,10 @@
       },
       "vars": {
         "API_NEXT_ENV": "production",
-        "MEDIA_PROCESSING_ENABLED": "false",
-        "DATA_REGISTRATION_ENABLED": "false",
+        "COMMUNITY_MAINTENANCE_ENABLED": "false",
+        "SONG_MAINTENANCE_OBSERVATION_ENABLED": "false",
+        "MEDIA_PROCESSING_ENABLED": "true",
+        "DATA_REGISTRATION_ENABLED": "true",
         "DATA_REGISTRATION_RPC_URL": "https://aeneid.storyrpc.io",
         "DATA_REGISTRATION_SIGNER_ADDRESS": "0x91016D653FDa20E7C8eb2a1E6710a6504C5d1E7d",
         "DATA_REGISTRATION_NATIVE_BALANCE_FLOOR_WEI": "200000000000000000",
