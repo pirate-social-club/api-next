@@ -138,3 +138,28 @@ retrying, exhausted and terminal counts at zero. Balance query run
 Aeneid DATA signer. Its latest record was `fresh` and `sufficient` on chain
 1315 with a reserve ratio of 210,000 basis points. These queries retained only
 redacted counts, statuses, timestamps and version identifiers.
+
+Rollback pull request 203 merged as
+`b0ef61a17f489e3dc17024e33951211e1eea3331` after the repository,
+secret-boundary, advisory-policy and PostgreSQL 17 gates passed. The first
+PostgreSQL attempt reached its 600-second cumulative-suite timeout after only
+passing assertions, and one later attempt hit the independently pre-existing
+intermittent HNS owner-recovery storage fixture. The unchanged final head
+passed PostgreSQL 17 in 11 minutes 44 seconds; neither failure was hidden or
+bypassed.
+
+Rollback deployment `f4b9425f-0c2d-45d2-aafc-4d02200dc812` placed version
+`bda54f24-3f57-4c38-af40-4822b4ee8de4` at 100 percent from that exact merged
+commit. Independent version read-back confirmed the Git provenance and false
+community, media, DATA, HNS and Megapot gates. The Cloudflare schedules API
+returned an empty schedule array. A post-rollback read-only transaction found
+zero media submissions, media attempts, media outbox rows, DATA operations and
+DATA outbox rows. Both production DLQs retained zero producers and their one
+reviewed diagnostic consumer; Cloudflare exposes no backlog-depth field, so
+the zero launch authority, zero database effects and collector evidence are
+the bounded empty-or-reconciled proof.
+
+The mode-0600 local Workers Observability token file was deleted immediately
+after the persisted queries. Dashboard deletion of the short-lived user token
+is an operator-confirmed final hygiene step and must be recorded before this
+lane is marked complete.
