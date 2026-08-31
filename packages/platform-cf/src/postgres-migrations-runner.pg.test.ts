@@ -111,8 +111,8 @@ suite("Postgres 17 migration runner", () => {
       expect(result).toMatchObject({
         dryRun: false,
         result: {
-          applied: migrations.slice(assetBonusIndex).map(({ version }) => version),
-          currentVersion: migrations.at(-1)?.version,
+          applied: ["0088_rewards_song_asset_bonus.sql"],
+          currentVersion: "0088_rewards_song_asset_bonus.sql",
         },
       });
       const asset = await admin.query(

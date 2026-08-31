@@ -25,7 +25,7 @@ const input = parseMegapotGoldenInput({
     account_id: "participant_account_1",
     persona_id: "participant_persona_1",
     timezone: "UTC",
-    accepted_lyrics: "Sail away",
+    accepted_lyrics: "Line 1\nLine 2\nLine 3\nLine 4",
   },
 });
 
@@ -190,92 +190,36 @@ const participantStudyV2Session = {
 const executeOptions = { ...options, participantPreflight } as const;
 const now = () => new Date("2026-08-26T10:00:00.000Z");
 
-const activeStudySession = {
-  object: "study_session",
-  session_id: "study_session_1",
-  persona_id: input.study_participant.persona_id,
-  community_id: input.community_id,
-  post_id: input.post_id,
-  audio_revision: 1,
-  lyrics_revision: 1,
-  source_revision: 1,
-  qualification_policy_version_id: "study_session_first_pass_v2@1",
-  status: "active",
-  timezone: "UTC",
-  streak_day: null,
-  items: [
-    {
-      session_item_id: "study_item_1",
-      ordinal: 0,
-      source_identity: {
-        community_id: input.community_id,
-        post_id: input.post_id,
-        audio_revision: 1,
-        lyrics_revision: 1,
-        source_revision: 1,
-        source_item_key: "line-01",
-      },
-      prompt: { kind: "text_response", text: "Complete the accepted lyric: Sail ____" },
-      presentation_count: 1,
-      answer_count: 0,
-      first_pass_outcome: null,
+function studyV2Progress(answered: number) {
+  const completed = answered === 4;
+  return {
+    ...participantStudyV2Session,
+    status: completed ? ("completed" as const) : ("active" as const),
+    progress: {
+      qualifying_exercise_count: 4,
+      answered_exercise_count: answered,
+      first_pass_correct: answered,
+      required_correct: 3,
+      score_bps: completed ? 10_000 : null,
     },
-  ],
-  progress: {
-    qualifying_exercise_count: 1,
-    answered_exercise_count: 0,
-    first_pass_correct: 0,
-    required_correct: 1,
-    score_bps: null,
-  },
-  qualification: null,
-  created_at: "2026-08-26T10:00:00.000Z",
-  completed_at: null,
-} as const;
-
-const studyQualification = {
-  object: "activity_qualification",
-  qualification_id: "qualification_1",
-  persona_id: input.study_participant.persona_id,
-  community_id: input.community_id,
-  post_id: input.post_id,
-  audio_revision: 1,
-  activity: "study",
-  attempt_ref: { kind: "study", session_id: activeStudySession.session_id },
-  score_bps: 10_000,
-  qualification_policy_version_id: activeStudySession.qualification_policy_version_id,
-  qualified_at: "2026-08-26T10:01:00.000Z",
-  reward_period_key: "2026-08-26",
-  streak_day: "2026-08-26",
-  evidence_summary: {
-    kind: "study_session_first_pass_v2",
-    qualifying_exercise_count: 1,
-    first_pass_correct: 1,
-    required_correct: 1,
-  },
-} as const;
-
-const completedStudySession = {
-  ...activeStudySession,
-  status: "completed",
-  streak_day: "2026-08-26",
-  items: [
-    {
-      ...activeStudySession.items[0],
-      answer_count: 1,
-      first_pass_outcome: "correct",
+    lesson: {
+      current: completed
+        ? null
+        : {
+            session_item_id: `study_v2_item_${answered + 1}`,
+            presentation_number: 1,
+            is_reappearance: false,
+            presented_at: startsAt,
+          },
+      resolved_card_count: answered,
+      total_card_count: 4,
+      presentation_count: completed ? 4 : answered + 1,
+      presentation_cap: 12,
+      completion_reason: completed ? ("all_resolved" as const) : null,
     },
-  ],
-  progress: {
-    qualifying_exercise_count: 1,
-    answered_exercise_count: 1,
-    first_pass_correct: 1,
-    required_correct: 1,
-    score_bps: 10_000,
-  },
-  qualification: studyQualification,
-  completed_at: "2026-08-26T10:01:00.000Z",
-} as const;
+    completed_at: completed ? "2026-08-26T10:01:00.000Z" : null,
+  };
+}
 
 function json(value: unknown, status = 200): Response {
   return Response.json(value, { status });
@@ -451,6 +395,8 @@ describe("Base Sepolia Megapot golden flow", () => {
     const authorizations: Array<string | null> = [];
     let observations = 0;
     let sleeps = 0;
+    let studyAnswers = 0;
+    let studySession = participantStudyV2Session;
     const confirmed = {
       ...funding,
       status: "confirmed",
@@ -480,21 +426,38 @@ describe("Base Sepolia Megapot golden flow", () => {
           return json({ funding: confirmed });
         }
         if (path.endsWith("/rewards/megapot-pool")) return json({ pool: null });
-        if (path.endsWith("/posts/song_1/study/sessions")) {
-          return json(activeStudySession, 201);
-        }
-        if (path.endsWith("/items/study_item_1/answers")) {
+        if (path.includes("/study/v2/sessions/") && path.endsWith("/answers")) {
+          studyAnswers += 1;
+          const headers = new Headers(init?.headers);
+          expect(headers.get("content-type")).toBe("audio/wav");
+          expect(headers.get("idempotency-key")).toBe(
+            `megapot-golden-${input.run_id}-study-v2-answer-${studyAnswers}-1`,
+          );
+          expect(headers.get("x-study-attempt-number")).toBe("1");
+          expect(init?.body).toBeInstanceOf(Uint8Array);
+          studySession = studyV2Progress(studyAnswers);
           return json({
-            object: "study_answer_result",
-            session_item_id: "study_item_1",
+            object: "study_answer_result_v2",
+            session_item_id: `study_v2_item_${studyAnswers}`,
             attempt_number: 1,
+            exercise_type: "say_it_back",
             outcome: "correct",
             first_pass: true,
-            session: completedStudySession,
+            attempt_state: "spent",
+            feedback: {
+              kind: "transcript_diff",
+              heard_transcript: `Line ${studyAnswers}`,
+              matched: [],
+              missing: [],
+              extra: [],
+              substituted: [],
+              policy_revision: "grader_v1",
+            },
+            session: studySession,
           });
         }
-        if (path.endsWith(`/study/sessions/${activeStudySession.session_id}`)) {
-          return json(completedStudySession);
+        if (path.endsWith(`/study/v2/sessions/${participantStudyV2Session.session_id}`)) {
+          return json(studySession);
         }
         throw new Error(`unexpected path: ${path}`);
       },
@@ -502,6 +465,10 @@ describe("Base Sepolia Megapot golden flow", () => {
         sleeps += 1;
       },
       now,
+      synthesizeStudyAudio: async () => ({
+        bytes: new Uint8Array([1, 2, 3]),
+        durationMs: 100,
+      }),
     });
 
     expect(observations).toBe(2);
@@ -516,21 +483,23 @@ describe("Base Sepolia Megapot golden flow", () => {
       "GET",
       "POST",
       "POST",
+      "POST",
+      "POST",
       "GET",
     ]);
-    expect(paths.at(-1)).toEndWith(`/study/sessions/${activeStudySession.session_id}`);
+    expect(paths.at(-1)).toEndWith(`/study/v2/sessions/${participantStudyV2Session.session_id}`);
     expect(authorizations[0]).toBe("Bearer staging-participant-token");
     expect(authorizations.slice(1, 7)).toEqual(Array(6).fill("Bearer staging-test-token"));
-    expect(authorizations.slice(7)).toEqual(Array(3).fill("Bearer staging-participant-token"));
+    expect(authorizations.slice(7)).toEqual(Array(5).fill("Bearer staging-participant-token"));
     expect(result).toMatchObject({
       mode: "execute",
       state: "funded_and_qualified",
       funding: { status: "confirmed", transaction_hash: transactionHash },
       pool: null,
       participant: {
-        session_id: activeStudySession.session_id,
+        session_id: participantStudyV2Session.session_id,
         score_bps: 10_000,
-        qualification_id: studyQualification.qualification_id,
+        required_correct: 3,
       },
     });
   });
