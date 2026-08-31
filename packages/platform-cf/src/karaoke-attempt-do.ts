@@ -23,8 +23,8 @@ import {
 } from "@pirate/application";
 import { Effect } from "effect";
 import {
-  ELEVENLABS_KARAOKE_PROVIDER_RETENTION,
   ElevenLabsKaraokeSttAdapter,
+  elevenLabsKaraokeProviderPolicy,
 } from "./elevenlabs-karaoke-stt.ts";
 import { makeControlPlaneKaraokeStore } from "./karaoke-repository.ts";
 import { type HyperdriveConnection, makeHyperdriveControlPlaneLayer } from "./postgres.ts";
@@ -85,6 +85,7 @@ declare const WebSocketPair: {
 };
 
 export interface KaraokeAttemptDoBindings {
+  readonly API_NEXT_ENV?: string;
   readonly CONTROL_PLANE: HyperdriveConnection;
   readonly ELEVENLABS_API_KEY?: string;
   readonly LEARNER_AUDIO?: KaraokeR2Bucket;
@@ -268,8 +269,9 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
       )`);
       this.sql.exec(
         "INSERT OR IGNORE INTO karaoke_provider_retention (id,retention) VALUES (1,?)",
-        ELEVENLABS_KARAOKE_PROVIDER_RETENTION,
+        this.providerPolicy().providerRetention,
       );
+      this.recordProviderRetention(this.providerPolicy().providerRetention);
     });
   }
 
@@ -308,7 +310,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
           kind: "enabled",
           provider: "elevenlabs",
           model: "scribe_v2_realtime",
-          retention: ELEVENLABS_KARAOKE_PROVIDER_RETENTION,
+          retention: this.providerPolicy().providerRetention,
         },
       });
       const snapshot = serializeKaraokeSessionSnapshot({
@@ -524,6 +526,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
     if (key === undefined || key.trim() === "") throw new Error("karaoke_provider_unavailable");
     this.adapter = new ElevenLabsKaraokeSttAdapter({
       apiKey: key,
+      enableLogging: this.providerPolicy().enableLogging,
       onProviderRetentionChanged: (retention) => this.recordProviderRetention(retention),
     });
     this.host = new KaraokeSessionHost(snapshot.state, new RuntimeEffects(this), this.adapter, {
@@ -750,6 +753,10 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
     const row = one(this.sql, "SELECT retention FROM karaoke_provider_retention WHERE id=1");
     if (row?.retention === "not_stored" || row?.retention === "stored") return row.retention;
     throw new Error("karaoke_provider_retention_unavailable");
+  }
+
+  private providerPolicy() {
+    return elevenLabsKaraokeProviderPolicy(this.runtimeEnv.API_NEXT_ENV);
   }
 
   private recordProviderRetention(retention: "not_stored" | "stored"): void {

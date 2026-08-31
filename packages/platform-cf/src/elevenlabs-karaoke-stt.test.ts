@@ -3,6 +3,7 @@ import type { KaraokeSttAdapterMessage } from "@pirate/application/karaoke-runti
 import {
   connectElevenLabsKaraokeSocket,
   ElevenLabsKaraokeSttAdapter,
+  elevenLabsKaraokeProviderPolicy,
   type KaraokeSttSocket,
 } from "./elevenlabs-karaoke-stt.ts";
 
@@ -53,6 +54,21 @@ const frame = (bytes: number, songStartMs = 1_000) => ({
 });
 
 describe("ElevenLabs Karaoke realtime adapter", () => {
+  test("allows logged staging sessions while defaults and production stay zero retention", () => {
+    expect(elevenLabsKaraokeProviderPolicy(undefined)).toEqual({
+      enableLogging: false,
+      providerRetention: "not_stored",
+    });
+    expect(elevenLabsKaraokeProviderPolicy("production")).toEqual({
+      enableLogging: false,
+      providerRetention: "not_stored",
+    });
+    expect(elevenLabsKaraokeProviderPolicy("staging")).toEqual({
+      enableLogging: true,
+      providerRetention: "stored",
+    });
+  });
+
   test("requests manual timestamped zero-log scoring and enforces the safe commit floor", async () => {
     const socket = new FakeSocket();
     let connectedUrl = "";
@@ -137,6 +153,34 @@ describe("ElevenLabs Karaoke realtime adapter", () => {
     expect(socket.closed).toBe(true);
     await adapter.sendPcm16(frame(16_000));
     expect(socket.sent).toHaveLength(0);
+  });
+
+  test("does not request zero retention or fail on warnings in staging logging mode", async () => {
+    const socket = new FakeSocket();
+    let connectedUrl = "";
+    let terminal = "";
+    const adapter = new ElevenLabsKaraokeSttAdapter({
+      apiKey: "secret",
+      enableLogging: true,
+      connect: async ({ url }) => {
+        connectedUrl = url;
+        return socket;
+      },
+    });
+    await adapter.start({
+      attemptId: "attempt-1",
+      sessionId: "session-1",
+      initialSequence: 0,
+      onMessage: async () => undefined,
+      onTerminalError: (code) => {
+        terminal = code;
+      },
+    });
+    expect(new URL(connectedUrl).searchParams.get("enable_logging")).toBe("true");
+    socket.emit({ message_type: "warning", warning: "session quality may be reduced" });
+    await Bun.sleep(0);
+    expect(terminal).toBe("");
+    expect(socket.closed).toBe(false);
   });
 
   test("still closes when persistence of the zero-retention warning fails", async () => {

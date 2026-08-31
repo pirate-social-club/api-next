@@ -302,6 +302,7 @@
           "MEGAPOT_V2_RPC_URL",
           "MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID",
           "MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY",
+          "ELEVENLABS_API_KEY",
           "OPENAI_API_KEY"
         ]
       }

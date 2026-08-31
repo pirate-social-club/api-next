@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.43.0",
+  "releaseType": "karaoke-provider-retention-contracts",
+  "wireContract": "karaoke-provider-retention-truth",
+  "sourceCommit": "pending-review",
+  "supersedes": "0.42.0; permits the truthful stored provider-retention value used by authorized staging speech canaries while production remains zero-retention.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.43.0.tgz",
+    "sha256": "666d05762dd88b7cd36aaf7b35ac30429ccdbe79136200a1f923c1c169342c14",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@7178a1495575a364e120e9db2f54d2c4aa9b8c56a5945c21fb3c78be1320a0a9",
+    "openapiSha256": "7178a1495575a364e120e9db2f54d2c4aa9b8c56a5945c21fb3c78be1320a0a9",
+    "clientSha256": "556aa582f561c7d5a0bc58a0a4dd141fbe8fc685d71812cd2a4c546824035bc5"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "passed",
+      "baselineCommit": "origin/main",
+      "reason": "The release only adds stored to the Karaoke provider-retention enum; production still requests and records not_stored."
+    },
+    "focusedContractSuites": "76 passed across retention, generation, corpus, migration, workflow, and binding suites",
+    "fullUnitSuite": "2546 passed and 328 PostgreSQL-dependent tests skipped",
+    "fullWorkerdSuite": "four serial pools passed 43, 47, 2, and 9 tests",
+    "packageVerifier": "passed",
+    "repositoryCheck": "contract freshness, additive OpenAPI, baseline freshness, migration ledger, strict Effect diagnostics, both TypeScript projects, binding, creator, dependency, and HTTP boundaries passed"
+  }
+}

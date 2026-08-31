@@ -28,7 +28,7 @@ describe("karaoke contracts", () => {
       provider_retention: "not_stored",
       platform_retention: "private_learning",
     });
-    expect(() =>
+    expect(
       decode({
         kind: "enabled",
         model: "model",
@@ -36,7 +36,13 @@ describe("karaoke contracts", () => {
         provider_retention: "stored",
         platform_retention: "private_learning",
       }),
-    ).toThrow();
+    ).toEqual({
+      kind: "enabled",
+      model: "model",
+      provider: "elevenlabs",
+      provider_retention: "stored",
+      platform_retention: "private_learning",
+    });
   });
 
   it("decodes attempt/session/leaderboard shapes without audio fields", () => {

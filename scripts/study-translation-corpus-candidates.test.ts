@@ -9,13 +9,13 @@ import {
   STUDY_LANGUAGE_PROFILE_VALIDATOR_V2,
   STUDY_TRANSLATION_CORPUS_EVALUATOR_V2,
   STUDY_TRANSLATION_LIBRARY_MEASUREMENT_V1,
-  STUDY_TRANSLATION_PROMPT_V2,
   type StudyLanguageProfileAnalysis,
   type StudyTranslationGenerationProposal,
   validateStudyTranslationProposal,
 } from "@pirate/application";
 import { Effect } from "effect";
 import {
+  chunkStudyTranslationUnits,
   parseStudyCorpusCandidateArguments,
   runStudyCorpusCandidateCommand,
   writeStudyCorpusCandidate,
@@ -63,7 +63,7 @@ const proposalFor = (
   generation_run_id: request.generationRunId,
   provider_id: "fake-provider",
   provider_model: "fake-model",
-  prompt_revision: STUDY_TRANSLATION_PROMPT_V2,
+  prompt_revision: request.promptRevision,
   units: request.units.map((unit, index) => {
     const echo = {
       study_unit_id: unit.studyUnitId,
@@ -99,6 +99,16 @@ const proposalFor = (
 });
 
 describe("offline Study translation corpus candidates", () => {
+  test("batches translation units without reordering or dropping them", () => {
+    const units = Array.from({ length: 23 }, (_, index) => index + 1);
+    expect(chunkStudyTranslationUnits(units)).toEqual([
+      units.slice(0, 10),
+      units.slice(10, 20),
+      units.slice(20),
+    ]);
+    expect(() => chunkStudyTranslationUnits(units, 0)).toThrow("invalid batch size");
+  });
+
   test("plans deterministic unique units while preserving sung annotations", () => {
     const first = plan();
     const second = plan();

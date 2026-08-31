@@ -2,6 +2,7 @@ import { LanguageTagV1, StudyLearnerBandV2 } from "@pirate/contracts";
 import { Option, Schema } from "effect";
 import {
   STUDY_TRANSLATION_PROMPT_V2,
+  STUDY_TRANSLATION_PROMPT_V3,
   STUDY_TRANSLATION_VALIDATOR_V2,
   StudyTranslationGenerationProposal,
 } from "./study-translation-generator.ts";
@@ -140,7 +141,7 @@ export const StudyTranslationCorpusV1 = Schema.Struct({
   corpus_revision: Identifier,
   target_language: LanguageTagV1,
   learner_band: StudyLearnerBandV2,
-  prompt_revision: Schema.Literal(STUDY_TRANSLATION_PROMPT_V2),
+  prompt_revision: Schema.Literals([STUDY_TRANSLATION_PROMPT_V2, STUDY_TRANSLATION_PROMPT_V3]),
   validator_revision: Schema.Literal(STUDY_TRANSLATION_VALIDATOR_V2),
   reviewer_role: Identifier,
   reviewed_at: Schema.NonEmptyString.check(Schema.isMaxLength(64)),
@@ -172,7 +173,7 @@ export const StudyTranslationCorpusV2 = Schema.Struct({
   corpus_revision: Identifier,
   target_language: LanguageTagV1,
   learner_band: StudyLearnerBandV2,
-  prompt_revision: Schema.Literal(STUDY_TRANSLATION_PROMPT_V2),
+  prompt_revision: Schema.Literals([STUDY_TRANSLATION_PROMPT_V2, STUDY_TRANSLATION_PROMPT_V3]),
   validator_revision: Schema.Literal(STUDY_TRANSLATION_VALIDATOR_V2),
   reviewer_role: Identifier,
   review_method: Schema.Literals(["dual_ai_review_v1", "bilingual_human_review_v1"]),

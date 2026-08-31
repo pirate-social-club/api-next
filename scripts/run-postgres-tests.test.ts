@@ -1,7 +1,17 @@
 import { describe, expect, test } from "bun:test";
-import { partitionPostgresTestFiles } from "./run-postgres-tests.ts";
+import {
+  partitionPostgresTestFiles,
+  postgresTestTimeoutMilliseconds,
+} from "./run-postgres-tests.ts";
 
 describe("PostgreSQL test discovery", () => {
+  test("allows the complete general suite fifteen minutes", () => {
+    expect(postgresTestTimeoutMilliseconds).toEqual({
+      isolated: 120_000,
+      general: 900_000,
+    });
+  });
+
   test("isolates the namespace timing suite and retains every other tracked suite", async () => {
     const tracked = Bun.spawnSync(["git", "ls-files", "-z", "*.pg.test.ts"]);
     expect(tracked.exitCode).toBe(0);

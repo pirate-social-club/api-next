@@ -97,6 +97,15 @@ describe("karaoke-runtime serialization", () => {
     expect(withoutCoach.state.scoringPolicy).toEqual(ENABLED_POLICY);
   });
 
+  test("round-trips an honest stored provider-retention fact", () => {
+    const storedPolicy: KaraokeScoringPolicy = { ...ENABLED_POLICY, retention: "stored" };
+    const state: KaraokeSessionState = { ...BASE_STATE, scoringPolicy: storedPolicy };
+    const restored = deserializeKaraokeSessionSnapshot(
+      JSON.parse(JSON.stringify(serializeKaraokeSessionSnapshot(snapshotWith(state)))),
+    );
+    expect(restored.state.scoringPolicy).toEqual(storedPolicy);
+  });
+
   test("round-trips every session status", () => {
     const statuses: KaraokeSessionState["status"][] = [
       "idle",

@@ -21,6 +21,20 @@ import {
   planStudyCorpusSong,
 } from "./study-translation-corpus-candidates.ts";
 
+export const STUDY_OFFLINE_TRANSLATION_BATCH_SIZE = 10;
+
+export const chunkStudyTranslationUnits = <A>(
+  units: readonly A[],
+  batchSize = STUDY_OFFLINE_TRANSLATION_BATCH_SIZE,
+): readonly (readonly A[])[] => {
+  if (!Number.isInteger(batchSize) || batchSize < 1) throw new TypeError("invalid batch size");
+  const batches: A[][] = [];
+  for (let offset = 0; offset < units.length; offset += batchSize) {
+    batches.push(units.slice(offset, offset + batchSize));
+  }
+  return batches;
+};
+
 type Options = Readonly<{
   songsRoot: string;
   songs: readonly string[];
@@ -219,6 +233,11 @@ export const runStudyCorpusCandidateCommand = async (
       only: [options.provider as string],
     },
     accountPluginsDisabled: true,
+    limits: {
+      maxRequestBytes: 512 * 1024,
+      maxResponseBytes: 512 * 1024,
+      timeoutMs: 120_000,
+    },
   } as const;
   const analyzer = makeStudyLanguageProfileAnalyzer(
     makeOpenRouterStudyLanguageProfileTransport(providerOptions),
@@ -232,9 +251,31 @@ export const runStudyCorpusCandidateCommand = async (
       analysis,
       targetLanguage: options.targetLanguage,
     });
-    const transported = await Effect.runPromise(translationTransport.generate(request));
+    const batchProposals = [];
+    for (const units of chunkStudyTranslationUnits(request.units)) {
+      const batchRequest = { ...request, units };
+      const transported = await Effect.runPromise(translationTransport.generate(batchRequest));
+      batchProposals.push(
+        await Effect.runPromise(validateStudyTranslationProposal(batchRequest, transported)),
+      );
+    }
+    const firstProposal = batchProposals[0];
+    if (
+      firstProposal === undefined ||
+      batchProposals.some(
+        (proposal) =>
+          proposal.provider_id !== firstProposal.provider_id ||
+          proposal.provider_model !== firstProposal.provider_model ||
+          proposal.prompt_revision !== firstProposal.prompt_revision,
+      )
+    ) {
+      throw new TypeError("translation provider changed inside one song");
+    }
     const proposal = await Effect.runPromise(
-      validateStudyTranslationProposal(request, transported),
+      validateStudyTranslationProposal(request, {
+        ...firstProposal,
+        units: batchProposals.flatMap(({ units }) => units),
+      }),
     );
     generatedSongs.push({ plan, analysis, request, proposal });
   }

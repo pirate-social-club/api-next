@@ -25,7 +25,7 @@ export type KaraokeScoringPolicy =
       kind: "enabled";
       provider: KaraokeScoringSttProvider;
       model: string;
-      retention: "not_stored";
+      retention: "not_stored" | "stored";
       voiceCoachEnabled?: boolean;
     };
 

@@ -12,7 +12,7 @@ export type StudyGenerationWorkflowPayload = Readonly<{
   targetLanguage: string;
   learnerBand: StudyLearnerBandV2;
   generatorPolicyRevision: "study_translation_generation_v1";
-  promptRevision: "song_study_translation_prompt_v2";
+  promptRevision: "song_study_translation_prompt_v2" | "song_study_translation_prompt_v3";
   qualityPolicyRevision: string;
 }>;
 
@@ -79,7 +79,7 @@ export const makeStudyGenerationWorkflowRunner =
     ) {
       throw new Error("Study generation authority became stale");
     }
-    const translation = await step.do("study-translation-choice-v2", translationOptions, () =>
+    const translation = await step.do("study-translation-choice-v3", translationOptions, () =>
       composition.generateTranslation({
         communityId: identity.communityId,
         postId: identity.postId,
