@@ -39,15 +39,17 @@ const configs = {
   media: productionOf(await readJsonc("apps/media-processor-worker/wrangler.jsonc")),
 };
 
-describe("disabled production song infrastructure", () => {
-  test("keeps every product flag false", () => {
+describe("production song maintenance observation infrastructure", () => {
+  test("enables only jobs-side song maintenance", () => {
     expect(configs.http.vars).toMatchObject({
       MEDIA_UPLOADS_ENABLED: "false",
       MEGAPOT_REWARDS_ENABLED: "false",
     });
     expect(configs.jobs.vars).toMatchObject({
-      MEDIA_PROCESSING_ENABLED: "false",
-      DATA_REGISTRATION_ENABLED: "false",
+      COMMUNITY_MAINTENANCE_ENABLED: "false",
+      SONG_MAINTENANCE_OBSERVATION_ENABLED: "false",
+      MEDIA_PROCESSING_ENABLED: "true",
+      DATA_REGISTRATION_ENABLED: "true",
       MEGAPOT_REWARDS_ENABLED: "false",
     });
     expect(configs.media.vars).toMatchObject({
@@ -60,7 +62,7 @@ describe("disabled production song infrastructure", () => {
       DATA_REGISTRATION_ENABLED: "false",
       DATA_REGISTRATION_CHAIN_ID: "1315",
     });
-    expect(configs.jobs.triggers).toEqual({ crons: [] });
+    expect(configs.jobs.triggers).toEqual({ crons: ["* * * * *"] });
   });
 
   test("keeps queue and schedule Workers off public workers.dev routes", () => {
