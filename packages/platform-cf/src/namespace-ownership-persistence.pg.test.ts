@@ -46,10 +46,10 @@ const sentinelPath =
   "/tmp/api-next-control-plane-postgres-namespace-ownership-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-namespace-ownership-suite-complete\n";
 let completedTestCount = 0;
-const { runPostgresMigrations } =
+const { applyPostgresTestBaselineConnection } =
   connectionString === undefined
-    ? { runPostgresMigrations: undefined }
-    : await import("../../../scripts/postgres-migrations.ts");
+    ? { applyPostgresTestBaselineConnection: undefined }
+    : await import("../../../scripts/postgres-test-baseline.ts");
 
 const SHA = "a".repeat(64);
 const SHA_B = "b".repeat(64);
@@ -1124,7 +1124,7 @@ function verifiedCompletionInput(
 async function withSchema<A>(
   use: (client: Client, scopedConnectionString: string) => Promise<A>,
 ): Promise<A> {
-  if (connectionString === undefined || runPostgresMigrations === undefined) {
+  if (connectionString === undefined || applyPostgresTestBaselineConnection === undefined) {
     throw new Error("Postgres test configuration is unavailable");
   }
   const schema = schemaName();
@@ -1133,7 +1133,7 @@ async function withSchema<A>(
   await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
   try {
     const scoped = scopedConnection(connectionString, schema);
-    await runPostgresMigrations({ connectionString: scoped });
+    await applyPostgresTestBaselineConnection({ connectionString: scoped });
     await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
     return await use(admin, scoped);
   } finally {

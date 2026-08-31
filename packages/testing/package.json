@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./postgres": "./src/postgres.ts",
     "./verification": "./src/verification/index.ts"
   },
   "dependencies": {

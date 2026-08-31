@@ -12,7 +12,7 @@ import {
 } from "@pirate/application/use-cases/dance/reference-services";
 import { Effect } from "effect";
 import { Client } from "pg";
-import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
+import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { makeDanceReferenceStore } from "./dance-reference-authoring-repository.ts";
 import { makeDanceReferenceProcessingStore } from "./dance-reference-processing-repository.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
@@ -52,7 +52,7 @@ async function withSchema(
   await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
   await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
   try {
-    await runPostgresMigrations({
+    await applyPostgresTestBaselineConnection({
       connectionString: connectionForSchema(connectionString, schema),
     });
     await seedAuthority(admin);

@@ -17,19 +17,19 @@ const pgModule =
         if (required) throw error;
         return undefined;
       });
-const migrationModule =
+const baselineModule =
   connectionString === undefined
     ? undefined
-    : await import("./postgres-migrations").catch((error: unknown) => {
+    : await import("./postgres-test-baseline.ts").catch((error: unknown) => {
         if (required) throw error;
         return undefined;
       });
 const PgClientConstructor = pgModule?.Client;
-const runPostgresMigrations = migrationModule?.runPostgresMigrations;
+const applyPostgresTestBaselineConnection = baselineModule?.applyPostgresTestBaselineConnection;
 const suite =
   connectionString === undefined ||
   PgClientConstructor === undefined ||
-  runPostgresMigrations === undefined
+  applyPostgresTestBaselineConnection === undefined
     ? describe.skip
     : describe;
 
@@ -62,7 +62,7 @@ async function withSchema<A>(
   await admin.connect();
   await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
   try {
-    await runPostgresMigrations({
+    await applyPostgresTestBaselineConnection({
       connectionString: connectionForSchema(connectionString, schema),
     });
     await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);

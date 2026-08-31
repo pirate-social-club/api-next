@@ -11,6 +11,7 @@ import {
 import { Effect } from "effect";
 import { Client } from "pg";
 import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
+import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { makeDataRegistrationStore } from "./data-registration-repository.ts";
 import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
@@ -40,7 +41,7 @@ const sha256Hex = async (value: Uint8Array): Promise<string> =>
 
 async function withSchema<A>(
   use: (admin: Client, scopedConnection: string) => Promise<A>,
-  appliedMigrations = migrations,
+  appliedMigrations?: typeof migrations,
 ): Promise<A> {
   if (connectionString === undefined) throw new Error("test URL was not configured");
   const schema = schemaIdentifier();
@@ -50,13 +51,17 @@ async function withSchema<A>(
   await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
   const scopedConnection = connectionForSchema(connectionString, schema);
   try {
-    await Effect.runPromise(
-      Effect.scoped(
-        applyPostgresMigrations(appliedMigrations).pipe(
-          Effect.provide(makeDirectPostgresControlPlaneLayer(scopedConnection)),
+    if (appliedMigrations === undefined) {
+      await applyPostgresTestBaselineConnection({ connectionString: scopedConnection });
+    } else {
+      await Effect.runPromise(
+        Effect.scoped(
+          applyPostgresMigrations(appliedMigrations).pipe(
+            Effect.provide(makeDirectPostgresControlPlaneLayer(scopedConnection)),
+          ),
         ),
-      ),
-    );
+      );
+    }
     return await use(admin, scopedConnection);
   } finally {
     await admin.query("ROLLBACK");

@@ -1,6 +1,12 @@
 -- GENERATED FILE. DO NOT EDIT. Regenerate with bun run db:generate:baseline.
 -- Source of truth: db/postgres/migrations/*.sql
 
+SELECT pg_catalog.set_config(
+  'search_path',
+  pg_catalog.format('%I, pg_temp', pg_catalog.current_schema()),
+  false
+);
+
 SET check_function_bodies = false;
 
 CREATE TYPE community_moderation_policy_update_result_v1 AS (
@@ -975,6 +981,7 @@ $$;
 
 CREATE FUNCTION effective_active_route(expected_community_id text, database_now timestamp with time zone) RETURNS TABLE(community_id text, route_binding_id text, family text, root_label text, root_label_display text, path_segment text, href text, verified_evidence_ref text, binding_generation bigint, evidence_expires_at timestamp with time zone)
     LANGUAGE sql STABLE
+    SET search_path FROM CURRENT
     AS $$
   SELECT community.community_id,
          binding.route_binding_id,
@@ -1148,6 +1155,7 @@ $_$;
 
 CREATE FUNCTION effective_route_authority_v2(expected_community_id text, database_now timestamp with time zone) RETURNS TABLE(community_id text, route_binding_id text, family text, root_label text, root_label_display text, path_segment text, href text, route_authority_kind text, authority_reference text, authority_generation bigint, verified_evidence_ref text, binding_generation bigint, evidence_expires_at timestamp with time zone)
     LANGUAGE sql STABLE
+    SET search_path FROM CURRENT
     AS $$
   SELECT verified.community_id,
          verified.route_binding_id,
@@ -10488,6 +10496,7 @@ $$;
 
 CREATE FUNCTION resolve_hns_community_app_host_authority_v1(input_normalized_host text, database_now timestamp with time zone) RETURNS TABLE(normalized_host text, canonical_root text, community_id text, app_host_activation_id text, app_host_activation_generation bigint, app_host_activation_status text, activation_dns_zone_id text, activation_dns_zone_generation bigint, activation_gateway_deployment_reference text, route_binding_id text, route_binding_current boolean, route_authority_kind text, route_authority_reference text, route_authority_generation bigint, route_authority_effective boolean, dns_zone_activation_id text, dns_zone_activation_generation bigint, dns_zone_status text, stable_chain_delegation_matches boolean, dnssec_ds_authenticates_zone boolean, retained_zone_digest_matches boolean, gateway_deployment_reference text, gateway_certificate_spki_sha256 text, gateway_health text)
     LANGUAGE sql STABLE
+    SET search_path FROM CURRENT
     AS $$
   SELECT app.normalized_host,
          app.canonical_root,
@@ -23344,6 +23353,49 @@ CREATE TABLE verification_start_reservations (
     CONSTRAINT verification_start_reservations_state_check CHECK ((state = ANY (ARRAY['acquired'::text, 'released'::text, 'finalized'::text])))
 );
 
+INSERT INTO activity_registry VALUES ('study', 'active', 'study_session_v1', 'study_session_first_pass_v2@1', '2000-01-01 00:00:00+00', '2000-01-01 00:00:00+00');
+INSERT INTO activity_registry VALUES ('dance', 'reserved', NULL, NULL, '2000-01-01 00:00:00+00', '2000-01-01 00:00:00+00');
+INSERT INTO activity_registry VALUES ('karaoke', 'active', 'karaoke_postgres_v2', 'karaoke_qualification_v2@1', '2000-01-01 00:00:00+00', '2000-01-01 00:00:00+00');
+
+INSERT INTO handle_account_directory_bindings VALUES ('account_directory_v1', '1', 'c81ff980a56025b99dcd24d27979a302ca28f162ca7238dda354686082496d3d', 'active', '2000-01-01 00:00:00+00');
+
+INSERT INTO handle_issuance_driver_revisions VALUES ('hns', 'hosted_persona-local', '1', 'hosted_persona_v1', 'enabled', '2000-01-01 00:00:00+00');
+
+INSERT INTO handle_pricing_revisions VALUES ('platform_free_handles_v1', 1, 'cb24f410dbe3ea268df0ea438d56c48dc060f2319794ab2913717585b74809f8', 'free_v1', 0, 'active', '2000-01-01 00:00:00+00');
+
+INSERT INTO handle_qualification_policy_revisions VALUES ('none_v1', 1, NULL, 'none_v1', 'ff413d09b7df9c5aae70c0a303a5ce03c1b4134d6b64f7a393d2825226fd1dbd', 'ff413d09b7df9c5aae70c0a303a5ce03c1b4134d6b64f7a393d2825226fd1dbd', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'active', NULL, '2000-01-01 00:00:00+00');
+
+INSERT INTO handle_reserved_label_revisions VALUES ('reserved_labels_01', 1, '04cfc7880c630f8e46a0b8ccfdfc7390ed704d2be542fff3bbe17b233c2307ed', 'hns', '{abuse,admin,api,app,auth,billing,blog,cdn,dev,docs,gateway,help,hns,login,logout,mail,mod,moderator,new,official,pirate,root,security,settings,staff,staging,status,support,system,www}', '{}', 'active', '2000-01-01 00:00:00+00');
+
+INSERT INTO moderation_platform_floor_revisions VALUES ('moderation-platform-floor-v1', 1, '["moderation-platform-floor-v1","moderation-platform-floor-v1",[["harassment","permit"],["harassment/threatening","review"],["hate","review"],["hate/threatening","review"],["illicit","permit"],["illicit/violent","review"],["self-harm","permit"],["self-harm/intent","review"],["self-harm/instructions","review"],["sexual","permit"],["sexual/minors","block"],["violence","permit"],["violence/graphic","permit"]]]', '9c75ee8001386da6856c1cc1248273b3ed7c27de78f30b9a11fa570dc9896d58', '2000-01-01 00:00:00+00');
+
+INSERT INTO moderation_platform_floor_category_decisions VALUES ('moderation-platform-floor-v1', 'harassment', 'permit');
+INSERT INTO moderation_platform_floor_category_decisions VALUES ('moderation-platform-floor-v1', 'harassment/threatening', 'review');
+INSERT INTO moderation_platform_floor_category_decisions VALUES ('moderation-platform-floor-v1', 'hate', 'review');
+INSERT INTO moderation_platform_floor_category_decisions VALUES ('moderation-platform-floor-v1', 'hate/threatening', 'review');
+INSERT INTO moderation_platform_floor_category_decisions VALUES ('moderation-platform-floor-v1', 'illicit', 'permit');
+INSERT INTO moderation_platform_floor_category_decisions VALUES ('moderation-platform-floor-v1', 'illicit/violent', 'review');
+INSERT INTO moderation_platform_floor_category_decisions VALUES ('moderation-platform-floor-v1', 'self-harm', 'permit');
+INSERT INTO moderation_platform_floor_category_decisions VALUES ('moderation-platform-floor-v1', 'self-harm/intent', 'review');
+INSERT INTO moderation_platform_floor_category_decisions VALUES ('moderation-platform-floor-v1', 'self-harm/instructions', 'review');
+INSERT INTO moderation_platform_floor_category_decisions VALUES ('moderation-platform-floor-v1', 'sexual', 'permit');
+INSERT INTO moderation_platform_floor_category_decisions VALUES ('moderation-platform-floor-v1', 'sexual/minors', 'block');
+INSERT INTO moderation_platform_floor_category_decisions VALUES ('moderation-platform-floor-v1', 'violence', 'permit');
+INSERT INTO moderation_platform_floor_category_decisions VALUES ('moderation-platform-floor-v1', 'violence/graphic', 'permit');
+
+INSERT INTO moderation_platform_floor_current VALUES (true, 'moderation-platform-floor-v1', '9c75ee8001386da6856c1cc1248273b3ed7c27de78f30b9a11fa570dc9896d58', '2000-01-01 00:00:00+00');
+
+INSERT INTO platform_pirate_label_policy_revisions VALUES (1, 'pirate_ascii_ldh_3_32_v1', '7139c5f71b651833a68b14d03b2ef93f9b528b73bd53c455546cdb10a54eb873', 'pirate_platform_reserved_labels_v1', 1, 'e7f1a3e99c5eb1bd51e880db3aa6c7caeca83f2b7dcce4dfddb54c45c49ea304', 'pirate_ascii_skeleton_v1', 1, 'b50884c3e97a4ea50fc6da0c2b0d15669bcb0647886011521b5dbb1fd7ddfa92', '{abuse,admin,api,app,auth,billing,blog,cdn,dev,docs,gateway,help,hns,login,logout,mail,mod,moderator,new,official,pirate,root,security,settings,staff,staging,status,support,system,www}', '{new-}', '2000-01-01 00:00:00+00');
+
+INSERT INTO qualification_policy_versions VALUES ('study_session_first_pass_v2@1', 'study', 'study_session_first_pass_v2', '{"required_correct_bps": 7000}', '2000-01-01 00:00:00+00');
+INSERT INTO qualification_policy_versions VALUES ('karaoke_qualification_v1@1', 'karaoke', 'karaoke_qualification_v1', '{"minimum_coverage_bps": 8500, "minimum_final_score_bps": 7000, "minimum_scored_line_count": 5}', '2000-01-01 00:00:00+00');
+INSERT INTO qualification_policy_versions VALUES ('karaoke_qualification_v2@1', 'karaoke', 'karaoke_qualification_v2', '{"minimum_coverage_bps": 8500, "eligible_playback_kinds": ["full_mix"], "minimum_final_score_bps": 7000, "minimum_scored_line_count": 5}', '2000-01-01 00:00:00+00');
+
+INSERT INTO text_moderation_policy_revisions VALUES ('text-moderation-policy-v1', 'b0a8fd06312d7f9a99d7100633bc03fafc44b16aae5340899d290f54cb64df9d', '{"base_url_origin":"https://api.openai.com","decision_mapper_revision":"openai-text-v1","model":"omni-moderation-latest","normalization_revision":"text-moderation-input-v1","provider_id":"openai","sexual_minors_block_threshold":0.95,"timeout_ms":10000,"version":"text-moderation-policy-v1"}', '{"model": "omni-moderation-latest", "version": "text-moderation-policy-v1", "timeout_ms": 10000, "provider_id": "openai", "base_url_origin": "https://api.openai.com", "normalization_revision": "text-moderation-input-v1", "decision_mapper_revision": "openai-text-v1", "sexual_minors_block_threshold": 0.95}', 'openai', 'omni-moderation-latest', 'https://api.openai.com', 10000, 0.95, 'text-moderation-input-v1', 'openai-text-v1', '2000-01-01 00:00:00+00');
+INSERT INTO text_moderation_policy_revisions VALUES ('text-moderation-policy-openai-omni-2024-09-26-v1', '1af8908f175d351a6aa9398ea203d7724955de7c8a40967ccd394de4d5e2555a', '{"base_url":"https://api.openai.com/v1","decision_mapper_revision":"openai-boolean-categories-v1","model":"omni-moderation-2024-09-26","normalization_revision":"text-moderation-input-v1","provider_id":"openai","timeout_ms":10000,"version":"text-moderation-policy-openai-omni-2024-09-26-v1"}', '{"model": "omni-moderation-2024-09-26", "version": "text-moderation-policy-openai-omni-2024-09-26-v1", "base_url": "https://api.openai.com/v1", "timeout_ms": 10000, "provider_id": "openai", "normalization_revision": "text-moderation-input-v1", "decision_mapper_revision": "openai-boolean-categories-v1"}', 'openai', 'omni-moderation-2024-09-26', 'https://api.openai.com/v1', 10000, 0, 'text-moderation-input-v1', 'openai-boolean-categories-v1', '2000-01-01 00:00:00+00');
+
+INSERT INTO text_moderation_policy_current VALUES (true, 'text-moderation-policy-openai-omni-2024-09-26-v1', '2000-01-01 00:00:00+00');
+
 ALTER TABLE ONLY account_aliases
     ADD CONSTRAINT account_aliases_pkey PRIMARY KEY (source_user_id);
 
@@ -28615,3 +28667,5 @@ ALTER TABLE ONLY verification_start_reservations
 
 ALTER TABLE ONLY verification_start_reservations
     ADD CONSTRAINT verification_start_reservations_creation_ceremony_fk FOREIGN KEY (actor_id, creation_intent_id, creation_requirement_kind, creation_generation, intent_id) REFERENCES community_creation_ceremony_attempts(actor_id, intent_id, requirement_kind, generation, ceremony_intent_id);
+
+SET check_function_bodies = true;

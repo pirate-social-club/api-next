@@ -16,9 +16,9 @@ import type {
 } from "@pirate/domain/verification";
 import { Effect } from "effect";
 import { Client } from "pg";
+import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { makeControlPlaneCommunityCreationStore } from "./community-creation-repository";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres";
-import { applyPostgresMigrations, type PostgresMigration } from "./postgres-migrations";
 import {
   makeControlPlaneVerificationCompletionStore,
   makeSha256VerificationCompletionHasher,
@@ -40,48 +40,6 @@ const foundationTestCount = 8;
 // CI database runs. Expiry-specific tests override this value with an
 // intentionally past or database-relative timestamp below.
 const defaultSessionExpiresAt = "2099-08-18T00:00:00.000Z";
-
-const migrationFiles = [
-  "0001_v1_product_slice.sql",
-  "0002_identity.sql",
-  "0003_m2_community_content.sql",
-  "0004_post_comment_lock.sql",
-  "0005_m2_behavior_invariants.sql",
-  "0006_public_profile_handle_index.sql",
-  "0007_public_profile_handle_invariants.sql",
-  "0008_community_route_slug.sql",
-  "0009_gates_v2_foundation.sql",
-  "0010_proof_session_provenance.sql",
-  "0011_verification_start_reservations.sql",
-  "0012_verification_completion_attempts.sql",
-  "0013_m3_community_purchase_funding_journal.sql",
-  "0014_m3_community_purchase_funding_plans.sql",
-  "0015_identity_credentials.sql",
-  "0016_identity_credential_invariants.sql",
-  "0017_identity_credential_delete_guard.sql",
-  "0018_m3_funding_dormancy_and_retention.sql",
-  "0019_m3_reconciliation_attempts.sql",
-  "0020_m3_reconciliation_finalization.sql",
-  "0021_m3_community_purchase_commerce.sql",
-  "0022_m3_community_purchase_immutability.sql",
-  "0023_community_creation_intents.sql",
-  "0024_community_creation_preflight_transition.sql",
-  "0025_community_creation_storage_identity.sql",
-  "0026_text_moderation_foundation.sql",
-  "0027_community_routes_and_creation_requirements.sql",
-  "0028_community_creation_requirement_result_guard.sql",
-  "0029_namespace_ownership_persistence.sql",
-  "0030_namespace_ownership_completion_expiry.sql",
-  "0031_community_creation_route_contract.sql",
-] as const;
-const migrations: readonly PostgresMigration[] = await Promise.all(
-  migrationFiles.map(async (version) => {
-    const sql = await Bun.file(
-      new URL(`../../../db/postgres/migrations/${version}`, import.meta.url),
-    ).text();
-    return { version, sql, checksum: createHash("sha256").update(sql).digest("hex") };
-  }),
-);
 
 function schemaIdentifier(): string {
   return `api_next_verification_${Date.now()}_${Math.random().toString(36).slice(2)}`;
@@ -105,13 +63,7 @@ async function withSchema<A>(use: (connection: string, admin: Client) => Promise
   await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
   try {
     const scoped = connectionForSchema(connectionString, schema);
-    await Effect.runPromise(
-      Effect.scoped(
-        applyPostgresMigrations(migrations).pipe(
-          Effect.provide(makeDirectPostgresControlPlaneLayer(scoped)),
-        ),
-      ),
-    );
+    await applyPostgresTestBaselineConnection({ connectionString: scoped });
     await admin.query("INSERT INTO users (user_id) VALUES ('user-a'), ('user-b')");
     return await use(scoped, admin);
   } finally {

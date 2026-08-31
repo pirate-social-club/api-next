@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { Effect } from "effect";
 import { Client } from "pg";
-import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
+import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { makeControlPlaneCustodySolvencyStore } from "./custody-solvency-repository.ts";
 import { makeMegapotAllocationCoordinator } from "./megapot-allocation-coordinator.ts";
 import { makeControlPlaneMegapotAllocationStore } from "./megapot-allocation-repository.ts";
@@ -18,7 +18,6 @@ import { encodeMegapotUsdcTransfer } from "./megapot-v2.ts";
 import { makeControlPlaneMegapotWorkStore } from "./megapot-work-repository.ts";
 import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
-import { applyPostgresMigrations } from "./postgres-migrations.ts";
 import { makeControlPlaneRewardFundingStore } from "./reward-funding-repository.ts";
 import { makeControlPlaneRewardOfferTerminalStore } from "./reward-offer-terminal-repository.ts";
 import { makeControlPlaneRewardPayoutStore } from "./reward-payout-repository.ts";
@@ -36,7 +35,6 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_REWARDS_SONG_OFFERS_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-rewards-song-offers-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-rewards-song-offers-suite-complete\n";
-const migrations = await loadPostgresMigrations();
 const testCount = 16;
 let completedTestCount = 0;
 
@@ -62,15 +60,9 @@ async function withSchema<A>(
   await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
   await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
   try {
-    await Effect.runPromise(
-      Effect.scoped(
-        applyPostgresMigrations(migrations).pipe(
-          Effect.provide(
-            makeDirectPostgresControlPlaneLayer(connectionForSchema(connectionString, schema)),
-          ),
-        ),
-      ),
-    );
+    await applyPostgresTestBaselineConnection({
+      connectionString: connectionForSchema(connectionString, schema),
+    });
     return await use(admin, connectionForSchema(connectionString, schema));
   } finally {
     await admin.query("ROLLBACK");

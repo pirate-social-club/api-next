@@ -83,6 +83,12 @@ jobs:
         with:
           bun-version: 1.4.0
       - run: bun install --frozen-lockfile
+      - name: Verify generated PostgreSQL baseline freshness
+        env:
+          CONTROL_PLANE_POSTGRES_GENERATOR_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
+          CONTROL_PLANE_POSTGRES_IMAGE: postgres:17@sha256:67f41722b7a8cbdb868a44a4995c846eddfdc2973bccb291ce937dce88ad5675
+          CONTROL_PLANE_POSTGRES_SERVER_DUMP: "1"
+        run: bun run check:baseline:fresh
       - name: Remove stale completion sentinel
         run: >-
           rm -f
@@ -148,44 +154,9 @@ jobs:
           CONTROL_PLANE_POSTGRES_DANCE_REFERENCE_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-dance-reference-suite-complete
         run: |
           set -euo pipefail
-          # This suite contains database-time lease fixtures measured in tens of
-          # milliseconds. Keep it isolated from the cumulative migration load.
-          timeout 120s bun test --timeout 15000 \
-            packages/platform-cf/src/namespace-ownership-persistence.pg.test.ts
-          # Bound migration-heavy schema concurrency so PostgreSQL's shared
-          # relation-lock table is not exhausted as the migration set grows.
-          timeout 600s bun test --max-concurrency=4 --timeout 15000 \
-            packages/platform-cf/src/postgres.pg.test.ts \
-            packages/platform-cf/src/postgres-foundation.pg.test.ts \
-            packages/platform-cf/src/data-registration-repository.pg.test.ts \
-            packages/platform-cf/src/media-persistence.pg.test.ts \
-            packages/platform-cf/src/optional-route-v2-migration.pg.test.ts \
-            packages/platform-cf/src/postgres-migrations-runner.pg.test.ts \
-            packages/platform-cf/src/identity.pg.test.ts \
-            packages/platform-cf/src/community-repository.pg.test.ts \
-            packages/platform-cf/src/community-creation-repository.pg.test.ts \
-            packages/platform-cf/src/community-route-repository.pg.test.ts \
-            packages/platform-cf/src/hns-route-revalidation-scheduler.pg.test.ts \
-            packages/platform-cf/src/gates-v2-community.pg.test.ts \
-            packages/platform-cf/src/feed-repository.pg.test.ts \
-            packages/platform-cf/src/content-repository.pg.test.ts \
-            packages/platform-cf/src/text-submission-repository.pg.test.ts \
-            packages/platform-cf/src/persona-repository.pg.test.ts \
-            packages/platform-cf/src/rewards-qualification.pg.test.ts \
-            packages/platform-cf/src/rewards-song-offers.pg.test.ts \
-            packages/platform-cf/src/activity-qualification-repository.pg.test.ts \
-            packages/platform-cf/src/study-v2-foundation.pg.test.ts \
-            packages/platform-cf/src/public-profile.pg.test.ts \
-            packages/platform-cf/src/public-community-threads-repository.pg.test.ts \
-            packages/platform-cf/src/verification-completion-repository.pg.test.ts \
-            packages/platform-cf/src/verification-start-repository.pg.test.ts \
-            packages/platform-cf/src/community-purchase-funding-repository.pg.test.ts \
-            packages/platform-cf/src/hns-control-observer-repository.pg.test.ts \
-            packages/platform-cf/src/hns-host-persistence-repository.pg.test.ts \
-            packages/platform-cf/src/handle-sales-repository.pg.test.ts \
-            packages/platform-cf/src/community-moderation-foundation.pg.test.ts \
-            packages/platform-cf/src/platform-pirate-handle-repository.pg.test.ts \
-            packages/platform-cf/src/dance-reference-persistence.pg.test.ts
+          # The runner discovers every tracked *.pg.test.ts file, isolates the
+          # database-time namespace suite, and caps general concurrency at four.
+          bun run test:postgres
       - name: Verify Postgres 17 completion sentinel
         run: bun run verify:postgres-sentinels
       - name: Show egress audit summary

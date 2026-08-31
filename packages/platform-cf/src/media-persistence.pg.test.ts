@@ -8,6 +8,7 @@ import {
   loadPostgresMigrations,
   runPostgresMigrations,
 } from "../../../scripts/postgres-migrations";
+import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import type {
   PublicationDecision,
   SongTerms,
@@ -19,6 +20,7 @@ import { makeMediaProcessingStore } from "./media-processing-store";
 import { makeControlPlaneMediaSubmissionRepository } from "./media-submission-repository";
 import { makeMediaUploadApplicationCommands, makeMediaUploadStore } from "./media-upload-store";
 import {
+  activatePendingPersonaFixtures,
   backfillActivePersonaWalletFixtures,
   createActivePersonaFixture,
 } from "./persona-wallet.pg-fixture";
@@ -151,7 +153,7 @@ async function seedHnsState(admin: Client): Promise<void> {
     ["media-hns-operation", now, lease],
   );
 }
-async function withSchema<A>(
+async function withMigrationSchema<A>(
   use: (client: Client, connection: string) => Promise<A>,
   populated = true,
 ): Promise<A> {
@@ -203,6 +205,52 @@ async function withSchema<A>(
     if (populated) await backfillActivePersonaWalletFixtures(admin);
     await runPostgresMigrations({ connectionString: connection, migrations });
     if (populated) {
+      const personas = await admin.query<{ account_id: string; persona_id: string }>(
+        "SELECT account_id,persona_id FROM personas WHERE is_first_persona",
+      );
+      personaIdsByConnection.set(
+        connection,
+        new Map(personas.rows.map(({ account_id, persona_id }) => [account_id, persona_id])),
+      );
+    }
+    return await use(admin, connection);
+  } finally {
+    personaIdsByConnection.delete(connection);
+    await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
+    await admin.end();
+  }
+}
+
+async function withCurrentSchema<A>(
+  use: (client: Client, connection: string) => Promise<A>,
+  populated = true,
+): Promise<A> {
+  if (connectionString === undefined) throw new Error("Postgres test configuration is unavailable");
+  const schema = schemaName();
+  const admin = new Client({ connectionString });
+  await admin.connect();
+  await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
+  const connection = scopedConnection(connectionString, schema);
+  try {
+    await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
+    await applyPostgresTestBaselineConnection({ connectionString: connection });
+    if (populated) {
+      await admin.query("INSERT INTO users (user_id) VALUES ($1)", [actor]);
+      await admin.query("INSERT INTO users (user_id) VALUES ($1)", [moderator]);
+      await activatePendingPersonaFixtures(admin);
+      await admin.query(
+        "INSERT INTO communities (community_id,display_name,status,created_by_user_id,created_at,updated_at) VALUES ($1,'Media fixture','active',$2,now(),now())",
+        [community, moderator],
+      );
+      await admin.query(
+        "INSERT INTO community_memberships (community_id,membership_id,user_id,status,joined_at,created_at,updated_at) VALUES ($1,'media_pg_membership',$2,'member',now(),now(),now())",
+        [community, actor],
+      );
+      await admin.query(
+        "INSERT INTO community_memberships (community_id,membership_id,user_id,status,joined_at,created_at,updated_at) VALUES ($1,'media_pg_moderator_membership',$2,'member',now(),now(),now())",
+        [community, moderator],
+      );
+      await seedHnsState(admin);
       const personas = await admin.query<{ account_id: string; persona_id: string }>(
         "SELECT account_id,persona_id FROM personas WHERE is_first_persona",
       );
@@ -456,7 +504,7 @@ async function expectHostileLyricsProjectionLeakRejected(
 
 suite("song media persistence PostgreSQL 17 race suite", () => {
   test("installs the general-audience cover evidence and projection gate", async () => {
-    await withSchema(async (admin) => {
+    await withCurrentSchema(async (admin) => {
       const columns = await admin.query<{ column_name: string; is_nullable: string }>(
         `SELECT column_name, is_nullable
            FROM information_schema.columns
@@ -488,7 +536,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
   }, 40_000);
 
   test("persists provider unavailability as a review hold without a publication decision", async () => {
-    await withSchema(async (admin, connection) => {
+    await withCurrentSchema(async (admin, connection) => {
       await createThroughDecision(connection, decision, analysis, true);
       const layer = makeDirectPostgresControlPlaneLayer(connection);
       const store = makeMediaProcessingStore(layer);
@@ -534,7 +582,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
   }, 40_000);
 
   test("reloads authority and durably resumes provider polling and numbered retries", async () => {
-    await withSchema(async (_admin, connection) => {
+    await withCurrentSchema(async (_admin, connection) => {
       await createThroughDecision(connection);
       const layer = makeDirectPostgresControlPlaneLayer(connection);
       const store = makeMediaProcessingStore(layer, { retryBaseMs: 1 });
@@ -625,7 +673,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
   }, 40_000);
 
   test("applies 0043 over populated 0042 and atomically publishes owned lineage", async () => {
-    await withSchema(async (admin, connection) => {
+    await withMigrationSchema(async (admin, connection) => {
       const appendOnlyTriggers = await admin.query<{ trigger_name: string }>(
         `SELECT trigger.tgname AS trigger_name
          FROM pg_trigger AS trigger
@@ -823,7 +871,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     completedTestCount += 1;
   }, 40_000);
   test("applies 0043 over an empty foundation", async () => {
-    await withSchema(async (admin) => {
+    await withMigrationSchema(async (admin) => {
       expect(
         (await admin.query("SELECT count(*)::text AS count FROM media_post_submissions")).rows[0]
           ?.count,
@@ -1025,7 +1073,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     completedTestCount += 1;
   }, 40_000);
   test("binds lyrics after sealed finalization before independent terms", async () => {
-    await withSchema(async (admin, connection) => {
+    await withCurrentSchema(async (admin, connection) => {
       const authorReviewedLyrics = "Author reviewed lyrics ".repeat(30);
       expect(
         await run(connection, (store) =>
@@ -1390,7 +1438,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     completedTestCount += 1;
   }, 40_000);
   test("emits exact terms decision wakeup and lost-workflow replacement identities", async () => {
-    await withSchema(async (admin, connection) => {
+    await withCurrentSchema(async (admin, connection) => {
       await createThroughDecision(connection, decision, analysis, true);
       expect(
         await run(connection, (store) =>
@@ -1489,7 +1537,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     completedTestCount += 1;
   }, 40_000);
   test("scopes media reservation and submission replay by persona", async () => {
-    await withSchema(async (admin, connection) => {
+    await withCurrentSchema(async (admin, connection) => {
       const firstPersona = (
         await admin.query<{ persona_id: string }>(
           "SELECT persona_id FROM personas WHERE account_id=$1 AND is_first_persona",
@@ -1592,7 +1640,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     completedTestCount += 1;
   }, 40_000);
   test("reclaims an expired outbox lease and rejects the stale fence", async () => {
-    await withSchema(async (_admin, connection) => {
+    await withCurrentSchema(async (_admin, connection) => {
       await createThroughDecision(connection);
       expect(
         await run(connection, (store) =>
@@ -1701,7 +1749,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     completedTestCount += 1;
   }, 40_000);
   test("aligns owner application authority with the media action trigger", async () => {
-    await withSchema(async (admin, connection) => {
+    await withCurrentSchema(async (admin, connection) => {
       await createThroughDecision(connection, reviewDecision);
       await expectHostileLyricsProjectionLeakRejected(admin);
       const unused = async (): Promise<never> => {
@@ -1763,7 +1811,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     completedTestCount += 1;
   }, 40_000);
   test("persists policy-violation moderator blocks and scopes replay to authority", async () => {
-    await withSchema(async (admin, connection) => {
+    await withCurrentSchema(async (admin, connection) => {
       await createThroughDecision(connection, reviewDecision);
       const endpointTemplate = "/media-post-submissions/:submissionId/moderate";
       const idempotencyKey = "moderator-block-key";
@@ -1859,7 +1907,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     completedTestCount += 1;
   }, 40_000);
   test("rejects abandoned submissions reopening through a hostile lyrics edit", async () => {
-    await withSchema(async (admin, connection) => {
+    await withCurrentSchema(async (admin, connection) => {
       const requiresReference = {
         ...analysis,
         acr: { ...analysis.acr, decision: "requires_reference" as const },
@@ -1913,7 +1961,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     completedTestCount += 1;
   }, 40_000);
   test("records bounded typed failure retries and exact abandonment reasons", async () => {
-    await withSchema(async (admin, connection) => {
+    await withCurrentSchema(async (admin, connection) => {
       await createThroughDecision(connection);
       for (const retryCount of [0, 1, 2] as const) {
         const failureResult = await run(connection, (store) =>
@@ -1993,7 +2041,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     completedTestCount += 1;
   }, 40_000);
   test("persists author cancellation with typed retention", async () => {
-    await withSchema(async (admin, connection) => {
+    await withCurrentSchema(async (admin, connection) => {
       expect(
         await run(connection, (store) =>
           store.reserve({
@@ -2056,7 +2104,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     completedTestCount += 1;
   }, 40_000);
   test("serializes finalize fencing against author cancellation", async () => {
-    await withSchema(async (admin, connection) => {
+    await withCurrentSchema(async (admin, connection) => {
       expect(
         await run(connection, (store) =>
           store.reserve({
@@ -2128,7 +2176,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     completedTestCount += 1;
   }, 40_000);
   test("expires a claimed reservation only with its abandoned submission", async () => {
-    await withSchema(async (admin, connection) => {
+    await withCurrentSchema(async (admin, connection) => {
       expect(
         await run(connection, (store) =>
           store.reserve({
@@ -2204,7 +2252,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     completedTestCount += 1;
   }, 40_000);
   test("binds reference evidence atomically while reusing immutable analysis", async () => {
-    await withSchema(async (admin, connection) => {
+    await withCurrentSchema(async (admin, connection) => {
       const requiresReference = {
         ...analysis,
         acr: { ...analysis.acr, decision: "requires_reference" as const },
@@ -2278,7 +2326,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     completedTestCount += 1;
   }, 40_000);
   test("persists upload expectation mismatch with its typed event and retention", async () => {
-    await withSchema(async (admin, connection) => {
+    await withCurrentSchema(async (admin, connection) => {
       expect(
         await run(connection, (store) =>
           store.reserve({
@@ -2367,7 +2415,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     completedTestCount += 1;
   }, 40_000);
   test("rejects forged ordinary exhaustion and pointer mutation at SQL transition fences", async () => {
-    await withSchema(async (_schemaAdmin, connection) => {
+    await withCurrentSchema(async (_schemaAdmin, connection) => {
       const admin = new Client({ connectionString: connection });
       await admin.connect();
       await createThroughDecision(connection, reviewDecision);
@@ -2551,7 +2599,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     completedTestCount += 1;
   }, 40_000);
   test("rejects hostile SQL state, snapshot, payload, replay, audio, and transcript lineage", async () => {
-    await withSchema(async (_schemaAdmin, connection) => {
+    await withCurrentSchema(async (_schemaAdmin, connection) => {
       const admin = new Client({ connectionString: connection });
       await admin.connect();
       await createThroughDecision(connection, decision, analysis, true);
@@ -2784,7 +2832,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     completedTestCount += 1;
   }, 40_000);
   test("accepts normalized unavailable and ready lyrics-analysis snapshots", async () => {
-    await withSchema(async (admin, connection) => {
+    await withCurrentSchema(async (admin, connection) => {
       const unavailable: TrustedSongAnalysis = {
         ...analysis,
         lyricsAnalysis: {
@@ -2867,7 +2915,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         },
       });
     });
-    await withSchema(async (admin, connection) => {
+    await withCurrentSchema(async (admin, connection) => {
       const readyLyrics = "fixture lyrics";
       const ready: TrustedSongAnalysis = {
         ...analysis,
@@ -3053,7 +3101,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     completedTestCount += 1;
   }, 40_000);
   test("publishes explicit classified lyrics with their truthful label", async () => {
-    await withSchema(async (admin, connection) => {
+    await withCurrentSchema(async (admin, connection) => {
       const longDialogue = Array.from({ length: 33 }, (_, index) => `dialogue${index + 1}`).join(
         " ",
       );
@@ -3273,7 +3321,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
   }, 40_000);
 
   test("requires durable exhaustion evidence for ACR override moderation", async () => {
-    await withSchema(async (admin, connection) => {
+    await withCurrentSchema(async (admin, connection) => {
       await createThroughDecision(
         connection,
         decision,
@@ -3388,7 +3436,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     completedTestCount += 1;
   }, 40_000);
   test("reclaims a crashed third outbox delivery without changing workflow identity", async () => {
-    await withSchema(async (_admin, connection) => {
+    await withCurrentSchema(async (_admin, connection) => {
       await createThroughDecision(connection);
       for (const attempt of [1, 2] as const) {
         const claimed = await run(connection, (_store, outbox) =>
@@ -3468,7 +3516,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     completedTestCount += 1;
   }, 40_000);
   test("parks a completed third outbox failure without a fourth claim", async () => {
-    await withSchema(async (_admin, connection) => {
+    await withCurrentSchema(async (_admin, connection) => {
       await createThroughDecision(connection);
       for (const attempt of [1, 2] as const) {
         expect(
@@ -3532,7 +3580,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     completedTestCount += 1;
   }, 40_000);
   test("rejects a third processing attempt from entering retry_wait", async () => {
-    await withSchema(async (admin, connection) => {
+    await withCurrentSchema(async (admin, connection) => {
       await createThroughDecision(connection);
       await admin.query(
         "INSERT INTO media_processing_attempts (attempt_id,submission_id,community_id,actor_user_id,operation_id,audio_revision,analysis_revision,stage,attempt_number,input_hash,provider_idempotency_key,input_kind,input_revision,policy_revision,adapter_revision,state) VALUES ('media_pg_third_attempt',$1,$2,$3,$4,1,1,'acr_primary',3,$5,'media-pg-third-provider','audio',1,'acr-policy','acr-adapter','pending')",

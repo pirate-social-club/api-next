@@ -5,7 +5,7 @@ import { communityCreationProviderBindingHash } from "@pirate/domain";
 import type { EvidenceBundle, ProofSession } from "@pirate/domain/verification";
 import { Effect } from "effect";
 import { Client } from "pg";
-import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
+import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { prepareCommitReadyCommunity } from "./community-creation-repository.pg-fixture.ts";
 import { makeControlPlaneCommunityCreationStore } from "./community-creation-repository.ts";
 import { makeControlPlaneNamespaceOwnershipCompletionStore } from "./namespace-ownership-completion-repository.ts";
@@ -207,7 +207,7 @@ const actor = { userId: "creator-1", kind: "user" as const };
 suite("Postgres 17 community creation repository", () => {
   test("commits V2 after one human ceremony with a permanent namespaceless resource", async () => {
     await withSchema(async (connection, admin) => {
-      await runPostgresMigrations({ connectionString: connection });
+      await applyPostgresTestBaselineConnection({ connectionString: connection });
       await admin.query({
         text: "INSERT INTO users (user_id, status, account) VALUES ($1, 'active', '{}'::jsonb)",
         values: [actor.userId],
@@ -420,7 +420,7 @@ suite("Postgres 17 community creation repository", () => {
 
   test.skip("retains the pre-cutover route-v1 end-to-end fixture for historical replay", async () => {
     await withSchema(async (connection, admin) => {
-      await runPostgresMigrations({ connectionString: connection });
+      await applyPostgresTestBaselineConnection({ connectionString: connection });
       await admin.query({
         text: "INSERT INTO users (user_id, status, account) VALUES ($1, 'active', '{}'::jsonb)",
         values: [actor.userId],
@@ -1015,7 +1015,7 @@ suite("Postgres 17 community creation repository", () => {
 
   test("persists create/update revisions and replays exact historical outcomes", async () => {
     await withSchema(async (connection, admin) => {
-      await runPostgresMigrations({ connectionString: connection });
+      await applyPostgresTestBaselineConnection({ connectionString: connection });
       await admin.query({
         text: "INSERT INTO users (user_id, status, account) VALUES ($1, 'active', '{}'::jsonb)",
         values: [actor.userId],
@@ -1125,7 +1125,7 @@ suite("Postgres 17 community creation repository", () => {
 
   test("makes unsupported gates durable and expires active intents on read", async () => {
     await withSchema(async (connection, admin) => {
-      await runPostgresMigrations({ connectionString: connection });
+      await applyPostgresTestBaselineConnection({ connectionString: connection });
       await admin.query({
         text: "INSERT INTO users (user_id, status, account) VALUES ($1, 'active', '{}'::jsonb)",
         values: [actor.userId],
@@ -1231,7 +1231,7 @@ suite("Postgres 17 community creation repository", () => {
 
   test("serializes concurrent create replays and stale draft writers", async () => {
     await withSchema(async (connection, admin) => {
-      await runPostgresMigrations({ connectionString: connection });
+      await applyPostgresTestBaselineConnection({ connectionString: connection });
       await admin.query({
         text: "INSERT INTO users (user_id, status, account) VALUES ($1, 'active', '{}'::jsonb)",
         values: [actor.userId],
@@ -1302,7 +1302,7 @@ suite("Postgres 17 community creation repository", () => {
 
   test("serializes distinct commit-ready claimants onto one canonical route", async () => {
     await withSchema(async (connection, admin) => {
-      await runPostgresMigrations({ connectionString: connection });
+      await applyPostgresTestBaselineConnection({ connectionString: connection });
       const actors = [
         { kind: "user" as const, userId: "route-race-actor-a" },
         { kind: "user" as const, userId: "route-race-actor-b" },
@@ -1453,7 +1453,7 @@ suite("Postgres 17 community creation repository", () => {
 
   test("rechecks operator approval expiry after waiting on the actor lock", async () => {
     await withSchema(async (connection, admin) => {
-      await runPostgresMigrations({ connectionString: connection });
+      await applyPostgresTestBaselineConnection({ connectionString: connection });
       const quotaActor = { kind: "user" as const, userId: "approval-expiry-actor" };
       await admin.query(
         `INSERT INTO users (user_id, status, account) VALUES ($1, 'active', '{}'::jsonb)`,

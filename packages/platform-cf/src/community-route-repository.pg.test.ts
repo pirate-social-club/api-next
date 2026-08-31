@@ -11,6 +11,7 @@ import {
   loadPostgresMigrations,
   runPostgresMigrations,
 } from "../../../scripts/postgres-migrations.ts";
+import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { makeControlPlaneCommunityRouteExpiryStore } from "./community-route-expiry-repository.ts";
 import { makeControlPlaneCanonicalCommunityRouteStore } from "./community-route-repository.ts";
 import { makeControlPlaneOperatorManagedRouteStore } from "./operator-managed-route-repository.ts";
@@ -434,7 +435,7 @@ suite("canonical community route Postgres repository", () => {
 
   test("resolves an active optional-route community by permanent id without a binding", async () => {
     await withSchema(async (connection, admin) => {
-      await runPostgresMigrations({ connectionString: connection });
+      await applyPostgresTestBaselineConnection({ connectionString: connection });
       const communityId = "community_123e4567-e89b-42d3-a456-426614174000";
       await admin.query("INSERT INTO users (user_id) VALUES ('route-actor')");
       await activatePendingPersonaFixtures(admin);
@@ -500,7 +501,7 @@ suite("canonical community route Postgres repository", () => {
 
   test("projects a suspended Spaces binding under the disjoint at-sign path", async () => {
     await withSchema(async (connection, admin) => {
-      await runPostgresMigrations({ connectionString: connection });
+      await applyPostgresTestBaselineConnection({ connectionString: connection });
       const communityId = "community_123e4567-e89b-42d3-a456-426614174050";
       await admin.query("INSERT INTO users (user_id) VALUES ('spaces-route-owner')");
       await admin.query(
@@ -559,7 +560,7 @@ suite("canonical community route Postgres repository", () => {
 
   test("resolves a live verified HNS IDN binding with no legacy fallback", async () => {
     await withSchema(async (connection, admin) => {
-      await runPostgresMigrations({ connectionString: connection });
+      await applyPostgresTestBaselineConnection({ connectionString: connection });
       await admin.query(
         `INSERT INTO users (user_id, status, account) VALUES ('route-actor', 'active', '{}'::jsonb)`,
       );
@@ -664,7 +665,7 @@ suite("canonical community route Postgres repository", () => {
 
   test("fails expired evidence closed, then records one database-time lifecycle transition", async () => {
     await withSchema(async (connection, admin) => {
-      await runPostgresMigrations({ connectionString: connection });
+      await applyPostgresTestBaselineConnection({ connectionString: connection });
       await admin.query(
         `INSERT INTO users (user_id, status, account) VALUES ('route-actor', 'active', '{}'::jsonb)`,
       );
@@ -817,7 +818,7 @@ suite("canonical community route Postgres repository", () => {
 
   test("fails incomplete route evidence with no expiry closed", async () => {
     await withSchema(async (connection, admin) => {
-      await runPostgresMigrations({ connectionString: connection });
+      await applyPostgresTestBaselineConnection({ connectionString: connection });
       await admin.query(
         `INSERT INTO users (user_id, status, account) VALUES ('route-actor', 'active', '{}'::jsonb)`,
       );
@@ -850,7 +851,7 @@ suite("canonical community route Postgres repository", () => {
 
   test("orders a bounded expiry batch by evidence expiry before binding id", async () => {
     await withSchema(async (connection, admin) => {
-      await runPostgresMigrations({ connectionString: connection });
+      await applyPostgresTestBaselineConnection({ connectionString: connection });
       await admin.query(
         `INSERT INTO users (user_id, status, account) VALUES ('route-actor', 'active', '{}'::jsonb)`,
       );
@@ -907,7 +908,7 @@ suite("canonical community route Postgres repository", () => {
 
   test("fences concurrent expiry writers to one generation advance and audit row", async () => {
     await withSchema(async (connection, admin) => {
-      await runPostgresMigrations({ connectionString: connection });
+      await applyPostgresTestBaselineConnection({ connectionString: connection });
       await admin.query(
         `INSERT INTO users (user_id, status, account) VALUES ('route-actor', 'active', '{}'::jsonb)`,
       );
@@ -954,7 +955,7 @@ suite("canonical community route Postgres repository", () => {
 
   test("activates, resolves, replays, and revokes one operator-managed first-party root", async () => {
     await withSchema(async (connection, admin) => {
-      await runPostgresMigrations({ connectionString: connection });
+      await applyPostgresTestBaselineConnection({ connectionString: connection });
       const communityId = "community_123e4567-e89b-42d3-a456-426614174001";
       const registryBytes = new TextEncoder().encode(
         '["pirate-operator-managed-root-registry-v1","operator-managed-roots-2026-08",1,[["hns","jazleeuw","active"]]]',
@@ -1176,7 +1177,7 @@ suite("canonical community route Postgres repository", () => {
 
   test("rechecks operator privilege and prevents current registry removal of an active root", async () => {
     await withSchema(async (connection, admin) => {
-      await runPostgresMigrations({ connectionString: connection });
+      await applyPostgresTestBaselineConnection({ connectionString: connection });
       const registryReference = "operator-managed-roots-2026-08";
       const activeBytes = new TextEncoder().encode(
         '["pirate-operator-managed-root-registry-v1","operator-managed-roots-2026-08",1,[["hns","jazleeuw","active"]]]',
@@ -1320,7 +1321,7 @@ suite("canonical community route Postgres repository", () => {
 
   test("serializes two communities racing for one operator-managed root", async () => {
     await withSchema(async (connection, admin) => {
-      await runPostgresMigrations({ connectionString: connection });
+      await applyPostgresTestBaselineConnection({ connectionString: connection });
       const registryReference = "operator-managed-roots-race";
       const registryBytes = new TextEncoder().encode(
         '["pirate-operator-managed-root-registry-v1","operator-managed-roots-race",1,[["hns","race","active"]]]',

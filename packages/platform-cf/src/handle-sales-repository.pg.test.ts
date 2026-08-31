@@ -11,6 +11,7 @@ import { handleSaleNamespaceActivationHash } from "@pirate/domain";
 import { Effect } from "effect";
 import { Client } from "pg";
 import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
+import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { makeHandleRecipientTokenVault } from "./handle-recipient-token-vault.ts";
 import { makeControlPlaneHandleSalesStore } from "./handle-sales-repository.ts";
 import { makeControlPlaneHnsHandlePersonaHostAuthoritySource } from "./hns-handle-host-authority-repository.ts";
@@ -54,13 +55,7 @@ async function withSchema<A>(
   await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
   const scopedConnection = connectionForSchema(connectionString, schema);
   try {
-    await Effect.runPromise(
-      Effect.scoped(
-        applyPostgresMigrations(migrations).pipe(
-          Effect.provide(makeDirectPostgresControlPlaneLayer(scopedConnection)),
-        ),
-      ),
-    );
+    await applyPostgresTestBaselineConnection({ connectionString: scopedConnection });
     return await use({ admin, scopedConnection });
   } finally {
     await admin.query("ROLLBACK");

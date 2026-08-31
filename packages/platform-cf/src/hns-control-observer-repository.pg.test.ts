@@ -29,9 +29,8 @@ import {
   hnsObservedTxtValuesDigest,
 } from "@pirate/application";
 import type { Sha256Hex as Sha256HexValue } from "@pirate/domain/verification";
-import { Effect } from "effect";
 import { Client } from "pg";
-import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
+import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import {
   makeControlPlaneHnsAuthorityInventoryResolver,
   makeControlPlaneHnsControlObserverConfigurationResolver,
@@ -40,7 +39,6 @@ import {
   makeControlPlaneHnsControlObserverSnapshotStoreV2,
 } from "./namespace-ownership/hns-control-observer-postgres.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
-import { applyPostgresMigrations } from "./postgres-migrations.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -700,11 +698,7 @@ suite("Postgres 17 HNS control observer persistence", () => {
     await admin.connect();
     await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
     scoped = scopedConnection(connectionString, schema);
-    await Effect.runPromise(
-      Effect.scoped(
-        applyPostgresMigrations(await loadPostgresMigrations()).pipe(Effect.provide(runtime())),
-      ),
-    );
+    await applyPostgresTestBaselineConnection({ connectionString: scoped });
     await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
   }, 30_000);
 

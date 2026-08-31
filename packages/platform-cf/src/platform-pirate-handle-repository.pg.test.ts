@@ -4,7 +4,7 @@ import { getPublicProfileByHandle } from "@pirate/application/use-cases/public-p
 import { platformPirateHandleStateV1Hash } from "@pirate/domain";
 import { Effect } from "effect";
 import { Client } from "pg";
-import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
+import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { makeControlPlaneIdentityStore } from "./identity-repository.ts";
 import {
   createActivePersonaFixture,
@@ -96,7 +96,7 @@ async function withSchema<A>(use: (connection: string, admin: Client) => Promise
   await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
   try {
     const scoped = connectionForSchema(connectionString, schema);
-    await runPostgresMigrations({ connectionString: scoped });
+    await applyPostgresTestBaselineConnection({ connectionString: scoped });
     return await use(scoped, admin);
   } finally {
     await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);

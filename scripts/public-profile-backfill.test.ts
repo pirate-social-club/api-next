@@ -4,6 +4,7 @@ import {
   planPublicProfileBackfill,
   runPublicProfileBackfill,
 } from "./public-profile-backfill.ts";
+import { loadPublicProfileBackfillPgDriver } from "./public-profile-backfill-pg.ts";
 import {
   manifest,
   mappedHandle,
@@ -14,6 +15,11 @@ import {
 } from "./public-profile-backfill-test-fixtures.ts";
 
 describe("public-profile historical backfill planner", () => {
+  test("resolves the package-local pg driver used by the apply adapter", async () => {
+    const driver = await loadPublicProfileBackfillPgDriver();
+    expect(typeof driver.Client).toBe("function");
+  });
+
   test("seeds a current label and its historical redirect target", () => {
     const current = row({
       global_handle_id: "gh_current",

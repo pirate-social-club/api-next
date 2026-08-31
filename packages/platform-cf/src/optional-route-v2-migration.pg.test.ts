@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { Client } from "pg";
-import { runPostgresMigrations } from "../../../scripts/postgres-migrations";
+import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -67,7 +67,7 @@ afterAll(async () => {
 suite("optional-route-v2 sibling attachment aggregate", () => {
   test("checks authority at creation and commits only exact attachment evidence", async () => {
     await withSchema(async (connection, admin) => {
-      await runPostgresMigrations({ connectionString: connection });
+      await applyPostgresTestBaselineConnection({ connectionString: connection });
       const actorId = "optional-route-attachment-actor";
       const otherActorId = "optional-route-attachment-other";
       const communityId = "community_123e4567-e89b-42d3-a456-426614174000";

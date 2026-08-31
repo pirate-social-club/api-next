@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { runPostgresMigrations } from "./postgres-migrations.ts";
+import { applyPostgresTestBaselineConnection } from "./postgres-test-baseline.ts";
 import {
   loadPublicProfileBackfillPgDriver,
   type PublicProfileBackfillPgClient,
@@ -53,7 +53,7 @@ async function withSchema<A>(
   await admin.connect();
   await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
   try {
-    await runPostgresMigrations({ connectionString: scopedUrl });
+    await applyPostgresTestBaselineConnection({ connectionString: scopedUrl });
     await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
     await admin.query("INSERT INTO users (user_id, status) VALUES ($1, 'active')", [
       OPERATOR_USER_ID,

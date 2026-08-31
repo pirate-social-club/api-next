@@ -9,6 +9,7 @@ import {
 import { Cause, Effect, Exit, Result } from "effect";
 import { Client } from "pg";
 import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
+import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import {
   makeControlPlanePersonaRepository,
   makeControlPlanePersonaWalletRepository,
@@ -48,13 +49,7 @@ async function withSchema<A>(use: (admin: Client, connection: string) => Promise
   await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
   const scopedConnection = connectionForSchema(connectionString, schema);
   try {
-    await Effect.runPromise(
-      Effect.scoped(
-        applyPostgresMigrations(migrations).pipe(
-          Effect.provide(makeDirectPostgresControlPlaneLayer(scopedConnection)),
-        ),
-      ),
-    );
+    await applyPostgresTestBaselineConnection({ connectionString: scopedConnection });
     return await use(admin, scopedConnection);
   } finally {
     await admin.query("ROLLBACK");

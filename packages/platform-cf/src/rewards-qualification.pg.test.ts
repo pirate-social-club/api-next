@@ -1,10 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { Effect } from "effect";
 import { Client } from "pg";
-import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
+import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture.ts";
-import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
-import { applyPostgresMigrations } from "./postgres-migrations.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -16,7 +13,6 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_REWARDS_QUALIFICATION_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-rewards-qualification-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-rewards-qualification-suite-complete\n";
-const migrations = await loadPostgresMigrations();
 const testCount = 5;
 let completedTestCount = 0;
 
@@ -37,13 +33,7 @@ async function withSchema<A>(use: (admin: Client) => Promise<A>): Promise<A> {
   await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
   const scopedConnection = connectionForSchema(connectionString, schema);
   try {
-    await Effect.runPromise(
-      Effect.scoped(
-        applyPostgresMigrations(migrations).pipe(
-          Effect.provide(makeDirectPostgresControlPlaneLayer(scopedConnection)),
-        ),
-      ),
-    );
+    await applyPostgresTestBaselineConnection({ connectionString: scopedConnection });
     return await use(admin);
   } finally {
     await admin.query("ROLLBACK");
