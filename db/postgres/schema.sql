@@ -2141,25 +2141,18 @@ CREATE FUNCTION guard_community_canonical_route_binding_change() RETURNS trigger
 DECLARE
   authority_changed BOOLEAN;
   operator_promotion BOOLEAN;
+  owner_recovery_refresh BOOLEAN := FALSE;
 BEGIN
   IF TG_OP = 'DELETE' THEN
     RAISE EXCEPTION 'community canonical route binding is immutable';
   END IF;
 
   IF ROW(
-    NEW.route_binding_id,
-    NEW.community_id,
-    NEW.family,
-    NEW.root_label,
-    NEW.root_label_display,
-    NEW.created_at
+    NEW.route_binding_id, NEW.community_id, NEW.family, NEW.root_label,
+    NEW.root_label_display, NEW.created_at
   ) IS DISTINCT FROM ROW(
-    OLD.route_binding_id,
-    OLD.community_id,
-    OLD.family,
-    OLD.root_label,
-    OLD.root_label_display,
-    OLD.created_at
+    OLD.route_binding_id, OLD.community_id, OLD.family, OLD.root_label,
+    OLD.root_label_display, OLD.created_at
   ) THEN
     RAISE EXCEPTION 'community canonical route identity is immutable';
   END IF;
@@ -2178,36 +2171,41 @@ BEGIN
     AND NEW.ownership_status = 'verified'
     AND NEW.verified_evidence_ref IS NOT NULL;
 
-  IF ROW(
-    NEW.route_authority_kind,
-    NEW.authority_reference
-  ) IS DISTINCT FROM ROW(
-    OLD.route_authority_kind,
-    OLD.authority_reference
-  ) AND NOT operator_promotion THEN
+  IF ROW(NEW.route_authority_kind, NEW.authority_reference)
+       IS DISTINCT FROM ROW(OLD.route_authority_kind, OLD.authority_reference)
+    AND NOT operator_promotion
+  THEN
     RAISE EXCEPTION 'community canonical route identity is immutable';
   END IF;
 
   authority_changed := ROW(
-    NEW.ownership_status,
-    NEW.route_lifecycle_status,
-    NEW.verified_evidence_ref,
-    NEW.route_authority_kind,
-    NEW.authority_reference,
-    NEW.authority_generation
+    NEW.ownership_status, NEW.route_lifecycle_status, NEW.verified_evidence_ref,
+    NEW.route_authority_kind, NEW.authority_reference, NEW.authority_generation
   ) IS DISTINCT FROM ROW(
-    OLD.ownership_status,
-    OLD.route_lifecycle_status,
-    OLD.verified_evidence_ref,
-    OLD.route_authority_kind,
-    OLD.authority_reference,
-    OLD.authority_generation
+    OLD.ownership_status, OLD.route_lifecycle_status, OLD.verified_evidence_ref,
+    OLD.route_authority_kind, OLD.authority_reference, OLD.authority_generation
   );
+
+  IF NOT authority_changed AND NEW.binding_generation = OLD.binding_generation + 1 THEN
+    SELECT EXISTS (
+      SELECT 1
+        FROM community_route_revalidation_completion_attempts AS attempt
+       WHERE attempt.operation_mode = 'same_root_recovery'
+         AND attempt.route_binding_id = OLD.route_binding_id
+         AND attempt.expected_binding_generation = OLD.binding_generation
+         AND attempt.state = 'consumed'
+         AND attempt.consumption_kind <> 'stale_cas'
+         AND attempt.terminal_at IS NOT NULL
+    ) INTO owner_recovery_refresh;
+  END IF;
 
   IF authority_changed AND NEW.binding_generation <> OLD.binding_generation + 1 THEN
     RAISE EXCEPTION 'community canonical route generation must advance exactly once';
   END IF;
-  IF NOT authority_changed AND NEW.binding_generation <> OLD.binding_generation THEN
+  IF NOT authority_changed
+    AND NEW.binding_generation <> OLD.binding_generation
+    AND NOT owner_recovery_refresh
+  THEN
     RAISE EXCEPTION 'community canonical route generation cannot advance without authority change';
   END IF;
   RETURN NEW;
@@ -2954,6 +2952,198 @@ BEGIN
     RETURN OLD;
   END IF;
   RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION guard_community_route_active_lease_renewal() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  db_now TIMESTAMPTZ := clock_timestamp();
+  community_record communities%ROWTYPE;
+  binding_record community_canonical_route_bindings%ROWTYPE;
+  evidence_record community_route_ownership_evidence%ROWTYPE;
+  identity_record community_route_hns_control_identities%ROWTYPE;
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'active lease renewals cannot be deleted';
+  END IF;
+  IF TG_OP = 'INSERT' THEN
+    NEW.created_at := db_now;
+    NEW.updated_at := db_now;
+    SELECT * INTO community_record FROM communities
+     WHERE community_id = NEW.community_id FOR UPDATE;
+    SELECT * INTO binding_record FROM community_canonical_route_bindings
+     WHERE route_binding_id = NEW.route_binding_id
+       AND community_id = NEW.community_id FOR UPDATE;
+    SELECT * INTO evidence_record FROM community_route_ownership_evidence
+     WHERE evidence_ref = NEW.expected_verified_evidence_ref FOR SHARE;
+    SELECT * INTO identity_record FROM community_route_hns_control_identities
+     WHERE evidence_ref = NEW.expected_verified_evidence_ref FOR SHARE;
+    IF community_record.community_id IS NULL
+      OR community_record.status <> 'active'
+      OR community_record.canonical_route_binding_id IS DISTINCT FROM NEW.route_binding_id
+      OR binding_record.route_binding_id IS NULL
+      OR binding_record.binding_generation IS DISTINCT FROM NEW.expected_binding_generation
+      OR binding_record.verified_evidence_ref IS DISTINCT FROM NEW.expected_verified_evidence_ref
+      OR binding_record.ownership_status <> 'verified'
+      OR binding_record.route_lifecycle_status <> 'active'
+      OR evidence_record.evidence_ref IS NULL
+      OR evidence_record.binding_generation IS DISTINCT FROM NEW.expected_binding_generation
+      OR evidence_record.evidence_digest IS DISTINCT FROM NEW.expected_evidence_digest
+      OR evidence_record.expires_at IS NULL OR evidence_record.expires_at <= db_now
+      OR evidence_record.family IS DISTINCT FROM NEW.family
+      OR evidence_record.root_label IS DISTINCT FROM NEW.root_label
+      OR evidence_record.root_label_display IS DISTINCT FROM NEW.root_label_display
+      OR evidence_record.path_segment IS DISTINCT FROM NEW.path_segment
+      OR evidence_record.provider_id IS DISTINCT FROM NEW.provider_id
+      OR evidence_record.provider_binding_hash IS DISTINCT FROM NEW.provider_binding_hash
+      OR evidence_record.provider_configuration_version
+           IS DISTINCT FROM NEW.provider_configuration_version
+      OR identity_record.evidence_ref IS NULL
+      OR identity_record.control_identity_digest
+           IS DISTINCT FROM NEW.expected_control_identity_digest
+      OR identity_record.chain_authority_digest
+           IS DISTINCT FROM NEW.expected_chain_authority_digest
+      OR identity_record.provider_evidence_ref
+           IS DISTINCT FROM NEW.prior_provider_evidence_ref
+      OR NEW.status <> 'pending'
+    THEN
+      RAISE EXCEPTION 'active lease renewal does not match effective route authority';
+    END IF;
+    RETURN NEW;
+  END IF;
+
+  IF ROW(
+    NEW.active_lease_renewal_id, NEW.community_id, NEW.route_binding_id,
+    NEW.principal_kind, NEW.principal_id, NEW.expected_binding_generation,
+    NEW.expected_verified_evidence_ref, NEW.expected_evidence_digest,
+    NEW.expected_control_identity_digest, NEW.expected_chain_authority_digest,
+    NEW.prior_provider_evidence_ref, NEW.requirement_hash, NEW.provider_id,
+    NEW.provider_binding_hash, NEW.provider_configuration_kind,
+    NEW.provider_configuration_reference, NEW.provider_configuration_version,
+    NEW.provider_configuration_digest, NEW.protocol_version, NEW.environment,
+    NEW.family, NEW.root_label, NEW.root_label_display, NEW.path_segment, NEW.created_at
+  ) IS DISTINCT FROM ROW(
+    OLD.active_lease_renewal_id, OLD.community_id, OLD.route_binding_id,
+    OLD.principal_kind, OLD.principal_id, OLD.expected_binding_generation,
+    OLD.expected_verified_evidence_ref, OLD.expected_evidence_digest,
+    OLD.expected_control_identity_digest, OLD.expected_chain_authority_digest,
+    OLD.prior_provider_evidence_ref, OLD.requirement_hash, OLD.provider_id,
+    OLD.provider_binding_hash, OLD.provider_configuration_kind,
+    OLD.provider_configuration_reference, OLD.provider_configuration_version,
+    OLD.provider_configuration_digest, OLD.protocol_version, OLD.environment,
+    OLD.family, OLD.root_label, OLD.root_label_display, OLD.path_segment, OLD.created_at
+  ) THEN
+    RAISE EXCEPTION 'active lease renewal authority is immutable';
+  END IF;
+  IF OLD.status = 'pending'
+    AND NEW.status IN ('completed', 'failed')
+    AND NEW.terminal_at IS NOT NULL
+    AND NEW.terminal_at <= db_now
+  THEN
+    NEW.updated_at := db_now;
+    RETURN NEW;
+  END IF;
+  RAISE EXCEPTION 'active lease renewal transition is not allowed';
+END;
+$$;
+
+CREATE FUNCTION guard_community_route_active_lease_renewal_attempt() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  db_now TIMESTAMPTZ := date_trunc('milliseconds', clock_timestamp());
+  renewal_record community_route_active_lease_renewals%ROWTYPE;
+  consumed_count INTEGER;
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'active lease renewal attempts cannot be deleted';
+  END IF;
+  SELECT * INTO renewal_record
+    FROM community_route_active_lease_renewals
+   WHERE active_lease_renewal_id = COALESCE(
+     NEW.active_lease_renewal_id, OLD.active_lease_renewal_id
+   ) FOR UPDATE;
+  IF renewal_record.active_lease_renewal_id IS NULL THEN
+    RAISE EXCEPTION 'active lease renewal attempt lacks its operation';
+  END IF;
+
+  IF TG_OP = 'INSERT' THEN
+    NEW.created_at := db_now;
+    NEW.updated_at := db_now;
+    SELECT count(*)::integer INTO consumed_count
+      FROM community_route_active_lease_renewal_attempts
+     WHERE active_lease_renewal_id = NEW.active_lease_renewal_id
+       AND state = 'consumed';
+    IF renewal_record.status <> 'pending'
+      OR NEW.route_binding_id IS DISTINCT FROM renewal_record.route_binding_id
+      OR NEW.expected_binding_generation
+           IS DISTINCT FROM renewal_record.expected_binding_generation
+      OR NEW.attempt_number IS DISTINCT FROM consumed_count + 1
+      OR consumed_count >= 3
+      OR NEW.state <> 'leased'
+      OR NEW.fence_token <> 1
+      OR NEW.lease_expires_at <= db_now
+    THEN
+      RAISE EXCEPTION 'active lease renewal attempt is not admissible';
+    END IF;
+    NEW.lease_expires_at := db_now + INTERVAL '16 seconds';
+    RETURN NEW;
+  END IF;
+
+  IF ROW(
+    NEW.active_lease_renewal_attempt_id, NEW.active_lease_renewal_id,
+    NEW.route_binding_id, NEW.expected_binding_generation, NEW.attempt_number,
+    NEW.idempotency_key, NEW.request_hash, NEW.evidence_ref, NEW.observation_id,
+    NEW.created_at
+  ) IS DISTINCT FROM ROW(
+    OLD.active_lease_renewal_attempt_id, OLD.active_lease_renewal_id,
+    OLD.route_binding_id, OLD.expected_binding_generation, OLD.attempt_number,
+    OLD.idempotency_key, OLD.request_hash, OLD.evidence_ref, OLD.observation_id,
+    OLD.created_at
+  ) THEN
+    RAISE EXCEPTION 'active lease renewal attempt authority is immutable';
+  END IF;
+
+  IF OLD.state = 'leased' AND NEW.state = 'released'
+    AND NEW.fence_token = OLD.fence_token
+    AND NEW.lease_expires_at = OLD.lease_expires_at
+    AND NEW.consumption_kind IS NULL
+  THEN
+    NEW.updated_at := db_now;
+    RETURN NEW;
+  END IF;
+  IF OLD.state IN ('released', 'leased') AND NEW.state = 'leased'
+    AND NEW.fence_token = OLD.fence_token + 1
+    AND NEW.lease_expires_at > db_now
+    AND (OLD.state = 'released' OR OLD.lease_expires_at <= db_now)
+    AND NEW.consumption_kind IS NULL
+  THEN
+    NEW.lease_expires_at := db_now + INTERVAL '16 seconds';
+    NEW.updated_at := db_now;
+    RETURN NEW;
+  END IF;
+  IF OLD.state = 'leased' AND NEW.state = 'consumed'
+    AND NEW.fence_token = OLD.fence_token
+    AND NEW.lease_expires_at = OLD.lease_expires_at
+    AND NEW.terminal_at IS NOT NULL
+    AND NEW.terminal_at <= db_now
+    AND (
+      OLD.lease_expires_at > db_now
+      OR NEW.consumption_kind IN ('lease_expired_before_commit', 'stale_cas')
+    )
+    AND validate_hns_active_lease_renewal_terminal_document(
+      NEW.terminal_result_document, NEW.result_hash, NEW.terminal_result_version,
+      NEW.active_lease_renewal_id, NEW.active_lease_renewal_attempt_id,
+      NEW.route_binding_id, NEW.expected_binding_generation, NEW.idempotency_key,
+      NEW.request_hash, NEW.consumption_kind
+    )
+  THEN
+    NEW.updated_at := db_now;
+    RETURN NEW;
+  END IF;
+  RAISE EXCEPTION 'active lease renewal attempt transition is not allowed';
 END;
 $$;
 
@@ -4444,6 +4634,307 @@ BEGIN
   RAISE EXCEPTION 'HNS DNS activation operation transition is not allowed';
 END;
 $$;
+
+CREATE FUNCTION guard_hns_owner_recovery_attempt() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  db_now TIMESTAMPTZ := date_trunc('milliseconds', clock_timestamp());
+  session_record community_route_revalidation_sessions%ROWTYPE;
+  consumed_count INTEGER;
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'owner recovery attempts cannot be deleted';
+  END IF;
+  SELECT * INTO session_record FROM community_route_revalidation_sessions
+   WHERE route_revalidation_id = COALESCE(NEW.route_revalidation_id, OLD.route_revalidation_id)
+     AND revalidation_session_id = COALESCE(
+       NEW.revalidation_session_id, OLD.revalidation_session_id
+     ) FOR UPDATE;
+  IF session_record.revalidation_session_id IS NULL
+    OR session_record.operation_mode <> 'same_root_recovery'
+  THEN RAISE EXCEPTION 'owner recovery attempt lacks its session'; END IF;
+  IF TG_OP = 'INSERT' THEN
+    NEW.created_at := db_now;
+    NEW.updated_at := db_now;
+    SELECT count(*)::integer INTO consumed_count
+      FROM community_route_revalidation_completion_attempts
+     WHERE route_revalidation_id = NEW.route_revalidation_id
+       AND operation_mode = 'same_root_recovery' AND state = 'consumed';
+    IF session_record.status <> 'pending'
+      OR NEW.route_binding_id IS DISTINCT FROM session_record.route_binding_id
+      OR NEW.expected_binding_generation
+           IS DISTINCT FROM session_record.expected_binding_generation
+      OR NEW.expected_verified_evidence_ref IS NOT NULL
+      OR NEW.attempt_number IS DISTINCT FROM consumed_count + 1
+      OR consumed_count >= 3
+      OR NEW.state <> 'leased' OR NEW.fence_token <> 1
+      OR NEW.lease_expires_at <= db_now
+      OR (
+        session_record.expires_at > db_now
+        AND db_now + INTERVAL '16 seconds' > session_record.expires_at
+      )
+    THEN RAISE EXCEPTION 'owner recovery attempt is not admissible'; END IF;
+    NEW.lease_expires_at := db_now + INTERVAL '16 seconds';
+    RETURN NEW;
+  END IF;
+  IF (to_jsonb(NEW)
+        - 'state' - 'fence_token' - 'lease_expires_at' - 'consumption_kind'
+        - 'result_hash' - 'terminal_result_document' - 'terminal_result_version'
+        - 'target_observation_contract_version' - 'target_response_status'
+        - 'provider_response_sha256' - 'raw_provider_response_bytes'
+        - 'terminal_observed_expires_at' - 'terminal_at' - 'updated_at')
+       IS DISTINCT FROM
+     (to_jsonb(OLD)
+        - 'state' - 'fence_token' - 'lease_expires_at' - 'consumption_kind'
+        - 'result_hash' - 'terminal_result_document' - 'terminal_result_version'
+        - 'target_observation_contract_version' - 'target_response_status'
+        - 'provider_response_sha256' - 'raw_provider_response_bytes'
+        - 'terminal_observed_expires_at' - 'terminal_at' - 'updated_at')
+  THEN RAISE EXCEPTION 'owner recovery attempt authority is immutable'; END IF;
+  IF OLD.state = 'leased' AND NEW.state = 'released'
+    AND NEW.fence_token = OLD.fence_token
+    AND NEW.lease_expires_at = OLD.lease_expires_at
+  THEN NEW.updated_at := db_now; RETURN NEW; END IF;
+  IF OLD.state IN ('released', 'leased') AND NEW.state = 'leased'
+    AND NEW.fence_token = OLD.fence_token + 1
+    AND (OLD.state = 'released' OR OLD.lease_expires_at <= db_now)
+    AND NEW.lease_expires_at > db_now
+    AND (
+      session_record.expires_at <= db_now
+      OR db_now + INTERVAL '16 seconds' <= session_record.expires_at
+    )
+  THEN
+    NEW.lease_expires_at := db_now + INTERVAL '16 seconds';
+    NEW.updated_at := db_now;
+    RETURN NEW;
+  END IF;
+  IF OLD.state = 'leased' AND NEW.state = 'consumed'
+    AND NEW.fence_token = OLD.fence_token
+    AND NEW.lease_expires_at = OLD.lease_expires_at
+    AND NEW.terminal_at IS NOT NULL AND NEW.terminal_at <= db_now
+    AND (
+      (NEW.consumption_kind = 'session_expired' AND session_record.expires_at <= db_now)
+      OR (NEW.consumption_kind <> 'session_expired'
+          AND OLD.lease_expires_at > db_now AND session_record.expires_at > db_now)
+    )
+    AND validate_hns_owner_recovery_terminal_document(
+      NEW.terminal_result_document, NEW.result_hash, NEW.terminal_result_version,
+      NEW.route_revalidation_id, NEW.revalidation_session_id,
+      NEW.route_revalidation_attempt_id, NEW.route_binding_id,
+      NEW.expected_binding_generation, NEW.idempotency_key,
+      NEW.completion_request_hash, NEW.consumption_kind
+    )
+  THEN NEW.updated_at := db_now; RETURN NEW; END IF;
+  RAISE EXCEPTION 'owner recovery attempt transition is not allowed';
+END;
+$$;
+
+CREATE FUNCTION guard_hns_owner_recovery_session_change() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'owner recovery sessions cannot be deleted';
+  END IF;
+  IF (to_jsonb(NEW) - 'status' - 'terminal_at' - 'updated_at')
+       IS DISTINCT FROM
+     (to_jsonb(OLD) - 'status' - 'terminal_at' - 'updated_at')
+  THEN RAISE EXCEPTION 'owner recovery session authority is immutable'; END IF;
+  IF OLD.status = 'pending'
+    AND NEW.status IN ('completed', 'failed', 'expired')
+    AND NEW.terminal_at IS NOT NULL
+    AND NEW.terminal_at <= clock_timestamp()
+    AND (NEW.status <> 'expired' OR NEW.terminal_at >= NEW.expires_at)
+  THEN
+    NEW.updated_at := clock_timestamp();
+    RETURN NEW;
+  END IF;
+  RAISE EXCEPTION 'owner recovery session transition is not allowed';
+END;
+$$;
+
+CREATE FUNCTION guard_hns_owner_recovery_start() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $_$
+DECLARE
+  db_now TIMESTAMPTZ := date_trunc('milliseconds', clock_timestamp());
+  community_record communities%ROWTYPE;
+  binding_record community_canonical_route_bindings%ROWTYPE;
+  transition_record community_route_lifecycle_transitions%ROWTYPE;
+  prior_attempt community_route_revalidation_completion_attempts%ROWTYPE;
+  prior_session community_route_revalidation_sessions%ROWTYPE;
+  renewal_attempt community_route_active_lease_renewal_attempts%ROWTYPE;
+  renewal_record community_route_active_lease_renewals%ROWTYPE;
+  configuration_exists BOOLEAN;
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'owner recovery start reservations cannot be deleted';
+  END IF;
+  IF TG_OP = 'INSERT' THEN
+    NEW.created_at := db_now;
+    NEW.updated_at := db_now;
+    NEW.challenge_expires_at := db_now + INTERVAL '1 hour';
+    SELECT * INTO community_record FROM communities
+     WHERE community_id = NEW.community_id FOR UPDATE;
+    SELECT * INTO binding_record FROM community_canonical_route_bindings
+     WHERE route_binding_id = NEW.route_binding_id
+       AND community_id = NEW.community_id FOR UPDATE;
+    SELECT EXISTS (
+      SELECT 1 FROM hns_control_observer_configurations
+       WHERE provider_configuration_reference = NEW.provider_configuration_reference
+         AND provider_configuration_version = NEW.provider_configuration_version
+         AND provider_configuration_digest = NEW.provider_configuration_digest
+    ) INTO configuration_exists;
+    IF community_record.community_id IS NULL
+      OR community_record.status <> 'active'
+      OR community_record.created_by_user_id IS DISTINCT FROM NEW.principal_id
+      OR community_record.canonical_route_binding_id IS DISTINCT FROM NEW.route_binding_id
+      OR binding_record.route_binding_id IS NULL
+      OR binding_record.binding_generation IS DISTINCT FROM NEW.expected_binding_generation
+      OR binding_record.verified_evidence_ref IS NOT NULL
+      OR binding_record.route_lifecycle_status <> 'suspended'
+      OR binding_record.family IS DISTINCT FROM NEW.family
+      OR binding_record.root_label IS DISTINCT FROM NEW.root_label
+      OR binding_record.root_label_display IS DISTINCT FROM NEW.root_label_display
+      OR binding_record.path_segment IS DISTINCT FROM NEW.path_segment
+      OR NEW.provider_id <> 'hns.owner.v1'
+      OR NOT configuration_exists
+      OR NEW.state <> 'acquired'
+      OR NEW.fence_token <> 1
+      OR NEW.lease_expires_at <= db_now
+    THEN
+      RAISE EXCEPTION 'owner recovery reservation does not match creator and route authority';
+    END IF;
+    NEW.lease_expires_at := db_now + INTERVAL '8 seconds';
+
+    IF NEW.recovery_authority_kind = 'database_time_expiry_transition' THEN
+      SELECT * INTO transition_record FROM community_route_lifecycle_transitions
+       WHERE route_lifecycle_transition_id = NEW.recovery_authority_reference
+       FOR SHARE;
+      IF transition_record.route_lifecycle_transition_id IS NULL
+        OR transition_record.transition_kind <> 'database_time_expired'
+        OR transition_record.community_id IS DISTINCT FROM NEW.community_id
+        OR transition_record.route_binding_id IS DISTINCT FROM NEW.route_binding_id
+        OR transition_record.resulting_binding_generation
+             IS DISTINCT FROM NEW.expected_binding_generation
+      THEN RAISE EXCEPTION 'owner recovery lacks its database-expiry authority'; END IF;
+    ELSIF NEW.recovery_authority_kind IN (
+      'route_revalidation_terminal', 'owner_recovery_terminal'
+    ) THEN
+      SELECT * INTO prior_attempt FROM community_route_revalidation_completion_attempts
+       WHERE route_revalidation_attempt_id = NEW.recovery_authority_reference
+       FOR SHARE;
+      SELECT * INTO prior_session FROM community_route_revalidation_sessions
+       WHERE route_revalidation_id = prior_attempt.route_revalidation_id
+         AND revalidation_session_id = prior_attempt.revalidation_session_id
+       FOR SHARE;
+      IF prior_attempt.route_revalidation_attempt_id IS NULL
+        OR prior_attempt.state <> 'consumed'
+        OR prior_attempt.route_binding_id IS DISTINCT FROM NEW.route_binding_id
+        OR prior_attempt.expected_binding_generation + 1
+             IS DISTINCT FROM NEW.expected_binding_generation
+        OR prior_session.community_id IS DISTINCT FROM NEW.community_id
+        OR prior_session.provider_id IS DISTINCT FROM NEW.provider_id
+        OR prior_session.provider_binding_hash IS DISTINCT FROM NEW.provider_binding_hash
+        OR prior_session.provider_configuration_kind
+             IS DISTINCT FROM NEW.provider_configuration_kind
+        OR prior_session.provider_configuration_reference
+             IS DISTINCT FROM NEW.provider_configuration_reference
+        OR prior_session.provider_configuration_version
+             IS DISTINCT FROM NEW.provider_configuration_version
+        OR prior_session.environment IS DISTINCT FROM NEW.environment
+        OR (
+          NEW.recovery_authority_kind = 'owner_recovery_terminal'
+          AND prior_session.operation_mode <> 'same_root_recovery'
+        )
+        OR (
+          NEW.recovery_authority_kind = 'route_revalidation_terminal'
+          AND prior_session.operation_mode <> 'system_revalidation'
+        )
+      THEN RAISE EXCEPTION 'owner recovery lacks its revalidation authority'; END IF;
+    ELSE
+      SELECT * INTO renewal_attempt FROM community_route_active_lease_renewal_attempts
+       WHERE active_lease_renewal_attempt_id = NEW.recovery_authority_reference
+       FOR SHARE;
+      SELECT * INTO renewal_record FROM community_route_active_lease_renewals
+       WHERE active_lease_renewal_id = renewal_attempt.active_lease_renewal_id
+       FOR SHARE;
+      IF renewal_attempt.active_lease_renewal_attempt_id IS NULL
+        OR renewal_attempt.state <> 'consumed'
+        OR renewal_attempt.route_binding_id IS DISTINCT FROM NEW.route_binding_id
+        OR renewal_attempt.expected_binding_generation + 1
+             IS DISTINCT FROM NEW.expected_binding_generation
+        OR renewal_record.community_id IS DISTINCT FROM NEW.community_id
+        OR renewal_record.provider_id IS DISTINCT FROM NEW.provider_id
+        OR renewal_record.provider_binding_hash IS DISTINCT FROM NEW.provider_binding_hash
+        OR renewal_record.provider_configuration_kind
+             IS DISTINCT FROM NEW.provider_configuration_kind
+        OR renewal_record.provider_configuration_reference
+             IS DISTINCT FROM NEW.provider_configuration_reference
+        OR renewal_record.provider_configuration_version
+             IS DISTINCT FROM NEW.provider_configuration_version
+        OR renewal_record.provider_configuration_digest
+             IS DISTINCT FROM NEW.provider_configuration_digest
+        OR renewal_record.environment IS DISTINCT FROM NEW.environment
+      THEN RAISE EXCEPTION 'owner recovery lacks its active-renewal authority'; END IF;
+    END IF;
+    RETURN NEW;
+  END IF;
+
+  IF ROW(
+    NEW.route_revalidation_id, NEW.revalidation_session_id, NEW.community_id,
+    NEW.route_binding_id, NEW.principal_kind, NEW.principal_id,
+    NEW.expected_binding_generation, NEW.expected_verified_evidence_ref,
+    NEW.requirement_hash, NEW.provider_id, NEW.provider_binding_hash,
+    NEW.provider_configuration_kind, NEW.provider_configuration_reference,
+    NEW.provider_configuration_version, NEW.protocol_version, NEW.environment,
+    NEW.family, NEW.root_label, NEW.root_label_display, NEW.path_segment,
+    NEW.start_request_hash, NEW.operation_mode, NEW.start_reservation_id,
+    NEW.start_idempotency_key, NEW.recovery_authority_kind,
+    NEW.recovery_authority_reference, NEW.public_start_hash,
+    NEW.provider_configuration_digest, NEW.created_at
+  ) IS DISTINCT FROM ROW(
+    OLD.route_revalidation_id, OLD.revalidation_session_id, OLD.community_id,
+    OLD.route_binding_id, OLD.principal_kind, OLD.principal_id,
+    OLD.expected_binding_generation, OLD.expected_verified_evidence_ref,
+    OLD.requirement_hash, OLD.provider_id, OLD.provider_binding_hash,
+    OLD.provider_configuration_kind, OLD.provider_configuration_reference,
+    OLD.provider_configuration_version, OLD.protocol_version, OLD.environment,
+    OLD.family, OLD.root_label, OLD.root_label_display, OLD.path_segment,
+    OLD.start_request_hash, OLD.operation_mode, OLD.start_reservation_id,
+    OLD.start_idempotency_key, OLD.recovery_authority_kind,
+    OLD.recovery_authority_reference, OLD.public_start_hash,
+    OLD.provider_configuration_digest, OLD.created_at
+  ) THEN RAISE EXCEPTION 'owner recovery start authority is immutable'; END IF;
+
+  IF OLD.state = 'acquired' AND NEW.state = 'released'
+    AND NEW.fence_token = OLD.fence_token
+    AND NEW.lease_expires_at = OLD.lease_expires_at
+    AND NEW.challenge_expires_at = OLD.challenge_expires_at
+    AND NEW.provider_start_hash IS NULL
+  THEN NEW.updated_at := db_now; RETURN NEW; END IF;
+  IF OLD.state IN ('released', 'acquired') AND NEW.state = 'acquired'
+    AND NEW.fence_token = OLD.fence_token + 1
+    AND (OLD.state = 'released' OR OLD.lease_expires_at <= db_now)
+    AND NEW.lease_expires_at > db_now
+    AND NEW.provider_start_hash IS NULL
+  THEN
+    NEW.challenge_expires_at := db_now + INTERVAL '1 hour';
+    NEW.lease_expires_at := db_now + INTERVAL '8 seconds';
+    NEW.updated_at := db_now;
+    RETURN NEW;
+  END IF;
+  IF OLD.state = 'acquired' AND NEW.state = 'finalized'
+    AND OLD.lease_expires_at > db_now
+    AND NEW.fence_token = OLD.fence_token
+    AND NEW.lease_expires_at = OLD.lease_expires_at
+    AND NEW.challenge_expires_at = OLD.challenge_expires_at
+    AND NEW.provider_start_hash ~ '^[0-9a-f]{64}$'
+  THEN NEW.updated_at := db_now; RETURN NEW; END IF;
+  RAISE EXCEPTION 'owner recovery start transition is not allowed';
+END;
+$_$;
 
 CREATE FUNCTION guard_karaoke_attempt() RETURNS trigger
     LANGUAGE plpgsql
@@ -9791,6 +10282,62 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION require_community_route_hns_control_identity() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  identity_record community_route_hns_control_identities%ROWTYPE;
+  creation_snapshot namespace_ownership_evidence_snapshots%ROWTYPE;
+  revalidation_attempt community_route_revalidation_completion_attempts%ROWTYPE;
+  revalidation_session community_route_revalidation_sessions%ROWTYPE;
+BEGIN
+  IF NEW.origin = 'creation_ceremony' THEN
+    SELECT * INTO creation_snapshot
+      FROM namespace_ownership_evidence_snapshots
+     WHERE evidence_ref = NEW.evidence_ref;
+  ELSIF NEW.origin = 'route_revalidation' THEN
+    SELECT * INTO revalidation_attempt
+      FROM community_route_revalidation_completion_attempts
+     WHERE route_revalidation_attempt_id = NEW.route_revalidation_attempt_id;
+    SELECT * INTO revalidation_session
+      FROM community_route_revalidation_sessions
+     WHERE route_revalidation_id = revalidation_attempt.route_revalidation_id
+       AND revalidation_session_id = revalidation_attempt.revalidation_session_id;
+  END IF;
+
+  SELECT * INTO identity_record
+    FROM community_route_hns_control_identities
+   WHERE evidence_ref = NEW.evidence_ref
+   FOR SHARE;
+  IF identity_record.evidence_ref IS NULL THEN
+    IF NEW.origin = 'active_lease_renewal'
+      OR (
+        NEW.origin = 'creation_ceremony'
+        AND creation_snapshot.provider_configuration_version = 'hns-observer-config-v2'
+      )
+      OR (
+        NEW.origin = 'route_revalidation'
+        AND revalidation_session.operation_mode = 'same_root_recovery'
+      )
+    THEN
+      RAISE EXCEPTION 'new HNS route evidence requires immutable control identity authority';
+    END IF;
+    RETURN NEW;
+  END IF;
+
+  IF NEW.origin = 'route_revalidation' THEN
+    IF revalidation_session.operation_mode = 'same_root_recovery' THEN
+      IF NEW.verified_by_actor_id IS DISTINCT FROM revalidation_session.principal_id THEN
+        RAISE EXCEPTION 'owner recovery evidence must name the creator principal';
+      END IF;
+    ELSIF NEW.verified_by_actor_id IS NOT NULL THEN
+      RAISE EXCEPTION 'system revalidation evidence cannot name an owner principal';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION require_text_moderation_v2_case() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -10623,7 +11170,25 @@ BEGIN
     THEN
       RAISE EXCEPTION 'namespace ceremony result does not match its session and attempt';
     END IF;
+
+    IF NEW.target_observation_contract_version IS NOT NULL THEN
+      IF session_record.provider_configuration_version <> 'hns-observer-config-v2'
+        OR NEW.target_observation_contract_version <> 'pirate-hns-target-observation-v3'
+        OR NEW.target_response_status NOT IN ('rejected', 'ineligible')
+        OR NEW.outcome_status <> 'failed'
+      THEN
+        RAISE EXCEPTION 'namespace target response does not match its versioned session authority';
+      END IF;
+    END IF;
     RETURN NEW;
+  END IF;
+
+  IF NEW.target_observation_contract_version IS NOT NULL
+    OR NEW.target_response_status IS NOT NULL
+    OR NEW.provider_response_sha256 IS NOT NULL
+    OR NEW.raw_provider_response_bytes IS NOT NULL
+  THEN
+    RAISE EXCEPTION 'human ceremony result cannot retain an HNS target response';
   END IF;
 
   IF NEW.namespace_session_id IS NOT NULL
@@ -11028,6 +11593,184 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION validate_community_route_active_lease_renewal_coherence() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  renewal_record community_route_active_lease_renewals%ROWTYPE;
+  terminal_count INTEGER;
+  leased_count INTEGER;
+BEGIN
+  SELECT * INTO renewal_record
+    FROM community_route_active_lease_renewals
+   WHERE active_lease_renewal_id = NEW.active_lease_renewal_id;
+  SELECT count(*) FILTER (WHERE state = 'consumed')::integer,
+         count(*) FILTER (WHERE state = 'leased')::integer
+    INTO terminal_count, leased_count
+    FROM community_route_active_lease_renewal_attempts
+   WHERE active_lease_renewal_id = NEW.active_lease_renewal_id;
+  IF renewal_record.status = 'pending' AND terminal_count <> 0 THEN
+    RAISE EXCEPTION 'pending active lease renewal cannot have a consumed attempt';
+  END IF;
+  IF renewal_record.status IN ('completed', 'failed')
+    AND (terminal_count <> 1 OR leased_count <> 0)
+  THEN
+    RAISE EXCEPTION 'terminal active lease renewal requires one consumed attempt';
+  END IF;
+  RETURN NULL;
+END;
+$$;
+
+CREATE FUNCTION validate_community_route_active_lease_renewal_snapshot_insert() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  db_now TIMESTAMPTZ := clock_timestamp();
+  renewal_record community_route_active_lease_renewals%ROWTYPE;
+  attempt_record community_route_active_lease_renewal_attempts%ROWTYPE;
+  binding_record community_canonical_route_bindings%ROWTYPE;
+BEGIN
+  NEW.created_at := db_now;
+  SELECT * INTO renewal_record
+    FROM community_route_active_lease_renewals
+   WHERE active_lease_renewal_id = NEW.active_lease_renewal_id FOR SHARE;
+  SELECT * INTO attempt_record
+    FROM community_route_active_lease_renewal_attempts
+   WHERE active_lease_renewal_attempt_id = NEW.active_lease_renewal_attempt_id FOR SHARE;
+  SELECT * INTO binding_record
+    FROM community_canonical_route_bindings
+   WHERE route_binding_id = NEW.route_binding_id
+     AND community_id = NEW.community_id FOR UPDATE;
+  IF renewal_record.active_lease_renewal_id IS NULL
+    OR attempt_record.active_lease_renewal_attempt_id IS NULL
+    OR binding_record.route_binding_id IS NULL
+    OR renewal_record.status <> 'completed'
+    OR attempt_record.state <> 'consumed'
+    OR attempt_record.consumption_kind <> 'verified'
+    OR attempt_record.active_lease_renewal_id IS DISTINCT FROM NEW.active_lease_renewal_id
+    OR attempt_record.evidence_ref IS DISTINCT FROM NEW.evidence_ref
+    OR attempt_record.request_hash IS DISTINCT FROM NEW.request_hash
+    OR attempt_record.provider_response_sha256 IS DISTINCT FROM NEW.provider_response_sha256
+    OR renewal_record.community_id IS DISTINCT FROM NEW.community_id
+    OR renewal_record.route_binding_id IS DISTINCT FROM NEW.route_binding_id
+    OR renewal_record.principal_id IS DISTINCT FROM NEW.principal_id
+    OR renewal_record.requirement_hash IS DISTINCT FROM NEW.requirement_hash
+    OR renewal_record.expected_binding_generation
+         IS DISTINCT FROM NEW.expected_binding_generation
+    OR renewal_record.expected_verified_evidence_ref
+         IS DISTINCT FROM NEW.expected_verified_evidence_ref
+    OR renewal_record.expected_evidence_digest IS DISTINCT FROM NEW.expected_evidence_digest
+    OR renewal_record.expected_control_identity_digest
+         IS DISTINCT FROM NEW.expected_control_identity_digest
+    OR renewal_record.expected_chain_authority_digest
+         IS DISTINCT FROM NEW.expected_chain_authority_digest
+    OR renewal_record.prior_provider_evidence_ref
+         IS DISTINCT FROM NEW.prior_provider_evidence_ref
+    OR renewal_record.provider_id IS DISTINCT FROM NEW.provider_id
+    OR renewal_record.provider_binding_hash IS DISTINCT FROM NEW.provider_binding_hash
+    OR renewal_record.provider_configuration_kind
+         IS DISTINCT FROM NEW.provider_configuration_kind
+    OR renewal_record.provider_configuration_reference
+         IS DISTINCT FROM NEW.provider_configuration_reference
+    OR renewal_record.provider_configuration_version
+         IS DISTINCT FROM NEW.provider_configuration_version
+    OR renewal_record.provider_configuration_digest
+         IS DISTINCT FROM NEW.provider_configuration_digest
+    OR renewal_record.protocol_version IS DISTINCT FROM NEW.protocol_version
+    OR renewal_record.environment IS DISTINCT FROM NEW.environment
+    OR renewal_record.family IS DISTINCT FROM NEW.family
+    OR renewal_record.root_label IS DISTINCT FROM NEW.root_label
+    OR renewal_record.root_label_display IS DISTINCT FROM NEW.root_label_display
+    OR renewal_record.path_segment IS DISTINCT FROM NEW.path_segment
+    OR binding_record.binding_generation IS DISTINCT FROM NEW.binding_generation
+    OR binding_record.verified_evidence_ref IS DISTINCT FROM NEW.evidence_ref
+    OR binding_record.ownership_status <> 'verified'
+    OR binding_record.route_lifecycle_status <> 'active'
+    OR NEW.observed_at > db_now OR NEW.expires_at <= db_now
+    OR NEW.response_document ->> 'status' <> 'verified'
+    OR NEW.response_document #>> '{observation,ownership_source}'
+         IS DISTINCT FROM NEW.ownership_source
+    OR NEW.response_document #>> '{observation,txt_name}'
+         IS DISTINCT FROM NEW.txt_name
+    OR NEW.response_document #>> '{observation,expected_txt_value_sha256}'
+         IS DISTINCT FROM NEW.expected_txt_value_sha256
+    OR NEW.response_document #>> '{observation,control_identity_digest}'
+         IS DISTINCT FROM NEW.control_identity_digest
+    OR NEW.response_document #>> '{observation,chain_authority_digest}'
+         IS DISTINCT FROM NEW.chain_authority_digest
+    OR NEW.response_document #>> '{observation,provider_evidence_ref}'
+         IS DISTINCT FROM NEW.provider_evidence_ref
+    OR NEW.response_document #>> '{observation,observer_result_sha256}'
+         IS DISTINCT FROM NEW.observer_result_sha256
+  THEN
+    RAISE EXCEPTION 'active lease renewal snapshot does not match committed authority';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION validate_community_route_active_renewal_evidence_insert() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  snapshot_record community_route_active_lease_renewal_evidence_snapshots%ROWTYPE;
+  attempt_record community_route_active_lease_renewal_attempts%ROWTYPE;
+  renewal_record community_route_active_lease_renewals%ROWTYPE;
+  binding_record community_canonical_route_bindings%ROWTYPE;
+BEGIN
+  SELECT * INTO attempt_record
+    FROM community_route_active_lease_renewal_attempts
+   WHERE active_lease_renewal_attempt_id = NEW.active_lease_renewal_attempt_id
+   FOR SHARE;
+  SELECT * INTO renewal_record
+    FROM community_route_active_lease_renewals
+   WHERE active_lease_renewal_id = attempt_record.active_lease_renewal_id
+   FOR SHARE;
+  SELECT * INTO snapshot_record
+    FROM community_route_active_lease_renewal_evidence_snapshots
+   WHERE evidence_ref = NEW.evidence_ref
+     AND active_lease_renewal_attempt_id = NEW.active_lease_renewal_attempt_id
+   FOR SHARE;
+  SELECT * INTO binding_record
+    FROM community_canonical_route_bindings
+   WHERE route_binding_id = renewal_record.route_binding_id
+     AND community_id = renewal_record.community_id FOR UPDATE;
+  IF attempt_record.active_lease_renewal_attempt_id IS NULL
+    OR renewal_record.active_lease_renewal_id IS NULL
+    OR snapshot_record.evidence_ref IS NULL
+    OR attempt_record.state <> 'consumed'
+    OR attempt_record.consumption_kind <> 'verified'
+    OR renewal_record.status <> 'completed'
+    OR NEW.family IS DISTINCT FROM snapshot_record.family
+    OR NEW.root_label IS DISTINCT FROM snapshot_record.root_label
+    OR NEW.root_label_display IS DISTINCT FROM snapshot_record.root_label_display
+    OR NEW.path_segment IS DISTINCT FROM snapshot_record.path_segment
+    OR NEW.requirement_hash IS DISTINCT FROM snapshot_record.requirement_hash
+    OR NEW.provider_id IS DISTINCT FROM snapshot_record.provider_id
+    OR NEW.provider_binding_hash IS DISTINCT FROM snapshot_record.provider_binding_hash
+    OR NEW.provider_configuration_version
+         IS DISTINCT FROM snapshot_record.provider_configuration_version
+    OR NEW.provider_identity_digest IS DISTINCT FROM (
+      SELECT provider_identity_digest
+        FROM community_route_ownership_evidence
+       WHERE evidence_ref = snapshot_record.expected_verified_evidence_ref
+    )
+    OR NEW.evidence_digest IS DISTINCT FROM snapshot_record.evidence_digest
+    OR NEW.evidence_receipt_id IS NOT NULL
+    OR NEW.binding_generation IS DISTINCT FROM snapshot_record.binding_generation
+    OR NEW.verified_at IS DISTINCT FROM snapshot_record.observed_at
+    OR NEW.expires_at IS DISTINCT FROM snapshot_record.expires_at
+    OR binding_record.binding_generation IS DISTINCT FROM NEW.binding_generation
+    OR binding_record.verified_evidence_ref IS DISTINCT FROM NEW.evidence_ref
+    OR binding_record.ownership_status <> 'verified'
+    OR binding_record.route_lifecycle_status <> 'active'
+  THEN
+    RAISE EXCEPTION 'route ownership evidence does not match active renewal authority';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION validate_community_route_attachment_attempt_insert() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -11261,6 +12004,80 @@ BEGIN
     OR NEW.requirement_kind <> attempt_record.requirement_kind
     OR NEW.generation <> attempt_record.generation THEN
     RAISE EXCEPTION 'route attachment result does not match its immutable ceremony';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION validate_community_route_hns_control_identity_insert() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  creation_snapshot namespace_ownership_evidence_snapshots%ROWTYPE;
+  recovery_snapshot community_route_revalidation_evidence_snapshots%ROWTYPE;
+  renewal_snapshot community_route_active_lease_renewal_evidence_snapshots%ROWTYPE;
+  matching_snapshots INTEGER := 0;
+BEGIN
+  SELECT * INTO creation_snapshot
+    FROM namespace_ownership_evidence_snapshots
+   WHERE evidence_ref = NEW.evidence_ref
+   FOR SHARE;
+  IF FOUND THEN
+    matching_snapshots := matching_snapshots + 1;
+    IF creation_snapshot.root_label <> NEW.root_label
+      OR creation_snapshot.ownership_source <> NEW.ownership_source
+      OR creation_snapshot.challenge_name <> NEW.txt_name
+      OR creation_snapshot.challenge_value_sha256 <> NEW.expected_txt_value_sha256
+      OR creation_snapshot.provider_evidence_ref <> NEW.provider_evidence_ref
+      OR creation_snapshot.observation ->> 'control_identity_digest'
+           IS DISTINCT FROM NEW.control_identity_digest
+      OR creation_snapshot.observation ->> 'chain_authority_digest'
+           IS DISTINCT FROM NEW.chain_authority_digest
+    THEN
+      RAISE EXCEPTION 'HNS control identity does not match creation evidence';
+    END IF;
+  END IF;
+
+  SELECT * INTO recovery_snapshot
+    FROM community_route_revalidation_evidence_snapshots
+   WHERE evidence_ref = NEW.evidence_ref
+   FOR SHARE;
+  IF FOUND THEN
+    matching_snapshots := matching_snapshots + 1;
+    IF recovery_snapshot.root_label <> NEW.root_label
+      OR recovery_snapshot.ownership_source <> NEW.ownership_source
+      OR recovery_snapshot.challenge_name <> NEW.txt_name
+      OR recovery_snapshot.challenge_value_sha256 <> NEW.expected_txt_value_sha256
+      OR recovery_snapshot.provider_evidence_ref <> NEW.provider_evidence_ref
+      OR recovery_snapshot.observation ->> 'control_identity_digest'
+           IS DISTINCT FROM NEW.control_identity_digest
+      OR recovery_snapshot.observation ->> 'chain_authority_digest'
+           IS DISTINCT FROM NEW.chain_authority_digest
+    THEN
+      RAISE EXCEPTION 'HNS control identity does not match recovery evidence';
+    END IF;
+  END IF;
+
+  SELECT * INTO renewal_snapshot
+    FROM community_route_active_lease_renewal_evidence_snapshots
+   WHERE evidence_ref = NEW.evidence_ref
+   FOR SHARE;
+  IF FOUND THEN
+    matching_snapshots := matching_snapshots + 1;
+    IF renewal_snapshot.root_label <> NEW.root_label
+      OR renewal_snapshot.ownership_source <> NEW.ownership_source
+      OR renewal_snapshot.txt_name <> NEW.txt_name
+      OR renewal_snapshot.expected_txt_value_sha256 <> NEW.expected_txt_value_sha256
+      OR renewal_snapshot.provider_evidence_ref <> NEW.provider_evidence_ref
+      OR renewal_snapshot.control_identity_digest <> NEW.control_identity_digest
+      OR renewal_snapshot.chain_authority_digest <> NEW.chain_authority_digest
+    THEN
+      RAISE EXCEPTION 'HNS control identity does not match renewal evidence';
+    END IF;
+  END IF;
+
+  IF matching_snapshots <> 1 THEN
+    RAISE EXCEPTION 'HNS control identity requires exactly one immutable evidence snapshot';
   END IF;
   RETURN NEW;
 END;
@@ -12090,6 +12907,109 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION validate_hns_active_lease_renewal_terminal_document(document_text text, expected_hash text, expected_version text, expected_renewal_id text, expected_attempt_id text, expected_binding_id text, expected_generation bigint, expected_idempotency_key text, expected_request_hash text, expected_outcome text) RETURNS boolean
+    LANGUAGE plpgsql IMMUTABLE
+    AS $_$
+DECLARE
+  document JSONB;
+  canonical_document TEXT;
+  evidence_ref JSONB;
+  evidence_digest JSONB;
+  provider_hash JSONB;
+  ownership JSONB;
+  lifecycle JSONB;
+BEGIN
+  IF document_text IS NULL OR octet_length(document_text) NOT BETWEEN 1 AND 8192 THEN
+    RETURN FALSE;
+  END IF;
+  document := document_text::jsonb;
+  IF jsonb_typeof(document) <> 'array' OR jsonb_array_length(document) <> 13 THEN
+    RETURN FALSE;
+  END IF;
+  SELECT '[' || string_agg(value::TEXT, ',' ORDER BY ordinal) || ']'
+    INTO canonical_document
+    FROM jsonb_array_elements(document) WITH ORDINALITY AS item(value, ordinal);
+  IF canonical_document IS DISTINCT FROM document_text
+    OR encode(sha256(convert_to(document_text, 'UTF8')), 'hex') IS DISTINCT FROM expected_hash
+    OR document ->> 0 IS DISTINCT FROM expected_version
+    OR document ->> 1 IS DISTINCT FROM expected_renewal_id
+    OR document ->> 2 IS DISTINCT FROM expected_attempt_id
+    OR document ->> 3 IS DISTINCT FROM expected_binding_id
+    OR jsonb_typeof(document -> 4) <> 'number'
+    OR (document ->> 4)::bigint IS DISTINCT FROM expected_generation
+    OR document ->> 5 IS DISTINCT FROM expected_idempotency_key
+    OR document ->> 6 IS DISTINCT FROM expected_request_hash
+    OR document ->> 7 IS DISTINCT FROM expected_outcome
+  THEN
+    RETURN FALSE;
+  END IF;
+
+  evidence_ref := document -> 8;
+  evidence_digest := document -> 9;
+  provider_hash := document -> 10;
+  ownership := document -> 11;
+  lifecycle := document -> 12;
+
+  IF expected_version = 'pirate-hns-active-lease-renewal-result-v3'
+    AND expected_outcome <> 'owner_authoritative_source_ineligible'
+  THEN RETURN FALSE; END IF;
+  IF expected_version = 'pirate-hns-active-lease-renewal-result-v2'
+    AND expected_outcome = 'owner_authoritative_source_ineligible'
+  THEN RETURN FALSE; END IF;
+
+  IF expected_outcome = 'verified' THEN
+    RETURN jsonb_typeof(evidence_ref) = 'string'
+      AND jsonb_typeof(evidence_digest) = 'string'
+      AND evidence_digest #>> '{}' ~ '^[0-9a-f]{64}$'
+      AND jsonb_typeof(provider_hash) = 'string'
+      AND provider_hash #>> '{}' ~ '^[0-9a-f]{64}$'
+      AND ownership #>> '{}' = 'verified'
+      AND lifecycle #>> '{}' = 'active';
+  END IF;
+  IF expected_outcome IN ('root_absent', 'root_inactive') THEN
+    RETURN jsonb_typeof(evidence_ref) = 'null'
+      AND jsonb_typeof(evidence_digest) = 'null'
+      AND jsonb_typeof(provider_hash) = 'string'
+      AND ownership #>> '{}' = 'revoked'
+      AND lifecycle #>> '{}' = 'suspended';
+  END IF;
+  IF expected_outcome IN (
+    'txt_absent', 'txt_value_mismatch', 'control_identity_changed',
+    'chain_authority_changed', 'owner_authoritative_source_ineligible'
+  ) THEN
+    RETURN jsonb_typeof(evidence_ref) = 'null'
+      AND jsonb_typeof(evidence_digest) = 'null'
+      AND jsonb_typeof(provider_hash) = 'string'
+      AND ownership #>> '{}' = 'disputed'
+      AND lifecycle #>> '{}' = 'suspended';
+  END IF;
+  IF expected_outcome = 'expiry_horizon_insufficient' THEN
+    RETURN jsonb_typeof(evidence_ref) = 'null'
+      AND jsonb_typeof(evidence_digest) = 'null'
+      AND jsonb_typeof(provider_hash) = 'string'
+      AND ownership #>> '{}' = 'expired'
+      AND lifecycle #>> '{}' = 'suspended';
+  END IF;
+  IF expected_outcome = 'renewal_evidence_ineligible' THEN
+    RETURN jsonb_typeof(evidence_ref) = 'null'
+      AND jsonb_typeof(evidence_digest) = 'null'
+      AND jsonb_typeof(provider_hash) = 'null'
+      AND jsonb_typeof(ownership) = 'null'
+      AND jsonb_typeof(lifecycle) = 'null';
+  END IF;
+  IF expected_outcome IN ('lease_expired_before_commit', 'stale_cas') THEN
+    RETURN jsonb_typeof(evidence_ref) = 'null'
+      AND jsonb_typeof(evidence_digest) = 'null'
+      AND jsonb_typeof(provider_hash) IN ('null', 'string')
+      AND jsonb_typeof(ownership) = 'null'
+      AND jsonb_typeof(lifecycle) = 'null';
+  END IF;
+  RETURN FALSE;
+EXCEPTION WHEN others THEN
+  RETURN FALSE;
+END;
+$_$;
+
 CREATE FUNCTION validate_hns_control_observer_snapshot_complete() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -12294,6 +13214,350 @@ BEGIN
   RETURN NEW;
 END;
 $$;
+
+CREATE FUNCTION validate_hns_owner_recovery_attempt_coherence() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  session_record community_route_revalidation_sessions%ROWTYPE;
+  attempt_record community_route_revalidation_completion_attempts%ROWTYPE;
+  binding_record community_canonical_route_bindings%ROWTYPE;
+  consumed_count INTEGER;
+  leased_count INTEGER;
+BEGIN
+  SELECT * INTO session_record FROM community_route_revalidation_sessions
+   WHERE revalidation_session_id = NEW.revalidation_session_id;
+  SELECT count(*) FILTER (WHERE state = 'consumed')::integer,
+         count(*) FILTER (WHERE state = 'leased')::integer
+    INTO consumed_count, leased_count
+    FROM community_route_revalidation_completion_attempts
+   WHERE revalidation_session_id = NEW.revalidation_session_id
+     AND operation_mode = 'same_root_recovery';
+  IF session_record.status = 'pending' AND consumed_count <> 0 THEN
+    RAISE EXCEPTION 'pending owner recovery cannot have a consumed attempt';
+  END IF;
+  IF session_record.status IN ('completed', 'failed', 'expired')
+    AND (consumed_count <> 1 OR leased_count <> 0)
+  THEN RAISE EXCEPTION 'terminal owner recovery requires one consumed attempt'; END IF;
+  IF session_record.status IN ('completed', 'failed', 'expired') THEN
+    SELECT * INTO attempt_record
+      FROM community_route_revalidation_completion_attempts
+     WHERE revalidation_session_id = NEW.revalidation_session_id
+       AND operation_mode = 'same_root_recovery'
+       AND state = 'consumed';
+    SELECT * INTO binding_record
+      FROM community_canonical_route_bindings
+     WHERE route_binding_id = session_record.route_binding_id
+       AND community_id = session_record.community_id;
+    IF attempt_record.route_revalidation_attempt_id IS NULL
+      OR (
+        attempt_record.consumption_kind = 'verified'
+        AND session_record.status <> 'completed'
+      )
+      OR (
+        attempt_record.consumption_kind = 'session_expired'
+        AND session_record.status <> 'expired'
+      )
+      OR (
+        attempt_record.consumption_kind NOT IN ('verified', 'session_expired')
+        AND session_record.status <> 'failed'
+      )
+    THEN
+      RAISE EXCEPTION 'terminal owner recovery status does not match its consumed attempt';
+    END IF;
+    IF attempt_record.consumption_kind <> 'stale_cas'
+      AND (
+        binding_record.route_binding_id IS NULL
+        OR binding_record.binding_generation
+             IS DISTINCT FROM session_record.expected_binding_generation + 1
+        OR (
+          attempt_record.consumption_kind = 'verified'
+          AND (
+            binding_record.verified_evidence_ref
+                 IS DISTINCT FROM attempt_record.evidence_ref
+            OR binding_record.ownership_status <> 'verified'
+            OR binding_record.route_lifecycle_status <> 'active'
+          )
+        )
+        OR (
+          attempt_record.consumption_kind IN ('root_absent', 'root_inactive')
+          AND (
+            binding_record.verified_evidence_ref IS NOT NULL
+            OR binding_record.ownership_status <> 'revoked'
+            OR binding_record.route_lifecycle_status <> 'suspended'
+          )
+        )
+        OR (
+          attempt_record.consumption_kind IN (
+            'expiry_horizon_insufficient', 'session_expired'
+          )
+          AND (
+            binding_record.verified_evidence_ref IS NOT NULL
+            OR binding_record.ownership_status <> 'expired'
+            OR binding_record.route_lifecycle_status <> 'suspended'
+          )
+        )
+        OR (
+          attempt_record.consumption_kind = 'owner_authoritative_source_ineligible'
+          AND (
+            binding_record.verified_evidence_ref IS NOT NULL
+            OR binding_record.ownership_status <> 'disputed'
+            OR binding_record.route_lifecycle_status <> 'suspended'
+          )
+        )
+      )
+    THEN
+      RAISE EXCEPTION 'terminal owner recovery binding does not match its consumed attempt';
+    END IF;
+  END IF;
+  RETURN NULL;
+END;
+$$;
+
+CREATE FUNCTION validate_hns_owner_recovery_session_insert() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  db_now TIMESTAMPTZ := clock_timestamp();
+  reservation_record community_route_revalidation_start_reservations%ROWTYPE;
+  payload JSONB;
+BEGIN
+  NEW.created_at := db_now;
+  NEW.updated_at := db_now;
+  SELECT * INTO reservation_record
+    FROM community_route_revalidation_start_reservations
+   WHERE route_revalidation_id = NEW.route_revalidation_id
+     AND revalidation_session_id = NEW.revalidation_session_id
+     AND fence_token = NEW.start_fence_token FOR UPDATE;
+  payload := NEW.start_presentation -> 'payload';
+  IF reservation_record.route_revalidation_id IS NULL
+    OR reservation_record.state NOT IN ('acquired', 'finalized')
+    OR reservation_record.lease_expires_at <= db_now
+    OR reservation_record.operation_mode <> 'same_root_recovery'
+    OR reservation_record.community_id IS DISTINCT FROM NEW.community_id
+    OR reservation_record.route_binding_id IS DISTINCT FROM NEW.route_binding_id
+    OR reservation_record.principal_id IS DISTINCT FROM NEW.principal_id
+    OR reservation_record.expected_binding_generation
+         IS DISTINCT FROM NEW.expected_binding_generation
+    OR reservation_record.requirement_hash IS DISTINCT FROM NEW.requirement_hash
+    OR reservation_record.start_request_hash IS DISTINCT FROM NEW.start_request_hash
+    OR reservation_record.provider_id IS DISTINCT FROM NEW.provider_id
+    OR reservation_record.provider_binding_hash IS DISTINCT FROM NEW.provider_binding_hash
+    OR reservation_record.provider_configuration_kind
+         IS DISTINCT FROM NEW.provider_configuration_kind
+    OR reservation_record.provider_configuration_reference
+         IS DISTINCT FROM NEW.provider_configuration_reference
+    OR reservation_record.provider_configuration_version
+         IS DISTINCT FROM NEW.provider_configuration_version
+    OR reservation_record.environment IS DISTINCT FROM NEW.environment
+    OR reservation_record.family IS DISTINCT FROM NEW.family
+    OR reservation_record.root_label IS DISTINCT FROM NEW.root_label
+    OR reservation_record.root_label_display IS DISTINCT FROM NEW.root_label_display
+    OR reservation_record.path_segment IS DISTINCT FROM NEW.path_segment
+    OR reservation_record.start_idempotency_key IS DISTINCT FROM NEW.start_idempotency_key
+    OR reservation_record.recovery_authority_kind
+         IS DISTINCT FROM NEW.recovery_authority_kind
+    OR reservation_record.recovery_authority_reference
+         IS DISTINCT FROM NEW.recovery_authority_reference
+    OR reservation_record.public_start_hash IS DISTINCT FROM NEW.public_start_hash
+    OR reservation_record.provider_start_hash IS DISTINCT FROM NEW.provider_start_hash
+    OR reservation_record.provider_configuration_digest
+         IS DISTINCT FROM NEW.provider_configuration_digest
+    OR reservation_record.challenge_expires_at IS DISTINCT FROM NEW.challenge_expires_at
+    OR NEW.status <> 'pending'
+    OR NEW.started_at IS DISTINCT FROM NEW.challenge_expires_at - INTERVAL '1 hour'
+    OR NEW.expires_at IS DISTINCT FROM NEW.challenge_expires_at
+    OR NEW.start_presentation ->> 'kind' <> 'embedded_sdk'
+    OR (NEW.start_presentation ->> 'session_id') IS DISTINCT FROM NEW.upstream_session_ref
+    OR NEW.start_presentation ->> 'protocol' <> 'hns-txt-challenge'
+    OR NEW.start_presentation ->> 'version' <> '1'
+    OR payload ->> 'ownership_source' NOT IN (
+      'hns_parent_chain_txt', 'owner_authoritative_dns_txt'
+    )
+    OR (payload ->> 'challenge_name') IS DISTINCT FROM (
+      CASE
+        WHEN payload ->> 'ownership_source' = 'hns_parent_chain_txt'
+          THEN NEW.root_label
+        ELSE '_pirate.' || NEW.root_label
+      END
+    )
+    OR (payload ->> 'challenge_value')
+         IS DISTINCT FROM ('pirate-verification=' || NEW.upstream_session_ref)
+    OR ((payload ->> 'expires_at')::timestamptz) IS DISTINCT FROM NEW.challenge_expires_at
+  THEN
+    RAISE EXCEPTION 'owner recovery session does not match its fenced reservation';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION validate_hns_owner_recovery_snapshot_insert() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  db_now TIMESTAMPTZ := clock_timestamp();
+  session_record community_route_revalidation_sessions%ROWTYPE;
+  attempt_record community_route_revalidation_completion_attempts%ROWTYPE;
+  binding_record community_canonical_route_bindings%ROWTYPE;
+BEGIN
+  NEW.created_at := db_now;
+  SELECT * INTO session_record FROM community_route_revalidation_sessions
+   WHERE route_revalidation_id = NEW.route_revalidation_id
+     AND revalidation_session_id = NEW.revalidation_session_id FOR SHARE;
+  SELECT * INTO attempt_record FROM community_route_revalidation_completion_attempts
+   WHERE route_revalidation_attempt_id = NEW.route_revalidation_attempt_id FOR SHARE;
+  SELECT * INTO binding_record FROM community_canonical_route_bindings
+   WHERE route_binding_id = NEW.route_binding_id
+     AND community_id = NEW.community_id FOR UPDATE;
+  IF session_record.revalidation_session_id IS NULL
+    OR session_record.operation_mode <> 'same_root_recovery'
+    OR session_record.status <> 'completed'
+    OR attempt_record.route_revalidation_attempt_id IS NULL
+    OR attempt_record.operation_mode <> 'same_root_recovery'
+    OR attempt_record.state <> 'consumed'
+    OR attempt_record.consumption_kind <> 'verified'
+    OR attempt_record.evidence_ref IS DISTINCT FROM NEW.evidence_ref
+    OR attempt_record.fence_token IS DISTINCT FROM NEW.fence_token
+    OR attempt_record.provider_response_sha256 IS DISTINCT FROM NEW.observation_sha256
+    OR attempt_record.target_observation_contract_version
+         IS DISTINCT FROM NEW.observation_contract_version
+    OR attempt_record.target_response_status <> 'verified'
+    OR session_record.community_id IS DISTINCT FROM NEW.community_id
+    OR session_record.route_binding_id IS DISTINCT FROM NEW.route_binding_id
+    OR session_record.principal_id IS DISTINCT FROM NEW.principal_id
+    OR session_record.requirement_hash IS DISTINCT FROM NEW.requirement_hash
+    OR session_record.expected_binding_generation
+         IS DISTINCT FROM NEW.expected_binding_generation
+    OR session_record.expected_verified_evidence_ref IS NOT NULL
+    OR session_record.start_request_hash IS DISTINCT FROM NEW.start_request_hash
+    OR session_record.provider_id IS DISTINCT FROM NEW.provider_id
+    OR session_record.provider_binding_hash IS DISTINCT FROM NEW.provider_binding_hash
+    OR session_record.provider_configuration_kind
+         IS DISTINCT FROM NEW.provider_configuration_kind
+    OR session_record.provider_configuration_reference
+         IS DISTINCT FROM NEW.provider_configuration_reference
+    OR session_record.provider_configuration_version
+         IS DISTINCT FROM NEW.provider_configuration_version
+    OR session_record.provider_configuration_digest
+         IS DISTINCT FROM NEW.provider_configuration_digest
+    OR session_record.protocol_version IS DISTINCT FROM NEW.protocol_version
+    OR session_record.environment IS DISTINCT FROM NEW.environment
+    OR session_record.family IS DISTINCT FROM NEW.family
+    OR session_record.root_label IS DISTINCT FROM NEW.root_label
+    OR session_record.root_label_display IS DISTINCT FROM NEW.root_label_display
+    OR session_record.path_segment IS DISTINCT FROM NEW.path_segment
+    OR session_record.upstream_session_ref IS DISTINCT FROM NEW.upstream_session_ref
+    OR session_record.recovery_authority_kind IS DISTINCT FROM NEW.recovery_authority_kind
+    OR session_record.recovery_authority_reference
+         IS DISTINCT FROM NEW.recovery_authority_reference
+    OR session_record.public_start_hash IS DISTINCT FROM NEW.public_start_hash
+    OR session_record.provider_start_hash IS DISTINCT FROM NEW.provider_start_hash
+    OR session_record.challenge_expires_at IS DISTINCT FROM NEW.challenge_expires_at
+    OR NEW.poll_hash IS DISTINCT FROM attempt_record.completion_request_hash
+    OR binding_record.binding_generation IS DISTINCT FROM NEW.binding_generation
+    OR binding_record.verified_evidence_ref IS DISTINCT FROM NEW.evidence_ref
+    OR binding_record.ownership_status <> 'verified'
+    OR binding_record.route_lifecycle_status <> 'active'
+    OR NEW.observed_at > db_now OR NEW.expires_at <= db_now
+    OR encode(sha256(NEW.raw_response_bytes), 'hex') IS DISTINCT FROM NEW.observation_sha256
+    OR NEW.observation ->> 'status' <> 'verified'
+    OR NEW.observation ->> 'observation_contract_version'
+         IS DISTINCT FROM NEW.observation_contract_version
+    OR NEW.observation ->> 'ownership_source' IS DISTINCT FROM NEW.ownership_source
+    OR NEW.observation ->> 'challenge_name' IS DISTINCT FROM NEW.challenge_name
+    OR NEW.observation ->> 'expected_txt_value_sha256'
+         IS DISTINCT FROM NEW.challenge_value_sha256
+    OR NEW.observation ->> 'provider_evidence_ref'
+         IS DISTINCT FROM NEW.provider_evidence_ref
+  THEN
+    RAISE EXCEPTION 'owner recovery snapshot does not match its committed authority';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION validate_hns_owner_recovery_terminal_document(document_text text, expected_hash text, expected_version text, expected_recovery_id text, expected_session_id text, expected_attempt_id text, expected_binding_id text, expected_generation bigint, expected_idempotency_key text, expected_poll_hash text, expected_outcome text) RETURNS boolean
+    LANGUAGE plpgsql IMMUTABLE
+    AS $_$
+DECLARE
+  document JSONB;
+  canonical_document TEXT;
+BEGIN
+  IF document_text IS NULL OR octet_length(document_text) NOT BETWEEN 1 AND 8192 THEN
+    RETURN FALSE;
+  END IF;
+  document := document_text::jsonb;
+  IF jsonb_typeof(document) <> 'array' OR jsonb_array_length(document) <> 14 THEN
+    RETURN FALSE;
+  END IF;
+  SELECT '[' || string_agg(value::TEXT, ',' ORDER BY ordinal) || ']'
+    INTO canonical_document
+    FROM jsonb_array_elements(document) WITH ORDINALITY AS item(value, ordinal);
+  IF canonical_document IS DISTINCT FROM document_text
+    OR encode(sha256(convert_to(document_text, 'UTF8')), 'hex') IS DISTINCT FROM expected_hash
+    OR document ->> 0 IS DISTINCT FROM expected_version
+    OR document ->> 1 IS DISTINCT FROM expected_recovery_id
+    OR document ->> 2 IS DISTINCT FROM expected_session_id
+    OR document ->> 3 IS DISTINCT FROM expected_attempt_id
+    OR document ->> 4 IS DISTINCT FROM expected_binding_id
+    OR jsonb_typeof(document -> 5) <> 'number'
+    OR (document ->> 5)::bigint IS DISTINCT FROM expected_generation
+    OR document ->> 6 IS DISTINCT FROM expected_idempotency_key
+    OR document ->> 7 IS DISTINCT FROM expected_poll_hash
+    OR document ->> 8 IS DISTINCT FROM expected_outcome
+  THEN RETURN FALSE; END IF;
+
+  IF expected_version = 'pirate-hns-owner-recovery-result-v2'
+    AND expected_outcome <> 'owner_authoritative_source_ineligible'
+  THEN RETURN FALSE; END IF;
+  IF expected_version = 'pirate-hns-owner-recovery-result-v1'
+    AND expected_outcome = 'owner_authoritative_source_ineligible'
+  THEN RETURN FALSE; END IF;
+
+  IF expected_outcome = 'verified' THEN
+    RETURN jsonb_typeof(document -> 9) = 'string'
+      AND jsonb_typeof(document -> 10) = 'string'
+      AND document ->> 10 ~ '^[0-9a-f]{64}$'
+      AND jsonb_typeof(document -> 11) = 'string'
+      AND document ->> 11 ~ '^[0-9a-f]{64}$'
+      AND document ->> 12 = 'verified' AND document ->> 13 = 'active';
+  END IF;
+  IF expected_outcome IN ('root_absent', 'root_inactive') THEN
+    RETURN jsonb_typeof(document -> 9) = 'null'
+      AND jsonb_typeof(document -> 10) = 'null'
+      AND jsonb_typeof(document -> 11) = 'string'
+      AND document ->> 12 = 'revoked' AND document ->> 13 = 'suspended';
+  END IF;
+  IF expected_outcome = 'expiry_horizon_insufficient' THEN
+    RETURN jsonb_typeof(document -> 9) = 'null'
+      AND jsonb_typeof(document -> 10) = 'null'
+      AND jsonb_typeof(document -> 11) = 'string'
+      AND document ->> 12 = 'expired' AND document ->> 13 = 'suspended';
+  END IF;
+  IF expected_outcome = 'owner_authoritative_source_ineligible' THEN
+    RETURN jsonb_typeof(document -> 9) = 'null'
+      AND jsonb_typeof(document -> 10) = 'null'
+      AND jsonb_typeof(document -> 11) = 'string'
+      AND document ->> 12 = 'disputed' AND document ->> 13 = 'suspended';
+  END IF;
+  IF expected_outcome = 'session_expired' THEN
+    RETURN jsonb_typeof(document -> 9) = 'null'
+      AND jsonb_typeof(document -> 10) = 'null'
+      AND jsonb_typeof(document -> 11) = 'null'
+      AND document ->> 12 = 'expired' AND document ->> 13 = 'suspended';
+  END IF;
+  IF expected_outcome = 'stale_cas' THEN
+    RETURN jsonb_typeof(document -> 9) = 'null'
+      AND jsonb_typeof(document -> 10) = 'null'
+      AND jsonb_typeof(document -> 11) IN ('null', 'string')
+      AND jsonb_typeof(document -> 12) = 'null'
+      AND jsonb_typeof(document -> 13) = 'null';
+  END IF;
+  RETURN FALSE;
+EXCEPTION WHEN others THEN
+  RETURN FALSE;
+END;
+$_$;
 
 CREATE FUNCTION validate_media_alignment_insert() RETURNS trigger
     LANGUAGE plpgsql
@@ -15493,6 +16757,10 @@ CREATE TABLE community_creation_ceremony_results (
     namespace_session_id text,
     completion_attempt_id text,
     submission_channel text,
+    target_observation_contract_version text,
+    target_response_status text,
+    provider_response_sha256 text,
+    raw_provider_response_bytes bytea,
     CONSTRAINT community_creation_ceremony_resu_provider_identity_digest_check CHECK (((provider_identity_digest IS NULL) OR (provider_identity_digest ~ '^[0-9a-f]{64}$'::text))),
     CONSTRAINT community_creation_ceremony_results_callback_request_hash_check CHECK ((callback_request_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT community_creation_ceremony_results_evidence_digest_check CHECK (((evidence_digest IS NULL) OR (evidence_digest ~ '^[0-9a-f]{64}$'::text))),
@@ -15505,6 +16773,7 @@ CREATE TABLE community_creation_ceremony_results (
     CONSTRAINT community_creation_ceremony_results_requirement_kind_check CHECK ((requirement_kind = ANY (ARRAY['human_identity'::text, 'namespace_ownership'::text]))),
     CONSTRAINT community_creation_ceremony_results_result_hash_check CHECK ((result_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT community_creation_ceremony_results_submission_channel_check CHECK (((submission_channel IS NULL) OR (submission_channel = 'poll_result'::text))),
+    CONSTRAINT community_creation_ceremony_results_target_response_shape CHECK ((((target_observation_contract_version IS NULL) AND (target_response_status IS NULL) AND (provider_response_sha256 IS NULL) AND (raw_provider_response_bytes IS NULL)) OR ((requirement_kind = 'namespace_ownership'::text) AND (outcome_status = 'failed'::text) AND (target_observation_contract_version = 'pirate-hns-target-observation-v3'::text) AND (target_response_status = ANY (ARRAY['rejected'::text, 'ineligible'::text])) AND (provider_response_sha256 ~ '^[0-9a-f]{64}$'::text) AND ((octet_length(raw_provider_response_bytes) >= 1) AND (octet_length(raw_provider_response_bytes) <= 1048576)) AND (encode(sha256(raw_provider_response_bytes), 'hex'::text) = provider_response_sha256)))),
     CONSTRAINT community_creation_ceremony_results_time_order CHECK (((created_at >= terminal_at) AND ((satisfied_at IS NULL) OR (satisfied_at = terminal_at))))
 );
 
@@ -16273,6 +17542,174 @@ CREATE TABLE community_role_assignments (
     CONSTRAINT community_role_assignments_time_order CHECK (((deactivated_at IS NULL) OR (deactivated_at >= assigned_at)))
 );
 
+CREATE TABLE community_route_active_lease_renewal_attempts (
+    active_lease_renewal_attempt_id text NOT NULL,
+    active_lease_renewal_id text NOT NULL,
+    route_binding_id text NOT NULL,
+    expected_binding_generation bigint NOT NULL,
+    attempt_number integer NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    evidence_ref text NOT NULL,
+    observation_id text NOT NULL,
+    state text DEFAULT 'leased'::text NOT NULL,
+    fence_token bigint DEFAULT 1 NOT NULL,
+    lease_expires_at timestamp with time zone NOT NULL,
+    consumption_kind text,
+    terminal_result_version text,
+    terminal_result_document text,
+    result_hash text,
+    target_observation_contract_version text,
+    target_response_status text,
+    provider_response_sha256 text,
+    raw_provider_response_bytes bytea,
+    terminal_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT community_route_active_lease_expected_binding_generation_check1 CHECK ((expected_binding_generation > 0)),
+    CONSTRAINT community_route_active_lease_ren_provider_response_sha256_check CHECK ((provider_response_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_active_lease_renewal_att_consumption_kind_check CHECK ((consumption_kind = ANY (ARRAY['verified'::text, 'root_absent'::text, 'root_inactive'::text, 'txt_absent'::text, 'txt_value_mismatch'::text, 'control_identity_changed'::text, 'chain_authority_changed'::text, 'expiry_horizon_insufficient'::text, 'renewal_evidence_ineligible'::text, 'owner_authoritative_source_ineligible'::text, 'lease_expired_before_commit'::text, 'stale_cas'::text]))),
+    CONSTRAINT community_route_active_lease_renewal_attem_attempt_number_check CHECK (((attempt_number >= 1) AND (attempt_number <= 3))),
+    CONSTRAINT community_route_active_lease_renewal_attempt_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_active_lease_renewal_attempts_fence_token_check CHECK ((fence_token > 0)),
+    CONSTRAINT community_route_active_lease_renewal_attempts_identity_shape CHECK (((btrim(active_lease_renewal_attempt_id) = active_lease_renewal_attempt_id) AND ((octet_length(active_lease_renewal_attempt_id) >= 1) AND (octet_length(active_lease_renewal_attempt_id) <= 256)) AND (btrim(idempotency_key) = idempotency_key) AND ((octet_length(idempotency_key) >= 1) AND (octet_length(idempotency_key) <= 256)) AND (btrim(evidence_ref) = evidence_ref) AND ((octet_length(evidence_ref) >= 1) AND (octet_length(evidence_ref) <= 512)) AND (btrim(observation_id) = observation_id) AND ((octet_length(observation_id) >= 1) AND (octet_length(observation_id) <= 256)))),
+    CONSTRAINT community_route_active_lease_renewal_attempts_result_hash_check CHECK ((result_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_active_lease_renewal_attempts_result_shape CHECK ((((state = ANY (ARRAY['leased'::text, 'released'::text])) AND (consumption_kind IS NULL) AND (terminal_result_version IS NULL) AND (terminal_result_document IS NULL) AND (result_hash IS NULL) AND (target_observation_contract_version IS NULL) AND (target_response_status IS NULL) AND (provider_response_sha256 IS NULL) AND (raw_provider_response_bytes IS NULL) AND (terminal_at IS NULL)) OR ((state = 'consumed'::text) AND (consumption_kind IS NOT NULL) AND (terminal_result_version = ANY (ARRAY['pirate-hns-active-lease-renewal-result-v2'::text, 'pirate-hns-active-lease-renewal-result-v3'::text])) AND (terminal_result_document IS NOT NULL) AND (result_hash IS NOT NULL) AND (terminal_at IS NOT NULL) AND (((provider_response_sha256 IS NULL) AND (raw_provider_response_bytes IS NULL) AND (target_observation_contract_version IS NULL) AND (target_response_status IS NULL)) OR ((provider_response_sha256 IS NOT NULL) AND ((octet_length(raw_provider_response_bytes) >= 1) AND (octet_length(raw_provider_response_bytes) <= 1048576)) AND (encode(sha256(raw_provider_response_bytes), 'hex'::text) = provider_response_sha256) AND (target_observation_contract_version = ANY (ARRAY['pirate-hns-active-lease-renewal-response-v1'::text, 'pirate-hns-active-lease-renewal-response-v2'::text])) AND (target_response_status = ANY (ARRAY['verified'::text, 'rejected'::text, 'ineligible'::text]))))))),
+    CONSTRAINT community_route_active_lease_renewal_attempts_state_check CHECK ((state = ANY (ARRAY['leased'::text, 'released'::text, 'consumed'::text]))),
+    CONSTRAINT community_route_active_lease_renewal_attempts_time_order CHECK (((updated_at >= created_at) AND ((terminal_at IS NULL) OR (terminal_at >= created_at))))
+);
+
+CREATE TABLE community_route_active_lease_renewal_evidence_snapshots (
+    evidence_ref text NOT NULL,
+    active_lease_renewal_id text NOT NULL,
+    active_lease_renewal_attempt_id text NOT NULL,
+    community_id text NOT NULL,
+    route_binding_id text NOT NULL,
+    principal_kind text DEFAULT 'system'::text NOT NULL,
+    principal_id text NOT NULL,
+    requirement_hash text NOT NULL,
+    expected_binding_generation bigint NOT NULL,
+    binding_generation bigint NOT NULL,
+    expected_verified_evidence_ref text NOT NULL,
+    expected_evidence_digest text NOT NULL,
+    expected_control_identity_digest text NOT NULL,
+    expected_chain_authority_digest text NOT NULL,
+    prior_provider_evidence_ref text NOT NULL,
+    request_hash text NOT NULL,
+    provider_id text NOT NULL,
+    provider_binding_hash text NOT NULL,
+    provider_configuration_kind text NOT NULL,
+    provider_configuration_reference text NOT NULL,
+    provider_configuration_version text NOT NULL,
+    provider_configuration_digest text NOT NULL,
+    protocol_version text DEFAULT 'hns-active-lease-renewal-v1'::text NOT NULL,
+    environment text NOT NULL,
+    family text DEFAULT 'hns'::text NOT NULL,
+    root_label text NOT NULL,
+    root_label_display text NOT NULL,
+    path_segment text NOT NULL,
+    ownership_source text NOT NULL,
+    txt_name text NOT NULL,
+    expected_txt_value_sha256 text NOT NULL,
+    control_identity_digest text NOT NULL,
+    chain_authority_digest text NOT NULL,
+    root_exists boolean NOT NULL,
+    root_control_verified boolean NOT NULL,
+    expiry_horizon_sufficient boolean NOT NULL,
+    chain_network text NOT NULL,
+    chain_anchor_height bigint NOT NULL,
+    chain_anchor_block_hash text NOT NULL,
+    chain_anchor_median_time bigint NOT NULL,
+    expiry_height bigint NOT NULL,
+    observed_at timestamp with time zone NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    provider_evidence_ref text NOT NULL,
+    observer_result_sha256 text NOT NULL,
+    provider_response_sha256 text NOT NULL,
+    evidence_digest text NOT NULL,
+    response_document jsonb NOT NULL,
+    raw_response_bytes bytea NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT community_route_active_lease_expected_binding_generation_check2 CHECK ((expected_binding_generation > 0)),
+    CONSTRAINT community_route_active_lease_expected_chain_authority_di_check1 CHECK ((expected_chain_authority_digest ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_active_lease_expected_control_identity_d_check1 CHECK ((expected_control_identity_digest ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_active_lease_provider_configuration_dige_check1 CHECK ((provider_configuration_digest ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_active_lease_provider_configuration_kind_check1 CHECK ((provider_configuration_kind = ANY (ARRAY['managed'::text, 'dynamic'::text]))),
+    CONSTRAINT community_route_active_lease_re_expected_evidence_digest_check1 CHECK ((expected_evidence_digest ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_active_lease_re_expected_txt_value_sha256_check CHECK ((expected_txt_value_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_active_lease_re_expiry_horizon_sufficient_check CHECK ((expiry_horizon_sufficient IS TRUE)),
+    CONSTRAINT community_route_active_lease_re_provider_response_sha256_check1 CHECK ((provider_response_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_active_lease_ren_chain_anchor_median_time_check CHECK ((chain_anchor_median_time >= 0)),
+    CONSTRAINT community_route_active_lease_rene_chain_anchor_block_hash_check CHECK ((chain_anchor_block_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_active_lease_rene_control_identity_digest_check CHECK ((control_identity_digest ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_active_lease_renew_chain_authority_digest_check CHECK ((chain_authority_digest ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_active_lease_renew_observer_result_sha256_check CHECK ((observer_result_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_active_lease_renew_provider_binding_hash_check1 CHECK ((provider_binding_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_active_lease_renewa_root_control_verified_check CHECK ((root_control_verified IS TRUE)),
+    CONSTRAINT community_route_active_lease_renewal__chain_anchor_height_check CHECK ((chain_anchor_height >= 0)),
+    CONSTRAINT community_route_active_lease_renewal_e_raw_response_bytes_check CHECK (((octet_length(raw_response_bytes) >= 1) AND (octet_length(raw_response_bytes) <= 1048576))),
+    CONSTRAINT community_route_active_lease_renewal_evi_ownership_source_check CHECK ((ownership_source = ANY (ARRAY['hns_parent_chain_txt'::text, 'owner_authoritative_dns_txt'::text]))),
+    CONSTRAINT community_route_active_lease_renewal_evi_protocol_version_check CHECK ((protocol_version = 'hns-active-lease-renewal-v1'::text)),
+    CONSTRAINT community_route_active_lease_renewal_evi_requirement_hash_check CHECK ((requirement_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_active_lease_renewal_evid_evidence_digest_check CHECK ((evidence_digest ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_active_lease_renewal_evide_principal_kind_check CHECK ((principal_kind = 'system'::text)),
+    CONSTRAINT community_route_active_lease_renewal_eviden_expiry_height_check CHECK ((expiry_height >= 0)),
+    CONSTRAINT community_route_active_lease_renewal_evidenc_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_active_lease_renewal_evidence_root_exists_check CHECK ((root_exists IS TRUE)),
+    CONSTRAINT community_route_active_lease_renewal_evidence_snap_family_check CHECK ((family = 'hns'::text)),
+    CONSTRAINT community_route_active_lease_renewal_snapshots_generation CHECK ((binding_generation = (expected_binding_generation + 1))),
+    CONSTRAINT community_route_active_lease_renewal_snapshots_response_shape CHECK (((jsonb_typeof(response_document) = 'object'::text) AND ((response_document ->> 'status'::text) = 'verified'::text) AND (encode(sha256(raw_response_bytes), 'hex'::text) = provider_response_sha256))),
+    CONSTRAINT community_route_active_lease_renewal_snapshots_route_shape CHECK (((is_community_route_root_label('hns'::text, root_label) IS TRUE) AND (is_community_route_root_label_display(root_label_display) IS TRUE) AND (path_segment = ('app.'::text || root_label)) AND (((ownership_source = 'hns_parent_chain_txt'::text) AND (txt_name = root_label)) OR ((ownership_source = 'owner_authoritative_dns_txt'::text) AND (txt_name = ('_pirate.'::text || root_label)))))),
+    CONSTRAINT community_route_active_lease_renewal_snapshots_time_order CHECK (((expires_at > observed_at) AND (created_at >= observed_at)))
+);
+
+CREATE TABLE community_route_active_lease_renewals (
+    active_lease_renewal_id text NOT NULL,
+    community_id text NOT NULL,
+    route_binding_id text NOT NULL,
+    principal_kind text DEFAULT 'system'::text NOT NULL,
+    principal_id text NOT NULL,
+    expected_binding_generation bigint NOT NULL,
+    expected_verified_evidence_ref text NOT NULL,
+    expected_evidence_digest text NOT NULL,
+    expected_control_identity_digest text NOT NULL,
+    expected_chain_authority_digest text NOT NULL,
+    prior_provider_evidence_ref text NOT NULL,
+    requirement_hash text NOT NULL,
+    provider_id text NOT NULL,
+    provider_binding_hash text NOT NULL,
+    provider_configuration_kind text NOT NULL,
+    provider_configuration_reference text NOT NULL,
+    provider_configuration_version text NOT NULL,
+    provider_configuration_digest text NOT NULL,
+    protocol_version text DEFAULT 'hns-active-lease-renewal-v1'::text NOT NULL,
+    environment text NOT NULL,
+    family text DEFAULT 'hns'::text NOT NULL,
+    root_label text NOT NULL,
+    root_label_display text NOT NULL,
+    path_segment text NOT NULL,
+    status text DEFAULT 'pending'::text NOT NULL,
+    terminal_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT community_route_active_lease__expected_binding_generation_check CHECK ((expected_binding_generation > 0)),
+    CONSTRAINT community_route_active_lease__provider_configuration_kind_check CHECK ((provider_configuration_kind = ANY (ARRAY['managed'::text, 'dynamic'::text]))),
+    CONSTRAINT community_route_active_lease_expected_chain_authority_dig_check CHECK ((expected_chain_authority_digest ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_active_lease_expected_control_identity_di_check CHECK ((expected_control_identity_digest ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_active_lease_provider_configuration_diges_check CHECK ((provider_configuration_digest ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_active_lease_ren_expected_evidence_digest_check CHECK ((expected_evidence_digest ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_active_lease_renewa_provider_binding_hash_check CHECK ((provider_binding_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_active_lease_renewals_family_check CHECK ((family = 'hns'::text)),
+    CONSTRAINT community_route_active_lease_renewals_identity_shape CHECK (((btrim(active_lease_renewal_id) = active_lease_renewal_id) AND ((octet_length(active_lease_renewal_id) >= 1) AND (octet_length(active_lease_renewal_id) <= 256)) AND (btrim(principal_id) = principal_id) AND ((octet_length(principal_id) >= 1) AND (octet_length(principal_id) <= 256)) AND (btrim(provider_id) = provider_id) AND ((octet_length(provider_id) >= 1) AND (octet_length(provider_id) <= 256)) AND (btrim(provider_configuration_reference) = provider_configuration_reference) AND ((octet_length(provider_configuration_reference) >= 1) AND (octet_length(provider_configuration_reference) <= 512)) AND (btrim(provider_configuration_version) = provider_configuration_version) AND ((octet_length(provider_configuration_version) >= 1) AND (octet_length(provider_configuration_version) <= 128)) AND (btrim(prior_provider_evidence_ref) = prior_provider_evidence_ref) AND ((octet_length(prior_provider_evidence_ref) >= 1) AND (octet_length(prior_provider_evidence_ref) <= 512)))),
+    CONSTRAINT community_route_active_lease_renewals_lifecycle_shape CHECK ((((status = 'pending'::text) AND (terminal_at IS NULL)) OR ((status = ANY (ARRAY['completed'::text, 'failed'::text])) AND (terminal_at IS NOT NULL)))),
+    CONSTRAINT community_route_active_lease_renewals_principal_kind_check CHECK ((principal_kind = 'system'::text)),
+    CONSTRAINT community_route_active_lease_renewals_protocol_version_check CHECK ((protocol_version = 'hns-active-lease-renewal-v1'::text)),
+    CONSTRAINT community_route_active_lease_renewals_requirement_hash_check CHECK ((requirement_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_active_lease_renewals_route_shape CHECK (((is_community_route_root_label('hns'::text, root_label) IS TRUE) AND (is_community_route_root_label_display(root_label_display) IS TRUE) AND (path_segment = ('app.'::text || root_label)))),
+    CONSTRAINT community_route_active_lease_renewals_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'completed'::text, 'failed'::text]))),
+    CONSTRAINT community_route_active_lease_renewals_time_order CHECK (((updated_at >= created_at) AND ((terminal_at IS NULL) OR (terminal_at >= created_at))))
+);
+
 CREATE TABLE community_route_app_host_health (
     route_binding_id text NOT NULL,
     family text DEFAULT 'hns'::text NOT NULL,
@@ -16467,6 +17904,24 @@ CREATE TABLE community_route_authority_grants (
     CONSTRAINT community_route_authority_grants_status_shape CHECK ((((status = 'active'::text) AND (revoked_at IS NULL) AND (revoked_by_user_id IS NULL)) OR ((status = 'revoked'::text) AND (revoked_at IS NOT NULL) AND (revoked_by_user_id IS NOT NULL))))
 );
 
+CREATE TABLE community_route_hns_control_identities (
+    evidence_ref text NOT NULL,
+    ownership_source text NOT NULL,
+    root_label text NOT NULL,
+    txt_name text NOT NULL,
+    expected_txt_value_sha256 text NOT NULL,
+    control_identity_digest text NOT NULL,
+    chain_authority_digest text NOT NULL,
+    provider_evidence_ref text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT community_route_hns_control_ide_expected_txt_value_sha256_check CHECK ((expected_txt_value_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_hns_control_ident_control_identity_digest_check CHECK ((control_identity_digest ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_hns_control_identi_chain_authority_digest_check CHECK ((chain_authority_digest ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_hns_control_identities_identifiers CHECK (((is_community_route_root_label('hns'::text, root_label) IS TRUE) AND (btrim(txt_name) = txt_name) AND ((octet_length(txt_name) >= 1) AND (octet_length(txt_name) <= 255)) AND (txt_name !~ '[[:cntrl:]]'::text) AND (btrim(provider_evidence_ref) = provider_evidence_ref) AND ((octet_length(provider_evidence_ref) >= 1) AND (octet_length(provider_evidence_ref) <= 512)))),
+    CONSTRAINT community_route_hns_control_identities_name_shape CHECK ((((ownership_source = 'hns_parent_chain_txt'::text) AND (txt_name = root_label)) OR ((ownership_source = 'owner_authoritative_dns_txt'::text) AND (txt_name = ('_pirate.'::text || root_label))))),
+    CONSTRAINT community_route_hns_control_identities_ownership_source_check CHECK ((ownership_source = ANY (ARRAY['hns_parent_chain_txt'::text, 'owner_authoritative_dns_txt'::text])))
+);
+
 CREATE TABLE community_route_lifecycle_transitions (
     route_lifecycle_transition_id text NOT NULL,
     version text NOT NULL,
@@ -16534,12 +17989,13 @@ CREATE TABLE community_route_ownership_evidence (
     route_revalidation_attempt_id text,
     route_attachment_ceremony_intent_id text,
     operator_control_promotion_receipt_id text,
+    active_lease_renewal_attempt_id text,
     CONSTRAINT community_route_ownership_eviden_provider_identity_digest_check CHECK ((provider_identity_digest ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT community_route_ownership_evidence_binding_generation_check CHECK ((binding_generation > 0)),
     CONSTRAINT community_route_ownership_evidence_evidence_digest_check CHECK ((evidence_digest ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT community_route_ownership_evidence_family_check CHECK ((family = ANY (ARRAY['hns'::text, 'spaces'::text]))),
     CONSTRAINT community_route_ownership_evidence_identifiers_not_blank CHECK (((btrim(evidence_ref) <> ''::text) AND (evidence_ref = btrim(evidence_ref)) AND (btrim(provider_id) <> ''::text) AND (provider_id = btrim(provider_id)) AND (btrim(provider_configuration_version) <> ''::text) AND (provider_configuration_version = btrim(provider_configuration_version)))),
-    CONSTRAINT community_route_ownership_evidence_origin_shape CHECK ((((origin = 'creation_ceremony'::text) AND (creation_ceremony_intent_id IS NOT NULL) AND (route_revalidation_attempt_id IS NULL) AND (route_attachment_ceremony_intent_id IS NULL) AND (operator_control_promotion_receipt_id IS NULL) AND (verified_by_actor_id IS NOT NULL)) OR ((origin = 'route_revalidation'::text) AND (creation_ceremony_intent_id IS NULL) AND (route_revalidation_attempt_id IS NOT NULL) AND (route_attachment_ceremony_intent_id IS NULL) AND (operator_control_promotion_receipt_id IS NULL) AND (verified_by_actor_id IS NULL)) OR ((origin = 'route_attachment'::text) AND (creation_ceremony_intent_id IS NULL) AND (route_revalidation_attempt_id IS NULL) AND (route_attachment_ceremony_intent_id IS NOT NULL) AND (operator_control_promotion_receipt_id IS NULL) AND (verified_by_actor_id IS NOT NULL)) OR ((origin = 'operator_control_observation'::text) AND (creation_ceremony_intent_id IS NULL) AND (route_revalidation_attempt_id IS NULL) AND (route_attachment_ceremony_intent_id IS NULL) AND (operator_control_promotion_receipt_id IS NOT NULL) AND (verified_by_actor_id IS NULL) AND (family = 'hns'::text)))),
+    CONSTRAINT community_route_ownership_evidence_origin_shape_v2 CHECK ((((origin = 'creation_ceremony'::text) AND (creation_ceremony_intent_id IS NOT NULL) AND (route_revalidation_attempt_id IS NULL) AND (active_lease_renewal_attempt_id IS NULL) AND (route_attachment_ceremony_intent_id IS NULL) AND (operator_control_promotion_receipt_id IS NULL) AND (verified_by_actor_id IS NOT NULL)) OR ((origin = 'route_revalidation'::text) AND (creation_ceremony_intent_id IS NULL) AND (route_revalidation_attempt_id IS NOT NULL) AND (active_lease_renewal_attempt_id IS NULL) AND (route_attachment_ceremony_intent_id IS NULL) AND (operator_control_promotion_receipt_id IS NULL)) OR ((origin = 'active_lease_renewal'::text) AND (creation_ceremony_intent_id IS NULL) AND (route_revalidation_attempt_id IS NULL) AND (active_lease_renewal_attempt_id IS NOT NULL) AND (route_attachment_ceremony_intent_id IS NULL) AND (operator_control_promotion_receipt_id IS NULL) AND (verified_by_actor_id IS NULL) AND (family = 'hns'::text)) OR ((origin = 'route_attachment'::text) AND (creation_ceremony_intent_id IS NULL) AND (route_revalidation_attempt_id IS NULL) AND (active_lease_renewal_attempt_id IS NULL) AND (route_attachment_ceremony_intent_id IS NOT NULL) AND (operator_control_promotion_receipt_id IS NULL) AND (verified_by_actor_id IS NOT NULL)) OR ((origin = 'operator_control_observation'::text) AND (creation_ceremony_intent_id IS NULL) AND (route_revalidation_attempt_id IS NULL) AND (active_lease_renewal_attempt_id IS NULL) AND (route_attachment_ceremony_intent_id IS NULL) AND (operator_control_promotion_receipt_id IS NOT NULL) AND (verified_by_actor_id IS NULL) AND (family = 'hns'::text)))),
     CONSTRAINT community_route_ownership_evidence_provider_binding_hash_check CHECK ((provider_binding_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT community_route_ownership_evidence_requirement_hash_check CHECK ((requirement_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT community_route_ownership_evidence_route_shape CHECK (((is_community_route_root_label(family, root_label) IS TRUE) AND (is_community_route_root_label_display(root_label_display) IS TRUE) AND (path_segment =
@@ -16572,15 +18028,23 @@ CREATE TABLE community_route_revalidation_completion_attempts (
     updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     terminal_result_document text,
     terminal_observed_expires_at timestamp with time zone,
+    operation_mode text DEFAULT 'system_revalidation'::text NOT NULL,
+    observation_id text,
+    terminal_result_version text,
+    target_observation_contract_version text,
+    target_response_status text,
+    provider_response_sha256 text,
+    raw_provider_response_bytes bytea,
     CONSTRAINT community_route_revalidation_attempts_identifiers_not_blank CHECK (((btrim(route_revalidation_attempt_id) <> ''::text) AND (route_revalidation_attempt_id = btrim(route_revalidation_attempt_id)) AND (octet_length(route_revalidation_attempt_id) <= 256) AND (btrim(idempotency_key) <> ''::text) AND (idempotency_key = btrim(idempotency_key)) AND (octet_length(idempotency_key) <= 256) AND (btrim(evidence_ref) <> ''::text) AND (evidence_ref = btrim(evidence_ref)) AND (octet_length(evidence_ref) <= 512))),
-    CONSTRAINT community_route_revalidation_attempts_result_shape CHECK ((((state = 'consumed'::text) AND (consumption_kind IS NOT NULL) AND (terminal_at IS NOT NULL) AND (((consumption_kind = 'challenge_mismatch'::text) AND (result_hash IS NULL) AND (terminal_result_document IS NULL)) OR ((result_hash IS NOT NULL) AND (terminal_result_document IS NOT NULL) AND (((consumption_kind = 'database_time_expired'::text) AND (terminal_observed_expires_at IS NOT NULL)) OR ((consumption_kind <> 'database_time_expired'::text) AND (terminal_observed_expires_at IS NULL)))))) OR ((state = ANY (ARRAY['leased'::text, 'released'::text])) AND (consumption_kind IS NULL) AND (result_hash IS NULL) AND (terminal_result_document IS NULL) AND (terminal_observed_expires_at IS NULL) AND (terminal_at IS NULL)))),
+    CONSTRAINT community_route_revalidation_attempts_operation_branch CHECK ((((operation_mode = 'system_revalidation'::text) AND (observation_id IS NULL) AND ((terminal_result_version IS NULL) OR (terminal_result_version = 'pirate-hns-route-revalidation-result-v1'::text))) OR ((operation_mode = 'same_root_recovery'::text) AND (btrim(observation_id) = observation_id) AND ((octet_length(observation_id) >= 1) AND (octet_length(observation_id) <= 256)) AND ((terminal_result_version IS NULL) OR (terminal_result_version = ANY (ARRAY['pirate-hns-owner-recovery-result-v1'::text, 'pirate-hns-owner-recovery-result-v2'::text])))))),
+    CONSTRAINT community_route_revalidation_attempts_result_shape_v2 CHECK ((((state = ANY (ARRAY['leased'::text, 'released'::text])) AND (consumption_kind IS NULL) AND (result_hash IS NULL) AND (terminal_result_document IS NULL) AND (terminal_result_version IS NULL) AND (terminal_observed_expires_at IS NULL) AND (terminal_at IS NULL) AND (target_observation_contract_version IS NULL) AND (target_response_status IS NULL) AND (provider_response_sha256 IS NULL) AND (raw_provider_response_bytes IS NULL)) OR ((state = 'consumed'::text) AND (consumption_kind IS NOT NULL) AND (terminal_at IS NOT NULL) AND (((consumption_kind = 'challenge_mismatch'::text) AND (operation_mode = 'system_revalidation'::text) AND (result_hash IS NULL) AND (terminal_result_document IS NULL) AND (terminal_result_version IS NULL) AND (terminal_observed_expires_at IS NULL) AND (target_observation_contract_version IS NULL) AND (target_response_status IS NULL) AND (provider_response_sha256 IS NULL) AND (raw_provider_response_bytes IS NULL)) OR ((result_hash ~ '^[0-9a-f]{64}$'::text) AND (terminal_result_document IS NOT NULL) AND (((operation_mode = 'system_revalidation'::text) AND (terminal_result_version IS NULL)) OR ((operation_mode = 'same_root_recovery'::text) AND (terminal_result_version IS NOT NULL))) AND (((consumption_kind = 'database_time_expired'::text) AND (terminal_observed_expires_at IS NOT NULL)) OR ((consumption_kind <> 'database_time_expired'::text) AND (terminal_observed_expires_at IS NULL))) AND (((target_observation_contract_version IS NULL) AND (target_response_status IS NULL) AND (provider_response_sha256 IS NULL) AND (raw_provider_response_bytes IS NULL)) OR ((operation_mode = 'same_root_recovery'::text) AND (target_observation_contract_version = ANY (ARRAY['pirate-hns-target-observation-v2'::text, 'pirate-hns-target-observation-v3'::text])) AND (target_response_status = ANY (ARRAY['verified'::text, 'rejected'::text, 'ineligible'::text])) AND (provider_response_sha256 ~ '^[0-9a-f]{64}$'::text) AND ((octet_length(raw_provider_response_bytes) >= 1) AND (octet_length(raw_provider_response_bytes) <= 1048576)) AND (encode(sha256(raw_provider_response_bytes), 'hex'::text) = provider_response_sha256)))))))),
     CONSTRAINT community_route_revalidation_attempts_time_order CHECK (((updated_at >= created_at) AND ((terminal_at IS NULL) OR (terminal_at >= created_at)))),
     CONSTRAINT community_route_revalidation_comp_completion_request_hash_check CHECK ((completion_request_hash ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT community_route_revalidation_completion__consumption_kind_check CHECK ((consumption_kind = ANY (ARRAY['verified'::text, 'missing_root'::text, 'control_failed'::text, 'challenge_mismatch'::text, 'insufficient_expiry'::text, 'disputed'::text, 'revoked'::text, 'database_time_expired'::text, 'session_expired'::text, 'stale_cas'::text]))),
     CONSTRAINT community_route_revalidation_completion_at_attempt_number_check CHECK (((attempt_number >= 1) AND (attempt_number <= 3))),
     CONSTRAINT community_route_revalidation_completion_attem_fence_token_check CHECK ((fence_token > 0)),
     CONSTRAINT community_route_revalidation_completion_attem_result_hash_check CHECK ((result_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT community_route_revalidation_completion_attempts_state_check CHECK ((state = ANY (ARRAY['leased'::text, 'released'::text, 'consumed'::text]))),
+    CONSTRAINT community_route_revalidation_completion_consumption_kind_check CHECK ((consumption_kind = ANY (ARRAY['verified'::text, 'missing_root'::text, 'control_failed'::text, 'challenge_mismatch'::text, 'insufficient_expiry'::text, 'disputed'::text, 'revoked'::text, 'database_time_expired'::text, 'root_absent'::text, 'root_inactive'::text, 'expiry_horizon_insufficient'::text, 'session_expired'::text, 'stale_cas'::text, 'owner_authoritative_source_ineligible'::text]))),
     CONSTRAINT community_route_revalidation_expected_binding_generation_check2 CHECK ((expected_binding_generation > 0))
 );
 
@@ -16632,6 +18096,15 @@ CREATE TABLE community_route_revalidation_evidence_snapshots (
     observation jsonb NOT NULL,
     raw_response_bytes bytea NOT NULL,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    operation_mode text DEFAULT 'system_revalidation'::text NOT NULL,
+    recovery_authority_kind text,
+    recovery_authority_reference text,
+    public_start_hash text,
+    provider_start_hash text,
+    poll_hash text,
+    provider_configuration_digest text,
+    challenge_expires_at timestamp with time zone,
+    observation_contract_version text,
     CONSTRAINT community_route_revalidation_ev_expiry_horizon_sufficient_check CHECK ((expiry_horizon_sufficient IS TRUE)),
     CONSTRAINT community_route_revalidation_evi_chain_anchor_median_time_check CHECK ((chain_anchor_median_time > 0)),
     CONSTRAINT community_route_revalidation_evi_provider_identity_digest_check CHECK ((provider_identity_digest ~ '^[0-9a-f]{64}$'::text)),
@@ -16645,18 +18118,16 @@ CREATE TABLE community_route_revalidation_evidence_snapshots (
     CONSTRAINT community_route_revalidation_evidence__start_request_hash_check CHECK ((start_request_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT community_route_revalidation_evidence_chain_anchor_height_check CHECK ((chain_anchor_height > 0)),
     CONSTRAINT community_route_revalidation_evidence_sn_ownership_source_check CHECK ((ownership_source = ANY (ARRAY['hns_parent_chain_txt'::text, 'owner_authoritative_dns_txt'::text]))),
-    CONSTRAINT community_route_revalidation_evidence_sn_protocol_version_check CHECK ((protocol_version = 'hns-txt-v1'::text)),
     CONSTRAINT community_route_revalidation_evidence_sn_requirement_hash_check CHECK ((requirement_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT community_route_revalidation_evidence_sna_evidence_digest_check CHECK ((evidence_digest ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT community_route_revalidation_evidence_snap_principal_kind_check CHECK ((principal_kind = 'system'::text)),
     CONSTRAINT community_route_revalidation_evidence_snaps_expiry_height_check CHECK ((expiry_height > 0)),
-    CONSTRAINT community_route_revalidation_evidence_snapsho_abi_version_check CHECK ((abi_version = 'pirate-hns-route-revalidation-evidence-v1'::text)),
     CONSTRAINT community_route_revalidation_evidence_snapsho_fence_token_check CHECK ((fence_token > 0)),
     CONSTRAINT community_route_revalidation_evidence_snapsho_observation_check CHECK (((jsonb_typeof(observation) = 'object'::text) AND ((observation ->> 'status'::text) = 'verified'::text))),
     CONSTRAINT community_route_revalidation_evidence_snapsho_root_exists_check CHECK ((root_exists IS TRUE)),
     CONSTRAINT community_route_revalidation_evidence_snapshots_family_check CHECK ((family = 'hns'::text)),
     CONSTRAINT community_route_revalidation_expected_binding_generation_check3 CHECK ((expected_binding_generation > 0)),
     CONSTRAINT community_route_revalidation_provider_configuration_kind_check2 CHECK ((provider_configuration_kind = ANY (ARRAY['managed'::text, 'dynamic'::text]))),
+    CONSTRAINT community_route_revalidation_snapshot_authority_branch CHECK ((((operation_mode = 'system_revalidation'::text) AND (principal_kind = 'system'::text) AND (protocol_version = 'hns-txt-v1'::text) AND (abi_version = 'pirate-hns-route-revalidation-evidence-v1'::text) AND (recovery_authority_kind IS NULL) AND (recovery_authority_reference IS NULL) AND (public_start_hash IS NULL) AND (provider_start_hash IS NULL) AND (poll_hash IS NULL) AND (provider_configuration_digest IS NULL) AND (challenge_expires_at IS NULL) AND (observation_contract_version IS NULL)) OR ((operation_mode = 'same_root_recovery'::text) AND (principal_kind = 'user'::text) AND (provider_id = 'hns.owner.v1'::text) AND (protocol_version = 'hns-owner-recovery-v1'::text) AND (expected_verified_evidence_ref IS NULL) AND (abi_version = 'pirate-hns-owner-recovery-evidence-v1'::text) AND (recovery_authority_kind = ANY (ARRAY['database_time_expiry_transition'::text, 'route_revalidation_terminal'::text, 'active_lease_renewal_terminal'::text, 'owner_recovery_terminal'::text])) AND (btrim(recovery_authority_reference) = recovery_authority_reference) AND (public_start_hash ~ '^[0-9a-f]{64}$'::text) AND (provider_start_hash ~ '^[0-9a-f]{64}$'::text) AND (poll_hash ~ '^[0-9a-f]{64}$'::text) AND (provider_configuration_digest ~ '^[0-9a-f]{64}$'::text) AND (challenge_expires_at > observed_at) AND (observation_contract_version = ANY (ARRAY['pirate-hns-target-observation-v2'::text, 'pirate-hns-target-observation-v3'::text]))))),
     CONSTRAINT community_route_revalidation_snapshots_challenge_shape CHECK (((btrim(challenge_name) <> ''::text) AND (challenge_name = btrim(challenge_name)) AND (octet_length(challenge_name) <= 255) AND (challenge_name !~ '[[:cntrl:]]'::text) AND (((ownership_source = 'hns_parent_chain_txt'::text) AND (challenge_name = root_label)) OR ((ownership_source = 'owner_authoritative_dns_txt'::text) AND (challenge_name = ('_pirate.'::text || root_label)))))),
     CONSTRAINT community_route_revalidation_snapshots_generation_shape CHECK ((binding_generation = (expected_binding_generation + 1))),
     CONSTRAINT community_route_revalidation_snapshots_identifiers_not_blank CHECK (((btrim(evidence_ref) <> ''::text) AND (evidence_ref = btrim(evidence_ref)) AND (octet_length(evidence_ref) <= 512) AND (btrim(principal_id) <> ''::text) AND (principal_id = btrim(principal_id)) AND (octet_length(principal_id) <= 256) AND (btrim(provider_id) <> ''::text) AND (provider_id = btrim(provider_id)) AND (octet_length(provider_id) <= 256) AND (btrim(provider_configuration_reference) <> ''::text) AND (provider_configuration_reference = btrim(provider_configuration_reference)) AND (octet_length(provider_configuration_reference) <= 512) AND (btrim(chain_network) <> ''::text) AND (chain_network = btrim(chain_network)) AND (btrim(provider_evidence_ref) <> ''::text) AND (provider_evidence_ref = btrim(provider_evidence_ref)) AND (octet_length(provider_evidence_ref) <= 512) AND (octet_length(provider_configuration_version) <= 128) AND (octet_length(environment) <= 128))),
@@ -16695,15 +18166,22 @@ CREATE TABLE community_route_revalidation_sessions (
     terminal_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    operation_mode text DEFAULT 'system_revalidation'::text NOT NULL,
+    start_idempotency_key text,
+    recovery_authority_kind text,
+    recovery_authority_reference text,
+    public_start_hash text,
+    provider_start_hash text,
+    provider_configuration_digest text,
+    challenge_expires_at timestamp with time zone,
     CONSTRAINT community_route_revalidation_expected_binding_generation_check1 CHECK ((expected_binding_generation > 0)),
     CONSTRAINT community_route_revalidation_provider_configuration_kind_check1 CHECK ((provider_configuration_kind = ANY (ARRAY['managed'::text, 'dynamic'::text]))),
     CONSTRAINT community_route_revalidation_sessio_provider_binding_hash_check CHECK ((provider_binding_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_revalidation_sessions_authority_branch CHECK ((((operation_mode = 'system_revalidation'::text) AND (principal_kind = 'system'::text) AND (protocol_version = 'hns-txt-v1'::text) AND (start_idempotency_key IS NULL) AND (recovery_authority_kind IS NULL) AND (recovery_authority_reference IS NULL) AND (public_start_hash IS NULL) AND (provider_start_hash IS NULL) AND (provider_configuration_digest IS NULL) AND (challenge_expires_at IS NULL)) OR ((operation_mode = 'same_root_recovery'::text) AND (principal_kind = 'user'::text) AND (provider_id = 'hns.owner.v1'::text) AND (protocol_version = 'hns-owner-recovery-v1'::text) AND (expected_verified_evidence_ref IS NULL) AND (btrim(start_idempotency_key) = start_idempotency_key) AND ((octet_length(start_idempotency_key) >= 1) AND (octet_length(start_idempotency_key) <= 256)) AND (recovery_authority_kind = ANY (ARRAY['database_time_expiry_transition'::text, 'route_revalidation_terminal'::text, 'active_lease_renewal_terminal'::text, 'owner_recovery_terminal'::text])) AND (btrim(recovery_authority_reference) = recovery_authority_reference) AND ((octet_length(recovery_authority_reference) >= 1) AND (octet_length(recovery_authority_reference) <= 512)) AND (public_start_hash ~ '^[0-9a-f]{64}$'::text) AND (provider_start_hash ~ '^[0-9a-f]{64}$'::text) AND (provider_configuration_digest ~ '^[0-9a-f]{64}$'::text) AND (challenge_expires_at = expires_at)))),
     CONSTRAINT community_route_revalidation_sessions_family_check CHECK ((family = 'hns'::text)),
     CONSTRAINT community_route_revalidation_sessions_identifiers_not_blank CHECK (((btrim(revalidation_session_id) <> ''::text) AND (revalidation_session_id = btrim(revalidation_session_id)) AND (octet_length(revalidation_session_id) <= 256) AND (btrim(route_revalidation_id) <> ''::text) AND (route_revalidation_id = btrim(route_revalidation_id)) AND (octet_length(route_revalidation_id) <= 256) AND (btrim(principal_id) <> ''::text) AND (principal_id = btrim(principal_id)) AND (octet_length(principal_id) <= 256) AND (btrim(provider_id) <> ''::text) AND (provider_id = btrim(provider_id)) AND (octet_length(provider_id) <= 256) AND (btrim(provider_configuration_reference) <> ''::text) AND (provider_configuration_reference = btrim(provider_configuration_reference)) AND (octet_length(provider_configuration_reference) <= 512) AND (btrim(provider_configuration_version) <> ''::text) AND (provider_configuration_version = btrim(provider_configuration_version)) AND (octet_length(provider_configuration_version) <= 128) AND (btrim(environment) <> ''::text) AND (environment = btrim(environment)) AND (octet_length(environment) <= 128))),
     CONSTRAINT community_route_revalidation_sessions_lifecycle_shape CHECK ((((status = 'pending'::text) AND (terminal_at IS NULL)) OR ((status = ANY (ARRAY['completed'::text, 'failed'::text, 'expired'::text])) AND (terminal_at IS NOT NULL)))),
     CONSTRAINT community_route_revalidation_sessions_presentation_shape CHECK ((jsonb_typeof(start_presentation) = 'object'::text)),
-    CONSTRAINT community_route_revalidation_sessions_principal_kind_check CHECK ((principal_kind = 'system'::text)),
-    CONSTRAINT community_route_revalidation_sessions_protocol_version_check CHECK ((protocol_version = 'hns-txt-v1'::text)),
     CONSTRAINT community_route_revalidation_sessions_requirement_hash_check CHECK ((requirement_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT community_route_revalidation_sessions_route_shape CHECK (((is_community_route_root_label(family, root_label) IS TRUE) AND (is_community_route_root_label_display(root_label_display) IS TRUE) AND (path_segment = ('app.'::text || root_label)))),
     CONSTRAINT community_route_revalidation_sessions_start_fence_token_check CHECK ((start_fence_token > 0)),
@@ -16740,14 +18218,22 @@ CREATE TABLE community_route_revalidation_start_reservations (
     lease_expires_at timestamp with time zone NOT NULL,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    operation_mode text DEFAULT 'system_revalidation'::text NOT NULL,
+    start_reservation_id text,
+    start_idempotency_key text,
+    recovery_authority_kind text,
+    recovery_authority_reference text,
+    public_start_hash text,
+    provider_start_hash text,
+    provider_configuration_digest text,
+    challenge_expires_at timestamp with time zone,
     CONSTRAINT community_route_revalidation__expected_binding_generation_check CHECK ((expected_binding_generation > 0)),
     CONSTRAINT community_route_revalidation__provider_configuration_kind_check CHECK ((provider_configuration_kind = ANY (ARRAY['managed'::text, 'dynamic'::text]))),
     CONSTRAINT community_route_revalidation_start__provider_binding_hash_check CHECK ((provider_binding_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_revalidation_start_authority_branch CHECK ((((operation_mode = 'system_revalidation'::text) AND (principal_kind = 'system'::text) AND (protocol_version = 'hns-txt-v1'::text) AND (start_reservation_id IS NULL) AND (start_idempotency_key IS NULL) AND (recovery_authority_kind IS NULL) AND (recovery_authority_reference IS NULL) AND (public_start_hash IS NULL) AND (provider_start_hash IS NULL) AND (provider_configuration_digest IS NULL) AND (challenge_expires_at IS NULL)) OR ((operation_mode = 'same_root_recovery'::text) AND (principal_kind = 'user'::text) AND (provider_id = 'hns.owner.v1'::text) AND (protocol_version = 'hns-owner-recovery-v1'::text) AND (expected_verified_evidence_ref IS NULL) AND (btrim(start_reservation_id) = start_reservation_id) AND ((octet_length(start_reservation_id) >= 1) AND (octet_length(start_reservation_id) <= 256)) AND (btrim(start_idempotency_key) = start_idempotency_key) AND ((octet_length(start_idempotency_key) >= 1) AND (octet_length(start_idempotency_key) <= 256)) AND (recovery_authority_kind = ANY (ARRAY['database_time_expiry_transition'::text, 'route_revalidation_terminal'::text, 'active_lease_renewal_terminal'::text, 'owner_recovery_terminal'::text])) AND (btrim(recovery_authority_reference) = recovery_authority_reference) AND ((octet_length(recovery_authority_reference) >= 1) AND (octet_length(recovery_authority_reference) <= 512)) AND (public_start_hash ~ '^[0-9a-f]{64}$'::text) AND (((state = ANY (ARRAY['acquired'::text, 'released'::text])) AND (provider_start_hash IS NULL)) OR ((state = 'finalized'::text) AND (provider_start_hash ~ '^[0-9a-f]{64}$'::text))) AND (provider_configuration_digest ~ '^[0-9a-f]{64}$'::text) AND (challenge_expires_at > created_at)))),
     CONSTRAINT community_route_revalidation_start_identifiers_not_blank CHECK (((btrim(route_revalidation_id) <> ''::text) AND (route_revalidation_id = btrim(route_revalidation_id)) AND (octet_length(route_revalidation_id) <= 256) AND (btrim(revalidation_session_id) <> ''::text) AND (revalidation_session_id = btrim(revalidation_session_id)) AND (octet_length(revalidation_session_id) <= 256) AND (btrim(principal_id) <> ''::text) AND (principal_id = btrim(principal_id)) AND (octet_length(principal_id) <= 256) AND (btrim(provider_id) <> ''::text) AND (provider_id = btrim(provider_id)) AND (octet_length(provider_id) <= 256) AND (btrim(provider_configuration_reference) <> ''::text) AND (provider_configuration_reference = btrim(provider_configuration_reference)) AND (octet_length(provider_configuration_reference) <= 512) AND (btrim(provider_configuration_version) <> ''::text) AND (provider_configuration_version = btrim(provider_configuration_version)) AND (octet_length(provider_configuration_version) <= 128) AND (btrim(environment) <> ''::text) AND (environment = btrim(environment)) AND (octet_length(environment) <= 128))),
     CONSTRAINT community_route_revalidation_start_res_start_request_hash_check CHECK ((start_request_hash ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT community_route_revalidation_start_reser_protocol_version_check CHECK ((protocol_version = 'hns-txt-v1'::text)),
     CONSTRAINT community_route_revalidation_start_reser_requirement_hash_check CHECK ((requirement_hash ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT community_route_revalidation_start_reserva_principal_kind_check CHECK ((principal_kind = 'system'::text)),
     CONSTRAINT community_route_revalidation_start_reservatio_fence_token_check CHECK ((fence_token > 0)),
     CONSTRAINT community_route_revalidation_start_reservations_family_check CHECK ((family = 'hns'::text)),
     CONSTRAINT community_route_revalidation_start_reservations_state_check CHECK ((state = ANY (ARRAY['acquired'::text, 'released'::text, 'finalized'::text]))),
@@ -22266,6 +23752,33 @@ ALTER TABLE ONLY community_purchase_verification_snapshots
 ALTER TABLE ONLY community_role_assignments
     ADD CONSTRAINT community_role_assignments_pkey PRIMARY KEY (role_assignment_id);
 
+ALTER TABLE ONLY community_route_active_lease_renewal_evidence_snapshots
+    ADD CONSTRAINT community_route_active_lease__active_lease_renewal_attempt__key UNIQUE (active_lease_renewal_attempt_id);
+
+ALTER TABLE ONLY community_route_active_lease_renewal_attempts
+    ADD CONSTRAINT community_route_active_lease__active_lease_renewal_id_attem_key UNIQUE (active_lease_renewal_id, attempt_number);
+
+ALTER TABLE ONLY community_route_active_lease_renewal_attempts
+    ADD CONSTRAINT community_route_active_lease__active_lease_renewal_id_idemp_key UNIQUE (active_lease_renewal_id, idempotency_key);
+
+ALTER TABLE ONLY community_route_active_lease_renewals
+    ADD CONSTRAINT community_route_active_lease__active_lease_renewal_id_route_key UNIQUE (active_lease_renewal_id, route_binding_id, expected_binding_generation);
+
+ALTER TABLE ONLY community_route_active_lease_renewals
+    ADD CONSTRAINT community_route_active_lease__route_binding_id_expected_bin_key UNIQUE (route_binding_id, expected_binding_generation);
+
+ALTER TABLE ONLY community_route_active_lease_renewal_attempts
+    ADD CONSTRAINT community_route_active_lease_renewal_attempts_evidence_ref_key UNIQUE (evidence_ref);
+
+ALTER TABLE ONLY community_route_active_lease_renewal_attempts
+    ADD CONSTRAINT community_route_active_lease_renewal_attempts_pkey PRIMARY KEY (active_lease_renewal_attempt_id);
+
+ALTER TABLE ONLY community_route_active_lease_renewal_evidence_snapshots
+    ADD CONSTRAINT community_route_active_lease_renewal_evidence_snapshots_pkey PRIMARY KEY (evidence_ref);
+
+ALTER TABLE ONLY community_route_active_lease_renewals
+    ADD CONSTRAINT community_route_active_lease_renewals_pkey PRIMARY KEY (active_lease_renewal_id);
+
 ALTER TABLE ONLY community_route_app_host_health
     ADD CONSTRAINT community_route_app_host_health_pkey PRIMARY KEY (route_binding_id);
 
@@ -22298,6 +23811,9 @@ ALTER TABLE ONLY community_route_attachment_requirement_states
 
 ALTER TABLE ONLY community_route_authority_grants
     ADD CONSTRAINT community_route_authority_grants_pkey PRIMARY KEY (grant_id);
+
+ALTER TABLE ONLY community_route_hns_control_identities
+    ADD CONSTRAINT community_route_hns_control_identities_pkey PRIMARY KEY (evidence_ref);
 
 ALTER TABLE ONLY community_route_lifecycle_transitions
     ADD CONSTRAINT community_route_lifecycle_transition_generation_unique UNIQUE (route_binding_id, expected_binding_generation);
@@ -23785,6 +25301,8 @@ CREATE INDEX community_role_assignments_account_status_idx ON community_role_ass
 
 CREATE UNIQUE INDEX community_role_assignments_one_active_owner_uidx ON community_role_assignments USING btree (community_id) WHERE ((role = 'owner'::text) AND (status = 'active'::text));
 
+CREATE INDEX community_route_active_lease_renewal_attempts_lease_idx ON community_route_active_lease_renewal_attempts USING btree (state, lease_expires_at);
+
 CREATE UNIQUE INDEX community_route_attachment_intent_replay_uidx ON community_route_attachment_intent_revisions USING btree (actor_id, operation_kind, idempotency_key) WHERE (idempotency_key IS NOT NULL);
 
 CREATE UNIQUE INDEX community_route_attachment_intents_one_open_per_community_uidx ON community_route_attachment_intents USING btree (community_id) WHERE (status = ANY (ARRAY['verification_required'::text, 'commit_ready'::text]));
@@ -23801,11 +25319,19 @@ CREATE INDEX community_route_ownership_evidence_expiry_idx ON community_route_ow
 
 CREATE UNIQUE INDEX community_route_ownership_evidence_operator_control_receipt_uid ON community_route_ownership_evidence USING btree (operator_control_promotion_receipt_id) WHERE (origin = 'operator_control_observation'::text);
 
+CREATE UNIQUE INDEX community_route_ownership_evidence_renewal_attempt_uidx ON community_route_ownership_evidence USING btree (active_lease_renewal_attempt_id) WHERE (active_lease_renewal_attempt_id IS NOT NULL);
+
 CREATE UNIQUE INDEX community_route_ownership_evidence_revalidation_attempt_uidx ON community_route_ownership_evidence USING btree (route_revalidation_attempt_id) WHERE (origin = 'route_revalidation'::text);
 
 CREATE INDEX community_route_revalidation_attempts_lease_idx ON community_route_revalidation_completion_attempts USING btree (state, lease_expires_at);
 
 CREATE UNIQUE INDEX community_route_revalidation_one_leased_attempt_uidx ON community_route_revalidation_completion_attempts USING btree (revalidation_session_id) WHERE (state = 'leased'::text);
+
+CREATE INDEX community_route_revalidation_owner_authority_idx ON community_route_revalidation_start_reservations USING btree (recovery_authority_kind, recovery_authority_reference) WHERE (operation_mode = 'same_root_recovery'::text);
+
+CREATE INDEX community_route_revalidation_owner_open_sessions_idx ON community_route_revalidation_sessions USING btree (status, challenge_expires_at, route_binding_id) WHERE ((operation_mode = 'same_root_recovery'::text) AND (status = 'pending'::text));
+
+CREATE UNIQUE INDEX community_route_revalidation_owner_reservation_id_uidx ON community_route_revalidation_start_reservations USING btree (start_reservation_id) WHERE (operation_mode = 'same_root_recovery'::text);
 
 CREATE INDEX community_route_revalidation_start_lease_idx ON community_route_revalidation_start_reservations USING btree (state, lease_expires_at);
 
@@ -24219,6 +25745,20 @@ CREATE TRIGGER community_purchase_verification_snapshot_append_only BEFORE DELET
 
 CREATE TRIGGER community_role_assignments_change_guard BEFORE DELETE OR UPDATE ON community_role_assignments FOR EACH ROW EXECUTE FUNCTION guard_community_role_assignment_change();
 
+CREATE CONSTRAINT TRIGGER community_route_active_lease_renewal_attempt_coherence AFTER INSERT OR UPDATE ON community_route_active_lease_renewal_attempts DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_community_route_active_lease_renewal_coherence();
+
+CREATE TRIGGER community_route_active_lease_renewal_attempt_guard BEFORE INSERT OR DELETE OR UPDATE ON community_route_active_lease_renewal_attempts FOR EACH ROW EXECUTE FUNCTION guard_community_route_active_lease_renewal_attempt();
+
+CREATE TRIGGER community_route_active_lease_renewal_guard BEFORE INSERT OR DELETE OR UPDATE ON community_route_active_lease_renewals FOR EACH ROW EXECUTE FUNCTION guard_community_route_active_lease_renewal();
+
+CREATE CONSTRAINT TRIGGER community_route_active_lease_renewal_operation_coherence AFTER UPDATE ON community_route_active_lease_renewals DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_community_route_active_lease_renewal_coherence();
+
+CREATE TRIGGER community_route_active_lease_renewal_snapshot_insert_guard BEFORE INSERT ON community_route_active_lease_renewal_evidence_snapshots FOR EACH ROW EXECUTE FUNCTION validate_community_route_active_lease_renewal_snapshot_insert();
+
+CREATE TRIGGER community_route_active_lease_renewal_snapshots_immutable BEFORE DELETE OR UPDATE ON community_route_active_lease_renewal_evidence_snapshots FOR EACH ROW EXECUTE FUNCTION reject_community_creation_immutable_change();
+
+CREATE TRIGGER community_route_active_renewal_evidence_insert_guard BEFORE INSERT ON community_route_ownership_evidence FOR EACH ROW WHEN ((new.origin = 'active_lease_renewal'::text)) EXECUTE FUNCTION validate_community_route_active_renewal_evidence_insert();
+
 CREATE TRIGGER community_route_attachment_attempt_append_only BEFORE DELETE OR UPDATE ON community_route_attachment_ceremony_attempts FOR EACH ROW EXECUTE FUNCTION reject_community_route_attachment_immutable_change();
 
 CREATE TRIGGER community_route_attachment_attempt_insert_guard BEFORE INSERT ON community_route_attachment_ceremony_attempts FOR EACH ROW EXECUTE FUNCTION validate_community_route_attachment_attempt_insert();
@@ -24247,6 +25787,10 @@ CREATE TRIGGER community_route_attachment_revision_append_only BEFORE DELETE OR 
 
 CREATE TRIGGER community_route_authority_grants_change_guard BEFORE UPDATE ON community_route_authority_grants FOR EACH ROW EXECUTE FUNCTION guard_community_route_authority_grant_change();
 
+CREATE TRIGGER community_route_hns_control_identities_immutable BEFORE DELETE OR UPDATE ON community_route_hns_control_identities FOR EACH ROW EXECUTE FUNCTION reject_community_creation_immutable_change();
+
+CREATE TRIGGER community_route_hns_control_identity_insert_guard BEFORE INSERT ON community_route_hns_control_identities FOR EACH ROW EXECUTE FUNCTION validate_community_route_hns_control_identity_insert();
+
 CREATE TRIGGER community_route_lifecycle_transition_append_only BEFORE DELETE OR UPDATE ON community_route_lifecycle_transitions FOR EACH ROW EXECUTE FUNCTION reject_community_route_lifecycle_transition_change();
 
 CREATE TRIGGER community_route_lifecycle_transition_insert_guard BEFORE INSERT ON community_route_lifecycle_transitions FOR EACH ROW EXECUTE FUNCTION validate_community_route_lifecycle_transition_insert();
@@ -24255,27 +25799,55 @@ CREATE TRIGGER community_route_operator_override_audit_change_guard BEFORE DELET
 
 CREATE TRIGGER community_route_ownership_evidence_append_only BEFORE DELETE OR UPDATE ON community_route_ownership_evidence FOR EACH ROW EXECUTE FUNCTION reject_community_creation_immutable_change();
 
+CREATE TRIGGER community_route_ownership_evidence_hns_identity_guard BEFORE INSERT ON community_route_ownership_evidence FOR EACH ROW WHEN (((new.family = 'hns'::text) AND (new.origin = ANY (ARRAY['creation_ceremony'::text, 'route_revalidation'::text, 'active_lease_renewal'::text])))) EXECUTE FUNCTION require_community_route_hns_control_identity();
+
 CREATE TRIGGER community_route_ownership_evidence_insert_guard BEFORE INSERT ON community_route_ownership_evidence FOR EACH ROW WHEN ((new.origin = ANY (ARRAY['creation_ceremony'::text, 'route_revalidation'::text]))) EXECUTE FUNCTION validate_community_route_ownership_evidence_insert();
 
-CREATE TRIGGER community_route_revalidation_attempt_guard BEFORE INSERT OR DELETE OR UPDATE ON community_route_revalidation_completion_attempts FOR EACH ROW EXECUTE FUNCTION guard_community_route_revalidation_attempt();
+CREATE TRIGGER community_route_revalidation_attempt_guard_legacy_change BEFORE INSERT OR UPDATE ON community_route_revalidation_completion_attempts FOR EACH ROW WHEN ((new.operation_mode = 'system_revalidation'::text)) EXECUTE FUNCTION guard_community_route_revalidation_attempt();
 
-CREATE CONSTRAINT TRIGGER community_route_revalidation_attempt_session_guard AFTER INSERT OR UPDATE ON community_route_revalidation_completion_attempts DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_community_route_revalidation_attempt_session();
+CREATE TRIGGER community_route_revalidation_attempt_guard_legacy_delete BEFORE DELETE ON community_route_revalidation_completion_attempts FOR EACH ROW WHEN ((old.operation_mode = 'system_revalidation'::text)) EXECUTE FUNCTION guard_community_route_revalidation_attempt();
 
-CREATE CONSTRAINT TRIGGER community_route_revalidation_session_attempt_guard AFTER UPDATE ON community_route_revalidation_sessions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_community_route_revalidation_attempt_session();
+CREATE TRIGGER community_route_revalidation_attempt_guard_owner_change BEFORE INSERT OR UPDATE ON community_route_revalidation_completion_attempts FOR EACH ROW WHEN ((new.operation_mode = 'same_root_recovery'::text)) EXECUTE FUNCTION guard_hns_owner_recovery_attempt();
 
-CREATE TRIGGER community_route_revalidation_session_change_guard BEFORE DELETE OR UPDATE ON community_route_revalidation_sessions FOR EACH ROW EXECUTE FUNCTION guard_community_route_revalidation_session_change();
+CREATE TRIGGER community_route_revalidation_attempt_guard_owner_delete BEFORE DELETE ON community_route_revalidation_completion_attempts FOR EACH ROW WHEN ((old.operation_mode = 'same_root_recovery'::text)) EXECUTE FUNCTION guard_hns_owner_recovery_attempt();
+
+CREATE CONSTRAINT TRIGGER community_route_revalidation_attempt_session_guard_legacy AFTER INSERT OR UPDATE ON community_route_revalidation_completion_attempts DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN ((new.operation_mode = 'system_revalidation'::text)) EXECUTE FUNCTION validate_community_route_revalidation_attempt_session();
+
+CREATE CONSTRAINT TRIGGER community_route_revalidation_attempt_session_guard_owner AFTER INSERT OR UPDATE ON community_route_revalidation_completion_attempts DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN ((new.operation_mode = 'same_root_recovery'::text)) EXECUTE FUNCTION validate_hns_owner_recovery_attempt_coherence();
+
+CREATE CONSTRAINT TRIGGER community_route_revalidation_session_attempt_guard_legacy AFTER UPDATE ON community_route_revalidation_sessions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN ((new.operation_mode = 'system_revalidation'::text)) EXECUTE FUNCTION validate_community_route_revalidation_attempt_session();
+
+CREATE CONSTRAINT TRIGGER community_route_revalidation_session_attempt_guard_owner AFTER UPDATE ON community_route_revalidation_sessions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN ((new.operation_mode = 'same_root_recovery'::text)) EXECUTE FUNCTION validate_hns_owner_recovery_attempt_coherence();
+
+CREATE TRIGGER community_route_revalidation_session_change_guard_legacy_delete BEFORE DELETE ON community_route_revalidation_sessions FOR EACH ROW WHEN ((old.operation_mode = 'system_revalidation'::text)) EXECUTE FUNCTION guard_community_route_revalidation_session_change();
+
+CREATE TRIGGER community_route_revalidation_session_change_guard_legacy_update BEFORE UPDATE ON community_route_revalidation_sessions FOR EACH ROW WHEN ((new.operation_mode = 'system_revalidation'::text)) EXECUTE FUNCTION guard_community_route_revalidation_session_change();
+
+CREATE TRIGGER community_route_revalidation_session_change_guard_owner_delete BEFORE DELETE ON community_route_revalidation_sessions FOR EACH ROW WHEN ((old.operation_mode = 'same_root_recovery'::text)) EXECUTE FUNCTION guard_hns_owner_recovery_session_change();
+
+CREATE TRIGGER community_route_revalidation_session_change_guard_owner_update BEFORE UPDATE ON community_route_revalidation_sessions FOR EACH ROW WHEN ((new.operation_mode = 'same_root_recovery'::text)) EXECUTE FUNCTION guard_hns_owner_recovery_session_change();
 
 CREATE CONSTRAINT TRIGGER community_route_revalidation_session_coherence AFTER INSERT OR UPDATE ON community_route_revalidation_sessions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_community_route_revalidation_start_coherence();
 
-CREATE TRIGGER community_route_revalidation_session_insert_guard BEFORE INSERT ON community_route_revalidation_sessions FOR EACH ROW EXECUTE FUNCTION validate_community_route_revalidation_session_insert();
+CREATE TRIGGER community_route_revalidation_session_insert_guard_legacy BEFORE INSERT ON community_route_revalidation_sessions FOR EACH ROW WHEN ((new.operation_mode = 'system_revalidation'::text)) EXECUTE FUNCTION validate_community_route_revalidation_session_insert();
+
+CREATE TRIGGER community_route_revalidation_session_insert_guard_owner BEFORE INSERT ON community_route_revalidation_sessions FOR EACH ROW WHEN ((new.operation_mode = 'same_root_recovery'::text)) EXECUTE FUNCTION validate_hns_owner_recovery_session_insert();
 
 CREATE TRIGGER community_route_revalidation_snapshot_append_only BEFORE DELETE OR UPDATE ON community_route_revalidation_evidence_snapshots FOR EACH ROW EXECUTE FUNCTION reject_community_creation_immutable_change();
 
-CREATE TRIGGER community_route_revalidation_snapshot_insert_guard BEFORE INSERT ON community_route_revalidation_evidence_snapshots FOR EACH ROW EXECUTE FUNCTION validate_community_route_revalidation_snapshot_insert();
+CREATE TRIGGER community_route_revalidation_snapshot_insert_guard_legacy BEFORE INSERT ON community_route_revalidation_evidence_snapshots FOR EACH ROW WHEN ((new.operation_mode = 'system_revalidation'::text)) EXECUTE FUNCTION validate_community_route_revalidation_snapshot_insert();
+
+CREATE TRIGGER community_route_revalidation_snapshot_insert_guard_owner BEFORE INSERT ON community_route_revalidation_evidence_snapshots FOR EACH ROW WHEN ((new.operation_mode = 'same_root_recovery'::text)) EXECUTE FUNCTION validate_hns_owner_recovery_snapshot_insert();
 
 CREATE CONSTRAINT TRIGGER community_route_revalidation_start_coherence AFTER INSERT OR UPDATE ON community_route_revalidation_start_reservations DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_community_route_revalidation_start_coherence();
 
-CREATE TRIGGER community_route_revalidation_start_guard BEFORE INSERT OR DELETE OR UPDATE ON community_route_revalidation_start_reservations FOR EACH ROW EXECUTE FUNCTION guard_community_route_revalidation_start();
+CREATE TRIGGER community_route_revalidation_start_guard_legacy_change BEFORE INSERT OR UPDATE ON community_route_revalidation_start_reservations FOR EACH ROW WHEN ((new.operation_mode = 'system_revalidation'::text)) EXECUTE FUNCTION guard_community_route_revalidation_start();
+
+CREATE TRIGGER community_route_revalidation_start_guard_legacy_delete BEFORE DELETE ON community_route_revalidation_start_reservations FOR EACH ROW WHEN ((old.operation_mode = 'system_revalidation'::text)) EXECUTE FUNCTION guard_community_route_revalidation_start();
+
+CREATE TRIGGER community_route_revalidation_start_guard_owner_change BEFORE INSERT OR UPDATE ON community_route_revalidation_start_reservations FOR EACH ROW WHEN ((new.operation_mode = 'same_root_recovery'::text)) EXECUTE FUNCTION guard_hns_owner_recovery_start();
+
+CREATE TRIGGER community_route_revalidation_start_guard_owner_delete BEFORE DELETE ON community_route_revalidation_start_reservations FOR EACH ROW WHEN ((old.operation_mode = 'same_root_recovery'::text)) EXECUTE FUNCTION guard_hns_owner_recovery_start();
 
 CREATE TRIGGER community_streak_days_append_only BEFORE DELETE OR UPDATE ON community_streak_days FOR EACH ROW EXECUTE FUNCTION guard_reward_day_ledger();
 
@@ -25433,6 +27005,24 @@ ALTER TABLE ONLY community_role_assignments
 ALTER TABLE ONLY community_role_assignments
     ADD CONSTRAINT community_role_assignments_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
 
+ALTER TABLE ONLY community_route_active_lease_renewals
+    ADD CONSTRAINT community_route_active_lease__expected_verified_evidence_r_fkey FOREIGN KEY (expected_verified_evidence_ref) REFERENCES community_route_ownership_evidence(evidence_ref);
+
+ALTER TABLE ONLY community_route_active_lease_renewal_attempts
+    ADD CONSTRAINT community_route_active_lease_renewal_attempts_operation_fk FOREIGN KEY (active_lease_renewal_id, route_binding_id, expected_binding_generation) REFERENCES community_route_active_lease_renewals(active_lease_renewal_id, route_binding_id, expected_binding_generation);
+
+ALTER TABLE ONLY community_route_active_lease_renewal_evidence_snapshots
+    ADD CONSTRAINT community_route_active_lease_renewal_snapshots_attempt_fk FOREIGN KEY (active_lease_renewal_attempt_id) REFERENCES community_route_active_lease_renewal_attempts(active_lease_renewal_attempt_id);
+
+ALTER TABLE ONLY community_route_active_lease_renewal_evidence_snapshots
+    ADD CONSTRAINT community_route_active_lease_renewal_snapshots_operation_fk FOREIGN KEY (active_lease_renewal_id, route_binding_id, expected_binding_generation) REFERENCES community_route_active_lease_renewals(active_lease_renewal_id, route_binding_id, expected_binding_generation);
+
+ALTER TABLE ONLY community_route_active_lease_renewals
+    ADD CONSTRAINT community_route_active_lease_renewals_binding_fk FOREIGN KEY (route_binding_id, community_id) REFERENCES community_canonical_route_bindings(route_binding_id, community_id);
+
+ALTER TABLE ONLY community_route_active_lease_renewals
+    ADD CONSTRAINT community_route_active_lease_renewals_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
 ALTER TABLE ONLY community_route_app_host_health
     ADD CONSTRAINT community_route_app_host_health_route_fk FOREIGN KEY (route_binding_id, family) REFERENCES community_canonical_route_bindings(route_binding_id, family);
 
@@ -25478,6 +27068,9 @@ ALTER TABLE ONLY community_route_authority_grants
 ALTER TABLE ONLY community_route_authority_grants
     ADD CONSTRAINT community_route_authority_grants_revoked_by_user_id_fkey FOREIGN KEY (revoked_by_user_id) REFERENCES users(user_id);
 
+ALTER TABLE ONLY community_route_hns_control_identities
+    ADD CONSTRAINT community_route_hns_control_identities_evidence_fk FOREIGN KEY (evidence_ref) REFERENCES community_route_ownership_evidence(evidence_ref) DEFERRABLE INITIALLY DEFERRED;
+
 ALTER TABLE ONLY community_route_lifecycle_transitions
     ADD CONSTRAINT community_route_lifecycle_transition_binding_fk FOREIGN KEY (community_id, route_binding_id) REFERENCES community_canonical_route_bindings(community_id, route_binding_id);
 
@@ -25498,6 +27091,9 @@ ALTER TABLE ONLY community_route_ownership_evidence
 
 ALTER TABLE ONLY community_route_ownership_evidence
     ADD CONSTRAINT community_route_ownership_evidence_operator_control_receipt_fk FOREIGN KEY (operator_control_promotion_receipt_id) REFERENCES hns_operator_control_promotion_receipts(receipt_id) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY community_route_ownership_evidence
+    ADD CONSTRAINT community_route_ownership_evidence_renewal_attempt_fk FOREIGN KEY (active_lease_renewal_attempt_id) REFERENCES community_route_active_lease_renewal_attempts(active_lease_renewal_attempt_id) DEFERRABLE INITIALLY DEFERRED;
 
 ALTER TABLE ONLY community_route_ownership_evidence
     ADD CONSTRAINT community_route_ownership_evidence_revalidation_attempt_fk FOREIGN KEY (route_revalidation_attempt_id) REFERENCES community_route_revalidation_completion_attempts(route_revalidation_attempt_id) DEFERRABLE INITIALLY DEFERRED;
