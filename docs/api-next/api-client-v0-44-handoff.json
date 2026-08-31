@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.44.0",
+  "releaseType": "study-transcript-match-kind-contract",
+  "wireContract": "study-spoken-transcript-feedback",
+  "sourceCommit": "pending-review",
+  "supersedes": "0.43.0; admits the typed Study transcript match kind emitted by current phonetic grading while preserving replay of stored pre-phonetic responses where that additive field is absent.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.44.0.tgz",
+    "sha256": "c45933d5eb56af4cccb05010fdf38ae46205e903fe367c3f806244bd8dd3f468",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@1314a5787441f6e7355fd097140b889afc58e5c84accadf3b71e7121c8f382bd",
+    "openapiSha256": "1314a5787441f6e7355fd097140b889afc58e5c84accadf3b71e7121c8f382bd",
+    "clientSha256": "3f7e4c0c47f82d381c6a1f5a410d2255b4cbb1c0875995e0dcf4aa4254f869e0"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "passed",
+      "baselineCommit": "origin/main",
+      "reason": "The response-only match_kind discriminator is additive and optional so immutable pre-phonetic result snapshots remain valid."
+    },
+    "focusedContractSuites": "10 passed across Study contracts and spoken-answer composition",
+    "fullUnitSuite": "2566 passed and PostgreSQL-dependent tests excluded by the ordinary unit command",
+    "fullWorkerdSuite": "The first serial pool passed 43 tests; the HTTP pool was stopped after excessive idle runtime to release 14 workerd processes on the memory-constrained host. Clean CI remains authoritative.",
+    "packageVerifier": "passed",
+    "repositoryCheck": "Focused code, generated-contract, and provenance checks passed; repository-wide TypeScript remains red only on the recorded dependency-tree ArrayBufferLike conflict pending clean CI."
+  }
+}

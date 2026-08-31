@@ -91310,6 +91310,21 @@
                                 "transcript_diff"
                               ]
                             },
+                            "match_kind": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "enum": [
+                                    "exact",
+                                    "phonetic",
+                                    "none"
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
                             "heard_transcript": {
                               "type": "string",
                               "allOf": [
