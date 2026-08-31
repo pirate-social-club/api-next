@@ -2,14 +2,12 @@ import {
   AddMegapotPoolLeg,
   GetMegapotPoolFunding,
   GetSongMegapotPool,
-  GetStudySession,
   GetStudySessionV2,
   ObserveMegapotPoolFunding,
   OpenSongRewardOffer,
   SONG_LYRICS_TEXT_MAX_LENGTH,
-  StartStudySession,
   StartStudySessionV2,
-  SubmitStudyAnswer,
+  SubmitStudyAnswerV2,
 } from "@pirate/contracts";
 import { Schema } from "effect";
 import {
@@ -18,7 +16,11 @@ import {
   participantPreflightMatches,
   studySessionMatchesParticipantPreflight,
 } from "./megapot-participant-preflight-artifact.ts";
-import { runStagingStudyParticipant } from "./staging-study-participant.ts";
+import {
+  runStagingStudyParticipant,
+  type StudyFixtureAudio,
+  synthesizeStudyFixtureAudio,
+} from "./staging-study-participant.ts";
 
 const Identifier = Schema.NonEmptyString.check(Schema.isMaxLength(128));
 const AtomicAmount = Schema.String.check(Schema.isPattern(/^[1-9][0-9]*$/u));
@@ -76,6 +78,7 @@ export type MegapotGoldenDependencies = Readonly<{
   fetcher: Fetcher;
   sleep: (milliseconds: number) => Promise<void>;
   now: () => Date;
+  synthesizeStudyAudio?: (referenceText: string) => Promise<StudyFixtureAudio>;
 }>;
 
 export class MegapotBaseSepoliaGoldenFailed extends Error {
@@ -140,15 +143,16 @@ function endpoint(origin: string, path: string): string {
     url.search !== "" ||
     url.hash !== ""
   ) {
-    throw new MegapotBaseSepoliaGoldenFailed(
-      "invalid-options",
-      "The golden flow is restricted to https://api-next-staging.pirate.sc.",
-    );
+    throw new MegapotBaseSepoliaGoldenFailed("invalid-options", "Staging API required.");
   }
   return new URL(path, url).toString();
 }
 
-function authHeaders(options: MegapotGoldenOptions, write: boolean): Headers {
+function authHeaders(
+  options: MegapotGoldenOptions,
+  write: boolean,
+  contentType = "application/json",
+) {
   const headers = new Headers({ accept: "application/json" });
   if (options.authorization !== undefined) {
     if (
@@ -171,23 +175,19 @@ function authHeaders(options: MegapotGoldenOptions, write: boolean): Headers {
       !cookie.includes("__Host-pirate_session=") ||
       !cookie.includes(`__Host-pirate_csrf=${csrf}`)
     ) {
-      throw new MegapotBaseSepoliaGoldenFailed(
-        "invalid-auth",
-        "A valid staging session cookie and matching CSRF token are required.",
-      );
+      throw new MegapotBaseSepoliaGoldenFailed("invalid-auth", "Session and CSRF required.");
     }
     headers.set("cookie", cookie);
     headers.set("origin", "https://web-next-staging.pirate.sc");
     if (write) headers.set("x-csrf-token", csrf);
   }
-  if (write) headers.set("content-type", "application/json");
+  if (write) headers.set("content-type", contentType);
   return headers;
 }
 
 function participantOptions(options: MegapotGoldenOptions): MegapotGoldenOptions {
   return {
     execute: options.execute,
-    ...(options.qualifyStudy === undefined ? {} : { qualifyStudy: options.qualifyStudy }),
     apiOrigin: options.apiOrigin,
     ...(options.participantAuthorization === undefined
       ? {}
@@ -196,9 +196,6 @@ function participantOptions(options: MegapotGoldenOptions): MegapotGoldenOptions
     ...(options.participantCsrfToken === undefined
       ? {}
       : { csrfToken: options.participantCsrfToken }),
-    ...(options.participantPreflight === undefined
-      ? {}
-      : { participantPreflight: options.participantPreflight }),
   };
 }
 
@@ -264,12 +261,29 @@ async function requestJson<S extends Schema.ConstraintDecoder<unknown>>(
   options: MegapotGoldenOptions,
   path: string,
   schema: S,
-  request?: { readonly method: "POST"; readonly body: unknown },
+  request?: {
+    readonly method: "POST";
+    readonly body: unknown;
+    readonly contentType?: string;
+    readonly rawBody?: boolean;
+    readonly headers?: Readonly<Record<string, string>>;
+  },
 ): Promise<S["Type"]> {
+  const headers = authHeaders(
+    options,
+    request !== undefined,
+    request?.contentType ?? "application/json",
+  );
+  for (const [name, value] of Object.entries(request?.headers ?? {})) headers.set(name, value);
   const response = await dependencies.fetcher(endpoint(options.apiOrigin, path), {
     method: request?.method ?? "GET",
-    headers: authHeaders(options, request !== undefined),
-    ...(request === undefined ? {} : { body: JSON.stringify(request.body) }),
+    headers,
+    ...(request === undefined
+      ? {}
+      : {
+          body:
+            request.rawBody === true ? (request.body as BodyInit) : JSON.stringify(request.body),
+        }),
   });
   if (!response.ok) {
     const requestId = response.headers.get("x-request-id") ?? "missing";
@@ -303,7 +317,7 @@ function dryRun(input: GoldenInput, options: MegapotGoldenOptions) {
     qualification: {
       activity: "study" as const,
       execution: "authenticated_participant_api" as const,
-      fixture_source: "accepted_lyrics" as const,
+      fixture_source: "typed_study_v2_audio" as const,
       requested: options.qualifyStudy === true,
     },
     funding_transaction_supplied: input.funding_transaction_hash != null,
@@ -328,7 +342,7 @@ export async function runMegapotBaseSepoliaGolden(
   endpoint(options.apiOrigin, "/");
   if (!options.execute) return plan;
 
-  await assertParticipantReady(input, options, dependencies);
+  const participantStudySession = await assertParticipantReady(input, options, dependencies);
 
   const communityId = encodeURIComponent(input.community_id);
   const postId = encodeURIComponent(input.post_id);
@@ -428,44 +442,33 @@ export async function runMegapotBaseSepoliaGolden(
             communityId: input.community_id,
             postId: input.post_id,
             personaId: input.study_participant.persona_id,
-            timezone: input.study_participant.timezone,
             acceptedLyrics: input.study_participant.accepted_lyrics,
+            session: participantStudySession,
           },
           {
-            startSession: ({ communityId, postId, idempotencyKey, personaId, timezone }) =>
-              requestJson(
-                dependencies,
-                participantOptions(options),
-                `/communities/${encodeURIComponent(communityId)}/posts/${encodeURIComponent(postId)}/study/sessions`,
-                StartStudySession.response,
-                {
-                  method: "POST",
-                  body: {
-                    idempotency_key: idempotencyKey,
-                    persona_id: personaId,
-                    timezone,
-                  },
-                },
-              ),
+            synthesizeAudio: dependencies.synthesizeStudyAudio ?? synthesizeStudyFixtureAudio,
             submitAnswer: ({
               communityId,
               sessionId,
               sessionItemId,
               idempotencyKey,
               attemptNumber,
-              answer,
+              audio,
             }) =>
               requestJson(
                 dependencies,
                 participantOptions(options),
-                `/communities/${encodeURIComponent(communityId)}/study/sessions/${encodeURIComponent(sessionId)}/items/${encodeURIComponent(sessionItemId)}/answers`,
-                SubmitStudyAnswer.response,
+                `/communities/${encodeURIComponent(communityId)}/study/v2/sessions/${encodeURIComponent(sessionId)}/items/${encodeURIComponent(sessionItemId)}/answers`,
+                SubmitStudyAnswerV2.response,
                 {
                   method: "POST",
-                  body: {
-                    idempotency_key: idempotencyKey,
-                    attempt_number: attemptNumber,
-                    answer,
+                  body: audio.bytes,
+                  contentType: "audio/wav",
+                  rawBody: true,
+                  headers: {
+                    "idempotency-key": idempotencyKey,
+                    "x-study-attempt-number": String(attemptNumber),
+                    "x-audio-duration-ms": String(audio.durationMs),
                   },
                 },
               ),
@@ -473,8 +476,8 @@ export async function runMegapotBaseSepoliaGolden(
               requestJson(
                 dependencies,
                 participantOptions(options),
-                `/communities/${encodeURIComponent(communityId)}/study/sessions/${encodeURIComponent(sessionId)}`,
-                GetStudySession.response,
+                `/communities/${encodeURIComponent(communityId)}/study/v2/sessions/${encodeURIComponent(sessionId)}`,
+                GetStudySessionV2.response,
               ),
           },
         )
@@ -496,12 +499,7 @@ export async function runMegapotBaseSepoliaGolden(
   };
 }
 
-function parseOptions(args: readonly string[]): {
-  readonly execute: boolean;
-  readonly qualifyStudy: boolean;
-  readonly input: string;
-  readonly participantPreflight?: string;
-} {
+function parseOptions(args: readonly string[]) {
   const execute = args.includes("--execute");
   const confirmed = args.includes("--confirm-base-sepolia");
   const qualifyStudy = args.includes("--qualify-study");
