@@ -172,6 +172,7 @@ import {
   makeCommunityPurchaseFundingQuoteHandlers,
 } from "./community-purchase-funding-handlers.ts";
 import { makeDanceReferenceHandlers } from "./dance-reference-handlers.ts";
+import { makeProductionDanceReferenceServices } from "./dance-reference-production-composition.ts";
 import { makeHandleSalesHandlers } from "./handle-sales-handlers.ts";
 import { makeProductionHnsCommunityAppApiComposition } from "./hns-community-app-api-production-composition.ts";
 import { makeHnsOwnershipComposition } from "./hns-ownership-composition.ts";
@@ -608,10 +609,12 @@ export async function createProductionHttpWorker(
     throw new Error("HTTP worker configuration is incomplete or invalid");
   }
   const controlPlane = makeHyperdriveControlPlaneLayer(loadHyperdrive(bindings));
-  const danceReferenceHandlers = makeDanceReferenceHandlers({
-    store: makeDanceReferenceStore(controlPlane),
-    authority: dependencies.dance_reference_authority ?? null,
-  });
+  const danceReferenceHandlers = makeDanceReferenceHandlers(
+    makeProductionDanceReferenceServices(
+      makeDanceReferenceStore(controlPlane),
+      dependencies.dance_reference_authority,
+    ),
+  );
   const hnsCommunityAppApi = makeProductionHnsCommunityAppApiComposition({
     config,
     authority_source: makeControlPlaneHnsCommunityAppHostAuthoritySource(controlPlane),
