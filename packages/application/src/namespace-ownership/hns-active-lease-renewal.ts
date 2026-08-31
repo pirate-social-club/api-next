@@ -66,6 +66,7 @@ const unavailableValues = [
   "authoritative_dns_servfail",
   "authoritative_dns_insecure",
   "authoritative_dns_inconclusive",
+  "authority_inventory_unavailable",
   "observer_capacity",
   "observer_internal_error",
 ] as const;

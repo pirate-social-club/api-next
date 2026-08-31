@@ -6,14 +6,25 @@ import type {
   NamespaceOwnershipStartReservationInput,
   NamespaceOwnershipStoredCompletion,
 } from "@pirate/application";
+import { HnsActiveLeaseRenewalProviderFailed, runHnsActiveLeaseRenewal } from "@pirate/application";
 import type {
   HnsRouteRevalidationProviderStartResult,
   HnsRouteRevalidationStartReservationInput,
   HnsRouteRevalidationTerminalOutcomeV1,
 } from "@pirate/application/route-revalidation";
-import { hnsRouteRevalidationResultPreimage } from "@pirate/application/route-revalidation";
+import {
+  hnsRouteRevalidationResultPreimage,
+  pollHnsOwnerRecovery,
+  startHnsOwnerRecovery,
+} from "@pirate/application/route-revalidation";
 import { Effect } from "effect";
 import { Client } from "pg";
+import { makeControlPlaneHnsActiveLeaseRenewalStore } from "./hns-active-lease-renewal-repository";
+import { makeControlPlaneHnsOwnerRecoveryPollStore } from "./hns-owner-recovery-poll-repository";
+import {
+  makeControlPlaneHnsOwnerRecoveryAuthorityResolver,
+  makeControlPlaneHnsOwnerRecoveryStartStore,
+} from "./hns-owner-recovery-start-repository";
 import { makeControlPlaneNamespaceOwnershipCompletionStore } from "./namespace-ownership-completion-repository";
 import {
   makeControlPlaneNamespaceOwnershipStartAuthorityResolver,
@@ -29,7 +40,7 @@ if (required && connectionString === undefined) {
 }
 
 const suite = connectionString === undefined ? describe.skip : describe;
-const namespacePersistenceTestCount = 33;
+const namespacePersistenceTestCount = 35;
 const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_NAMESPACE_OWNERSHIP_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-namespace-ownership-suite-complete";
@@ -114,7 +125,11 @@ async function failure(client: Client, text: string, values: QueryValue[] = []):
   }
 }
 
-async function seed(client: Client, suffix: string): Promise<void> {
+async function seed(
+  client: Client,
+  suffix: string,
+  providerId = "namespace-provider",
+): Promise<void> {
   await client.query("INSERT INTO users (user_id) VALUES ($1), ($2)", [
     `actor_${suffix}`,
     `other_${suffix}`,
@@ -126,8 +141,8 @@ async function seed(client: Client, suffix: string): Promise<void> {
        verification_provider_id, provider_configuration_kind, provider_configuration_ref,
        provider_configuration_version, expires_at
      ) VALUES ($1, $2, 'create-key', $3, 1, 'verification_required', '{}'::jsonb, 1, $3, $4,
-       'namespace-provider', 'managed', 'namespace-config', 'v1', clock_timestamp() + interval '1 day')`,
-    [`intent_${suffix}`, `actor_${suffix}`, SHA, SHA_B],
+       $5, 'managed', 'namespace-config', 'v1', clock_timestamp() + interval '1 day')`,
+    [`intent_${suffix}`, `actor_${suffix}`, SHA, SHA_B, providerId],
   );
   await client.query(
     `INSERT INTO community_creation_requirement_states (
@@ -135,10 +150,10 @@ async function seed(client: Client, suffix: string): Promise<void> {
        provider_binding_hash, provider_configuration_kind, provider_configuration_ref,
        provider_configuration_version, route_family, route_root_label, route_root_label_display,
        route_path_segment
-     ) VALUES ($1, $2, 'namespace_ownership', 'unmet', $3, 'namespace-provider', $4,
+     ) VALUES ($1, $2, 'namespace_ownership', 'unmet', $3, $5, $4,
        'managed', 'namespace-config', 'v1', 'hns', 'example_root', 'example_root',
        'app.example_root')`,
-    [`intent_${suffix}`, `actor_${suffix}`, SHA_B, SHA_C],
+    [`intent_${suffix}`, `actor_${suffix}`, SHA_B, SHA_C, providerId],
   );
   await client.query(
     `INSERT INTO community_creation_ceremony_attempts (
@@ -147,10 +162,10 @@ async function seed(client: Client, suffix: string): Promise<void> {
        provider_configuration_ref, provider_configuration_version, route_family,
        route_root_label, route_root_label_display, route_path_segment,
        reservation_request_hash, reservation_request, expires_at
-     ) VALUES ($1, $2, $3, 'namespace_ownership', 1, $4, 'namespace-provider', $5,
+     ) VALUES ($1, $2, $3, 'namespace_ownership', 1, $4, $7, $5,
        'managed', 'namespace-config', 'v1', 'hns', 'example_root', 'example_root',
        'app.example_root', $6, '{}'::jsonb, clock_timestamp() + interval '1 hour')`,
-    [`ceremony_${suffix}`, `actor_${suffix}`, `intent_${suffix}`, SHA_B, SHA_C, SHA],
+    [`ceremony_${suffix}`, `actor_${suffix}`, `intent_${suffix}`, SHA_B, SHA_C, SHA, providerId],
   );
   await client.query(
     `UPDATE community_creation_requirement_states
@@ -165,6 +180,7 @@ async function insertSession(
   client: Client,
   suffix: string,
   overrides: Record<string, unknown> = {},
+  providerId = "namespace-provider",
 ) {
   const reuseReservation = overrides.reuseReservation === true;
   const values = {
@@ -195,7 +211,7 @@ async function insertSession(
        protocol_version, environment, route_family, route_root_label, route_root_label_display,
        route_path_segment, route_href, route_app_host, state, fence_token,
        lease_expires_at
-     ) VALUES ($1, $2, $3, $4, $5, 1, $6, 1, $7, $8, 'namespace-provider', $9,
+     ) VALUES ($1, $2, $3, $4, $5, 1, $6, 1, $7, $8, $11, $9,
        'managed', 'namespace-config', 'v1', 'hns-txt-v1', 'test', 'hns', 'example_root',
        'example_root', 'app.example_root', '/c/app.example_root', NULL, 'acquired', 1,
        COALESCE($10::timestamptz, clock_timestamp() + interval '30 minutes'))`,
@@ -210,6 +226,7 @@ async function insertSession(
         SHA_C,
         SHA_C,
         values.reservationLease,
+        providerId,
       ],
     );
   const sessionSql = `INSERT INTO namespace_ownership_sessions (
@@ -220,7 +237,7 @@ async function insertSession(
        protocol_version, environment, route_family, route_root_label, route_root_label_display,
        route_path_segment, route_href, route_app_host, upstream_session_ref,
        presentation_kind, presentation_payload, status, started_at, expires_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, 1, 1, $7, $8, 'namespace-provider', $9,
+       ) VALUES ($1, $2, $3, $4, $5, $6, 1, 1, $7, $8, $13, $9,
        'managed', 'namespace-config', 'v1', 'hns-txt-v1', 'test', 'hns',
        'example_root', 'example_root', 'app.example_root', '/c/app.example_root', NULL,
        $10, 'poll', '{"session_id":"provider-session"}'::jsonb, 'pending',
@@ -239,6 +256,7 @@ async function insertSession(
     values.upstream,
     values.startedAt,
     values.expiresAt,
+    providerId,
   ];
   if (values.expectFailure === true) {
     await failure(client, sessionSql, sessionValues);
@@ -306,6 +324,7 @@ async function insertSnapshot(
     raw: Buffer;
     providerEvidence: string;
   }> = {},
+  providerId = "namespace-provider",
 ) {
   const value = {
     evidence: `evidence_${suffix}`,
@@ -318,9 +337,21 @@ async function insertSnapshot(
     expires: undefined,
     expectFailure: false,
     raw: Buffer.from('{"status":"verified"}', "utf8"),
-    providerEvidence: "provider-observation-shared",
+    providerEvidence:
+      providerId === "hns.owner.v1"
+        ? `hns-observer-v1:sha256:${SHA}:fixture`
+        : "provider-observation-shared",
     ...overrides,
   };
+  const observation =
+    providerId === "hns.owner.v1"
+      ? JSON.stringify({
+          status: "verified",
+          control_identity_digest: SHA_B,
+          chain_authority_digest: SHA_C,
+        })
+      : '{"status":"verified"}';
+  if (overrides.raw === undefined) value.raw = Buffer.from(observation, "utf8");
   const snapshotSql = `INSERT INTO namespace_ownership_evidence_snapshots (
        evidence_ref, completion_attempt_id, namespace_session_id, actor_id, creation_intent_id,
        ceremony_intent_id, generation, requirement_hash, request_hash, provider_id,
@@ -332,7 +363,7 @@ async function insertSnapshot(
        chain_anchor_block_hash, chain_anchor_median_time, expiry_height, observed_at, expires_at,
        provider_evidence_ref, observation_sha256, provider_identity_digest, evidence_digest,
        observation, raw_response_bytes
-     ) VALUES ($1, $2, $3, $4, $5, $6, 1, $7, $8, 'namespace-provider', $9,
+     ) VALUES ($1, $2, $3, $4, $5, $6, 1, $7, $8, $21, $9,
        'managed', 'namespace-config', 'v1', 'hns-txt-v1', 'test', 'hns', 'example_root',
        'example_root', 'app.example_root', '/c/app.example_root', NULL, $10, 1,
        'pirate-hns-ownership-evidence-v1', 'owner_authoritative_dns_txt',
@@ -359,14 +390,27 @@ async function insertSnapshot(
     SHA,
     SHA_B,
     SHA_C,
-    '{"status":"verified"}',
+    observation,
     value.raw,
+    providerId,
   ];
   if (value.expectFailure === true) {
     await failure(client, snapshotSql, snapshotValues);
   } else {
     await client.query(snapshotSql, snapshotValues);
   }
+}
+
+async function insertHnsControlIdentity(client: Client, evidenceRef: string): Promise<void> {
+  await client.query(
+    `INSERT INTO community_route_hns_control_identities (
+       evidence_ref, ownership_source, root_label, txt_name,
+       expected_txt_value_sha256, control_identity_digest,
+       chain_authority_digest, provider_evidence_ref
+     ) VALUES ($1, 'owner_authoritative_dns_txt', 'example_root',
+       '_pirate.example_root', $2, $3, $4, $5)`,
+    [evidenceRef, SHA, SHA_B, SHA_C, `hns-observer-v1:sha256:${SHA}:fixture`],
+  );
 }
 
 async function databaseTerminalAt(client: Client): Promise<string> {
@@ -383,6 +427,7 @@ async function insertNamespaceResult(
   suffix: string,
   outcome: NamespaceOutcome,
   terminalAt: string,
+  providerId = "namespace-provider",
 ): Promise<void> {
   const satisfied = outcome === "satisfied";
   await client.query(
@@ -392,7 +437,7 @@ async function insertNamespaceResult(
        callback_idempotency_key, callback_request_hash, outcome_status, result_hash,
        evidence_ref, evidence_digest, provider_identity_digest, terminal_at, satisfied_at,
        namespace_session_id, completion_attempt_id, submission_channel
-     ) VALUES ($1, $2, $3, 'namespace_ownership', 1, $4, 'namespace-provider', $5, 'v1',
+     ) VALUES ($1, $2, $3, 'namespace_ownership', 1, $4, $17, $5, 'v1',
        $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, 'poll_result')`,
     [
       `ceremony_${suffix}`,
@@ -411,6 +456,7 @@ async function insertNamespaceResult(
       satisfied ? terminalAt : null,
       `namespace_session_${suffix}`,
       `completion_${suffix}`,
+      providerId,
     ],
   );
 }
@@ -419,6 +465,7 @@ async function insertRouteEvidence(
   client: Client,
   suffix: string,
   verifiedAt: string,
+  providerId = "namespace-provider",
 ): Promise<void> {
   await client.query(
     `INSERT INTO community_route_ownership_evidence (
@@ -428,7 +475,7 @@ async function insertRouteEvidence(
        provider_configuration_version, provider_identity_digest,
        evidence_digest, binding_generation, verified_at, expires_at
      ) VALUES ($1, $2, $3, 'hns', 'example_root', 'example_root', 'app.example_root',
-       $4, 'namespace-provider', $5, 'v1', $6, $7, 1, $8,
+       $4, $9, $5, 'v1', $6, $7, 1, $8,
        (SELECT expires_at FROM namespace_ownership_evidence_snapshots WHERE evidence_ref = $1))`,
     [
       `evidence_${suffix}`,
@@ -439,23 +486,31 @@ async function insertRouteEvidence(
       SHA_B,
       SHA_C,
       verifiedAt,
+      providerId,
     ],
   );
 }
 
-async function finalizeVerifiedSnapshot(client: Client, suffix: string): Promise<void> {
+async function finalizeVerifiedSnapshot(
+  client: Client,
+  suffix: string,
+  providerId = "namespace-provider",
+): Promise<void> {
   await client.query("BEGIN");
   await consumeAttempt(client, suffix, "verified");
-  await insertSnapshot(client, suffix);
+  await insertSnapshot(client, suffix, {}, providerId);
+  if (providerId === "hns.owner.v1") {
+    await insertHnsControlIdentity(client, `evidence_${suffix}`);
+  }
   const terminalAt = await databaseTerminalAt(client);
-  await insertNamespaceResult(client, suffix, "satisfied", terminalAt);
+  await insertNamespaceResult(client, suffix, "satisfied", terminalAt, providerId);
   await client.query(
     `UPDATE community_creation_requirement_states
         SET status = 'satisfied', satisfied_at = $1, updated_at = clock_timestamp()
       WHERE intent_id = $2 AND requirement_kind = 'namespace_ownership'`,
     [terminalAt, `intent_${suffix}`],
   );
-  await insertRouteEvidence(client, suffix, terminalAt);
+  await insertRouteEvidence(client, suffix, terminalAt, providerId);
   await client.query(
     `UPDATE namespace_ownership_sessions
         SET status = 'completed', terminal_at = $1, completed_at = $1,
@@ -466,11 +521,15 @@ async function finalizeVerifiedSnapshot(client: Client, suffix: string): Promise
   await client.query("COMMIT");
 }
 
-async function seedActiveRevalidationRoute(client: Client, suffix: string): Promise<void> {
-  await seed(client, suffix);
-  await insertSession(client, suffix);
+async function seedActiveRevalidationRoute(
+  client: Client,
+  suffix: string,
+  providerId = "namespace-provider",
+): Promise<void> {
+  await seed(client, suffix, providerId);
+  await insertSession(client, suffix, {}, providerId);
   await insertAttempt(client, suffix);
-  await finalizeVerifiedSnapshot(client, suffix);
+  await finalizeVerifiedSnapshot(client, suffix, providerId);
   await client.query("BEGIN");
   await client.query(
     `INSERT INTO communities (
@@ -492,10 +551,61 @@ async function seedActiveRevalidationRoute(client: Client, suffix: string): Prom
   await client.query("COMMIT");
 }
 
+async function seedSuspendedRecoveryRoute(client: Client, suffix: string): Promise<void> {
+  const providerId = "hns.owner.v1";
+  await insertHnsTestConfiguration(client);
+  await seedActiveRevalidationRoute(client, suffix, providerId);
+  await insertRevalidationSession(
+    client,
+    suffix,
+    new Date(Date.now() + 3_600_000).toISOString(),
+    providerId,
+  );
+  await insertRevalidationAttempt(client, suffix);
+  const terminal = routeTerminalDocument(suffix, "missing_root");
+  await client.query("BEGIN");
+  await client.query(
+    `UPDATE community_canonical_route_bindings
+        SET binding_generation = 2, verified_evidence_ref = NULL,
+            ownership_status = 'revoked', route_lifecycle_status = 'suspended',
+            updated_at = clock_timestamp()
+      WHERE route_binding_id = $1`,
+    [`route_binding_${suffix}`],
+  );
+  await client.query(
+    `UPDATE community_route_revalidation_completion_attempts
+        SET state = 'consumed', consumption_kind = 'missing_root',
+            result_hash = $1, terminal_result_document = $2,
+            terminal_at = clock_timestamp()
+      WHERE route_revalidation_attempt_id = $3`,
+    [terminal.resultHash, terminal.document, `revalidation_attempt_${suffix}`],
+  );
+  await client.query(
+    `UPDATE community_route_revalidation_sessions
+        SET status = 'failed', terminal_at = clock_timestamp()
+      WHERE revalidation_session_id = $1`,
+    [`revalidation_session_${suffix}`],
+  );
+  await client.query("COMMIT");
+}
+
+async function insertHnsTestConfiguration(client: Client): Promise<void> {
+  const configurationBytes = Buffer.from('{"kind":"test"}', "utf8");
+  const configurationDigest = createHash("sha256").update(configurationBytes).digest("hex");
+  await client.query(
+    `INSERT INTO hns_control_observer_configurations (
+       provider_configuration_reference, provider_configuration_version,
+       provider_configuration_digest, configuration_bytes
+     ) VALUES ('namespace-config', 'v1', $1, $2)`,
+    [configurationDigest, configurationBytes],
+  );
+}
+
 async function insertRevalidationSession(
   client: Client,
   suffix: string,
   expiresAt = new Date(Date.now() + 3_600_000).toISOString(),
+  providerId = "namespace-provider",
 ): Promise<void> {
   const upstreamSessionRef = `revalidation_upstream_${suffix}`;
   const startPresentation = {
@@ -521,7 +631,7 @@ async function insertRevalidationSession(
        protocol_version, environment, family, root_label, root_label_display,
        path_segment, start_request_hash, state, fence_token, lease_expires_at
      ) VALUES ($1, $2, $3, $4, 'system', 'route-revalidation-scheduler', 1, $5,
-       $6, 'namespace-provider', $7, 'managed', 'namespace-config', 'v1',
+       $6, $9, $7, 'managed', 'namespace-config', 'v1',
        'hns-txt-v1', 'test', 'hns', 'example_root', 'example_root',
        'app.example_root', $8, 'acquired', 1, clock_timestamp() + interval '15 seconds')`,
     [
@@ -533,6 +643,7 @@ async function insertRevalidationSession(
       SHA,
       SHA_C,
       SHA_B,
+      providerId,
     ],
   );
   await client.query(
@@ -546,7 +657,7 @@ async function insertRevalidationSession(
        root_label, root_label_display, path_segment, upstream_session_ref,
        start_presentation, status, started_at, expires_at
      ) VALUES ($1, $2, 1, $3, $4, 'system', 'route-revalidation-scheduler',
-       1, $5, $6, $7, 'namespace-provider', $8, 'managed', 'namespace-config',
+       1, $5, $6, $7, $12, $8, 'managed', 'namespace-config',
        'v1', 'hns-txt-v1', 'test', 'hns', 'example_root', 'example_root',
        'app.example_root', $9, $10::jsonb, 'pending', clock_timestamp(), $11)`,
     [
@@ -561,6 +672,7 @@ async function insertRevalidationSession(
       upstreamSessionRef,
       JSON.stringify(startPresentation),
       expiresAt,
+      providerId,
     ],
   );
   await client.query(
@@ -2172,6 +2284,7 @@ suite("Postgres namespace ownership persistence foundation", () => {
         result_hash: SHA_C,
         expired_result_hash: SHA_B,
         attempt: reserved.reservation,
+        target_response: null,
       } as const;
       expect(await Effect.runPromise(Effect.scoped(completionStore.reject(rejected)))).toEqual({
         kind: "committed",
@@ -3131,6 +3244,220 @@ suite("Postgres namespace ownership persistence foundation", () => {
     });
     completedTestCount += 1;
   });
+
+  test("runs owner recovery start and terminal poll through the real repositories", async () => {
+    await withSchema(async (client, scoped) => {
+      const suffix = "owner_recovery_repository";
+      await seedSuspendedRecoveryRoute(client, suffix);
+      const layer = makeDirectPostgresControlPlaneLayer(scoped);
+      const startInput = {
+        actor_id: `actor_${suffix}`,
+        community_id: `community_${suffix}`,
+        expected_generation: 2,
+        idempotency_key: "owner-recovery-start-key",
+      } as const;
+      let startProviderCalls = 0;
+      const startServices = {
+        authority: makeControlPlaneHnsOwnerRecoveryAuthorityResolver(layer),
+        store: makeControlPlaneHnsOwnerRecoveryStartStore(layer),
+        provider: {
+          start: (request: {
+            readonly challenge_expires_at: string;
+            readonly route: { readonly root_label: string };
+          }) => {
+            startProviderCalls += 1;
+            const upstreamSessionRef = "owner-recovery-upstream";
+            const ownershipSource = "owner_authoritative_dns_txt" as const;
+            return Effect.succeed({
+              upstream_session_ref: upstreamSessionRef,
+              expires_at: request.challenge_expires_at,
+              presentation: {
+                kind: "embedded_sdk" as const,
+                session_id: upstreamSessionRef,
+                protocol: "hns-txt-challenge" as const,
+                version: "1" as const,
+                payload: {
+                  ownership_source: ownershipSource,
+                  challenge_name: `_pirate.${request.route.root_label}`,
+                  challenge_value: `pirate-verification=${upstreamSessionRef}`,
+                  expires_at: request.challenge_expires_at,
+                },
+              },
+            });
+          },
+        },
+        ids: {
+          reservation: () => "owner-recovery-start-reservation",
+          recovery: () => "owner-recovery-id",
+          session: () => "owner-recovery-session",
+        },
+      } as const;
+      const started = await Effect.runPromise(
+        Effect.scoped(startHnsOwnerRecovery(startInput, startServices)),
+      );
+      expect(started).toMatchObject({
+        route_recovery_id: "owner-recovery-id",
+        session_id: "owner-recovery-session",
+        generation: 2,
+        status: "pending",
+        replayed: false,
+      });
+      expect(
+        await Effect.runPromise(Effect.scoped(startHnsOwnerRecovery(startInput, startServices))),
+      ).toMatchObject({ replayed: true });
+      expect(startProviderCalls).toBe(1);
+
+      let pollProviderCalls = 0;
+      const pollInput = {
+        actor_id: startInput.actor_id,
+        community_id: startInput.community_id,
+        route_recovery_id: started.route_recovery_id,
+        session_id: started.session_id,
+        expected_generation: 2,
+        idempotency_key: "owner-recovery-poll-key",
+        channel: "poll_result",
+      } as const;
+      const pollServices = {
+        store: makeControlPlaneHnsOwnerRecoveryPollStore(layer),
+        provider: {
+          poll: () => {
+            pollProviderCalls += 1;
+            return Effect.succeed(
+              Buffer.from(
+                JSON.stringify({
+                  status: "rejected",
+                  observation_contract_version: "pirate-hns-target-observation-v2",
+                  reason_code: "root_absent",
+                  observer_result_sha256: SHA,
+                  provider_evidence_ref: `hns-observer-v1:sha256:${SHA}:root-absent`,
+                }),
+                "utf8",
+              ),
+            );
+          },
+        },
+        policy: {
+          expected_block_interval_seconds: 600,
+          minimum_safe_remaining_blocks: 1,
+          expiry_safety_blocks: 100,
+          evidence_lease_seconds: 2_592_000,
+        },
+        ids: {
+          attempt: () => "owner-recovery-attempt",
+          evidence: () => "owner-recovery-evidence",
+          observation: () => "owner-recovery-observation",
+        },
+      } as const;
+      const polled = await Effect.runPromise(
+        Effect.scoped(pollHnsOwnerRecovery(pollInput, pollServices)),
+      );
+      expect(polled).toMatchObject({
+        status: "rejected",
+        reason_code: "root_unavailable",
+        generation: 3,
+        replayed: false,
+      });
+      expect(
+        await Effect.runPromise(Effect.scoped(pollHnsOwnerRecovery(pollInput, pollServices))),
+      ).toMatchObject({ generation: 3, replayed: true });
+      expect(pollProviderCalls).toBe(1);
+      expect(
+        (
+          await client.query(
+            `SELECT
+               (SELECT binding_generation::int
+                  FROM community_canonical_route_bindings
+                 WHERE route_binding_id = $1) AS binding_generation,
+               (SELECT count(*)::int
+                  FROM community_route_ownership_evidence
+                 WHERE origin = 'owner_recovery') AS recovery_evidence,
+               (SELECT consumption_kind
+                  FROM community_route_revalidation_completion_attempts
+                 WHERE route_revalidation_attempt_id = $2) AS consumption_kind`,
+            [`route_binding_${suffix}`, "owner-recovery-attempt"],
+          )
+        ).rows[0],
+      ).toEqual({
+        binding_generation: 3,
+        recovery_evidence: 0,
+        consumption_kind: "root_absent",
+      });
+    });
+    completedTestCount += 1;
+  }, 20_000);
+
+  test("runs active lease renewal unchanged finalization through the real repository", async () => {
+    await withSchema(async (client, scoped) => {
+      const suffix = "active_renewal_repository";
+      await insertHnsTestConfiguration(client);
+      await seedActiveRevalidationRoute(client, suffix, "hns.owner.v1");
+      let providerCalls = 0;
+      const services = {
+        store: makeControlPlaneHnsActiveLeaseRenewalStore(
+          makeDirectPostgresControlPlaneLayer(scoped),
+        ),
+        provider: {
+          renew: () => {
+            providerCalls += 1;
+            return Effect.fail(
+              new HnsActiveLeaseRenewalProviderFailed({
+                reason: "renewal_evidence_ineligible",
+              }),
+            );
+          },
+        },
+        policy: {
+          expected_block_interval_seconds: 600,
+          minimum_safe_remaining_blocks: 1,
+          expiry_safety_blocks: 100,
+          evidence_lease_seconds: 2_592_000,
+        },
+        ids: {
+          renewal: () => "active-renewal-id",
+          attempt: () => "active-renewal-attempt",
+          evidence: () => "active-renewal-evidence",
+          observation: () => "active-renewal-observation",
+        },
+      } as const;
+      const input = {
+        route_binding_id: `route_binding_${suffix}`,
+        idempotency_key: "active-renewal-key",
+      } as const;
+      expect(
+        await Effect.runPromise(Effect.scoped(runHnsActiveLeaseRenewal(input, services))),
+      ).toMatchObject({
+        status: "unchanged",
+        outcome_status: "renewal_evidence_ineligible",
+        replayed: false,
+      });
+      expect(
+        await Effect.runPromise(Effect.scoped(runHnsActiveLeaseRenewal(input, services))),
+      ).toMatchObject({ replayed: true });
+      expect(providerCalls).toBe(1);
+      expect(
+        (
+          await client.query(
+            `SELECT
+               (SELECT binding_generation::int
+                  FROM community_canonical_route_bindings
+                 WHERE route_binding_id = $1) AS binding_generation,
+               (SELECT verified_evidence_ref
+                  FROM community_canonical_route_bindings
+                 WHERE route_binding_id = $1) AS verified_evidence_ref,
+               (SELECT consumption_kind
+                  FROM community_route_active_lease_renewal_attempts
+                 WHERE active_lease_renewal_attempt_id = $2) AS consumption_kind`,
+            [`route_binding_${suffix}`, "active-renewal-attempt"],
+          )
+        ).rows[0],
+      ).toEqual({
+        binding_generation: 1,
+        verified_evidence_ref: `evidence_${suffix}`,
+        consumption_kind: "renewal_evidence_ineligible",
+      });
+    });
+    completedTestCount += 1;
+  }, 20_000);
 
   afterAll(async () => {
     if (connectionString !== undefined && completedTestCount === namespacePersistenceTestCount) {

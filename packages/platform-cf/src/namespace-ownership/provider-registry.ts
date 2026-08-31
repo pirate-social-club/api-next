@@ -28,6 +28,7 @@ export type PlatformNamespaceOwnershipProviderOptions = Readonly<{
     readonly provider_configuration?: Schema.Schema.Type<typeof ProviderConfigurationRef>;
     readonly environments?: readonly string[];
     readonly operation_deadlines?: HnsOwnerAdapterOptions["operation_deadlines"];
+    readonly target_observation_contract?: HnsOwnerAdapterOptions["target_observation_contract"];
   }>;
 }>;
 
@@ -53,7 +54,7 @@ function configuredHnsAdapter(
   try {
     return makeHnsOwnerAdapter({
       transport: hns.transport,
-      require_target_observation_v2: true,
+      target_observation_contract: hns.target_observation_contract ?? "v2",
       provider_configuration: configuration.value,
       environments: hns.environments,
       ...(hns.operation_deadlines === undefined

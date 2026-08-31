@@ -128,6 +128,7 @@ export {
   makeControlPlaneHandleSalesRepository,
   makeControlPlaneHandleSalesStore,
 } from "./handle-sales-repository";
+export { makeControlPlaneHnsActiveLeaseRenewalStore } from "./hns-active-lease-renewal-repository.ts";
 export {
   HnsAuthoritySuccessorPostgresReaderError,
   makeHnsAuthoritySuccessorGenerationReaderFromRepositoryV1,
@@ -146,6 +147,11 @@ export {
   makeControlPlaneHnsCommunityAppHostAuthoritySource,
   makeControlPlaneHnsFirstPartyHostPersistenceRepository,
 } from "./hns-host-persistence-repository";
+export { makeControlPlaneHnsOwnerRecoveryPollStore } from "./hns-owner-recovery-poll-repository.ts";
+export {
+  makeControlPlaneHnsOwnerRecoveryAuthorityResolver,
+  makeControlPlaneHnsOwnerRecoveryStartStore,
+} from "./hns-owner-recovery-start-repository.ts";
 export {
   type CanonicalIdentity,
   type IdentityRepository,

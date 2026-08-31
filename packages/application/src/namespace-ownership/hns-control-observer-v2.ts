@@ -29,7 +29,18 @@ import {
 } from "./hns-control-observer-store.ts";
 import {
   decodeStrictHnsJsonBytes,
+  HNS_OWNER_EVIDENCE_PREIMAGE_VERSION,
+  HNS_OWNER_PROVIDER_ID,
   HnsOwnerResponseDecodeError,
+  type HnsOwnershipEvidenceEnvelope,
+  type HnsOwnershipEvidenceInput,
+  type HnsOwnershipEvidencePreimageInput,
+  hnsNamespaceStartHash,
+  hnsOwnerChallengeName,
+  hnsOwnerChallengeValue,
+  hnsOwnerChallengeValueSha256,
+  hnsOwnershipEvidencePreimage,
+  hnsProviderIdentityDigest,
   sha256Utf8,
 } from "./hns-evidence.ts";
 
@@ -1266,6 +1277,143 @@ export async function decodeHnsOwnerTargetObservationV3Bytes(value: unknown): Pr
     response,
     response_bytes: bytes,
     response_sha256: await sha256Bytes(bytes),
+  };
+}
+
+export async function buildHnsOwnershipEvidenceFromTargetV3(
+  input: HnsOwnershipEvidenceInput,
+): Promise<HnsOwnershipEvidenceEnvelope> {
+  const decoded = await decodeHnsOwnerTargetObservationV3Bytes(input.raw_response_bytes);
+  if (decoded.response.status !== "verified") {
+    throw new HnsControlObservationV2DecodeError(
+      "Only a verified target-v3 response can produce ownership evidence",
+    );
+  }
+  const observation = decoded.response;
+  if (
+    input.provider_id !== HNS_OWNER_PROVIDER_ID ||
+    input.route.family !== "hns" ||
+    input.route.app_host !== null ||
+    observation.upstream_session_ref !== input.upstream_session_ref ||
+    observation.challenge_name !==
+      hnsOwnerChallengeName(observation.ownership_source, input.route.root_label) ||
+    observation.challenge_value !== hnsOwnerChallengeValue(input.upstream_session_ref)
+  ) {
+    throw new HnsControlObservationV2DecodeError(
+      "Target-v3 ownership evidence is not bound to its namespace session",
+    );
+  }
+  const expectedControlIdentity = await hnsControlIdentityDigest({
+    ownership_source: observation.ownership_source,
+    txt_name: observation.challenge_name,
+    expected_txt_value: observation.challenge_value,
+    root_label: input.route.root_label,
+    chain_authority_digest: observation.chain_authority_digest,
+  });
+  if (observation.control_identity_digest !== expectedControlIdentity) {
+    throw new HnsControlObservationV2DecodeError(
+      "Target-v3 ownership evidence has inconsistent control authority",
+    );
+  }
+  const expectedRequestHash = await hnsNamespaceStartHash({
+    actor_id: input.actor_id,
+    creation_intent_id: input.creation_intent_id,
+    ceremony_intent_id: input.ceremony_intent_id,
+    requirement_hash: input.requirement_hash,
+    generation: input.generation,
+    provider_id: input.provider_id,
+    provider_binding_hash: input.provider_binding_hash,
+    provider_configuration: input.provider_configuration,
+    protocol_version: input.protocol_version,
+    environment: input.environment,
+    route: input.route,
+  });
+  if (input.request_hash !== expectedRequestHash) {
+    throw new HnsControlObservationV2DecodeError(
+      "Target-v3 ownership evidence request hash is inconsistent",
+    );
+  }
+  const providerIdentityDigest = await hnsProviderIdentityDigest({
+    provider_id: input.provider_id,
+    provider_configuration_kind: input.provider_configuration.kind,
+    provider_configuration_reference: input.provider_configuration.reference,
+    provider_configuration_version: input.provider_configuration.version,
+    protocol_version: input.protocol_version,
+    root_label: input.route.root_label,
+  });
+  const challengeValueSha256 = await hnsOwnerChallengeValueSha256(input.upstream_session_ref);
+  const evidenceInput: HnsOwnershipEvidencePreimageInput = {
+    actor_id: input.actor_id,
+    creation_intent_id: input.creation_intent_id,
+    ceremony_intent_id: input.ceremony_intent_id,
+    requirement_hash: input.requirement_hash,
+    generation: input.generation,
+    provider_id: input.provider_id,
+    provider_binding_hash: input.provider_binding_hash,
+    provider_configuration: input.provider_configuration,
+    protocol_version: input.protocol_version,
+    environment: input.environment,
+    route: input.route,
+    request_hash: input.request_hash,
+    upstream_session_ref: observation.upstream_session_ref,
+    ownership_source: observation.ownership_source,
+    challenge_name: observation.challenge_name,
+    root_exists: true,
+    root_control_verified: true,
+    expiry_horizon_sufficient: true,
+    chain_network: observation.chain_network,
+    chain_anchor_height: observation.chain_anchor_height,
+    chain_anchor_block_hash: observation.chain_anchor_block_hash,
+    chain_anchor_median_time: observation.chain_anchor_median_time,
+    expiry_height: observation.expiry_height,
+    observed_at: observation.observed_at,
+    expires_at: observation.expires_at,
+    evidence_ref: input.evidence_ref,
+    provider_evidence_ref: observation.provider_evidence_ref,
+    observation_sha256: decoded.response_sha256,
+    provider_identity_digest: providerIdentityDigest,
+    challenge_value_sha256: challengeValueSha256,
+  };
+  const evidenceDigest = await sha256Utf8(hnsOwnershipEvidencePreimage(evidenceInput));
+  return {
+    version: HNS_OWNER_EVIDENCE_PREIMAGE_VERSION,
+    actor_id: input.actor_id,
+    creation_intent_id: input.creation_intent_id,
+    requirement: "namespace_ownership",
+    requirement_hash: input.requirement_hash,
+    ceremony_intent_id: input.ceremony_intent_id,
+    generation: input.generation,
+    request_hash: input.request_hash,
+    provider_id: input.provider_id,
+    provider_binding_hash: input.provider_binding_hash,
+    provider_configuration_kind: input.provider_configuration.kind,
+    provider_configuration_reference: input.provider_configuration.reference,
+    provider_configuration_version: input.provider_configuration.version,
+    protocol_version: input.protocol_version,
+    environment: input.environment,
+    family: "hns",
+    root_label: input.route.root_label,
+    root_label_display: input.route.root_label_display,
+    path_segment: input.route.path_segment,
+    upstream_session_ref: observation.upstream_session_ref,
+    ownership_source: observation.ownership_source,
+    challenge_name: observation.challenge_name,
+    challenge_value_sha256: challengeValueSha256,
+    root_exists: true,
+    root_control_verified: true,
+    expiry_horizon_sufficient: true,
+    chain_network: observation.chain_network,
+    chain_anchor_height: observation.chain_anchor_height,
+    chain_anchor_block_hash: observation.chain_anchor_block_hash,
+    chain_anchor_median_time: observation.chain_anchor_median_time,
+    expiry_height: observation.expiry_height,
+    observed_at: observation.observed_at,
+    expires_at: observation.expires_at,
+    evidence_ref: input.evidence_ref,
+    provider_evidence_ref: observation.provider_evidence_ref,
+    observation_sha256: decoded.response_sha256,
+    provider_identity_digest: providerIdentityDigest,
+    evidence_digest: evidenceDigest,
   };
 }
 

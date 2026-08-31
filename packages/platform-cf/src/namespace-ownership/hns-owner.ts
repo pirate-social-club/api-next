@@ -1,5 +1,6 @@
 import {
   decodeHnsOwnerResponseBytes,
+  decodeHnsOwnerTargetObservationV3Bytes,
   decodeStrictHnsJsonBytes,
   HNS_OWNER_MANIFEST_VERSION,
   HNS_OWNER_PROTOCOL_VERSION,
@@ -66,8 +67,8 @@ export type HnsOwnerAdapterOptions = Readonly<{
     readonly complete_ms: number;
   }>;
   readonly now?: () => number;
-  /** Target-owned composition accepts only the control-observer v2 response. */
-  readonly require_target_observation_v2?: boolean;
+  /** Version-closed target response selected by the owning composition. */
+  readonly target_observation_contract?: "v2" | "v3";
 }>;
 
 const HnsStartPresentation = Schema.Struct({
@@ -128,6 +129,77 @@ function sessionMatchesConfiguration(
     sameConfiguration(session.provider_configuration, provider_configuration) &&
     session.protocol_version === HNS_OWNER_PROTOCOL_VERSION &&
     environments.includes(session.environment)
+  );
+}
+
+function targetV3Result(
+  bytes: Uint8Array,
+  input: NamespaceOwnershipProviderCompleteInput,
+  now: number,
+): Effect.Effect<
+  NamespaceOwnershipProviderCompleteResult,
+  NamespaceOwnershipProviderInvalidResponse | NamespaceOwnershipProviderObservationRejected
+> {
+  return Effect.tryPromise({
+    try: () => decodeHnsOwnerTargetObservationV3Bytes(bytes),
+    catch: () => invalid("complete"),
+  }).pipe(
+    Effect.flatMap(
+      (
+        decoded,
+      ): Effect.Effect<
+        NamespaceOwnershipProviderCompleteResult,
+        NamespaceOwnershipProviderObservationRejected
+      > => {
+        const result = decoded.response;
+        const common = {
+          observation_contract_version: result.observation_contract_version,
+          raw_response_bytes: decoded.response_bytes,
+          provider_response_sha256: decoded.response_sha256,
+          observation: result,
+        } as const;
+        if (result.status === "pending") {
+          return Effect.succeed({ status: "pending" as const, ...common });
+        }
+        if (result.status === "rejected") {
+          return Effect.succeed({ status: "rejected" as const, ...common });
+        }
+        if (result.status === "unavailable") {
+          return Effect.succeed({
+            status: "unavailable" as const,
+            ...common,
+            retry_after_seconds: result.retry_after_seconds,
+          });
+        }
+        if (result.status === "ineligible") {
+          return result.root_label === input.session.route.root_label
+            ? Effect.succeed({ status: "ineligible" as const, ...common })
+            : Effect.fail(observationRejected());
+        }
+        if (
+          result.upstream_session_ref !== input.session.upstream_session_ref ||
+          result.challenge_name !==
+            hnsOwnerChallengeName(result.ownership_source, input.session.route.root_label) ||
+          result.challenge_value !== hnsOwnerChallengeValue(input.session.upstream_session_ref) ||
+          !isCanonicalInstant(result.observed_at) ||
+          !isCanonicalInstant(result.expires_at) ||
+          Date.parse(result.observed_at) > now ||
+          Date.parse(result.expires_at) <= now ||
+          Date.parse(result.expires_at) <= Date.parse(result.observed_at)
+        ) {
+          return Effect.fail(observationRejected());
+        }
+        return Effect.succeed({
+          status: "verified" as const,
+          evidence_kind: "raw_provider_response_v1" as const,
+          provider_evidence_ref: result.provider_evidence_ref,
+          raw_response_bytes: decoded.response_bytes,
+          observation: result,
+          observed_at: result.observed_at,
+          expires_at: result.expires_at,
+        });
+      },
+    ),
   );
 }
 
@@ -280,6 +352,9 @@ export function makeHnsOwnerAdapter(
               | NamespaceOwnershipProviderInvalidResponse
               | NamespaceOwnershipProviderObservationRejected
             > => {
+              if (options.target_observation_contract === "v3") {
+                return targetV3Result(bytes, input, now());
+              }
               let decoded: HnsOwnerRawResponse;
               try {
                 decoded = decodeHnsOwnerResponseBytes(bytes);
@@ -287,7 +362,7 @@ export function makeHnsOwnerAdapter(
                 return Effect.fail(invalid("complete"));
               }
               if (
-                options.require_target_observation_v2 === true &&
+                options.target_observation_contract === "v2" &&
                 !("observation_contract_version" in decoded.response)
               ) {
                 return Effect.fail(invalid("complete"));

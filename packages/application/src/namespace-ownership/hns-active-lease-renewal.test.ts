@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { Effect } from "effect";
 import {
   buildHnsActiveLeaseRenewalEvidence,
   classifyHnsActiveLeaseRenewalResponse,
@@ -23,9 +24,19 @@ import {
   resolveHnsActiveLeaseRenewalControlIdentity,
 } from "./hns-active-lease-renewal.ts";
 import {
+  HnsActiveLeaseRenewalProviderFailed,
+  type HnsActiveLeaseRenewalReservation,
+  type HnsActiveLeaseRenewalServices,
+  type HnsActiveLeaseRenewalStore,
+  type HnsActiveLeaseRenewalStoredOperation,
+  hnsActiveLeaseRenewalTerminalResultHash,
+  runHnsActiveLeaseRenewal,
+} from "./hns-active-lease-renewal-operation.ts";
+import {
   hnsControlIdentityDigest,
   hnsControlObservationRequestHash,
 } from "./hns-control-observer.ts";
+import { encodeHnsActiveLeaseRenewalIneligibleResponseV2 } from "./hns-control-observer-v2.ts";
 
 const route = {
   family: "hns" as const,
@@ -615,4 +626,259 @@ test("recovers exact prior control identity only from its hash-pinned snapshot",
       },
     }),
   ).rejects.toThrow("does not match its provider evidence reference");
+});
+
+async function operationRequestFor(
+  inputAuthority: HnsActiveLeaseRenewalAuthorityV1,
+): Promise<HnsOwnerActiveLeaseRenewalRequestV1> {
+  const pending: HnsOwnerActiveLeaseRenewalRequestV1 = {
+    version: "pirate-hns-active-lease-renewal-request-v1",
+    operation_kind: "active_lease_renewal",
+    active_lease_renewal_id: "hns_renewal_01",
+    active_lease_renewal_attempt_id: "hns_renewal_attempt_01",
+    community_id: inputAuthority.community_id,
+    route_binding_id: inputAuthority.route_binding_id,
+    expected_binding_generation: inputAuthority.expected_binding_generation,
+    expected_verified_evidence_ref: inputAuthority.expected_verified_evidence_ref,
+    expected_evidence_digest: inputAuthority.expected_evidence_digest,
+    expected_control_identity_digest: inputAuthority.expected_control_identity_digest,
+    expected_chain_authority_digest: inputAuthority.expected_chain_authority_digest,
+    prior_provider_evidence_ref: inputAuthority.prior_provider_evidence_ref,
+    attempt_number: 1,
+    evidence_ref: "route_evidence_13",
+    requirement_hash: await hnsActiveLeaseRenewalRequirementHash(inputAuthority),
+    request_hash: "0".repeat(64),
+    provider_id: inputAuthority.provider_id,
+    provider_binding_hash: inputAuthority.provider_binding_hash,
+    provider_configuration: inputAuthority.provider_configuration,
+    protocol_version: inputAuthority.protocol_version,
+    environment: inputAuthority.environment,
+    route: inputAuthority.route,
+  };
+  return {
+    ...pending,
+    request_hash: await hnsActiveLeaseRenewalRequestHash(pending),
+  };
+}
+
+async function operationFixture(
+  inputAuthority: HnsActiveLeaseRenewalAuthorityV1,
+  provider: HnsActiveLeaseRenewalServices["provider"],
+): Promise<
+  Readonly<{
+    services: HnsActiveLeaseRenewalServices;
+    request: HnsOwnerActiveLeaseRenewalRequestV1;
+    finalizations: Array<Parameters<HnsActiveLeaseRenewalStore["finalize"]>[0]>;
+    releaseCount: () => number;
+  }>
+> {
+  const renewalRequest = await operationRequestFor(inputAuthority);
+  let releases = 0;
+  let stored: HnsActiveLeaseRenewalStoredOperation = {
+    authority: inputAuthority,
+    control_identity: persistedIdentity,
+    terminal: null,
+  };
+  const finalizations: Array<Parameters<HnsActiveLeaseRenewalStore["finalize"]>[0]> = [];
+  const store: HnsActiveLeaseRenewalStore = {
+    resolve: () =>
+      Effect.succeed({
+        authority: inputAuthority,
+        control_identity: persistedIdentity,
+      }),
+    reserve: (input) => {
+      const reservation: HnsActiveLeaseRenewalReservation = {
+        stored,
+        request: renewalRequest,
+        idempotency_key: input.idempotency_key,
+        attempt: {
+          active_lease_renewal_attempt_id: renewalRequest.active_lease_renewal_attempt_id,
+          evidence_ref: renewalRequest.evidence_ref,
+          observation_id: "observer-renewal-01",
+          fence_token: 1,
+          attempt_number: 1,
+          database_now: "2026-02-02T04:40:00.000Z",
+          lease_expires_at: "2026-02-02T04:40:20.000Z",
+        },
+      };
+      return Effect.succeed({ kind: "acquired", reservation });
+    },
+    release: () => {
+      releases += 1;
+      return Effect.succeed({ kind: "released" });
+    },
+    finalize: (input) =>
+      Effect.promise(async () => {
+        finalizations.push(input);
+        stored = {
+          ...stored,
+          terminal: {
+            result: input.result,
+            result_hash: await hnsActiveLeaseRenewalTerminalResultHash(input.result),
+          },
+        };
+        return { kind: "committed", stored } as const;
+      }),
+  };
+  return {
+    services: {
+      store,
+      provider,
+      policy: leasePolicy,
+      ids: {
+        renewal: () => renewalRequest.active_lease_renewal_id,
+        attempt: () => renewalRequest.active_lease_renewal_attempt_id,
+        evidence: () => renewalRequest.evidence_ref,
+        observation: () => "observer-renewal-01",
+      },
+    },
+    request: renewalRequest,
+    finalizations,
+    releaseCount: () => releases,
+  };
+}
+
+test("runs a verified active lease renewal through exact provider bytes", async () => {
+  const positive = await positiveResponse();
+  const responseBytes = new TextEncoder().encode(JSON.stringify(positive.response));
+  const fixture = await operationFixture(authority, {
+    renew: () => Effect.succeed(responseBytes),
+  });
+
+  const result = await Effect.runPromise(
+    runHnsActiveLeaseRenewal(
+      { route_binding_id: authority.route_binding_id, idempotency_key: "renewal-operation-01" },
+      fixture.services,
+    ),
+  );
+
+  expect(result).toMatchObject({ status: "verified", outcome_status: "verified", replayed: false });
+  expect(fixture.releaseCount()).toBe(0);
+  expect(fixture.finalizations).toHaveLength(1);
+  expect(fixture.finalizations[0]?.evidence).not.toBeNull();
+  expect(fixture.finalizations[0]?.provider_response_bytes).toEqual(responseBytes);
+});
+
+test("retains exact source-ineligible bytes and binds them to the renewal request", async () => {
+  const v2Authority: HnsActiveLeaseRenewalAuthorityV1 = {
+    ...authority,
+    provider_configuration: {
+      ...authority.provider_configuration,
+      version: "hns-observer-config-v2",
+    },
+  };
+  const requestV2 = await operationRequestFor(v2Authority);
+  const responseBytes = await encodeHnsActiveLeaseRenewalIneligibleResponseV2({
+    version: "pirate-hns-active-lease-renewal-response-v2",
+    active_lease_renewal_id: requestV2.active_lease_renewal_id,
+    active_lease_renewal_attempt_id: requestV2.active_lease_renewal_attempt_id,
+    request_hash: requestV2.request_hash,
+    status: "ineligible",
+    reason_code: "owner_authoritative_source_ineligible",
+    observer_snapshot_sha256: "a".repeat(64),
+    observer_result_sha256: "b".repeat(64),
+    diagnostic_ref: "hns-observer:test:source-ineligible-01",
+  });
+  const fixture = await operationFixture(v2Authority, {
+    renew: () => Effect.succeed(responseBytes),
+  });
+
+  const result = await Effect.runPromise(
+    runHnsActiveLeaseRenewal(
+      { route_binding_id: authority.route_binding_id, idempotency_key: "renewal-operation-02" },
+      fixture.services,
+    ),
+  );
+
+  expect(result).toMatchObject({
+    status: "ineligible",
+    outcome_status: "owner_authoritative_source_ineligible",
+  });
+  expect(fixture.finalizations[0]?.evidence).toBeNull();
+  expect(fixture.finalizations[0]?.provider_response_bytes).toEqual(responseBytes);
+
+  const mismatchedBytes = await encodeHnsActiveLeaseRenewalIneligibleResponseV2({
+    version: "pirate-hns-active-lease-renewal-response-v2",
+    active_lease_renewal_id: requestV2.active_lease_renewal_id,
+    active_lease_renewal_attempt_id: requestV2.active_lease_renewal_attempt_id,
+    request_hash: "f".repeat(64),
+    status: "ineligible",
+    reason_code: "owner_authoritative_source_ineligible",
+    observer_snapshot_sha256: "a".repeat(64),
+    observer_result_sha256: "b".repeat(64),
+    diagnostic_ref: "hns-observer:test:source-ineligible-02",
+  });
+  const mismatch = await operationFixture(v2Authority, {
+    renew: () => Effect.succeed(mismatchedBytes),
+  });
+  await expect(
+    Effect.runPromise(
+      runHnsActiveLeaseRenewal(
+        { route_binding_id: authority.route_binding_id, idempotency_key: "renewal-operation-03" },
+        mismatch.services,
+      ),
+    ),
+  ).rejects.toEqual(new HnsActiveLeaseRenewalProviderFailed({ reason: "invalid_response" }));
+  expect(mismatch.releaseCount()).toBe(1);
+  expect(mismatch.finalizations).toHaveLength(0);
+});
+
+test("releases inventory-unavailable observations without consuming an attempt", async () => {
+  const renewalRequest = await operationRequestFor(authority);
+  const unavailableBytes = new TextEncoder().encode(
+    JSON.stringify({
+      version: "pirate-hns-active-lease-renewal-response-v1",
+      active_lease_renewal_id: renewalRequest.active_lease_renewal_id,
+      active_lease_renewal_attempt_id: renewalRequest.active_lease_renewal_attempt_id,
+      request_hash: renewalRequest.request_hash,
+      status: "unavailable",
+      reason_code: "authority_inventory_unavailable",
+      retry_after_seconds: 30,
+      diagnostic_ref: "hns-observer:test:inventory-unavailable-01",
+    }),
+  );
+  const fixture = await operationFixture(authority, {
+    renew: () => Effect.succeed(unavailableBytes),
+  });
+
+  await expect(
+    Effect.runPromise(
+      runHnsActiveLeaseRenewal(
+        { route_binding_id: authority.route_binding_id, idempotency_key: "renewal-operation-04" },
+        fixture.services,
+      ),
+    ),
+  ).rejects.toEqual(new HnsActiveLeaseRenewalProviderFailed({ reason: "unavailable" }));
+  expect(fixture.releaseCount()).toBe(1);
+  expect(fixture.finalizations).toHaveLength(0);
+});
+
+test("finalizes prior-evidence ineligibility without calling a hidden retry path", async () => {
+  let providerCalls = 0;
+  const fixture = await operationFixture(authority, {
+    renew: () => {
+      providerCalls += 1;
+      return Effect.fail(
+        new HnsActiveLeaseRenewalProviderFailed({ reason: "renewal_evidence_ineligible" }),
+      );
+    },
+  });
+
+  const result = await Effect.runPromise(
+    runHnsActiveLeaseRenewal(
+      { route_binding_id: authority.route_binding_id, idempotency_key: "renewal-operation-05" },
+      fixture.services,
+    ),
+  );
+
+  expect(result).toMatchObject({
+    status: "unchanged",
+    outcome_status: "renewal_evidence_ineligible",
+  });
+  expect(providerCalls).toBe(1);
+  expect(fixture.releaseCount()).toBe(0);
+  expect(fixture.finalizations[0]).toMatchObject({
+    evidence: null,
+    provider_response_bytes: null,
+  });
 });

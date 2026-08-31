@@ -15,6 +15,12 @@ import {
   isHnsControlObserverSnapshotReference,
 } from "../namespace-ownership/hns-control-observer-store.ts";
 import {
+  decodeHnsOwnerTargetObservationV3Bytes,
+  type HnsOwnerTargetObservationV3,
+  hnsOwnerRecoverySourceIneligibleResultV2Hash,
+  hnsOwnerRecoverySourceIneligibleResultV2Preimage,
+} from "../namespace-ownership/hns-control-observer-v2.ts";
+import {
   decodeStrictHnsJsonBytes,
   hnsOwnerChallengeName,
   hnsOwnerChallengeValue,
@@ -400,7 +406,7 @@ const PublicPollRejectedSchema = Schema.Struct({
   session_id: Identifier,
   generation: PositiveSafeInteger,
   status: Schema.Literal("rejected"),
-  reason_code: Schema.Literals(["root_unavailable", "expiry_insufficient"]),
+  reason_code: Schema.Literals(["root_unavailable", "expiry_insufficient", "source_ineligible"]),
   replayed: Schema.Boolean,
   retry_after_seconds: Schema.Null,
   result_hash: Sha256Hex,
@@ -517,6 +523,9 @@ export type HnsOwnerRecoveryPersistedSessionAuthority = Readonly<{
 export type HnsOwnerRecoveryPollRequestV1 = Schema.Schema.Type<typeof PollRequestSchema>;
 export type HnsOwnerSameRootRecoveryProviderPollV1 = Schema.Schema.Type<typeof ProviderPollSchema>;
 export type HnsOwnerRecoveryTargetResponseV2 = HnsOwnerTargetObservationV2;
+export type HnsOwnerRecoveryTargetResponse =
+  | HnsOwnerRecoveryTargetResponseV2
+  | HnsOwnerTargetObservationV3;
 export type HnsOwnerRecoveryOutcomeStatus =
   | "verified"
   | "root_absent"
@@ -591,6 +600,26 @@ export type HnsOwnerRecoveryResultHashInput = Readonly<{
   readonly route_lifecycle_status_or_null: "active" | "suspended" | null;
 }>;
 
+export type HnsOwnerRecoverySourceIneligibleTerminalResult = Readonly<{
+  readonly route_recovery_id: string;
+  readonly session_id: string;
+  readonly recovery_attempt_id: string;
+  readonly route_binding_id: string;
+  readonly expected_binding_generation: number;
+  readonly idempotency_key: string;
+  readonly poll_hash: Sha256HexValue;
+  readonly outcome_status: "owner_authoritative_source_ineligible";
+  readonly evidence_ref_or_null: null;
+  readonly evidence_digest_or_null: null;
+  readonly provider_response_sha256_or_null: Sha256HexValue;
+  readonly ownership_status_or_null: "disputed";
+  readonly route_lifecycle_status_or_null: "suspended";
+}>;
+
+export type HnsOwnerRecoveryTerminalResult =
+  | HnsOwnerRecoveryResultHashInput
+  | HnsOwnerRecoverySourceIneligibleTerminalResult;
+
 export type HnsOwnerRecoveryPollOutcome =
   | Readonly<{ readonly kind: "pending"; readonly retry_after_seconds: 5 }>
   | Readonly<{
@@ -605,8 +634,14 @@ export type HnsOwnerRecoveryPollOutcome =
       readonly provider_response_sha256: Sha256HexValue;
     }>
   | Readonly<{
+      readonly kind: "source_ineligible";
+      readonly provider_response_sha256: Sha256HexValue;
+    }>
+  | Readonly<{
       readonly kind: "verified";
-      readonly observation: Schema.Schema.Type<typeof TargetVerifiedSchema>;
+      readonly observation:
+        | Schema.Schema.Type<typeof TargetVerifiedSchema>
+        | Extract<HnsOwnerTargetObservationV3, { readonly status: "verified" }>;
       readonly provider_response_sha256: Sha256HexValue;
     }>;
 
@@ -962,6 +997,40 @@ export function hnsOwnerRecoveryResultHash(
   input: HnsOwnerRecoveryResultHashInput,
 ): Promise<Sha256HexValue> {
   return sha256Utf8(hnsOwnerRecoveryResultPreimage(input));
+}
+
+export function hnsOwnerRecoveryTerminalResultHash(
+  result: HnsOwnerRecoveryTerminalResult,
+): Promise<Sha256HexValue> {
+  return result.outcome_status === "owner_authoritative_source_ineligible"
+    ? hnsOwnerRecoverySourceIneligibleResultV2Hash({
+        route_recovery_id: result.route_recovery_id,
+        session_id: result.session_id,
+        recovery_attempt_id: result.recovery_attempt_id,
+        route_binding_id: result.route_binding_id,
+        expected_binding_generation: result.expected_binding_generation,
+        idempotency_key: result.idempotency_key,
+        poll_hash: result.poll_hash,
+        provider_response_sha256: result.provider_response_sha256_or_null,
+      })
+    : hnsOwnerRecoveryResultHash(result);
+}
+
+export function hnsOwnerRecoveryTerminalResultPreimage(
+  result: HnsOwnerRecoveryTerminalResult,
+): string {
+  return result.outcome_status === "owner_authoritative_source_ineligible"
+    ? hnsOwnerRecoverySourceIneligibleResultV2Preimage({
+        route_recovery_id: result.route_recovery_id,
+        session_id: result.session_id,
+        recovery_attempt_id: result.recovery_attempt_id,
+        route_binding_id: result.route_binding_id,
+        expected_binding_generation: result.expected_binding_generation,
+        idempotency_key: result.idempotency_key,
+        poll_hash: result.poll_hash,
+        provider_response_sha256: result.provider_response_sha256_or_null,
+      })
+    : hnsOwnerRecoveryResultPreimage(result);
 }
 
 export function hnsOwnerRecoveryChallengeExpiresAt(databaseStartedAt: string): string {
@@ -1373,13 +1442,27 @@ export async function decodeHnsOwnerRecoveryProviderPollBytes(
   return decoded;
 }
 
-export async function decodeHnsOwnerRecoveryTargetResponseBytes(value: Uint8Array): Promise<
+export async function decodeHnsOwnerRecoveryTargetResponseBytes(
+  value: Uint8Array,
+  observationContractVersion:
+    | "pirate-hns-target-observation-v2"
+    | "pirate-hns-target-observation-v3" = "pirate-hns-target-observation-v2",
+): Promise<
   Readonly<{
-    readonly response: HnsOwnerRecoveryTargetResponseV2;
+    readonly response: HnsOwnerRecoveryTargetResponse;
     readonly response_bytes: Uint8Array;
     readonly response_sha256: Sha256HexValue;
   }>
 > {
+  if (observationContractVersion === "pirate-hns-target-observation-v3") {
+    try {
+      return await decodeHnsOwnerTargetObservationV3Bytes(value);
+    } catch (error) {
+      throw new HnsOwnerRecoveryDecodeError(
+        error instanceof Error ? error.message : "HNS owner-recovery target-v3 response is invalid",
+      );
+    }
+  }
   if (!(value instanceof Uint8Array)) {
     throw new HnsOwnerRecoveryDecodeError("HNS owner-recovery response must be exact bytes");
   }
@@ -1466,7 +1549,14 @@ export async function classifyHnsOwnerRecoveryTargetResponse(
       "Expired HNS owner-recovery must terminalize without provider response",
     );
   }
-  const decoded = await decodeHnsOwnerRecoveryTargetResponseBytes(input.response_bytes);
+  const observationContractVersion =
+    session.provider_configuration.version === "hns-observer-config-v2"
+      ? "pirate-hns-target-observation-v3"
+      : "pirate-hns-target-observation-v2";
+  const decoded = await decodeHnsOwnerRecoveryTargetResponseBytes(
+    input.response_bytes,
+    observationContractVersion,
+  );
   const response = decoded.response;
   if (response.status === "pending") {
     return { kind: "pending", retry_after_seconds: HNS_OWNER_RECOVERY_DEFAULT_RETRY_SECONDS };
@@ -1477,6 +1567,20 @@ export async function classifyHnsOwnerRecoveryTargetResponse(
       retry_after_seconds: response.retry_after_seconds ?? HNS_OWNER_RECOVERY_DEFAULT_RETRY_SECONDS,
       reason_code: response.reason_code,
       diagnostic_ref: response.diagnostic_ref,
+    };
+  }
+  if (response.status === "ineligible") {
+    if (
+      response.root_label !== session.route.root_label ||
+      response.ownership_source !== session.ownership_source
+    ) {
+      throw new HnsOwnerRecoveryDecodeError(
+        "HNS recovery source-ineligible response disagrees with persisted authority",
+      );
+    }
+    return {
+      kind: "source_ineligible",
+      provider_response_sha256: decoded.response_sha256,
     };
   }
   if (response.status === "rejected") {
@@ -1878,7 +1982,7 @@ export type HnsOwnerRecoveryPollResponseV1 =
       readonly session_id: string;
       readonly generation: number;
       readonly status: "rejected";
-      readonly reason_code: "root_unavailable" | "expiry_insufficient";
+      readonly reason_code: "root_unavailable" | "expiry_insufficient" | "source_ineligible";
       readonly replayed: boolean;
       readonly retry_after_seconds: null;
       readonly result_hash: Sha256HexValue;
@@ -1981,7 +2085,7 @@ export async function hnsOwnerRecoveryPollResponse(
       | Extract<HnsOwnerRecoveryPollOutcome, { readonly kind: "pending" | "unavailable" }>
       | Readonly<{
           readonly kind: "terminal";
-          readonly result: HnsOwnerRecoveryResultHashInput;
+          readonly result: HnsOwnerRecoveryTerminalResult;
         }>;
     readonly replayed?: boolean;
   }>,
@@ -2003,7 +2107,7 @@ export async function hnsOwnerRecoveryPollResponse(
     });
   }
   const result = input.outcome.result;
-  const resultHash = await hnsOwnerRecoveryResultHash(result);
+  const resultHash = await hnsOwnerRecoveryTerminalResultHash(result);
   if (
     result.route_recovery_id !== session.route_recovery_id ||
     result.session_id !== session.session_id ||
@@ -2028,6 +2132,18 @@ export async function hnsOwnerRecoveryPollResponse(
     });
   }
   const outcomeStatus = result.outcome_status;
+  if (outcomeStatus === "owner_authoritative_source_ineligible") {
+    return validatePublicPollResponse({
+      route_recovery_id: session.route_recovery_id,
+      session_id: session.session_id,
+      generation,
+      status: "rejected",
+      reason_code: "source_ineligible",
+      replayed,
+      retry_after_seconds: null,
+      result_hash: resultHash,
+    });
+  }
   if (outcomeStatus === "session_expired") {
     return validatePublicPollResponse({
       route_recovery_id: session.route_recovery_id,

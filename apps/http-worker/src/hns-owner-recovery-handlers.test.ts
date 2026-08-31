@@ -14,7 +14,7 @@ import {
   type HnsOwnerRecoveryStoredStart,
   hnsOwnerRecoveryPublicStartHash,
   hnsOwnerRecoveryRequirementHash,
-  hnsOwnerRecoveryResultHash,
+  hnsOwnerRecoveryTerminalResultHash,
 } from "@pirate/application/route-revalidation";
 import {
   AuthError,
@@ -312,7 +312,7 @@ function pollServices(
               terminal: {
                 idempotency_key: input.request.idempotency_key,
                 poll_hash: input.poll_hash,
-                result_hash: await hnsOwnerRecoveryResultHash(input.result),
+                result_hash: await hnsOwnerRecoveryTerminalResultHash(input.result),
                 result: input.result,
               },
             };

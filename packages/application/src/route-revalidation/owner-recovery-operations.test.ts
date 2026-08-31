@@ -10,7 +10,7 @@ import {
   hnsOwnerRecoveryPollHash,
   hnsOwnerRecoveryPublicStartHash,
   hnsOwnerRecoveryRequirementHash,
-  hnsOwnerRecoveryResultHash,
+  hnsOwnerRecoveryTerminalResultHash,
 } from "./owner-recovery.ts";
 import {
   HNS_OWNER_RECOVERY_POLL_LEASE_MS,
@@ -349,7 +349,7 @@ function pollServices(
               terminal: {
                 idempotency_key: input.request.idempotency_key,
                 poll_hash: input.poll_hash,
-                result_hash: await hnsOwnerRecoveryResultHash(input.result),
+                result_hash: await hnsOwnerRecoveryTerminalResultHash(input.result),
                 result: input.result,
               },
             };

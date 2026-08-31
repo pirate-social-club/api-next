@@ -10,10 +10,11 @@ import {
   type HnsOwnerRecoveryPollRequestV1,
   type HnsOwnerRecoveryPollResponseV1,
   type HnsOwnerRecoveryResultHashInput,
+  type HnsOwnerRecoveryTerminalResult,
   type HnsOwnerSameRootRecoveryProviderPollV1,
   hnsOwnerRecoveryPollHash,
   hnsOwnerRecoveryPollResponse,
-  hnsOwnerRecoveryResultHash,
+  hnsOwnerRecoveryTerminalResultHash,
   planHnsOwnerRecoveryPoll,
 } from "./owner-recovery.ts";
 import {
@@ -57,7 +58,7 @@ export type HnsOwnerRecoveryStoredTerminal = Readonly<{
   readonly idempotency_key: string;
   readonly poll_hash: string;
   readonly result_hash: string;
-  readonly result: HnsOwnerRecoveryResultHashInput;
+  readonly result: HnsOwnerRecoveryTerminalResult;
 }>;
 
 export type HnsOwnerRecoveryStoredPoll = HnsOwnerRecoveryStoredStart &
@@ -153,7 +154,7 @@ export interface HnsOwnerRecoveryPollStore {
       readonly expected: HnsOwnerRecoveryStoredPoll;
       readonly poll_hash: string;
       readonly attempt: HnsOwnerRecoveryPollAttempt;
-      readonly result: HnsOwnerRecoveryResultHashInput;
+      readonly result: HnsOwnerRecoveryTerminalResult;
       readonly evidence: HnsOwnerRecoveryEvidenceEnvelopeV1 | null;
       readonly provider_response_bytes: Uint8Array | null;
     }>,
@@ -265,7 +266,7 @@ function terminalReplay(
   }
   return Effect.tryPromise({
     try: async () => {
-      if ((await hnsOwnerRecoveryResultHash(terminal.result)) !== terminal.result_hash) {
+      if ((await terminalResultHash(terminal.result)) !== terminal.result_hash) {
         throw new Error("stored terminal result hash mismatch");
       }
       return hnsOwnerRecoveryPollResponse({
@@ -285,10 +286,30 @@ function resultInput(
   attempt: HnsOwnerRecoveryPollAttempt,
   pollHash: string,
   outcome:
-    | Extract<HnsOwnerRecoveryPollOutcome, { readonly kind: "rejected" | "verified" }>
+    | Extract<
+        HnsOwnerRecoveryPollOutcome,
+        { readonly kind: "rejected" | "verified" | "source_ineligible" }
+      >
     | Readonly<{ readonly kind: "expired" }>,
   evidence: HnsOwnerRecoveryEvidenceEnvelopeV1 | null,
-): HnsOwnerRecoveryResultHashInput {
+): HnsOwnerRecoveryTerminalResult {
+  if (outcome.kind === "source_ineligible") {
+    return {
+      route_recovery_id: stored.session.route_recovery_id,
+      session_id: stored.session.session_id,
+      recovery_attempt_id: attempt.recovery_attempt_id,
+      route_binding_id: stored.session.route_binding_id,
+      expected_binding_generation: stored.session.expected_binding_generation,
+      idempotency_key: input.idempotency_key,
+      poll_hash: pollHash as HnsOwnerRecoveryResultHashInput["poll_hash"],
+      outcome_status: "owner_authoritative_source_ineligible",
+      evidence_ref_or_null: null,
+      evidence_digest_or_null: null,
+      provider_response_sha256_or_null: outcome.provider_response_sha256,
+      ownership_status_or_null: "disputed",
+      route_lifecycle_status_or_null: "suspended",
+    };
+  }
   const terminalStatus =
     outcome.kind === "expired"
       ? "session_expired"
@@ -321,6 +342,10 @@ function resultInput(
   };
 }
 
+function terminalResultHash(result: HnsOwnerRecoveryTerminalResult): Promise<string> {
+  return hnsOwnerRecoveryTerminalResultHash(result);
+}
+
 function finalizedResponse(
   input: PollHnsOwnerRecoveryInput,
   pollHash: string,
@@ -328,7 +353,7 @@ function finalizedResponse(
   outcome:
     | Exclude<HnsOwnerRecoveryPollReleaseOutcome, { readonly kind: "released" }>
     | HnsOwnerRecoveryPollFinalizeOutcome,
-  expectedResult?: HnsOwnerRecoveryResultHashInput,
+  expectedResult?: HnsOwnerRecoveryTerminalResult,
 ): Effect.Effect<HnsOwnerRecoveryPollResponseV1, HnsOwnerRecoveryPollRejected> {
   if (outcome.kind === "conflict") {
     return Effect.fail(new HnsOwnerRecoveryPollRejected({ reason: "conflict" }));
@@ -365,7 +390,7 @@ function finalizedResponse(
   }
   return Effect.tryPromise({
     try: async () => {
-      if ((await hnsOwnerRecoveryResultHash(terminal.result)) !== terminal.result_hash) {
+      if ((await terminalResultHash(terminal.result)) !== terminal.result_hash) {
         throw new Error("stored terminal result hash mismatch");
       }
       return hnsOwnerRecoveryPollResponse({
