@@ -47,7 +47,7 @@ describe("production song maintenance observation infrastructure", () => {
     });
     expect(configs.jobs.vars).toMatchObject({
       COMMUNITY_MAINTENANCE_ENABLED: "false",
-      SONG_MAINTENANCE_OBSERVATION_ENABLED: "false",
+      SONG_MAINTENANCE_OBSERVATION_ENABLED: "true",
       MEDIA_PROCESSING_ENABLED: "true",
       DATA_REGISTRATION_ENABLED: "true",
       MEGAPOT_REWARDS_ENABLED: "false",

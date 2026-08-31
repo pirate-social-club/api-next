@@ -305,7 +305,7 @@
       "vars": {
         "API_NEXT_ENV": "production",
         "COMMUNITY_MAINTENANCE_ENABLED": "false",
-        "SONG_MAINTENANCE_OBSERVATION_ENABLED": "false",
+        "SONG_MAINTENANCE_OBSERVATION_ENABLED": "true",
         "MEDIA_PROCESSING_ENABLED": "true",
         "DATA_REGISTRATION_ENABLED": "true",
         "DATA_REGISTRATION_RPC_URL": "https://aeneid.storyrpc.io",
