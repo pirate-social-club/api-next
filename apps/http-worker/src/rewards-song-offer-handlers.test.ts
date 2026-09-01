@@ -174,6 +174,12 @@ function fixture(fundingIntent: RewardFundingIntent = intent) {
           beneficiaryCount: 2,
           ticketPriceCeilingAtomic: 1_000_000n,
           actualTicketCostAtomic: 0n,
+          grossPrizePoolAtomic: 9_007_199_254_740_993n,
+          globalTicketsBought: 7n,
+          prizePoolObservedAt: "2026-08-26T12:50:00.000Z",
+          prizePoolBasis:
+            "gross_observed_before_referral_win_share_terminal_last_observed_pre_rollover",
+          globalTicketsBasis: "drawing_wide_all_megapot_buyers",
           netWinningsAtomic: 0n,
           commitmentReference: null,
           snapshotHash: null,
@@ -415,7 +421,16 @@ describe("song reward offer HTTP handlers", () => {
         object: "song_megapot_pool_projection",
         ticket_custody: "pirate",
         allocation_rule: "equal_v1",
-        drawing: { state: "entry_open", beneficiary_count: 2 },
+        drawing: {
+          state: "entry_open",
+          beneficiary_count: 2,
+          gross_prize_pool_atomic: "9007199254740993",
+          global_tickets_bought: "7",
+          prize_pool_observed_at: "2026-08-26T12:50:00.000Z",
+          prize_pool_basis:
+            "gross_observed_before_referral_win_share_terminal_last_observed_pre_rollover",
+          global_tickets_basis: "drawing_wide_all_megapot_buyers",
+        },
       },
     });
     expect(JSON.stringify(body)).not.toContain("account_1");

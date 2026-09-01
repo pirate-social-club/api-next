@@ -99,6 +99,7 @@
     "0096_study_translation_prompt_v3.sql": "30cf9030e7f63d82c26d22db43dcd3d13b8670b198ab4084596f6b7b7958a946",
     "0097_hns_operator_evidence_recovery.sql": "028c89be72a2f001ef3d502ffb6204e0a43e9c86f94844461453630797443ecc",
     "0098_hns_dns_evidence_lease_window.sql": "2a0ab79bce1eeca59b69363952cbda3a71df4adfbf00c47118688b71be08984a",
-    "0099_hns_root_import_foundation.sql": "2d416fd997b4c5d924f614ae809ace47403a48449d0d194d0bf76e9464d46d9b"
+    "0099_hns_root_import_foundation.sql": "2d416fd997b4c5d924f614ae809ace47403a48449d0d194d0bf76e9464d46d9b",
+    "0100_rewards_megapot_prize_pool_projection.sql": "1c2c7a4dba458b33a89f26ccfa8c7abfe9aea775d9e4ea95118ebecb82f4c8e6"
   }
 }

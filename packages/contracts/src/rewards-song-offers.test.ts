@@ -8,6 +8,7 @@ import {
   GetSongMegapotPool,
   ListMyRewardCredits,
   MegapotFundingV1,
+  MegapotPoolDrawingProjectionV1,
   MegapotPoolStandingV1,
   ObserveAssetBonusFunding,
   ObserveMegapotPoolFunding,
@@ -178,6 +179,37 @@ describe("song reward offer contracts", () => {
         beneficiary_count: 2,
       }),
     ).not.toHaveProperty("account_id");
+  });
+
+  test("keeps observed drawing-wide jackpot values as exact decimal strings", () => {
+    const drawing = {
+      object: "megapot_pool_drawing_projection",
+      drawing_id: "42",
+      lifecycle_status: "entry_open",
+      state: "entry_open",
+      entry_cutoff_at: "2026-09-01T12:00:00.000Z",
+      beneficiary_count: 2,
+      ticket_price_ceiling_atomic: "10000",
+      actual_ticket_cost_atomic: "0",
+      gross_prize_pool_atomic: "18014398509481987",
+      global_tickets_bought: "9007199254740993",
+      prize_pool_observed_at: "2026-09-01T11:54:00.000Z",
+      prize_pool_basis:
+        "gross_observed_before_referral_win_share_terminal_last_observed_pre_rollover",
+      global_tickets_basis: "drawing_wide_all_megapot_buyers",
+      net_winnings_atomic: "0",
+      commitment_reference: null,
+      snapshot_hash: null,
+      ticket_id: null,
+      purchase_transaction_hash: null,
+      claim_transaction_hash: null,
+    } as const;
+    const decoded = strict(MegapotPoolDrawingProjectionV1)(drawing);
+    expect(decoded).toEqual(drawing);
+    expect(JSON.parse(JSON.stringify(decoded))).toMatchObject({
+      gross_prize_pool_atomic: "18014398509481987",
+      global_tickets_bought: "9007199254740993",
+    });
   });
 
   test("does not widen the established funding status enum", () => {

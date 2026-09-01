@@ -62,17 +62,38 @@ function instantFromSeconds(value: bigint): string | null {
   return Number.isFinite(date.getTime()) ? date.toISOString() : null;
 }
 
-function canonicalState(input: {
+type CanonicalStateInput = {
   readonly attestationId: string;
   readonly drawingId: bigint;
   readonly state: Awaited<ReturnType<MegapotV2RpcClient["readDrawing"]>>;
   readonly blockNumber: bigint;
   readonly blockHash: string;
-}): string {
+};
+
+function canonicalStateV1(input: CanonicalStateInput): string {
   return JSON.stringify({
     domain: "pirate.megapot-drawing-observation.v1",
     attestation_id: input.attestationId,
     drawing_id: input.drawingId.toString(),
+    ticket_price_atomic: input.state.ticketPrice.toString(),
+    drawing_time: input.state.drawingTime.toString(),
+    ball_max: input.state.ballMax,
+    bonusball_max: input.state.bonusballMax,
+    drawing_locked: input.state.jackpotLock,
+    referral_fee_wei: input.state.referralFee.toString(),
+    referral_win_share_wei: input.state.referralWinShare.toString(),
+    block_number: input.blockNumber.toString(),
+    block_hash: input.blockHash.toLowerCase(),
+  });
+}
+
+function canonicalStateV2(input: CanonicalStateInput): string {
+  return JSON.stringify({
+    domain: "pirate.megapot-drawing-observation.v2",
+    attestation_id: input.attestationId,
+    drawing_id: input.drawingId.toString(),
+    gross_prize_pool_atomic: input.state.prizePool.toString(),
+    global_tickets_bought: input.state.globalTicketsBought.toString(),
     ticket_price_atomic: input.state.ticketPrice.toString(),
     drawing_time: input.state.drawingTime.toString(),
     ball_max: input.state.ballMax,
@@ -140,20 +161,23 @@ export function makeMegapotDrawingObserver(input: {
       ) {
         return yield* rejected("drawing-closed");
       }
-      const rawState = canonicalState({
+      const canonicalInput = {
         attestationId,
         drawingId,
         state,
         blockNumber: head.blockNumber,
         blockHash: head.blockHash,
-      });
-      const rawStateHash = sha256(toBytes(rawState)).slice(2);
+      };
+      const legacyRawStateHash = sha256(toBytes(canonicalStateV1(canonicalInput))).slice(2);
+      const rawStateHash = sha256(toBytes(canonicalStateV2(canonicalInput))).slice(2);
       const observedAt = new Date(observedMilliseconds).toISOString();
       return yield* input.store.recordAndOpen({
         observationId: `drawing_observation_${rawStateHash}`,
         attestationId,
         chainId: candidate.chainId,
         drawingId,
+        grossPrizePoolAtomic: state.prizePool,
+        globalTicketsBought: state.globalTicketsBought,
         ticketPriceAtomic: state.ticketPrice,
         drawingTime,
         ballMax: state.ballMax,
@@ -168,6 +192,7 @@ export function makeMegapotDrawingObserver(input: {
         observedAt,
         expiresAt: new Date(observedMilliseconds + input.observationTtlMs).toISOString(),
         rawStateHash,
+        legacyRawStateHash,
       });
     }),
   };

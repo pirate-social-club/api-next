@@ -49,6 +49,8 @@ export type MegapotDrawingObservationRecord = Readonly<{
   attestationId: string;
   chainId: number;
   drawingId: bigint;
+  grossPrizePoolAtomic: bigint;
+  globalTicketsBought: bigint;
   ticketPriceAtomic: bigint;
   drawingTime: string;
   ballMax: number;
@@ -63,10 +65,18 @@ export type MegapotDrawingObservationRecord = Readonly<{
   observedAt: string;
   expiresAt: string;
   rawStateHash: string;
+  legacyRawStateHash: string;
 }>;
 
-export type MegapotDrawingObservationResult = MegapotDrawingObservationRecord &
-  Readonly<{ openedPoolLegIds: readonly string[] }>;
+export type MegapotDrawingObservationResult = Omit<
+  MegapotDrawingObservationRecord,
+  "grossPrizePoolAtomic" | "globalTicketsBought" | "legacyRawStateHash"
+> &
+  Readonly<{
+    grossPrizePoolAtomic: bigint | null;
+    globalTicketsBought: bigint | null;
+    openedPoolLegIds: readonly string[];
+  }>;
 
 export interface MegapotDrawingObservationStore {
   readonly loadCandidate: (

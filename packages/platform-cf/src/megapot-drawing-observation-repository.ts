@@ -69,6 +69,10 @@ function bigint(row: Row, field: string): bigint {
   return BigInt(value);
 }
 
+function nullableBigint(row: Row, field: string): bigint | null {
+  return row[field] === null || row[field] === undefined ? null : bigint(row, field);
+}
+
 function bool(row: Row, field: string): boolean {
   const value = row[field];
   if (typeof value !== "boolean") throw new Error(`invalid ${field}`);
@@ -112,11 +116,18 @@ function observationFromRow(
   row: Row,
   openedPoolLegIds: readonly string[],
 ): MegapotDrawingObservationResult {
+  const grossPrizePoolAtomic = nullableBigint(row, "gross_prize_pool_atomic");
+  const globalTicketsBought = nullableBigint(row, "global_tickets_bought");
+  if ((grossPrizePoolAtomic === null) !== (globalTicketsBought === null)) {
+    throw new Error("invalid jackpot observation pair");
+  }
   return {
     observationId: text(row, "observation_id"),
     attestationId: text(row, "attestation_id"),
     chainId: integer(row, "chain_id"),
     drawingId: bigint(row, "drawing_id"),
+    grossPrizePoolAtomic,
+    globalTicketsBought,
     ticketPriceAtomic: bigint(row, "ticket_price_atomic"),
     drawingTime: instant(row, "drawing_time"),
     ballMax: integer(row, "ball_max"),
@@ -137,6 +148,7 @@ function observationFromRow(
 
 const OBSERVATION_SELECT = `
   SELECT observation_id, attestation_id, chain_id, drawing_id,
+         gross_prize_pool_atomic, global_tickets_bought,
          ticket_price_atomic, drawing_time, ball_max, bonusball_max,
          drawing_locked, referral_fee_wei, referral_win_share_wei,
          block_number, block_hash, block_timestamp, confirmations,
@@ -194,19 +206,22 @@ export function makeControlPlaneMegapotDrawingObservationRepository() {
                 label: "megapot-drawing-observation.create",
                 text: `INSERT INTO megapot_drawing_observations (
                          observation_id, attestation_id, chain_id, drawing_id,
+                         gross_prize_pool_atomic, global_tickets_bought,
                          ticket_price_atomic, drawing_time, ball_max, bonusball_max,
                          drawing_locked, referral_fee_wei, referral_win_share_wei,
                          block_number, block_hash, block_timestamp, confirmations,
                          observed_at, expires_at, raw_state_hash
                        ) VALUES (
-                         $1,$2,$3,$4,$5,$6::timestamptz,$7,$8,$9,$10,$11,$12,$13,
-                         $14::timestamptz,$15,$16::timestamptz,$17::timestamptz,$18
+                         $1,$2,$3,$4,$5,$6,$7,$8::timestamptz,$9,$10,$11,$12,$13,$14,$15,
+                         $16::timestamptz,$17,$18::timestamptz,$19::timestamptz,$20
                        ) ON CONFLICT (attestation_id, drawing_id, block_hash) DO NOTHING`,
                 values: [
                   observation.observationId,
                   observation.attestationId,
                   observation.chainId,
                   observation.drawingId.toString(),
+                  observation.grossPrizePoolAtomic.toString(),
+                  observation.globalTicketsBought.toString(),
                   observation.ticketPriceAtomic.toString(),
                   observation.drawingTime,
                   observation.ballMax,
@@ -237,7 +252,12 @@ export function makeControlPlaneMegapotDrawingObservationRepository() {
               });
               if (persisted.rows.length !== 1) return yield* storage("invalid-row");
               const row = persisted.rows[0] as Row;
-              if (text(row, "raw_state_hash") !== observation.rawStateHash) {
+              const persistedRawStateHash = text(row, "raw_state_hash");
+              const legacyReplay =
+                row.gross_prize_pool_atomic === null &&
+                row.global_tickets_bought === null &&
+                persistedRawStateHash === observation.legacyRawStateHash;
+              if (persistedRawStateHash !== observation.rawStateHash && !legacyReplay) {
                 return yield* storage("conflict");
               }
               const opened = yield* transaction.execute<Row>({
