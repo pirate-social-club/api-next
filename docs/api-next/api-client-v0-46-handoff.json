@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.46.0",
+  "releaseType": "hns-root-import-security-hardening",
+  "wireContract": "hns-root-import-v1",
+  "sourceCommit": "pending-review",
+  "supersedes": "0.45.0; adds the awaiting-ownership response, keeps asynchronous start and poll responses on HTTP 202, and preserves all four root-import endpoint paths while moving provisioning behind completed ownership.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.46.0.tgz",
+    "sha256": "a67608cd431ccc24aface94939567f40a8b0d98a3a639599c2c362338d8c3856",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@3d5399646c2f538edd2e7df2fc61f428d0a79b9518a75e5aa286e2936a94d981",
+    "openapiSha256": "3d5399646c2f538edd2e7df2fc61f428d0a79b9518a75e5aa286e2936a94d981",
+    "clientSha256": "68f87f81c598601aa9aa2423baf7368ddd43a85f6b3c99ede0934f2f9ed5370d"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "passed",
+      "baselineCommit": "origin/main",
+      "reason": "The awaiting-ownership response and regenerated client types are additive; existing root-import endpoint paths remain unchanged."
+    },
+    "focusedContractAndApplicationSuites": "72 passed across ownership-first orchestration, wallet planning, HSD inspection, provisioning, live readiness, DNSSEC and AXFR validation, explicit activation, and HTTP transport.",
+    "postgresActivationSuite": "The HNS PostgreSQL 17 suite passed 29 assertions covering proof-before-provision, unverified-root non-reservation, fenced activation, wrong-principal isolation, replay conflicts, and atomic serving plus handle issuance.",
+    "fullPostgresSuite": "310 passed and 2 skipped in the serial full run. One load-sensitive lease test passed 8/8 in isolation; migration catalog parity was corrected and then passed 14/14 in isolation.",
+    "packageVerifier": "passed",
+    "repositoryCheck": "passed with only the pre-existing karaoke non-null assertion warnings and deprecated Biome configuration notice."
+  }
+}

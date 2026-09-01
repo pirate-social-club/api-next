@@ -5,5 +5,8 @@
   "type": "module",
   "scripts": {
     "emit-authority-successor": "bun src/authority-successor-main.ts"
+  },
+  "dependencies": {
+    "@pirate/hns-dns-runtime": "workspace:*"
   }
 }

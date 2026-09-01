@@ -2,6 +2,7 @@ import type {
   HnsControlObserverRuntimeCapabilities,
   HnsControlObserverRuntimeCapabilitiesV2,
 } from "@pirate/application/namespace-ownership";
+import { makeHnsAuthoritativeDnsValidatorV1 } from "@pirate/application/namespace-ownership";
 import { makeHnsControlObserverHsdPrivateTransport } from "@pirate/platform-cf/namespace-ownership-hns-control-observer-hsd-private-transport";
 import {
   makeControlPlaneHnsAuthorityInventoryResolver,
@@ -19,7 +20,6 @@ import {
   type HyperdriveConnection,
   makeHyperdriveControlPlaneLayer,
 } from "@pirate/platform-cf/postgres";
-import { makeHnsAuthoritativeDnsValidatorV1 } from "./owner-authoritative-dns-policy-v1.ts";
 import type { HnsTargetObserverRuntime } from "./target-observer.ts";
 import {
   makeHnsOwnerAuthoritativeTargetObserverRuntimeV2,

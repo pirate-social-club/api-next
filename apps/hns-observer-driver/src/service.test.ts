@@ -19,7 +19,7 @@ import {
   HNS_PRIVATE_DRIVER_PROTOCOL,
   HNS_PRIVATE_DRIVER_PROTOCOL_HEADER,
 } from "@pirate/application/namespace-ownership";
-import type { HnsDnsTcpConnector } from "./dns-tcp.ts";
+import type { HnsDnsTcpConnector } from "@pirate/hns-dns-runtime/dns-tcp";
 import { makeHnsObserverDriverHsdHttpCapability } from "./hsd-http.ts";
 import { makeHnsObserverDriverService } from "./service.ts";
 

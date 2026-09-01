@@ -8,7 +8,7 @@ import { sha256 } from "./api-client-provenance.ts";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../", import.meta.url)));
 const packageRoot = join(repositoryRoot, "packages", "api-client");
-const currentVersion = "0.44.0";
+const currentVersion = "0.46.0";
 const packageName = `pirate-api-client-${currentVersion}.tgz`;
 
 interface ReleaseLedger {

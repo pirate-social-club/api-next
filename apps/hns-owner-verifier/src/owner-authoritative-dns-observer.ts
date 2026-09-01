@@ -14,6 +14,7 @@ import {
   type HnsControlObservationUnavailableReason,
   type HnsControlObserverConfigurationV1,
   type HnsControlObserverTranscriptEntryV1,
+  hnsAuthoritativeDnsPolicyV1RequiresChildQuery,
   hnsChainAuthorityDigest,
   hnsChainAuthorityRecords,
   hnsObservedTxtValuesDigest,
@@ -22,7 +23,6 @@ import {
   validateHnsAuthoritativeDnsValidationResultV1,
   validateHnsControlObserverTranscript,
 } from "@pirate/application/namespace-ownership";
-import { hnsAuthoritativeDnsPolicyV1RequiresChildQuery } from "./owner-authoritative-dns-policy-v1.ts";
 
 type Sha256HexValue = HnsAuthoritativeDnsValidationResultV1["validated_chain_authority_digest"];
 

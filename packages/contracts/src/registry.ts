@@ -33,6 +33,12 @@ import { DeliverHnsEdgeAlert } from "./hns-edge-alerts.ts";
 import { PublishHnsEdgeStatusReport } from "./hns-edge-status.ts";
 import { PollHnsOwnerRecovery, StartHnsOwnerRecovery } from "./hns-owner-recovery.ts";
 import {
+  ActivateHnsRootImport,
+  GetHnsRootImport,
+  PollHnsRootImport,
+  StartHnsRootImport,
+} from "./hns-root-import.ts";
+import {
   CreateKaraokeAttempt,
   GetKaraokeAttempt,
   GetKaraokeLeaderboard,
@@ -92,6 +98,10 @@ export const registry = {
   PublishHnsEdgeStatusReport,
   StartHnsOwnerRecovery,
   PollHnsOwnerRecovery,
+  StartHnsRootImport,
+  GetHnsRootImport,
+  PollHnsRootImport,
+  ActivateHnsRootImport,
   ...handleSalesRegistry,
   ListMyPersonas,
   CreatePersona,

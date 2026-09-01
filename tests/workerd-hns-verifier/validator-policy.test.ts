@@ -4,9 +4,9 @@ import type {
   HnsAuthoritativeDnsValidatorInputV1,
   HnsChainAuthorityRecord,
 } from "@pirate/application/namespace-ownership";
+import { makeHnsAuthoritativeDnsValidatorV1 } from "@pirate/application/namespace-ownership";
 import type { Sha256Hex as Sha256HexValue } from "@pirate/domain/verification";
 import { describe, expect, it } from "vitest";
-import { makeHnsAuthoritativeDnsValidatorV1 } from "../../apps/hns-owner-verifier/src/owner-authoritative-dns-policy-v1.ts";
 
 const DNSKEY_REQUEST = "000100000001000000000001086a617a6c65657577000030000100002904d0000080000000";
 const CONTROL_REQUEST =

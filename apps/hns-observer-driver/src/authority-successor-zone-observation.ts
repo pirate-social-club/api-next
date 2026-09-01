@@ -1,5 +1,5 @@
 import type { HnsAuthorityEmitViewV1 } from "@pirate/application/hns-host-persistence";
-import { deriveCanonicalHnsAuthorityZoneBytesV1 } from "./dns-axfr-zone.ts";
+import { deriveCanonicalHnsAuthorityZoneBytesV1 } from "@pirate/hns-dns-runtime/dns-axfr-zone";
 
 type DetachedDnsTranscriptEntryV1 = Readonly<{
   exchange_kind: "hns_rpc" | "child_authority_dns" | "parent_authority_dns";

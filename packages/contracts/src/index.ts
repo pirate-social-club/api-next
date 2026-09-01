@@ -15,6 +15,7 @@ export * from "./handle-sales.ts";
 export * from "./hns-edge-alerts.ts";
 export * from "./hns-edge-status.ts";
 export * from "./hns-owner-recovery.ts";
+export * from "./hns-root-import.ts";
 export * from "./karaoke.ts";
 export * from "./language.ts";
 export * from "./learner-audio.ts";

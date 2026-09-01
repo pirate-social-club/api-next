@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.45.0",
+  "releaseType": "hns-root-import-contract",
+  "wireContract": "hns-root-import-v1",
+  "sourceCommit": "pending-review",
+  "supersedes": "0.44.0; adds authenticated arbitrary-HNS-root import start, status, read-only polling, and explicit activation endpoints without changing existing endpoint contracts.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.45.0.tgz",
+    "sha256": "ec467a57c3f41ea535c2c5127511fc34ed33aac4b362aea10b784d69d1e2a590",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@9b9b4859c17a1063f76355516dae0b4ea8905572530569de1331aa1635ddf6b9",
+    "openapiSha256": "9b9b4859c17a1063f76355516dae0b4ea8905572530569de1331aa1635ddf6b9",
+    "clientSha256": "ea35937b350669af41afb29c0fb9a21e06cd1f4639c8c5fdcc1eaf382504c61e"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "passed",
+      "baselineCommit": "origin/main",
+      "reason": "The four authenticated HNS root-import endpoints and their response types are additive."
+    },
+    "focusedContractAndApplicationSuites": "26 passed across wallet planning, HSD inspection, provisioning, observation, orchestration, and HTTP transport",
+    "postgresActivationSuite": "The real PostgreSQL 17 paths passed transient provisioning retry with a new fence, ownership observation, atomic serving and handle-issuance activation, and exact replay.",
+    "packageVerifier": "passed",
+    "repositoryCheck": "The focused HNS TypeScript surface passes. The repository-wide TypeScript and binding gates remain blocked by the pre-existing TypeScript 7 Uint8Array BufferSource incompatibility outside this change."
+  }
+}

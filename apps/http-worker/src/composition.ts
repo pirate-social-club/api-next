@@ -2,6 +2,10 @@ import type { MediaSubmissionServices } from "@pirate/application/media/submissi
 import { makeCommunityPurchaseFundingInterpreter } from "@pirate/application/money/community-purchase-funding";
 import { makeCommunityPurchaseFundingObservationUseCase } from "@pirate/application/money/community-purchase-funding-observation";
 import {
+  completeNamespaceOwnership,
+  startNamespaceOwnership,
+} from "@pirate/application/namespace-ownership";
+import {
   type TextModeration,
   TextModerationProviderError,
 } from "@pirate/application/use-cases/content/text-post";
@@ -72,6 +76,7 @@ import type { HnsEdgeStatusKvNamespace } from "@pirate/platform-cf/hns-edge-stat
 import type { HnsForwarderReplayStoreNamespace } from "@pirate/platform-cf/hns-forwarder-replay-store";
 import { makeControlPlaneHnsHandlePersonaHostAuthoritySource } from "@pirate/platform-cf/hns-handle-host-authority-repository";
 import { makeControlPlaneHnsCommunityAppHostAuthoritySource } from "@pirate/platform-cf/hns-host-persistence-repository";
+import { makeControlPlaneHnsRootImportStore } from "@pirate/platform-cf/hns-root-import-repository";
 import {
   makeControlPlaneCredentialCanonicalResolver,
   makeControlPlaneIdentityRegistrationStore,
@@ -183,6 +188,7 @@ import { makeHnsEdgeStatusHandlers } from "./hns-edge-status-handlers.ts";
 import { makeProductionHnsEdgeStatusComposition } from "./hns-edge-status-production-composition.ts";
 import { makeProductionHnsHandleHostApiComposition } from "./hns-handle-host-api-production-composition.ts";
 import { makeHnsOwnershipComposition } from "./hns-ownership-composition.ts";
+import { makeHnsRootImportHandlers } from "./hns-root-import-handlers.ts";
 import { makeKaraokeHandlers, makeKaraokeReadinessHandlers } from "./karaoke-handlers.ts";
 import { makeLearnerAudioHandlers } from "./learner-audio-handlers.ts";
 import { makeMediaUploadHandlers } from "./media-upload-handlers.ts";
@@ -877,17 +883,29 @@ export async function createProductionHttpWorker(
   // replays remain available. The same explicit configuration owns both the
   // creation binding above and this registry; no provider may exist in only
   // one side of the ceremony.
+  const namespaceOwnershipStartServices = {
+    intents: makeControlPlaneNamespaceOwnershipStartAuthorityResolver(controlPlane),
+    registry: namespaceOwnershipRegistry,
+    store: makeControlPlaneNamespaceOwnershipStartStore(controlPlane),
+    environment: config.API_NEXT_ENV,
+  } as const;
+  const namespaceOwnershipCompletionServices = {
+    registry: namespaceOwnershipRegistry,
+    store: makeControlPlaneNamespaceOwnershipCompletionStore(controlPlane),
+  } as const;
   const namespaceOwnershipHandlers = makeNamespaceOwnershipHandlers({
-    start: {
-      intents: makeControlPlaneNamespaceOwnershipStartAuthorityResolver(controlPlane),
-      registry: namespaceOwnershipRegistry,
-      store: makeControlPlaneNamespaceOwnershipStartStore(controlPlane),
-      environment: config.API_NEXT_ENV,
+    start: namespaceOwnershipStartServices,
+    completion: namespaceOwnershipCompletionServices,
+  });
+  const hnsRootImportHandlers = makeHnsRootImportHandlers({
+    ownership: {
+      start: (input) => startNamespaceOwnership(input, namespaceOwnershipStartServices),
     },
     completion: {
-      registry: namespaceOwnershipRegistry,
-      store: makeControlPlaneNamespaceOwnershipCompletionStore(controlPlane),
+      complete: (input) => completeNamespaceOwnership(input, namespaceOwnershipCompletionServices),
     },
+    community: { communityCreationStore, personaStore },
+    store: makeControlPlaneHnsRootImportStore(controlPlane),
   });
   const sessionCrypto = await makeSessionCrypto({
     privateKeyPem: Redacted.value(config.PIRATE_APP_JWT_PRIVATE_KEY),
@@ -1173,6 +1191,7 @@ export async function createProductionHttpWorker(
       ...communityCreationHandlers,
       ...canonicalCommunityRouteHandlers,
       ...namespaceOwnershipHandlers,
+      ...hnsRootImportHandlers,
       ...verificationHandlers,
       ...fundingHandlers,
       ...personaHandlers,

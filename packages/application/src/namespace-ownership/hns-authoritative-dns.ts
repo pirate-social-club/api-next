@@ -160,11 +160,7 @@ function compareUtf8(left: string, right: string): number {
 }
 
 function assertRootLabel(value: string): void {
-  if (
-    !validCommunityRouteRoot("hns", value) ||
-    !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(value) ||
-    encoder.encode(value).byteLength > 63
-  ) {
+  if (!validCommunityRouteRoot("hns", value) || encoder.encode(value).byteLength > 63) {
     throw new HnsAuthoritativeDnsWireError("HNS authoritative DNS root label is invalid");
   }
 }
