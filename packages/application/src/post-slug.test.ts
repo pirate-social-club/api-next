@@ -2,7 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { isSlug, slugify } from "cizgile";
 import { allScripts } from "cizgile/transliterate";
 import { postSlugV1GoldenFixtures } from "../../../tests/fixtures/post-slug-v1.ts";
-import { createPostSlugCandidate } from "./post-slug.ts";
+import {
+  createPostSlugCandidate,
+  postSlugCollisionCandidate,
+  postSlugOpaqueToken,
+  selectPostSlugSource,
+} from "./post-slug.ts";
 
 describe("post-slug-v1 golden corpus", () => {
   for (const fixture of postSlugV1GoldenFixtures) {
@@ -65,5 +70,29 @@ describe("cizgile 0.1.1 regression boundaries", () => {
     if (result.kind === "descriptive") {
       expect(result.slug).not.toContain("%");
     }
+  });
+});
+
+describe("post-slug-v1 allocation inputs", () => {
+  test("selects the persisted title or first nonblank body line", () => {
+    expect(selectPostSlugSource({ title: "  A title  ", body: "ignored" })).toBe("  A title  ");
+    expect(selectPostSlugSource({ title: "  ", body: "\n  \r\nFirst body line\nSecond" })).toBe(
+      "First body line",
+    );
+    expect(selectPostSlugSource({ title: null, body: null })).toBe("");
+  });
+
+  test("fits collision suffixes inside the logical maximum", () => {
+    const base = "東".repeat(80);
+    expect(postSlugCollisionCandidate(base, 1)).toBe(base);
+    expect(postSlugCollisionCandidate(base, 2)).toBe(`${"東".repeat(78)}-2`);
+    expect(postSlugCollisionCandidate(base, 100)).toBe(`${"東".repeat(76)}-100`);
+  });
+
+  test("maps ten bytes to the frozen Crockford alphabet", () => {
+    expect(postSlugOpaqueToken(Uint8Array.from([0, 1, 8, 9, 10, 11, 16, 22, 30, 31]))).toBe(
+      "0189abgpyz",
+    );
+    expect(() => postSlugOpaqueToken(new Uint8Array(9))).toThrow(RangeError);
   });
 });

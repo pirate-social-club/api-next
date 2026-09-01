@@ -1,8 +1,10 @@
-import { isSlug, type SlugifyOptions, slugify } from "cizgile";
+import { isSlug, type SlugifyOptions, slugify, truncateSlug } from "cizgile";
 import { allScripts, type Locale, locales, lookup, resolveTables } from "cizgile/transliterate";
 
 export const POST_SLUG_POLICY_VERSION = "post-slug-v1" as const;
 export const POST_SLUG_MAX_LENGTH = 80;
+export const POST_SLUG_OPAQUE_ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz" as const;
+export const POST_SLUG_OPAQUE_TOKEN_LENGTH = 10;
 
 export type PostSlugCandidate =
   | Readonly<{
@@ -159,4 +161,58 @@ export const createPostSlugCandidate = (input: CreatePostSlugCandidateInput): Po
   }
 
   return opaqueCandidate(input.postType);
+};
+
+export const selectPostSlugSource = (input: {
+  readonly title: string | null;
+  readonly body: string | null;
+}): string => {
+  if (input.title?.trim()) return input.title;
+  return input.body?.split(/\r?\n/u).find((line) => line.trim().length > 0) ?? "";
+};
+
+export const postSlugCollisionCandidate = (base: string, ordinal: number): string => {
+  if (!Number.isSafeInteger(ordinal) || ordinal < 1) {
+    throw new RangeError("post slug collision ordinal must be a positive safe integer");
+  }
+  if (ordinal === 1) return truncateSlug(base, POST_SLUG_MAX_LENGTH);
+  const suffix = `-${ordinal}`;
+  const truncatedBase = truncateSlug(base, POST_SLUG_MAX_LENGTH - suffix.length);
+  if (truncatedBase.length === 0) {
+    throw new RangeError("post slug collision suffix leaves no logical base");
+  }
+  return `${truncatedBase}${suffix}`;
+};
+
+export const postSlugOpaqueToken = (bytes: Uint8Array): string => {
+  if (bytes.length < POST_SLUG_OPAQUE_TOKEN_LENGTH) {
+    throw new RangeError("post slug opaque entropy must contain at least ten bytes");
+  }
+  let token = "";
+  for (let index = 0; index < POST_SLUG_OPAQUE_TOKEN_LENGTH; index += 1) {
+    const byte = bytes[index];
+    if (byte === undefined) throw new RangeError("post slug opaque entropy is incomplete");
+    const character = POST_SLUG_OPAQUE_ALPHABET[byte & 31];
+    if (character === undefined) throw new RangeError("post slug opaque alphabet is incomplete");
+    token += character;
+  }
+  return token;
+};
+
+export const isLogicalPostSlug = (slug: string): boolean => {
+  try {
+    return (
+      slug.length > 0 &&
+      slug.length <= POST_SLUG_MAX_LENGTH &&
+      slug.normalize("NFKC") === slug &&
+      !slug.includes("%") &&
+      !slug.includes("/") &&
+      !slug.includes("\\") &&
+      slug !== "." &&
+      slug !== ".." &&
+      isSlug(slug, unicodeOptions)
+    );
+  } catch {
+    return false;
+  }
 };
