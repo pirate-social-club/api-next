@@ -9,7 +9,7 @@ DynamicUser=yes
 WorkingDirectory=/srv/pirate-hns-authority-provisioner/current
 EnvironmentFile=/etc/pirate/hns-authority-provisioner.env
 LoadCredential=hns_axfr_tsig_secret:/etc/pirate/hns-authority-axfr-tsig-secret
-Environment=HNS_AUTHORITY_AXFR_TSIG_SECRET_FILE=%d/hns_axfr_tsig_secret
+Environment=HNS_AUTHORITY_AXFR_TSIG_SECRET_FILE=/run/credentials/pirate-hns-authority-provisioner.service/hns_axfr_tsig_secret
 ExecStart=/usr/bin/env bun /srv/pirate-hns-authority-provisioner/current/bin/pirate-hns-authority-provisioner.mjs --serve
 Restart=on-failure
 RestartSec=3
