@@ -1,5 +1,15 @@
+import {
+  freshSchemaPostgresTestSuites,
+  noBaselinePostgresTestSuites,
+  reusablePostgresTestSuites,
+} from "./postgres-test-suite-manifest.ts";
+
 const namespaceOwnershipTest =
   "packages/platform-cf/src/namespace-ownership-persistence.pg.test.ts";
+
+const reusableSuites = new Set<string>(reusablePostgresTestSuites);
+const freshSchemaSuites = new Set<string>(freshSchemaPostgresTestSuites);
+const noBaselineSuites = new Set<string>(noBaselinePostgresTestSuites);
 
 export const postgresTestTimeoutMilliseconds = {
   isolated: 120_000,
@@ -7,6 +17,13 @@ export const postgresTestTimeoutMilliseconds = {
 } as const;
 
 export const postgresGeneralShardCount = 4;
+
+// Weight units approximate tenths of a second from the first baseline-reuse benchmark:
+// reusable suites pay once for installation, then once per reset and test; other suites
+// conservatively retain the pre-reuse per-test cost. The values only balance shards.
+const reusableBaselineInstallWeight = 14;
+const reusableTestWeight = 11;
+const independentTestWeight = 20;
 
 type PostgresTestPartition = {
   readonly isolated: readonly string[];
@@ -93,6 +110,17 @@ export function shardPostgresTestFiles(
   return shards;
 }
 
+export function postgresTestFileWeight(file: string, testCount: number): number {
+  const normalizedTestCount = Math.max(testCount, 1);
+  if (reusableSuites.has(file)) {
+    return reusableBaselineInstallWeight + reusableTestWeight * normalizedTestCount;
+  }
+  if (freshSchemaSuites.has(file) || noBaselineSuites.has(file)) {
+    return independentTestWeight * normalizedTestCount;
+  }
+  throw new Error(`PostgreSQL test suite is not classified for shard weighting: ${file}`);
+}
+
 async function postgresTestWeights(
   files: readonly string[],
 ): Promise<Readonly<Record<string, number>>> {
@@ -100,7 +128,7 @@ async function postgresTestWeights(
     files.map(async (file) => {
       const source = await Bun.file(file).text();
       const testCount = source.match(/\btest(?:\.skip)?\s*\(/gu)?.length ?? 0;
-      return [file, Math.max(testCount, 1)] as const;
+      return [file, postgresTestFileWeight(file, testCount)] as const;
     }),
   );
   return Object.fromEntries(entries);

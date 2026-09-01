@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   partitionPostgresTestFiles,
   postgresGeneralShardCount,
+  postgresTestFileWeight,
   postgresTestTimeoutMilliseconds,
   shardPostgresTestFiles,
 } from "./run-postgres-tests.ts";
@@ -32,6 +33,24 @@ describe("PostgreSQL test discovery", () => {
 
     expect(shards.flat().sort()).toEqual([...files].sort());
     expect(shards.every((shard) => shard.length === 1)).toBe(true);
+  });
+
+  test("weights reusable fixtures below fresh and migration-owned fixtures", () => {
+    expect(
+      postgresTestFileWeight(
+        "packages/platform-cf/src/activity-qualification-repository.pg.test.ts",
+        2,
+      ),
+    ).toBe(36);
+    expect(
+      postgresTestFileWeight("packages/platform-cf/src/data-registration-repository.pg.test.ts", 2),
+    ).toBe(40);
+    expect(
+      postgresTestFileWeight("packages/platform-cf/src/community-route-migration.pg.test.ts", 2),
+    ).toBe(40);
+    expect(() => postgresTestFileWeight("unclassified.pg.test.ts", 2)).toThrow(
+      "PostgreSQL test suite is not classified for shard weighting",
+    );
   });
 
   test("keeps the CI matrix and runner shard count in lockstep", async () => {
