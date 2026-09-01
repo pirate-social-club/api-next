@@ -96,11 +96,10 @@ const checkpointDigest = (value: Omit<PostSlugBackfillCheckpoint, "canonical_dig
   sha256(canonicalJson(value));
 
 const parseTimestamp = (value: unknown): string => {
-  if (value instanceof Date && Number.isFinite(value.getTime())) return value.toISOString();
-  if (typeof value !== "string" || !Number.isFinite(Date.parse(value))) {
+  if (typeof value !== "string") {
     throw new Error("public-post-slug-backfill-invalid-row");
   }
-  return new Date(value).toISOString();
+  return value;
 };
 
 const stringValue = (row: Record<string, unknown>, key: string): string => {
@@ -138,7 +137,10 @@ const rowFromDatabase = (row: Record<string, unknown>): PostSlugBackfillPostRow 
 
 const pageSql = `SELECT p.post_id,
        p.community_id,
-       p.created_at,
+       to_char(
+         p.created_at AT TIME ZONE 'UTC',
+         'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+       ) AS created_at,
        p.post_type,
        p.status,
        p.visibility,
@@ -160,9 +162,14 @@ const pageSql = `SELECT p.post_id,
   FROM posts AS p
   JOIN communities AS c ON c.community_id = p.community_id
   LEFT JOIN post_slug_aliases AS alias ON alias.post_id = p.post_id
- WHERE ($1::timestamptz IS NULL OR (p.created_at, p.post_id) > ($1::timestamptz, $2::text))
-   AND (p.created_at, p.post_id) <= ($3::timestamptz, $4::text)
- ORDER BY p.created_at ASC, p.post_id ASC
+ WHERE ($1::timestamptz IS NULL
+        OR p.created_at > $1::timestamptz
+        OR (p.created_at = $1::timestamptz
+            AND p.post_id COLLATE "C" > $2::text COLLATE "C"))
+   AND (p.created_at < $3::timestamptz
+        OR (p.created_at = $3::timestamptz
+            AND p.post_id COLLATE "C" <= $4::text COLLATE "C"))
+ ORDER BY p.created_at ASC, p.post_id COLLATE "C" ASC
  LIMIT $5`;
 
 export async function readPostSlugBackfillPage(
@@ -199,7 +206,14 @@ export async function capturePostSlugBackfillUpperBound(
   const result = await transaction.query<{
     readonly created_at: unknown;
     readonly post_id: unknown;
-  }>("SELECT created_at, post_id FROM posts ORDER BY created_at DESC, post_id DESC LIMIT 1");
+  }>(`SELECT to_char(
+               created_at AT TIME ZONE 'UTC',
+               'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+             ) AS created_at,
+             post_id
+        FROM posts
+       ORDER BY created_at DESC, post_id COLLATE "C" DESC
+       LIMIT 1`);
   const row = result.rows[0];
   if (row === undefined) return null;
   return encodePostSlugBackfillCursor({

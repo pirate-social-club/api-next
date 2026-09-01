@@ -21,7 +21,7 @@ import {
   sha256,
 } from "./public-post-slug-backfill-types.ts";
 
-const RFC3339_UTC_MILLISECONDS = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
+const POSTGRES_MICROSECOND_TIMESTAMP = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3})\d{3}Z$/u;
 const VALID_POST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,511}$/u;
 const VALID_STATUSES = new Set([
   "draft",
@@ -61,11 +61,14 @@ const fail = (message: string): never => {
   throw new PostSlugBackfillPlannerError(message);
 };
 
-const validTimestamp = (value: unknown): value is string =>
-  typeof value === "string" &&
-  RFC3339_UTC_MILLISECONDS.test(value) &&
-  Number.isFinite(Date.parse(value)) &&
-  new Date(value).toISOString() === value;
+const validTimestamp = (value: unknown): value is string => {
+  if (typeof value !== "string") return false;
+  const match = POSTGRES_MICROSECOND_TIMESTAMP.exec(value);
+  const millisecondTimestamp = match === null ? undefined : `${match[1]}Z`;
+  if (millisecondTimestamp === undefined) return false;
+  const millis = Date.parse(millisecondTimestamp);
+  return Number.isFinite(millis) && new Date(millis).toISOString() === millisecondTimestamp;
+};
 
 const validPostId = (value: unknown): value is string =>
   typeof value === "string" && VALID_POST_ID.test(value);
@@ -147,8 +150,25 @@ function validateCursor(cursor: PostSlugBackfillCursor): void {
   }
 }
 
+const compareTextBytewise = (left: string, right: string): number => {
+  const leftBytes = new TextEncoder().encode(left);
+  const rightBytes = new TextEncoder().encode(right);
+  const length = Math.min(leftBytes.length, rightBytes.length);
+  for (let index = 0; index < length; index += 1) {
+    const leftByte = leftBytes[index];
+    const rightByte = rightBytes[index];
+    if (leftByte === undefined || rightByte === undefined) break;
+    if (leftByte !== rightByte) return leftByte < rightByte ? -1 : 1;
+  }
+  return Math.sign(leftBytes.length - rightBytes.length);
+};
+
 const compareCursor = (left: PostSlugBackfillCursor, right: PostSlugBackfillCursor): number =>
-  left.createdAt.localeCompare(right.createdAt) || left.postId.localeCompare(right.postId);
+  left.createdAt < right.createdAt
+    ? -1
+    : left.createdAt > right.createdAt
+      ? 1
+      : compareTextBytewise(left.postId, right.postId);
 
 const validatePageSize = (pageSize: number): void => {
   if (

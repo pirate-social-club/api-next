@@ -159,14 +159,14 @@ async function seedLiveStateFixtures(admin: Client): Promise<void> {
   await admin.query(
     `INSERT INTO post_slug_aliases (slug, post_id, slug_policy_version, created_at)
      VALUES
-      ('café-post', 'slug-public', 'post-slug-v1', '2026-09-01T00:00:01Z'),
+      ('café-post', 'slug-public', 'post-slug-v1', '2026-09-01T00:00:01.000111Z'),
       ('members-post', 'slug-members', 'post-slug-v1', '2026-09-01T00:00:02Z'),
       ('adult-post', 'slug-adult', 'post-slug-v1', '2026-09-01T00:00:03Z'),
       ('hidden-post', 'slug-hidden', 'post-slug-v1', '2026-09-01T00:00:04Z'),
       ('draft-post', 'slug-draft', 'post-slug-v1', '2026-09-01T00:00:05Z'),
       ('inactive-post', 'slug-inactive', 'post-slug-v1', '2026-09-01T00:00:06Z'),
-      ('transition-post', 'slug-transition', 'post-slug-v1', '2026-09-01T00:00:07Z'),
-      ('stable-post', 'slug-stable', 'post-slug-v1', '2026-09-01T00:00:09Z')`,
+      ('transition-post', 'slug-transition', 'post-slug-v1', '2026-09-01T00:00:01.000222Z'),
+      ('stable-post', 'slug-stable', 'post-slug-v1', '2026-09-01T00:00:01.000333Z')`,
   );
 }
 

@@ -17,6 +17,7 @@ type Row = Readonly<Record<string, unknown>>;
 type Result = Readonly<{ rows: readonly Row[]; rowCount?: number }>;
 
 const timestamp = "2026-09-01T12:00:00.000Z";
+const cursorTimestamp = "2026-09-01T12:00:00.000123Z";
 const aliasRow = (slug: string, postId = "post-1"): Row => ({
   slug,
   post_id: postId,
@@ -29,6 +30,7 @@ const liveRow = (overrides: Row = {}): Row => ({
   alias_post_id: "post-1",
   alias_slug_policy_version: "post-slug-v1",
   alias_created_at: timestamp,
+  alias_cursor_created_at: cursorTimestamp,
   post_id: "post-1",
   community_id: "community-1",
   post_type: "text",
@@ -254,12 +256,13 @@ describe("public post slug live-state lookups", () => {
     const statements: ControlPlaneStatement[] = [];
     let page = 0;
     const rows = [
-      liveRow({ alias_slug: "first", alias_post_id: "post-1", alias_created_at: timestamp }),
-      liveRow({ alias_slug: "second", alias_post_id: "post-2", alias_created_at: timestamp }),
+      liveRow({ alias_slug: "first", alias_post_id: "post-1" }),
+      liveRow({ alias_slug: "second", alias_post_id: "post-2" }),
       liveRow({
         alias_slug: "third",
         alias_post_id: "post-3",
         alias_created_at: "2026-09-01T12:01:00.000Z",
+        alias_cursor_created_at: "2026-09-01T12:01:00.000456Z",
       }),
     ];
     const transaction = transactionFor((statement) => {
@@ -278,7 +281,8 @@ describe("public post slug live-state lookups", () => {
     expect(first.next_cursor).toStartWith("pps1.");
     expect(first.items[0]).not.toHaveProperty("post_id");
     expect(statements[0]?.values).toEqual([null, null, 3]);
-    expect(statements[0]?.text).toContain("ORDER BY a.created_at ASC, a.post_id ASC");
+    expect(statements[0]?.text).toContain('ORDER BY a.created_at ASC, a.post_id COLLATE "C" ASC');
+    expect(statements[0]?.text).toContain("AS alias_cursor_created_at");
     expect(statements[0]?.text).toContain("c.status = 'active'");
     expect(statements[0]?.text).toContain("p.status = 'published'");
     expect(statements[0]?.text).toContain("p.visibility = 'public'");
@@ -295,7 +299,7 @@ describe("public post slug live-state lookups", () => {
       items: [{ canonical_path: "/posts/third" }],
       next_cursor: null,
     });
-    expect(statements[1]?.values).toEqual(["2026-09-01T12:00:00.000Z", "post-2", 3]);
+    expect(statements[1]?.values).toEqual([cursorTimestamp, "post-2", 3]);
   });
 
   test("fails closed when a database row violates sitemap live-state filters", async () => {
@@ -323,6 +327,22 @@ describe("public post slug live-state lookups", () => {
       Effect.runPromise(
         listPublicPostSitemapInTransaction(transaction, {
           cursor: "not-a-cursor",
+          limit: 10,
+        }),
+      ),
+    ).rejects.toMatchObject({ reason: "invalid-cursor" });
+  });
+
+  test("rejects a millisecond-only sitemap cursor that could lose database precision", async () => {
+    const transaction = transactionFor(() => ({ rows: [] }));
+    const payload = btoa(JSON.stringify({ v: 1, t: "2026-09-01T12:00:00.000Z", p: "post-1" }))
+      .replace(/\+/gu, "-")
+      .replace(/\//gu, "_")
+      .replace(/=+$/u, "");
+    await expect(
+      Effect.runPromise(
+        listPublicPostSitemapInTransaction(transaction, {
+          cursor: `pps1.${payload}`,
           limit: 10,
         }),
       ),

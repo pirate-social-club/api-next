@@ -132,6 +132,7 @@ const OPAQUE_TOKEN = /^[0-9abcdefghjkmnpqrstvwxyz]{10}$/u;
 
 const SITEMAP_PAGE_SIZE_MAX = 1_000;
 const SITEMAP_CURSOR_PREFIX = "pps1.";
+const POSTGRES_MICROSECOND_TIMESTAMP = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3})\d{3}Z$/u;
 const POST_STATUSES: ReadonlySet<string> = new Set([
   "draft",
   "processing",
@@ -189,6 +190,17 @@ const isoTimestamp = (value: unknown): string | null => {
   if (typeof value !== "string") return null;
   const millis = Date.parse(value);
   return Number.isFinite(millis) ? new Date(millis).toISOString() : null;
+};
+
+const exactPostgresTimestamp = (value: unknown): string | null => {
+  if (typeof value !== "string") return null;
+  const match = POSTGRES_MICROSECOND_TIMESTAMP.exec(value);
+  const millisecondTimestamp = match === null ? undefined : `${match[1]}Z`;
+  if (millisecondTimestamp === undefined) return null;
+  const millis = Date.parse(millisecondTimestamp);
+  return Number.isFinite(millis) && new Date(millis).toISOString() === millisecondTimestamp
+    ? value
+    : null;
 };
 
 const aliasRecord = (row: Row): PostSlugAliasRecord | null => {
@@ -377,19 +389,14 @@ const decodeSitemapCursor = (value: string | undefined): SitemapCursor | null =>
     const parsed: unknown = JSON.parse(base64UrlDecode(value.slice(SITEMAP_CURSOR_PREFIX.length)));
     if (typeof parsed !== "object" || parsed === null) throw invalidCursor();
     const record = parsed as Record<string, unknown>;
-    const createdAt = record.t;
+    const createdAt = exactPostgresTimestamp(record.t);
     const postId = record.p;
-    if (
-      record.v !== 1 ||
-      typeof createdAt !== "string" ||
-      !Number.isFinite(Date.parse(createdAt)) ||
-      !validId(postId)
-    ) {
+    if (record.v !== 1 || createdAt === null || !validId(postId)) {
       throw invalidCursor();
     }
     return {
       version: 1,
-      createdAt: new Date(createdAt).toISOString(),
+      createdAt,
       postId,
     };
   } catch (error) {
@@ -404,6 +411,10 @@ const sitemapStatement = (cursor: SitemapCursor | null, limit: number) => ({
                 a.post_id AS alias_post_id,
                 a.slug_policy_version AS alias_slug_policy_version,
                 a.created_at AS alias_created_at,
+                to_char(
+                  a.created_at AT TIME ZONE 'UTC',
+                  'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+                ) AS alias_cursor_created_at,
                 p.status AS post_status,
                 p.visibility AS post_visibility,
                 p.content_rating,
@@ -416,8 +427,10 @@ const sitemapStatement = (cursor: SitemapCursor | null, limit: number) => ({
             AND p.visibility = 'public'
             AND p.content_rating = 'general'
             AND ($1::timestamptz IS NULL
-              OR (a.created_at, a.post_id) > ($1::timestamptz, $2::text))
-          ORDER BY a.created_at ASC, a.post_id ASC
+              OR a.created_at > $1::timestamptz
+              OR (a.created_at = $1::timestamptz
+                  AND a.post_id COLLATE "C" > $2::text COLLATE "C"))
+          ORDER BY a.created_at ASC, a.post_id COLLATE "C" ASC
           LIMIT $3`,
   values: [cursor?.createdAt ?? null, cursor?.postId ?? null, limit + 1],
   readonly: true,
@@ -427,6 +440,7 @@ const sitemapAliasFromRow = (
   row: Row,
 ): Readonly<{ canonical_path: string; createdAt: string; postId: string }> | null => {
   const alias = aliasRecordFromLookupRow(row);
+  const cursorCreatedAt = exactPostgresTimestamp(row.alias_cursor_created_at);
   const postStatus = stringValue(row, "post_status");
   const postVisibility = stringValue(row, "post_visibility");
   const communityStatus = stringValue(row, "community_status");
@@ -439,6 +453,7 @@ const sitemapAliasFromRow = (
         : undefined;
   if (
     alias === null ||
+    cursorCreatedAt === null ||
     postStatus !== "published" ||
     postVisibility !== "public" ||
     communityStatus !== "active" ||
@@ -451,7 +466,7 @@ const sitemapAliasFromRow = (
   const canonicalPath = postSlugCanonicalPath(alias.slug);
   return canonicalPath === null
     ? null
-    : { canonical_path: canonicalPath, createdAt: alias.createdAt, postId: alias.postId };
+    : { canonical_path: canonicalPath, createdAt: cursorCreatedAt, postId: alias.postId };
 };
 
 const queryOneLookup = (

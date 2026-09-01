@@ -62,15 +62,15 @@ async function seed(admin: Client, includeRemoved = false): Promise<void> {
        created_at, updated_at, author_declared_rating, content_rating)
      VALUES
       ('slug-backfill-community', 'backfill-a', 'text', 'published', 'public',
-       'Same title', NULL, '2026-09-01T00:00:01Z', '2026-09-01T00:00:01Z', 'general', 'general'),
+       'Same title', NULL, '2026-09-01T00:00:01.000001Z', '2026-09-01T00:00:01Z', 'general', 'general'),
       ('slug-backfill-community', 'backfill-b', 'text', 'published', 'public',
-       'Same title', NULL, '2026-09-01T00:00:02Z', '2026-09-01T00:00:02Z', 'general', 'general'),
+       'Same title', NULL, '2026-09-01T00:00:01.000002Z', '2026-09-01T00:00:02Z', 'general', 'general'),
       ('slug-backfill-community', 'backfill-member', 'text', 'published', 'members_only',
-       'Guarded member title', NULL, '2026-09-01T00:00:03Z', '2026-09-01T00:00:03Z', 'general', 'general'),
+       'Guarded member title', NULL, '2026-09-01T00:00:01.000003Z', '2026-09-01T00:00:03Z', 'general', 'general'),
       ('slug-backfill-community', 'backfill-hidden', 'text', 'hidden', 'public',
-       'Guarded hidden title', NULL, '2026-09-01T00:00:04Z', '2026-09-01T00:00:04Z', 'general', 'general'),
+       'Guarded hidden title', NULL, '2026-09-01T00:00:01.000004Z', '2026-09-01T00:00:04Z', 'general', 'general'),
       ('slug-backfill-community', 'backfill-draft', 'text', 'draft', 'public',
-       'Draft title', NULL, '2026-09-01T00:00:05Z', '2026-09-01T00:00:05Z', 'general', 'general')`,
+       'Draft title', NULL, '2026-09-01T00:00:01.000005Z', '2026-09-01T00:00:05Z', 'general', 'general')`,
   );
   if (includeRemoved) {
     await admin.query(
@@ -275,9 +275,58 @@ suite("public Post slug backfill against PostgreSQL 17", () => {
     });
     completedTestCount += 1;
   }, 30_000);
+
+  test("paginates exact microseconds across a song row without repeating a boundary", async () => {
+    await withSchema(async (connection, admin) => {
+      await seed(admin);
+      await admin.query(
+        `INSERT INTO posts
+          (community_id, post_id, post_type, status, visibility, title, body,
+           created_at, updated_at, author_declared_rating, content_rating)
+         VALUES
+          ('slug-backfill-community', 'backfill-song', 'song', 'published', 'public',
+           'Song boundary', NULL, '2026-09-01T00:00:01.000006Z',
+           '2026-09-01T00:00:06Z', 'general', 'general')`,
+      );
+      const adapter = await createPostSlugBackfillPgAdapter(connection, "test");
+      await adapter.client.connect();
+      try {
+        const postIds: string[] = [];
+        let cursor: string | null = null;
+        let upperBound: string | undefined;
+        for (let page = 0; page < 10; page += 1) {
+          const dryRun = await runPostSlugBackfillDryRunPage({
+            database: adapter.database,
+            cursor,
+            ...(upperBound === undefined ? {} : { upperBound }),
+            pageSize: 1,
+          });
+          upperBound ??= encodePostSlugBackfillCursor(dryRun.plan.upper_bound);
+          postIds.push(...dryRun.plan.decisions.map(({ post_id }) => post_id));
+          if (!dryRun.plan.has_more) break;
+          const nextCursor = dryRun.plan.next_cursor;
+          if (nextCursor === null) throw new Error("expected an exact next cursor");
+          expect(nextCursor.createdAt).toMatch(/\.\d{6}Z$/u);
+          cursor = encodePostSlugBackfillCursor(nextCursor);
+        }
+        expect(postIds).toEqual([
+          "backfill-a",
+          "backfill-b",
+          "backfill-member",
+          "backfill-hidden",
+          "backfill-draft",
+          "backfill-song",
+        ]);
+        expect(new Set(postIds).size).toBe(postIds.length);
+      } finally {
+        await adapter.client.end();
+      }
+    });
+    completedTestCount += 1;
+  }, 30_000);
 });
 
 afterAll(async () => {
-  if (connectionString === undefined || completedTestCount !== 2) return;
+  if (connectionString === undefined || completedTestCount !== 3) return;
   await Bun.write(sentinelPath, sentinelContents);
 });

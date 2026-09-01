@@ -20,7 +20,8 @@ import {
   postSlugBackfillResultDigest,
 } from "./public-post-slug-backfill-types.ts";
 
-const at = (second: number): string => `2026-09-01T00:00:${String(second).padStart(2, "0")}.000Z`;
+const at = (second: number): string =>
+  `2026-09-01T00:00:${String(second).padStart(2, "0")}.000000Z`;
 const cursor = (second: number, postId: string): string =>
   encodePostSlugBackfillCursor({ version: 1, createdAt: at(second), postId });
 
@@ -114,6 +115,26 @@ describe("public Post slug backfill planner", () => {
       "invalid prefix",
     );
     expect(() => decodePostSlugBackfillCursor(`${encoded}=`)).toThrow();
+    expect(() =>
+      encodePostSlugBackfillCursor({
+        version: 1,
+        createdAt: "2026-09-01T00:00:01.000Z",
+        postId: "post-1",
+      }),
+    ).toThrow("invalid version, timestamp, or post id");
+  });
+
+  test("orders exact microseconds and post ids with PostgreSQL C-collation semantics", () => {
+    const plan = planPostSlugBackfillPage({
+      rows: [
+        row(1, "post-z", { created_at: "2026-09-01T00:00:01.000001Z" }),
+        row(1, "post-A", { created_at: "2026-09-01T00:00:01.000002Z" }),
+        row(1, "post-a", { created_at: "2026-09-01T00:00:01.000002Z" }),
+      ],
+      page_size: 3,
+      upper_bound: cursor(59, "post-upper"),
+    });
+    expect(plan.decisions.map(({ post_id }) => post_id)).toEqual(["post-z", "post-A", "post-a"]);
   });
 
   test("classifies descriptive, opaque, existing, skipped, and blocking rows without guarded source", () => {
@@ -224,7 +245,7 @@ describe("public Post slug backfill authorization and execution", () => {
                 rows: [
                   {
                     ...row(1, "post-1"),
-                    created_at: new Date(at(1)),
+                    created_at: at(1),
                   },
                 ],
               };
@@ -287,7 +308,7 @@ describe("public Post slug backfill authorization and execution", () => {
                   rows: [
                     {
                       ...source,
-                      created_at: new Date(source.created_at),
+                      created_at: source.created_at,
                       existing_slug: allocations === 0 ? null : "publication-winner-2",
                     },
                   ],
