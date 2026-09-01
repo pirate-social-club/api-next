@@ -265,6 +265,10 @@ describe("config system (000 §9)", () => {
       readonly durable_objects?: {
         readonly bindings?: readonly { readonly name?: string; readonly class_name?: string }[];
       };
+      readonly services?: readonly {
+        readonly binding?: string;
+        readonly service?: string;
+      }[];
       readonly migrations?: readonly {
         readonly tag?: string;
         readonly new_sqlite_classes?: readonly string[];
@@ -281,6 +285,10 @@ describe("config system (000 §9)", () => {
                 readonly class_name?: string;
               }[];
             };
+            readonly services?: readonly {
+              readonly binding?: string;
+              readonly service?: string;
+            }[];
           }
         >
       >;
@@ -333,7 +341,13 @@ describe("config system (000 §9)", () => {
       tag: "v4",
       new_sqlite_classes: ["HnsForwarderReplayStoreDO"],
     });
-    expect(JSON.stringify(config)).not.toContain("HNS_OWNER_VERIFIER");
+    expect(production?.services).toContainEqual({
+      binding: "HNS_OWNER_VERIFIER",
+      service: "pirate-hns-owner-verifier-production",
+    });
+    expect(JSON.stringify([config.services, config.env?.staging?.services])).not.toContain(
+      "HNS_OWNER_VERIFIER",
+    );
     expect(JSON.stringify(config)).not.toContain("HNS_OBSERVER_DRIVER");
   });
 
@@ -357,18 +371,18 @@ describe("config system (000 §9)", () => {
     };
     const staging = config.env?.staging;
     const production = config.env?.production;
-    const environments = [config, ...Object.values(config.env ?? {})];
+    const environments = [config, staging];
     for (const environment of environments) {
-      expect(environment.vars?.VERY_OAUTH_ENABLED).toBe("false");
-      expect(environment.vars?.HNS_OWNERSHIP_ENABLED).toBe("false");
-      expect(environment.vars?.OPENAI_MODERATION_MODEL).toBe("omni-moderation-2024-09-26");
-      expect(environment.vars?.OPENAI_MODERATION_BASE_URL).toBe("https://api.openai.com/v1");
-      expect(environment.vars?.OPENAI_MODERATION_TIMEOUT_MS).toBe("10000");
-      expect(environment.secrets?.required ?? []).not.toContain("VERY_OAUTH_CLIENT_SECRET");
-      expect(environment.secrets?.required ?? []).not.toContain("VERY_OAUTH_SEALING_KEY");
+      expect(environment?.vars?.VERY_OAUTH_ENABLED).toBe("false");
+      expect(environment?.vars?.HNS_OWNERSHIP_ENABLED).toBe("false");
+      expect(environment?.vars?.OPENAI_MODERATION_MODEL).toBe("omni-moderation-2024-09-26");
+      expect(environment?.vars?.OPENAI_MODERATION_BASE_URL).toBe("https://api.openai.com/v1");
+      expect(environment?.vars?.OPENAI_MODERATION_TIMEOUT_MS).toBe("10000");
+      expect(environment?.secrets?.required ?? []).not.toContain("VERY_OAUTH_CLIENT_SECRET");
+      expect(environment?.secrets?.required ?? []).not.toContain("VERY_OAUTH_SEALING_KEY");
     }
-    // Development (the base block) and production rely on the fail-closed
-    // default. Staging alone carries the operator-authorized Very web app.
+    // Development and production keep Very web fail-closed. Staging alone
+    // carries the operator-authorized Very web app.
     expect(config.vars?.VERY_WEB_ENABLED).toBeUndefined();
     expect(staging?.vars?.VERY_WEB_ENABLED).toBe("true");
     expect(staging?.vars?.VERY_WEB_APP_ID).toBe("fa6bb1db-51dd-4673-915a-b945e7a895a0");
@@ -380,6 +394,9 @@ describe("config system (000 §9)", () => {
     expect(staging?.secrets?.required ?? []).toContain("OPENAI_API_KEY");
     expect(production?.vars?.OPENAI_MODERATION_ENABLED).toBe("false");
     expect(production?.secrets?.required ?? []).not.toContain("OPENAI_API_KEY");
+    expect(production?.vars?.HNS_OWNERSHIP_ENABLED).toBe("true");
+    expect(production?.vars?.HNS_OWNERSHIP_CONFIGURATION_REFERENCE).toBe("hns-owner-production");
+    expect(production?.vars?.HNS_OWNERSHIP_CONFIGURATION_VERSION).toBe("hns-owner-config-v1");
   });
 
   test("pins the production HTTP origin to its dedicated Hyperdrive and custom domain", async () => {
@@ -399,6 +416,10 @@ describe("config system (000 §9)", () => {
             readonly binding?: string;
             readonly id?: string;
             readonly localConnectionString?: string;
+          }[];
+          readonly services?: readonly {
+            readonly binding?: string;
+            readonly service?: string;
           }[];
           readonly secrets?: { readonly required?: readonly string[] };
           readonly vars?: Record<string, string>;
@@ -425,6 +446,12 @@ describe("config system (000 §9)", () => {
     expect(production?.vars?.CORS_ORIGIN).toBe(
       "https://app.pirate,https://pirate.app,https://pirate.sc",
     );
-    expect(production?.vars?.HNS_OWNERSHIP_ENABLED).toBe("false");
+    expect(production?.vars?.HNS_OWNERSHIP_ENABLED).toBe("true");
+    expect(production?.services).toEqual([
+      {
+        binding: "HNS_OWNER_VERIFIER",
+        service: "pirate-hns-owner-verifier-production",
+      },
+    ]);
   });
 });

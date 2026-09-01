@@ -4,9 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "emit-authority-successor": "bun src/authority-successor-main.ts"
+    "build:vps-bundle": "bun build --target=bun --outfile dist/pirate-hns-observer-driver.mjs src/server.ts",
+    "emit-authority-successor": "bun src/authority-successor-main.ts",
+    "run": "bun src/server.ts"
   },
   "dependencies": {
+    "@pirate/application": "workspace:*",
     "@pirate/hns-dns-runtime": "workspace:*"
   }
 }

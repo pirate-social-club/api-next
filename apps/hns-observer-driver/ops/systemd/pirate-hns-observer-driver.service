@@ -1,0 +1,29 @@
+[Unit]
+Description=Pirate private HNS observer driver
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+WorkingDirectory=/srv/pirate-hns-observer-driver/current
+EnvironmentFile=/etc/pirate/hns-observer-driver.env
+Environment=HNS_OBSERVER_DRIVER_HSD_API_KEY_FILE=/run/credentials/pirate-hns-observer-driver.service/hsd_api_key
+LoadCredential=hsd_api_key:/etc/pirate/hns-observer-driver-hsd-api-key
+ExecStart=/usr/local/bin/bun /srv/pirate-hns-observer-driver/current/bin/pirate-hns-observer-driver.mjs
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+MemoryMax=128M
+CPUQuota=25%
+TasksMax=32
+
+[Install]
+WantedBy=multi-user.target

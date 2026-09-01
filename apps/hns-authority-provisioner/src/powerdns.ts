@@ -360,6 +360,37 @@ export function makePowerDnsRootProvisioner(
   };
 }
 
+/** Idempotently removes only a zone that this import session reported creating. */
+export function makePowerDnsRootTeardown(
+  config: Pick<PowerDnsRootProvisionConfig, "api_url" | "api_key" | "server_id">,
+  fetcher: PowerDnsFetch = fetch,
+): (input: { readonly root_label: string }) => Promise<void> {
+  if (
+    !validEndpoint(config.api_url) ||
+    config.api_key.length === 0 ||
+    config.server_id.length === 0
+  ) {
+    throw new Error("PowerDNS root teardown configuration is invalid");
+  }
+  const apiUrl = config.api_url.replace(/\/+$/u, "");
+  return async (input) => {
+    const zoneName = canonicalName(input.root_label);
+    const response = await fetcher(
+      `${apiUrl}/api/v1/servers/${encodeURIComponent(config.server_id)}/zones/${encodeURIComponent(zoneName)}`,
+      {
+        method: "DELETE",
+        redirect: "manual",
+        signal: AbortSignal.timeout(requestTimeoutMs),
+        headers: { accept: "application/json", "x-api-key": config.api_key },
+      },
+    );
+    await readBoundedJson(response);
+    if (response.status !== 404 && !response.ok) {
+      throw new Error("PowerDNS zone teardown failed");
+    }
+  };
+}
+
 /** Read-only reconciliation used after the owner broadcasts the replacement resource. */
 export function makePowerDnsRootInspector(
   config: PowerDnsRootProvisionConfig,

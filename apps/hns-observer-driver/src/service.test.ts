@@ -570,7 +570,6 @@ describe("target-owned HNS observer driver service", () => {
     const calls: Request[] = [];
     const service = makeHnsObserverDriverService({
       hsd_driver_reference: "hsd-json-rpc:regtest-primary",
-      dns_driver_reference: "authoritative-dns:regtest",
       hsd: makeHnsObserverDriverHsdHttpCapability({
         endpoint: "http://127.0.0.1:14037/",
         authorization: "Basic cmVndGVzdDpyZWd0ZXN0",
@@ -582,18 +581,7 @@ describe("target-owned HNS observer driver service", () => {
           });
         },
       }),
-      dns_views: [
-        {
-          view_id: "dns-view-a",
-          vantage_reference: "regtest-egress:view-a",
-          connector: { connect: async () => Promise.reject(new Error("not reached")) },
-        },
-        {
-          view_id: "dns-view-b",
-          vantage_reference: "regtest-egress:view-b",
-          connector: { connect: async () => Promise.reject(new Error("not reached")) },
-        },
-      ],
+      dns_views: [],
     });
     const body = encodeHnsPrivateDriverRequestV1({
       exchange_kind: "hsd_json_rpc",
@@ -613,13 +601,22 @@ describe("target-owned HNS observer driver service", () => {
     expect(forwarded.headers.get("authorization")).toBe("Basic cmVndGVzdDpyZWd0ZXN0");
     expect(new Uint8Array(await forwarded.arrayBuffer())).toEqual(hsdBody);
     expect(response.headers.get("pirate-hns-driver-upstream-status")).toBe("200");
+
+    const disabledDns = await service.fetch(
+      driverRequest(
+        HNS_PRIVATE_DRIVER_DNS_PATH,
+        "application/dns-message",
+        dnsEnvelope("dns-view-a"),
+      ),
+    );
+    expect(disabledDns.status).toBe(400);
+    expect(calls).toHaveLength(1);
   });
 
   test("enforces the HSD deadline when the local fetcher does not settle", async () => {
     let calls = 0;
     const service = makeHnsObserverDriverService({
       hsd_driver_reference: "hsd-json-rpc:regtest-primary",
-      dns_driver_reference: "authoritative-dns:regtest",
       hsd: makeHnsObserverDriverHsdHttpCapability({
         endpoint: "http://127.0.0.1:14037/",
         authorization: "Basic cmVndGVzdDpyZWd0ZXN0",
@@ -628,18 +625,7 @@ describe("target-owned HNS observer driver service", () => {
           return new Promise<Response>(() => undefined);
         },
       }),
-      dns_views: [
-        {
-          view_id: "dns-view-a",
-          vantage_reference: "regtest-egress:view-a",
-          connector: { connect: async () => Promise.reject(new Error("not reached")) },
-        },
-        {
-          view_id: "dns-view-b",
-          vantage_reference: "regtest-egress:view-b",
-          connector: { connect: async () => Promise.reject(new Error("not reached")) },
-        },
-      ],
+      dns_views: [],
     });
     const body = encodeHnsPrivateDriverRequestV1({
       exchange_kind: "hsd_json_rpc",

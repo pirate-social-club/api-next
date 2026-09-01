@@ -23,6 +23,7 @@ const baselineSeedTables = [
   "handle_pricing_revisions",
   "handle_qualification_policy_revisions",
   "handle_reserved_label_revisions",
+  "hns_control_observer_configurations",
   "moderation_platform_floor_category_decisions",
   "moderation_platform_floor_current",
   "moderation_platform_floor_revisions",

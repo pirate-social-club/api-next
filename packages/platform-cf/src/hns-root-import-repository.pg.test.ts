@@ -474,6 +474,13 @@ async function seedCommittedCommunityRoute(admin: Client): Promise<void> {
        ) VALUES ('route-binding-root-import','community-root-import','hns','newroot','newroot',
          'verified','active',1,'evidence-root-import')`,
     );
+    await admin.query("SET LOCAL session_replication_role = replica");
+    await admin.query(
+      `UPDATE community_creation_intents
+          SET status='committed',committed_community_id='community-root-import',
+              committed_resource_href='/c/app.newroot',updated_at=clock_timestamp()
+        WHERE intent_id='intent-root-import' AND actor_id='actor-root-import'`,
+    );
     await admin.query("COMMIT");
   } catch (error) {
     await admin.query("ROLLBACK");
@@ -687,6 +694,66 @@ suite("Postgres 17 HNS root-import repository", () => {
     });
   }, 20_000);
 
+  test("leases teardown before expiring a provisioned root abandoned before broadcast", async () => {
+    await withSchema(async (connection, admin) => {
+      const store = makeControlPlaneHnsRootImportStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      await provisionRootImport(store, admin);
+      await admin.query("SET session_replication_role = replica");
+      try {
+        await admin.query(
+          `UPDATE hns_root_import_sessions
+              SET created_at=clock_timestamp()-interval '2 minutes',
+                  expires_at=clock_timestamp()-interval '1 minute'
+            WHERE root_import_session_id='root-import-session'`,
+        );
+      } finally {
+        await admin.query("SET session_replication_role = origin");
+      }
+      const claim = await admin.query<{
+        observation_job_id: string;
+        operation_kind: string;
+        request_sha256: string;
+        lease_fence: string;
+      }>("SELECT * FROM claim_hns_root_import_observation_job_v1($1,$2)", [
+        "authority-executor",
+        60,
+      ]);
+      expect(claim.rows).toHaveLength(1);
+      expect(claim.rows[0]).toMatchObject({ operation_kind: "teardown_root_v1" });
+      const finalized = await admin.query<{
+        outcome: string;
+        root_import_session_id: string;
+        session_revision: string;
+      }>("SELECT * FROM finalize_hns_root_import_observation_job_v1($1,$2,$3,$4,$5,$6,$7,$8)", [
+        claim.rows[0]?.observation_job_id,
+        "authority-executor",
+        Number(claim.rows[0]?.lease_fence),
+        claim.rows[0]?.request_sha256,
+        "failed",
+        null,
+        null,
+        "session_expired",
+      ]);
+      expect(finalized.rows).toEqual([
+        {
+          outcome: "failed",
+          root_import_session_id: "root-import-session",
+          session_revision: "4",
+        },
+      ]);
+      const state = await admin.query<{ teardown_state: string; session_status: string }>(
+        `SELECT teardown.state AS teardown_state,session.status AS session_status
+           FROM hns_root_import_teardown_jobs AS teardown
+           JOIN hns_root_import_sessions AS session
+             ON session.root_import_session_id=teardown.root_import_session_id
+          WHERE teardown.root_import_session_id='root-import-session'`,
+      );
+      expect(state.rows).toEqual([{ teardown_state: "completed", session_status: "expired" }]);
+    });
+  }, 20_000);
+
   test("observes readiness and atomically activates serving plus handle issuance", async () => {
     await withSchema(async (connection, admin) => {
       const store = makeControlPlaneHnsRootImportStore(
@@ -780,7 +847,7 @@ suite("Postgres 17 HNS root-import repository", () => {
         },
       ]);
       await admin.query(
-        "UPDATE hns_root_import_observation_jobs SET attempt_count=20 WHERE observation_job_id=$1",
+        "UPDATE hns_root_import_observation_jobs SET attempt_count=19 WHERE observation_job_id=$1",
         ["observation-root-import"],
       );
       const claim = await admin.query<{
@@ -798,7 +865,7 @@ suite("Postgres 17 HNS root-import repository", () => {
             ["observation-root-import"],
           )
         ).rows[0]?.attempt_count,
-      ).toBe(21);
+      ).toBe(20);
       const readiness = await makeReadinessArtifact({
         ownershipResultHash,
         publishPlanSha256: sha256(provisioned.planBytes),

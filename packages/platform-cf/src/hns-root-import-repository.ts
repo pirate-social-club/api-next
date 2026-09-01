@@ -684,6 +684,23 @@ export function makeControlPlaneHnsRootImportRepository(): HnsRootImportReposito
             ) {
               return { kind: "conflict" } as const;
             }
+            const intentResult = yield* transaction.execute<Row>({
+              label: "hns.root-import.activate.lock-committed-intent",
+              text: `SELECT intent_id
+                       FROM community_creation_intents
+                      WHERE intent_id=$1 AND actor_id=$2 AND status='committed'
+                        AND committed_community_id=$3
+                      FOR SHARE`,
+              values: [input.input.creation_intent_id, input.input.actor_id, input.community_id],
+              readonly: false,
+            });
+            const committedIntent = oneRow(intentResult);
+            if (
+              committedIntent === undefined ||
+              committedIntent?.intent_id !== input.input.creation_intent_id
+            ) {
+              return { kind: "conflict" } as const;
+            }
             const routeResult = yield* transaction.execute<Row>({
               label: "hns.root-import.activate.lock-route",
               text: `SELECT community.canonical_route_binding_id,
@@ -871,9 +888,7 @@ export function makeControlPlaneHnsRootImportRepository(): HnsRootImportReposito
               return yield* Effect.fail(storageFailure());
             }
             const healthValidForSeconds = Math.floor(
-              (Date.parse(readiness.result.valid_until) -
-                Date.parse(readiness.result.observed_at)) /
-                1_000,
+              (Date.parse(readiness.result.valid_until) - Date.parse(databaseNow)) / 1_000,
             );
             if (healthValidForSeconds < 1 || healthValidForSeconds > 604_800) {
               return yield* Effect.fail(storageFailure());
@@ -1057,6 +1072,20 @@ export function makeControlPlaneHnsRootImportRepository(): HnsRootImportReposito
               ],
               readonly: false,
             });
+
+            const cancelledTeardown = yield* transaction.execute({
+              label: "hns.root-import.activate.cancel-teardown",
+              text: `UPDATE hns_root_import_teardown_jobs
+                        SET state='cancelled',leased_by=NULL,lease_expires_at=NULL,
+                            failure_code=NULL,completed_at=$1::timestamptz,
+                            updated_at=$1::timestamptz
+                      WHERE root_import_session_id=$2 AND state='waiting'`,
+              values: [databaseNow, input.input.root_import_session_id],
+              readonly: false,
+            });
+            if (cancelledTeardown.rowCount !== 1) {
+              return yield* Effect.fail(storageFailure());
+            }
 
             const updated = yield* transaction.execute({
               label: "hns.root-import.activate.update-session",
