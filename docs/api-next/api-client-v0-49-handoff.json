@@ -5,7 +5,7 @@
   "version": "0.49.0",
   "releaseType": "public-post-canonical-route-contract",
   "wireContract": "public-post-slug-routes",
-  "sourceCommit": "pending-review",
+  "sourceCommit": "89e2321f13e956a268ba8365f60c99839b6d72be",
   "supersedes": "0.48.0; preserves the Dance client release and additively exposes public Post lookup by logical slug and Post ID, bounded sitemap enumeration, guarded route results, and canonical paths.",
   "artifact": {
     "path": "artifacts/api-client/pirate-api-client-0.49.0.tgz",
@@ -23,17 +23,17 @@
     "clientSha256": "998d93c4bc73b5a91a365f21d6d4ea5e3bc40cd53cdf9a90e500c15b7b3e0b07"
   },
   "verification": {
-    "checkFresh": "pending after rebase",
+    "checkFresh": "passed",
     "checkBreaking": {
-      "status": "pending after rebase",
+      "status": "passed",
       "baselineCommit": "main",
       "reason": "The three public Post operations and optional canonical path are additive."
     },
-    "focusedContractSuites": "pending after rebase",
-    "fullUnitSuite": "pending after rebase",
-    "fullWorkerdSuite": "pending after rebase",
-    "postgres17": "pending after migration renumbering",
-    "packageVerifier": "pending after release-ledger registration",
-    "repositoryCheck": "pending after rebase"
+    "focusedContractSuites": "covered by the complete 2766-test unit run and 20-test Node slug run on the rebased successor",
+    "fullUnitSuite": "2766 passed with 12086 assertions, plus 20 Node slug tests",
+    "fullWorkerdSuite": "127 passed across 33 files in all four Workerd pools",
+    "postgres17": "331 passed and 2 intentional Very-creation tests skipped across the isolated partition and all four serial shards",
+    "packageVerifier": "passed for the immutable 0.49.0 artifact",
+    "repositoryCheck": "passed with the pre-existing karaoke non-null assertion warnings and deprecated Biome configuration notice"
   }
 }
