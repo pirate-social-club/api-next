@@ -52,29 +52,33 @@ export type KaraokeSttSocketConnect = (input: {
   readonly apiKey: string;
 }) => Promise<KaraokeSttSocket>;
 
-export const connectElevenLabsKaraokeSocket: KaraokeSttSocketConnect = async (input) => {
-  const upgradeUrl = input.url.replace(/^wss:/iu, "https:").replace(/^ws:/iu, "http:");
-  const tokenResponse = await fetch(new URL(TOKEN_PATH, upgradeUrl), {
-    method: "POST",
-    headers: { "xi-api-key": input.apiKey },
-  });
-  if (!tokenResponse.ok)
-    throw new Error(`elevenlabs_stt_token_mint_failed_${tokenResponse.status}`);
-  const tokenDocument = (await tokenResponse.json()) as { readonly token?: unknown };
-  if (typeof tokenDocument.token !== "string" || tokenDocument.token.trim() === "") {
-    throw new Error("elevenlabs_stt_token_missing");
-  }
-  const websocketUrl = new URL(upgradeUrl);
-  websocketUrl.searchParams.set("token", tokenDocument.token);
-  const response = (await fetch(websocketUrl, {
-    headers: { Upgrade: "websocket" },
-  })) as Response & { readonly webSocket: (WebSocket & { accept(): void }) | null };
-  if (response.webSocket === null) {
-    throw new Error(`elevenlabs_stt_upgrade_failed_${response.status}`);
-  }
-  response.webSocket.accept();
-  return response.webSocket as unknown as KaraokeSttSocket;
-};
+export const makeElevenLabsKaraokeSocketConnect =
+  (fetchRequest: typeof fetch): KaraokeSttSocketConnect =>
+  async (input) => {
+    const upgradeUrl = input.url.replace(/^wss:/iu, "https:").replace(/^ws:/iu, "http:");
+    const tokenResponse = await fetchRequest(new URL(TOKEN_PATH, upgradeUrl), {
+      method: "POST",
+      headers: { "xi-api-key": input.apiKey },
+    });
+    if (!tokenResponse.ok)
+      throw new Error(`elevenlabs_stt_token_mint_failed_${tokenResponse.status}`);
+    const tokenDocument = (await tokenResponse.json()) as { readonly token?: unknown };
+    if (typeof tokenDocument.token !== "string" || tokenDocument.token.trim() === "") {
+      throw new Error("elevenlabs_stt_token_missing");
+    }
+    const websocketUrl = new URL(upgradeUrl);
+    websocketUrl.searchParams.set("token", tokenDocument.token);
+    const response = (await fetchRequest(websocketUrl, {
+      headers: { Upgrade: "websocket" },
+    })) as Response & { readonly webSocket: (WebSocket & { accept(): void }) | null };
+    if (response.webSocket === null) {
+      throw new Error(`elevenlabs_stt_upgrade_failed_${response.status}`);
+    }
+    response.webSocket.accept();
+    return response.webSocket as unknown as KaraokeSttSocket;
+  };
+
+export const connectElevenLabsKaraokeSocket = makeElevenLabsKaraokeSocketConnect(fetch);
 
 type Segment = Readonly<{ streamStartMs: number; streamEndMs: number; songStartMs: number }>;
 
