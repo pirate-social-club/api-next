@@ -17,6 +17,7 @@ import type { StoredVerificationCompletion, VerificationCompletionStore } from "
 import { makeVerificationProviderRegistry } from "./registry.ts";
 
 const RESULT_HASH = "a".repeat(64);
+const REGISTRY_OPTIONS = { now: () => Date.parse("2026-08-17T00:00:00.000Z") } as const;
 const ATTEMPT = {
   attempt_id: "attempt-test",
   fence_token: 1,
@@ -186,7 +187,7 @@ describe("verification provider callback", () => {
   test("authenticates the exact callback before deriving actor identity and completing", async () => {
     const proofSession = session();
     const registry = await Effect.runPromise(
-      makeVerificationProviderRegistry([adapterFor(proofSession)]),
+      makeVerificationProviderRegistry([adapterFor(proofSession)], REGISTRY_OPTIONS),
     );
     const store: VerificationCompletionStore = {
       ...attemptMethods(),
@@ -224,7 +225,7 @@ describe("verification provider callback", () => {
   test("fails closed when the provider has no callback capability", async () => {
     const proofSession = session();
     const registry = await Effect.runPromise(
-      makeVerificationProviderRegistry([adapterFor(proofSession, false)]),
+      makeVerificationProviderRegistry([adapterFor(proofSession, false)], REGISTRY_OPTIONS),
     );
     const exit = await Effect.runPromiseExit(
       handleVerificationCallback(
@@ -246,7 +247,7 @@ describe("verification provider callback", () => {
   test("does not allow a callback route to cross provider identity", async () => {
     const proofSession = session({ provider_id: "other.provider" });
     const registry = await Effect.runPromise(
-      makeVerificationProviderRegistry([adapterFor(proofSession)]),
+      makeVerificationProviderRegistry([adapterFor(proofSession)], REGISTRY_OPTIONS),
     );
     const exit = await Effect.runPromiseExit(
       handleVerificationCallback(
@@ -274,15 +275,18 @@ describe("verification provider callback", () => {
     const proofSession = session();
     const adapter = adapterFor(proofSession);
     const registry = await Effect.runPromise(
-      makeVerificationProviderRegistry([
-        {
-          ...adapter,
-          verifyCallback: (input) => {
-            observedHeaders = input.headers;
-            return adapter.verifyCallback?.(input) ?? Effect.die("missing callback");
+      makeVerificationProviderRegistry(
+        [
+          {
+            ...adapter,
+            verifyCallback: (input) => {
+              observedHeaders = input.headers;
+              return adapter.verifyCallback?.(input) ?? Effect.die("missing callback");
+            },
           },
-        },
-      ]),
+        ],
+        REGISTRY_OPTIONS,
+      ),
     );
     const exit = await Effect.runPromiseExit(
       handleVerificationCallback(
@@ -321,21 +325,24 @@ describe("verification provider callback", () => {
     };
     const base = adapterFor(proofSession, false);
     const registry = await Effect.runPromise(
-      makeVerificationProviderRegistry([
-        {
-          ...base,
-          manifest: sessionBoundManifest,
-          resolveCallback: ({ raw_body }) =>
-            Effect.succeed({
-              proof_session_id: raw_body,
-              idempotency_key: "proof-1",
-              submission: {
-                channel: "provider_callback" as const,
-                payload: { proof: "opaque" },
-              },
-            }),
-        },
-      ]),
+      makeVerificationProviderRegistry(
+        [
+          {
+            ...base,
+            manifest: sessionBoundManifest,
+            resolveCallback: ({ raw_body }) =>
+              Effect.succeed({
+                proof_session_id: raw_body,
+                idempotency_key: "proof-1",
+                submission: {
+                  channel: "provider_callback" as const,
+                  payload: { proof: "opaque" },
+                },
+              }),
+          },
+        ],
+        REGISTRY_OPTIONS,
+      ),
     );
     const result = await Effect.runPromise(
       handleVerificationCallback(
@@ -374,7 +381,9 @@ describe("verification provider callback", () => {
         readonly status: "verified" | "pending";
       }) => Effect.succeed({ result: status === "verified", status, id: resolved.id }),
     } satisfies VerificationProviderAdapter;
-    const registry = await Effect.runPromise(makeVerificationProviderRegistry([adapter]));
+    const registry = await Effect.runPromise(
+      makeVerificationProviderRegistry([adapter], REGISTRY_OPTIONS),
+    );
     const result = await Effect.runPromise(
       handleVerificationCallback(
         {
@@ -416,7 +425,9 @@ describe("verification provider callback", () => {
         readonly status: "verified" | "pending";
       }) => Effect.succeed({ result: status === "verified", status, id: resolved.id }),
     } satisfies VerificationProviderAdapter;
-    const registry = await Effect.runPromise(makeVerificationProviderRegistry([adapter]));
+    const registry = await Effect.runPromise(
+      makeVerificationProviderRegistry([adapter], REGISTRY_OPTIONS),
+    );
     const result = await Effect.runPromise(
       handleVerificationCallback(
         {

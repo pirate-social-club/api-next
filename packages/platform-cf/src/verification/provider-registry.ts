@@ -294,10 +294,10 @@ export function makePlatformVerificationProviderRegistry(
       ? []
       : [veryWebAdapter(options.very_web)]),
   ];
-  return makeVerificationProviderRegistry(
-    providers,
-    options.callback_credential_headers === undefined
+  return makeVerificationProviderRegistry(providers, {
+    now: Date.now,
+    ...(options.callback_credential_headers === undefined
       ? {}
-      : { callbackCredentialHeaders: options.callback_credential_headers },
-  );
+      : { callbackCredentialHeaders: options.callback_credential_headers }),
+  });
 }

@@ -9,6 +9,8 @@ import {
 import { planVerificationProviderCandidates } from "./planning.ts";
 import { makeVerificationProviderRegistry } from "./registry.ts";
 
+const REGISTRY_OPTIONS = { now: () => Date.parse("2026-08-17T00:00:00.000Z") } as const;
+
 const planInput = (issuer: string): VerificationProviderPlanInput => ({
   method: "document",
   scope: { kind: "none", issuer },
@@ -65,12 +67,15 @@ function provider(
 describe("verification provider planning", () => {
   test("returns every option deterministically without provider-specific branches", async () => {
     const registry = await Effect.runPromise(
-      makeVerificationProviderRegistry([
-        provider("zkpassport", "dynamic", "supported"),
-        provider("future.provider", "dynamic", "unavailable"),
-        provider("self.enterprise", "curated", "supported"),
-        provider("configured.only", "curated", "unsupported"),
-      ]),
+      makeVerificationProviderRegistry(
+        [
+          provider("zkpassport", "dynamic", "supported"),
+          provider("future.provider", "dynamic", "unavailable"),
+          provider("self.enterprise", "curated", "supported"),
+          provider("configured.only", "curated", "unsupported"),
+        ],
+        REGISTRY_OPTIONS,
+      ),
     );
     const candidates = ["zkpassport", "future.provider", "self.enterprise", "configured.only"].map(
       (provider_id) => ({ provider_id, input: planInput(provider_id) }),

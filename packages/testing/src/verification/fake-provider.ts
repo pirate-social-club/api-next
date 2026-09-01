@@ -356,7 +356,9 @@ export function makeFakeVerificationProvider(
 }
 
 export function makeFakeVerificationProviderRegistry(options: FakeProviderOptions = {}) {
-  return makeVerificationProviderRegistry([makeFakeVerificationProvider(options)]);
+  return makeVerificationProviderRegistry([makeFakeVerificationProvider(options)], {
+    now: () => Date.parse("2026-08-17T00:00:00.000Z"),
+  });
 }
 
 export function makeFakeVerificationTransport(

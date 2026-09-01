@@ -300,7 +300,7 @@ describe("verification registry adversarial corpus", () => {
               }),
           },
         ],
-        { callbackCredentialHeaders: ["X-Internal-Auth"] },
+        { now: () => NOW, callbackCredentialHeaders: ["X-Internal-Auth"] },
       ),
     );
     expect(failureOf(customCredential)).toEqual(
@@ -311,17 +311,20 @@ describe("verification registry adversarial corpus", () => {
     );
 
     const seamMismatch = await Effect.runPromiseExit(
-      makeVerificationProviderRegistry([
-        {
-          ...adapterFor({}, undefined, MANIFEST),
-          verifyCallback: () =>
-            Effect.succeed({
-              proof_session_id: "session-1",
-              idempotency_key: "callback-1",
-              submission: { channel: "provider_callback" as const, payload: {} },
-            }),
-        },
-      ]),
+      makeVerificationProviderRegistry(
+        [
+          {
+            ...adapterFor({}, undefined, MANIFEST),
+            verifyCallback: () =>
+              Effect.succeed({
+                proof_session_id: "session-1",
+                idempotency_key: "callback-1",
+                submission: { channel: "provider_callback" as const, payload: {} },
+              }),
+          },
+        ],
+        { now: () => NOW },
+      ),
     );
     expect(failureOf(seamMismatch)).toEqual(
       new VerificationProviderManifestInvalid({

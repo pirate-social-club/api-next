@@ -10,6 +10,10 @@ import { makeVerificationProviderRegistry } from "@pirate/application/verificati
 import type { SubjectScope } from "@pirate/domain/verification";
 import { Cause, Effect, Exit, Result } from "effect";
 
+const CONFORMANCE_REGISTRY_OPTIONS = {
+  now: () => Date.parse("2026-08-17T00:00:00.000Z"),
+} as const;
+
 export interface ProviderConformanceHarness {
   readonly adapter: VerificationProviderAdapter;
   readonly startInput: VerificationProviderStartInput;
@@ -79,7 +83,9 @@ export async function runProviderConformance(harness: ProviderConformanceHarness
   readonly evidenceBundleId: string;
 }> {
   const { adapter, startInput, submission } = harness;
-  const registry = await Effect.runPromise(makeVerificationProviderRegistry([adapter]));
+  const registry = await Effect.runPromise(
+    makeVerificationProviderRegistry([adapter], CONFORMANCE_REGISTRY_OPTIONS),
+  );
   const manifests = registry.list();
   if (manifests.length !== 1 || manifests[0]?.provider_id !== adapter.manifest.provider_id) {
     throw new Error("provider manifest was not registered deterministically");
@@ -182,7 +188,9 @@ export async function runProviderTransportConformance<Transport>(
   for (const scenario of cases) {
     const transport = scenario.makeTransport();
     const adapter = scenario.makeAdapter(transport);
-    const registry = await Effect.runPromise(makeVerificationProviderRegistry([adapter]));
+    const registry = await Effect.runPromise(
+      makeVerificationProviderRegistry([adapter], CONFORMANCE_REGISTRY_OPTIONS),
+    );
     const provider = await Effect.runPromise(registry.resolve(adapter.manifest.provider_id));
     const planned = await Effect.runPromiseExit(provider.plan(planInputOf(scenario.startInput)));
     let outcome = outcomeOf(planned);

@@ -314,18 +314,19 @@ export class NamespaceOwnershipProviderRegistry extends Context.Service<
 >()("@pirate/application/namespace-ownership/NamespaceOwnershipProviderRegistry") {}
 
 export type NamespaceOwnershipProviderRegistryOptions = Readonly<{
-  readonly now?: () => number;
+  /** Explicit request-scoped clock; runtime adapters bind the system clock. */
+  readonly now: () => number;
 }>;
 
 export function makeNamespaceOwnershipProviderRegistry(
   adapters: readonly NamespaceOwnershipProviderAdapter[],
-  options: NamespaceOwnershipProviderRegistryOptions = {},
+  options: NamespaceOwnershipProviderRegistryOptions,
 ): Effect.Effect<
   NamespaceOwnershipProviderRegistryService,
   NamespaceOwnershipProviderRegistryError
 > {
   return Effect.gen(function* () {
-    const now = options.now ?? Date.now;
+    const now = options.now;
     const providers = new Set<string>();
     const manifests: Manifest[] = [];
     const byFamily = new Map<CommunityRouteFamilyV1, NamespaceOwnershipProviderAdapter>();
@@ -376,7 +377,7 @@ export function makeNamespaceOwnershipProviderRegistry(
 
 export function makeNamespaceOwnershipProviderRegistryLayer(
   adapters: readonly NamespaceOwnershipProviderAdapter[],
-  options: NamespaceOwnershipProviderRegistryOptions = {},
+  options: NamespaceOwnershipProviderRegistryOptions,
 ): Layer.Layer<NamespaceOwnershipProviderRegistry, NamespaceOwnershipProviderRegistryError> {
   return Layer.effect(
     NamespaceOwnershipProviderRegistry,
