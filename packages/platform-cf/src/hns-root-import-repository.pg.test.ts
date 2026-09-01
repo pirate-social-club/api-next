@@ -767,7 +767,7 @@ suite("Postgres 17 HNS root-import repository", () => {
       );
       const record = startRecord();
       const started = await Effect.runPromise(Effect.scoped(store.start(record)));
-      if (started.kind === "conflict" || started.kind === "intent_unavailable") {
+      if (!("session" in started)) {
         throw new Error("expected root-import session");
       }
       if (started.session.status !== "awaiting_ownership") {
@@ -786,6 +786,49 @@ suite("Postgres 17 HNS root-import repository", () => {
         verified: true,
       });
       const request = provisionRequest(record);
+      const rejectedProofBytes = encodeHnsRootImportNameProofResultV1({
+        version: HNS_ROOT_IMPORT_NAME_PROOF_RESULT_VERSION,
+        root_label: record.root_label,
+        message_sha256: messageSha256,
+        signature_sha256: signatureSha256,
+        safe: true,
+        verified: false,
+      });
+      expect(
+        await Effect.runPromise(
+          Effect.scoped(
+            store.beginProvisioning({
+              poll: {
+                actor_id: record.actor_id,
+                creation_intent_id: record.creation_intent_id,
+                root_import_session_id: record.root_import_session_id,
+                expected_revision: 1,
+                idempotency_key: "reject-root-import-name-proof",
+                provisioning_name_signature: signature,
+              },
+              poll_request_sha256: SHA_A,
+              authorization: {
+                kind: "hns_name_signature",
+                result_bytes: rejectedProofBytes,
+                result_sha256: sha256(rejectedProofBytes),
+                message_sha256: messageSha256,
+                signature_sha256: signatureSha256,
+              },
+              provision_job_id: record.provision_job_id,
+              provision_request_bytes: request.bytes,
+              provision_request_sha256: request.sha256,
+            }),
+          ),
+        ),
+      ).toEqual({ kind: "conflict" });
+      expect(
+        (
+          await admin.query("SELECT * FROM claim_hns_authority_provision_job_v1($1,$2)", [
+            "authority-executor",
+            60,
+          ])
+        ).rows,
+      ).toHaveLength(0);
       const provisioning = await Effect.runPromise(
         Effect.scoped(
           store.beginProvisioning({
@@ -910,6 +953,7 @@ suite("Postgres 17 HNS root-import repository", () => {
       expect(teardown.rows[0]).toMatchObject({ operation_kind: "teardown_root_v1" });
       const finalized = await admin.query<{
         outcome: string;
+        root_import_session_id: string;
         session_revision: string;
       }>("SELECT * FROM finalize_hns_root_import_observation_job_v1($1,$2,$3,$4,$5,$6,$7,$8)", [
         teardown.rows[0]?.observation_job_id,

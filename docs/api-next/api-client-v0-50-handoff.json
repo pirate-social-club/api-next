@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.50.0",
+  "releaseType": "hns-root-import-name-signature-proof",
+  "wireContract": "hns-root-import-v1",
+  "sourceCommit": "pending-review",
+  "supersedes": "0.49.0; additively exposes the bounded HNS name-signature provisioning authorization while preserving signature-free polling compatibility and all existing root-import endpoint paths.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.50.0.tgz",
+    "sha256": "9d6f1709f00026348dddb3f2f33799dc9a12714a65ec0c76eefb8de2dde48632",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@9372abd4ffd36948294a6854f223b483d4d897c342c99f25f84944e105437767",
+    "openapiSha256": "9372abd4ffd36948294a6854f223b483d4d897c342c99f25f84944e105437767",
+    "clientSha256": "444bce42b59ecf8f9a237095b6d73a0e670446b2c723e3809c4eacfe8b5f23b2"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "passed",
+      "baselineCommit": "origin/main",
+      "reason": "The optional polling signature and awaiting-ownership authorization presentation are additive; existing root-import endpoint paths and signature-free poll requests remain valid."
+    },
+    "focusedHnsSuites": "Focused application, private-driver, verifier, service-binding, HTTP-handler, and PostgreSQL 17 suites passed during the implementation checkpoint; the focused repository proof completed 4 PostgreSQL tests with 47 assertions.",
+    "fullUnitSuite": "2801 tests across 427 files passed with 12188 assertions; the Node configuration added 20 tests in 1 file.",
+    "fullWorkerdSuite": "131 tests across 33 files passed when the four Workerd configurations were run serially: 72 general, 48 HTTP, 2 self-verifier, and 9 HNS-verifier tests.",
+    "packageVerifier": "passed after artifact ledger registration",
+    "repositoryCheck": "passed, including both TypeScript projects, dependency and HTTP boundaries, 106 migration checks, generated-contract freshness, and package verification"
+  }
+}

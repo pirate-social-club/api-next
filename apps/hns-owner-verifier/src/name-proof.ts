@@ -3,9 +3,9 @@ import {
   encodeHnsRootImportNameProofResultV1,
   HNS_PRIVATE_DRIVER_HSD_NAME_PROOF_METHOD,
   HNS_ROOT_IMPORT_NAME_PROOF_MESSAGE_MAX_BYTES,
+  HnsRootImportNameProofResultV1,
   HnsRootImportNameSignature,
 } from "@pirate/application/namespace-ownership";
-import { validCommunityRouteRoot } from "@pirate/domain";
 import type { HnsControlObserverHsdPrivateCapability } from "@pirate/platform-cf/namespace-ownership-hns-control-observer-hsd-private-transport";
 import { Option, Predicate, Schema } from "effect";
 
@@ -22,11 +22,7 @@ const HnsNameProofRequest = Schema.Struct({
         : "Expected a bounded root-import session id",
     ),
   ),
-  root_label: Schema.NonEmptyString.check(
-    Schema.makeFilter((value) =>
-      validCommunityRouteRoot("hns", value) ? undefined : "Expected a canonical HNS root",
-    ),
-  ),
+  root_label: HnsRootImportNameProofResultV1.fields.root_label,
   message: Schema.NonEmptyString.check(
     Schema.makeFilter((value) =>
       encoder.encode(value).byteLength <= HNS_ROOT_IMPORT_NAME_PROOF_MESSAGE_MAX_BYTES
