@@ -92,6 +92,40 @@ function validateBreakingChangePolicy(
   return candidate.breakingChangeWaivers as unknown as readonly BreakingChangeWaiver[];
 }
 
+export function assertNoObsoleteBreakingChangeWaivers(
+  policy: BreakingChangePolicy,
+  baselineSha: string,
+  isAncestorOfHead: (commitSha: string) => boolean,
+): void {
+  if (!FULL_COMMIT_SHA.test(baselineSha)) {
+    throw new Error(`Resolved baseline SHA must be a full lowercase commit SHA: ${baselineSha}`);
+  }
+  const obsolete = validateBreakingChangePolicy(policy)
+    .filter((waiver) => waiver.baselineSha !== baselineSha && isAncestorOfHead(waiver.baselineSha))
+    .map((waiver) => `${waiver.operationId} (${waiver.baselineSha})`)
+    .sort();
+  if (obsolete.length === 0) return;
+  throw new Error(
+    [
+      "Breaking-change waivers reference an obsolete baseline reachable from HEAD:",
+      ...obsolete.map((entry) => `  - ${entry}`),
+      "Remove each landed waiver, or regenerate its exact diff against the current baseline if the transition is still pending.",
+    ].join("\n"),
+  );
+}
+
+function isCommitAncestorOfHead(commitSha: string): boolean {
+  const result = spawnSync("git", ["merge-base", "--is-ancestor", commitSha, "HEAD"], {
+    encoding: "utf8",
+  });
+  if (result.status === 0) return true;
+  if (result.status === 1) return false;
+  const detail = result.stderr.trim();
+  throw new Error(
+    `Unable to determine whether breaking-change waiver baseline ${commitSha} is reachable from HEAD${detail === "" ? "" : `: ${detail}`}`,
+  );
+}
+
 function sorted(values: Iterable<string>): readonly string[] {
   return [...values].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
 }
@@ -264,6 +298,7 @@ async function main(): Promise<void> {
       "utf8",
     ),
   ) as BreakingChangePolicy;
+  assertNoObsoleteBreakingChangeWaivers(policy, baseline.resolvedSha, isCommitAncestorOfHead);
   const breaks = filterAllowedBreakingChanges(oldDoc, newDoc, policy, baseline.resolvedSha);
   if (breaks.length > 0) {
     console.error(

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { OpenApiDocument } from "@pirate/contracts";
 import {
+  assertNoObsoleteBreakingChangeWaivers,
   type BreakingChangePolicy,
   classifyBreakingViolationOperationKey,
   filterAllowedBreakingChanges,
@@ -89,6 +90,57 @@ describe("OpenAPI baseline selection", () => {
 });
 
 describe("OpenAPI clean-break allowance", () => {
+  test("keeps a waiver for the current baseline without consulting ancestry", () => {
+    let consulted = false;
+
+    expect(() =>
+      assertNoObsoleteBreakingChangeWaivers(policy([POST_GATE_VIOLATION]), BASELINE_SHA, () => {
+        consulted = true;
+        return true;
+      }),
+    ).not.toThrow();
+    expect(consulted).toBe(false);
+  });
+
+  test("rejects a non-current waiver whose baseline is reachable from HEAD", () => {
+    const consulted: string[] = [];
+    expect(() =>
+      assertNoObsoleteBreakingChangeWaivers(
+        policy([POST_GATE_VIOLATION]),
+        OTHER_BASELINE_SHA,
+        (commitSha) => {
+          consulted.push(commitSha);
+          return true;
+        },
+      ),
+    ).toThrow(
+      `Breaking-change waivers reference an obsolete baseline reachable from HEAD:\n  - ${POST_OPERATION} (${BASELINE_SHA})`,
+    );
+    expect(consulted).toEqual([BASELINE_SHA]);
+  });
+
+  test("keeps a non-ancestor waiver inert for an unrebased transition", () => {
+    expect(() =>
+      assertNoObsoleteBreakingChangeWaivers(
+        policy([POST_GATE_VIOLATION]),
+        OTHER_BASELINE_SHA,
+        () => false,
+      ),
+    ).not.toThrow();
+  });
+
+  test("fails closed when Git ancestry cannot be determined", () => {
+    expect(() =>
+      assertNoObsoleteBreakingChangeWaivers(
+        policy([POST_GATE_VIOLATION]),
+        OTHER_BASELINE_SHA,
+        () => {
+          throw new Error("ancestry unavailable");
+        },
+      ),
+    ).toThrow("ancestry unavailable");
+  });
+
   test("classifies only anchored operation-scoped detector output", () => {
     const key = "POST /audio:align";
 
