@@ -103,6 +103,7 @@
     "./reward-funding-repository": "./src/reward-funding-repository.ts",
     "./song-reward-offer-repository": "./src/song-reward-offer-repository.ts",
     "./public-profile-repository": "./src/public-profile-repository.ts",
+    "./public-post-slug-repository": "./src/public-post-slug-repository.ts",
     "./platform-pirate-handle-repository": "./src/platform-pirate-handle-repository.ts",
     "./registration-rate-limiter": "./src/registration-rate-limiter.ts",
     "./registration-rate-limiter-do": "./src/registration-rate-limiter-do.ts",

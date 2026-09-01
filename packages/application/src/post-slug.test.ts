@@ -3,7 +3,9 @@ import { isSlug, slugify } from "cizgile";
 import { allScripts } from "cizgile/transliterate";
 import { postSlugV1GoldenFixtures } from "../../../tests/fixtures/post-slug-v1.ts";
 import {
+  createOpaquePostSlugCandidate,
   createPostSlugCandidate,
+  postSlugCanonicalPath,
   postSlugCollisionCandidate,
   postSlugOpaqueToken,
   selectPostSlugSource,
@@ -74,6 +76,11 @@ describe("cizgile 0.1.1 regression boundaries", () => {
 });
 
 describe("post-slug-v1 allocation inputs", () => {
+  test("selects opaque allocation without title input", () => {
+    expect(createOpaquePostSlugCandidate("text")).toEqual({ kind: "opaque", prefix: "post" });
+    expect(createOpaquePostSlugCandidate("song")).toEqual({ kind: "opaque", prefix: "song" });
+  });
+
   test("selects the persisted title or first nonblank body line", () => {
     expect(selectPostSlugSource({ title: "  A title  ", body: "ignored" })).toBe("  A title  ");
     expect(selectPostSlugSource({ title: "  ", body: "\n  \r\nFirst body line\nSecond" })).toBe(
@@ -94,5 +101,11 @@ describe("post-slug-v1 allocation inputs", () => {
       "0189abgpyz",
     );
     expect(() => postSlugOpaqueToken(new Uint8Array(9))).toThrow(RangeError);
+  });
+
+  test("serializes the logical slug with iriToUri only at the HTTP boundary", () => {
+    expect(postSlugCanonicalPath("deja-vu")).toBe("/posts/deja-vu");
+    expect(postSlugCanonicalPath("你好-world")).toBe("/posts/%E4%BD%A0%E5%A5%BD-world");
+    expect(postSlugCanonicalPath("bad%2Fslug")).toBeNull();
   });
 });

@@ -36,6 +36,7 @@ const post = (index: number, overrides: Row = {}): Row => ({
   body: `post ${index}`,
   title: null,
   content_rating: "general",
+  canonical_slug: null,
   rating_view_allowed: true,
   created_at: new Date(1_787_000_000_000 - index * 1_000),
   upvote_count: "2",
@@ -186,8 +187,22 @@ describe("public community threads Postgres repository", () => {
     expect(calls[1]?.text).toContain("p.post_type = 'text'");
     expect(calls[1]?.text).toContain("p.status = 'published'");
     expect(calls[1]?.text).toContain("p.visibility = 'public'");
+    expect(calls[1]?.text).toContain("LEFT JOIN post_slug_aliases AS alias");
     expect(calls[1]?.text).toContain("ORDER BY p.created_at DESC, p.post_id DESC");
     expect(calls[1]?.values[0]).toBe("community-a");
+  });
+
+  test("attaches only an existing public/general canonical path", async () => {
+    const result = await runWith(
+      repositoryFor().listPublicCommunityThreads(input("alpha")),
+      fakeDb([[community()], [post(0, { canonical_slug: "你好-world" })]], []),
+    );
+    expect(Exit.isSuccess(result)).toBe(true);
+    if (Exit.isSuccess(result)) {
+      expect(result.value?.items[0]).toMatchObject({
+        canonical_path: "/posts/%E4%BD%A0%E5%A5%BD-world",
+      });
+    }
   });
 
   test("fails closed on malformed non-null projected post scalars", async () => {

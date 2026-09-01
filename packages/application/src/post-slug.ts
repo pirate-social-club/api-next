@@ -1,5 +1,6 @@
 import { isSlug, type SlugifyOptions, slugify, truncateSlug } from "cizgile";
 import { allScripts, type Locale, locales, lookup, resolveTables } from "cizgile/transliterate";
+import { iriToUri } from "cizgile/uri";
 
 export const POST_SLUG_POLICY_VERSION = "post-slug-v1" as const;
 export const POST_SLUG_MAX_LENGTH = 80;
@@ -47,7 +48,7 @@ const SCRIPT_MATCHERS = [
 
 const graphemeSegmenter = new Intl.Segmenter("und", { granularity: "grapheme" });
 
-const opaqueCandidate = (postType: "text" | "song"): PostSlugCandidate => ({
+export const createOpaquePostSlugCandidate = (postType: "text" | "song"): PostSlugCandidate => ({
   kind: "opaque",
   prefix: postType === "song" ? "song" : "post",
 });
@@ -157,10 +158,10 @@ export const createPostSlugCandidate = (input: CreatePostSlugCandidateInput): Po
       return { kind: "descriptive", branch: "unicode", slug };
     }
   } catch {
-    return opaqueCandidate(input.postType);
+    return createOpaquePostSlugCandidate(input.postType);
   }
 
-  return opaqueCandidate(input.postType);
+  return createOpaquePostSlugCandidate(input.postType);
 };
 
 export const selectPostSlugSource = (input: {
@@ -214,5 +215,16 @@ export const isLogicalPostSlug = (slug: string): boolean => {
     );
   } catch {
     return false;
+  }
+};
+
+/** Serialize a validated logical key only at the canonical HTTP boundary. */
+export const postSlugCanonicalPath = (slug: string): string | null => {
+  if (!isLogicalPostSlug(slug)) return null;
+  try {
+    const wire = iriToUri(slug);
+    return wire.length > 0 && !wire.includes("/") ? `/posts/${wire}` : null;
+  } catch {
+    return null;
   }
 };

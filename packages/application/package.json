@@ -65,6 +65,7 @@
     "./use-cases/content/clear-post-vote": "./src/use-cases/content/clear-post-vote.ts",
     "./use-cases/content/create-post": "./src/use-cases/content/create-post.ts",
     "./use-cases/content/get-post": "./src/use-cases/content/get-post.ts",
+    "./use-cases/content/public-post-routes": "./src/use-cases/content/public-post-routes.ts",
     "./use-cases/content/text-post": "./src/use-cases/content/text-post.ts",
     "./use-cases/identity-account": "./src/use-cases/identity-account.ts",
     "./use-cases/current-user": "./src/use-cases/current-user.ts",

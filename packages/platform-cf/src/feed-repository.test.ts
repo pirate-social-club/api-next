@@ -28,6 +28,7 @@ const feedRow = (index = 0, overrides: Record<string, unknown> = {}) => ({
   title: null,
   body: `post ${index}`,
   content_rating: "general",
+  canonical_slug: null,
   rating_view_allowed: true,
   comments_locked: false,
   created_at: new Date(1_760_000_000_000 - index * 1_000),
@@ -127,6 +128,35 @@ describe("home feed Postgres repository", () => {
     expect(output.items[0]).toMatchObject({
       post: { post: { id: "post_0", body: "post 0" } },
     });
+    expect(output.items[0]).not.toHaveProperty("post.canonical_path");
+  });
+
+  test("attaches canonical paths only to public general feed content", async () => {
+    const repository = makeControlPlaneFeedRepository();
+    const publicOutput = await Effect.runPromise(
+      repository.listHome({ query: {} }).pipe(
+        Effect.provideService(
+          ControlPlaneDb,
+          fakeDb(() => [feedRow(0, { canonical_slug: "你好-world" })], []),
+        ),
+      ),
+    );
+    expect(publicOutput.items[0]).toMatchObject({
+      post: { canonical_path: "/posts/%E4%BD%A0%E5%A5%BD-world" },
+    });
+
+    const memberOutput = await Effect.runPromise(
+      repository.listHome({ query: {}, viewerUserId: "member-1" }).pipe(
+        Effect.provideService(
+          ControlPlaneDb,
+          fakeDb(
+            () => [feedRow(0, { canonical_slug: "hidden-title", visibility: "members_only" })],
+            [],
+          ),
+        ),
+      ),
+    );
+    expect(memberOutput.items[0]).not.toHaveProperty("post.canonical_path");
   });
 
   test("maps only published projection rows into the conservative wire shape", async () => {

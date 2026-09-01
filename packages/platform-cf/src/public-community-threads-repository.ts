@@ -7,6 +7,7 @@ import {
   type PublicCommunityThreadsStore,
   type PublicCommunityThreadsStoreService,
 } from "@pirate/application";
+import { postSlugCanonicalPath } from "@pirate/application/post-slug";
 import { GetPublicCommunityThreads } from "@pirate/contracts";
 import { Effect, type Layer, Schema } from "effect";
 import { publicPersonaFromSql } from "./public-persona-projection";
@@ -233,6 +234,7 @@ const listTextPostsStatement = (input: {
                 p.body,
                 p.title,
                 p.content_rating,
+                alias.slug AS canonical_slug,
                 can_account_view_content_rating_v1($6, p.content_rating) AS rating_view_allowed,
                 p.created_at,
                 (SELECT COUNT(*)
@@ -251,6 +253,8 @@ const listTextPostsStatement = (input: {
                     AND comment_count.post_id = p.post_id
                     AND comment_count.status = 'published') AS comment_count
            FROM posts AS p
+           LEFT JOIN post_slug_aliases AS alias
+             ON alias.post_id = p.post_id
           WHERE p.community_id = $1
             AND p.post_type = 'text'
             AND p.status = 'published'
@@ -335,6 +339,7 @@ const localizedTextPostFromRow = (
   const commentCount = countValue(row.comment_count);
   const contentRating = stringValue(row, "content_rating");
   const ratingViewAllowed = row.rating_view_allowed;
+  const canonicalSlug = nullableStringValue(row, "canonical_slug");
   if (
     postId === null ||
     communityId === null ||
@@ -342,6 +347,7 @@ const localizedTextPostFromRow = (
     authorPersona === undefined ||
     !nullableStringFieldIsValid(row, "body") ||
     !nullableStringFieldIsValid(row, "title") ||
+    !nullableStringFieldIsValid(row, "canonical_slug") ||
     created === null ||
     upvoteCount === null ||
     downvoteCount === null ||
@@ -352,7 +358,13 @@ const localizedTextPostFromRow = (
     return null;
   }
   if (contentRating === "adult_18" && !ratingViewAllowed) return ageLockedResource();
+  const canonicalPath =
+    contentRating === "general" && canonicalSlug !== null
+      ? postSlugCanonicalPath(canonicalSlug)
+      : null;
+  if (contentRating === "general" && canonicalSlug !== null && canonicalPath === null) return null;
   return {
+    ...(canonicalPath === null ? {} : { canonical_path: canonicalPath }),
     post: {
       id: postId,
       object: "post",
