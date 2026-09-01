@@ -662,9 +662,7 @@ export async function createProductionHttpWorker(
   });
   const publicProfileStore = makeControlPlanePublicProfileStore(controlPlane, identityStore);
   const communityStore = makeControlPlaneCommunityStore(controlPlane);
-  const communityCreationStore = makeControlPlaneCommunityCreationStore(controlPlane, {
-    namespace_provider_bindings: namespaceBindings,
-  });
+  const communityCreationStore = makeControlPlaneCommunityCreationStore(controlPlane);
   const personaStore = makeControlPlanePersonaStore(controlPlane);
   const mediaServices = (() => {
     if (dependencies.media_services !== undefined) return dependencies.media_services;
