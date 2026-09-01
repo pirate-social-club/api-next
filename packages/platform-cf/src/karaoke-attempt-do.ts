@@ -276,6 +276,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
   }
 
   async initialize(authority: KaraokeSessionAuthority): Promise<{
+    providerRetention: "not_stored" | "stored";
     token: string;
     tokenExpiresAt: number;
   }> {
@@ -347,7 +348,11 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
       await digestToken(credential),
       tokenExpiresAt,
     );
-    return { token: credential, tokenExpiresAt };
+    return {
+      providerRetention: this.providerRetention(),
+      token: credential,
+      tokenExpiresAt,
+    };
   }
 
   async fetch(request: Request): Promise<Response> {

@@ -117,7 +117,8 @@ describe("Karaoke attempt Durable Object", () => {
   it("orders and deduplicates accepted PCM by validated frame sequence", async () => {
     const sessionId = `karaoke-stored-${crypto.randomUUID()}`;
     const stub = env.KARAOKE_ATTEMPT.getByName(sessionId);
-    await stub.initialize(authority(sessionId));
+    const initialized = await stub.initialize(authority(sessionId));
+    expect(initialized.providerRetention).toBe("not_stored");
     const chunk = new Uint8Array(256 * 1024);
     chunk.fill(7);
     const tail = new Uint8Array([1, 2, 3, 4]);
