@@ -12,6 +12,7 @@ export const reusablePostgresTestSuites = [
   "packages/platform-cf/src/media-persistence.pg.test.ts",
   "packages/platform-cf/src/namespace-ownership-persistence.pg.test.ts",
   "packages/platform-cf/src/platform-pirate-handle-repository.pg.test.ts",
+  "packages/platform-cf/src/public-post-slug-repository.pg.test.ts",
   "packages/platform-cf/src/public-profile.pg.test.ts",
   "packages/platform-cf/src/rewards-qualification.pg.test.ts",
   "packages/platform-cf/src/rewards-song-offers.pg.test.ts",
@@ -38,6 +39,7 @@ export const freshSchemaPostgresTestSuites = [
   "packages/platform-cf/src/study-translation-repository.pg.test.ts",
   "packages/platform-cf/src/verification-completion-repository.pg.test.ts",
   "packages/platform-cf/src/verification-start-repository.pg.test.ts",
+  "scripts/public-post-slug-backfill.pg.test.ts",
   "scripts/public-profile-backfill.pg.test.ts",
 ] as const;
 

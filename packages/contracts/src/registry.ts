@@ -63,6 +63,11 @@ import {
 } from "./personas.ts";
 import { platformPirateHandleRegistry } from "./platform-pirate-handles.ts";
 import {
+  GetPublicPostBySlug,
+  GetPublicPostCanonicalRouteById,
+  GetPublicPostSitemap,
+} from "./public-post-routes.ts";
+import {
   GetCommunityActivityLeaderboard,
   GetSongActivityLeaderboard,
   GetStudySession,
@@ -165,6 +170,9 @@ export const registry = {
   ObserveAssetBonusFunding,
   GetAssetBonusFunding,
   ListSongAssetBonuses,
+  GetPublicPostBySlug,
+  GetPublicPostCanonicalRouteById,
+  GetPublicPostSitemap,
 } as const;
 
 /** The sole source consumed by every generated HTTP artifact. */

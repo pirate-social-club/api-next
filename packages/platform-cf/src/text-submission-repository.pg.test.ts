@@ -51,6 +51,21 @@ const cutoverMigrationIndex = migrations.findIndex(
 );
 if (cutoverMigrationIndex < 1) throw new Error("OpenAI moderation cutover migration is missing");
 const historicalV1Migrations = migrations.slice(0, cutoverMigrationIndex);
+const publicPostSlugMigration = migrations.find(
+  (migration) => migration.version === "0103_public_post_slug_aliases.sql",
+);
+const heldVisibilityMigration = migrations.find(
+  (migration) => migration.version === "0104_text_held_revision_visibility.sql",
+);
+if (publicPostSlugMigration === undefined)
+  throw new Error("Public Post slug alias migration is missing");
+if (heldVisibilityMigration === undefined)
+  throw new Error("Held text visibility migration is missing");
+const slugEnabledHistoricalMigrations = [
+  ...historicalV1Migrations,
+  publicPostSlugMigration,
+  heldVisibilityMigration,
+];
 afterEach(() => {
   completedTestCount += 1;
 });
@@ -167,7 +182,7 @@ function scopedConnection(raw: string, schema: string): string {
 
 async function withSchema<A>(
   use: (client: Client, connection: string) => Promise<A>,
-  migrationPlan: readonly LoadedPostgresMigration[] = historicalV1Migrations,
+  migrationPlan: readonly LoadedPostgresMigration[] = slugEnabledHistoricalMigrations,
 ): Promise<A> {
   if (connectionString === undefined) throw new Error("Postgres test configuration is unavailable");
   const schema = schemaName();
@@ -592,9 +607,57 @@ suite("Postgres 17 terminal text submission repository", () => {
         `SELECT
          (SELECT count(*)::int FROM text_content_submissions) AS submissions,
          (SELECT count(*)::int FROM posts) AS posts,
-         (SELECT count(*)::int FROM home_feed_projection) AS feed`,
+         (SELECT count(*)::int FROM home_feed_projection) AS feed,
+         (SELECT count(*)::int FROM post_slug_aliases) AS aliases,
+         (SELECT slug FROM post_slug_aliases LIMIT 1) AS slug`,
       );
-      expect(counts.rows[0]).toMatchObject({ submissions: 1, posts: 1, feed: 1 });
+      expect(counts.rows[0]).toMatchObject({
+        submissions: 1,
+        posts: 1,
+        feed: 1,
+        aliases: 1,
+        slug: "terminal-text",
+      });
+
+      const guardedBody = {
+        ...body,
+        idempotency_key: "text-order5-members-only",
+        visibility: "members_only",
+      } as CreatePostBody;
+      const guardedRequestHash = await Effect.runPromise(
+        canonicalBodyHash({ community_id: "text-community", body: guardedBody }),
+      );
+      const guarded = await runStore(connection, (store) =>
+        store.commitTerminal({
+          communityId: "text-community",
+          actor,
+          personaId: actorPersonaId,
+          body: guardedBody,
+          moderationInput: input,
+          idempotencyKey: guardedBody.idempotency_key,
+          requestHash: guardedRequestHash,
+          operationId: "operation_text_members_only",
+          evaluation,
+        }),
+      );
+      expect(guarded).toMatchObject({
+        kind: "created",
+        snapshot: { status: "published", published_resource: { kind: "post" } },
+      });
+      const guardedAlias = await admin.query<{
+        readonly slug: string;
+        readonly visibility: string;
+      }>(
+        `SELECT alias.slug, post.visibility
+           FROM post_slug_aliases AS alias
+           JOIN posts AS post ON post.post_id = alias.post_id
+          WHERE post.idempotency_key = $1`,
+        [guardedBody.idempotency_key],
+      );
+      expect(guardedAlias.rows).toHaveLength(1);
+      expect(guardedAlias.rows[0]?.visibility).toBe("members_only");
+      expect(guardedAlias.rows[0]?.slug).toMatch(/^post-[0-9abcdefghjkmnpqrstvwxyz]{10}$/);
+      expect(guardedAlias.rows[0]?.slug).not.toContain("terminal-text");
     });
   }, 30_000);
 
@@ -830,11 +893,19 @@ suite("Postgres 17 terminal text submission repository", () => {
          (SELECT count(*)::int FROM text_content_submissions) AS submissions,
          (SELECT count(*)::int FROM posts) AS posts,
          (SELECT count(*)::int FROM home_feed_projection) AS feed,
+         (SELECT count(*)::int FROM post_slug_aliases) AS aliases,
          (SELECT count(*)::int FROM text_content_held_revisions) AS held,
          (SELECT count(*)::int FROM text_moderation_cases) AS cases`,
       );
-      expect(counts.rows[0]).toEqual({ submissions: 1, posts: 0, feed: 0, held: 1, cases: 1 });
-    }, historicalV1Migrations);
+      expect(counts.rows[0]).toEqual({
+        submissions: 1,
+        posts: 0,
+        feed: 0,
+        aliases: 0,
+        held: 1,
+        cases: 1,
+      });
+    }, slugEnabledHistoricalMigrations);
   }, 30_000);
 
   test("publishes posts and comments without a namespace binding", async () => {
@@ -884,6 +955,16 @@ suite("Postgres 17 terminal text submission repository", () => {
         kind: "created",
         snapshot: { status: "published", published_resource: { kind: "post" } },
       });
+      const publishedPostId =
+        postResult.kind === "created" && postResult.snapshot.published_resource?.kind === "post"
+          ? postResult.snapshot.published_resource.post_id
+          : undefined;
+      if (publishedPostId === undefined) throw new Error("expected a published Post resource");
+      const postAlias = await admin.query<{ readonly slug: string }>(
+        "SELECT slug FROM post_slug_aliases WHERE post_id = $1",
+        [publishedPostId],
+      );
+      expect(postAlias.rows).toEqual([{ slug: "namespaceless-post" }]);
 
       await admin.query(
         `INSERT INTO posts (

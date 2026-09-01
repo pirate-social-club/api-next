@@ -137,6 +137,7 @@ import {
   type HyperdriveConnection,
   makeHyperdriveControlPlaneLayer,
 } from "@pirate/platform-cf/postgres";
+import { makeControlPlanePublicPostSlugStore } from "@pirate/platform-cf/public-post-slug-repository";
 import { makeControlPlanePublicProfileStore } from "@pirate/platform-cf/public-profile-repository";
 import {
   makeDurableObjectIdentityRegistrationRateLimiter,
@@ -203,6 +204,7 @@ import { makeNamespaceOwnershipHandlers } from "./namespace-ownership-handlers.t
 import { makePersonaHandlers } from "./persona-handlers.ts";
 import { makePlatformPirateHandleHandlers } from "./platform-pirate-handle-handlers.ts";
 import { makeProductHandlers } from "./product-handlers.ts";
+import { makePublicPostRouteHandlers } from "./public-post-route-handlers.ts";
 import { makeSongRewardOfferHandlers } from "./rewards-song-offer-handlers.ts";
 import { makeStudyGenerationHandlers } from "./study-generation-handlers.ts";
 import type { StudyGenerationWorkflowPayload } from "./study-generation-workflow.ts";
@@ -897,6 +899,10 @@ export async function createProductionHttpWorker(
   const canonicalCommunityRouteHandlers = makeCanonicalCommunityRouteHandlers({
     canonicalCommunityRouteStore: makeControlPlaneCanonicalCommunityRouteStore(controlPlane),
   });
+  const publicPostRouteHandlers = makePublicPostRouteHandlers({
+    publicPostRouteStore: makeControlPlanePublicPostSlugStore(controlPlane),
+    contentStore,
+  });
   // The route is installed before any provider is enabled so durable terminal
   // replays remain available. The same explicit configuration owns both the
   // creation binding above and this registry; no provider may exist in only
@@ -1208,6 +1214,7 @@ export async function createProductionHttpWorker(
       ...productHandlers,
       ...communityCreationHandlers,
       ...canonicalCommunityRouteHandlers,
+      ...publicPostRouteHandlers,
       ...namespaceOwnershipHandlers,
       ...hnsRootImportHandlers,
       ...verificationHandlers,

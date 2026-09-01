@@ -29,6 +29,8 @@ const migrations = await loadPostgresMigrations();
 const foundationMigrationVersion = "0059_community_moderation_authority_policy.sql";
 const cutoverMigrationVersion = "0061_openai_moderation_driver_cutover.sql";
 const runtimeMigrationVersion = "0065_text_ratings_age_access.sql";
+const postSlugMigrationVersion = "0103_public_post_slug_aliases.sql";
+const heldVisibilityMigrationVersion = "0104_text_held_revision_visibility.sql";
 const foundationMigrationIndex = migrations.findIndex(
   (migration) => migration.version === foundationMigrationVersion,
 );
@@ -38,18 +40,34 @@ const cutoverMigrationIndex = migrations.findIndex(
 const runtimeMigrationIndex = migrations.findIndex(
   (migration) => migration.version === runtimeMigrationVersion,
 );
+const postSlugMigrationIndex = migrations.findIndex(
+  (migration) => migration.version === postSlugMigrationVersion,
+);
+const heldVisibilityMigrationIndex = migrations.findIndex(
+  (migration) => migration.version === heldVisibilityMigrationVersion,
+);
+const postSlugMigration = migrations[postSlugMigrationIndex];
+const heldVisibilityMigration = migrations[heldVisibilityMigrationIndex];
 if (
   foundationMigrationIndex < 0 ||
   cutoverMigrationIndex <= foundationMigrationIndex ||
-  runtimeMigrationIndex <= cutoverMigrationIndex
+  runtimeMigrationIndex <= cutoverMigrationIndex ||
+  postSlugMigrationIndex <= runtimeMigrationIndex ||
+  heldVisibilityMigrationIndex <= postSlugMigrationIndex ||
+  postSlugMigration === undefined ||
+  heldVisibilityMigration === undefined
 ) {
   throw new Error(
-    "community moderation migrations must exist in foundation, cutover, runtime order",
+    "community moderation migrations must exist in foundation, cutover, runtime, and post-slug order",
   );
 }
 const foundationMigrations = migrations.slice(0, foundationMigrationIndex + 1);
 const cutoverMigrations = migrations.slice(0, cutoverMigrationIndex + 1);
-const runtimeMigrations = migrations.slice(0, runtimeMigrationIndex + 1);
+const runtimeMigrations = [
+  ...migrations.slice(0, runtimeMigrationIndex + 1),
+  postSlugMigration,
+  heldVisibilityMigration,
+];
 
 function schemaName(): string {
   return `api_next_community_moderation_${crypto.randomUUID().replaceAll("-", "")}`;
@@ -692,6 +710,7 @@ suite("community moderation authority and policy migration", () => {
         readonly rating: "general" | "adult_18";
         readonly status: "manual_review" | "blocked";
         readonly source: "automatic" | "platform_held";
+        readonly visibility?: "public" | "members_only";
       }) => {
         await admin.query("BEGIN");
         try {
@@ -748,9 +767,9 @@ suite("community moderation authority and policy migration", () => {
           if (input.status === "manual_review") {
             await admin.query(
               `INSERT INTO text_content_held_revisions (
-               community_id, held_revision_id, submission_id, title, body, content_sha256
-             ) VALUES ('moderation-runtime', $1, $2, 'Held title', 'Held body', repeat('5', 64))`,
-              [`${input.submissionId}-held`, input.submissionId],
+               community_id, held_revision_id, submission_id, title, body, visibility, content_sha256
+             ) VALUES ('moderation-runtime', $1, $2, 'Held title', 'Held body', $3, repeat('5', 64))`,
+              [`${input.submissionId}-held`, input.submissionId, input.visibility ?? "public"],
             );
             await admin.query(
               `INSERT INTO text_moderation_cases (
@@ -790,6 +809,15 @@ suite("community moderation authority and policy migration", () => {
         rating: "general",
         status: "manual_review",
         source: "automatic",
+        visibility: "public",
+      });
+      await insertSubmission({
+        submissionId: "moderation-runtime-members",
+        caseRef: "moderation-runtime-case-members",
+        rating: "general",
+        status: "manual_review",
+        source: "automatic",
+        visibility: "members_only",
       });
       await insertSubmission({
         submissionId: "moderation-runtime-adult",
@@ -797,6 +825,7 @@ suite("community moderation authority and policy migration", () => {
         rating: "adult_18",
         status: "manual_review",
         source: "automatic",
+        visibility: "public",
       });
       await insertSubmission({
         submissionId: "moderation-runtime-platform",
@@ -877,6 +906,21 @@ suite("community moderation authority and policy migration", () => {
         }),
       );
       expect(replayed).toEqual(approved);
+      const approvedMembersOnly = await Effect.runPromise(
+        store.actOnCase({
+          caseRef: "moderation-runtime-case-members",
+          actor: owner,
+          idempotencyKey: "members-approval",
+          expectedCaseRevision: 1,
+          action: "approve_as_general",
+          requestHash: "a".repeat(64),
+        }),
+      );
+      expect(approvedMembersOnly).toMatchObject({
+        version: "moderation-case-action-result-v2",
+        action: "approve_as_general",
+        target_status: "published",
+      });
       const published = await admin.query<{ published_post_id: string }>(
         `SELECT published_post_id FROM text_content_submissions
           WHERE submission_id = 'moderation-runtime-general'`,
@@ -892,6 +936,43 @@ suite("community moderation authority and policy migration", () => {
       ).resolves.toMatchObject({
         rows: [{ author_declared_rating: "general", content_rating: "general" }],
       });
+      const membersPublished = await admin.query<{ published_post_id: string }>(
+        `SELECT published_post_id FROM text_content_submissions
+          WHERE submission_id = 'moderation-runtime-members'`,
+      );
+      const membersPostId = membersPublished.rows[0]?.published_post_id;
+      expect(membersPostId).toBeString();
+      if (membersPostId === undefined) throw new Error("members-only post was not persisted");
+      const aliases = await admin.query<{
+        post_id: string;
+        slug: string;
+        slug_policy_version: string;
+        visibility: string;
+        content_rating: string;
+      }>(
+        `SELECT alias.post_id, alias.slug, alias.slug_policy_version,
+                post.visibility, post.content_rating
+           FROM post_slug_aliases AS alias
+           JOIN posts AS post ON post.post_id = alias.post_id
+          WHERE alias.post_id IN ($1, $2)`,
+        [postId, membersPostId],
+      );
+      expect(aliases.rows).toHaveLength(2);
+      const generalAlias = aliases.rows.find((alias) => alias.post_id === postId);
+      expect(generalAlias).toMatchObject({
+        slug: "held-title",
+        slug_policy_version: "post-slug-v1",
+        visibility: "public",
+        content_rating: "general",
+      });
+      const membersAlias = aliases.rows.find((alias) => alias.post_id === membersPostId);
+      expect(membersAlias).toMatchObject({
+        slug_policy_version: "post-slug-v1",
+        visibility: "members_only",
+        content_rating: "general",
+      });
+      expect(membersAlias?.slug).toMatch(/^post-[0-9abcdefghjkmnpqrstvwxyz]{10}$/u);
+      expect(membersAlias?.slug).not.toBe("held-title");
 
       const firstReport = await Effect.runPromise(
         store.reportTarget({

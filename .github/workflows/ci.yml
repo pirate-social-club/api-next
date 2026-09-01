@@ -204,6 +204,7 @@ jobs:
           /tmp/api-next-control-plane-postgres-community-moderation-suite-complete
           /tmp/api-next-control-plane-postgres-platform-pirate-rename-suite-complete
           /tmp/api-next-control-plane-postgres-dance-reference-suite-complete
+          /tmp/api-next-control-plane-postgres-public-post-slug-suite-complete
       - name: Run required Postgres 17 general shard
         env:
           CONTROL_PLANE_POSTGRES_TEST_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
@@ -240,6 +241,7 @@ jobs:
           CONTROL_PLANE_POSTGRES_COMMUNITY_MODERATION_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-community-moderation-suite-complete
           CONTROL_PLANE_POSTGRES_PLATFORM_PIRATE_RENAME_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-platform-pirate-rename-suite-complete
           CONTROL_PLANE_POSTGRES_DANCE_REFERENCE_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-dance-reference-suite-complete
+          CONTROL_PLANE_POSTGRES_PUBLIC_POST_SLUG_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-public-post-slug-suite-complete
         run: bun run test:postgres
       - name: Upload general completion sentinels
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

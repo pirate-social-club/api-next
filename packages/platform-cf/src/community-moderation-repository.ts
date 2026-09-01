@@ -12,11 +12,20 @@ import {
   type ControlPlaneTransaction,
 } from "@pirate/application";
 import {
+  createOpaquePostSlugCandidate,
+  createPostSlugCandidate,
+  selectPostSlugSource,
+} from "@pirate/application/post-slug";
+import {
   MODERATION_POLICY_CATEGORIES_V1,
   type ModerationPolicyCategoryV1,
   type ModerationPolicyDecisionV1,
 } from "@pirate/contracts";
 import { Effect, type Layer, Predicate } from "effect";
+import {
+  ensurePostSlugAliasInTransaction,
+  PublicPostSlugRepositoryError,
+} from "./public-post-slug-repository.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 type Transaction = ControlPlaneTransaction;
@@ -312,8 +321,9 @@ const caseSelect = `
          submission.policy_hash, submission.platform_policy_revision_id,
          submission.platform_policy_hash, submission.community_policy_revision_id,
          submission.community_policy_hash, submission.evidence_ref,
-         held.title AS held_title,
-         held.body AS held_body, post.title AS post_title, post.body AS post_body,
+         held.title AS held_title, held.body AS held_body,
+         held.visibility AS held_visibility,
+         post.title AS post_title, post.body AS post_body,
          comment.body AS comment_body, evidence.normalized_scores,
          evidence.applied_input_types
     FROM community_moderation_cases_v2 AS moderation_case
@@ -1094,6 +1104,7 @@ export function makeControlPlaneCommunityModerationRepository(): RepositoryServi
             const evidenceRef = stringValue(row, "evidence_ref");
             const heldTitle = stringValue(row, "held_title");
             const heldBody = stringValue(row, "held_body");
+            const heldVisibility = stringValue(row, "held_visibility");
             if (
               platformPolicyRevisionId === null ||
               platformPolicyHash === null ||
@@ -1125,7 +1136,10 @@ export function makeControlPlaneCommunityModerationRepository(): RepositoryServi
                 submissionActorId === null ||
                 submissionPersonaId === null ||
                 submissionKey === null ||
-                !HASH.test(submissionHash ?? "")
+                !HASH.test(submissionHash ?? "") ||
+                (targetType === "text_post" &&
+                  heldVisibility !== "public" &&
+                  heldVisibility !== "members_only")
               ) {
                 return yield* Effect.fail(failure("action", "invalid-row"));
               }
@@ -1150,13 +1164,14 @@ export function makeControlPlaneCommunityModerationRepository(): RepositoryServi
                       post_type, status, visibility, title, body, created_at,
                       updated_at, idempotency_key, idempotency_body_hash,
                       author_declared_rating, content_rating
-                    ) VALUES ($1, $2, $3, $4, 'text', 'published', 'public',
-                      $5, $6, $7, $7, $8, $9, $10, $11)`,
+                    ) VALUES ($1, $2, $3, $4, 'text', 'published', $5,
+                      $6, $7, $8, $8, $9, $10, $11, $12)`,
                   values: [
                     communityId,
                     targetResourceId,
                     submissionActorId,
                     submissionPersonaId,
+                    heldVisibility,
                     heldTitle,
                     heldBody,
                     at,
@@ -1167,6 +1182,27 @@ export function makeControlPlaneCommunityModerationRepository(): RepositoryServi
                   ],
                   readonly: false,
                 });
+                const candidate =
+                  heldVisibility === "public" && afterRating === "general"
+                    ? createPostSlugCandidate({
+                        source: selectPostSlugSource({
+                          postType: "text",
+                          title: heldTitle,
+                          body: heldBody,
+                        }),
+                        postType: "text",
+                      })
+                    : createOpaquePostSlugCandidate("text");
+                yield* ensurePostSlugAliasInTransaction(transaction, {
+                  postId: targetResourceId,
+                  candidate,
+                }).pipe(
+                  Effect.mapError((error) =>
+                    error instanceof PublicPostSlugRepositoryError
+                      ? failure("action", "invalid-row")
+                      : error,
+                  ),
+                );
                 yield* transaction.execute({
                   label: "community-moderation.approve-post-feed",
                   text: `INSERT INTO home_feed_projection (

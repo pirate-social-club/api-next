@@ -217,6 +217,13 @@ export const POSTGRES_TEST_SENTINELS: readonly PostgresSentinel[] = [
       "/tmp/api-next-control-plane-postgres-dance-reference-suite-complete",
     contents: "api-next-control-plane-postgres-dance-reference-suite-complete\n",
   },
+  {
+    name: "postgres public post slug aliases",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_PUBLIC_POST_SLUG_TEST_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-public-post-slug-suite-complete",
+    contents: "api-next-control-plane-postgres-public-post-slug-suite-complete\n",
+  },
 ];
 
 export async function verifyPostgresTestSentinels(

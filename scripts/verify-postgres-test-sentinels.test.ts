@@ -50,6 +50,7 @@ async function sentinelSet(): Promise<{
     "handle-sales",
     "community-moderation",
     "dance-reference",
+    "public-post-slug",
   ].map((name) => ({
     name,
     path: join(directory, `${name}.complete`),
@@ -173,6 +174,21 @@ describe("Postgres suite sentinel verification", () => {
     );
     expect(
       workflow.match(/\/tmp\/api-next-control-plane-postgres-dance-reference-suite-complete/gu),
+    ).toHaveLength(2);
+  });
+
+  test("keeps public post slug persistence fail-closed in Postgres CI", async () => {
+    const workflow = await readFile(
+      new URL("../.github/workflows/ci.yml", import.meta.url),
+      "utf8",
+    );
+
+    expect(workflow).toContain(
+      "CONTROL_PLANE_POSTGRES_PUBLIC_POST_SLUG_TEST_SENTINEL: " +
+        "/tmp/api-next-control-plane-postgres-public-post-slug-suite-complete",
+    );
+    expect(
+      workflow.match(/\/tmp\/api-next-control-plane-postgres-public-post-slug-suite-complete/gu),
     ).toHaveLength(2);
   });
 

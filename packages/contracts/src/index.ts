@@ -26,6 +26,7 @@ export * from "./openapi-diff.ts";
 export * from "./personas.ts";
 export * from "./platform-pirate-handles.ts";
 export * from "./provider-presentation.ts";
+export * from "./public-post-routes.ts";
 export * from "./registry.ts";
 export * from "./rewards-qualification.ts";
 export * from "./rewards-song-offers.ts";

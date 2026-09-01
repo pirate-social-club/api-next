@@ -16,6 +16,11 @@ import {
   type TextSubmissionSurface,
   type TextSubmissionTarget,
 } from "@pirate/application";
+import {
+  createOpaquePostSlugCandidate,
+  createPostSlugCandidate,
+  selectPostSlugSource,
+} from "@pirate/application/post-slug";
 import type {
   RestrictedTextModerationEvidenceV1,
   TextModerationPolicySnapshotV2,
@@ -35,6 +40,10 @@ import {
   textModerationEvaluationInvariant,
 } from "@pirate/domain";
 import { Effect, type Layer } from "effect";
+import {
+  ensurePostSlugAliasInTransaction,
+  PublicPostSlugRepositoryError,
+} from "./public-post-slug-repository.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 type Transaction = ControlPlaneTransaction;
@@ -901,6 +910,7 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
           }
 
           if (postId !== null) {
+            const visibility = body.visibility ?? "public";
             yield* transaction.execute({
               label: "text-post.commit.post",
               text:
@@ -910,18 +920,19 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
                  post_type, status, visibility,
                  title, body, created_at, updated_at, idempotency_key, idempotency_body_hash,
                  author_declared_rating, content_rating)
-               VALUES ($1, $2, $3, $4, 'text', 'published', 'public', $5, $6, $7, $7, $8, $9,
-                 $10, $11)`
+               VALUES ($1, $2, $3, $4, 'text', 'published', $5, $6, $7, $8, $8, $9, $10,
+                 $11, $12)`
                   : `INSERT INTO posts
                 (community_id, post_id, author_user_id, author_persona_id,
                  post_type, status, visibility,
                  title, body, created_at, updated_at, idempotency_key, idempotency_body_hash)
-               VALUES ($1, $2, $3, $4, 'text', 'published', 'public', $5, $6, $7, $7, $8, $9)`,
+               VALUES ($1, $2, $3, $4, 'text', 'published', $5, $6, $7, $8, $8, $9, $10)`,
               values: [
                 input.communityId,
                 postId,
                 input.actor.userId,
                 input.personaId,
+                visibility,
                 input.moderationInput.title,
                 input.moderationInput.body,
                 at,
@@ -933,6 +944,28 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
               ],
               readonly: false,
             });
+            const contentRating =
+              evaluation.version === "text-moderation-v2"
+                ? evaluation.resulting_content_rating
+                : "general";
+            const candidate =
+              visibility === "public" && contentRating === "general"
+                ? createPostSlugCandidate({
+                    source: selectPostSlugSource({
+                      postType: "text",
+                      title: input.moderationInput.title,
+                      body: input.moderationInput.body,
+                    }),
+                    postType: "text",
+                  })
+                : createOpaquePostSlugCandidate("text");
+            yield* ensurePostSlugAliasInTransaction(transaction, { postId, candidate }).pipe(
+              Effect.mapError((error) =>
+                error instanceof PublicPostSlugRepositoryError
+                  ? failure("commit", "invalid-row")
+                  : error,
+              ),
+            );
           }
           if (commentId !== null) {
             const commentTarget = target.surface === "text_post" ? null : target;
@@ -1179,14 +1212,16 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
             yield* transaction.execute({
               label: "text-post.commit.held-revision",
               text: `INSERT INTO text_content_held_revisions
-                (community_id, held_revision_id, submission_id, title, body, content_sha256, created_at)
-               VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                (community_id, held_revision_id, submission_id, title, body, visibility,
+                 content_sha256, created_at)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
               values: [
                 input.communityId,
                 makeId("held"),
                 submissionId,
                 input.moderationInput.title,
                 input.moderationInput.body,
+                body.visibility ?? "public",
                 canonical.sha256,
                 at,
               ],

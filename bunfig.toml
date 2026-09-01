@@ -1,2 +1,4 @@
 [install]
 minimumReleaseAge = 604800
+# Spec 022 independently audits and exactly pins this pre-age-gate package.
+minimumReleaseAgeExcludes = ["cizgile"]

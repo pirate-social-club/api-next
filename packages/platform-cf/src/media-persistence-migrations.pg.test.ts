@@ -496,8 +496,10 @@ suite("song media persistence PostgreSQL migration suite", () => {
         registration_outbox: string;
         feeds: string;
         feed_item_id: string;
+        aliases: string;
+        slug: string;
       }>({
-        text: "SELECT (SELECT count(*)::text FROM media_submission_events WHERE submission_id=$1) AS events,(SELECT count(*)::text FROM media_submission_outbox WHERE submission_id=$1) AS effects,(SELECT count(*)::text FROM media_publication_projections WHERE submission_id=$1) AS publications,(SELECT alignment FROM media_publication_projections WHERE submission_id=$1) AS alignment,(SELECT count(*)::text FROM hns_control_observer_operations) AS hns,(SELECT count(*)::text FROM data_registration_operations WHERE submission_id=$1) AS registrations,(SELECT count(*)::text FROM data_registration_outbox WHERE registration_operation_id=(SELECT registration_operation_id FROM data_registration_operations WHERE submission_id=$1)) AS registration_outbox,(SELECT count(*)::text FROM home_feed_projection WHERE community_id=$2 AND post_id=$3) AS feeds,(SELECT feed_item_id FROM home_feed_projection WHERE community_id=$2 AND post_id=$3) AS feed_item_id",
+        text: "SELECT (SELECT count(*)::text FROM media_submission_events WHERE submission_id=$1) AS events,(SELECT count(*)::text FROM media_submission_outbox WHERE submission_id=$1) AS effects,(SELECT count(*)::text FROM media_publication_projections WHERE submission_id=$1) AS publications,(SELECT alignment FROM media_publication_projections WHERE submission_id=$1) AS alignment,(SELECT count(*)::text FROM hns_control_observer_operations) AS hns,(SELECT count(*)::text FROM data_registration_operations WHERE submission_id=$1) AS registrations,(SELECT count(*)::text FROM data_registration_outbox WHERE registration_operation_id=(SELECT registration_operation_id FROM data_registration_operations WHERE submission_id=$1)) AS registration_outbox,(SELECT count(*)::text FROM home_feed_projection WHERE community_id=$2 AND post_id=$3) AS feeds,(SELECT feed_item_id FROM home_feed_projection WHERE community_id=$2 AND post_id=$3) AS feed_item_id,(SELECT count(*)::text FROM post_slug_aliases WHERE post_id=$3) AS aliases,(SELECT slug FROM post_slug_aliases WHERE post_id=$3) AS slug",
         values: [submission, community, postId],
       });
       expect(counts.rows[0]).toEqual({
@@ -510,6 +512,8 @@ suite("song media persistence PostgreSQL migration suite", () => {
         registration_outbox: "1",
         feeds: "1",
         feed_item_id: `media-feed-${operation}`,
+        aliases: "1",
+        slug: "fixture-song",
       });
       expect(
         await run(

@@ -9947,6 +9947,16 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION post_slug_utf16_code_units(value text) RETURNS integer
+    LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
+    AS $$
+  SELECT COALESCE(
+    SUM(CASE WHEN ascii(character) > 65535 THEN 2 ELSE 1 END),
+    0
+  )::INTEGER
+  FROM regexp_split_to_table(value, '') AS characters(character);
+$$;
+
 CREATE FUNCTION prepare_hns_control_observer_operation_insert() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -11559,6 +11569,14 @@ CREATE FUNCTION reject_operator_managed_route_operation_change() RETURNS trigger
     AS $$
 BEGIN
   RAISE EXCEPTION 'operator-managed route operations are append-only';
+END;
+$$;
+
+CREATE FUNCTION reject_post_slug_alias_mutation() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'post slug aliases are immutable';
 END;
 $$;
 
@@ -23583,6 +23601,15 @@ CREATE TABLE policy_versions (
     CONSTRAINT policy_versions_reward_authority_check CHECK ((((policy_purpose = 'access'::text) AND (uniqueness_authority_id IS NULL)) OR ((policy_purpose = 'reward'::text) AND (uniqueness_authority_id IS NOT NULL) AND ((uniqueness_model ->> 'kind'::text) = 'single_authority'::text) AND ((uniqueness_model ->> 'authority_id'::text) = uniqueness_authority_id))))
 );
 
+CREATE TABLE post_slug_aliases (
+    slug text NOT NULL,
+    post_id text NOT NULL,
+    slug_policy_version text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT post_slug_aliases_policy_check CHECK ((slug_policy_version = 'post-slug-v1'::text)),
+    CONSTRAINT post_slug_aliases_slug_check CHECK (((slug <> ''::text) AND (slug = btrim(slug)) AND ((post_slug_utf16_code_units(slug) >= 1) AND (post_slug_utf16_code_units(slug) <= 80)) AND (octet_length(slug) <= 320) AND (slug !~ '[[:space:][:cntrl:]]'::text) AND (strpos(slug, '%'::text) = 0) AND (strpos(slug, '/'::text) = 0) AND (strpos(slug, '\'::text) = 0) AND (slug <> ALL (ARRAY['.'::text, '..'::text]))))
+);
+
 CREATE TABLE post_vote_actions (
     action_id text NOT NULL,
     community_id text NOT NULL,
@@ -24912,9 +24939,11 @@ CREATE TABLE text_content_held_revisions (
     body text,
     content_sha256 text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
+    visibility text DEFAULT 'public'::text NOT NULL,
     CONSTRAINT text_content_held_revisions_content_present CHECK ((((title IS NOT NULL) AND (btrim(title) <> ''::text)) OR ((body IS NOT NULL) AND (btrim(body) <> ''::text)))),
     CONSTRAINT text_content_held_revisions_content_sha256_check CHECK ((content_sha256 ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT text_content_held_revisions_identifiers_not_blank CHECK (((btrim(held_revision_id) <> ''::text) AND (held_revision_id = btrim(held_revision_id))))
+    CONSTRAINT text_content_held_revisions_identifiers_not_blank CHECK (((btrim(held_revision_id) <> ''::text) AND (held_revision_id = btrim(held_revision_id)))),
+    CONSTRAINT text_content_held_revisions_visibility_check CHECK ((visibility = ANY (ARRAY['public'::text, 'members_only'::text])))
 );
 
 CREATE TABLE text_content_submissions (
@@ -26803,6 +26832,12 @@ ALTER TABLE ONLY policy_versions
 ALTER TABLE ONLY policy_versions
     ADD CONSTRAINT policy_versions_revision_unique UNIQUE (community_id, policy_key, revision);
 
+ALTER TABLE ONLY post_slug_aliases
+    ADD CONSTRAINT post_slug_aliases_pkey PRIMARY KEY (slug);
+
+ALTER TABLE ONLY post_slug_aliases
+    ADD CONSTRAINT post_slug_aliases_post_id_key UNIQUE (post_id);
+
 ALTER TABLE ONLY post_vote_actions
     ADD CONSTRAINT post_vote_actions_actor_post_endpoint_key_unique UNIQUE (actor_user_id, post_id, endpoint_template, idempotency_key);
 
@@ -27449,6 +27484,8 @@ CREATE UNIQUE INDEX personas_one_first_per_account_uidx ON personas USING btree 
 CREATE UNIQUE INDEX platform_operator_route_authority_grants_active_uidx ON platform_operator_route_authority_grants USING btree (operator_principal_id, authority) WHERE (status = 'active'::text);
 
 CREATE INDEX platform_pirate_handle_rate_account_operation_idx ON platform_pirate_handle_rate_submissions USING btree (actor_account_id, operation, submitted_at DESC);
+
+CREATE INDEX post_slug_aliases_sitemap_order_idx ON post_slug_aliases USING btree (created_at, post_id);
 
 CREATE INDEX post_vote_actions_target_time_idx ON post_vote_actions USING btree (community_id, post_id, created_at, action_id);
 
@@ -28345,6 +28382,8 @@ CREATE TRIGGER platform_referral_revenue_append_only BEFORE DELETE OR UPDATE ON 
 CREATE TRIGGER platform_sponsorship_budget_entries_append_only BEFORE DELETE OR UPDATE ON platform_sponsorship_budget_entries FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
 
 CREATE TRIGGER policy_versions_append_only BEFORE DELETE OR UPDATE ON policy_versions FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
+
+CREATE TRIGGER post_slug_aliases_immutable BEFORE DELETE OR UPDATE ON post_slug_aliases FOR EACH ROW EXECUTE FUNCTION reject_post_slug_alias_mutation();
 
 CREATE TRIGGER posts_active_persona BEFORE INSERT ON posts FOR EACH ROW EXECUTE FUNCTION require_active_author_persona();
 
@@ -30243,6 +30282,9 @@ ALTER TABLE ONLY policy_versions
 
 ALTER TABLE ONLY policy_versions
     ADD CONSTRAINT policy_versions_uniqueness_authority_fk FOREIGN KEY (uniqueness_authority_id) REFERENCES reward_uniqueness_authorities(campaign_id);
+
+ALTER TABLE ONLY post_slug_aliases
+    ADD CONSTRAINT post_slug_aliases_post_fk FOREIGN KEY (post_id) REFERENCES posts(post_id);
 
 ALTER TABLE ONLY post_vote_actions
     ADD CONSTRAINT post_vote_actions_post_fk FOREIGN KEY (community_id, post_id) REFERENCES posts(community_id, post_id);

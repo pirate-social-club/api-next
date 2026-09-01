@@ -8,6 +8,7 @@ import {
   type HomeFeedDocument,
   type HomeFeedQuery,
 } from "@pirate/application";
+import { postSlugCanonicalPath } from "@pirate/application/post-slug";
 import { Effect, type Layer } from "effect";
 import { publicPersonaFromSql } from "./public-persona-projection";
 
@@ -212,6 +213,7 @@ const feedItemFromRow = (
   const viewerVote = viewerVoteValue === 1 || viewerVoteValue === -1 ? viewerVoteValue : null;
   const contentRating = stringValue(row, "content_rating");
   const ratingViewAllowed = booleanValue(row, "rating_view_allowed");
+  const canonicalSlug = optionalString(row, "canonical_slug");
   if (
     feedItemId === null ||
     postId === null ||
@@ -243,6 +245,19 @@ const feedItemFromRow = (
     return ageLockedResource();
   }
 
+  const canonicalPath =
+    visibility === "public" && contentRating === "general" && canonicalSlug !== null
+      ? postSlugCanonicalPath(canonicalSlug)
+      : null;
+  if (
+    visibility === "public" &&
+    contentRating === "general" &&
+    canonicalSlug !== null &&
+    canonicalPath === null
+  ) {
+    return null;
+  }
+
   const authorPersona = publicPersonaFromSql(row.author_persona);
   const authorAccountId = optionalString(row, "actor_account_id");
   if (authorPersona === undefined) return null;
@@ -256,6 +271,7 @@ const feedItemFromRow = (
   return {
     community,
     post: {
+      ...(canonicalPath === null ? {} : { canonical_path: canonicalPath }),
       post: {
         id: postId,
         object: "post",
@@ -326,6 +342,7 @@ const homeFeedStatement = (input: {
                   p.title,
                   p.body,
                   p.content_rating,
+                  alias.slug AS canonical_slug,
                   (p.post_type NOT IN ('text', 'song')
                     OR can_account_view_content_rating_v1($1, p.content_rating)) AS rating_view_allowed,
                   p.comments_locked,
@@ -367,6 +384,8 @@ const homeFeedStatement = (input: {
               AND p.post_id = h.post_id
              JOIN communities AS c
                ON c.community_id = h.community_id
+             LEFT JOIN post_slug_aliases AS alias
+               ON alias.post_id = p.post_id
             WHERE c.status = 'active'
               AND p.status = 'published'
               AND ($2::double precision IS NULL OR EXTRACT(EPOCH FROM p.created_at) >= $2)
