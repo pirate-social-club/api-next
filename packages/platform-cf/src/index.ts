@@ -215,6 +215,7 @@ export {
   HNS_OWNER_ROUTE_REVALIDATION_START_DEADLINE_MS,
   type HnsOwnerRouteRevalidationTransport,
   makeHnsOwnerRouteRevalidationTransport,
+  makeHnsRootImportNameProofServiceBindingVerifier,
 } from "./namespace-ownership/hns-owner-service-binding";
 export {
   makePlatformNamespaceOwnershipProviderRegistry,

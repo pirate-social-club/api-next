@@ -61,6 +61,8 @@ function wireFailure(error: unknown): Error {
       return new Conflict({ message: "HNS root import conflicts with durable state" });
     case "ownership_unavailable":
       return new ProviderUnavailable({ message: "HNS ownership provider is unavailable" });
+    case "ownership_rejected":
+      return new BadRequest({ message: "HNS name signature did not verify" });
     case "ownership_source_unsupported":
       return new ProviderMisconfigured({
         message: "HNS root import requires parent-chain ownership proof",
@@ -112,6 +114,7 @@ export function makeHnsRootImportHandlers(services: HnsRootImportServices): HnsR
       const body = request.body as Readonly<{
         expected_revision: number;
         idempotency_key: string;
+        provisioning_name_signature?: string;
       }>;
       return Effect.runPromise(
         pollHnsRootImport(
@@ -121,6 +124,9 @@ export function makeHnsRootImportHandlers(services: HnsRootImportServices): HnsR
             root_import_session_id: parameters.sessionId ?? "",
             expected_revision: body.expected_revision,
             idempotency_key: body.idempotency_key,
+            ...(body.provisioning_name_signature === undefined
+              ? {}
+              : { provisioning_name_signature: body.provisioning_name_signature }),
           },
           services,
         ).pipe(

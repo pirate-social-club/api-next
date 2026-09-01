@@ -79,6 +79,12 @@ function services(
       ownership_source: "hns_parent_chain_txt" as const,
       record: { type: "TXT" as const, txt: ["pirate-verification=challenge"] as const },
     },
+    provisioning_authorization: {
+      kind: "hns_name_signature_v1" as const,
+      wallet_rpc_method: "signmessagewithname" as const,
+      message: '["pirate-hns-root-import-name-proof-v1","fixture"]',
+      expires_at: expiresAt,
+    },
     publish_plan: null,
     publish_plan_sha256: null,
     readiness_result_sha256: null,

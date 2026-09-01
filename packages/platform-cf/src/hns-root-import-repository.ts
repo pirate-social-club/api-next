@@ -18,6 +18,7 @@ import {
   type HnsRootImportStartStoreOutcome,
   HnsRootImportStorageFailed,
   type HnsRootImportStore,
+  hnsRootImportNameProofMessage,
   prepareHnsDnsZoneActivationDocumentV1,
 } from "@pirate/application";
 import { decodeStrictHnsJsonBytes } from "@pirate/application/namespace-ownership";
@@ -96,7 +97,16 @@ function decodePlan(value: unknown): HnsRootImportSessionResponse["publish_plan"
   return Option.isSome(planResponse) ? planResponse.value.publish_plan : undefined;
 }
 
-function responseFromRow(row: Row, replayed: boolean): HnsRootImportSessionResponse | null {
+type HnsRootImportRepositoryOptions = Readonly<{ readonly environment: string }>;
+
+const defaultRepositoryOptions: HnsRootImportRepositoryOptions = { environment: "production" };
+
+function responseFromRow(
+  row: Row,
+  replayed: boolean,
+  options: HnsRootImportRepositoryOptions,
+): HnsRootImportSessionResponse | null {
+  const actorId = stringValue(row, "actor_id");
   const creationIntentId = stringValue(row, "creation_intent_id");
   const ceremonyIntentId = stringValue(row, "ceremony_intent_id");
   const sessionId = stringValue(row, "root_import_session_id");
@@ -112,6 +122,7 @@ function responseFromRow(row: Row, replayed: boolean): HnsRootImportSessionRespo
   const readinessHash =
     row.readiness_result_sha256 === null ? null : stringValue(row, "readiness_result_sha256");
   if (
+    actorId === null ||
     creationIntentId === null ||
     ceremonyIntentId === null ||
     sessionId === null ||
@@ -135,6 +146,22 @@ function responseFromRow(row: Row, replayed: boolean): HnsRootImportSessionRespo
     expires_at: expiresAt,
     replayed,
   } as const;
+  let nameProofMessage: string;
+  try {
+    nameProofMessage = hnsRootImportNameProofMessage({
+      actor_id: actorId,
+      creation_intent_id: creationIntentId,
+      ceremony_intent_id: ceremonyIntentId,
+      root_import_session_id: sessionId,
+      namespace_session_id: namespaceSessionId,
+      root_label: rootLabel,
+      challenge_txt_value: challengeTxtValue,
+      environment: options.environment,
+      expires_at: expiresAt,
+    });
+  } catch {
+    return null;
+  }
   const candidate =
     status === "awaiting_ownership"
       ? {
@@ -143,6 +170,12 @@ function responseFromRow(row: Row, replayed: boolean): HnsRootImportSessionRespo
           ownership_challenge: {
             ownership_source: "hns_parent_chain_txt" as const,
             record: { type: "TXT" as const, txt: [challengeTxtValue] as const },
+          },
+          provisioning_authorization: {
+            kind: "hns_name_signature_v1" as const,
+            wallet_rpc_method: "signmessagewithname" as const,
+            message: nameProofMessage,
+            expires_at: expiresAt,
           },
           publish_plan: null,
           publish_plan_sha256: null,
@@ -200,13 +233,15 @@ const sessionColumns = `
   root_label, challenge_txt_value, status, revision, start_idempotency_key,
   start_request_sha256, provision_job_id, publish_plan_bytes,
   publish_plan_sha256, readiness_result_bytes, readiness_result_sha256,
-  ownership_result_sha256, observation_job_id, observation_idempotency_key,
+  ownership_result_sha256, provision_authorization_kind,
+  provision_authorization_sha256, observation_job_id, observation_idempotency_key,
   observation_request_sha256, activated_community_id, expires_at, created_at, updated_at`;
 
 function loadSession(
   transaction: Transaction,
   input: GetHnsRootImportInput,
   lock: boolean,
+  options: HnsRootImportRepositoryOptions,
 ): Effect.Effect<
   HnsRootImportSessionResponse | null,
   HnsRootImportStorageFailed | ControlPlaneError
@@ -224,7 +259,7 @@ function loadSession(
     const row = oneRow(result);
     if (row === undefined) return yield* Effect.fail(storageFailure());
     if (row === null) return null;
-    const decoded = responseFromRow(row, false);
+    const decoded = responseFromRow(row, false, options);
     return decoded === null ? yield* Effect.fail(storageFailure()) : decoded;
   });
 }
@@ -283,7 +318,9 @@ interface HnsRootImportRepository {
   >;
 }
 
-export function makeControlPlaneHnsRootImportRepository(): HnsRootImportRepository {
+export function makeControlPlaneHnsRootImportRepository(
+  options: HnsRootImportRepositoryOptions = defaultRepositoryOptions,
+): HnsRootImportRepository {
   return {
     start: (input) =>
       Effect.gen(function* () {
@@ -303,7 +340,7 @@ export function makeControlPlaneHnsRootImportRepository(): HnsRootImportReposito
             const replayRow = oneRow(replayResult);
             if (replayRow === undefined) return yield* Effect.fail(storageFailure());
             if (replayRow !== null) {
-              const response = responseFromRow(replayRow, true);
+              const response = responseFromRow(replayRow, true, options);
               return response !== null && replayRow.start_request_sha256 === input.request_sha256
                 ? ({ kind: "replay", session: response } as const)
                 : ({ kind: "conflict" } as const);
@@ -383,7 +420,7 @@ export function makeControlPlaneHnsRootImportRepository(): HnsRootImportReposito
             const insertedRow = oneRow(insertedSession);
             if (insertedRow === undefined) return yield* Effect.fail(storageFailure());
             if (insertedRow === null) return { kind: "conflict" } as const;
-            const response = responseFromRow(insertedRow, false);
+            const response = responseFromRow(insertedRow, false, options);
             return response === null
               ? yield* Effect.fail(storageFailure())
               : ({ kind: "created", session: response } as const);
@@ -393,7 +430,9 @@ export function makeControlPlaneHnsRootImportRepository(): HnsRootImportReposito
     get: (input) =>
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
-        return yield* db.withTransaction((transaction) => loadSession(transaction, input, false));
+        return yield* db.withTransaction((transaction) =>
+          loadSession(transaction, input, false, options),
+        );
       }),
     loadPollAuthority: (input) =>
       Effect.gen(function* () {
@@ -412,7 +451,7 @@ export function makeControlPlaneHnsRootImportRepository(): HnsRootImportReposito
         const row = oneRow(result);
         if (row === undefined) return yield* Effect.fail(storageFailure());
         if (row === null) return null;
-        const session = responseFromRow(row, false);
+        const session = responseFromRow(row, false, options);
         const ownershipRevision = positiveInteger(row.ownership_expected_revision);
         const challenge = stringValue(row, "challenge_txt_value");
         const provisionJobId = stringValue(row, "provision_job_id");
@@ -442,12 +481,15 @@ export function makeControlPlaneHnsRootImportRepository(): HnsRootImportReposito
     beginProvisioning: (input) =>
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
+        const nameProof =
+          input.authorization.kind === "hns_name_signature" ? input.authorization : null;
         return yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
             const result = yield* transaction.execute<Row>({
               label: "hns.root-import.begin-provisioning",
-              text: `SELECT * FROM begin_hns_root_import_provision_v1(
-                       $1,$2,$3,$4::bigint,$5,$6,$7,$8,$9::bytea,$10
+              text: `SELECT * FROM begin_hns_root_import_provision_v2(
+                       $1,$2,$3,$4::bigint,$5,$6,$7,$8,$9::bytea,$10,$11,
+                       $12,$13::bytea,$14
                      )`,
               values: [
                 input.poll.actor_id,
@@ -456,7 +498,11 @@ export function makeControlPlaneHnsRootImportRepository(): HnsRootImportReposito
                 input.poll.expected_revision,
                 input.poll.idempotency_key,
                 input.poll_request_sha256,
-                input.ownership_result_sha256,
+                input.authorization.kind,
+                input.authorization.result_sha256,
+                nameProof?.result_bytes ?? null,
+                nameProof?.message_sha256 ?? null,
+                nameProof?.signature_sha256 ?? null,
                 input.provision_job_id,
                 input.provision_request_bytes,
                 input.provision_request_sha256,
@@ -472,7 +518,7 @@ export function makeControlPlaneHnsRootImportRepository(): HnsRootImportReposito
             if (outcomeRow.outcome !== "provisioning" && outcomeRow.outcome !== "replayed") {
               return yield* Effect.fail(storageFailure());
             }
-            const session = yield* loadSession(transaction, input.poll, false);
+            const session = yield* loadSession(transaction, input.poll, false, options);
             if (session === null) return yield* Effect.fail(storageFailure());
             return {
               kind: outcomeRow.outcome,
@@ -514,7 +560,7 @@ export function makeControlPlaneHnsRootImportRepository(): HnsRootImportReposito
             if (outcomeRow.outcome !== "observing" && outcomeRow.outcome !== "replayed") {
               return yield* Effect.fail(storageFailure());
             }
-            const session = yield* loadSession(transaction, input.poll, false);
+            const session = yield* loadSession(transaction, input.poll, false, options);
             if (session === null) return yield* Effect.fail(storageFailure());
             return {
               kind: outcomeRow.outcome,
@@ -556,7 +602,7 @@ export function makeControlPlaneHnsRootImportRepository(): HnsRootImportReposito
             ) {
               return yield* Effect.fail(storageFailure());
             }
-            const session = yield* loadSession(transaction, input.poll, false);
+            const session = yield* loadSession(transaction, input.poll, false, options);
             if (session === null) return yield* Effect.fail(storageFailure());
             return {
               kind: outcomeRow.outcome,
@@ -601,7 +647,7 @@ export function makeControlPlaneHnsRootImportRepository(): HnsRootImportReposito
               const replayAppActivationId = stringValue(replay, "app_host_activation_id");
               const replaySaleActivationId = stringValue(replay, "sale_namespace_activation_id");
               const replaySaleHash = stringValue(replay, "sale_namespace_activation_sha256");
-              const root = yield* loadSession(transaction, input.input, false);
+              const root = yield* loadSession(transaction, input.input, false, options);
               if (
                 revision === null ||
                 replayCommunityId === null ||
@@ -1159,8 +1205,9 @@ export function makeControlPlaneHnsRootImportRepository(): HnsRootImportReposito
 
 export function makeControlPlaneHnsRootImportStore(
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+  options: HnsRootImportRepositoryOptions = defaultRepositoryOptions,
 ): HnsRootImportStore {
-  const repository = makeControlPlaneHnsRootImportRepository();
+  const repository = makeControlPlaneHnsRootImportRepository(options);
   const provide = <A>(
     effect: Effect.Effect<A, HnsRootImportStorageFailed | ControlPlaneError, ControlPlaneDb>,
   ) => Effect.provide(runtime)(effect).pipe(Effect.mapError(() => storageFailure()));

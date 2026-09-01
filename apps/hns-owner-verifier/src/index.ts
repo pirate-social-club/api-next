@@ -9,9 +9,15 @@ import {
   type HnsOwnerSameRootRecoveryProviderStartV1,
 } from "@pirate/application/route-revalidation";
 import {
+  composeHnsNameProofRuntime,
   composeHnsTargetObserverRuntime,
   type HnsTargetCompositionBindings,
 } from "./composition.ts";
+import {
+  decodeHnsNameProofRequest,
+  type HnsNameProofRuntime,
+  HnsNameProofRuntimeError,
+} from "./name-proof.ts";
 import {
   type HnsOwnerCreationTargetSession,
   HnsTargetObserverFacadeError,
@@ -26,6 +32,7 @@ import {
 const START_PATH = "/internal/hns-owner/v1/start";
 const POLL_PATH = "/internal/hns-owner/v1/poll";
 const ACTIVE_LEASE_RENEWAL_PATH = "/internal/hns-owner/v1/active-lease-renewal";
+const NAME_PROOF_PATH = "/internal/hns-owner/v1/verify-name-signature";
 const SESSION_HEADER = "Pirate-Namespace-Session-Id";
 const OBSERVATION_HEADER = "Pirate-HNS-Observation-Id";
 const ACTIVE_LEASE_RENEWAL_HEADER = "Pirate-HNS-Active-Lease-Renewal-Id";
@@ -33,6 +40,8 @@ const START_REQUEST_MAX_BYTES = 8_192;
 const START_RESPONSE_MAX_BYTES = 65_536;
 const POLL_REQUEST_MAX_BYTES = 32_768;
 const POLL_RESPONSE_MAX_BYTES = 1_048_576;
+const NAME_PROOF_REQUEST_MAX_BYTES = 4_096;
+const NAME_PROOF_RESPONSE_MAX_BYTES = 1_024;
 const UPSTREAM_REFERENCE_BYTES = 24;
 
 const CREATION_START_KEYS = [
@@ -719,6 +728,7 @@ export async function handleRequest(
   env: Env,
   options: Readonly<{
     readonly targetObserver?: HnsTargetObserverRuntime;
+    readonly nameProof?: HnsNameProofRuntime;
   }> = {},
 ): Promise<Response> {
   const url = new URL(request.url);
@@ -728,10 +738,44 @@ export async function handleRequest(
   if (
     url.pathname !== START_PATH &&
     url.pathname !== POLL_PATH &&
-    url.pathname !== ACTIVE_LEASE_RENEWAL_PATH
+    url.pathname !== ACTIVE_LEASE_RENEWAL_PATH &&
+    url.pathname !== NAME_PROOF_PATH
   )
     return errorResponse(404, "not_found");
   if (request.method !== "POST") return errorResponse(405, "method_not_allowed");
+  if (url.pathname === NAME_PROOF_PATH) {
+    if (
+      request.headers.get("content-type") !== "application/json" ||
+      request.headers.get("accept") !== "application/json" ||
+      request.headers.get(OBSERVATION_HEADER) !== null ||
+      sessionHeader(request) === null
+    ) {
+      return errorResponse(400, "invalid_request");
+    }
+    const body = await boundedBody(request, NAME_PROOF_REQUEST_MAX_BYTES);
+    if (body === null) return errorResponse(400, "invalid_request");
+    let decoded: unknown;
+    try {
+      decoded = strictJson(body, NAME_PROOF_REQUEST_MAX_BYTES);
+    } catch {
+      return errorResponse(400, "invalid_request");
+    }
+    const input = decodeHnsNameProofRequest(decoded);
+    if (input === null) return errorResponse(400, "invalid_request");
+    if (sessionHeader(request) !== input.root_import_session_id) {
+      return errorResponse(400, "invalid_request");
+    }
+    if (options.nameProof === undefined) return errorResponse(502, "provider_misconfigured");
+    try {
+      const output = await options.nameProof.verify(input, request.signal);
+      const result = strictJson(output, NAME_PROOF_RESPONSE_MAX_BYTES);
+      return jsonResponse(result, 200);
+    } catch (error) {
+      return error instanceof HnsNameProofRuntimeError && error.reason === "unavailable"
+        ? errorResponse(503, "provider_unavailable")
+        : errorResponse(502, "invalid_response");
+    }
+  }
   if (url.pathname === ACTIVE_LEASE_RENEWAL_PATH) {
     if (
       request.headers.get("content-type") !== "application/json" ||
@@ -950,13 +994,26 @@ export async function handleRequest(
 
 const app = {
   async fetch(request: Request, env: Env): Promise<Response> {
+    if (new URL(request.url).pathname === NAME_PROOF_PATH) {
+      let nameProof: HnsNameProofRuntime | undefined;
+      try {
+        nameProof = composeHnsNameProofRuntime(env, request.signal);
+      } catch {
+        nameProof = undefined;
+      }
+      return handleRequest(request, env, {
+        ...(nameProof === undefined ? {} : { nameProof }),
+      });
+    }
     let targetObserver: HnsTargetObserverRuntime | undefined;
     try {
       targetObserver = await composeHnsTargetObserverRuntime(env, request.signal);
     } catch {
       targetObserver = undefined;
     }
-    return handleRequest(request, env, targetObserver === undefined ? {} : { targetObserver });
+    return handleRequest(request, env, {
+      ...(targetObserver === undefined ? {} : { targetObserver }),
+    });
   },
 };
 

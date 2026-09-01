@@ -120,6 +120,47 @@ describe("HNS private observer-driver wire", () => {
     });
   });
 
+  test("admits only the exact safe HNS name-signature verification vector", () => {
+    const signature = btoa("\u0001".repeat(64));
+    const message = '["pirate-hns-root-import-name-proof-v1","fixture"]';
+    const body = encoder.encode(
+      JSON.stringify({
+        method: "verifymessagewithname",
+        params: ["dankmemes", signature, message, true],
+      }),
+    );
+    const request = encodeHnsPrivateDriverRequestV1({
+      exchange_kind: "hsd_json_rpc",
+      driver_reference: "hsd-json-rpc:production-primary",
+      request_bytes: body,
+      response_max_bytes: 1_024,
+      timeout_ms: 4_000,
+    });
+    expect(decodeHnsPrivateDriverRequestV1(request)).toMatchObject({
+      request_bytes: body,
+    });
+
+    for (const params of [
+      ["dankmemes", signature, message, false],
+      ["DANKMEMES", signature, message, true],
+      ["dankmemes", "AQ==", message, true],
+      ["dankmemes", signature, message],
+      [signature, "dankmemes", message, true],
+    ]) {
+      expect(() =>
+        encodeHnsPrivateDriverRequestV1({
+          exchange_kind: "hsd_json_rpc",
+          driver_reference: "hsd-json-rpc:production-primary",
+          request_bytes: encoder.encode(
+            JSON.stringify({ method: "verifymessagewithname", params }),
+          ),
+          response_max_bytes: 1_024,
+          timeout_ms: 4_000,
+        }),
+      ).toThrow();
+    }
+  });
+
   test("rejects member, byte, identity, bound, and timeout substitutions", () => {
     const valid = JSON.parse(decoder.decode(dnsRequest())) as Record<string, unknown>;
     const mutations: ReadonlyArray<Record<string, unknown>> = [

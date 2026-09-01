@@ -1,5 +1,7 @@
 import {
+  decodeHnsRootImportNameProofResultV1,
   HNS_OWNER_PROVIDER_ID,
+  type HnsRootImportNameProofVerifierPort,
   NamespaceOwnershipProviderInvalidResponse,
   NamespaceOwnershipProviderRejected,
   NamespaceOwnershipProviderUnavailable,
@@ -11,10 +13,13 @@ import type { HnsOwnerTransport, HnsOwnerTransportFailure } from "./hns-owner.ts
 
 const START_URL = "https://hns-owner.internal/internal/hns-owner/v1/start";
 const POLL_URL = "https://hns-owner.internal/internal/hns-owner/v1/poll";
+const NAME_PROOF_URL = "https://hns-owner.internal/internal/hns-owner/v1/verify-name-signature";
 const START_REQUEST_MAX_BYTES = 8_192;
 const START_RESPONSE_MAX_BYTES = 65_536;
 const POLL_REQUEST_MAX_BYTES = 32_768;
 const POLL_RESPONSE_MAX_BYTES = 1_048_576;
+const NAME_PROOF_REQUEST_MAX_BYTES = 4_096;
+const NAME_PROOF_RESPONSE_MAX_BYTES = 1_024;
 export const HNS_OWNER_ROUTE_REVALIDATION_START_DEADLINE_MS = 5_000;
 export const HNS_OWNER_ROUTE_REVALIDATION_POLL_DEADLINE_MS = 15_000;
 
@@ -69,6 +74,11 @@ function jsonBytes(value: unknown, maxBytes: number, operation: Operation): Uint
   }
   if (bytes.byteLength === 0 || bytes.byteLength > maxBytes) throw invalid(operation);
   return bytes;
+}
+
+async function sha256Bytes(value: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", Uint8Array.from(value).buffer);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 export async function readBoundedHnsOwnerServiceBindingResponse(
@@ -260,6 +270,70 @@ export function makeHnsOwnerServiceBindingTransport(
         HNS_OWNER_ROUTE_REVALIDATION_POLL_DEADLINE_MS,
         "complete",
         POLL_RESPONSE_MAX_BYTES,
+      );
+    },
+  };
+}
+
+/**
+ * Off-chain provisioning proof over the existing private HNS service binding.
+ * The verifier returns only digests and a boolean; the signature never enters
+ * the returned evidence bytes.
+ */
+export function makeHnsRootImportNameProofServiceBindingVerifier(
+  binding: HnsOwnerServiceBinding,
+): HnsRootImportNameProofVerifierPort {
+  return {
+    verify: (input) => {
+      const body = jsonBytes(
+        {
+          root_import_session_id: input.root_import_session_id,
+          root_label: input.root_label,
+          message: input.message,
+          signature: input.signature,
+        },
+        NAME_PROOF_REQUEST_MAX_BYTES,
+        "complete",
+      );
+      return request(
+        binding,
+        NAME_PROOF_URL,
+        body,
+        "application/json",
+        input.root_import_session_id,
+        undefined,
+        HNS_OWNER_ROUTE_REVALIDATION_POLL_DEADLINE_MS,
+        "complete",
+        NAME_PROOF_RESPONSE_MAX_BYTES,
+      ).pipe(
+        Effect.flatMap((resultBytes) =>
+          Effect.tryPromise({
+            try: async () => {
+              const result = decodeHnsRootImportNameProofResultV1(resultBytes);
+              const [messageSha256, signatureSha256, resultSha256] = await Promise.all([
+                sha256Bytes(new TextEncoder().encode(input.message)),
+                sha256Bytes(new TextEncoder().encode(input.signature)),
+                sha256Bytes(resultBytes),
+              ]);
+              if (
+                result.root_label !== input.root_label ||
+                result.message_sha256 !== messageSha256 ||
+                result.signature_sha256 !== signatureSha256 ||
+                result.safe !== true
+              ) {
+                throw invalid("complete");
+              }
+              return {
+                result_bytes: new Uint8Array(resultBytes),
+                result_sha256: resultSha256,
+              };
+            },
+            catch: (error) =>
+              error instanceof NamespaceOwnershipProviderInvalidResponse
+                ? error
+                : invalid("complete"),
+          }),
+        ),
       );
     },
   };

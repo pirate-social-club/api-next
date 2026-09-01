@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
+  encodeHnsRootImportNameProofResultV1,
+  HNS_ROOT_IMPORT_NAME_PROOF_RESULT_VERSION,
   NamespaceOwnershipProviderInvalidResponse,
   NamespaceOwnershipProviderRejected,
   NamespaceOwnershipProviderUnavailable,
@@ -10,6 +12,7 @@ import { Effect } from "effect";
 import {
   makeHnsOwnerRouteRevalidationTransport,
   makeHnsOwnerServiceBindingTransport,
+  makeHnsRootImportNameProofServiceBindingVerifier,
 } from "./hns-owner-service-binding.ts";
 
 const input = {
@@ -149,6 +152,56 @@ function capturedHeaders(init: RequestInit | undefined): Readonly<Record<string,
 }
 
 describe("HNS owner service-binding transport", () => {
+  test("binds name proof to the import session and returns only sanitized evidence", async () => {
+    const calls: Array<{ input: string | URL; init: RequestInit | undefined }> = [];
+    const signature = btoa("\u0001".repeat(64));
+    const message = '["pirate-hns-root-import-name-proof-v1","fixture"]';
+    const digest = async (value: string): Promise<string> => {
+      const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+      return [...new Uint8Array(bytes)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    };
+    const resultBytes = encodeHnsRootImportNameProofResultV1({
+      version: HNS_ROOT_IMPORT_NAME_PROOF_RESULT_VERSION,
+      root_label: "dankmemes",
+      message_sha256: await digest(message),
+      signature_sha256: await digest(signature),
+      safe: true,
+      verified: true,
+    });
+    const verifier = makeHnsRootImportNameProofServiceBindingVerifier({
+      fetch: async (request, init) => {
+        calls.push({ input: request, init });
+        return response(resultBytes);
+      },
+    });
+
+    const result = await Effect.runPromise(
+      verifier.verify({
+        root_import_session_id: "root-import-session-1",
+        root_label: "dankmemes",
+        message,
+        signature,
+      }),
+    );
+    expect(String(calls[0]?.input)).toBe(
+      "https://hns-owner.internal/internal/hns-owner/v1/verify-name-signature",
+    );
+    expect(calls[0]?.init?.headers).toEqual([
+      ["Content-Type", "application/json"],
+      ["Accept", "application/json"],
+      ["Pirate-Namespace-Session-Id", "root-import-session-1"],
+    ]);
+    expect(new TextDecoder().decode(calls[0]?.init?.body as Uint8Array)).toBe(
+      JSON.stringify({
+        root_import_session_id: "root-import-session-1",
+        root_label: "dankmemes",
+        message,
+        signature,
+      }),
+    );
+    expect(new TextDecoder().decode(result.result_bytes)).not.toContain(signature);
+  });
+
   test("sends exact internal start request bytes and correlation header", async () => {
     const calls: Array<{ input: string | URL; init: RequestInit | undefined }> = [];
     const bytes = new TextEncoder().encode(JSON.stringify(startDocument));

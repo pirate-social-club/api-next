@@ -37,6 +37,7 @@ export const HNS_PRIVATE_DRIVER_UPSTREAM_STATUS_HEADER =
   "Pirate-HNS-Driver-Upstream-Status" as const;
 export const HNS_PRIVATE_DRIVER_UPSTREAM_CONTENT_TYPE_HEADER =
   "Pirate-HNS-Driver-Upstream-Content-Type" as const;
+export const HNS_PRIVATE_DRIVER_HSD_NAME_PROOF_METHOD = "verifymessagewithname" as const;
 
 export type HnsPrivateDriverHsdRequestV1 = Readonly<{
   readonly version: typeof HNS_PRIVATE_DRIVER_REQUEST_VERSION;
@@ -145,7 +146,10 @@ export class HnsPrivateDriverWireError extends Error {
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
-const hsdMethods = new Set<string>(HNS_CONTROL_OBSERVER_HSD_METHODS);
+const hsdMethods = new Set<string>([
+  ...HNS_CONTROL_OBSERVER_HSD_METHODS,
+  HNS_PRIVATE_DRIVER_HSD_NAME_PROOF_METHOD,
+]);
 const driverReferencePattern = /^[a-z][a-z0-9-]{0,63}:[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/u;
 const viewIdPattern = /^[a-z][a-z0-9-]{0,63}$/u;
 const sha256Pattern = /^[0-9a-f]{64}$/u;
@@ -183,6 +187,15 @@ function safeText(value: unknown, maximumBytes: number): value is string {
     const point = character.codePointAt(0) ?? 0;
     return point >= 0x20 && !(point >= 0x7f && point <= 0x9f);
   });
+}
+
+function canonicalCompactHnsSignature(value: string): boolean {
+  try {
+    const decoded = atob(value);
+    return decoded.length === 64 && btoa(decoded) === value;
+  } catch {
+    return false;
+  }
 }
 
 function encodeBase64(bytes: Uint8Array): string {
@@ -227,10 +240,21 @@ export function isCanonicalHnsPrivateDriverHsdRequest(method: string, bytes: Uin
             typeof parameters[0] === "string" &&
             sha256Pattern.test(parameters[0]) &&
             parameters[1] === true
-          : parameters.length === 2 &&
-            typeof parameters[0] === "string" &&
-            validCommunityRouteRoot("hns", parameters[0]) &&
-            parameters[1] === false;
+          : method === HNS_PRIVATE_DRIVER_HSD_NAME_PROOF_METHOD
+            ? parameters.length === 4 &&
+              typeof parameters[0] === "string" &&
+              validCommunityRouteRoot("hns", parameters[0]) &&
+              typeof parameters[1] === "string" &&
+              parameters[1].length <= 512 &&
+              canonicalBase64Pattern.test(parameters[1]) &&
+              canonicalCompactHnsSignature(parameters[1]) &&
+              typeof parameters[2] === "string" &&
+              safeText(parameters[2], 2_048) &&
+              parameters[3] === true
+            : parameters.length === 2 &&
+              typeof parameters[0] === "string" &&
+              validCommunityRouteRoot("hns", parameters[0]) &&
+              parameters[1] === false;
     return exactParameters && JSON.stringify(decoded) === text;
   } catch {
     return false;

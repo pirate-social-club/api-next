@@ -10,7 +10,18 @@ import {
   pollHnsRootImport,
   startHnsRootImport,
 } from "./hns-root-import.ts";
+import {
+  encodeHnsRootImportNameProofResultV1,
+  HNS_ROOT_IMPORT_NAME_PROOF_RESULT_VERSION,
+} from "./hns-root-import-name-proof.ts";
 import type { NamespaceOwnershipStartResponse } from "./start.ts";
+
+const encoder = new TextEncoder();
+
+async function digest(bytes: Uint8Array): Promise<string> {
+  const value = await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes).buffer);
+  return [...new Uint8Array(value)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
 
 const pendingOwnership: NamespaceOwnershipStartResponse = {
   creation_intent_id: "intent-1",
@@ -43,6 +54,12 @@ function response(record: HnsRootImportStartRecord, replayed: boolean) {
     ownership_challenge: {
       ownership_source: "hns_parent_chain_txt" as const,
       record: { type: "TXT" as const, txt: [record.challenge_txt_value] as const },
+    },
+    provisioning_authorization: {
+      kind: "hns_name_signature_v1" as const,
+      wallet_rpc_method: "signmessagewithname" as const,
+      message: '["pirate-hns-root-import-name-proof-v1","fixture"]',
+      expires_at: record.expires_at,
     },
     publish_plan: null,
     publish_plan_sha256: null,
@@ -226,6 +243,12 @@ describe("HNS root import completion", () => {
           txt: ["pirate-verification=namespace-session-1"] as const,
         },
       },
+      provisioning_authorization: {
+        kind: "hns_name_signature_v1" as const,
+        wallet_rpc_method: "signmessagewithname" as const,
+        message: '["pirate-hns-root-import-name-proof-v1","fixture"]',
+        expires_at: "2099-01-01T00:00:00.000Z",
+      },
       publish_plan: null,
       publish_plan_sha256: null,
       readiness_result_sha256: null,
@@ -300,10 +323,140 @@ describe("HNS root import completion", () => {
     );
     expect(result).toEqual(queued);
     expect(provisioning).toMatchObject({
-      ownership_result_sha256: "b".repeat(64),
+      authorization: {
+        kind: "namespace_ownership",
+        result_sha256: "b".repeat(64),
+      },
       provision_job_id: "root-provision-job-1",
     });
     expect(provisioning?.provision_request_sha256).toMatch(/^[0-9a-f]{64}$/u);
+  });
+
+  test("uses a safe name signature only to authorize provisioning", async () => {
+    const signature = btoa("\u0001".repeat(64));
+    const message = '["pirate-hns-root-import-name-proof-v1","fixture"]';
+    const expiresAt = "2099-01-01T00:00:00.000Z";
+    const awaiting = {
+      creation_intent_id: "intent-1",
+      ceremony_intent_id: "ceremony-1",
+      root_import_session_id: "root-import-session-1",
+      namespace_session_id: "namespace-session-1",
+      root_label: "newroot",
+      revision: 1,
+      expires_at: expiresAt,
+      replayed: false,
+      status: "awaiting_ownership" as const,
+      ownership_challenge: {
+        ownership_source: "hns_parent_chain_txt" as const,
+        record: {
+          type: "TXT" as const,
+          txt: ["pirate-verification=namespace-session-1"] as const,
+        },
+      },
+      provisioning_authorization: {
+        kind: "hns_name_signature_v1" as const,
+        wallet_rpc_method: "signmessagewithname" as const,
+        message,
+        expires_at: expiresAt,
+      },
+      publish_plan: null,
+      publish_plan_sha256: null,
+      readiness_result_sha256: null,
+      retry_after_seconds: 5,
+    };
+    const queued = {
+      creation_intent_id: awaiting.creation_intent_id,
+      ceremony_intent_id: awaiting.ceremony_intent_id,
+      root_import_session_id: awaiting.root_import_session_id,
+      namespace_session_id: awaiting.namespace_session_id,
+      root_label: awaiting.root_label,
+      revision: 2,
+      expires_at: awaiting.expires_at,
+      replayed: false,
+      status: "provisioning" as const,
+      publish_plan: null,
+      publish_plan_sha256: null,
+      readiness_result_sha256: null,
+      retry_after_seconds: 2,
+    };
+    let provisioning: Parameters<HnsRootImportStore["beginProvisioning"]>[0] | undefined;
+    let completionCalls = 0;
+    const result = await Effect.runPromise(
+      pollHnsRootImport(
+        {
+          actor_id: "account-1",
+          creation_intent_id: "intent-1",
+          root_import_session_id: "root-import-session-1",
+          expected_revision: 1,
+          idempotency_key: "poll-root-import-name-proof",
+          provisioning_name_signature: signature,
+        },
+        {
+          ownership: { start: () => Effect.die("start not expected") },
+          completion: {
+            complete: () => {
+              completionCalls += 1;
+              return Effect.die("on-chain completion not expected before provisioning");
+            },
+          },
+          nameProof: {
+            verify: (input) =>
+              Effect.promise(async () => {
+                const resultBytes = encodeHnsRootImportNameProofResultV1({
+                  version: HNS_ROOT_IMPORT_NAME_PROOF_RESULT_VERSION,
+                  root_label: input.root_label,
+                  message_sha256: await digest(encoder.encode(input.message)),
+                  signature_sha256: await digest(encoder.encode(input.signature)),
+                  safe: true,
+                  verified: true,
+                });
+                return {
+                  result_bytes: resultBytes,
+                  result_sha256: await digest(resultBytes),
+                };
+              }),
+          },
+          community: {} as never,
+          store: {
+            start: () => Effect.die("start not expected"),
+            get: () => Effect.die("get not expected"),
+            loadPollAuthority: () =>
+              Effect.succeed({
+                session: awaiting,
+                ownership_expected_revision: 1,
+                challenge_txt_value: "pirate-verification=namespace-session-1",
+                provision_job_id: "root-provision-job-1",
+                ownership_result_sha256: null,
+                provision_result_sha256: null,
+              }),
+            beginProvisioning: (input) => {
+              provisioning = input;
+              return Effect.succeed({ kind: "provisioning" as const, session: queued });
+            },
+            beginObservation: () => Effect.die("observation not expected"),
+            finishOwnershipTerminal: () => Effect.die("terminal not expected"),
+            activate: () => Effect.die("activation not expected"),
+          },
+          ids: {
+            session: () => "unused-session",
+            provisionJob: () => "unused-provision-job",
+            observationJob: () => "observation-job-1",
+          },
+        },
+      ),
+    );
+
+    expect(result).toEqual(queued);
+    expect(completionCalls).toBe(0);
+    expect(provisioning?.authorization).toMatchObject({
+      kind: "hns_name_signature",
+      signature_sha256: await digest(encoder.encode(signature)),
+    });
+    if (provisioning?.authorization.kind === "hns_name_signature") {
+      expect(new TextDecoder().decode(provisioning.authorization.result_bytes)).not.toContain(
+        signature,
+      );
+    }
   });
 
   test("refuses activation before readiness and hides sessions from another principal", async () => {

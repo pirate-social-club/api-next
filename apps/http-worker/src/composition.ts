@@ -115,6 +115,7 @@ import {
   type HnsOwnerServiceBinding,
   type HnsOwnerTransport,
   makeHnsOwnerServiceBindingTransport,
+  makeHnsRootImportNameProofServiceBindingVerifier,
   makePlatformNamespaceOwnershipProviderRegistry,
 } from "@pirate/platform-cf/namespace-ownership-provider-registry";
 import {
@@ -929,8 +930,15 @@ export async function createProductionHttpWorker(
     completion: {
       complete: (input) => completeNamespaceOwnership(input, namespaceOwnershipCompletionServices),
     },
+    ...(bindings.HNS_OWNER_VERIFIER === undefined
+      ? {}
+      : {
+          nameProof: makeHnsRootImportNameProofServiceBindingVerifier(bindings.HNS_OWNER_VERIFIER),
+        }),
     community: { communityCreationStore, personaStore },
-    store: makeControlPlaneHnsRootImportStore(controlPlane),
+    store: makeControlPlaneHnsRootImportStore(controlPlane, {
+      environment: config.API_NEXT_ENV,
+    }),
   });
   const sessionCrypto = await makeSessionCrypto({
     privateKeyPem: Redacted.value(config.PIRATE_APP_JWT_PRIVATE_KEY),

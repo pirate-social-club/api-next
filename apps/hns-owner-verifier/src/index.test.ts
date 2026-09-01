@@ -8,6 +8,7 @@ import {
   hnsControlObservationRequestHash,
 } from "@pirate/application/namespace-ownership";
 import { app, type Env, handleRequest } from "./index.ts";
+import type { HnsNameProofRuntime } from "./name-proof.ts";
 import type { HnsTargetObserverRuntime } from "./target-observer.ts";
 
 const encoder = new TextEncoder();
@@ -317,6 +318,51 @@ async function start(targetObserver: HnsTargetObserverRuntime) {
 }
 
 describe("HNS owner verifier target composition", () => {
+  test("binds the private name-proof route to its session header", async () => {
+    const signature = btoa("\u0001".repeat(64));
+    const output = encoder.encode(
+      JSON.stringify({
+        version: "pirate-hns-root-import-name-proof-result-v1",
+        root_label: "dankmemes",
+        message_sha256: "a".repeat(64),
+        signature_sha256: "b".repeat(64),
+        safe: true,
+        verified: true,
+      }),
+    );
+    let captured: Parameters<HnsNameProofRuntime["verify"]>[0] | undefined;
+    const nameProof: HnsNameProofRuntime = {
+      verify: async (input) => {
+        captured = input;
+        return output;
+      },
+    };
+    const body = {
+      root_import_session_id: "namespace-session-1",
+      root_label: "dankmemes",
+      message: '["pirate-hns-root-import-name-proof-v1","fixture"]',
+      signature,
+    };
+    const accepted = await handleRequest(
+      request("/internal/hns-owner/v1/verify-name-signature", body, "application/json"),
+      env,
+      { nameProof },
+    );
+    expect(accepted.status).toBe(200);
+    expect(captured).toEqual(body);
+
+    const mismatched = await handleRequest(
+      request(
+        "/internal/hns-owner/v1/verify-name-signature",
+        { ...body, root_import_session_id: "other-session" },
+        "application/json",
+      ),
+      env,
+      { nameProof },
+    );
+    expect(mismatched.status).toBe(400);
+  });
+
   test("fails closed without target authority and has no public legacy graph", async () => {
     const response = await app.fetch(
       request("/internal/hns-owner/v1/start", creationStart, "application/json"),

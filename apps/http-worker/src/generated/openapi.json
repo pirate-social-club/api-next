@@ -11156,6 +11156,41 @@
                           ],
                           "additionalProperties": false
                         },
+                        "provisioning_authorization": {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "hns_name_signature_v1"
+                              ]
+                            },
+                            "wallet_rpc_method": {
+                              "type": "string",
+                              "enum": [
+                                "signmessagewithname"
+                              ]
+                            },
+                            "message": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "expires_at": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "wallet_rpc_method",
+                            "message",
+                            "expires_at"
+                          ],
+                          "additionalProperties": false
+                        },
                         "publish_plan": {
                           "type": "null"
                         },
@@ -11180,6 +11215,7 @@
                         "replayed",
                         "status",
                         "ownership_challenge",
+                        "provisioning_authorization",
                         "publish_plan",
                         "publish_plan_sha256",
                         "readiness_result_sha256",
@@ -11755,6 +11791,41 @@
                           ],
                           "additionalProperties": false
                         },
+                        "provisioning_authorization": {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "hns_name_signature_v1"
+                              ]
+                            },
+                            "wallet_rpc_method": {
+                              "type": "string",
+                              "enum": [
+                                "signmessagewithname"
+                              ]
+                            },
+                            "message": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "expires_at": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "wallet_rpc_method",
+                            "message",
+                            "expires_at"
+                          ],
+                          "additionalProperties": false
+                        },
                         "publish_plan": {
                           "type": "null"
                         },
@@ -11779,6 +11850,7 @@
                         "replayed",
                         "status",
                         "ownership_challenge",
+                        "provisioning_authorization",
                         "publish_plan",
                         "publish_plan_sha256",
                         "readiness_result_sha256",
@@ -12724,6 +12796,41 @@
                           ],
                           "additionalProperties": false
                         },
+                        "provisioning_authorization": {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "hns_name_signature_v1"
+                              ]
+                            },
+                            "wallet_rpc_method": {
+                              "type": "string",
+                              "enum": [
+                                "signmessagewithname"
+                              ]
+                            },
+                            "message": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "expires_at": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "wallet_rpc_method",
+                            "message",
+                            "expires_at"
+                          ],
+                          "additionalProperties": false
+                        },
                         "publish_plan": {
                           "type": "null"
                         },
@@ -12748,6 +12855,7 @@
                         "replayed",
                         "status",
                         "ownership_challenge",
+                        "provisioning_authorization",
                         "publish_plan",
                         "publish_plan_sha256",
                         "readiness_result_sha256",
@@ -13598,6 +13706,21 @@
                         "minLength": 1
                       }
                     ]
+                  },
+                  "provisioning_name_signature": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "allOf": [
+                          {
+                            "minLength": 1
+                          }
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   }
                 },
                 "required": [
@@ -13722,6 +13845,41 @@
                           ],
                           "additionalProperties": false
                         },
+                        "provisioning_authorization": {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "hns_name_signature_v1"
+                              ]
+                            },
+                            "wallet_rpc_method": {
+                              "type": "string",
+                              "enum": [
+                                "signmessagewithname"
+                              ]
+                            },
+                            "message": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "expires_at": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "wallet_rpc_method",
+                            "message",
+                            "expires_at"
+                          ],
+                          "additionalProperties": false
+                        },
                         "publish_plan": {
                           "type": "null"
                         },
@@ -13746,6 +13904,7 @@
                         "replayed",
                         "status",
                         "ownership_challenge",
+                        "provisioning_authorization",
                         "publish_plan",
                         "publish_plan_sha256",
                         "readiness_result_sha256",
@@ -14321,6 +14480,41 @@
                           ],
                           "additionalProperties": false
                         },
+                        "provisioning_authorization": {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "hns_name_signature_v1"
+                              ]
+                            },
+                            "wallet_rpc_method": {
+                              "type": "string",
+                              "enum": [
+                                "signmessagewithname"
+                              ]
+                            },
+                            "message": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "expires_at": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "wallet_rpc_method",
+                            "message",
+                            "expires_at"
+                          ],
+                          "additionalProperties": false
+                        },
                         "publish_plan": {
                           "type": "null"
                         },
@@ -14345,6 +14539,7 @@
                         "replayed",
                         "status",
                         "ownership_challenge",
+                        "provisioning_authorization",
                         "publish_plan",
                         "publish_plan_sha256",
                         "readiness_result_sha256",
@@ -15133,6 +15328,41 @@
                           ],
                           "additionalProperties": false
                         },
+                        "provisioning_authorization": {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "hns_name_signature_v1"
+                              ]
+                            },
+                            "wallet_rpc_method": {
+                              "type": "string",
+                              "enum": [
+                                "signmessagewithname"
+                              ]
+                            },
+                            "message": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "expires_at": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "wallet_rpc_method",
+                            "message",
+                            "expires_at"
+                          ],
+                          "additionalProperties": false
+                        },
                         "publish_plan": {
                           "type": "null"
                         },
@@ -15157,6 +15387,7 @@
                         "replayed",
                         "status",
                         "ownership_challenge",
+                        "provisioning_authorization",
                         "publish_plan",
                         "publish_plan_sha256",
                         "readiness_result_sha256",
