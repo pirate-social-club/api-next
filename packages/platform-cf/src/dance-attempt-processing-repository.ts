@@ -11,6 +11,10 @@ import {
   type DanceAttemptProcessingStore,
   FrozenDanceAttemptInput,
 } from "@pirate/application/dance/attempt-processing";
+import type {
+  DanceAttemptWakeupRecord,
+  DanceAttemptWakeupStore,
+} from "@pirate/application/dance/attempt-processing-wakeup";
 import { Effect, type Layer, Schema } from "effect";
 
 type Row = Readonly<Record<string, unknown>>;
@@ -112,6 +116,36 @@ function decodeClaim(row: Row): DanceAttemptProcessingClaim {
   }
 }
 
+const attemptStates = new Set(["grading_pending", "completed", "rejected", "processing_failed"]);
+const wakeupStates = new Set(["pending", "running", "delivered", "failed"]);
+
+function decodeWakeupRow(row: Row): DanceAttemptWakeupRecord {
+  const attemptState = text(row, "attempt_state");
+  const state = text(row, "state");
+  const inputDigest = text(row, "input_digest");
+  const deliveryAttempts = integer(row, "delivery_attempts");
+  const claimFence = integer(row, "claim_fence");
+  if (
+    !attemptStates.has(attemptState) ||
+    !wakeupStates.has(state) ||
+    !/^[0-9a-f]{64}$/u.test(inputDigest) ||
+    deliveryAttempts > 3 ||
+    typeof row.eligible !== "boolean"
+  ) {
+    throw invalid("claim");
+  }
+  return Object.freeze({
+    attemptId: text(row, "attempt_id"),
+    effectIdentity: text(row, "effect_identity"),
+    inputDigest,
+    attemptState: attemptState as DanceAttemptWakeupRecord["attemptState"],
+    state: state as DanceAttemptWakeupRecord["state"],
+    deliveryAttempts,
+    claimFence,
+    eligible: row.eligible,
+  });
+}
+
 const frozenProjectionSql = `SELECT a.attempt_id,a.session_id,a.input_digest,a.sealed_media_sha256,
        o.effect_identity,o.delivery_attempts,o.claim_owner,o.claim_fence,
        s.segment_id,s.choreography_id,s.choreography_revision,s.expected_scored_duration_ms,
@@ -206,7 +240,7 @@ function insertEvidence(
 
 export function makeDanceAttemptProcessingStore(
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
-): DanceAttemptProcessingStore {
+): DanceAttemptProcessingStore & DanceAttemptWakeupStore {
   const claim: DanceAttemptProcessingStore["claim"] = (input) =>
     Effect.tryPromise({
       try: () =>
@@ -445,5 +479,60 @@ export function makeDanceAttemptProcessingStore(
       catch: () => invalid("fail"),
     });
 
-  return { claim, complete, fail };
+  const getWakeup: DanceAttemptWakeupStore["getWakeup"] = async (attemptId) =>
+    runWithRuntime(
+      runtime,
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        const result = yield* db.execute<Row>({
+          label: "dance-attempt-processing.wakeup.get",
+          text: `SELECT a.attempt_id,a.input_digest,a.state AS attempt_state,
+                        o.effect_identity,o.state,o.delivery_attempts,o.claim_fence,
+                        (a.state='grading_pending' AND o.delivery_attempts<3 AND (
+                          o.state='pending'
+                          OR (o.state='failed' AND o.next_eligible_at<=clock_timestamp())
+                          OR (o.state='running' AND o.lease_expires_at<=clock_timestamp())
+                        )) AS eligible
+                   FROM dance_attempt_outbox o
+                   JOIN dance_attempts a ON a.attempt_id=o.attempt_id
+                  WHERE a.attempt_id=$1`,
+          values: [attemptId],
+          readonly: true,
+        });
+        if (result.rows.length === 0) return null;
+        if (result.rows.length !== 1) return yield* Effect.fail(invalid("claim"));
+        return decodeWakeupRow(result.rows[0] as Row);
+      }),
+      "claim",
+    );
+
+  const listEligibleWakeups: DanceAttemptWakeupStore["listEligibleWakeups"] = async (limit) => {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw invalid("claim");
+    return runWithRuntime(
+      runtime,
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        const result = yield* db.execute<Row>({
+          label: "dance-attempt-processing.wakeup.list",
+          text: `SELECT a.attempt_id,a.input_digest,a.state AS attempt_state,
+                        o.effect_identity,o.state,o.delivery_attempts,o.claim_fence,
+                        TRUE AS eligible
+                   FROM dance_attempt_outbox o
+                   JOIN dance_attempts a ON a.attempt_id=o.attempt_id
+                  WHERE a.state='grading_pending' AND o.delivery_attempts<3
+                    AND (o.state='pending'
+                      OR (o.state='failed' AND o.next_eligible_at<=clock_timestamp())
+                      OR (o.state='running' AND o.lease_expires_at<=clock_timestamp()))
+                  ORDER BY o.created_at,o.outbox_event_id
+                  LIMIT $1`,
+          values: [limit],
+          readonly: true,
+        });
+        return result.rows.map(decodeWakeupRow);
+      }),
+      "claim",
+    );
+  };
+
+  return { claim, complete, fail, getWakeup, listEligibleWakeups };
 }

@@ -504,6 +504,19 @@ suite("Dance attempt shadow persistence", () => {
                 (SELECT count(*)::int FROM dance_attempt_outbox) AS outbox`,
       );
       expect(rows.rows[0]).toEqual({ actions: 5, attempts: 1, outbox: 1 });
+      const wakeups = processingStore(schema);
+      const eligibleWakeups = await wakeups.listEligibleWakeups(10);
+      expect(eligibleWakeups).toHaveLength(1);
+      const attemptId = eligibleWakeups[0]?.attemptId;
+      if (attemptId === undefined) throw new Error("Dance grading wake-up was not persisted");
+      expect(await wakeups.getWakeup(attemptId)).toMatchObject({
+        attemptId,
+        attemptState: "grading_pending",
+        state: "pending",
+        deliveryAttempts: 0,
+        claimFence: 0,
+        eligible: true,
+      });
       const replayed = await store.submit({
         action: action(
           "/communities/:communityId/dance/sessions/:sessionId/grading-submissions",
@@ -583,6 +596,11 @@ suite("Dance attempt shadow persistence", () => {
         qualification_outcome: "suppressed_shadow",
         grade_outcome: "scored",
         outbox_state: "delivered",
+      });
+      expect(await store.getWakeup("attempt-1")).toMatchObject({
+        attemptState: "completed",
+        state: "delivered",
+        eligible: false,
       });
       completedTestCount += 1;
     });
