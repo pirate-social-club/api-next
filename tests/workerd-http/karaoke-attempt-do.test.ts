@@ -1,7 +1,7 @@
 /// <reference types="@cloudflare/vitest-pool-workers/types" />
 
 import { runInDurableObject, env as testEnv } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { KaraokeSessionSummary } from "../../packages/application/src/karaoke-runtime/scoring.ts";
 import type {
   KaraokeRecordingResult,
@@ -148,10 +148,20 @@ describe("Karaoke attempt Durable Object", () => {
     expect(cached).toEqual(result);
   });
 
-  it("persists a provider zero-retention refusal monotonically", async () => {
+  it("persists and emits a provider zero-retention refusal exactly once", async () => {
     const sessionId = `karaoke-retention-${crypto.randomUUID()}`;
     const stub = env.KARAOKE_ATTEMPT.getByName(sessionId);
-    await stub.initialize(authority(sessionId));
+    const initialized = await stub.initialize(authority(sessionId));
+    const response = await connect(stub, initialized.token);
+    const socket = response.webSocket;
+    if (socket === null) throw new TypeError("expected Karaoke WebSocket");
+    const events: Array<Record<string, unknown>> = [];
+    socket.addEventListener("message", (event) => {
+      if (typeof event.data === "string") {
+        events.push(JSON.parse(event.data) as Record<string, unknown>);
+      }
+    });
+
     await runInDurableObject(stub, async (instance, state) => {
       const retention = () =>
         state.storage.sql
@@ -160,9 +170,23 @@ describe("Karaoke attempt Durable Object", () => {
           )
           .one().retention;
       expect(retention()).toBe("not_stored");
+      (instance as unknown as RetentionHarness).recordProviderRetention("not_stored");
+      expect(retention()).toBe("not_stored");
+      (instance as unknown as RetentionHarness).recordProviderRetention("stored");
       (instance as unknown as RetentionHarness).recordProviderRetention("stored");
       (instance as unknown as RetentionHarness).recordProviderRetention("not_stored");
       expect(retention()).toBe("stored");
+    });
+
+    await vi.waitFor(() => expect(events).toHaveLength(1));
+    expect(events[0]).toEqual({
+      attemptId: `attempt-${sessionId}`,
+      eventId: "karaoke_event_1",
+      protocolVersion: 1,
+      provider_retention: "stored",
+      sequence: 1,
+      sessionId,
+      type: "provider_retention_changed",
     });
   });
 

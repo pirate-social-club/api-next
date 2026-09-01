@@ -13,6 +13,7 @@ import {
   type KaraokeLineScore,
   type KaraokeRecordingResult,
   type KaraokeRuntimeGateway,
+  type KaraokeServerEvent,
   type KaraokeSessionAuthority,
   KaraokeSessionHost,
   type KaraokeSessionState,
@@ -455,7 +456,13 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
     return sqlJson(row.authority_json);
   }
 
-  broadcast(type: string, body: Readonly<Record<string, unknown>>): void {
+  broadcast<Type extends KaraokeServerEvent["type"]>(
+    type: Type,
+    body: Omit<
+      Extract<KaraokeServerEvent, { type: Type }>,
+      "attemptId" | "eventId" | "protocolVersion" | "sequence" | "sessionId" | "type"
+    >,
+  ): void {
     const authority = this.authority();
     this.serverSequence += 1;
     const event = JSON.stringify({
@@ -769,9 +776,18 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
   }
 
   private recordProviderRetention(retention: "not_stored" | "stored"): void {
-    if (retention === "stored") {
-      this.sql.exec("UPDATE karaoke_provider_retention SET retention='stored' WHERE id=1");
-    }
+    if (retention !== "stored") return;
+    const changed = this.sql
+      .exec(
+        `UPDATE karaoke_provider_retention
+            SET retention='stored'
+          WHERE id=1 AND retention='not_stored'
+        RETURNING retention`,
+      )
+      .toArray();
+    if (changed.length === 0) return;
+    if (one(this.sql, "SELECT id FROM karaoke_session WHERE id=1") === null) return;
+    this.broadcast("provider_retention_changed", { provider_retention: "stored" });
   }
 
   private async flushOutbox(): Promise<void> {

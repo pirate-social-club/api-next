@@ -6,6 +6,7 @@ import {
   type KaraokeClientEvent,
   KaraokeReadiness,
   KaraokeScoringPolicy,
+  type KaraokeServerEvent,
   KaraokeSession,
   KaraokeSongLeaderboard,
 } from "./karaoke.ts";
@@ -131,6 +132,21 @@ describe("karaoke contracts", () => {
       type: "playback_sync",
     };
     expect(clientEvent.type).toBe("playback_sync");
+  });
+
+  it("exposes provider retention corrections without a protocol version bump", () => {
+    const serverEvent: KaraokeServerEvent = {
+      attemptId: "attempt-1",
+      eventId: "karaoke_event_1",
+      protocolVersion: 1,
+      provider_retention: "stored",
+      sequence: 1,
+      sessionId: "session-1",
+      type: "provider_retention_changed",
+    };
+
+    expect(serverEvent.type).toBe("provider_retention_changed");
+    expect(serverEvent.provider_retention).toBe("stored");
   });
 
   it("decodes typed unavailable and browser-ready payload states", () => {
