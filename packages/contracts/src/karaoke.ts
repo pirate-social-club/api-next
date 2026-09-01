@@ -435,6 +435,7 @@ export type KaraokeServerEvent = KaraokeTransportEnvelope & { eventId: string } 
     | { type: "stt_final"; text: string; words: KaraokeRecognizedWord[] }
     | { type: "line_score"; result: KaraokeLineScore }
     | { type: "summary"; summary: KaraokeSessionSummary }
+    | { type: "provider_retention_changed"; provider_retention: "stored" }
     | { type: "session_error"; code: string; message?: string }
   );
 

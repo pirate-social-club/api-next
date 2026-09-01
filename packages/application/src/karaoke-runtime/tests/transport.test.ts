@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   KARAOKE_TRANSPORT_PROTOCOL_VERSION,
+  type KaraokeServerEvent,
   validateKaraokeClientEventPayload,
   validateKaraokeStreamingSttEventPayload,
 } from "../transport";
@@ -13,6 +14,21 @@ const envelope = {
 };
 
 describe("karaoke transport payload validation", () => {
+  test("keeps provider retention correction additive in protocol v1", () => {
+    const event: KaraokeServerEvent = {
+      ...envelope,
+      eventId: "karaoke_event_1",
+      provider_retention: "stored",
+      type: "provider_retention_changed",
+    };
+
+    expect(event).toMatchObject({
+      protocolVersion: 1,
+      provider_retention: "stored",
+      type: "provider_retention_changed",
+    });
+  });
+
   test("accepts complete client and STT events", () => {
     expect(
       validateKaraokeClientEventPayload({

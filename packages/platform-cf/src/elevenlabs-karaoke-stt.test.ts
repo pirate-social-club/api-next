@@ -132,6 +132,7 @@ describe("ElevenLabs Karaoke realtime adapter", () => {
 
   test("fails closed and records provider storage when zero retention is refused", async () => {
     const socket = new FakeSocket();
+    const order: string[] = [];
     let retention = "not_stored";
     let terminal = "";
     const adapter = new ElevenLabsKaraokeSttAdapter({
@@ -139,6 +140,7 @@ describe("ElevenLabs Karaoke realtime adapter", () => {
       connect: async () => socket,
       onProviderRetentionChanged: (value) => {
         retention = value;
+        order.push(`retention:${value}`);
       },
     });
     await adapter.start({
@@ -148,6 +150,7 @@ describe("ElevenLabs Karaoke realtime adapter", () => {
       onMessage: async () => undefined,
       onTerminalError: (code) => {
         terminal = code;
+        order.push(`terminal:${code}`);
       },
     });
     socket.emit({
@@ -158,6 +161,7 @@ describe("ElevenLabs Karaoke realtime adapter", () => {
     await Bun.sleep(0);
     expect(retention).toBe("stored");
     expect(terminal).toBe("zero_retention_not_applied");
+    expect(order).toEqual(["retention:stored", "terminal:zero_retention_not_applied"]);
     expect(socket.closed).toBe(true);
     await adapter.sendPcm16(frame(16_000));
     expect(socket.sent).toHaveLength(0);
@@ -165,11 +169,13 @@ describe("ElevenLabs Karaoke realtime adapter", () => {
 
   test("does not request zero retention or fail on warnings in staging logging mode", async () => {
     const socket = new FakeSocket();
+    const retentionChanges: string[] = [];
     let connectedUrl = "";
     let terminal = "";
     const adapter = new ElevenLabsKaraokeSttAdapter({
       apiKey: "secret",
       enableLogging: true,
+      onProviderRetentionChanged: (retention) => retentionChanges.push(retention),
       connect: async ({ url }) => {
         connectedUrl = url;
         return socket;
@@ -188,6 +194,7 @@ describe("ElevenLabs Karaoke realtime adapter", () => {
     socket.emit({ message_type: "warning", warning: "session quality may be reduced" });
     await Bun.sleep(0);
     expect(terminal).toBe("");
+    expect(retentionChanges).toEqual([]);
     expect(socket.closed).toBe(false);
   });
 
