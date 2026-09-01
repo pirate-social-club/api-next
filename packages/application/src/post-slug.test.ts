@@ -5,9 +5,11 @@ import { postSlugV1GoldenFixtures } from "../../../tests/fixtures/post-slug-v1.t
 import {
   createOpaquePostSlugCandidate,
   createPostSlugCandidate,
+  hasDescriptivePostSlugPolicy,
   postSlugCanonicalPath,
   postSlugCollisionCandidate,
   postSlugOpaqueToken,
+  postSlugSourcePolicyForType,
   selectPostSlugSource,
 } from "./post-slug.ts";
 
@@ -81,12 +83,44 @@ describe("post-slug-v1 allocation inputs", () => {
     expect(createOpaquePostSlugCandidate("song")).toEqual({ kind: "opaque", prefix: "song" });
   });
 
-  test("selects the persisted title or first nonblank body line", () => {
-    expect(selectPostSlugSource({ title: "  A title  ", body: "ignored" })).toBe("  A title  ");
-    expect(selectPostSlugSource({ title: "  ", body: "\n  \r\nFirst body line\nSecond" })).toBe(
-      "First body line",
+  test("declares an exhaustive descriptive-source policy for every target post type", () => {
+    expect(
+      Object.fromEntries(
+        ["text", "image", "video", "link", "song", "crosspost", "file"].map((postType) => [
+          postType,
+          postSlugSourcePolicyForType(postType),
+        ]),
+      ),
+    ).toEqual({
+      text: "title-or-first-body-line",
+      image: null,
+      video: null,
+      link: null,
+      song: "title",
+      crosspost: null,
+      file: null,
+    });
+    expect(hasDescriptivePostSlugPolicy("text")).toBe(true);
+    expect(hasDescriptivePostSlugPolicy("song")).toBe(true);
+    expect(hasDescriptivePostSlugPolicy("video")).toBe(false);
+    expect(hasDescriptivePostSlugPolicy("future-type")).toBe(false);
+  });
+
+  test("selects only sources declared by the post-type policy", () => {
+    expect(selectPostSlugSource({ postType: "text", title: "  A title  ", body: "ignored" })).toBe(
+      "  A title  ",
     );
-    expect(selectPostSlugSource({ title: null, body: null })).toBe("");
+    expect(
+      selectPostSlugSource({
+        postType: "text",
+        title: "  ",
+        body: "\n  \r\nFirst body line\nSecond",
+      }),
+    ).toBe("First body line");
+    expect(selectPostSlugSource({ postType: "song", title: null, body: "not a title" })).toBe("");
+    expect(selectPostSlugSource({ postType: "video", title: "UI drift", body: "caption" })).toBe(
+      null,
+    );
   });
 
   test("fits collision suffixes inside the logical maximum", () => {

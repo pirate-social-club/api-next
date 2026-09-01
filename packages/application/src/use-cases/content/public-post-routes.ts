@@ -7,7 +7,7 @@ import {
 } from "@pirate/contracts";
 import { Effect } from "effect";
 import type { ContentStoreService, LocalizedPostDocument } from "../../ports.ts";
-import { isLogicalPostSlug } from "../../post-slug.ts";
+import { hasDescriptivePostSlugPolicy, isLogicalPostSlug } from "../../post-slug.ts";
 
 export type PublicPostLiveRecord = Readonly<{
   readonly alias: Readonly<{ readonly slug: string; readonly postId: string }>;
@@ -118,6 +118,9 @@ const projectLiveRecord = (
       return yield* new InternalError({ message: "Public post route lookup failed" });
     }
     if (live.post.status !== "published" || live.community.status !== "active") {
+      return yield* notFound();
+    }
+    if (live.post.contentRating === null || !hasDescriptivePostSlugPolicy(live.post.postType)) {
       return yield* notFound();
     }
     if (live.post.visibility === "members_only" && !live.viewer.isMember) {

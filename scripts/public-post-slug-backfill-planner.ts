@@ -1,6 +1,7 @@
 import {
   createOpaquePostSlugCandidate,
   createPostSlugCandidate,
+  hasDescriptivePostSlugPolicy,
   isLogicalPostSlug,
   selectPostSlugSource,
 } from "../packages/application/src/post-slug.ts";
@@ -225,6 +226,18 @@ const opaqueCandidate = (postType: string) =>
   createOpaquePostSlugCandidate(postType === "song" ? "song" : "text");
 
 const decisionForRow = (row: PostSlugBackfillPostRow): PostSlugBackfillDecision => {
+  if (!hasDescriptivePostSlugPolicy(row.post_type)) {
+    return {
+      post_id: row.post_id,
+      created_at: row.created_at,
+      post_type: row.post_type,
+      policy: "blocked",
+      existing_slug: row.existing_slug,
+      candidate: null,
+      issue: "unsupported-post-type",
+    };
+  }
+
   if (row.status === "removed") {
     return {
       post_id: row.post_id,
@@ -276,9 +289,8 @@ const decisionForRow = (row: PostSlugBackfillPostRow): PostSlugBackfillDecision 
   const descriptiveEligible =
     row.community_status === "active" &&
     row.visibility === "public" &&
-    row.content_rating === "general" &&
-    (row.post_type === "text" || row.post_type === "song");
-  if (!descriptiveEligible || (row.post_type !== "text" && row.post_type !== "song")) {
+    row.content_rating === "general";
+  if (!descriptiveEligible) {
     return {
       post_id: row.post_id,
       created_at: row.created_at,
@@ -292,6 +304,7 @@ const decisionForRow = (row: PostSlugBackfillPostRow): PostSlugBackfillDecision 
 
   const candidate = createPostSlugCandidate({
     source: selectPostSlugSource({
+      postType: row.post_type,
       title: row.title ?? null,
       body: row.body ?? null,
     }),

@@ -1,3 +1,4 @@
+import type { PostDocument } from "@pirate/contracts";
 import { isSlug, type SlugifyOptions, slugify, truncateSlug } from "cizgile";
 import { allScripts, type Locale, locales, lookup, resolveTables } from "cizgile/transliterate";
 import { iriToUri } from "cizgile/uri";
@@ -6,6 +7,20 @@ export const POST_SLUG_POLICY_VERSION = "post-slug-v1" as const;
 export const POST_SLUG_MAX_LENGTH = 80;
 export const POST_SLUG_OPAQUE_ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz" as const;
 export const POST_SLUG_OPAQUE_TOKEN_LENGTH = 10;
+
+export type PostSlugPostType = PostDocument["post_type"];
+export type DescriptivePostSlugPostType = Extract<PostSlugPostType, "text" | "song">;
+export type PostSlugSourcePolicy = "title-or-first-body-line" | "title";
+
+const POST_SLUG_SOURCE_POLICIES = {
+  text: "title-or-first-body-line",
+  image: null,
+  video: null,
+  link: null,
+  song: "title",
+  crosspost: null,
+  file: null,
+} as const satisfies Record<PostSlugPostType, PostSlugSourcePolicy | null>;
 
 export type PostSlugCandidate =
   | Readonly<{
@@ -21,7 +36,7 @@ export type PostSlugCandidate =
 export type CreatePostSlugCandidateInput = Readonly<{
   source: string;
   locale?: string;
-  postType: "text" | "song";
+  postType: DescriptivePostSlugPostType;
 }>;
 
 type PrincipalScript =
@@ -48,7 +63,18 @@ const SCRIPT_MATCHERS = [
 
 const graphemeSegmenter = new Intl.Segmenter("und", { granularity: "grapheme" });
 
-export const createOpaquePostSlugCandidate = (postType: "text" | "song"): PostSlugCandidate => ({
+export const postSlugSourcePolicyForType = (postType: string): PostSlugSourcePolicy | null =>
+  Object.hasOwn(POST_SLUG_SOURCE_POLICIES, postType)
+    ? POST_SLUG_SOURCE_POLICIES[postType as PostSlugPostType]
+    : null;
+
+export const hasDescriptivePostSlugPolicy = (
+  postType: string,
+): postType is DescriptivePostSlugPostType => postSlugSourcePolicyForType(postType) !== null;
+
+export const createOpaquePostSlugCandidate = (
+  postType: DescriptivePostSlugPostType,
+): PostSlugCandidate => ({
   kind: "opaque",
   prefix: postType === "song" ? "song" : "post",
 });
@@ -164,13 +190,23 @@ export const createPostSlugCandidate = (input: CreatePostSlugCandidateInput): Po
   return createOpaquePostSlugCandidate(input.postType);
 };
 
-export const selectPostSlugSource = (input: {
+type SelectPostSlugSourceInput = Readonly<{
+  readonly postType: PostSlugPostType;
   readonly title: string | null;
   readonly body: string | null;
-}): string => {
+}>;
+
+export function selectPostSlugSource(
+  input: SelectPostSlugSourceInput & Readonly<{ readonly postType: DescriptivePostSlugPostType }>,
+): string;
+export function selectPostSlugSource(input: SelectPostSlugSourceInput): string | null;
+export function selectPostSlugSource(input: SelectPostSlugSourceInput): string | null {
+  const policy = POST_SLUG_SOURCE_POLICIES[input.postType];
+  if (policy === null) return null;
   if (input.title?.trim()) return input.title;
+  if (policy === "title") return "";
   return input.body?.split(/\r?\n/u).find((line) => line.trim().length > 0) ?? "";
-};
+}
 
 export const postSlugCollisionCandidate = (base: string, ordinal: number): string => {
   if (!Number.isSafeInteger(ordinal) || ordinal < 1) {

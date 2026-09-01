@@ -135,6 +135,24 @@ describe("public post route use cases", () => {
     expect(contentCalls).toEqual([]);
   });
 
+  test("returns generic not found for null-rated or undeclared post types without loading content", async () => {
+    for (const post of [
+      { ...live().post, contentRating: null },
+      { ...live().post, postType: "video" },
+    ]) {
+      const contentCalls: string[] = [];
+      await expect(
+        Effect.runPromise(
+          getPublicPostBySlug(
+            { slug: "hello-world" },
+            services(live({ post, canonicalPath: null }), { contentCalls }),
+          ),
+        ),
+      ).rejects.toMatchObject({ _tag: "NotFound", message: "Post not found" });
+      expect(contentCalls).toEqual([]);
+    }
+  });
+
   test("redacts unauthorized member content and strips routes for authorized guarded reads", async () => {
     const memberPost = { ...live().post, visibility: "members_only" as const };
     await expect(

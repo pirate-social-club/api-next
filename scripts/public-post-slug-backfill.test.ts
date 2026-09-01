@@ -166,7 +166,7 @@ describe("public Post slug backfill planner", () => {
       "opaque",
       "opaque",
       "opaque",
-      "opaque",
+      "blocked",
       "skip",
       "descriptive",
       "blocked",
@@ -175,14 +175,18 @@ describe("public Post slug backfill planner", () => {
       input_count: 10,
       existing_count: 1,
       descriptive_count: 3,
-      opaque_count: 5,
+      opaque_count: 4,
       skipped_count: 1,
-      blocked_count: 1,
-      issue_counts: { "removed-not-normalized": 1 },
+      blocked_count: 2,
+      issue_counts: { "removed-not-normalized": 1, "unsupported-post-type": 1 },
       collision_classes: [{ candidate: "same-title", count: 2 }],
     });
     expect(plan.decisions[2]?.candidate).toEqual({ kind: "opaque", prefix: "post" });
-    expect(plan.decisions[6]?.candidate).toEqual({ kind: "opaque", prefix: "post" });
+    expect(plan.decisions[6]).toMatchObject({
+      policy: "blocked",
+      candidate: null,
+      issue: "unsupported-post-type",
+    });
     expect(JSON.stringify(plan.decisions)).not.toContain("Title 3");
     expect(() =>
       planPostSlugBackfillPage({

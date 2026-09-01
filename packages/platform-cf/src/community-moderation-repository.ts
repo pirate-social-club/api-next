@@ -1185,7 +1185,11 @@ export function makeControlPlaneCommunityModerationRepository(): RepositoryServi
                 const candidate =
                   heldVisibility === "public" && afterRating === "general"
                     ? createPostSlugCandidate({
-                        source: selectPostSlugSource({ title: heldTitle, body: heldBody }),
+                        source: selectPostSlugSource({
+                          postType: "text",
+                          title: heldTitle,
+                          body: heldBody,
+                        }),
                         postType: "text",
                       })
                     : createOpaquePostSlugCandidate("text");

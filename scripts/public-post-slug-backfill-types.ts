@@ -54,6 +54,7 @@ export type PostSlugBackfillIssueCode =
   | "removed-not-normalized"
   | "invalid-row"
   | "invalid-order"
+  | "unsupported-post-type"
   | "unsupported-status";
 
 export type PostSlugBackfillDecision = Readonly<{

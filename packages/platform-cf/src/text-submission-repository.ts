@@ -952,6 +952,7 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
               visibility === "public" && contentRating === "general"
                 ? createPostSlugCandidate({
                     source: selectPostSlugSource({
+                      postType: "text",
                       title: input.moderationInput.title,
                       body: input.moderationInput.body,
                     }),
