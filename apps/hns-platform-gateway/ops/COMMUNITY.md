@@ -82,14 +82,16 @@ The staging unit is
 release, manifest, credential directory, listener, or unit with production or
 production shadow.
 
-The Caddy file is a composition fragment, not a complete candidate. Resolve
-its one exact `app.<root>` host only after root selection. Insert the route
-ahead of the existing catchall while retaining the exact `app.pirate` route,
-DANE certificate policy, verifier, DoH, and HTTP behavior. Keep wildcard
-reserved-header deletion separate from exact terminator-header injection.
-Before any reload, validate new complete bytes, retain the active bytes and
-SHA-256, and probe `app.pirate` against its unchanged `127.0.0.1:4049`
-artifact before and after every promotion.
+For the generic production edge, run `build:generic-caddy-candidate` with an
+absolute active-config input and new candidate and rollback paths. The builder
+accepts only the reviewed production topology. It retains the exact
+`app.jazleeuw`, `*.jazleeuw`, verifier, DoH, port-80, and TLS-policy objects;
+adds exact `pirate` and `app.pirate` routes to `127.0.0.1:4049`; and replaces
+the HTTPS fallback with the existing sanitized community boundary to
+`127.0.0.1:4069`. Unknown hosts then reach the database-driven gateway and
+still fail closed with 421. The rollback output is byte-for-byte identical to
+the input. Validate both outputs with `/usr/local/bin/pirate-caddy` before any
+reload, and probe the static hosts before and after every promotion.
 
 These files are repository templates only. They do not authorize a VPS
 connection, build or install on the VPS, service action, credential ceremony,

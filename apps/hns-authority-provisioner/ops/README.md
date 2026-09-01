@@ -46,6 +46,14 @@ TSIG-authenticated AXFR independently from both authorities, requires the
 canonical zone bytes to match, and checks the live gateway certificate SPKI
 before it records evidence.
 
+The generic production profile is pinned to the general HNS DANE gateway
+certificate SPKI
+`5c8ddd3dbf63dbab698c726708b06177adda4a21416c675197f97e3b27ab20d8`,
+which is the certificate Caddy serves for new root and handle SNI. Do not use
+the root-specific `app.jazleeuw` certificate in the provisioner. A future
+certificate rotation must update Caddy and this TLSA value in one reviewed
+edge ceremony before another root is provisioned.
+
 After installation, start one non-production root import. Confirm that the
 session progresses from `provisioning` to `awaiting_owner_update`, that the
 returned wallet plan is a complete replacement, and that no activation occurs
