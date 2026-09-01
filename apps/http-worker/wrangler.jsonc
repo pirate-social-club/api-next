@@ -87,6 +87,7 @@
   ],
   "vars": {
     "API_NEXT_ENV": "development",
+    "ELEVENLABS_ENABLE_LOGGING": "false",
     "STUDY_GENERATION_ENABLED": "false",
     "STUDY_GENERATION_OPENROUTER_MODEL": "",
     "MEGAPOT_REWARDS_ENABLED": "false",
@@ -217,6 +218,7 @@
       ],
       "vars": {
         "API_NEXT_ENV": "staging",
+        "ELEVENLABS_ENABLE_LOGGING": "false",
         "STUDY_GENERATION_ENABLED": "false",
         "STUDY_GENERATION_OPENROUTER_MODEL": "",
         "MEGAPOT_REWARDS_ENABLED": "true",
@@ -384,6 +386,7 @@
       ],
       "vars": {
         "API_NEXT_ENV": "production",
+        "ELEVENLABS_ENABLE_LOGGING": "false",
         "STUDY_GENERATION_ENABLED": "false",
         "STUDY_GENERATION_OPENROUTER_MODEL": "",
         "MEGAPOT_REWARDS_ENABLED": "false",

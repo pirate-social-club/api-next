@@ -9,13 +9,14 @@ import type {
 
 const DEFAULT_URL = "wss://api.elevenlabs.io/v1/speech-to-text/realtime";
 const DEFAULT_MODEL = "scribe_v2_realtime";
-export const elevenLabsKaraokeProviderPolicy = (
+export const elevenLabsSpeechProviderPolicy = (
   environment: string | undefined,
+  loggingSetting: string | undefined,
 ): Readonly<{
   enableLogging: boolean;
   providerRetention: "not_stored" | "stored";
 }> => {
-  const enableLogging = environment === "staging";
+  const enableLogging = environment === "staging" && loggingSetting === "true";
   return {
     enableLogging,
     providerRetention: enableLogging ? "stored" : "not_stored",

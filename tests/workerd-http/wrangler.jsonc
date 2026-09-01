@@ -11,6 +11,7 @@
   ],
   "vars": {
     "CORS_ORIGIN": "https://solid.test",
+    "ELEVENLABS_ENABLE_LOGGING": "false",
     "REGISTRATION_IP_LIMIT": "5",
     "REGISTRATION_IP_WINDOW_SECONDS": "900",
     "REGISTRATION_APPLICATION_LIMIT": "100",

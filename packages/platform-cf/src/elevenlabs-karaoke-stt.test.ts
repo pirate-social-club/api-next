@@ -3,7 +3,7 @@ import type { KaraokeSttAdapterMessage } from "@pirate/application/karaoke-runti
 import {
   connectElevenLabsKaraokeSocket,
   ElevenLabsKaraokeSttAdapter,
-  elevenLabsKaraokeProviderPolicy,
+  elevenLabsSpeechProviderPolicy,
   type KaraokeSttSocket,
 } from "./elevenlabs-karaoke-stt.ts";
 
@@ -54,18 +54,26 @@ const frame = (bytes: number, songStartMs = 1_000) => ({
 });
 
 describe("ElevenLabs Karaoke realtime adapter", () => {
-  test("allows logged staging sessions while defaults and production stay zero retention", () => {
-    expect(elevenLabsKaraokeProviderPolicy(undefined)).toEqual({
+  test("requires an explicit staging override while defaults and production stay zero retention", () => {
+    expect(elevenLabsSpeechProviderPolicy(undefined, undefined)).toEqual({
       enableLogging: false,
       providerRetention: "not_stored",
     });
-    expect(elevenLabsKaraokeProviderPolicy("production")).toEqual({
+    expect(elevenLabsSpeechProviderPolicy("staging", undefined)).toEqual({
       enableLogging: false,
       providerRetention: "not_stored",
     });
-    expect(elevenLabsKaraokeProviderPolicy("staging")).toEqual({
+    expect(elevenLabsSpeechProviderPolicy("staging", "false")).toEqual({
+      enableLogging: false,
+      providerRetention: "not_stored",
+    });
+    expect(elevenLabsSpeechProviderPolicy("staging", "true")).toEqual({
       enableLogging: true,
       providerRetention: "stored",
+    });
+    expect(elevenLabsSpeechProviderPolicy("production", "true")).toEqual({
+      enableLogging: false,
+      providerRetention: "not_stored",
     });
   });
 

@@ -79,6 +79,7 @@ const HTTP_BINDING_KINDS = {
   OPENAI_MODERATION_MODEL: "var",
   OPENAI_MODERATION_BASE_URL: "var",
   OPENAI_MODERATION_TIMEOUT_MS: "var",
+  ELEVENLABS_ENABLE_LOGGING: "var",
   ELEVENLABS_API_KEY: "secret",
   STUDY_GENERATION_ENABLED: "var",
   STUDY_GENERATION_OPENROUTER_MODEL: "var",
@@ -317,6 +318,7 @@ const HTTP_ALWAYS_REQUIRED = [
   "MEGAPOT_ATTESTATION_ID",
   "MEGAPOT_REQUIRED_CONFIRMATIONS",
   "OPENAI_MODERATION_ENABLED",
+  "ELEVENLABS_ENABLE_LOGGING",
 ] as const;
 
 const HTTP_MEGAPOT_REQUIRED = ["MEGAPOT_V2_RPC_URL"] as const;
@@ -675,6 +677,14 @@ describe("source-to-Wrangler binding contract", () => {
     expect(declaredEnvironment(configs.http, "production").secrets).not.toContain(
       "ELEVENLABS_API_KEY",
     );
+  });
+
+  test("declares fail-closed ElevenLabs logging in every HTTP environment", () => {
+    for (const environmentName of ENVIRONMENTS) {
+      expect(
+        declaredEnvironment(configs.http, environmentName).vars.ELEVENLABS_ENABLE_LOGGING,
+      ).toBe("false");
+    }
   });
 
   test("API_NEXT_ENV is explicit and uses the canonical vocabulary", () => {

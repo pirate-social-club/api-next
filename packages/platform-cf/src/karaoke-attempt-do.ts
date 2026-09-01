@@ -24,7 +24,7 @@ import {
 import { Effect } from "effect";
 import {
   ElevenLabsKaraokeSttAdapter,
-  elevenLabsKaraokeProviderPolicy,
+  elevenLabsSpeechProviderPolicy,
 } from "./elevenlabs-karaoke-stt.ts";
 import { makeControlPlaneKaraokeStore } from "./karaoke-repository.ts";
 import { type HyperdriveConnection, makeHyperdriveControlPlaneLayer } from "./postgres.ts";
@@ -87,6 +87,7 @@ declare const WebSocketPair: {
 export interface KaraokeAttemptDoBindings {
   readonly API_NEXT_ENV?: string;
   readonly CONTROL_PLANE: HyperdriveConnection;
+  readonly ELEVENLABS_ENABLE_LOGGING?: string;
   readonly ELEVENLABS_API_KEY?: string;
   readonly LEARNER_AUDIO?: KaraokeR2Bucket;
 }
@@ -761,7 +762,10 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
   }
 
   private providerPolicy() {
-    return elevenLabsKaraokeProviderPolicy(this.runtimeEnv.API_NEXT_ENV);
+    return elevenLabsSpeechProviderPolicy(
+      this.runtimeEnv.API_NEXT_ENV,
+      this.runtimeEnv.ELEVENLABS_ENABLE_LOGGING,
+    );
   }
 
   private recordProviderRetention(retention: "not_stored" | "stored"): void {

@@ -284,6 +284,7 @@ export interface HttpWorkerBindings {
   readonly OPENAI_MODERATION_MODEL?: string;
   readonly OPENAI_MODERATION_BASE_URL?: string;
   readonly OPENAI_MODERATION_TIMEOUT_MS?: string;
+  readonly ELEVENLABS_ENABLE_LOGGING?: string;
   readonly ELEVENLABS_API_KEY?: string;
   readonly MEGAPOT_REWARDS_ENABLED?: string;
   readonly MEGAPOT_CHAIN_ID?: string;
