@@ -28,8 +28,3 @@ export const getMyProfile = Effect.fn("getMyProfile")(function* (
   }
   return account.profile;
 });
-
-export const makeProfileHandler =
-  (services: ProfileServices) =>
-  async (input: GetMyProfileInput): Promise<MyProfile> =>
-    Effect.runPromise(getMyProfile(input, services));

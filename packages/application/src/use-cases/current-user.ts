@@ -33,8 +33,3 @@ export const getCurrentUser = Effect.fn("getCurrentUser")(function* (
   }
   return account.user;
 });
-
-export const makeCurrentUserHandler =
-  (services: CurrentUserServices) =>
-  async (input: GetCurrentUserInput): Promise<CurrentUser> =>
-    Effect.runPromise(getCurrentUser(input, services));
