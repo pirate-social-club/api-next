@@ -25,6 +25,17 @@ const reusableBaselineInstallWeight = 14;
 const reusableTestWeight = 11;
 const independentTestWeight = 20;
 
+// Minimums capture suites whose first required-CI timing materially exceeded the category
+// estimate. New and ordinary suites continue to use the fixture-aware model above.
+const measuredMinimumWeights: Readonly<Record<string, number>> = {
+  "packages/platform-cf/src/community-route-repository.pg.test.ts": 280,
+  "packages/platform-cf/src/content-repository.pg.test.ts": 510,
+  "packages/platform-cf/src/handle-sales-repository.pg.test.ts": 215,
+  "packages/platform-cf/src/hns-control-observer-repository.pg.test.ts": 272,
+  "packages/platform-cf/src/postgres.pg.test.ts": 102,
+  "packages/platform-cf/src/text-submission-repository.pg.test.ts": 165,
+};
+
 type PostgresTestPartition = {
   readonly isolated: readonly string[];
   readonly general: readonly string[];
@@ -112,13 +123,15 @@ export function shardPostgresTestFiles(
 
 export function postgresTestFileWeight(file: string, testCount: number): number {
   const normalizedTestCount = Math.max(testCount, 1);
+  let estimatedWeight: number;
   if (reusableSuites.has(file)) {
-    return reusableBaselineInstallWeight + reusableTestWeight * normalizedTestCount;
+    estimatedWeight = reusableBaselineInstallWeight + reusableTestWeight * normalizedTestCount;
+  } else if (freshSchemaSuites.has(file) || noBaselineSuites.has(file)) {
+    estimatedWeight = independentTestWeight * normalizedTestCount;
+  } else {
+    throw new Error(`PostgreSQL test suite is not classified for shard weighting: ${file}`);
   }
-  if (freshSchemaSuites.has(file) || noBaselineSuites.has(file)) {
-    return independentTestWeight * normalizedTestCount;
-  }
-  throw new Error(`PostgreSQL test suite is not classified for shard weighting: ${file}`);
+  return Math.max(estimatedWeight, measuredMinimumWeights[file] ?? 0);
 }
 
 async function postgresTestWeights(

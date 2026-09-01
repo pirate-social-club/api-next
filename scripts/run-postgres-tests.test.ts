@@ -48,6 +48,12 @@ describe("PostgreSQL test discovery", () => {
     expect(
       postgresTestFileWeight("packages/platform-cf/src/community-route-migration.pg.test.ts", 2),
     ).toBe(40);
+    expect(
+      postgresTestFileWeight("packages/platform-cf/src/content-repository.pg.test.ts", 2),
+    ).toBe(510);
+    expect(
+      postgresTestFileWeight("packages/platform-cf/src/community-route-repository.pg.test.ts", 2),
+    ).toBe(280);
     expect(() => postgresTestFileWeight("unclassified.pg.test.ts", 2)).toThrow(
       "PostgreSQL test suite is not classified for shard weighting",
     );
