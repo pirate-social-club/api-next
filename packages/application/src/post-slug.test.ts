@@ -9,8 +9,8 @@ describe("post-slug-v1 golden corpus", () => {
     test(fixture.name, () => {
       const result = createPostSlugCandidate({
         source: fixture.source,
-        locale: fixture.locale,
         postType: fixture.postType,
+        ...("locale" in fixture ? { locale: fixture.locale } : {}),
       });
 
       expect(result).toEqual(fixture.expected);

@@ -6,6 +6,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./community-moderation-runtime": "./src/community-moderation-runtime.ts",
+    "./post-slug": "./src/post-slug.ts",
     "./use-cases/content/community-moderation-runtime": "./src/use-cases/content/community-moderation-runtime.ts",
     "./text-moderation-runtime": "./src/text-moderation-runtime.ts",
     "./hns-community-app-gateway": "./src/hns-community-app-gateway.ts",
