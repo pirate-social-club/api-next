@@ -4,6 +4,10 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -52,7 +56,8 @@ jobs:
         if: always()
         uses: ironsh/iron-proxy-action/summary@fa1fd82ec32396d044deba7040a6db576bec927a # v0.1.4
 
-  postgres17:
+  postgres17-namespace:
+    name: postgres17-namespace
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -83,8 +88,8 @@ jobs:
           CONTROL_PLANE_POSTGRES_IMAGE: postgres:17@sha256:67f41722b7a8cbdb868a44a4995c846eddfdc2973bccb291ce937dce88ad5675
         run: bun run check:baseline:fresh
       # Iron Proxy intentionally removes Docker socket access. Start it after
-      # freshness has exercised the pinned pg_dump image; the required check
-      # job separately audits the same pinned setup and dependency install.
+      # freshness has exercised the pinned pg_dump image; the general shard
+      # jobs separately audit the same pinned setup and dependency install.
       - name: Start warn-only egress audit
         uses: ironsh/iron-proxy-action@fa1fd82ec32396d044deba7040a6db576bec927a # v0.1.4
         with:
@@ -94,11 +99,66 @@ jobs:
       - name: Remove stale completion sentinel
         run: >-
           rm -f
+          /tmp/api-next-control-plane-postgres-namespace-ownership-suite-complete
+      - name: Run isolated Postgres 17 namespace suite
+        env:
+          CONTROL_PLANE_POSTGRES_TEST_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
+          CONTROL_PLANE_POSTGRES_TEST_REQUIRED: "1"
+          CONTROL_PLANE_POSTGRES_TEST_PARTITION: isolated
+          CONTROL_PLANE_POSTGRES_NAMESPACE_OWNERSHIP_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-namespace-ownership-suite-complete
+        run: bun run test:postgres
+      - name: Upload namespace completion sentinel
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: postgres17-sentinels-namespace
+          path: /tmp/api-next-control-plane-postgres-namespace-ownership-suite-complete
+          if-no-files-found: error
+          retention-days: 1
+      - name: Show egress audit summary
+        if: always()
+        uses: ironsh/iron-proxy-action/summary@fa1fd82ec32396d044deba7040a6db576bec927a # v0.1.4
+
+  postgres17-general:
+    name: postgres17-general-${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    services:
+      postgres:
+        image: postgres:17@sha256:67f41722b7a8cbdb868a44a4995c846eddfdc2973bccb291ce937dce88ad5675
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - name: Start warn-only egress audit
+        uses: ironsh/iron-proxy-action@fa1fd82ec32396d044deba7040a6db576bec927a # v0.1.4
+        with:
+          version: 0.41.0
+          egress-rules: .github/egress/postgres17.yml
+          warn: true
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.0
+      - run: bun install --frozen-lockfile
+      # Every matrix runner starts with the complete general-marker set clean.
+      # The assigned shard then writes only the markers owned by its test files.
+      - name: Remove stale general completion sentinels
+        run: >-
+          rm -f
           /tmp/api-next-control-plane-postgres-adapter-suite-complete
           /tmp/api-next-control-plane-postgres-foundation-suite-complete
           /tmp/api-next-control-plane-postgres-media-persistence-suite-complete
           /tmp/api-next-control-plane-postgres-optional-route-v2-suite-complete
-          /tmp/api-next-control-plane-postgres-namespace-ownership-suite-complete
           /tmp/api-next-control-plane-postgres-migration-suite-complete
           /tmp/api-next-control-plane-postgres-identity-suite-complete
           /tmp/api-next-control-plane-postgres-community-suite-complete
@@ -122,15 +182,17 @@ jobs:
           /tmp/api-next-control-plane-postgres-community-moderation-suite-complete
           /tmp/api-next-control-plane-postgres-platform-pirate-rename-suite-complete
           /tmp/api-next-control-plane-postgres-dance-reference-suite-complete
-      - name: Run required Postgres 17 suite
+      - name: Run required Postgres 17 general shard
         env:
           CONTROL_PLANE_POSTGRES_TEST_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
           CONTROL_PLANE_POSTGRES_TEST_REQUIRED: "1"
+          CONTROL_PLANE_POSTGRES_TEST_PARTITION: general-shard
+          CONTROL_PLANE_POSTGRES_TEST_SHARD_INDEX: ${{ matrix.shard }}
+          CONTROL_PLANE_POSTGRES_TEST_SHARD_COUNT: "4"
           CONTROL_PLANE_POSTGRES_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-adapter-suite-complete
           CONTROL_PLANE_POSTGRES_FOUNDATION_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-foundation-suite-complete
           CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-media-persistence-suite-complete
           CONTROL_PLANE_POSTGRES_OPTIONAL_ROUTE_V2_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-optional-route-v2-suite-complete
-          CONTROL_PLANE_POSTGRES_NAMESPACE_OWNERSHIP_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-namespace-ownership-suite-complete
           CONTROL_PLANE_POSTGRES_MIGRATION_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-migration-suite-complete
           CONTROL_PLANE_POSTGRES_IDENTITY_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-identity-suite-complete
           CONTROL_PLANE_POSTGRES_COMMUNITY_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-community-suite-complete
@@ -154,13 +216,40 @@ jobs:
           CONTROL_PLANE_POSTGRES_COMMUNITY_MODERATION_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-community-moderation-suite-complete
           CONTROL_PLANE_POSTGRES_PLATFORM_PIRATE_RENAME_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-platform-pirate-rename-suite-complete
           CONTROL_PLANE_POSTGRES_DANCE_REFERENCE_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-dance-reference-suite-complete
-        run: |
-          set -euo pipefail
-          # The runner discovers every tracked *.pg.test.ts file, isolates the
-          # database-time namespace suite, and caps general concurrency at four.
-          bun run test:postgres
-      - name: Verify Postgres 17 completion sentinel
-        run: bun run verify:postgres-sentinels
+        run: bun run test:postgres
+      - name: Upload general completion sentinels
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: postgres17-sentinels-general-${{ matrix.shard }}
+          path: /tmp/api-next-control-plane-postgres-*-suite-complete
+          if-no-files-found: ignore
+          retention-days: 1
       - name: Show egress audit summary
         if: always()
         uses: ironsh/iron-proxy-action/summary@fa1fd82ec32396d044deba7040a6db576bec927a # v0.1.4
+
+  postgres17:
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [postgres17-namespace, postgres17-general]
+    steps:
+      - name: Require every PostgreSQL partition
+        env:
+          GENERAL_RESULT: ${{ needs.postgres17-general.result }}
+          NAMESPACE_RESULT: ${{ needs.postgres17-namespace.result }}
+        run: |
+          set -euo pipefail
+          [[ "$GENERAL_RESULT" == "success" ]]
+          [[ "$NAMESPACE_RESULT" == "success" ]]
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.0
+      - name: Download PostgreSQL completion sentinels
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: postgres17-sentinels-*
+          path: /tmp
+          merge-multiple: true
+      - name: Verify Postgres 17 completion sentinels
+        run: bun run verify:postgres-sentinels

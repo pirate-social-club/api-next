@@ -112,6 +112,8 @@ describe("Postgres suite sentinel verification", () => {
     );
 
     expect(workflow).toContain("bun run test:postgres");
+    expect(workflow).toContain("CONTROL_PLANE_POSTGRES_TEST_PARTITION: general-shard");
+    expect(workflow).toContain("merge-multiple: true");
   });
 
   test("keeps persona and text-submission persistence fail-closed in Postgres CI", async () => {

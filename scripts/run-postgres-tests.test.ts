@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
   partitionPostgresTestFiles,
+  postgresGeneralShardCount,
   postgresTestTimeoutMilliseconds,
+  shardPostgresTestFiles,
 } from "./run-postgres-tests.ts";
 
 describe("PostgreSQL test discovery", () => {
@@ -10,6 +12,50 @@ describe("PostgreSQL test discovery", () => {
       isolated: 120_000,
       general: 900_000,
     });
+  });
+
+  test("balances every general file across four independent CI shards", () => {
+    expect(postgresGeneralShardCount).toBe(4);
+    const files = [
+      "heavy.pg.test.ts",
+      "medium.pg.test.ts",
+      "small-a.pg.test.ts",
+      "small-b.pg.test.ts",
+    ];
+    const weights = {
+      "heavy.pg.test.ts": 8,
+      "medium.pg.test.ts": 6,
+      "small-a.pg.test.ts": 2,
+      "small-b.pg.test.ts": 2,
+    };
+    const shards = shardPostgresTestFiles(files, postgresGeneralShardCount, weights);
+
+    expect(shards.flat().sort()).toEqual([...files].sort());
+    expect(shards.every((shard) => shard.length === 1)).toBe(true);
+  });
+
+  test("keeps the CI matrix and runner shard count in lockstep", async () => {
+    const workflow = await Bun.file(new URL("../.github/workflows/ci.yml", import.meta.url)).text();
+    const generalJob = workflow.match(/\n  postgres17-general:\n([\s\S]*?)\n  postgres17:\n/u)?.[1];
+    const matrix = generalJob?.match(/shard:\s*\[([^\]]+)\]/u)?.[1];
+    const configuredCount = generalJob?.match(
+      /CONTROL_PLANE_POSTGRES_TEST_SHARD_COUNT:\s*"(\d+)"/u,
+    )?.[1];
+
+    expect(generalJob).toBeDefined();
+    expect(matrix).toBeDefined();
+    expect(configuredCount).toBeDefined();
+    const matrixShards = matrix?.split(",").map((shard) => Number(shard.trim()));
+    expect(matrixShards).toEqual(
+      Array.from({ length: postgresGeneralShardCount }, (_, index) => index),
+    );
+    expect(Number(configuredCount)).toBe(postgresGeneralShardCount);
+  });
+
+  test("rejects invalid shard counts", () => {
+    expect(() => shardPostgresTestFiles([], 0, {})).toThrow(
+      "PostgreSQL test shard count must be a positive integer",
+    );
   });
 
   test("isolates the namespace timing suite and retains every other tracked suite", async () => {
