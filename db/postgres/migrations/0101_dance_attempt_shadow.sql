@@ -539,6 +539,16 @@ BEGIN
      AND claim_owner = NEW.claim_owner AND claim_fence = NEW.claim_fence
      AND lease_expires_at > clock_timestamp();
   IF NOT FOUND THEN RAISE EXCEPTION 'Dance outbox terminal fence lost'; END IF;
+  INSERT INTO dance_media_cleanup_operations (
+    cleanup_operation_id, session_id, artifact_kind, private_artifact_ref
+  ) SELECT
+    'dance-cleanup-' || encode(sha256(convert_to(
+      NEW.session_id || ':raw_video:' || upload.private_object_key, 'UTF8')), 'hex'),
+    NEW.session_id, 'raw_video', upload.private_object_key
+  FROM dance_upload_reservations upload
+  WHERE upload.session_id = NEW.session_id AND upload.state = 'sealed'
+  ON CONFLICT (session_id, artifact_kind, private_artifact_ref) DO NOTHING;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Dance raw-media cleanup was not scheduled'; END IF;
   RETURN NULL;
 END
 $$;
@@ -557,12 +567,57 @@ CREATE TABLE dance_media_cleanup_operations (
   lease_owner TEXT,
   lease_fence BIGINT NOT NULL DEFAULT 0 CHECK (lease_fence BETWEEN 0 AND 9007199254740991),
   lease_expires_at TIMESTAMPTZ,
+  next_eligible_at TIMESTAMPTZ,
   attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts BETWEEN 0 AND 10),
+  failure_code TEXT CHECK (failure_code IS NULL OR is_dance_identifier(failure_code)),
   completed_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
-  UNIQUE (session_id, artifact_kind, private_artifact_ref)
+  UNIQUE (session_id, artifact_kind, private_artifact_ref),
+  CONSTRAINT dance_media_cleanup_state_shape CHECK (
+    (state = 'pending' AND lease_owner IS NULL AND lease_fence = 0
+      AND lease_expires_at IS NULL AND next_eligible_at IS NULL AND attempts = 0
+      AND failure_code IS NULL AND completed_at IS NULL)
+    OR (state = 'leased' AND lease_owner IS NOT NULL AND lease_fence > 0
+      AND lease_expires_at > updated_at AND next_eligible_at IS NULL
+      AND attempts BETWEEN 1 AND 10 AND failure_code IS NULL AND completed_at IS NULL)
+    OR (state = 'failed' AND lease_owner IS NULL AND lease_fence > 0
+      AND lease_expires_at IS NULL AND attempts BETWEEN 1 AND 10
+      AND failure_code IS NOT NULL AND completed_at IS NULL
+      AND ((attempts < 10 AND next_eligible_at IS NOT NULL)
+        OR (attempts = 10 AND next_eligible_at IS NULL)))
+    OR (state = 'completed' AND lease_owner IS NULL AND lease_fence > 0
+      AND lease_expires_at IS NULL AND next_eligible_at IS NULL
+      AND attempts BETWEEN 1 AND 10 AND failure_code IS NULL AND completed_at IS NOT NULL)
+  )
 );
+
+CREATE FUNCTION guard_dance_media_cleanup_operation() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN RAISE EXCEPTION 'Dance cleanup operations cannot be deleted'; END IF;
+  IF TG_OP = 'INSERT' THEN RETURN NEW; END IF;
+  IF ROW(NEW.cleanup_operation_id, NEW.session_id, NEW.artifact_kind,
+    NEW.private_artifact_ref, NEW.created_at)
+    IS DISTINCT FROM ROW(OLD.cleanup_operation_id, OLD.session_id, OLD.artifact_kind,
+    OLD.private_artifact_ref, OLD.created_at)
+    OR NOT (
+      (OLD.state IN ('pending', 'failed') AND NEW.state = 'leased'
+        AND NEW.lease_fence = OLD.lease_fence + 1 AND NEW.attempts = OLD.attempts + 1)
+      OR (OLD.state = 'leased' AND OLD.lease_expires_at <= clock_timestamp()
+        AND NEW.state = 'leased' AND NEW.lease_fence = OLD.lease_fence + 1
+        AND NEW.attempts = OLD.attempts + 1)
+      OR (OLD.state = 'leased' AND NEW.state IN ('completed', 'failed')
+        AND NEW.lease_fence = OLD.lease_fence AND NEW.attempts = OLD.attempts)
+    ) THEN
+    RAISE EXCEPTION 'Invalid Dance cleanup transition';
+  END IF;
+  RETURN NEW;
+END
+$$;
+CREATE TRIGGER dance_media_cleanup_operations_change_guard
+BEFORE INSERT OR UPDATE OR DELETE ON dance_media_cleanup_operations
+FOR EACH ROW EXECUTE FUNCTION guard_dance_media_cleanup_operation();
 
 CREATE TABLE dance_grading_usage_counters (
   account_id TEXT NOT NULL REFERENCES users (user_id),

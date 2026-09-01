@@ -1,7 +1,9 @@
 import { afterAll, describe, expect, test } from "bun:test";
+import { Effect } from "effect";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { makeDanceAttemptStore } from "./dance-attempt-authoring-repository.ts";
+import { makeDanceAttemptCleanupStore } from "./dance-attempt-cleanup-repository.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -14,7 +16,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_DANCE_ATTEMPT_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-dance-attempt-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-dance-attempt-suite-complete\n";
-const testCount = 5;
+const testCount = 6;
 let completedTestCount = 0;
 
 const HASH_A = "11".repeat(32);
@@ -450,7 +452,9 @@ suite("Dance attempt shadow persistence", () => {
       const result = await admin.query(
         `SELECT s.state AS session_state, a.state AS attempt_state,
                 e.qualification_outcome, o.state AS outbox_state,
-                (SELECT count(*)::int FROM dance_replay_fingerprint_claims) AS claims
+                (SELECT count(*)::int FROM dance_replay_fingerprint_claims) AS claims,
+                (SELECT state FROM dance_media_cleanup_operations
+                  WHERE session_id=s.session_id AND artifact_kind='raw_video') AS cleanup_state
            FROM dance_sessions s
            JOIN dance_attempts a USING (session_id)
            JOIN dance_attempt_evidence e USING (attempt_id)
@@ -462,7 +466,49 @@ suite("Dance attempt shadow persistence", () => {
         qualification_outcome: "suppressed_shadow",
         outbox_state: "delivered",
         claims: 1,
+        cleanup_state: "pending",
       });
+      completedTestCount += 1;
+    });
+  });
+
+  test("cleanup retry fencing rejects stale completion and converges once", async () => {
+    await withSchema("cleanup_fence", async (admin, schema) => {
+      await createPendingAttempt(admin, "1");
+      const gradingFence = await claim(admin, "1", "grading-worker");
+      await finalize(admin, "1", "grading-worker", gradingFence, HASH_A);
+      const operation = await admin.query<{ cleanup_operation_id: string }>(
+        `SELECT cleanup_operation_id FROM dance_media_cleanup_operations
+          WHERE session_id='session-1' AND artifact_kind='raw_video'`,
+      );
+      const cleanupOperationId = operation.rows[0]?.cleanup_operation_id;
+      if (cleanupOperationId === undefined) throw new Error("cleanup operation was not scheduled");
+      const cleanup = makeDanceAttemptCleanupStore(
+        makeDirectPostgresControlPlaneLayer(
+          connectionForSchema(connectionString as string, schema),
+        ),
+      );
+      const first = await Effect.runPromise(
+        cleanup.claim({ cleanupOperationId, workerId: "cleanup-worker-a", leaseSeconds: 60 }),
+      );
+      if (first.kind !== "claimed") throw new Error("first cleanup lease was not claimed");
+      expect(
+        await Effect.runPromise(
+          cleanup.fail({
+            binding: first.binding,
+            failureCode: "delete_failed",
+            retryAfterSeconds: 0,
+          }),
+        ),
+      ).toBe("retryable");
+      const second = await Effect.runPromise(
+        cleanup.claim({ cleanupOperationId, workerId: "cleanup-worker-b", leaseSeconds: 60 }),
+      );
+      if (second.kind !== "claimed") throw new Error("retry cleanup lease was not claimed");
+      expect(second.binding.claimFence).toBe(first.binding.claimFence + 1);
+      expect(await Effect.runPromise(cleanup.complete(first.binding))).toBe("stale");
+      expect(await Effect.runPromise(cleanup.complete(second.binding))).toBe("committed");
+      expect(await Effect.runPromise(cleanup.complete(second.binding))).toBe("replayed");
       completedTestCount += 1;
     });
   });
