@@ -278,10 +278,10 @@ describe("Dance reference contracts", () => {
     const danceEndpoints = Object.entries(registry).filter(([, value]) =>
       value.path.includes("/dance/"),
     );
-    expect(danceEndpoints).toHaveLength(9);
+    expect(danceEndpoints).toHaveLength(15);
     for (const [name, value] of danceEndpoints) {
-      expect(name).not.toMatch(/Attempt|Qualification|Session/u);
-      expect(value.path).not.toMatch(/attempts|qualifications|sessions|rewards/u);
+      expect(name).not.toMatch(/Qualification/u);
+      expect(value.path).not.toMatch(/qualifications|rewards/u);
     }
   });
 });

@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./dance/attempt-grader-fake": "./src/dance/attempt-grader-fake.ts",
     "./postgres": "./src/postgres.ts",
     "./verification": "./src/verification/index.ts"
   },

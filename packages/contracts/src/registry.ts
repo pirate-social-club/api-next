@@ -28,6 +28,14 @@ import {
   RetireDanceChoreography,
   SetSongDancePresentation,
 } from "./dance.ts";
+import {
+  CreateDanceSession,
+  FinalizeDanceSessionUpload,
+  GetDanceSession,
+  RecordDanceSessionConsent,
+  ReserveDanceSessionUpload,
+  SubmitDanceSessionForGrading,
+} from "./dance-attempt.ts";
 import { handleSalesRegistry } from "./handle-sales.ts";
 import { DeliverHnsEdgeAlert } from "./hns-edge-alerts.ts";
 import { PublishHnsEdgeStatusReport } from "./hns-edge-status.ts";
@@ -127,6 +135,12 @@ export const registry = {
   GetDanceChoreographyRevision,
   SetSongDancePresentation,
   ClearSongDancePresentation,
+  CreateDanceSession,
+  RecordDanceSessionConsent,
+  ReserveDanceSessionUpload,
+  FinalizeDanceSessionUpload,
+  SubmitDanceSessionForGrading,
+  GetDanceSession,
   DeleteMyLearnerAudio,
   StartStudySession,
   GetStudySession,

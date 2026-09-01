@@ -8,6 +8,11 @@ import {
   normalizePostgresBaselineResetDump,
   normalizePostgresBaselineSeedDump,
 } from "./postgres-baseline-normalization.ts";
+import {
+  assertPostgresFoundationTableCatalogFresh,
+  tableNamesFromFoundationCatalog,
+  tableNamesFromPostgresBaseline,
+} from "./postgres-foundation-table-catalog.ts";
 
 describe("PostgreSQL baseline normalization", () => {
   test("preserves function search-path configuration without retaining the source schema", () => {
@@ -101,5 +106,29 @@ INSERT INTO public.seed_table VALUES ('2026-08-31 17:07:43.49507+00');`,
       "options=-c%20statement_timeout%3D0%20-c%20timezone%3DUTC%20-c%20search_path%3Dpublic",
     );
     expect(connectionString).not.toContain("+");
+  });
+
+  test("keeps the explicit foundation table catalog equal to the normalized baseline", () => {
+    const baselineSource = "CREATE TABLE alpha_table (\n);\nCREATE TABLE beta_table (\n);\n";
+    const foundationTestSource = `
+      // POSTGRES_FOUNDATION_TABLE_CATALOG_START
+      "alpha_table",
+      "beta_table",
+      // POSTGRES_FOUNDATION_TABLE_CATALOG_END
+    `;
+    expect(tableNamesFromPostgresBaseline(baselineSource)).toEqual(["alpha_table", "beta_table"]);
+    expect(tableNamesFromFoundationCatalog(foundationTestSource)).toEqual([
+      "alpha_table",
+      "beta_table",
+    ]);
+    expect(() =>
+      assertPostgresFoundationTableCatalogFresh({ baselineSource, foundationTestSource }),
+    ).not.toThrow();
+    expect(() =>
+      assertPostgresFoundationTableCatalogFresh({
+        baselineSource: `${baselineSource}CREATE TABLE gamma_table (\n);\n`,
+        foundationTestSource,
+      }),
+    ).toThrow("missing=gamma_table");
   });
 });

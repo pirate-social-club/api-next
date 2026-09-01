@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.48.0",
+  "releaseType": "dance-private-attempt-shadow",
+  "wireContract": "dance-attempt-shadow-v1",
+  "sourceCommit": "pending-review",
+  "supersedes": "0.47.0; additively exposes six authenticated private Dance attempt operations while retaining the Megapot prize-pool projection and keeping Dance excluded from qualifying and reward activity enums.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.48.0.tgz",
+    "sha256": "97c394cc707544ae0ff86da5fbc15617e24019d5504232dec0c629e87c3db168",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@1f710c2e951822e92741eb4139611342638c88fe97d587ca2e8a5e64972fbd1a",
+    "openapiSha256": "1f710c2e951822e92741eb4139611342638c88fe97d587ca2e8a5e64972fbd1a",
+    "clientSha256": "22666f0a127ff9aa0a63d8fa4884d19f7edba3f3935b0fa6b89a64d41b9a8805"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "passed",
+      "baselineCommit": "origin/main",
+      "reason": "The six private Dance operations are additive, and the qualifying and reward activity schemas still reject Dance."
+    },
+    "focusedApplicationAndFixtureSuites": "39 passed across the processing interpreter, dormant Queue and Workflow boundary, deterministic feature fixtures, and test-only grader.",
+    "postgresAttemptSuite": "10 passed on PostgreSQL 17 against the combined 101-migration baseline, including wake-up authority, concurrent duplicate convergence, stale fencing, irreversible exhaustion, and suppressed-shadow non-promotion.",
+    "fullUnitSuite": "not run locally; focused Dance suites and protected CI are authoritative for this checkpoint",
+    "fullWorkerdSuite": "not run locally because the host remains constrained; no Wrangler or deployed binding changed",
+    "packageVerifier": "passed",
+    "repositoryCheck": "Targeted TypeScript, Effect diagnostics, Knip, dependency, migration-worktree, formatting, freshness, and package checks passed."
+  }
+}
