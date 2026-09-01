@@ -3,6 +3,7 @@ import {
   type ControlPlaneError,
   type ControlPlaneTransaction,
 } from "@pirate/application";
+import type { DanceAttemptCallbackClaimStore } from "@pirate/application/dance/attempt-callback";
 import {
   DanceAttemptProcessingBinding,
   type DanceAttemptProcessingClaim,
@@ -162,6 +163,25 @@ const frozenProjectionSql = `SELECT a.attempt_id,a.session_id,a.input_digest,a.s
     ON artifact.choreography_id=s.choreography_id
    AND artifact.revision=s.choreography_revision`;
 
+const callbackProjectionSql = `SELECT a.attempt_id,a.session_id,a.input_digest,
+       a.sealed_media_sha256,o.effect_identity,o.delivery_attempts,
+       COALESCE(o.claim_owner,e.claim_owner) AS claim_owner,
+       COALESCE(e.claim_fence,o.claim_fence) AS claim_fence,
+       s.segment_id,s.choreography_id,s.choreography_revision,s.expected_scored_duration_ms,
+       s.cue_observation_end_ms,s.captured_admission_state,s.pose_model_version,
+       s.feature_schema_version,s.scorer_contract_version,s.mirror_policy_version,
+       s.fingerprint_policy_version,s.fingerprint_key_version,s.integrity_policy_version,
+       s.grader_adapter_version,u.private_object_key,artifact.private_artifact_ref,
+       artifact.artifact_sha256
+  FROM dance_attempts a
+  JOIN dance_attempt_outbox o ON o.attempt_id=a.attempt_id
+  JOIN dance_sessions s ON s.session_id=a.session_id
+  JOIN dance_upload_reservations u ON u.reservation_id=a.reservation_id
+  JOIN dance_reference_artifacts artifact
+    ON artifact.choreography_id=s.choreography_id
+   AND artifact.revision=s.choreography_revision
+  LEFT JOIN dance_attempt_evidence e ON e.attempt_id=a.attempt_id`;
+
 function runWithRuntime<A>(
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
   effect: Effect.Effect<A, Failure, ControlPlaneDb>,
@@ -188,6 +208,26 @@ function existingTerminal(
     const state = text(result.rows[0] as Row, "state");
     if (state === "grading_pending") return null;
     return state === "processing_failed" ? "failed" : "completed";
+  });
+}
+
+function existingTerminalEvidence(
+  tx: ControlPlaneTransaction,
+  attemptId: string,
+): Effect.Effect<{ readonly evidenceDigest: string } | null, Failure> {
+  return Effect.gen(function* () {
+    const result = yield* tx.execute<Row>({
+      label: "dance-attempt-processing.terminal-evidence",
+      text: "SELECT state,terminal_evidence_digest FROM dance_attempts WHERE attempt_id=$1 FOR UPDATE",
+      values: [attemptId],
+      readonly: false,
+    });
+    if (result.rows.length !== 1) return null;
+    const row = result.rows[0] as Row;
+    if (text(row, "state") === "grading_pending") return null;
+    const evidenceDigest = nullableText(row, "terminal_evidence_digest");
+    if (evidenceDigest === null) return yield* Effect.fail(invalid("complete"));
+    return { evidenceDigest };
   });
 }
 
@@ -240,7 +280,7 @@ function insertEvidence(
 
 export function makeDanceAttemptProcessingStore(
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
-): DanceAttemptProcessingStore & DanceAttemptWakeupStore {
+): DanceAttemptProcessingStore & DanceAttemptWakeupStore & DanceAttemptCallbackClaimStore {
   const claim: DanceAttemptProcessingStore["claim"] = (input) =>
     Effect.tryPromise({
       try: () =>
@@ -296,8 +336,36 @@ export function makeDanceAttemptProcessingStore(
             const db = yield* ControlPlaneDb;
             return yield* db.withTransaction((tx) =>
               Effect.gen(function* () {
-                const terminal = yield* existingTerminal(tx, processingClaim.binding.attemptId);
-                if (terminal !== null) return "replayed" as const;
+                const terminal = yield* existingTerminalEvidence(
+                  tx,
+                  processingClaim.binding.attemptId,
+                );
+                if (terminal !== null) {
+                  if (terminal.evidenceDigest === outcome.evidenceDigest) {
+                    return "replayed" as const;
+                  }
+                  yield* tx.execute({
+                    label: "dance-attempt-processing.terminal-conflict",
+                    text: `INSERT INTO dance_attempt_operator_items (
+                             operator_item_id,attempt_id,kind,effect_identity,claim_owner,
+                             claim_fence,accepted_evidence_digest,conflicting_evidence_digest
+                           ) VALUES (
+                             'dance-callback-conflict-' || encode(sha256(convert_to(
+                               $1 || ':' || $6, 'UTF8')), 'hex'),
+                             $1,'conflicting_terminal_callback',$2,$3,$4,$5,$6
+                           ) ON CONFLICT (attempt_id,kind) DO NOTHING`,
+                    values: [
+                      processingClaim.binding.attemptId,
+                      processingClaim.binding.effectIdentity,
+                      processingClaim.binding.claimOwner,
+                      processingClaim.binding.claimFence,
+                      terminal.evidenceDigest,
+                      outcome.evidenceDigest,
+                    ],
+                    readonly: false,
+                  });
+                  return "conflict" as const;
+                }
                 const fingerprint = outcome.fingerprint;
                 if (fingerprint === null) {
                   if (outcome.gradeOutcome !== "rejected") {
@@ -534,5 +602,51 @@ export function makeDanceAttemptProcessingStore(
     );
   };
 
-  return { claim, complete, fail, getWakeup, listEligibleWakeups };
+  const resolveCallbackClaim: DanceAttemptCallbackClaimStore["resolveCallbackClaim"] = (binding) =>
+    Effect.tryPromise({
+      try: () =>
+        runWithRuntime(
+          runtime,
+          Effect.gen(function* () {
+            const db = yield* ControlPlaneDb;
+            const result = yield* db.execute<Row>({
+              label: "dance-attempt-processing.callback-claim",
+              text: `${callbackProjectionSql}
+                        WHERE a.attempt_id=$1 AND o.effect_identity=$2 AND a.input_digest=$3
+                          AND o.delivery_attempts=$4 AND (
+                            (a.state='grading_pending' AND o.state='running'
+                              AND o.claim_owner=$5 AND o.claim_fence=$6
+                              AND o.lease_expires_at>clock_timestamp())
+                            OR (a.state<>'grading_pending' AND e.claim_owner=$5
+                              AND e.claim_fence=$6)
+                          )`,
+              values: [
+                binding.attemptId,
+                binding.effectIdentity,
+                binding.inputDigest,
+                binding.attemptNumber,
+                binding.claimOwner,
+                binding.claimFence,
+              ],
+              readonly: true,
+            });
+            if (result.rows.length === 0) return null;
+            if (result.rows.length !== 1) return yield* Effect.fail(invalid("claim"));
+            const claim = decodeClaim(result.rows[0] as Row);
+            const resolved = Schema.decodeUnknownSync(DanceAttemptProcessingBinding)(claim.binding);
+            return resolved.effectIdentity === binding.effectIdentity &&
+              resolved.attemptId === binding.attemptId &&
+              resolved.inputDigest === binding.inputDigest &&
+              resolved.attemptNumber === binding.attemptNumber &&
+              resolved.claimOwner === binding.claimOwner &&
+              resolved.claimFence === binding.claimFence
+              ? claim
+              : null;
+          }),
+          "claim",
+        ),
+      catch: () => invalid("claim"),
+    });
+
+  return { claim, complete, fail, getWakeup, listEligibleWakeups, resolveCallbackClaim };
 }

@@ -4775,6 +4775,17 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION guard_dance_attempt_operator_item() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    RAISE EXCEPTION 'Dance attempt operator items are immutable';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
 CREATE FUNCTION guard_dance_choreography() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -19705,6 +19716,28 @@ CREATE TABLE dance_attempt_evidence (
     CONSTRAINT dance_attempt_evidence_window CHECK (((scored_window_end_ms - scored_window_start_ms) = scored_duration_ms))
 );
 
+CREATE TABLE dance_attempt_operator_items (
+    operator_item_id text NOT NULL,
+    attempt_id text NOT NULL,
+    kind text NOT NULL,
+    status text DEFAULT 'open'::text NOT NULL,
+    effect_identity text NOT NULL,
+    claim_owner text NOT NULL,
+    claim_fence bigint NOT NULL,
+    accepted_evidence_digest text NOT NULL,
+    conflicting_evidence_digest text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT dance_attempt_operator_item_digest_conflict CHECK ((accepted_evidence_digest <> conflicting_evidence_digest)),
+    CONSTRAINT dance_attempt_operator_items_accepted_evidence_digest_check CHECK ((accepted_evidence_digest ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT dance_attempt_operator_items_claim_fence_check CHECK (((claim_fence >= 1) AND (claim_fence <= '9007199254740991'::bigint))),
+    CONSTRAINT dance_attempt_operator_items_claim_owner_check CHECK (is_dance_identifier(claim_owner)),
+    CONSTRAINT dance_attempt_operator_items_conflicting_evidence_digest_check CHECK ((conflicting_evidence_digest ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT dance_attempt_operator_items_effect_identity_check CHECK (is_dance_identifier(effect_identity, 512)),
+    CONSTRAINT dance_attempt_operator_items_kind_check CHECK ((kind = 'conflicting_terminal_callback'::text)),
+    CONSTRAINT dance_attempt_operator_items_operator_item_id_check CHECK (is_dance_identifier(operator_item_id, 512)),
+    CONSTRAINT dance_attempt_operator_items_status_check CHECK ((status = 'open'::text))
+);
+
 CREATE TABLE dance_attempt_outbox (
     outbox_event_id text NOT NULL,
     attempt_id text NOT NULL,
@@ -25687,6 +25720,12 @@ ALTER TABLE ONLY dance_attempt_evidence
 ALTER TABLE ONLY dance_attempt_evidence
     ADD CONSTRAINT dance_attempt_evidence_pkey PRIMARY KEY (attempt_id);
 
+ALTER TABLE ONLY dance_attempt_operator_items
+    ADD CONSTRAINT dance_attempt_operator_items_attempt_id_kind_key UNIQUE (attempt_id, kind);
+
+ALTER TABLE ONLY dance_attempt_operator_items
+    ADD CONSTRAINT dance_attempt_operator_items_pkey PRIMARY KEY (operator_item_id);
+
 ALTER TABLE ONLY dance_attempt_outbox
     ADD CONSTRAINT dance_attempt_outbox_attempt_id_key UNIQUE (attempt_id);
 
@@ -27799,6 +27838,8 @@ CREATE TRIGGER dance_attempt_evidence_change_guard BEFORE INSERT OR DELETE OR UP
 
 CREATE TRIGGER dance_attempt_evidence_finalize AFTER INSERT ON dance_attempt_evidence FOR EACH ROW EXECUTE FUNCTION finalize_dance_attempt_evidence();
 
+CREATE TRIGGER dance_attempt_operator_item_guard BEFORE DELETE OR UPDATE ON dance_attempt_operator_items FOR EACH ROW EXECUTE FUNCTION guard_dance_attempt_operator_item();
+
 CREATE TRIGGER dance_attempts_change_guard BEFORE INSERT OR DELETE OR UPDATE ON dance_attempts FOR EACH ROW EXECUTE FUNCTION guard_dance_attempt();
 
 CREATE TRIGGER dance_choreographies_change_guard BEFORE INSERT OR DELETE OR UPDATE ON dance_choreographies FOR EACH ROW EXECUTE FUNCTION guard_dance_choreography();
@@ -29143,6 +29184,9 @@ ALTER TABLE ONLY dance_attempt_evidence
 
 ALTER TABLE ONLY dance_attempt_evidence
     ADD CONSTRAINT dance_attempt_evidence_matched_fingerprint_claim_id_fkey FOREIGN KEY (matched_fingerprint_claim_id) REFERENCES dance_replay_fingerprint_claims(fingerprint_claim_id);
+
+ALTER TABLE ONLY dance_attempt_operator_items
+    ADD CONSTRAINT dance_attempt_operator_items_attempt_id_accepted_evidence__fkey FOREIGN KEY (attempt_id, accepted_evidence_digest) REFERENCES dance_attempt_evidence(attempt_id, evidence_digest);
 
 ALTER TABLE ONLY dance_attempt_outbox
     ADD CONSTRAINT dance_attempt_outbox_attempt_id_fkey FOREIGN KEY (attempt_id) REFERENCES dance_attempts(attempt_id);

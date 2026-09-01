@@ -18,7 +18,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_DANCE_ATTEMPT_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-dance-attempt-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-dance-attempt-suite-complete\n";
-const testCount = 10;
+const testCount = 11;
 let completedTestCount = 0;
 
 const HASH_A = "11".repeat(32);
@@ -602,6 +602,55 @@ suite("Dance attempt shadow persistence", () => {
         state: "delivered",
         eligible: false,
       });
+      completedTestCount += 1;
+    });
+  });
+
+  test("replays identical callback evidence and opens one item for a conflicting terminal", async () => {
+    await withSchema("processing_callback_replay", async (admin, schema) => {
+      await createPendingAttempt(admin, "1");
+      const store = processingStore(schema);
+      const claimed = await claimProcessing(schema, "attempt-1", "provider-operation-1");
+      if (claimed.kind !== "claimed") throw new Error("attempt was not claimed");
+      expect(await Effect.runPromise(store.resolveCallbackClaim(claimed.claim.binding))).toEqual(
+        claimed.claim,
+      );
+      const accepted = scoredOutcome(claimed, HASH_C, "claim-processing-callback-1");
+      expect(await Effect.runPromise(store.complete(claimed.claim, accepted))).toBe("committed");
+      const terminalClaim = await Effect.runPromise(
+        store.resolveCallbackClaim(claimed.claim.binding),
+      );
+      expect(terminalClaim).toEqual(claimed.claim);
+      if (terminalClaim === null) throw new Error("terminal callback claim was unavailable");
+      expect(await Effect.runPromise(store.complete(terminalClaim, accepted))).toBe("replayed");
+      const conflicting = { ...accepted, evidenceDigest: HASH_B };
+      expect(await Effect.runPromise(store.complete(terminalClaim, conflicting))).toBe("conflict");
+      expect(await Effect.runPromise(store.complete(terminalClaim, conflicting))).toBe("conflict");
+      expect(
+        await Effect.runPromise(
+          store.complete(terminalClaim, { ...accepted, evidenceDigest: HASH_D }),
+        ),
+      ).toBe("conflict");
+      const persisted = await admin.query(
+        `SELECT e.evidence_digest,i.status,i.accepted_evidence_digest,
+                i.conflicting_evidence_digest,
+                (SELECT count(*)::int FROM dance_attempt_operator_items) AS item_count
+           FROM dance_attempt_evidence e
+           JOIN dance_attempt_operator_items i USING (attempt_id)
+          WHERE e.attempt_id='attempt-1'`,
+      );
+      expect(persisted.rows[0]).toEqual({
+        evidence_digest: HASH_C,
+        status: "open",
+        accepted_evidence_digest: HASH_C,
+        conflicting_evidence_digest: HASH_B,
+        item_count: 1,
+      });
+      await expect(
+        admin.query(
+          "UPDATE dance_attempt_operator_items SET status='open' WHERE attempt_id='attempt-1'",
+        ),
+      ).rejects.toThrow("Dance attempt operator items are immutable");
       completedTestCount += 1;
     });
   });

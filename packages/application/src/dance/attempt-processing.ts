@@ -159,7 +159,10 @@ export interface DanceAttemptProcessingStore {
   readonly complete: (
     claim: DanceAttemptProcessingClaim,
     outcome: DanceAttemptProcessingOutcome,
-  ) => Effect.Effect<"committed" | "replayed" | "stale", DanceAttemptProcessingInvalid>;
+  ) => Effect.Effect<
+    "committed" | "replayed" | "conflict" | "stale",
+    DanceAttemptProcessingInvalid
+  >;
   readonly fail: (input: {
     readonly claim: DanceAttemptProcessingClaim;
     readonly failureCode: string;
@@ -178,7 +181,7 @@ export type DanceAttemptProcessingDisposition =
   | Readonly<{ readonly kind: "inert" | "busy" | "stale" }>
   | Readonly<{ readonly kind: "terminal"; readonly status: "completed" | "failed" }>
   | Readonly<{
-      readonly kind: "committed" | "replayed";
+      readonly kind: "committed" | "replayed" | "conflict";
       readonly status: "completed" | "failed";
     }>
   | Readonly<{ readonly kind: "retryable" | "exhausted"; readonly status: "failed" }>;
@@ -197,7 +200,7 @@ function sameBinding(
   );
 }
 
-function decodeOutcome(
+export function validateDanceAttemptProcessingOutcome(
   claim: DanceAttemptProcessingClaim,
   value: unknown,
 ): Effect.Effect<DanceAttemptProcessingOutcome, DanceAttemptProcessingInvalid> {
@@ -250,7 +253,9 @@ export function runDanceAttemptProcessing(
     );
     const outcome =
       rawOutcome._tag === "Some"
-        ? yield* Effect.option(decodeOutcome(claimed.claim, rawOutcome.value))
+        ? yield* Effect.option(
+            validateDanceAttemptProcessingOutcome(claimed.claim, rawOutcome.value),
+          )
         : rawOutcome;
     if (outcome._tag === "None") {
       const failed = yield* dependencies.store
@@ -268,6 +273,7 @@ export function runDanceAttemptProcessing(
       .complete(claimed.claim, outcome.value)
       .pipe(Effect.catch(() => Effect.succeed("stale" as const)));
     if (completed === "stale") return { kind: "stale" } as const;
+    if (completed === "conflict") return { kind: "conflict", status: "failed" } as const;
     return {
       kind: completed,
       status: "completed",

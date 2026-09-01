@@ -109,6 +109,7 @@ TRUNCATE TABLE
   "custody_solvency_observations",
   "dance_attempt_actions",
   "dance_attempt_evidence",
+  "dance_attempt_operator_items",
   "dance_attempt_outbox",
   "dance_attempts",
   "dance_choreographies",

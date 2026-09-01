@@ -573,6 +573,42 @@ CREATE TRIGGER dance_attempt_evidence_finalize
 AFTER INSERT ON dance_attempt_evidence
 FOR EACH ROW EXECUTE FUNCTION finalize_dance_attempt_evidence();
 
+CREATE TABLE dance_attempt_operator_items (
+  operator_item_id TEXT PRIMARY KEY CHECK (is_dance_identifier(operator_item_id, 512)),
+  attempt_id TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind = 'conflicting_terminal_callback'),
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status = 'open'),
+  effect_identity TEXT NOT NULL CHECK (is_dance_identifier(effect_identity, 512)),
+  claim_owner TEXT NOT NULL CHECK (is_dance_identifier(claim_owner)),
+  claim_fence BIGINT NOT NULL CHECK (claim_fence BETWEEN 1 AND 9007199254740991),
+  accepted_evidence_digest TEXT NOT NULL CHECK (
+    accepted_evidence_digest ~ '^[0-9a-f]{64}$'
+  ),
+  conflicting_evidence_digest TEXT NOT NULL CHECK (
+    conflicting_evidence_digest ~ '^[0-9a-f]{64}$'
+  ),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  FOREIGN KEY (attempt_id, accepted_evidence_digest)
+    REFERENCES dance_attempt_evidence (attempt_id, evidence_digest),
+  UNIQUE (attempt_id, kind),
+  CONSTRAINT dance_attempt_operator_item_digest_conflict CHECK (
+    accepted_evidence_digest <> conflicting_evidence_digest
+  )
+);
+
+CREATE FUNCTION guard_dance_attempt_operator_item() RETURNS TRIGGER
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    RAISE EXCEPTION 'Dance attempt operator items are immutable';
+  END IF;
+  RETURN NEW;
+END
+$$;
+CREATE TRIGGER dance_attempt_operator_item_guard
+BEFORE UPDATE OR DELETE ON dance_attempt_operator_items
+FOR EACH ROW EXECUTE FUNCTION guard_dance_attempt_operator_item();
+
 CREATE TABLE dance_media_cleanup_operations (
   cleanup_operation_id TEXT PRIMARY KEY CHECK (is_dance_identifier(cleanup_operation_id)),
   session_id TEXT NOT NULL REFERENCES dance_sessions (session_id),

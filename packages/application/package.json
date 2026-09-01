@@ -42,6 +42,7 @@
     "./dance/reference-processing-wakeup": "./src/dance/reference-processing-wakeup.ts",
     "./dance/attempt-cleanup": "./src/dance/attempt-cleanup.ts",
     "./dance/attempt-processing": "./src/dance/attempt-processing.ts",
+    "./dance/attempt-callback": "./src/dance/attempt-callback.ts",
     "./dance/attempt-processing-wakeup": "./src/dance/attempt-processing-wakeup.ts",
     "./use-cases/dance/reference-services": "./src/use-cases/dance/reference-services.ts",
     "./use-cases/dance/reference-authority": "./src/use-cases/dance/reference-authority.ts",
