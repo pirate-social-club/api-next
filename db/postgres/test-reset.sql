@@ -107,6 +107,7 @@ TRUNCATE TABLE
   "community_streaks",
   "content_publication_outbox",
   "custody_solvency_observations",
+  "dance_attempt_actions",
   "dance_attempt_evidence",
   "dance_attempt_outbox",
   "dance_attempts",

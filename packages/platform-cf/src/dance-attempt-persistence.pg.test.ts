@@ -1,6 +1,8 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
+import { makeDanceAttemptStore } from "./dance-attempt-authoring-repository.ts";
+import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -12,7 +14,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_DANCE_ATTEMPT_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-dance-attempt-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-dance-attempt-suite-complete\n";
-const testCount = 4;
+const testCount = 5;
 let completedTestCount = 0;
 
 const HASH_A = "11".repeat(32);
@@ -282,6 +284,155 @@ async function finalize(
 }
 
 suite("Dance attempt shadow persistence", () => {
+  test("commits authoring actions and grading outbox without a processor", async () => {
+    await withSchema("authoring_repository", async (admin, schema) => {
+      const createdAt = new Date();
+      const expiresAt = new Date(createdAt.getTime() + 15 * 60_000);
+      const uploadCreatedAt = new Date(createdAt.getTime() + 1_000);
+      const uploadExpiresAt = new Date(createdAt.getTime() + 10 * 60_000);
+      const sealedAt = new Date(createdAt.getTime() + 2_000);
+      const store = makeDanceAttemptStore(
+        makeDirectPostgresControlPlaneLayer(
+          connectionForSchema(connectionString as string, schema),
+        ),
+      );
+      const action = (
+        endpointTemplate:
+          | "/communities/:communityId/posts/:postId/dance/choreographies/:choreographyId/revisions/:revision/sessions"
+          | "/communities/:communityId/dance/sessions/:sessionId/consent"
+          | "/communities/:communityId/dance/sessions/:sessionId/upload-reservations"
+          | "/communities/:communityId/dance/sessions/:sessionId/upload/finalize"
+          | "/communities/:communityId/dance/sessions/:sessionId/grading-submissions",
+        idempotencyKey: string,
+      ) => ({
+        actorAccountId: "dancer-1",
+        httpMethod: "POST" as const,
+        endpointTemplate,
+        idempotencyKey,
+        requestHash: HASH_D,
+      });
+      const created = await store.create({
+        action: action(
+          "/communities/:communityId/posts/:postId/dance/choreographies/:choreographyId/revisions/:revision/sessions",
+          "create-repository-1",
+        ),
+        communityId: "community-1",
+        songPostId: "song-1",
+        choreographyId: "choreography-1",
+        choreographyRevision: 1,
+        personaId: "dancer-persona-1",
+        authority: {
+          sessionId: "dance-session-repository-1",
+          audioRevision: 4,
+          segmentId: "segment-1",
+          expectedScoredDurationMs: 6_000,
+          cue: {
+            kind: "hands_on_head",
+            holdMs: 1_000,
+            observationStartMs: 0,
+            observationEndMs: 2_000,
+          },
+          policy: {
+            qualificationPolicyVersionId: "shadow-policy-v1",
+            calibrationVersionId: "shadow-calibration-v1",
+            calibrationChecksum: HASH_A,
+            capturedAdmissionState: "shadow",
+            platformFloorBps: 4_321,
+            poseModelVersion: "pose-v1",
+            featureSchemaVersion: "features-v1",
+            scorerContractVersion: "scorer-v1",
+            mirrorPolicyVersion: "mirror-v1",
+            cuePolicyVersion: "cue-v1",
+            fingerprintPolicyVersion: "fingerprint-v1",
+            fingerprintKeyVersion: "fingerprint-key-v1",
+            integrityPolicyVersion: "integrity-v1",
+            graderAdapterVersion: "adapter-v1",
+          },
+          sessionTermsHash: HASH_B,
+          createdAt: createdAt.toISOString(),
+          expiresAt: expiresAt.toISOString(),
+        },
+      });
+      expect(created.session.state).toBe("created");
+      await store.consent({
+        action: action(
+          "/communities/:communityId/dance/sessions/:sessionId/consent",
+          "consent-repository-1",
+        ),
+        communityId: "community-1",
+        sessionId: created.session.session_id,
+        personaId: "dancer-persona-1",
+        sessionTermsHash: HASH_B,
+        consentPolicyVersionId: "consent-v1",
+        retentionDisclosureVersion: "retention-v1",
+        source: "camera",
+      });
+      const reserved = await store.reserve({
+        action: action(
+          "/communities/:communityId/dance/sessions/:sessionId/upload-reservations",
+          "reserve-repository-1",
+        ),
+        communityId: "community-1",
+        sessionId: created.session.session_id,
+        authority: {
+          reservationId: "dance-reservation-repository-1",
+          privateObjectKey: "private/random/repository-1",
+          uploadUrl: "https://uploads.invalid/dance-repository-1",
+          expectedContentType: "video/mp4",
+          expectedSizeBytes: 1_000,
+          expectedDurationMs: 8_000,
+          expectedSha256: HASH_A,
+          createdAt: uploadCreatedAt.toISOString(),
+          expiresAt: uploadExpiresAt.toISOString(),
+        },
+      });
+      expect(reserved.session.state).toBe("awaiting_upload");
+      await store.finalize({
+        action: action(
+          "/communities/:communityId/dance/sessions/:sessionId/upload/finalize",
+          "finalize-repository-1",
+        ),
+        communityId: "community-1",
+        sessionId: created.session.session_id,
+        authority: {
+          reservationId: reserved.reservation.reservation_id,
+          privateObjectKey: "private/random/repository-1",
+          contentType: "video/mp4",
+          sizeBytes: 1_000,
+          durationMs: 8_000,
+          serverSha256: HASH_A,
+          sealedAt: sealedAt.toISOString(),
+        },
+      });
+      const submitted = await store.submit({
+        action: action(
+          "/communities/:communityId/dance/sessions/:sessionId/grading-submissions",
+          "submit-repository-1",
+        ),
+        communityId: "community-1",
+        sessionId: created.session.session_id,
+      });
+      expect(submitted.session.state).toBe("grading_pending");
+      const rows = await admin.query(
+        `SELECT (SELECT count(*)::int FROM dance_attempt_actions) AS actions,
+                (SELECT count(*)::int FROM dance_attempts) AS attempts,
+                (SELECT count(*)::int FROM dance_attempt_outbox) AS outbox`,
+      );
+      expect(rows.rows[0]).toEqual({ actions: 5, attempts: 1, outbox: 1 });
+      const replayed = await store.submit({
+        action: action(
+          "/communities/:communityId/dance/sessions/:sessionId/grading-submissions",
+          "submit-repository-1",
+        ),
+        communityId: "community-1",
+        sessionId: created.session.session_id,
+      });
+      expect(replayed.replayed).toBe(true);
+      expect("processor" in store).toBe(false);
+      completedTestCount += 1;
+    });
+  });
+
   test("requires consent, seals once, and atomically commits a suppressed result", async () => {
     await withSchema("lifecycle", async (admin) => {
       await expect(

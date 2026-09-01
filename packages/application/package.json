@@ -42,6 +42,7 @@
     "./dance/reference-processing-wakeup": "./src/dance/reference-processing-wakeup.ts",
     "./use-cases/dance/reference-services": "./src/use-cases/dance/reference-services.ts",
     "./use-cases/dance/reference-authority": "./src/use-cases/dance/reference-authority.ts",
+    "./use-cases/dance/attempt-services": "./src/use-cases/dance/attempt-services.ts",
     "./data/registration-persistence": "./src/data/registration-persistence.ts",
     "./data/registration-workflow": "./src/data/registration-workflow.ts",
     "./data/registration-workflow-queue": "./src/data/registration-workflow-queue.ts",

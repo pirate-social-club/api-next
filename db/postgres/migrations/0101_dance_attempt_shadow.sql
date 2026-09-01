@@ -126,6 +126,40 @@ CREATE TRIGGER dance_sessions_change_guard
 BEFORE INSERT OR UPDATE OR DELETE ON dance_sessions
 FOR EACH ROW EXECUTE FUNCTION guard_dance_session();
 
+CREATE TABLE dance_attempt_actions (
+  actor_account_id TEXT NOT NULL REFERENCES users (user_id),
+  http_method TEXT NOT NULL CHECK (http_method = 'POST'),
+  endpoint_template TEXT NOT NULL CHECK (endpoint_template IN (
+    '/communities/:communityId/posts/:postId/dance/choreographies/:choreographyId/revisions/:revision/sessions',
+    '/communities/:communityId/dance/sessions/:sessionId/consent',
+    '/communities/:communityId/dance/sessions/:sessionId/upload-reservations',
+    '/communities/:communityId/dance/sessions/:sessionId/upload/finalize',
+    '/communities/:communityId/dance/sessions/:sessionId/grading-submissions'
+  )),
+  idempotency_key TEXT NOT NULL CHECK (is_dance_identifier(idempotency_key)),
+  request_hash TEXT NOT NULL CHECK (request_hash ~ '^[0-9a-f]{64}$'),
+  result_kind TEXT NOT NULL CHECK (result_kind = 'accepted'),
+  response_snapshot BYTEA NOT NULL,
+  response_snapshot_sha256 TEXT NOT NULL CHECK (
+    response_snapshot_sha256 ~ '^[0-9a-f]{64}$'
+    AND encode(sha256(response_snapshot), 'hex') = response_snapshot_sha256
+  ),
+  session_id TEXT REFERENCES dance_sessions (session_id),
+  committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  PRIMARY KEY (actor_account_id, http_method, endpoint_template, idempotency_key)
+);
+
+CREATE FUNCTION guard_dance_attempt_action() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP <> 'INSERT' THEN RAISE EXCEPTION 'Dance attempt actions are immutable'; END IF;
+  RETURN NEW;
+END
+$$;
+CREATE TRIGGER dance_attempt_actions_change_guard
+BEFORE INSERT OR UPDATE OR DELETE ON dance_attempt_actions
+FOR EACH ROW EXECUTE FUNCTION guard_dance_attempt_action();
+
 CREATE TABLE dance_session_consents (
   session_id TEXT PRIMARY KEY REFERENCES dance_sessions (session_id),
   account_id TEXT NOT NULL,

@@ -4726,6 +4726,15 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION guard_dance_attempt_action() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP <> 'INSERT' THEN RAISE EXCEPTION 'Dance attempt actions are immutable'; END IF;
+  RETURN NEW;
+END
+$$;
+
 CREATE FUNCTION guard_dance_attempt_evidence() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -19610,6 +19619,25 @@ CREATE TABLE custody_solvency_observations (
     CONSTRAINT custody_solvency_observations_token_address_check CHECK ((token_address ~ '^0x[0-9a-f]{40}$'::text))
 );
 
+CREATE TABLE dance_attempt_actions (
+    actor_account_id text NOT NULL,
+    http_method text NOT NULL,
+    endpoint_template text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    result_kind text NOT NULL,
+    response_snapshot bytea NOT NULL,
+    response_snapshot_sha256 text NOT NULL,
+    session_id text,
+    committed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT dance_attempt_actions_check CHECK (((response_snapshot_sha256 ~ '^[0-9a-f]{64}$'::text) AND (encode(sha256(response_snapshot), 'hex'::text) = response_snapshot_sha256))),
+    CONSTRAINT dance_attempt_actions_endpoint_template_check CHECK ((endpoint_template = ANY (ARRAY['/communities/:communityId/posts/:postId/dance/choreographies/:choreographyId/revisions/:revision/sessions'::text, '/communities/:communityId/dance/sessions/:sessionId/consent'::text, '/communities/:communityId/dance/sessions/:sessionId/upload-reservations'::text, '/communities/:communityId/dance/sessions/:sessionId/upload/finalize'::text, '/communities/:communityId/dance/sessions/:sessionId/grading-submissions'::text]))),
+    CONSTRAINT dance_attempt_actions_http_method_check CHECK ((http_method = 'POST'::text)),
+    CONSTRAINT dance_attempt_actions_idempotency_key_check CHECK (is_dance_identifier(idempotency_key)),
+    CONSTRAINT dance_attempt_actions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT dance_attempt_actions_result_kind_check CHECK ((result_kind = 'accepted'::text))
+);
+
 CREATE TABLE dance_attempt_evidence (
     attempt_id text NOT NULL,
     session_id text NOT NULL,
@@ -25604,6 +25632,9 @@ ALTER TABLE ONLY content_publication_outbox
 ALTER TABLE ONLY custody_solvency_observations
     ADD CONSTRAINT custody_solvency_observations_pkey PRIMARY KEY (observation_id);
 
+ALTER TABLE ONLY dance_attempt_actions
+    ADD CONSTRAINT dance_attempt_actions_pkey PRIMARY KEY (actor_account_id, http_method, endpoint_template, idempotency_key);
+
 ALTER TABLE ONLY dance_attempt_evidence
     ADD CONSTRAINT dance_attempt_evidence_attempt_id_evidence_digest_key UNIQUE (attempt_id, evidence_digest);
 
@@ -27722,6 +27753,8 @@ CREATE TRIGGER community_streaks_change_guard BEFORE DELETE OR UPDATE ON communi
 
 CREATE TRIGGER custody_solvency_observations_append_only BEFORE DELETE OR UPDATE ON custody_solvency_observations FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
 
+CREATE TRIGGER dance_attempt_actions_change_guard BEFORE INSERT OR DELETE OR UPDATE ON dance_attempt_actions FOR EACH ROW EXECUTE FUNCTION guard_dance_attempt_action();
+
 CREATE TRIGGER dance_attempt_evidence_change_guard BEFORE INSERT OR DELETE OR UPDATE ON dance_attempt_evidence FOR EACH ROW EXECUTE FUNCTION guard_dance_attempt_evidence();
 
 CREATE TRIGGER dance_attempt_evidence_finalize AFTER INSERT ON dance_attempt_evidence FOR EACH ROW EXECUTE FUNCTION finalize_dance_attempt_evidence();
@@ -29053,6 +29086,12 @@ ALTER TABLE ONLY custody_solvency_observations
 
 ALTER TABLE ONLY custody_solvency_observations
     ADD CONSTRAINT custody_solvency_observations_attestation_id_fkey FOREIGN KEY (attestation_id) REFERENCES megapot_deployment_attestations(attestation_id);
+
+ALTER TABLE ONLY dance_attempt_actions
+    ADD CONSTRAINT dance_attempt_actions_actor_account_id_fkey FOREIGN KEY (actor_account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY dance_attempt_actions
+    ADD CONSTRAINT dance_attempt_actions_session_id_fkey FOREIGN KEY (session_id) REFERENCES dance_sessions(session_id);
 
 ALTER TABLE ONLY dance_attempt_evidence
     ADD CONSTRAINT dance_attempt_evidence_attempt_id_session_id_fkey FOREIGN KEY (attempt_id, session_id) REFERENCES dance_attempts(attempt_id, session_id);
