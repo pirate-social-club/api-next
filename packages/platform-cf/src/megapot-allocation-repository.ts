@@ -12,6 +12,7 @@ import {
 } from "@pirate/application";
 import { Effect, type Layer } from "effect";
 import { keccak256, toBytes } from "viem";
+import { mapMegapotStorageFailure } from "./control-plane-error-classification.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 
@@ -20,31 +21,10 @@ const storage = (reason: MegapotAllocationStorageFailed["reason"]) =>
 const rejected = (reason: MegapotAllocationRejected["reason"]) =>
   new MegapotAllocationRejected({ reason });
 
-function mapError(error: ControlPlaneError): MegapotAllocationStorageFailed {
-  if (error._tag === "ControlPlaneTransactionOutcomeUnknown") return storage("outcome-unknown");
-  if (error._tag === "ControlPlaneOperationTimedOut" && error.outcomeCertainty === "unknown") {
-    return storage("outcome-unknown");
-  }
-  if (error._tag === "ControlPlaneStatementFailed" && error.sqlState === "23505") {
-    return storage("conflict");
-  }
-  if (error._tag === "ControlPlaneStatementFailed" && error.sqlState !== null) {
-    return storage("constraint");
-  }
-  return storage("unavailable");
-}
-
 const mapped = <A, E, R>(effect: Effect.Effect<A, E | ControlPlaneError, R>) =>
   effect.pipe(
     Effect.mapError((error) =>
-      typeof error === "object" && error !== null && "_tag" in error
-        ? error._tag === "ControlPlaneAcquireFailed" ||
-          error._tag === "ControlPlaneOperationTimedOut" ||
-          error._tag === "ControlPlaneStatementFailed" ||
-          error._tag === "ControlPlaneTransactionOutcomeUnknown"
-          ? mapError(error as ControlPlaneError)
-          : (error as E)
-        : (error as E),
+      mapMegapotStorageFailure<E, MegapotAllocationStorageFailed>(error, storage),
     ),
   );
 
