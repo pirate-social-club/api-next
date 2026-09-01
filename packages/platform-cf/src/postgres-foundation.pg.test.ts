@@ -1421,6 +1421,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "platform_sponsorship_budget_entries",
         "platform_sponsorship_budgets",
         "policy_versions",
+        "post_slug_aliases",
         "post_vote_actions",
         "post_votes",
         "posts",
