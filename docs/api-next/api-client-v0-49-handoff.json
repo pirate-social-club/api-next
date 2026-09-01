@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.49.0",
+  "releaseType": "public-post-canonical-route-contract",
+  "wireContract": "public-post-slug-routes",
+  "sourceCommit": "pending-review",
+  "supersedes": "0.48.0; preserves the Dance client release and additively exposes public Post lookup by logical slug and Post ID, bounded sitemap enumeration, guarded route results, and canonical paths.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.49.0.tgz",
+    "sha256": "afcdd70fe6a7a1c40b789236c8056f990d1c081222aac287e3fb8107c25278fc",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@8e33bb183103a155365352f0b9b33c5526bf608bad15feec8f3f7372bea7b246",
+    "openapiSha256": "8e33bb183103a155365352f0b9b33c5526bf608bad15feec8f3f7372bea7b246",
+    "clientSha256": "998d93c4bc73b5a91a365f21d6d4ea5e3bc40cd53cdf9a90e500c15b7b3e0b07"
+  },
+  "verification": {
+    "checkFresh": "pending after rebase",
+    "checkBreaking": {
+      "status": "pending after rebase",
+      "baselineCommit": "main",
+      "reason": "The three public Post operations and optional canonical path are additive."
+    },
+    "focusedContractSuites": "pending after rebase",
+    "fullUnitSuite": "pending after rebase",
+    "fullWorkerdSuite": "pending after rebase",
+    "postgres17": "pending after migration renumbering",
+    "packageVerifier": "pending after release-ledger registration",
+    "repositoryCheck": "pending after rebase"
+  }
+}
