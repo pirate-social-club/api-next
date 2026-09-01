@@ -18,6 +18,9 @@ import {
   type JobDefinition,
   type JobsWorkerEnv,
   default as jobsWorker,
+  KARAOKE_FINALIZATION_RECOVERY_JOB,
+  KARAOKE_FINALIZATION_RECOVERY_LANE,
+  KARAOKE_FINALIZATION_RECOVERY_READS,
   MEGAPOT_REWARDS_CYCLE_JOB,
   makeCommunityCatalogIntegrityJob,
   makeHnsRouteRevalidationComposition,
@@ -119,6 +122,43 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
         declaration.writes.some((table) => recoveryWrites.has(table)),
       ),
     ).toEqual([recovery]);
+  });
+
+  it("registers Karaoke recovery only when the external namespace is supplied", () => {
+    const namespace = {
+      getByName: () => ({
+        redriveFinalization: async () => ({ outcome: "idle" as const, rearmed: [] }),
+      }),
+    };
+    const disabled = makeJobsWorkerDeclarations(
+      {},
+      "https://rpc.test/",
+      { enabled: false },
+      "development",
+      null,
+      false,
+    );
+    expect(
+      disabled.some((declaration) => declaration.name === KARAOKE_FINALIZATION_RECOVERY_JOB),
+    ).toBe(false);
+
+    const enabled = makeJobsWorkerDeclarations(
+      {},
+      "https://rpc.test/",
+      { enabled: false },
+      "development",
+      null,
+      false,
+      undefined,
+      { namespace },
+    );
+    const recovery = enabled.find(
+      (declaration) => declaration.name === KARAOKE_FINALIZATION_RECOVERY_JOB,
+    );
+    expect(recovery?.lane).toBe(KARAOKE_FINALIZATION_RECOVERY_LANE);
+    expect(recovery?.reads).toEqual(KARAOKE_FINALIZATION_RECOVERY_READS);
+    expect(recovery?.writes).toEqual([]);
+    expect(recovery?.requiresAdapterSafety).toBe(true);
   });
 
   it("emits a persisted alert when expired spoken-answer object absence is unconfirmed", async () => {

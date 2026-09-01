@@ -27,6 +27,8 @@ import {
   ElevenLabsKaraokeSttAdapter,
   elevenLabsSpeechProviderPolicy,
 } from "./elevenlabs-karaoke-stt.ts";
+import type { KaraokeFinalizationRedriveResult } from "./karaoke-finalization-recovery.ts";
+import { karaokeFinalizationFailureTransition } from "./karaoke-finalization-retry.ts";
 import { makeControlPlaneKaraokeStore } from "./karaoke-repository.ts";
 import { type HyperdriveConnection, makeHyperdriveControlPlaneLayer } from "./postgres.ts";
 
@@ -90,6 +92,7 @@ export interface KaraokeAttemptDoBindings {
   readonly CONTROL_PLANE: HyperdriveConnection;
   readonly ELEVENLABS_ENABLE_LOGGING?: string;
   readonly ELEVENLABS_API_KEY?: string;
+  readonly KARAOKE_FINALIZATION_RECOVERY_ENABLED?: string;
   readonly LEARNER_AUDIO?: KaraokeR2Bucket;
 }
 
@@ -100,6 +103,7 @@ export interface KaraokeAttemptDoStub {
     ? (authority: A) => Promise<B>
     : never;
   readonly fetch: (request: Request) => Promise<Response>;
+  readonly redriveFinalization: () => Promise<KaraokeFinalizationRedriveResult>;
 }
 
 export interface KaraokeAttemptDoNamespace {
@@ -124,6 +128,8 @@ type Outbox = Readonly<{
   qualificationId: string;
   summary: NonNullable<KaraokeSessionState["summary"]>;
 }>;
+
+type FinalizationAxis = "score" | "recording";
 
 const canonicalJson = (value: unknown): string => {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
@@ -257,8 +263,46 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
       )`);
       this.sql.exec(`CREATE TABLE IF NOT EXISTS karaoke_outbox (
         id INTEGER PRIMARY KEY CHECK (id=1), payload_json TEXT NOT NULL,
-        score_state TEXT NOT NULL, recording_state TEXT NOT NULL
+        score_state TEXT NOT NULL, recording_state TEXT NOT NULL,
+        score_attempts INTEGER NOT NULL DEFAULT 0,
+        score_next_attempt_at INTEGER NOT NULL DEFAULT 0,
+        score_last_failure_at INTEGER,
+        recording_attempts INTEGER NOT NULL DEFAULT 0,
+        recording_next_attempt_at INTEGER NOT NULL DEFAULT 0,
+        recording_last_failure_at INTEGER
       )`);
+      const outboxColumns = new Set(
+        this.sql
+          .exec<{ name: string }>("PRAGMA table_info(karaoke_outbox)")
+          .toArray()
+          .map((column) => column.name),
+      );
+      if (!outboxColumns.has("score_attempts")) {
+        this.sql.exec(
+          "ALTER TABLE karaoke_outbox ADD COLUMN score_attempts INTEGER NOT NULL DEFAULT 0",
+        );
+      }
+      if (!outboxColumns.has("score_next_attempt_at")) {
+        this.sql.exec(
+          "ALTER TABLE karaoke_outbox ADD COLUMN score_next_attempt_at INTEGER NOT NULL DEFAULT 0",
+        );
+      }
+      if (!outboxColumns.has("score_last_failure_at")) {
+        this.sql.exec("ALTER TABLE karaoke_outbox ADD COLUMN score_last_failure_at INTEGER");
+      }
+      if (!outboxColumns.has("recording_attempts")) {
+        this.sql.exec(
+          "ALTER TABLE karaoke_outbox ADD COLUMN recording_attempts INTEGER NOT NULL DEFAULT 0",
+        );
+      }
+      if (!outboxColumns.has("recording_next_attempt_at")) {
+        this.sql.exec(
+          "ALTER TABLE karaoke_outbox ADD COLUMN recording_next_attempt_at INTEGER NOT NULL DEFAULT 0",
+        );
+      }
+      if (!outboxColumns.has("recording_last_failure_at")) {
+        this.sql.exec("ALTER TABLE karaoke_outbox ADD COLUMN recording_last_failure_at INTEGER");
+      }
       this.sql.exec(`CREATE TABLE IF NOT EXISTS karaoke_transport (
         id INTEGER PRIMARY KEY CHECK (id=1), reconnect_count INTEGER NOT NULL DEFAULT 0,
         pause_count INTEGER NOT NULL DEFAULT 0, seek_count INTEGER NOT NULL DEFAULT 0,
@@ -388,6 +432,36 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
       status: 101,
       webSocket: pair[0],
     } as ResponseInit & { webSocket: WebSocket });
+  }
+
+  async redriveFinalization(): Promise<KaraokeFinalizationRedriveResult> {
+    const session = one(this.sql, "SELECT id FROM karaoke_session WHERE id=1");
+    if (session === null) return { outcome: "missing", rearmed: [] };
+    const now = Date.now();
+    const outbox = one(this.sql, "SELECT id FROM karaoke_outbox WHERE id=1");
+    if (outbox === null) {
+      await this.runtimeCtx.storage.setAlarm(now);
+      return { outcome: "scheduled", rearmed: [] };
+    }
+    const rearmed: FinalizationAxis[] = [];
+    for (const axis of ["score", "recording"] as const) {
+      const changed = this.sql
+        .exec(
+          `UPDATE karaoke_outbox
+              SET ${axis}_state='pending', ${axis}_attempts=0,
+                  ${axis}_next_attempt_at=?
+            WHERE id=1 AND ${axis}_state='exhausted'
+          RETURNING id`,
+          now,
+        )
+        .toArray();
+      if (changed.length === 1) rearmed.push(axis);
+    }
+    const scheduled = await this.scheduleOutboxAlarm(now);
+    return {
+      outcome: scheduled ? "scheduled" : "idle",
+      rearmed,
+    };
   }
 
   async webSocketMessage(_socket: WebSocket, message: string | ArrayBuffer): Promise<void> {
@@ -775,6 +849,10 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
     );
   }
 
+  private finalizationExhaustionEnabled(): boolean {
+    return this.runtimeEnv.KARAOKE_FINALIZATION_RECOVERY_ENABLED === "true";
+  }
+
   private recordProviderRetention(retention: "not_stored" | "stored"): void {
     if (retention !== "stored") return;
     const changed = this.sql
@@ -798,8 +876,8 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
     const store = makeControlPlaneKaraokeStore(
       makeHyperdriveControlPlaneLayer(this.runtimeEnv.CONTROL_PLANE),
     );
-    let retry = false;
-    if (row.score_state === "pending") {
+    const now = Date.now();
+    if (row.score_state === "pending" && Number(row.score_next_attempt_at) <= now) {
       try {
         await Effect.runPromise(
           store.finalizeAttempt({
@@ -814,10 +892,10 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
         );
         this.sql.exec("UPDATE karaoke_outbox SET score_state='stored' WHERE id=1");
       } catch {
-        retry = true;
+        this.recordFinalizationFailure("score", Date.now());
       }
     }
-    if (row.recording_state === "pending") {
+    if (row.recording_state === "pending" && Number(row.recording_next_attempt_at) <= now) {
       const result = await this.finishArchive();
       try {
         await Effect.runPromise(
@@ -833,7 +911,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
         );
         this.sql.exec("UPDATE karaoke_outbox SET recording_state='stored' WHERE id=1");
       } catch {
-        retry = true;
+        this.recordFinalizationFailure("recording", Date.now());
       }
     }
     const current = one(
@@ -844,7 +922,44 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
       this.sql.exec("DELETE FROM karaoke_audio_chunk");
       return;
     }
-    if (retry) await this.runtimeCtx.storage.setAlarm(Date.now() + 30_000);
+    await this.scheduleOutboxAlarm(Date.now());
+  }
+
+  private recordFinalizationFailure(axis: FinalizationAxis, now: number): void {
+    const row = one(this.sql, `SELECT ${axis}_attempts AS attempts FROM karaoke_outbox WHERE id=1`);
+    if (row === null) return;
+    const transition = karaokeFinalizationFailureTransition({
+      attempts: Number(row.attempts),
+      now,
+      exhaustionEnabled: this.finalizationExhaustionEnabled(),
+    });
+    this.sql.exec(
+      `UPDATE karaoke_outbox
+          SET ${axis}_state=?, ${axis}_attempts=?, ${axis}_next_attempt_at=?,
+              ${axis}_last_failure_at=?
+        WHERE id=1`,
+      transition.state,
+      transition.attempts,
+      transition.nextAttemptAt,
+      transition.lastFailureAt,
+    );
+  }
+
+  private async scheduleOutboxAlarm(now: number): Promise<boolean> {
+    const row = one(
+      this.sql,
+      `SELECT min(next_attempt_at) AS next_attempt_at
+         FROM (
+           SELECT score_next_attempt_at AS next_attempt_at
+             FROM karaoke_outbox WHERE id=1 AND score_state='pending'
+           UNION ALL
+           SELECT recording_next_attempt_at AS next_attempt_at
+             FROM karaoke_outbox WHERE id=1 AND recording_state='pending'
+         )`,
+    );
+    if (row?.next_attempt_at === null || row?.next_attempt_at === undefined) return false;
+    await this.runtimeCtx.storage.setAlarm(Math.max(now, Number(row.next_attempt_at)));
+    return true;
   }
 }
 

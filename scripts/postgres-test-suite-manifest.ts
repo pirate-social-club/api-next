@@ -30,6 +30,7 @@ export const freshSchemaPostgresTestSuites = [
   "packages/platform-cf/src/handle-sales-repository.pg.test.ts",
   "packages/platform-cf/src/hns-host-persistence-repository.pg.test.ts",
   "packages/platform-cf/src/hns-root-import-repository.pg.test.ts",
+  "packages/platform-cf/src/karaoke-finalization-recovery.pg.test.ts",
   "packages/platform-cf/src/learner-audio-deletion-repository.pg.test.ts",
   "packages/platform-cf/src/localization-foundation.pg.test.ts",
   "packages/platform-cf/src/optional-route-v2-migration.pg.test.ts",
