@@ -265,6 +265,21 @@ export function makeDanceAttemptProcessingStore(
                 const terminal = yield* existingTerminal(tx, processingClaim.binding.attemptId);
                 if (terminal !== null) return "replayed" as const;
                 const fingerprint = outcome.fingerprint;
+                if (fingerprint === null) {
+                  if (outcome.gradeOutcome !== "rejected") {
+                    return yield* Effect.fail(invalid("complete"));
+                  }
+                  yield* insertEvidence(tx, {
+                    claim: processingClaim,
+                    outcome,
+                    fingerprintClaimId: null,
+                    matchedFingerprintClaimId: null,
+                  });
+                  return "committed" as const;
+                }
+                if (outcome.evidenceSummary === null) {
+                  return yield* Effect.fail(invalid("complete"));
+                }
                 const insertedClaim = yield* tx.execute<Row>({
                   label: "dance-attempt-processing.fingerprint.claim",
                   text: `INSERT INTO dance_replay_fingerprint_claims (

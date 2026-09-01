@@ -100,22 +100,29 @@ export const DanceAttemptProcessingOutcome = Schema.Struct({
   scoredWindowStartMs: NonNegativeInteger,
   scoredWindowEndMs: PositiveInteger,
   scoredDurationMs: Schema.Int.check(Schema.isBetween({ minimum: 6_000, maximum: 30_000 })),
-  evidenceSummary: EvidenceSummary,
+  evidenceSummary: Schema.NullOr(EvidenceSummary),
   evidenceDigest: Sha256,
-  fingerprint: FingerprintEvidence,
+  fingerprint: Schema.NullOr(FingerprintEvidence),
 }).check(
   Schema.makeFilter((outcome) => {
     if (outcome.scoredWindowEndMs - outcome.scoredWindowStartMs !== outcome.scoredDurationMs) {
       return "Expected an exact Dance terminal scoring interval";
     }
     if (
+      outcome.fingerprint !== null &&
       (outcome.fingerprint.matchScope === "same_account") !==
-      (outcome.fingerprint.accountScopeId !== null)
+        (outcome.fingerprint.accountScopeId !== null)
     ) {
       return "Expected the Dance fingerprint scope to bind its account identity";
     }
+    if (outcome.fingerprint !== null && outcome.evidenceSummary === null) {
+      return "Expected fingerprinted Dance evidence to include its summary";
+    }
     return outcome.gradeOutcome === "scored"
-      ? outcome.scoreBps !== null && outcome.rejectionCode === null
+      ? outcome.scoreBps !== null &&
+        outcome.rejectionCode === null &&
+        outcome.evidenceSummary !== null &&
+        outcome.fingerprint !== null
         ? undefined
         : "Expected scored Dance evidence"
       : outcome.scoreBps === null && outcome.rejectionCode !== null
@@ -206,8 +213,9 @@ function decodeOutcome(
         outcome.scoredWindowStartMs !== input.scoredWindowStartMs ||
         outcome.scoredWindowEndMs !== input.scoredWindowEndMs ||
         outcome.scoredDurationMs !== input.expectedScoredDurationMs ||
-        outcome.fingerprint.policyVersion !== input.policy.fingerprintPolicyVersion ||
-        outcome.fingerprint.keyVersion !== input.policy.fingerprintKeyVersion
+        (outcome.fingerprint !== null &&
+          (outcome.fingerprint.policyVersion !== input.policy.fingerprintPolicyVersion ||
+            outcome.fingerprint.keyVersion !== input.policy.fingerprintKeyVersion))
       ) {
         throw new Error("binding");
       }

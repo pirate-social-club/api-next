@@ -84,6 +84,15 @@ const outcome: DanceAttemptProcessingOutcome = {
   },
 };
 
+const preFingerprintRejection: DanceAttemptProcessingOutcome = {
+  ...outcome,
+  gradeOutcome: "rejected",
+  scoreBps: null,
+  rejectionCode: "multiple_people",
+  evidenceSummary: null,
+  fingerprint: null,
+};
+
 const unexpected = () => Effect.die(new Error("unexpected processing store call"));
 
 function store(overrides: Partial<DanceAttemptProcessingStore>): DanceAttemptProcessingStore {
@@ -145,6 +154,55 @@ describe("Dance attempt processing interpreter", () => {
     );
     expect(events).toEqual(["claim", "grade", "complete:1"]);
     expect(result).toEqual({ kind: "committed", status: "completed" });
+  });
+
+  test("commits an integrity rejection without manufacturing fingerprint evidence", async () => {
+    const result = await Effect.runPromise(
+      runDanceAttemptProcessing(runInput, {
+        store: store({
+          claim: () => Effect.succeed({ kind: "claimed", claim }),
+          complete: (_completedClaim, completedOutcome) => {
+            expect(completedOutcome).toMatchObject({
+              gradeOutcome: "rejected",
+              rejectionCode: "multiple_people",
+              evidenceSummary: null,
+              fingerprint: null,
+            });
+            return Effect.succeed("committed");
+          },
+        }),
+        adapter: { grade: () => Effect.succeed(preFingerprintRejection) },
+      }),
+    );
+    expect(result).toEqual({ kind: "committed", status: "completed" });
+  });
+
+  test("rejects a scored outcome that omits fingerprint evidence", async () => {
+    let completed = false;
+    const result = await Effect.runPromise(
+      runDanceAttemptProcessing(runInput, {
+        store: store({
+          claim: () => Effect.succeed({ kind: "claimed", claim }),
+          complete: () => {
+            completed = true;
+            return Effect.succeed("committed");
+          },
+          fail: ({ failureCode }) => {
+            expect(failureCode).toBe("grader_adapter_failure");
+            return Effect.succeed("retryable");
+          },
+        }),
+        adapter: {
+          grade: () =>
+            Effect.succeed({
+              ...outcome,
+              fingerprint: null,
+            } as unknown as DanceAttemptProcessingOutcome),
+        },
+      }),
+    );
+    expect(completed).toBe(false);
+    expect(result).toEqual({ kind: "retryable", status: "failed" });
   });
 
   test("turns a binding-mismatched adapter result into bounded failure", async () => {

@@ -18,7 +18,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_DANCE_ATTEMPT_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-dance-attempt-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-dance-attempt-suite-complete\n";
-const testCount = 9;
+const testCount = 10;
 let completedTestCount = 0;
 
 const HASH_A = "11".repeat(32);
@@ -335,6 +335,27 @@ function scoredOutcome(
   };
 }
 
+function preFingerprintRejection(
+  claim: Awaited<ReturnType<typeof claimProcessing>>,
+  evidenceDigest: string,
+) {
+  if (claim.kind !== "claimed") throw new Error("Dance processing claim was unavailable");
+  return {
+    version: "dance-attempt-processing-outcome-v1" as const,
+    binding: claim.claim.binding,
+    gradeOutcome: "rejected" as const,
+    qualificationOutcome: "suppressed_shadow" as const,
+    scoreBps: null,
+    rejectionCode: "multiple_people",
+    scoredWindowStartMs: claim.claim.frozenInput.scoredWindowStartMs,
+    scoredWindowEndMs: claim.claim.frozenInput.scoredWindowEndMs,
+    scoredDurationMs: claim.claim.frozenInput.expectedScoredDurationMs,
+    evidenceSummary: null,
+    evidenceDigest,
+    fingerprint: null,
+  };
+}
+
 function processingStore(schema: string) {
   return makeDanceAttemptProcessingStore(
     makeDirectPostgresControlPlaneLayer(connectionForSchema(connectionString as string, schema)),
@@ -562,6 +583,37 @@ suite("Dance attempt shadow persistence", () => {
         qualification_outcome: "suppressed_shadow",
         grade_outcome: "scored",
         outbox_state: "delivered",
+      });
+      completedTestCount += 1;
+    });
+  });
+
+  test("commits pre-fingerprint integrity rejection without invented evidence", async () => {
+    await withSchema("processing_integrity_reject", async (admin, schema) => {
+      await createPendingAttempt(admin, "1");
+      const store = processingStore(schema);
+      const claimed = await claimProcessing(schema, "attempt-1", "worker-a");
+      if (claimed.kind !== "claimed") throw new Error("attempt was not claimed");
+      expect(
+        await Effect.runPromise(
+          store.complete(claimed.claim, preFingerprintRejection(claimed, HASH_C)),
+        ),
+      ).toBe("committed");
+      const terminal = await admin.query(
+        `SELECT a.state,e.grade_outcome,e.rejection_code,e.evidence_summary,
+                e.fingerprint_claim_id,e.matched_fingerprint_claim_id,
+                (SELECT count(*)::int FROM dance_replay_fingerprint_claims) AS fingerprints
+           FROM dance_attempts a JOIN dance_attempt_evidence e USING (attempt_id)
+          WHERE a.attempt_id='attempt-1'`,
+      );
+      expect(terminal.rows[0]).toEqual({
+        state: "rejected",
+        grade_outcome: "rejected",
+        rejection_code: "multiple_people",
+        evidence_summary: null,
+        fingerprint_claim_id: null,
+        matched_fingerprint_claim_id: null,
+        fingerprints: 0,
       });
       completedTestCount += 1;
     });

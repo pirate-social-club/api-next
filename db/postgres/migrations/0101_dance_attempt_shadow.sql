@@ -465,8 +465,14 @@ CREATE TABLE dance_attempt_evidence (
       AND evidence_summary IS NOT NULL AND fingerprint_claim_id IS NOT NULL
       AND matched_fingerprint_claim_id IS NULL)
     OR (grade_outcome = 'rejected' AND score_bps IS NULL AND rejection_code IS NOT NULL
-      AND evidence_summary IS NOT NULL
-      AND NOT (fingerprint_claim_id IS NOT NULL AND matched_fingerprint_claim_id IS NOT NULL))
+      AND (
+        (evidence_summary IS NULL AND fingerprint_claim_id IS NULL
+          AND matched_fingerprint_claim_id IS NULL)
+        OR (evidence_summary IS NOT NULL AND (
+          (fingerprint_claim_id IS NOT NULL AND matched_fingerprint_claim_id IS NULL)
+          OR (fingerprint_claim_id IS NULL AND matched_fingerprint_claim_id IS NOT NULL)
+        ))
+      ))
     OR (grade_outcome = 'failed' AND score_bps IS NULL AND rejection_code IS NOT NULL
       AND evidence_summary IS NULL AND fingerprint_claim_id IS NULL
       AND matched_fingerprint_claim_id IS NULL)
