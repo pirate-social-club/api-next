@@ -8,3 +8,4 @@
 export const testing = "api-next/testing: lane B (001 §4)" as const;
 export * from "./community-schema.ts";
 export * from "./dance/attempt-feature-fixtures.ts";
+export * from "./dance/attempt-grader-fake.ts";
