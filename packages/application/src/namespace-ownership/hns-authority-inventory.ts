@@ -9,6 +9,7 @@ export const HNS_AUTHORITY_CAPABILITY_SET_VERSION =
   "pirate-hns-authority-capability-set-v1" as const;
 export const HNS_AUTHORITY_INVENTORY_MAX_BYTES = 65_536 as const;
 export const HNS_AUTHORITY_INVENTORY_MAX_ENTRIES = 256 as const;
+export const HNS_AUTHORITY_EVIDENCE_MAX_LIFETIME_SECONDS = 7 * 86_400;
 
 const exactParseOptions = { onExcessProperty: "error" } as const;
 const encoder = new TextEncoder();
@@ -479,7 +480,7 @@ export function validateHnsAuthorityInventoryAtDatabaseTime(
   if (
     !Number.isSafeInteger(input.maximum_inventory_lifetime_seconds) ||
     input.maximum_inventory_lifetime_seconds <= 0 ||
-    input.maximum_inventory_lifetime_seconds > 86_400 ||
+    input.maximum_inventory_lifetime_seconds > HNS_AUTHORITY_EVIDENCE_MAX_LIFETIME_SECONDS ||
     !Number.isFinite(now) ||
     new Date(now).toISOString() !== input.database_now ||
     publishedAt > now ||

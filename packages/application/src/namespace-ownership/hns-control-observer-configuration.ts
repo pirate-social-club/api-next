@@ -1,5 +1,6 @@
 import { Sha256Hex, type Sha256Hex as Sha256HexValue } from "@pirate/domain/verification";
 import { Option, Schema } from "effect";
+import { HNS_AUTHORITY_EVIDENCE_MAX_LIFETIME_SECONDS } from "./hns-authority-inventory.ts";
 import type { HnsOwnershipSource } from "./hns-control-observer.ts";
 import { decodeStrictHnsJsonBytes, HnsOwnerResponseDecodeError } from "./hns-evidence.ts";
 
@@ -118,7 +119,7 @@ const AuthorityInventorySchema = Schema.Struct({
   registry_reference: RegistryReference,
   maximum_inventory_lifetime_seconds: integerRange(
     1,
-    86_400,
+    HNS_AUTHORITY_EVIDENCE_MAX_LIFETIME_SECONDS,
     "maximum authority inventory lifetime seconds",
   ),
   response_max_bytes: integerRange(1, 65_536, "authority inventory response byte limit"),

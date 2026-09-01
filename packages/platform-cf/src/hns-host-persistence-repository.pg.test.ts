@@ -5,6 +5,7 @@ import {
   encodeHnsDnsHealthDocumentV1,
   encodeHnsDnsZoneActivationDocumentV1,
   encodeHnsDnsZonePersistenceDocumentV1,
+  HNS_AUTHORITY_EVIDENCE_MAX_LIFETIME_SECONDS,
   HNS_DNS_ZONE_ACTIVATION_DOCUMENT_VERSION,
   isHnsCommunityAppHostAuthorityActive,
   revokeOperatorManagedRoute,
@@ -304,7 +305,7 @@ suite("HNS first-party host persistence on PostgreSQL 17", () => {
         ds_authenticates_zone: true,
         retained_zone_digest_matches: true,
         gateway_healthy: true,
-        valid_for_seconds: 3600,
+        valid_for_seconds: HNS_AUTHORITY_EVIDENCE_MAX_LIFETIME_SECONDS,
       } as const;
       await Effect.runPromise(
         repository.store.recordDnsZoneHealth(encodeHnsDnsHealthDocumentV1(healthy)),
@@ -356,7 +357,11 @@ suite("HNS first-party host persistence on PostgreSQL 17", () => {
       expect(concurrent.filter((state) => state === null)).toHaveLength(4);
 
       const future = await admin.query(
-        "SELECT * FROM resolve_hns_community_app_host_authority_v1('app.jazleeuw', clock_timestamp() + interval '2 hours')",
+        `SELECT * FROM resolve_hns_community_app_host_authority_v1(
+           'app.jazleeuw',
+           clock_timestamp() + ($1::integer + 1) * interval '1 second'
+         )`,
+        [HNS_AUTHORITY_EVIDENCE_MAX_LIFETIME_SECONDS],
       );
       expect(future.rows[0]).toMatchObject({
         stable_chain_delegation_matches: false,
