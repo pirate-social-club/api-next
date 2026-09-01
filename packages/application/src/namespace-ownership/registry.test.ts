@@ -263,10 +263,10 @@ describe("namespace ownership provider registry", () => {
   test("rejects duplicate provider authority for one family", async () => {
     await expect(
       Effect.runPromise(
-        makeNamespaceOwnershipProviderRegistry([
-          adapter(),
-          adapter({ providerId: "test.other-hns-owner" }),
-        ]),
+        makeNamespaceOwnershipProviderRegistry(
+          [adapter(), adapter({ providerId: "test.other-hns-owner" })],
+          { now: () => now },
+        ),
       ),
     ).rejects.toBeInstanceOf(NamespaceOwnershipProviderDuplicate);
   });

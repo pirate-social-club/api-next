@@ -21,6 +21,8 @@ import {
 } from "./fake-provider.ts";
 import { runProviderConformance, runProviderTransportConformance } from "./provider-conformance.ts";
 
+const REGISTRY_OPTIONS = { now: () => Date.parse("2026-08-17T00:00:00.000Z") } as const;
+
 const FAKE_START_INPUT: VerificationProviderStartInput = {
   actor_id: "user-1",
   intent_id: "intent-1",
@@ -60,9 +62,10 @@ const fakeSubmission = (request_hash: string) =>
 
 async function registered(mode?: FakeProviderMode) {
   return Effect.runPromise(
-    makeVerificationProviderRegistry([
-      makeFakeVerificationProvider(mode === undefined ? {} : { mode }),
-    ]),
+    makeVerificationProviderRegistry(
+      [makeFakeVerificationProvider(mode === undefined ? {} : { mode })],
+      REGISTRY_OPTIONS,
+    ),
   );
 }
 
@@ -348,16 +351,19 @@ describe("verification provider adapter boundary", () => {
 
   test("does not accept document assurance as holder liveness", async () => {
     const registry = await Effect.runPromise(
-      makeVerificationProviderRegistry([
-        makeFakeVerificationProvider({
-          manifest: {
-            ...FAKE_PROVIDER_MANIFEST,
-            claim_ids: ["human.live"],
-            claim_capabilities: [{ claim_id: "human.live", request_modes: ["dynamic"] }],
-            assurance_levels: ["holder_live", "document_zk"],
-          },
-        }),
-      ]),
+      makeVerificationProviderRegistry(
+        [
+          makeFakeVerificationProvider({
+            manifest: {
+              ...FAKE_PROVIDER_MANIFEST,
+              claim_ids: ["human.live"],
+              claim_capabilities: [{ claim_id: "human.live", request_modes: ["dynamic"] }],
+              assurance_levels: ["holder_live", "document_zk"],
+            },
+          }),
+        ],
+        REGISTRY_OPTIONS,
+      ),
     );
     const provider = await Effect.runPromise(registry.resolve(FAKE_PROVIDER_MANIFEST.provider_id));
     const humanLiveInput: VerificationProviderStartInput = {
@@ -441,7 +447,10 @@ describe("verification provider adapter boundary", () => {
 
   test("supports a native no-subject provider with receipt-bound assertions", async () => {
     const registry = await Effect.runPromise(
-      makeVerificationProviderRegistry([makeFakeVerificationProvider({ mode: "no-subject" })]),
+      makeVerificationProviderRegistry(
+        [makeFakeVerificationProvider({ mode: "no-subject" })],
+        REGISTRY_OPTIONS,
+      ),
     );
     const provider = await Effect.runPromise(
       registry.resolve(NO_SUBJECT_FAKE_PROVIDER_MANIFEST.provider_id),
@@ -512,14 +521,16 @@ describe("verification provider adapter boundary", () => {
   test("rejects duplicate IDs and unknown IDs through the registry", async () => {
     const adapter = makeFakeVerificationProvider();
     const duplicate = await Effect.runPromiseExit(
-      makeVerificationProviderRegistry([adapter, adapter]),
+      makeVerificationProviderRegistry([adapter, adapter], REGISTRY_OPTIONS),
     );
     expect(failureOf(duplicate)).toMatchObject({
       _tag: "VerificationProviderDuplicate",
       provider_id: FAKE_PROVIDER_MANIFEST.provider_id,
     });
 
-    const registry = await Effect.runPromise(makeVerificationProviderRegistry([adapter]));
+    const registry = await Effect.runPromise(
+      makeVerificationProviderRegistry([adapter], REGISTRY_OPTIONS),
+    );
     const unknown = await Effect.runPromiseExit(registry.resolve("missing.provider"));
     expect(failureOf(unknown)).toMatchObject({
       _tag: "VerificationProviderUnknown",

@@ -81,7 +81,8 @@ export function makePlatformNamespaceOwnershipProviderRegistry(
 > {
   const adapter = configuredHnsAdapter(options);
   const adapters = adapter === undefined ? [] : [adapter];
-  const registryOptions: NamespaceOwnershipProviderRegistryOptions =
-    options.now === undefined ? {} : { now: options.now };
+  const registryOptions: NamespaceOwnershipProviderRegistryOptions = {
+    now: options.now ?? Date.now,
+  };
   return makeNamespaceOwnershipProviderRegistry(adapters, registryOptions);
 }

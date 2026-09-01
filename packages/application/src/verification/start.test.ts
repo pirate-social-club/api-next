@@ -16,6 +16,8 @@ import {
   VerificationStartRejected,
 } from "./start.ts";
 
+const REGISTRY_OPTIONS = { now: () => Date.parse("2026-08-17T00:00:00.000Z") } as const;
+
 const MANIFEST: ProofProviderManifest = {
   provider_id: "test.provider",
   manifest_version: "1",
@@ -117,7 +119,10 @@ async function services(input: {
   readonly startCalls?: { value: number };
 }) {
   const registry = await Effect.runPromise(
-    makeVerificationProviderRegistry([adapter(input.plan, input.startFailure, input.startCalls)]),
+    makeVerificationProviderRegistry(
+      [adapter(input.plan, input.startFailure, input.startCalls)],
+      REGISTRY_OPTIONS,
+    ),
   );
   const commits: ProviderSessionStart[] = [];
   const reservations: VerificationSessionStartReservationInput[] = [];
@@ -391,23 +396,26 @@ describe("verification start use case", () => {
     let releases = 0;
     const base = adapter();
     const registry = await Effect.runPromise(
-      makeVerificationProviderRegistry([
-        {
-          ...base,
-          start: (input) => {
-            attempts += 1;
-            if (attempts === 1) {
-              return Effect.fail(
-                new VerificationProviderUnavailable({
-                  provider_id: MANIFEST.provider_id,
-                  operation: "start",
-                }),
-              );
-            }
-            return base.start(input);
+      makeVerificationProviderRegistry(
+        [
+          {
+            ...base,
+            start: (input) => {
+              attempts += 1;
+              if (attempts === 1) {
+                return Effect.fail(
+                  new VerificationProviderUnavailable({
+                    provider_id: MANIFEST.provider_id,
+                    operation: "start",
+                  }),
+                );
+              }
+              return base.start(input);
+            },
           },
-        },
-      ]),
+        ],
+        REGISTRY_OPTIONS,
+      ),
     );
     const store = {
       reserve: () =>

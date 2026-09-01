@@ -914,18 +914,18 @@ export class VerificationProviderRegistry extends Context.Service<
 >()("@pirate/application/verification/VerificationProviderRegistry") {}
 
 export interface VerificationProviderRegistryOptions {
-  /** Injectable for deterministic expiry tests and request-scoped clocks. */
-  readonly now?: () => number;
+  /** Explicit request-scoped clock; runtime adapters bind the system clock. */
+  readonly now: () => number;
   /** Additional deployment-specific credential headers are always stripped. */
   readonly callbackCredentialHeaders?: readonly string[] | ReadonlySet<string>;
 }
 
 export function makeVerificationProviderRegistry(
   adapters: readonly VerificationProviderAdapter[],
-  options: VerificationProviderRegistryOptions = {},
+  options: VerificationProviderRegistryOptions,
 ): Effect.Effect<VerificationProviderRegistryService, VerificationProviderRegistryError> {
   return Effect.gen(function* () {
-    const now = options.now ?? Date.now;
+    const now = options.now;
     const credentials = credentialHeaderSet(options.callbackCredentialHeaders);
     const registered = new Map<string, VerificationProviderAdapter>();
     for (const adapter of adapters) {
@@ -956,7 +956,7 @@ export function makeVerificationProviderRegistry(
 
 export function makeVerificationProviderRegistryLayer(
   adapters: readonly VerificationProviderAdapter[],
-  options: VerificationProviderRegistryOptions = {},
+  options: VerificationProviderRegistryOptions,
 ): Layer.Layer<VerificationProviderRegistry, VerificationProviderRegistryError> {
   return Layer.effect(
     VerificationProviderRegistry,

@@ -14,6 +14,8 @@ import {
   startNamespaceOwnership,
 } from "./start.ts";
 
+const REGISTRY_OPTIONS = { now: () => Date.parse("2026-08-20T12:00:00.000Z") } as const;
+
 const authority: NamespaceOwnershipStartAuthority = {
   actor_id: "actor-1",
   creation_intent_id: "intent-1",
@@ -124,7 +126,10 @@ async function harness(
   const calls = { plan: 0, start: 0 };
   const events: string[] = [];
   const registry = await Effect.runPromise(
-    makeNamespaceOwnershipProviderRegistry([provider(calls, events, options.failure)]),
+    makeNamespaceOwnershipProviderRegistry(
+      [provider(calls, events, options.failure)],
+      REGISTRY_OPTIONS,
+    ),
   );
   let resolveCalls = 0;
   let releases = 0;
