@@ -133,9 +133,14 @@ export interface KaraokeAttemptStore {
 }
 
 export interface KaraokeRuntimeGateway {
-  readonly initialize: (
-    authority: KaraokeSessionAuthority,
-  ) => Effect.Effect<Readonly<{ token: string; tokenExpiresAt: number }>, KaraokeFailure>;
+  readonly initialize: (authority: KaraokeSessionAuthority) => Effect.Effect<
+    Readonly<{
+      providerRetention: KaraokeProviderRetention;
+      token: string;
+      tokenExpiresAt: number;
+    }>,
+    KaraokeFailure
+  >;
 }
 
 const rejected = (reason: KaraokeCommandRejected["reason"]) =>
@@ -189,7 +194,7 @@ export const makeKaraokeService = (input: {
           kind: "enabled",
           provider: authority.scoringProvider,
           model: authority.scoringModel,
-          provider_retention: "not_stored",
+          provider_retention: credential.providerRetention,
           platform_retention: "private_learning",
           voice_coach_enabled: false,
         },

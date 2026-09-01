@@ -46,7 +46,11 @@ describe("Karaoke service", () => {
       publicOrigin: "https://api.example.test",
       runtime: {
         initialize: () =>
-          Effect.succeed({ token: "one time", tokenExpiresAt: Date.UTC(2026, 7, 29, 10, 5) }),
+          Effect.succeed({
+            providerRetention: "stored" as const,
+            token: "one time",
+            tokenExpiresAt: Date.UTC(2026, 7, 29, 10, 5),
+          }),
       },
       store,
     });
@@ -78,7 +82,7 @@ describe("Karaoke service", () => {
     );
     expect(result.scoring_policy).toMatchObject({
       platform_retention: "private_learning",
-      provider_retention: "not_stored",
+      provider_retention: "stored",
       provider: "elevenlabs",
     });
     expect(result.session_expires_at - Date.UTC(2026, 7, 29, 10)).toBe(30 * 60 * 1_000);
