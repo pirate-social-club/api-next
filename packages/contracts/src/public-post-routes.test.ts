@@ -22,7 +22,6 @@ describe("public post canonical route contracts", () => {
       method: "GET",
       path: "/public/posts/by-slug",
       auth: Auth.user({ optionalUser: true }),
-      errors: [expect.anything(), expect.anything(), expect.anything(), expect.anything()],
     });
     expect(GetPublicPostCanonicalRouteById).toMatchObject({
       method: "GET",
