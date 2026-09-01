@@ -29,7 +29,7 @@ const migrations = await loadPostgresMigrations();
 const foundationMigrationVersion = "0059_community_moderation_authority_policy.sql";
 const cutoverMigrationVersion = "0061_openai_moderation_driver_cutover.sql";
 const runtimeMigrationVersion = "0065_text_ratings_age_access.sql";
-const postSlugMigrationVersion = "0100_public_post_slug_aliases.sql";
+const postSlugMigrationVersion = "0103_public_post_slug_aliases.sql";
 const heldVisibilityMigrationVersion = "0104_text_held_revision_visibility.sql";
 const foundationMigrationIndex = migrations.findIndex(
   (migration) => migration.version === foundationMigrationVersion,

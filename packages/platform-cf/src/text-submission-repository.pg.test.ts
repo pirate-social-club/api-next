@@ -52,7 +52,7 @@ const cutoverMigrationIndex = migrations.findIndex(
 if (cutoverMigrationIndex < 1) throw new Error("OpenAI moderation cutover migration is missing");
 const historicalV1Migrations = migrations.slice(0, cutoverMigrationIndex);
 const publicPostSlugMigration = migrations.find(
-  (migration) => migration.version === "0100_public_post_slug_aliases.sql",
+  (migration) => migration.version === "0103_public_post_slug_aliases.sql",
 );
 const heldVisibilityMigration = migrations.find(
   (migration) => migration.version === "0104_text_held_revision_visibility.sql",
