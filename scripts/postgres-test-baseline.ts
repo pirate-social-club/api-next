@@ -52,6 +52,7 @@ type ReusableSchemaState = {
   active: boolean;
   initialized: boolean;
   catalogFingerprint: string | undefined;
+  queue: Promise<void>;
 };
 
 const reusableSchemas = new Map<string, ReusableSchemaState>();
@@ -76,6 +77,7 @@ function reusableSchemaState(
     active: false,
     initialized: false,
     catalogFingerprint: undefined,
+    queue: Promise.resolve(),
   };
   reusableSchemas.set(key, state);
   afterAll(() => cleanupReusableSchema(state));
@@ -153,25 +155,30 @@ export async function withReusablePostgresTestSchema<A>(options: {
   }) => Promise<A>;
 }): Promise<A> {
   const state = reusableSchemaState(options.baseConnectionString, options.schemaName);
-  if (state.active) {
-    throw new Error(
-      `Reusable PostgreSQL test schema ${state.schema} cannot run concurrent fixture bodies`,
-    );
-  }
+  const precedingFixture = state.queue;
+  let releaseFixture: () => void = () => undefined;
+  state.queue = new Promise<void>((resolve) => {
+    releaseFixture = resolve;
+  });
+  await precedingFixture;
   state.active = true;
   const admin = new Client({ connectionString: state.baseConnectionString });
-  await admin.connect();
   try {
-    await prepareReusableSchema(state, admin);
-    return await options.use({
-      admin,
-      connectionString: state.scopedConnectionString,
-      schema: state.schema,
-    });
+    await admin.connect();
+    try {
+      await prepareReusableSchema(state, admin);
+      return await options.use({
+        admin,
+        connectionString: state.scopedConnectionString,
+        schema: state.schema,
+      });
+    } finally {
+      await admin.query("ROLLBACK").catch(() => undefined);
+      await admin.query("SET search_path TO public").catch(() => undefined);
+      await admin.end().catch(() => undefined);
+    }
   } finally {
-    await admin.query("ROLLBACK").catch(() => undefined);
-    await admin.query("SET search_path TO public").catch(() => undefined);
-    await admin.end();
     state.active = false;
+    releaseFixture();
   }
 }

@@ -55,7 +55,9 @@ describe("PostgreSQL test discovery", () => {
 
   test("keeps the CI matrix and runner shard count in lockstep", async () => {
     const workflow = await Bun.file(new URL("../.github/workflows/ci.yml", import.meta.url)).text();
-    const generalJob = workflow.match(/\n  postgres17-general:\n([\s\S]*?)\n  postgres17:\n/u)?.[1];
+    const generalJob = workflow.match(
+      /\n {2}postgres17-general:\n([\s\S]*?)\n {2}postgres17:\n/u,
+    )?.[1];
     const matrix = generalJob?.match(/shard:\s*\[([^\]]+)\]/u)?.[1];
     const configuredCount = generalJob?.match(
       /CONTROL_PLANE_POSTGRES_TEST_SHARD_COUNT:\s*"(\d+)"/u,
