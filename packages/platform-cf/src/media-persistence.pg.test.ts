@@ -33,7 +33,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-media-persistence-suite-complete\n";
-const testCount = 24;
+const testCount = 25;
 let completedTestCount = 0;
 const actor = "media_pg_actor",
   moderator = "media_pg_moderator",
@@ -2506,6 +2506,60 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     });
     completedTestCount += 1;
   }, 40_000);
+  test("allocates an opaque alias while reconciling an already-published adult song", async () => {
+    await withCurrentSchema(async (admin, connection) => {
+      const adultAnalysis: TrustedSongAnalysis = {
+        ...analysis,
+        contentModeration: {
+          ...analysis.contentModeration,
+          resultingContentRating: "adult_18",
+        },
+      };
+      const adultDecision: PublicationDecision = {
+        ...decision,
+        contentRating: "adult_18",
+      };
+      await createThroughDecision(connection, adultDecision, adultAnalysis);
+      const postId = `media-post-${operation}`;
+      await admin.query(
+        "INSERT INTO posts (community_id,post_id,author_user_id,post_type,status,visibility,title,created_at,updated_at,idempotency_key,idempotency_body_hash,author_persona_id,author_declared_rating,content_rating) VALUES ($1,$2,$3,'song','published','public','Fixture song',clock_timestamp(),clock_timestamp(),'reconciled-post',$4,$5,'general','adult_18')",
+        [community, postId, actor, requestHash, personaFor(connection)],
+      );
+
+      expect(
+        await run(connection, (store) =>
+          store.publish({
+            ...command(
+              connection,
+              "/media-post-submissions/:submissionId/publish",
+              "publish-reconcile",
+            ),
+            expectedCreationRevision: 2,
+            expectedAudioRevision: 1,
+            expectedAnalysisRevision: 1,
+            expectedDecisionRevision: 1,
+            postId,
+          }),
+        ),
+      ).toMatchObject({ kind: "committed", postId });
+      const aliases = await admin.query<{
+        readonly slug: string;
+        readonly post_id: string;
+        readonly slug_policy_version: string;
+      }>("SELECT slug,post_id,slug_policy_version FROM post_slug_aliases WHERE post_id=$1", [
+        postId,
+      ]);
+      expect(aliases.rows).toHaveLength(1);
+      expect(aliases.rows[0]).toMatchObject({
+        post_id: postId,
+        slug_policy_version: "post-slug-v1",
+      });
+      expect(aliases.rows[0]?.slug).toMatch(/^song-[0-9abcdefghjkmnpqrstvwxyz]{10}$/u);
+      expect(aliases.rows[0]?.slug).not.toBe("fixture-song");
+    });
+    completedTestCount += 1;
+  }, 40_000);
+
   test("publishes explicit classified lyrics with their truthful label", async () => {
     await withCurrentSchema(async (admin, connection) => {
       const longDialogue = Array.from({ length: 33 }, (_, index) => `dialogue${index + 1}`).join(

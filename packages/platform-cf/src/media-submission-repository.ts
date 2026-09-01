@@ -10,6 +10,10 @@ import {
   deterministicDataRegistrationOutboxId,
   deterministicDataRegistrationWorkflowId,
 } from "@pirate/application/data/registration-persistence";
+import {
+  createOpaquePostSlugCandidate,
+  createPostSlugCandidate,
+} from "@pirate/application/post-slug";
 import { SONG_LYRICS_TEXT_MAX_LENGTH } from "@pirate/contracts";
 import { Data, Effect } from "effect";
 import {
@@ -30,6 +34,10 @@ import {
   transitionMediaSubmission,
 } from "../../domain/src/media-submission.ts";
 import { materializeAcceptedLyricLineCatalog } from "./lyric-line-catalog.ts";
+import {
+  ensurePostSlugAliasInTransaction,
+  PublicPostSlugRepositoryError,
+} from "./public-post-slug-repository.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 type Bytes = Uint8Array;
@@ -2963,7 +2971,7 @@ export function makeControlPlaneMediaSubmissionRepository(
           });
           const existing = yield* tx.execute<Row>({
             label: "media-publish.post.lookup",
-            text: "SELECT author_user_id,post_type,status,visibility,title FROM posts WHERE community_id=$1 AND post_id=$2 FOR UPDATE",
+            text: "SELECT author_user_id,post_type,status,visibility,title,content_rating FROM posts WHERE community_id=$1 AND post_id=$2 FOR UPDATE",
             values: [current.communityId, ownedPostId],
             readonly: false,
           });
@@ -2990,11 +2998,24 @@ export function makeControlPlaneMediaSubmissionRepository(
             existing.rows[0]?.post_type !== "song" ||
             existing.rows[0]?.status !== "published" ||
             existing.rows[0]?.visibility !== "public" ||
-            existing.rows[0]?.title !== current.title
+            existing.rows[0]?.title !== current.title ||
+            existing.rows[0]?.content_rating !== (current.decision?.contentRating ?? "general")
           )
             return yield* Effect.fail(
               fail("publish", "post-ownership", { submissionId: current.submissionId }),
             );
+          const contentRating = current.decision?.contentRating ?? "general";
+          const candidate =
+            contentRating === "general"
+              ? createPostSlugCandidate({ source: current.title, postType: "song" })
+              : createOpaquePostSlugCandidate("song");
+          yield* ensurePostSlugAliasInTransaction(tx, { postId: ownedPostId, candidate }).pipe(
+            Effect.mapError((error) =>
+              error instanceof PublicPostSlugRepositoryError
+                ? fail("publish", "invalid-row", { submissionId: current.submissionId })
+                : error,
+            ),
+          );
           const feedItemId = `media-feed-${current.operationId}`;
           yield* tx.execute({
             label: "media-publish.home-feed.insert",

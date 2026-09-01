@@ -24939,9 +24939,11 @@ CREATE TABLE text_content_held_revisions (
     body text,
     content_sha256 text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
+    visibility text DEFAULT 'public'::text NOT NULL,
     CONSTRAINT text_content_held_revisions_content_present CHECK ((((title IS NOT NULL) AND (btrim(title) <> ''::text)) OR ((body IS NOT NULL) AND (btrim(body) <> ''::text)))),
     CONSTRAINT text_content_held_revisions_content_sha256_check CHECK ((content_sha256 ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT text_content_held_revisions_identifiers_not_blank CHECK (((btrim(held_revision_id) <> ''::text) AND (held_revision_id = btrim(held_revision_id))))
+    CONSTRAINT text_content_held_revisions_identifiers_not_blank CHECK (((btrim(held_revision_id) <> ''::text) AND (held_revision_id = btrim(held_revision_id)))),
+    CONSTRAINT text_content_held_revisions_visibility_check CHECK ((visibility = ANY (ARRAY['public'::text, 'members_only'::text])))
 );
 
 CREATE TABLE text_content_submissions (
