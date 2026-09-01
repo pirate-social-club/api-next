@@ -1159,6 +1159,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema()",
       );
       expect(tables.rows.map((row) => row.table_name).sort()).toEqual([
+        // POSTGRES_FOUNDATION_TABLE_CATALOG_START
         "account_aliases",
         "account_language_preferences",
         "account_minimum_age_attestations",
@@ -1258,14 +1259,25 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "community_streaks",
         "content_publication_outbox",
         "custody_solvency_observations",
+        "dance_attempt_actions",
+        "dance_attempt_evidence",
+        "dance_attempt_operator_items",
+        "dance_attempt_outbox",
+        "dance_attempts",
         "dance_choreographies",
         "dance_choreography_revisions",
+        "dance_grading_usage_counters",
+        "dance_media_cleanup_operations",
         "dance_reference_actions",
         "dance_reference_artifacts",
         "dance_reference_outbox",
         "dance_reference_processing_attempts",
         "dance_reference_processing_requests",
+        "dance_replay_fingerprint_claims",
+        "dance_session_consents",
+        "dance_sessions",
         "dance_song_segments",
+        "dance_upload_reservations",
         "data_registration_artifacts",
         "data_registration_attempt_transitions",
         "data_registration_command_replays",
@@ -1472,6 +1484,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "users",
         "verification_completion_attempts",
         "verification_start_reservations",
+        // POSTGRES_FOUNDATION_TABLE_CATALOG_END
       ]);
 
       await admin.query(
