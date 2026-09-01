@@ -2,8 +2,11 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { getPublicProfileByHandle } from "@pirate/application/use-cases/public-profile";
 import { platformPirateHandleStateV1Hash, platformPirateLabelPolicyV1 } from "@pirate/domain";
 import { Effect } from "effect";
-import { Client } from "pg";
-import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
+import type { Client } from "pg";
+import {
+  applyPostgresTestBaselineConnection,
+  withReusablePostgresTestSchema,
+} from "../../../scripts/postgres-test-baseline.ts";
 import { makeControlPlaneIdentityStore } from "./identity-repository.ts";
 import { createWalletBackedAccountFixture } from "./persona-wallet.pg-fixture.ts";
 import { makeControlPlanePlatformPirateHandleStore } from "./platform-pirate-handle-repository.ts";
@@ -22,8 +25,6 @@ const sentinelPath =
 const sentinelContents = "api-next-control-plane-postgres-public-profile-suite-complete\n";
 let completedTestCount = 0;
 
-const schemaIdentifier = (): string =>
-  `api_next_public_profile_${crypto.randomUUID().replaceAll("-", "")}`;
 const quoteIdentifier = (value: string): string => `"${value.replaceAll('"', '""')}"`;
 const connectionForSchema = (raw: string, schema: string): string => {
   const separator = raw.includes("?") ? "&" : "?";
@@ -83,17 +84,14 @@ const account = (userId: string, handleId: string, label: string) => ({
 
 async function withSchema<A>(use: (connection: string, admin: Client) => Promise<A>): Promise<A> {
   if (connectionString === undefined) throw new Error("test URL was not configured");
-  const schema = schemaIdentifier();
-  const admin = new Client({ connectionString });
-  await admin.connect();
-  await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
-  await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
-  try {
-    return await use(connectionForSchema(connectionString, schema), admin);
-  } finally {
-    await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
-    await admin.end();
-  }
+  return withReusablePostgresTestSchema({
+    baseConnectionString: connectionString,
+    schemaName: "packages_platform_cf_src_public_profile_pg_test_ts",
+    use: async ({ admin, schema }) => {
+      await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
+      return await use(connectionForSchema(connectionString, schema), admin);
+    },
+  });
 }
 
 async function expectDeferredFailure(

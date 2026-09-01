@@ -26,10 +26,12 @@ const baselineModule =
       });
 const PgClientConstructor = pgModule?.Client;
 const applyPostgresTestBaselineConnection = baselineModule?.applyPostgresTestBaselineConnection;
+const withReusablePostgresTestSchema = baselineModule?.withReusablePostgresTestSchema;
 const suite =
   connectionString === undefined ||
   PgClientConstructor === undefined ||
-  applyPostgresTestBaselineConnection === undefined
+  applyPostgresTestBaselineConnection === undefined ||
+  withReusablePostgresTestSchema === undefined
     ? describe.skip
     : describe;
 
@@ -38,10 +40,6 @@ const TOKEN = `0x${"22".repeat(20)}`;
 const TREASURY = `0x${"33".repeat(20)}`;
 const OPERATION = "money:v1:community_purchase:community_1:quote_1:purchase_1:3";
 const OPERATION_2 = "money:v1:community_purchase:community_1:quote_2:purchase_2:3";
-
-function schemaIdentifier(): string {
-  return `api_next_funding_plans_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-}
 
 function quoteIdentifier(value: string): string {
   return `"${value.replaceAll('"', '""')}"`;
@@ -56,27 +54,30 @@ async function withSchema<A>(
   use: (admin: PublicProfileBackfillPgClient) => Promise<A>,
 ): Promise<A> {
   if (connectionString === undefined) throw new Error("test URL was not configured");
-  const schema = schemaIdentifier();
   if (PgClientConstructor === undefined) throw new Error("package-local pg driver unavailable");
-  const admin = new PgClientConstructor({ connectionString });
-  await admin.connect();
-  await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
-  try {
-    await applyPostgresTestBaselineConnection({
-      connectionString: connectionForSchema(connectionString, schema),
-    });
-    await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
-    await admin.query("INSERT INTO users (user_id) VALUES ('user_1')");
-    await admin.query(`
-      INSERT INTO communities (
-        community_id, display_name, created_by_user_id, created_at, updated_at
-      ) VALUES ('community_1', 'Community One', 'user_1', clock_timestamp(), clock_timestamp())
-    `);
-    return await use(admin);
-  } finally {
-    await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
-    await admin.end();
+  if (
+    applyPostgresTestBaselineConnection === undefined ||
+    withReusablePostgresTestSchema === undefined
+  ) {
+    throw new Error("PostgreSQL baseline helper is unavailable");
   }
+  return withReusablePostgresTestSchema({
+    baseConnectionString: connectionString,
+    schemaName: "scripts_community_purchase_funding_plans_pg_test_ts",
+    use: async ({ admin, schema }) => {
+      await applyPostgresTestBaselineConnection({
+        connectionString: connectionForSchema(connectionString, schema),
+      });
+      await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
+      await admin.query("INSERT INTO users (user_id) VALUES ('user_1')");
+      await admin.query(`
+        INSERT INTO communities (
+          community_id, display_name, created_by_user_id, created_at, updated_at
+        ) VALUES ('community_1', 'Community One', 'user_1', clock_timestamp(), clock_timestamp())
+      `);
+      return await use(admin);
+    },
+  });
 }
 
 const planSql = `

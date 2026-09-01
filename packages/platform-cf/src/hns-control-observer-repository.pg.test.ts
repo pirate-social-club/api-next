@@ -29,6 +29,10 @@ import {
   hnsObservedTxtValuesDigest,
 } from "@pirate/application";
 import type { Sha256Hex as Sha256HexValue } from "@pirate/domain/verification";
+import {
+  postgresTestSchemaCatalogFingerprint,
+  resetPostgresTestBaseline,
+} from "@pirate/testing/postgres";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import {
@@ -58,6 +62,7 @@ let completedTestCount = 0;
 let admin: Client | undefined;
 let schema = "";
 let scoped = "";
+let catalogFingerprint = "";
 
 const configurationValue = {
   version: "pirate-hns-control-observer-configuration-v1",
@@ -700,18 +705,15 @@ suite("Postgres 17 HNS control observer persistence", () => {
     scoped = scopedConnection(connectionString, schema);
     await applyPostgresTestBaselineConnection({ connectionString: scoped });
     await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
+    catalogFingerprint = await postgresTestSchemaCatalogFingerprint(admin);
   }, 30_000);
 
   beforeEach(async () => {
     if (admin === undefined) return;
-    await admin.query(`TRUNCATE
-      hns_control_observer_snapshot_transcript_entries,
-      hns_control_observer_snapshots,
-      hns_control_observer_reservations,
-      hns_control_observer_operations,
-      hns_control_observer_configurations,
-      hns_authority_inventories
-      CASCADE`);
+    await resetPostgresTestBaseline(admin);
+    if ((await postgresTestSchemaCatalogFingerprint(admin)) !== catalogFingerprint) {
+      throw new Error("HNS observer reusable schema retained persistent DDL between tests");
+    }
   });
 
   test("resolves exact immutable configuration bytes", async () => {
@@ -2132,9 +2134,16 @@ suite("Postgres 17 HNS control observer persistence", () => {
 
   afterAll(async () => {
     if (admin !== undefined) {
-      await admin.query("ROLLBACK").catch(() => undefined);
-      await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
-      await admin.end();
+      try {
+        await admin.query("ROLLBACK").catch(() => undefined);
+        await resetPostgresTestBaseline(admin);
+        if ((await postgresTestSchemaCatalogFingerprint(admin)) !== catalogFingerprint) {
+          throw new Error("HNS observer reusable schema retained persistent DDL after its tests");
+        }
+      } finally {
+        await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
+        await admin.end();
+      }
     }
     if (connectionString !== undefined && completedTestCount === testCount) {
       await Bun.write(sentinelPath, sentinelContents);

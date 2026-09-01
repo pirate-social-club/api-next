@@ -1,5 +1,15 @@
+import {
+  freshSchemaPostgresTestSuites,
+  noBaselinePostgresTestSuites,
+  reusablePostgresTestSuites,
+} from "./postgres-test-suite-manifest.ts";
+
 const namespaceOwnershipTest =
   "packages/platform-cf/src/namespace-ownership-persistence.pg.test.ts";
+
+const reusableSuites = new Set<string>(reusablePostgresTestSuites);
+const freshSchemaSuites = new Set<string>(freshSchemaPostgresTestSuites);
+const noBaselineSuites = new Set<string>(noBaselinePostgresTestSuites);
 
 export const postgresTestTimeoutMilliseconds = {
   isolated: 120_000,
@@ -7,6 +17,24 @@ export const postgresTestTimeoutMilliseconds = {
 } as const;
 
 export const postgresGeneralShardCount = 4;
+
+// Weight units approximate tenths of a second from the first baseline-reuse benchmark:
+// reusable suites pay once for installation, then once per reset and test; other suites
+// conservatively retain the pre-reuse per-test cost. The values only balance shards.
+const reusableBaselineInstallWeight = 14;
+const reusableTestWeight = 11;
+const independentTestWeight = 20;
+
+// Minimums capture suites whose first required-CI timing materially exceeded the category
+// estimate. New and ordinary suites continue to use the fixture-aware model above.
+const measuredMinimumWeights: Readonly<Record<string, number>> = {
+  "packages/platform-cf/src/community-route-repository.pg.test.ts": 280,
+  "packages/platform-cf/src/content-repository.pg.test.ts": 510,
+  "packages/platform-cf/src/handle-sales-repository.pg.test.ts": 215,
+  "packages/platform-cf/src/hns-control-observer-repository.pg.test.ts": 272,
+  "packages/platform-cf/src/postgres.pg.test.ts": 102,
+  "packages/platform-cf/src/text-submission-repository.pg.test.ts": 165,
+};
 
 type PostgresTestPartition = {
   readonly isolated: readonly string[];
@@ -93,6 +121,19 @@ export function shardPostgresTestFiles(
   return shards;
 }
 
+export function postgresTestFileWeight(file: string, testCount: number): number {
+  const normalizedTestCount = Math.max(testCount, 1);
+  let estimatedWeight: number;
+  if (reusableSuites.has(file)) {
+    estimatedWeight = reusableBaselineInstallWeight + reusableTestWeight * normalizedTestCount;
+  } else if (freshSchemaSuites.has(file) || noBaselineSuites.has(file)) {
+    estimatedWeight = independentTestWeight * normalizedTestCount;
+  } else {
+    throw new Error(`PostgreSQL test suite is not classified for shard weighting: ${file}`);
+  }
+  return Math.max(estimatedWeight, measuredMinimumWeights[file] ?? 0);
+}
+
 async function postgresTestWeights(
   files: readonly string[],
 ): Promise<Readonly<Record<string, number>>> {
@@ -100,7 +141,7 @@ async function postgresTestWeights(
     files.map(async (file) => {
       const source = await Bun.file(file).text();
       const testCount = source.match(/\btest(?:\.skip)?\s*\(/gu)?.length ?? 0;
-      return [file, Math.max(testCount, 1)] as const;
+      return [file, postgresTestFileWeight(file, testCount)] as const;
     }),
   );
   return Object.fromEntries(entries);

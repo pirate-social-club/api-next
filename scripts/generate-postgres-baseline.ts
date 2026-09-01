@@ -1,16 +1,18 @@
 import { createHash } from "node:crypto";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Client } from "pg";
 import {
   normalizePostgresBaselineDump,
+  normalizePostgresBaselineResetDump,
   normalizePostgresBaselineSeedDump,
 } from "./postgres-baseline-normalization.ts";
 import { runPostgresMigrations } from "./postgres-migrations.ts";
 
 const root = new URL("../", import.meta.url);
 const defaultOutput = new URL("db/postgres/schema.sql", root);
+const defaultResetOutput = new URL("db/postgres/test-reset.sql", root);
 const postgresImage = process.env.CONTROL_PLANE_POSTGRES_IMAGE?.trim() || "postgres:17";
 const localPassword = "postgres";
 const migrationsDirectory = new URL("../db/postgres/migrations/", import.meta.url);
@@ -262,6 +264,24 @@ async function nonemptyPublicTables(connectionString: string): Promise<readonly 
   });
 }
 
+async function resettablePublicTables(connectionString: string): Promise<readonly string[]> {
+  return withPostgresClient(connectionString, async (client) => {
+    const tables = await client.query<{ readonly table_name: string }>(
+      `SELECT relation.relname AS table_name
+         FROM pg_catalog.pg_class AS relation
+         JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+        WHERE namespace.nspname = 'public'
+          AND relation.relkind = ANY (ARRAY['r', 'p']::"char"[])
+          AND NOT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_inherits AS inheritance
+             WHERE inheritance.inhrelid = relation.oid
+          )
+        ORDER BY table_name`,
+    );
+    return tables.rows.map((row) => row.table_name);
+  });
+}
+
 function seedDumpArguments(): readonly string[] {
   return [
     "--data-only",
@@ -327,6 +347,7 @@ async function dumpSuppliedPostgres(
 
 export async function generatePostgresBaseline(
   outputPath: string | URL = defaultOutput,
+  resetOutputPath: string | URL = defaultResetOutput,
 ): Promise<void> {
   const suppliedConnectionString = process.env.CONTROL_PLANE_POSTGRES_GENERATOR_URL?.trim();
   const migrationFingerprintBefore = await migrationHistoryFingerprint();
@@ -346,6 +367,7 @@ export async function generatePostgresBaseline(
     await assertEmptyGeneratorDatabase(connectionString);
     await runPostgresMigrations({ connectionString });
     assertPostgresBaselineSeedInventory(await nonemptyPublicTables(connectionString));
+    const resettableTables = await resettablePublicTables(connectionString);
     const preDataDump =
       container === undefined
         ? await dumpSuppliedPostgres(connectionString, "pre-data")
@@ -370,6 +392,10 @@ export async function generatePostgresBaseline(
         `${preDataDump}\n${normalizePostgresBaselineSeedDump(seedDump)}\n${postDataDump}`,
       ),
     );
+    await writeFile(
+      resetOutputPath,
+      normalizePostgresBaselineResetDump(seedDump, resettableTables),
+    );
   } finally {
     if (container !== undefined) {
       await runCommand(["docker", "rm", "--force", container]);
@@ -380,18 +406,20 @@ export async function generatePostgresBaseline(
   }
 }
 
-async function outputPathFromArgs(args: readonly string[]): Promise<string | URL> {
-  if (args.length === 0) return defaultOutput;
+async function outputPathsFromArgs(
+  args: readonly string[],
+): Promise<readonly [string | URL, string | URL]> {
+  if (args.length === 0) return [defaultOutput, defaultResetOutput];
   if (args.length === 2 && args[0] === "--output" && args[1] !== undefined) {
-    return args[1];
+    return [args[1], join(dirname(args[1]), "test-reset.sql")];
   }
   throw new Error("Usage: bun scripts/generate-postgres-baseline.ts [--output path]");
 }
 
 if (import.meta.main) {
   try {
-    const output = await outputPathFromArgs(Bun.argv.slice(2));
-    await generatePostgresBaseline(output);
+    const [output, resetOutput] = await outputPathsFromArgs(Bun.argv.slice(2));
+    await generatePostgresBaseline(output, resetOutput);
   } catch (error: unknown) {
     console.error(error instanceof Error ? error.message : "Postgres baseline generation failed");
     process.exitCode = 1;

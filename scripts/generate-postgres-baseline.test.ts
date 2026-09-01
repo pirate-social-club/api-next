@@ -5,6 +5,7 @@ import {
 } from "./generate-postgres-baseline.ts";
 import {
   normalizePostgresBaselineDump,
+  normalizePostgresBaselineResetDump,
   normalizePostgresBaselineSeedDump,
 } from "./postgres-baseline-normalization.ts";
 
@@ -65,6 +66,23 @@ SET search_path TO leaked_session_schema;
         "INSERT INTO example VALUES ('2026-08-31 21:07:43.49507+04', '2026-08-31 17:07:43');",
       ),
     ).toBe("INSERT INTO example VALUES ('2000-01-01 00:00:00+00', '2000-01-01 00:00:00+00');");
+  });
+
+  test("generates a portable reset with every root table and deterministic seeds", () => {
+    const normalized = normalizePostgresBaselineResetDump(
+      `SET statement_timeout = 0;
+SELECT pg_catalog.set_config('search_path', '', false);
+INSERT INTO public.seed_table VALUES ('2026-08-31 17:07:43.49507+00');`,
+      ["z_table", "seed_table"],
+    );
+
+    expect(normalized).toContain('TRUNCATE TABLE\n  "seed_table",\n  "z_table"');
+    expect(normalized).toContain("RESTART IDENTITY CASCADE;");
+    expect(normalized).toContain("SET LOCAL session_replication_role = replica;");
+    expect(normalized).toContain("SET LOCAL session_replication_role = origin;");
+    expect(normalized).toContain("INSERT INTO seed_table VALUES ('2000-01-01 00:00:00+00');");
+    expect(normalized).not.toContain("public.seed_table");
+    expect(normalized).not.toContain("statement_timeout");
   });
 
   test("fails closed when migration-owned seed tables drift from the manifest", () => {

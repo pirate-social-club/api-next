@@ -116,3 +116,57 @@ export function normalizePostgresBaselineSeedDump(dump: string): string {
     "'2000-01-01 00:00:00+00'",
   );
 }
+
+export function normalizePostgresBaselineResetDump(
+  seedDump: string,
+  tableNames: readonly string[],
+): string {
+  const seedStatements = normalizePostgresBaselineSeedDump(seedDump)
+    .replaceAll("\r\n", "\n")
+    .replaceAll("\r", "\n")
+    .split("\n")
+    .filter((line) => {
+      const trimmed = line.trim();
+      return !(
+        trimmed.startsWith("--") ||
+        trimmed.startsWith("\\restrict ") ||
+        trimmed.startsWith("\\unrestrict ") ||
+        trimmed.startsWith("SET ") ||
+        trimmed.startsWith("SELECT pg_catalog.set_config('search_path'")
+      );
+    })
+    .join("\n")
+    .replaceAll(/"public"\.|\bpublic\./g, "")
+    .replaceAll(/\n{3,}/g, "\n\n")
+    .trim();
+  const quotedTables = [...tableNames]
+    .sort()
+    .map((table) => `"${table.replaceAll('"', '""')}"`)
+    .join(",\n  ");
+
+  return [
+    "-- GENERATED FILE. DO NOT EDIT. Regenerate with bun run db:generate:baseline.",
+    "-- Source of truth: db/postgres/migrations/*.sql",
+    "",
+    "SELECT pg_catalog.set_config(",
+    "  'search_path',",
+    "  pg_catalog.format('%I, pg_temp', pg_catalog.current_schema()),",
+    "  false",
+    ");",
+    "",
+    "TRUNCATE TABLE",
+    `  ${quotedTables}`,
+    "RESTART IDENTITY CASCADE;",
+    ...(seedStatements.length === 0
+      ? []
+      : [
+          "",
+          "SET LOCAL session_replication_role = replica;",
+          "",
+          seedStatements,
+          "",
+          "SET LOCAL session_replication_role = origin;",
+        ]),
+    "",
+  ].join("\n");
+}

@@ -29,6 +29,13 @@ export const POSTGRES_TEST_SENTINELS: readonly PostgresSentinel[] = [
     contents: "api-next-control-plane-postgres-media-persistence-suite-complete\n",
   },
   {
+    name: "postgres media persistence migrations",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_MEDIA_MIGRATIONS_TEST_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-media-migrations-suite-complete",
+    contents: "api-next-control-plane-postgres-media-migrations-suite-complete\n",
+  },
+  {
     name: "postgres optional route v2 migration",
     path:
       process.env.CONTROL_PLANE_POSTGRES_OPTIONAL_ROUTE_V2_TEST_SENTINEL ??
@@ -76,6 +83,13 @@ export const POSTGRES_TEST_SENTINELS: readonly PostgresSentinel[] = [
       process.env.CONTROL_PLANE_POSTGRES_CANONICAL_ROUTE_TEST_SENTINEL ??
       "/tmp/api-next-control-plane-postgres-canonical-route-suite-complete",
     contents: "api-next-control-plane-postgres-canonical-route-suite-complete\n",
+  },
+  {
+    name: "postgres canonical community route migration",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_CANONICAL_ROUTE_MIGRATION_TEST_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-canonical-route-migration-suite-complete",
+    contents: "api-next-control-plane-postgres-canonical-route-migration-suite-complete\n",
   },
   {
     name: "gates v2 community repository",

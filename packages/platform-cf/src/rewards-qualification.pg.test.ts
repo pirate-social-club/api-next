@@ -1,6 +1,9 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { Client } from "pg";
-import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
+import type { Client } from "pg";
+import {
+  applyPostgresTestBaselineConnection,
+  withReusablePostgresTestSchema,
+} from "../../../scripts/postgres-test-baseline.ts";
 import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -16,8 +19,6 @@ const sentinelContents = "api-next-control-plane-postgres-rewards-qualification-
 const testCount = 5;
 let completedTestCount = 0;
 
-const schemaIdentifier = (): string =>
-  `api_next_rewards_${crypto.randomUUID().replaceAll("-", "")}`;
 const quoteIdentifier = (value: string): string => `"${value.replaceAll('"', '""')}"`;
 const connectionForSchema = (raw: string, schema: string): string => {
   const separator = raw.includes("?") ? "&" : "?";
@@ -26,20 +27,16 @@ const connectionForSchema = (raw: string, schema: string): string => {
 
 async function withSchema<A>(use: (admin: Client) => Promise<A>): Promise<A> {
   if (connectionString === undefined) throw new Error("test URL was not configured");
-  const schema = schemaIdentifier();
-  const admin = new Client({ connectionString });
-  await admin.connect();
-  await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
-  await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
-  const scopedConnection = connectionForSchema(connectionString, schema);
-  try {
-    await applyPostgresTestBaselineConnection({ connectionString: scopedConnection });
-    return await use(admin);
-  } finally {
-    await admin.query("ROLLBACK");
-    await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
-    await admin.end();
-  }
+  return withReusablePostgresTestSchema({
+    baseConnectionString: connectionString,
+    schemaName: "packages_platform_cf_src_rewards_qualification_pg_test_ts",
+    use: async ({ admin, schema }) => {
+      await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
+      const scopedConnection = connectionForSchema(connectionString, schema);
+      await applyPostgresTestBaselineConnection({ connectionString: scopedConnection });
+      return await use(admin);
+    },
+  });
 }
 
 async function seedAccountSong(

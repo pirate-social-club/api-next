@@ -46,9 +46,12 @@ const sentinelPath =
   "/tmp/api-next-control-plane-postgres-namespace-ownership-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-namespace-ownership-suite-complete\n";
 let completedTestCount = 0;
-const { applyPostgresTestBaselineConnection } =
+const { applyPostgresTestBaselineConnection, withReusablePostgresTestSchema } =
   connectionString === undefined
-    ? { applyPostgresTestBaselineConnection: undefined }
+    ? {
+        applyPostgresTestBaselineConnection: undefined,
+        withReusablePostgresTestSchema: undefined,
+      }
     : await import("../../../scripts/postgres-test-baseline.ts");
 
 const SHA = "a".repeat(64);
@@ -101,10 +104,6 @@ function routeTerminalDocument(
     document,
     resultHash: createHash("sha256").update(Buffer.from(document, "utf8")).digest("hex"),
   };
-}
-
-function schemaName(): string {
-  return `api_next_namespace_${crypto.randomUUID().replaceAll("-", "")}`;
 }
 
 function quoteIdentifier(value: string): string {
@@ -1124,23 +1123,23 @@ function verifiedCompletionInput(
 async function withSchema<A>(
   use: (client: Client, scopedConnectionString: string) => Promise<A>,
 ): Promise<A> {
-  if (connectionString === undefined || applyPostgresTestBaselineConnection === undefined) {
+  if (
+    connectionString === undefined ||
+    applyPostgresTestBaselineConnection === undefined ||
+    withReusablePostgresTestSchema === undefined
+  ) {
     throw new Error("Postgres test configuration is unavailable");
   }
-  const schema = schemaName();
-  const admin = new Client({ connectionString });
-  await admin.connect();
-  await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
-  try {
-    const scoped = scopedConnection(connectionString, schema);
-    await applyPostgresTestBaselineConnection({ connectionString: scoped });
-    await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
-    return await use(admin, scoped);
-  } finally {
-    await admin.query("ROLLBACK").catch(() => undefined);
-    await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
-    await admin.end();
-  }
+  return withReusablePostgresTestSchema({
+    baseConnectionString: connectionString,
+    schemaName: "packages_platform_cf_src_namespace_ownership_persistence_pg_test_ts",
+    use: async ({ admin, schema }) => {
+      const scoped = scopedConnection(connectionString, schema);
+      await applyPostgresTestBaselineConnection({ connectionString: scoped });
+      await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
+      return await use(admin, scoped);
+    },
+  });
 }
 
 suite("Postgres namespace ownership persistence foundation", () => {

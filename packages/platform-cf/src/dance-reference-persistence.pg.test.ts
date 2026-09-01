@@ -12,7 +12,10 @@ import {
 } from "@pirate/application/use-cases/dance/reference-services";
 import { Effect } from "effect";
 import { Client } from "pg";
-import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
+import {
+  applyPostgresTestBaselineConnection,
+  withReusablePostgresTestSchema,
+} from "../../../scripts/postgres-test-baseline.ts";
 import { makeDanceReferenceStore } from "./dance-reference-authoring-repository.ts";
 import { makeDanceReferenceProcessingStore } from "./dance-reference-processing-repository.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
@@ -42,26 +45,22 @@ const connectionForSchema = (raw: string, schema: string): string => {
 };
 
 async function withSchema(
-  label: string,
+  _label: string,
   run: (admin: Client, schema: string) => Promise<void>,
 ): Promise<void> {
   if (connectionString === undefined) throw new Error("test URL was not configured");
-  const schema = `api_next_dance_${label}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-  const admin = new Client({ connectionString });
-  await admin.connect();
-  await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
-  await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
-  try {
-    await applyPostgresTestBaselineConnection({
-      connectionString: connectionForSchema(connectionString, schema),
-    });
-    await seedAuthority(admin);
-    await run(admin, schema);
-  } finally {
-    await admin.query("SET search_path TO public");
-    await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
-    await admin.end();
-  }
+  return withReusablePostgresTestSchema({
+    baseConnectionString: connectionString,
+    schemaName: "packages_platform_cf_src_dance_reference_persistence_pg_test_ts",
+    use: async ({ admin, schema }) => {
+      await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
+      await applyPostgresTestBaselineConnection({
+        connectionString: connectionForSchema(connectionString, schema),
+      });
+      await seedAuthority(admin);
+      await run(admin, schema);
+    },
+  });
 }
 
 async function seedAuthority(admin: Client): Promise<void> {
