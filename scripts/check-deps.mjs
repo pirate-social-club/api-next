@@ -15,6 +15,7 @@ const INTERNAL = {
   "packages/contracts": "@pirate/contracts",
   "packages/api-client": "@pirate/api-client",
   "packages/domain": "@pirate/domain",
+  "packages/hns-dns-runtime": "@pirate/hns-dns-runtime",
   "packages/route-label-codec": "@pirate/route-label-codec",
   "packages/application": "@pirate/application",
   "packages/platform-cf": "@pirate/platform-cf",
@@ -26,6 +27,7 @@ const INTERNAL = {
   "apps/media-processor-worker": "@pirate/media-processor-worker",
   "apps/data-registration-worker": "@pirate/data-registration-worker",
   "apps/hns-owner-verifier": "@pirate/hns-owner-verifier",
+  "apps/hns-authority-provisioner": "@pirate/hns-authority-provisioner",
   "apps/hns-observer-driver": "@pirate/hns-observer-driver",
   "apps/hns-platform-gateway": "@pirate/hns-platform-gateway",
 };
@@ -34,6 +36,7 @@ const ALLOWED = {
   "@pirate/contracts": ["@pirate/route-label-codec"],
   "@pirate/api-client": [],
   "@pirate/domain": ["@pirate/route-label-codec"],
+  "@pirate/hns-dns-runtime": [],
   "@pirate/route-label-codec": [],
   "@pirate/application": ["@pirate/contracts", "@pirate/domain"],
   "@pirate/platform-cf": [
@@ -60,7 +63,12 @@ const ALLOWED = {
   "@pirate/media-processor-worker": ["@pirate/application", "@pirate/platform-cf"],
   "@pirate/data-registration-worker": ["@pirate/application", "@pirate/platform-cf"],
   "@pirate/hns-owner-verifier": [],
-  "@pirate/hns-observer-driver": ["@pirate/application"],
+  "@pirate/hns-authority-provisioner": [
+    "@pirate/application",
+    "@pirate/domain",
+    "@pirate/hns-dns-runtime",
+  ],
+  "@pirate/hns-observer-driver": ["@pirate/application", "@pirate/hns-dns-runtime"],
   "@pirate/hns-platform-gateway": ["@pirate/application"],
 };
 

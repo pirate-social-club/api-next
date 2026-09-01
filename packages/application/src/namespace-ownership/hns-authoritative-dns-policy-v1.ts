@@ -10,9 +10,8 @@ import {
   type HnsAuthoritativeDnsValidationV1,
   type HnsAuthoritativeDnsValidatorInputV1,
   type HnsAuthoritativeDnsValidatorPortV1,
-  type HnsChainAuthorityRecord,
-  hnsChainAuthorityRecords,
-} from "@pirate/application/namespace-ownership";
+} from "./hns-authoritative-dns.ts";
+import { type HnsChainAuthorityRecord, hnsChainAuthorityRecords } from "./hns-control-observer.ts";
 
 type Sha256HexValue = HnsAuthoritativeDnsValidationResultV1["validated_chain_authority_digest"];
 

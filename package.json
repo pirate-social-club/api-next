@@ -47,6 +47,7 @@
     "review:study-translation-corpus": "bun scripts/review-study-translation-corpus-dual-ai.ts",
     "db:preflight:m3": "bun scripts/m3-staging-preflight.ts",
     "hns:emit-authority-successor": "bun apps/hns-observer-driver/src/authority-successor-main.ts",
+    "hns:provision-authority-root": "bun apps/hns-authority-provisioner/src/main.ts",
     "db:preflight:megapot-base-sepolia": "bun scripts/megapot-base-sepolia-preflight.ts",
     "db:bootstrap:megapot-base-sepolia": "bun scripts/bootstrap-megapot-base-sepolia.ts",
     "staging:golden:megapot-base-sepolia": "bun scripts/megapot-base-sepolia-golden.ts",

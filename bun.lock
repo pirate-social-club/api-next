@@ -16,6 +16,7 @@
         "@msw/cloudflare": "^0.0.1",
         "@selfxyz/core": "1.2.0-beta.1",
         "@types/bun": "1.3.14",
+        "@types/pg": "8.15.5",
         "knip": "^6.32.2",
         "msw": "^2.14.0",
         "typescript": "^7.0.2",
@@ -31,9 +32,22 @@
         "@pirate/platform-cf": "workspace:*",
       },
     },
+    "apps/hns-authority-provisioner": {
+      "name": "@pirate/hns-authority-provisioner",
+      "version": "0.0.0",
+      "dependencies": {
+        "@pirate/application": "workspace:*",
+        "@pirate/domain": "workspace:*",
+        "@pirate/hns-dns-runtime": "workspace:*",
+        "pg": "8.16.3",
+      },
+    },
     "apps/hns-observer-driver": {
       "name": "@pirate/hns-observer-driver",
       "version": "0.0.0",
+      "dependencies": {
+        "@pirate/hns-dns-runtime": "workspace:*",
+      },
     },
     "apps/hns-owner-verifier": {
       "name": "@pirate/hns-owner-verifier",
@@ -67,7 +81,7 @@
     },
     "packages/api-client": {
       "name": "@pirate/api-client",
-      "version": "0.28.0",
+      "version": "0.45.0",
     },
     "packages/application": {
       "name": "@pirate/application",
@@ -86,6 +100,10 @@
       "dependencies": {
         "@pirate/route-label-codec": "workspace:*",
       },
+    },
+    "packages/hns-dns-runtime": {
+      "name": "@pirate/hns-dns-runtime",
+      "version": "0.0.0",
     },
     "packages/platform-cf": {
       "name": "@pirate/platform-cf",
@@ -132,6 +150,10 @@
       },
     },
   },
+  "trustedDependencies": [
+    "esbuild",
+    "workerd",
+  ],
   "overrides": {
     "underscore": "1.13.8",
     "ws": "8.21.0",
@@ -552,6 +574,10 @@
     "@pirate/data-registration-worker": ["@pirate/data-registration-worker@workspace:apps/data-registration-worker"],
 
     "@pirate/domain": ["@pirate/domain@workspace:packages/domain"],
+
+    "@pirate/hns-authority-provisioner": ["@pirate/hns-authority-provisioner@workspace:apps/hns-authority-provisioner"],
+
+    "@pirate/hns-dns-runtime": ["@pirate/hns-dns-runtime@workspace:packages/hns-dns-runtime"],
 
     "@pirate/hns-observer-driver": ["@pirate/hns-observer-driver@workspace:apps/hns-observer-driver"],
 

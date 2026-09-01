@@ -542,7 +542,9 @@ function compareUtf8(left: string, right: string): number {
 
 function canonicalDnsName(value: string): boolean {
   if (value.length === 0 || value.length > 253 || value.endsWith(".")) return false;
-  return value.split(".").every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(label));
+  return value
+    .split(".")
+    .every((label) => /^[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?$/u.test(label));
 }
 
 function canonicalIpv4(value: string): boolean {

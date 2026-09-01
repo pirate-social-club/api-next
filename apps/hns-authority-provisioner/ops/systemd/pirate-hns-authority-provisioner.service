@@ -1,0 +1,32 @@
+[Unit]
+Description=Pirate HNS authority root provisioner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+WorkingDirectory=/srv/pirate-hns-authority-provisioner/current
+EnvironmentFile=/etc/pirate/hns-authority-provisioner.env
+LoadCredential=hns_axfr_tsig_secret:/etc/pirate/hns-authority-axfr-tsig-secret
+Environment=HNS_AUTHORITY_AXFR_TSIG_SECRET_FILE=%d/hns_axfr_tsig_secret
+ExecStart=/usr/bin/env bun /srv/pirate-hns-authority-provisioner/current/bin/pirate-hns-authority-provisioner.mjs --serve
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=65
+MemoryMax=384M
+CPUQuota=50%
+TasksMax=32
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

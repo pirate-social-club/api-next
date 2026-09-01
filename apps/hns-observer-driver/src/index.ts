@@ -1,4 +1,31 @@
 export {
+  deriveCanonicalHnsAuthorityZoneBytesV1,
+  HNS_CANONICAL_AUTHORITY_ZONE_VERSION,
+} from "@pirate/hns-dns-runtime/dns-axfr-zone";
+export {
+  exchangeDirectHnsDnsTcp,
+  exchangeDirectHnsDnsTcpSequence,
+  type HnsDnsTcpConnectInput,
+  type HnsDnsTcpConnector,
+  type HnsDnsTcpExchangeInput,
+  type HnsDnsTcpSequenceExchangeInput,
+  type HnsObserverDriverExchangeCause,
+  HnsObserverDriverExchangeError,
+  type HnsObserverDriverExchangeFailure,
+  makeNodeHnsDnsTcpConnector,
+} from "@pirate/hns-dns-runtime/dns-tcp";
+export {
+  decodeHnsDnsTcpMessageSequenceV1,
+  encodeHnsDnsTcpMessageSequenceV1,
+  exchangeDirectHnsDnsTsigAxfrV1,
+  HNS_DNS_TSIG_AXFR_ALGORITHM,
+  HnsDnsTsigAxfrError,
+  type HnsDnsTsigAxfrExchangeResultV1,
+  type HnsDnsTsigAxfrSessionV1,
+  type HnsDnsTsigCredentialV1,
+  makeHnsDnsTsigAxfrSessionV1,
+} from "@pirate/hns-dns-runtime/dns-tsig-axfr";
+export {
   HnsAuthoritySuccessorEmitterError,
   type HnsAuthoritySuccessorEmitterIoV1,
   runHnsAuthoritySuccessorEmitterV1,
@@ -21,33 +48,6 @@ export {
   prepareCandidateFromHnsAuthoritySuccessorObservationV1,
   runHnsAuthoritySuccessorObservationHarnessV1,
 } from "./authority-successor-observation-harness.ts";
-export {
-  deriveCanonicalHnsAuthorityZoneBytesV1,
-  HNS_CANONICAL_AUTHORITY_ZONE_VERSION,
-} from "./dns-axfr-zone.ts";
-export {
-  exchangeDirectHnsDnsTcp,
-  exchangeDirectHnsDnsTcpSequence,
-  type HnsDnsTcpConnectInput,
-  type HnsDnsTcpConnector,
-  type HnsDnsTcpExchangeInput,
-  type HnsDnsTcpSequenceExchangeInput,
-  type HnsObserverDriverExchangeCause,
-  HnsObserverDriverExchangeError,
-  type HnsObserverDriverExchangeFailure,
-  makeNodeHnsDnsTcpConnector,
-} from "./dns-tcp.ts";
-export {
-  decodeHnsDnsTcpMessageSequenceV1,
-  encodeHnsDnsTcpMessageSequenceV1,
-  exchangeDirectHnsDnsTsigAxfrV1,
-  HNS_DNS_TSIG_AXFR_ALGORITHM,
-  HnsDnsTsigAxfrError,
-  type HnsDnsTsigAxfrExchangeResultV1,
-  type HnsDnsTsigAxfrSessionV1,
-  type HnsDnsTsigCredentialV1,
-  makeHnsDnsTsigAxfrSessionV1,
-} from "./dns-tsig-axfr.ts";
 export {
   type HnsObserverDriverHsdCapability,
   type HnsObserverDriverHsdExchangeResult,

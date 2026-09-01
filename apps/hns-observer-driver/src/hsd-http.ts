@@ -1,4 +1,4 @@
-import { HnsObserverDriverExchangeError } from "./dns-tcp.ts";
+import { HnsObserverDriverExchangeError } from "@pirate/hns-dns-runtime/dns-tcp";
 
 export type HnsObserverDriverHsdExchangeResult = Readonly<{
   readonly status: number;

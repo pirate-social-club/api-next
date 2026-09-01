@@ -1,0 +1,11 @@
+{
+  "name": "@pirate/hns-dns-runtime",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./dns-axfr-zone": "./src/dns-axfr-zone.ts",
+    "./dns-tcp": "./src/dns-tcp.ts",
+    "./dns-tsig-axfr": "./src/dns-tsig-axfr.ts"
+  }
+}

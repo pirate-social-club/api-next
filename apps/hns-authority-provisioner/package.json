@@ -1,0 +1,17 @@
+{
+  "name": "@pirate/hns-authority-provisioner",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:vps-bundle": "bun build --target=bun --outfile dist/pirate-hns-authority-provisioner.mjs src/main.ts",
+    "run": "bun src/main.ts --serve",
+    "run-once": "bun src/main.ts"
+  },
+  "dependencies": {
+    "@pirate/application": "workspace:*",
+    "@pirate/domain": "workspace:*",
+    "@pirate/hns-dns-runtime": "workspace:*",
+    "pg": "8.16.3"
+  }
+}

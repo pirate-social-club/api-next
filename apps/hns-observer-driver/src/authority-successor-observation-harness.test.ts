@@ -15,6 +15,8 @@ import {
   hnsAuthorityCapabilitySetDigest,
   hnsChainAuthorityDigest,
 } from "@pirate/application/namespace-ownership";
+import { deriveCanonicalHnsAuthorityZoneBytesV1 } from "@pirate/hns-dns-runtime/dns-axfr-zone";
+import { encodeHnsDnsTcpMessageSequenceV1 } from "@pirate/hns-dns-runtime/dns-tsig-axfr";
 import { runHnsAuthoritySuccessorEmitterV1 } from "./authority-successor-emitter.ts";
 import {
   decodeHnsAuthoritySuccessorObservationDocumentV1,
@@ -26,8 +28,6 @@ import {
   makeHnsAuthoritySuccessorObservationSourceV1,
   runHnsAuthoritySuccessorObservationHarnessV1,
 } from "./authority-successor-observation-harness.ts";
-import { deriveCanonicalHnsAuthorityZoneBytesV1 } from "./dns-axfr-zone.ts";
-import { encodeHnsDnsTcpMessageSequenceV1 } from "./dns-tsig-axfr.ts";
 
 const encoder = new TextEncoder();
 const candidateBytes = encoder.encode('{"candidate":"review-exact"}');

@@ -19,8 +19,11 @@ import {
   exchangeDirectHnsDnsTcp,
   type HnsDnsTcpConnector,
   HnsObserverDriverExchangeError,
-} from "./dns-tcp.ts";
-import { exchangeDirectHnsDnsTsigAxfrV1, type HnsDnsTsigCredentialV1 } from "./dns-tsig-axfr.ts";
+} from "@pirate/hns-dns-runtime/dns-tcp";
+import {
+  exchangeDirectHnsDnsTsigAxfrV1,
+  type HnsDnsTsigCredentialV1,
+} from "@pirate/hns-dns-runtime/dns-tsig-axfr";
 import type { HnsObserverDriverHsdCapability } from "./hsd-http.ts";
 
 export type HnsObserverDriverDnsView = Readonly<{

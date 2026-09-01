@@ -153,6 +153,7 @@ export {
   selectHnsAuthoritativeDnsAuthorityTupleV1,
   validateHnsAuthoritativeDnsValidationResultV1,
 } from "./hns-authoritative-dns.ts";
+export * from "./hns-authoritative-dns-policy-v1.ts";
 export type {
   HnsAuthorityInventoryDecodedV1,
   HnsAuthorityInventoryDnsWriteCapabilityV1,
@@ -441,6 +442,9 @@ export {
   hnsPrivateDriverErrorStatus,
   isCanonicalHnsPrivateDriverHsdRequest,
 } from "./hns-private-driver.ts";
+export * from "./hns-root-import.ts";
+export * from "./hns-root-import-plan.ts";
+export * from "./hns-root-import-readiness.ts";
 export * from "./operator-control-promotion.ts";
 export * from "./operator-managed-root-registry.ts";
 export * from "./operator-managed-route.ts";

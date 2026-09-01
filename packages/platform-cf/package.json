@@ -17,6 +17,7 @@
     "./hns-forwarder-replay-store-do": "./src/hns-forwarder-replay-store-do.ts",
     "./hns-authority-successor-postgres": "./src/hns-authority-successor-postgres.ts",
     "./hns-host-persistence-repository": "./src/hns-host-persistence-repository.ts",
+    "./hns-root-import-repository": "./src/hns-root-import-repository.ts",
     "./hns-active-lease-renewal-repository": "./src/hns-active-lease-renewal-repository.ts",
     "./hns-owner-recovery-start-repository": "./src/hns-owner-recovery-start-repository.ts",
     "./hns-owner-recovery-poll-repository": "./src/hns-owner-recovery-poll-repository.ts",

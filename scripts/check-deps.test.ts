@@ -17,6 +17,7 @@ const dependencyRoots = [
   "packages/api-client",
   "packages/domain",
   "packages/route-label-codec",
+  "packages/hns-dns-runtime",
   "packages/application",
   "packages/platform-cf",
   "packages/testing",
@@ -27,6 +28,7 @@ const dependencyRoots = [
   "apps/media-processor-worker",
   "apps/data-registration-worker",
   "apps/hns-owner-verifier",
+  "apps/hns-authority-provisioner",
   "apps/hns-observer-driver",
   "apps/hns-platform-gateway",
 ] as const;

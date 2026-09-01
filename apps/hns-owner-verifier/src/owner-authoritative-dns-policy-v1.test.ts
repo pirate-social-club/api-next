@@ -3,9 +3,9 @@ import {
   buildHnsAuthoritativeDnsQueryV1,
   type HnsAuthoritativeDnsValidatorInputV1,
   type HnsChainAuthorityRecord,
+  makeHnsAuthoritativeDnsValidatorV1,
 } from "@pirate/application/namespace-ownership";
 import type { Sha256Hex as Sha256HexValue } from "@pirate/domain/verification";
-import { makeHnsAuthoritativeDnsValidatorV1 } from "./owner-authoritative-dns-policy-v1.ts";
 
 const ROOT = "jazleeuw";
 const CONTROL = `_pirate.${ROOT}`;
