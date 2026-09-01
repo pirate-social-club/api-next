@@ -407,7 +407,7 @@ function reserveInput(
     expected_binding_generation: 1,
     expected_verified_evidence_ref: `evidence_${suffix}`,
     idempotency_key: `poll_${suffix}`,
-    lease_ms: 1_000,
+    lease_ms: 15_000,
     max_consumed_attempts: 3,
     ...overrides,
   } as const;
