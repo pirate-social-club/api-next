@@ -9,6 +9,10 @@ import {
   type TextModeration,
   TextModerationProviderError,
 } from "@pirate/application/use-cases/content/text-post";
+import type {
+  DanceAttemptSessionAuthorityResolver,
+  DanceAttemptUploadAuthority,
+} from "@pirate/application/use-cases/dance/attempt-services";
 import type { DanceReferenceAuthoringAuthorityResolver } from "@pirate/application/use-cases/dance/reference-services";
 import { makeRandomIdentityRegistrationCandidateSource } from "@pirate/application/use-cases/identity-registration";
 import { PERSONA_WALLET_SETUP_SESSION_SCOPE } from "@pirate/application/use-cases/identity-registration-handler";
@@ -68,6 +72,7 @@ import {
   loadConfigFrom,
 } from "@pirate/platform-cf/config";
 import { makeControlPlaneContentStore } from "@pirate/platform-cf/content-repository";
+import { makeDanceAttemptStore } from "@pirate/platform-cf/dance-attempt-authoring-repository";
 import { makeDanceReferenceStore } from "@pirate/platform-cf/dance-reference-authoring-repository";
 import { makeControlPlaneFeedStore } from "@pirate/platform-cf/feed-repository";
 import { makeHandleRecipientTokenVault } from "@pirate/platform-cf/handle-recipient-token-vault";
@@ -179,6 +184,8 @@ import {
   makeCommunityPurchaseFundingObservationHandlers,
   makeCommunityPurchaseFundingQuoteHandlers,
 } from "./community-purchase-funding-handlers.ts";
+import { makeDanceAttemptHandlers } from "./dance-attempt-handlers.ts";
+import { makeProductionDanceAttemptServices } from "./dance-attempt-production-composition.ts";
 import { makeDanceReferenceHandlers } from "./dance-reference-handlers.ts";
 import { makeProductionDanceReferenceServices } from "./dance-reference-production-composition.ts";
 import { makeHandleSalesHandlers } from "./handle-sales-handlers.ts";
@@ -322,6 +329,10 @@ export interface HttpWorkerCompositionDependencies {
   readonly media_services?: MediaSubmissionServices;
   /** Sealed-video policy authority. Production remains null until its owning lane lands. */
   readonly dance_reference_authority?: DanceReferenceAuthoringAuthorityResolver;
+  /** Test/review injection only. Production has no private Dance attempt authority. */
+  readonly dance_attempt_session_authority?: DanceAttemptSessionAuthorityResolver;
+  /** Test/review injection only. Production has no private Dance upload authority. */
+  readonly dance_attempt_upload_authority?: DanceAttemptUploadAuthority;
   /** Fake transport for provider-free composition and request-path tests. */
   readonly openai_moderation_transport?: OpenAiModerationTransport;
 }
@@ -644,6 +655,13 @@ export async function createProductionHttpWorker(
     makeProductionDanceReferenceServices(
       makeDanceReferenceStore(controlPlane),
       dependencies.dance_reference_authority,
+    ),
+  );
+  const danceAttemptHandlers = makeDanceAttemptHandlers(
+    makeProductionDanceAttemptServices(
+      makeDanceAttemptStore(controlPlane),
+      dependencies.dance_attempt_session_authority,
+      dependencies.dance_attempt_upload_authority,
     ),
   );
   const hnsCommunityAppApi = makeProductionHnsCommunityAppApiComposition({
@@ -1207,6 +1225,7 @@ export async function createProductionHttpWorker(
       ...songRewardOfferHandlers,
       ...mediaHandlers,
       ...danceReferenceHandlers,
+      ...danceAttemptHandlers,
       GetJwks: () => sessionCrypto.jwks(),
       GetPublicProfileByHandle: publicProfile,
     },
