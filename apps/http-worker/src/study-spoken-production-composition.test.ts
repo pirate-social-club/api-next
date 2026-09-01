@@ -70,11 +70,23 @@ describe("Study spoken production composition", () => {
     expect(storedObjects).toHaveLength(1);
   });
 
-  test("allows provider retention only in staging", async () => {
+  test("allows provider retention only through the explicit staging diagnostic override", async () => {
     const urls: string[] = [];
-    for (const API_NEXT_ENV of ["staging", "production"] as const) {
+    const cases = [
+      { API_NEXT_ENV: "staging", ELEVENLABS_ENABLE_LOGGING: undefined, stored: false },
+      { API_NEXT_ENV: "staging", ELEVENLABS_ENABLE_LOGGING: "false", stored: false },
+      { API_NEXT_ENV: "staging", ELEVENLABS_ENABLE_LOGGING: "true", stored: true },
+      { API_NEXT_ENV: "production", ELEVENLABS_ENABLE_LOGGING: "true", stored: false },
+    ] as const;
+    for (const testCase of cases) {
       const study = makeProductionStudySpokenServices(
-        { API_NEXT_ENV, ELEVENLABS_API_KEY: "fixture-elevenlabs-key" },
+        {
+          API_NEXT_ENV: testCase.API_NEXT_ENV,
+          ELEVENLABS_API_KEY: "fixture-elevenlabs-key",
+          ...(testCase.ELEVENLABS_ENABLE_LOGGING === undefined
+            ? {}
+            : { ELEVENLABS_ENABLE_LOGGING: testCase.ELEVENLABS_ENABLE_LOGGING }),
+        },
         {
           study_batch_fetch: async (url) => {
             urls.push(url);
@@ -83,9 +95,7 @@ describe("Study spoken production composition", () => {
         },
       );
       if (study === undefined) throw new Error("Study speech must be enabled in this fixture");
-      expect(study.transcriber.providerRetention).toBe(
-        API_NEXT_ENV === "staging" ? "stored" : "not_stored",
-      );
+      expect(study.transcriber.providerRetention).toBe(testCase.stored ? "stored" : "not_stored");
       await Effect.runPromise(
         study.transcriber.transcribe({
           audio: new Uint8Array([1]),
@@ -94,7 +104,9 @@ describe("Study spoken production composition", () => {
         }),
       );
     }
-    expect(urls[0]).toContain("enable_logging=true");
+    expect(urls[0]).toContain("enable_logging=false");
     expect(urls[1]).toContain("enable_logging=false");
+    expect(urls[2]).toContain("enable_logging=true");
+    expect(urls[3]).toContain("enable_logging=false");
   });
 });
