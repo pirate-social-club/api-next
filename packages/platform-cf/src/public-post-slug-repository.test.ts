@@ -196,6 +196,7 @@ describe("public post slug live-state lookups", () => {
       "JOIN communities AS c ON c.community_id = p.community_id",
     );
     expect(statements[0]?.text).toContain("can_account_view_content_rating_v1");
+    expect(statements[0]?.text).toContain("$2::text IS NOT NULL");
     expect(statements[0]?.text).not.toContain("p.title");
     expect(statements[0]?.text).not.toContain("p.body");
   });

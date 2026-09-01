@@ -314,15 +314,13 @@ const baseLookupSelect = `SELECT a.slug AS alias_slug,
                 p.visibility AS post_visibility,
                 p.content_rating,
                 c.status AS community_status,
-                CASE WHEN p.visibility = 'public' THEN TRUE
-                     ELSE EXISTS (
+                ($2::text IS NOT NULL AND EXISTS (
                        SELECT 1
                          FROM community_memberships AS viewer_membership
                         WHERE viewer_membership.community_id = p.community_id
                           AND viewer_membership.user_id = $2
                           AND viewer_membership.status = 'member'
-                     )
-                END AS viewer_is_member,
+                     )) AS viewer_is_member,
                 (p.content_rating IS NULL
                   OR can_account_view_content_rating_v1($2, p.content_rating)) AS rating_view_allowed
            FROM post_slug_aliases AS a
