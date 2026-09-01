@@ -58,13 +58,15 @@ export type DanceAttemptQueueDisposition =
   | Readonly<{ readonly disposition: "retry"; readonly delaySeconds: number }>
   | Readonly<{ readonly disposition: "dlq" }>;
 
+export type DanceAttemptQueueDependencies = Readonly<{
+  readonly store: DanceAttemptWakeupStore;
+  readonly workflow: DanceAttemptWorkflowLauncher;
+}>;
+
 export async function consumeDanceAttemptQueueMessage(
   body: unknown,
   deliveryIdInput: unknown,
-  dependencies: Readonly<{
-    readonly store: DanceAttemptWakeupStore;
-    readonly workflow: DanceAttemptWorkflowLauncher;
-  }>,
+  dependencies: DanceAttemptQueueDependencies,
 ): Promise<DanceAttemptQueueDisposition> {
   let message: Schema.Schema.Type<typeof DanceAttemptQueueMessage>;
   let deliveryId: string;

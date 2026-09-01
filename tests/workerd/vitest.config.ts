@@ -36,6 +36,10 @@ const alias = {
     "../../packages/application/src/dance/reference-processing.ts",
     import.meta.url,
   ).pathname,
+  "@pirate/application/dance/attempt-processing-wakeup": new URL(
+    "../../packages/application/src/dance/attempt-processing-wakeup.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/application/verification": new URL(
     "../../packages/application/src/verification/index.ts",
     import.meta.url,
