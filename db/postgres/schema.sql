@@ -27419,7 +27419,11 @@ CREATE INDEX home_feed_rank_idx ON home_feed_projection USING btree (community_i
 
 CREATE INDEX identity_credentials_user_status_idx ON identity_credentials USING btree (canonical_user_id, status, created_at DESC);
 
+CREATE INDEX karaoke_recordings_pending_recovery_idx ON karaoke_recordings USING btree (created_at, session_id, attempt_id) WHERE (state = 'pending'::text);
+
 CREATE INDEX karaoke_sessions_account_created_idx ON karaoke_sessions USING btree (account_id, created_at DESC, session_id);
+
+CREATE INDEX karaoke_sessions_active_expiry_recovery_idx ON karaoke_sessions USING btree (expires_at, session_id) WHERE (status = 'active'::text);
 
 CREATE INDEX karaoke_sessions_live_account_idx ON karaoke_sessions USING btree (account_id, expires_at) WHERE (status = 'active'::text);
 

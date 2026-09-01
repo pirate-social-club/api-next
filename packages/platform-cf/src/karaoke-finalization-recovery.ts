@@ -55,18 +55,26 @@ export const makeControlPlaneKaraokeFinalizationRecoveryStore = (
       const db = yield* ControlPlaneDb;
       const result = yield* db.execute<Row>({
         label: "karaoke.finalization-recovery.candidates",
-        text: `WITH due AS (
+        text: `WITH expired AS (
                  SELECT session.session_id, session.expires_at AS due_at, 0 AS kind_order
                    FROM karaoke_sessions session
                   WHERE session.status='active'
                     AND session.expires_at <= clock_timestamp()
-                 UNION ALL
+                  ORDER BY session.expires_at, session.session_id
+                  LIMIT $1
+               ), pending_recordings AS (
                  SELECT recording.session_id, recording.created_at AS due_at, 1 AS kind_order
                    FROM karaoke_recordings recording
                    JOIN karaoke_sessions session
                      ON session.session_id=recording.session_id
                     AND session.attempt_id=recording.attempt_id
                   WHERE session.status='completed' AND recording.state='pending'
+                  ORDER BY recording.created_at, recording.session_id
+                  LIMIT $1
+               ), due AS (
+                 SELECT * FROM expired
+                 UNION ALL
+                 SELECT * FROM pending_recordings
                ), candidates AS (
                  SELECT session_id, min(due_at) AS due_at, min(kind_order) AS kind_order
                    FROM due GROUP BY session_id
