@@ -5,7 +5,7 @@
   "version": "0.49.0",
   "releaseType": "public-post-canonical-route-contract",
   "wireContract": "public-post-slug-routes",
-  "sourceCommit": "89e2321f13e956a268ba8365f60c99839b6d72be",
+  "sourceCommit": "cfa2fd0d8e5408efe7ce918de7f93cf311d9f9b9",
   "supersedes": "0.48.0; preserves the Dance client release and additively exposes public Post lookup by logical slug and Post ID, bounded sitemap enumeration, guarded route results, and canonical paths.",
   "artifact": {
     "path": "artifacts/api-client/pirate-api-client-0.49.0.tgz",
