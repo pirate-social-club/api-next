@@ -10068,7 +10068,7 @@ BEGIN
       replay.activation_generation, replay.result_health_generation;
     RETURN;
   END IF;
-  IF input_valid_for_seconds < 1 OR input_valid_for_seconds > 86400 THEN
+  IF input_valid_for_seconds < 1 OR input_valid_for_seconds > 604800 THEN
     RAISE EXCEPTION 'HNS DNS health lifetime is invalid';
   END IF;
   SELECT * INTO current_record FROM hns_dns_zone_activation_current AS current_authority
