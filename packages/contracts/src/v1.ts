@@ -82,7 +82,7 @@ const PathPost = Schema.Struct({ postId: Schema.String });
 const PathComment = Schema.Struct({ commentId: Schema.String });
 const PathMediaSubmission = Schema.Struct({ submissionId: Schema.String });
 
-const LocaleQuery = Schema.Struct({
+export const LocaleQuery = Schema.Struct({
   locale: Schema.optional(Schema.String),
 });
 
@@ -602,8 +602,10 @@ const PostDocument = Schema.Struct({
 });
 export type PostDocument = Schema.Schema.Type<typeof PostDocument>;
 
-const LocalizedPost = Schema.Struct({
+export const LocalizedPost = Schema.Struct({
   post: PostDocument,
+  /** API-owned canonical detail path; absent for guarded/non-feed projections. */
+  canonical_path: Schema.optional(Schema.String),
   community: Schema.optional(Schema.NullOr(CommunityPreview)),
   viewer_gate_state: Schema.optional(Schema.NullOr(JsonObject)),
   author_community_role: Schema.optional(Schema.NullOr(Schema.String)),
@@ -638,6 +640,7 @@ const LocalizedPost = Schema.Struct({
   translated_embeds: Schema.optional(Schema.NullOr(Schema.Array(JsonObject))),
   source_hash: Schema.NullOr(Schema.String),
 });
+export type LocalizedPost = Schema.Schema.Type<typeof LocalizedPost>;
 
 const HomeFeedCommunitySummary = Schema.Struct({
   id: Schema.String,
