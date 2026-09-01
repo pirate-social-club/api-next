@@ -187,13 +187,18 @@ async function startLocalPostgres(): Promise<{
   }
 }
 
-function connectionForBaselineGeneration(connectionString: string): string {
+export function connectionForBaselineGeneration(connectionString: string): string {
   const url = new URL(connectionString);
   const existingOptions = url.searchParams.get("options")?.trim();
   url.searchParams.set(
     "options",
     [existingOptions, "-c timezone=UTC", "-c search_path=public"].filter(Boolean).join(" "),
   );
+  // URLSearchParams uses application/x-www-form-urlencoded `+` for spaces,
+  // while libpq URI parameters require percent-encoded spaces.
+  url.search = [...url.searchParams]
+    .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
+    .join("&");
   return url.toString();
 }
 

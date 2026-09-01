@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { assertPostgresBaselineSeedInventory } from "./generate-postgres-baseline.ts";
+import {
+  assertPostgresBaselineSeedInventory,
+  connectionForBaselineGeneration,
+} from "./generate-postgres-baseline.ts";
 import {
   normalizePostgresBaselineDump,
   normalizePostgresBaselineSeedDump,
@@ -68,5 +71,17 @@ SET search_path TO leaked_session_schema;
     expect(() =>
       assertPostgresBaselineSeedInventory(["activity_registry", "unexpected_seed_table"]),
     ).toThrow(/missing=.*handle_account_directory_bindings.*unexpected=.*unexpected_seed_table/u);
+  });
+
+  test("percent-encodes libpq option spaces in supplied connection URLs", () => {
+    const connectionString = connectionForBaselineGeneration(
+      "postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable&options=-c%20statement_timeout%3D0",
+    );
+
+    expect(connectionString).toContain("sslmode=disable");
+    expect(connectionString).toContain(
+      "options=-c%20statement_timeout%3D0%20-c%20timezone%3DUTC%20-c%20search_path%3Dpublic",
+    );
+    expect(connectionString).not.toContain("+");
   });
 });
