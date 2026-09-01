@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import { Effect } from "effect";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
+import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import {
+  makeControlPlaneStudySpokenAnswerRecoveryStore,
+  recoverExpiredStudySpokenAnswers,
+} from "./study-spoken-answer-recovery.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -343,6 +349,95 @@ suite("Study v2 Postgres foundation", () => {
           recording_state: "pending",
         },
       ]);
+      await admin.query(
+        `UPDATE study_spoken_answer_commands
+            SET reserved_at=clock_timestamp() - interval '2 minutes',
+                lease_expires_at=clock_timestamp() - interval '1 second'
+          WHERE command_id='spoken-1'`,
+      );
+      const storageOperations: string[] = [];
+      const recoveryStore = makeControlPlaneStudySpokenAnswerRecoveryStore(
+        makeDirectPostgresControlPlaneLayer(connectionForSchema(connectionString, schema)),
+      );
+      const firstClaim = await Effect.runPromise(
+        Effect.scoped(
+          recoveryStore.claimExpired({ leaseToken: "sweep-lease-1", leaseMs: 120_000, limit: 25 }),
+        ),
+      );
+      expect(firstClaim).toHaveLength(1);
+      const resumedClaim = await Effect.runPromise(
+        Effect.scoped(
+          recoveryStore.claimExpired({ leaseToken: "sweep-lease-1", leaseMs: 120_000, limit: 25 }),
+        ),
+      );
+      expect(resumedClaim).toEqual(firstClaim);
+      const recovery = await Effect.runPromise(
+        Effect.scoped(
+          recoverExpiredStudySpokenAnswers({
+            store: recoveryStore,
+            bucket: {
+              delete: async (key) => {
+                storageOperations.push(`delete:${key}`);
+              },
+              head: async (key) => {
+                storageOperations.push(`head:${key}`);
+                return null;
+              },
+            },
+            leaseToken: "sweep-lease-1",
+            failedAt: "2026-09-01T00:00:00.000Z",
+          }),
+        ),
+      );
+      expect(recovery).toEqual({ claimed: 1, recovered: 1, storageFailures: 0, fenced: 0 });
+      expect(storageOperations).toEqual([
+        "delete:learner-audio/study/spoken-attempt-1/audio",
+        "head:learner-audio/study/spoken-attempt-1/audio",
+      ]);
+      const recoveredCommand = await admin.query(
+        `SELECT state, provider_failure_kind, lease_token
+           FROM study_spoken_answer_commands
+          WHERE command_id='spoken-1'`,
+      );
+      expect(recoveredCommand.rows).toEqual([
+        {
+          state: "retryable_failed",
+          provider_failure_kind: "timeout",
+          lease_token: "sweep-lease-1",
+        },
+      ]);
+      const recoveredArtifact = await admin.query(
+        `SELECT object_ref, recording_state
+           FROM learner_audio_artifacts
+          WHERE learner_audio_artifact_id='audio-command-1'`,
+      );
+      expect(recoveredArtifact.rows).toEqual([{ object_ref: null, recording_state: "failed" }]);
+      const staleCompletion = await admin.query(
+        `UPDATE study_spoken_answer_commands
+            SET state='retryable_failed'
+          WHERE command_id='spoken-1' AND lease_token='lease-2'
+            AND state='reserved' AND lease_expires_at > clock_timestamp()
+        RETURNING command_id`,
+      );
+      expect(staleCompletion.rows).toEqual([]);
+      const clientRetry = await admin.query(
+        `UPDATE study_spoken_answer_commands
+            SET state='reserved', provider_failure_kind=NULL, completed_at=NULL,
+                lease_token='client-retry-lease',
+                lease_expires_at=clock_timestamp() + interval '60 seconds',
+                reserved_at=clock_timestamp()
+          WHERE command_id='spoken-1' AND state='retryable_failed'
+        RETURNING command_id`,
+      );
+      expect(clientRetry.rows).toEqual([{ command_id: "spoken-1" }]);
+      const artifactRetry = await admin.query(
+        `UPDATE learner_audio_artifacts
+            SET recording_state='pending', object_ref=NULL, deleted_at=NULL
+          WHERE learner_audio_artifact_id='audio-command-1' AND account_id='account-1'
+            AND recording_state='failed'
+        RETURNING learner_audio_artifact_id`,
+      );
+      expect(artifactRetry.rows).toEqual([{ learner_audio_artifact_id: "audio-command-1" }]);
       await expect(
         admin.query(
           `INSERT INTO study_sessions_v2 (

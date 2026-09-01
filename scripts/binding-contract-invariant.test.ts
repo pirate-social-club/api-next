@@ -124,6 +124,7 @@ const JOBS_BINDING_KINDS = {
   CF_VERSION_METADATA: "platform",
   CRON_LOCK: "platform",
   CONTROL_PLANE: "platform",
+  LEARNER_AUDIO: "platform",
   MEGAPOT_COMMITMENTS: "platform",
   HNS_OWNER_VERIFIER: "platform",
   API_NEXT_ENV: "var",

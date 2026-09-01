@@ -67,6 +67,7 @@ import {
   collectSongPipelineTerminalAlerts,
   handleSongPipelineDlqBatch,
 } from "./song-pipeline-terminal-alerts";
+import { makeStudySpokenAnswerRecoveryJob } from "./study-spoken-answer-recovery";
 
 export { ScheduledCronLockDO } from "@pirate/platform-cf";
 export {
@@ -123,6 +124,15 @@ export {
   type CommunityCatalogIntegrityJobOptions,
   makeCommunityCatalogIntegrityJob,
 } from "./routing-integrity";
+export {
+  makeStudySpokenAnswerRecoveryJob,
+  STUDY_SPOKEN_ANSWER_RECOVERY_JOB,
+  STUDY_SPOKEN_ANSWER_RECOVERY_LANE,
+  STUDY_SPOKEN_ANSWER_RECOVERY_READS,
+  STUDY_SPOKEN_ANSWER_RECOVERY_SCHEDULE,
+  STUDY_SPOKEN_ANSWER_RECOVERY_TIMEOUT,
+  STUDY_SPOKEN_ANSWER_RECOVERY_WRITES,
+} from "./study-spoken-answer-recovery";
 
 export interface JobsWorkerEnv
   extends AlertSinkBindings,
@@ -133,6 +143,7 @@ export interface JobsWorkerEnv
   readonly CF_VERSION_METADATA: MegapotRewardsJobOptions["workerVersion"];
   readonly CRON_LOCK: DurableObjectNamespace<ScheduledCronLockDO>;
   readonly CONTROL_PLANE?: HyperdriveConnection;
+  readonly LEARNER_AUDIO?: R2Bucket;
   readonly MEGAPOT_COMMITMENTS?: R2Bucket;
   readonly API_NEXT_ENV?: string;
   readonly COMMUNITY_MAINTENANCE_ENABLED?: string;
@@ -690,6 +701,7 @@ export function makeJobsWorkerDeclarations(
   environment: JobsWorkerConfigValue["API_NEXT_ENV"] = "development",
   megapot: MegapotRewardsJobOptions | null = null,
   communityMaintenanceEnabled = true,
+  learnerAudio?: R2Bucket,
 ) {
   const declarations: Array<JobDeclaration<unknown, ControlPlaneDb | AlertCollector>> = [];
   if (communityMaintenanceEnabled) {
@@ -710,6 +722,9 @@ export function makeJobsWorkerDeclarations(
     );
   }
   if (megapot !== null) declarations.push(makeMegapotRewardsJob(sink, megapot));
+  if (learnerAudio !== undefined) {
+    declarations.push(makeStudySpokenAnswerRecoveryJob(sink, learnerAudio));
+  }
   return declarations;
 }
 
@@ -747,6 +762,7 @@ export default {
       config.API_NEXT_ENV,
       megapot,
       config.COMMUNITY_MAINTENANCE_ENABLED,
+      env.LEARNER_AUDIO,
     );
     const registry = await Effect.runPromise(buildJobRegistry(declarations));
     const dueByLane = groupDueJobsByLane(registry, event.scheduledTime);

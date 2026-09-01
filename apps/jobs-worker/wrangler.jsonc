@@ -36,6 +36,12 @@
       "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
     }
   ],
+  "r2_buckets": [
+    {
+      "binding": "LEARNER_AUDIO",
+      "bucket_name": "pirate-learner-audio-development"
+    }
+  ],
   "workflows": [
     {
       "binding": "MEDIA_PROCESSING_WORKFLOW",
@@ -207,6 +213,10 @@
       },
       "r2_buckets": [
         {
+          "binding": "LEARNER_AUDIO",
+          "bucket_name": "pirate-learner-audio-staging"
+        },
+        {
           "binding": "MEGAPOT_COMMITMENTS",
           "bucket_name": "pirate-megapot-commitments-staging",
           "preview_bucket_name": "pirate-megapot-commitments-staging"
@@ -323,6 +333,12 @@
         "MEGAPOT_SHARED_SPONSOR_DAILY_TICKET_CEILING": "50",
         "MEGAPOT_SHARED_SPONSOR_DAILY_SPEND_CEILING_ATOMIC": "500000000"
       },
+      "r2_buckets": [
+        {
+          "binding": "LEARNER_AUDIO",
+          "bucket_name": "pirate-learner-audio-production"
+        }
+      ],
       "secrets": {
         "required": ["COMMUNITY_PURCHASE_FUNDING_RPC_URL"]
       }
