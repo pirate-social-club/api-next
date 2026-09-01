@@ -25,12 +25,14 @@ async function sentinelSet(): Promise<{
     "adapter",
     "foundation",
     "media-persistence",
+    "media-migrations",
     "optional-route-v2",
     "migration",
     "identity",
     "community",
     "community-creation",
     "canonical-community-route",
+    "canonical-route-migration",
     "gates-v2-community",
     "feed",
     "content",
@@ -204,6 +206,23 @@ describe("Postgres suite sentinel verification", () => {
     }
   });
 
+  test("keeps canonical-route migration coverage fail-closed in Postgres CI", async () => {
+    const workflow = await readFile(
+      new URL("../.github/workflows/ci.yml", import.meta.url),
+      "utf8",
+    );
+
+    expect(workflow).toContain(
+      "CONTROL_PLANE_POSTGRES_CANONICAL_ROUTE_MIGRATION_TEST_SENTINEL: " +
+        "/tmp/api-next-control-plane-postgres-canonical-route-migration-suite-complete",
+    );
+    expect(
+      workflow.match(
+        /\/tmp\/api-next-control-plane-postgres-canonical-route-migration-suite-complete/gu,
+      ),
+    ).toHaveLength(2);
+  });
+
   test("keeps HNS observer persistence fail-closed in Postgres CI", async () => {
     const workflow = await readFile(
       new URL("../.github/workflows/ci.yml", import.meta.url),
@@ -289,6 +308,21 @@ describe("Postgres suite sentinel verification", () => {
     );
     expect(
       workflow.match(/\/tmp\/api-next-control-plane-postgres-media-persistence-suite-complete/gu),
+    ).toHaveLength(2);
+  });
+
+  test("keeps media migration coverage fail-closed in Postgres CI", async () => {
+    const workflow = await readFile(
+      new URL("../.github/workflows/ci.yml", import.meta.url),
+      "utf8",
+    );
+
+    expect(workflow).toContain(
+      "CONTROL_PLANE_POSTGRES_MEDIA_MIGRATIONS_TEST_SENTINEL: " +
+        "/tmp/api-next-control-plane-postgres-media-migrations-suite-complete",
+    );
+    expect(
+      workflow.match(/\/tmp\/api-next-control-plane-postgres-media-migrations-suite-complete/gu),
     ).toHaveLength(2);
   });
 

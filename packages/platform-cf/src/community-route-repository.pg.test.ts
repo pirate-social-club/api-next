@@ -7,10 +7,6 @@ import {
 import type { Sha256Hex } from "@pirate/domain/verification";
 import { Effect } from "effect";
 import { Client } from "pg";
-import {
-  loadPostgresMigrations,
-  runPostgresMigrations,
-} from "../../../scripts/postgres-migrations.ts";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { makeControlPlaneCommunityRouteExpiryStore } from "./community-route-expiry-repository.ts";
 import { makeControlPlaneCanonicalCommunityRouteStore } from "./community-route-repository.ts";
@@ -378,61 +374,6 @@ function expireHnsRoutes(connection: string, limit = 25) {
 }
 
 suite("canonical community route Postgres repository", () => {
-  test("refuses the route-v2 migration when retained history contains the platform root", async () => {
-    await withSchema(async (connection, admin) => {
-      const migrations = await loadPostgresMigrations();
-      const routeV2Index = migrations.findIndex(
-        (migration) => migration.version === "0049_bare_hns_community_route_v2.sql",
-      );
-      expect(routeV2Index).toBeGreaterThan(0);
-      await runPostgresMigrations({
-        connectionString: connection,
-        migrations: migrations.slice(0, routeV2Index),
-      });
-      await admin.query("INSERT INTO users (user_id) VALUES ('reserved-route-owner')");
-      await admin.query(
-        `INSERT INTO communities (
-           community_id, display_name, status, created_by_user_id,
-           created_at, updated_at, route_slug, route_authority_version
-         ) VALUES ('community_123e4567-e89b-42d3-a456-426614174049',
-           'Reserved platform route', 'active',
-           'reserved-route-owner', clock_timestamp(), clock_timestamp(), NULL,
-           'optional_route_v2')`,
-      );
-      await admin.query("BEGIN");
-      await admin.query(
-        `INSERT INTO community_canonical_route_bindings (
-           route_binding_id, community_id, family, root_label, root_label_display,
-           ownership_status, route_lifecycle_status, binding_generation,
-           verified_evidence_ref
-         ) VALUES ('reserved-platform-binding',
-           'community_123e4567-e89b-42d3-a456-426614174049', 'hns',
-           'pirate', 'pirate', 'pending', 'suspended', 1, NULL)`,
-      );
-      await admin.query(
-        `UPDATE communities
-            SET canonical_route_binding_id = 'reserved-platform-binding'
-          WHERE community_id = 'community_123e4567-e89b-42d3-a456-426614174049'`,
-      );
-      await admin.query("COMMIT");
-
-      await expect(
-        runPostgresMigrations({ connectionString: connection, migrations }),
-      ).rejects.toBeDefined();
-      await expect(
-        admin.query(
-          "SELECT count(*)::integer AS count FROM schema_migrations WHERE version = '0049_bare_hns_community_route_v2.sql'",
-        ),
-      ).resolves.toMatchObject({ rows: [{ count: 0 }] });
-      await expect(
-        admin.query(
-          "SELECT root_label FROM community_canonical_route_bindings WHERE route_binding_id = 'reserved-platform-binding'",
-        ),
-      ).resolves.toMatchObject({ rows: [{ root_label: "pirate" }] });
-      completedTestCount += 1;
-    });
-  }, 30_000);
-
   test("resolves an active optional-route community by permanent id without a binding", async () => {
     await withSchema(async (connection, admin) => {
       await applyPostgresTestBaselineConnection({ connectionString: connection });
@@ -1432,6 +1373,6 @@ suite("canonical community route Postgres repository", () => {
 });
 
 afterAll(async () => {
-  if (connectionString === undefined || completedTestCount !== 11) return;
+  if (connectionString === undefined || completedTestCount !== 10) return;
   await Bun.write(sentinelPath, sentinelContents);
 });

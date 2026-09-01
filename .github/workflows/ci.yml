@@ -158,12 +158,14 @@ jobs:
           /tmp/api-next-control-plane-postgres-adapter-suite-complete
           /tmp/api-next-control-plane-postgres-foundation-suite-complete
           /tmp/api-next-control-plane-postgres-media-persistence-suite-complete
+          /tmp/api-next-control-plane-postgres-media-migrations-suite-complete
           /tmp/api-next-control-plane-postgres-optional-route-v2-suite-complete
           /tmp/api-next-control-plane-postgres-migration-suite-complete
           /tmp/api-next-control-plane-postgres-identity-suite-complete
           /tmp/api-next-control-plane-postgres-community-suite-complete
           /tmp/api-next-control-plane-postgres-community-creation-suite-complete
           /tmp/api-next-control-plane-postgres-canonical-route-suite-complete
+          /tmp/api-next-control-plane-postgres-canonical-route-migration-suite-complete
           /tmp/api-next-control-plane-postgres-gates-v2-community-suite-complete
           /tmp/api-next-control-plane-postgres-feed-suite-complete
           /tmp/api-next-control-plane-postgres-content-suite-complete
@@ -192,12 +194,14 @@ jobs:
           CONTROL_PLANE_POSTGRES_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-adapter-suite-complete
           CONTROL_PLANE_POSTGRES_FOUNDATION_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-foundation-suite-complete
           CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-media-persistence-suite-complete
+          CONTROL_PLANE_POSTGRES_MEDIA_MIGRATIONS_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-media-migrations-suite-complete
           CONTROL_PLANE_POSTGRES_OPTIONAL_ROUTE_V2_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-optional-route-v2-suite-complete
           CONTROL_PLANE_POSTGRES_MIGRATION_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-migration-suite-complete
           CONTROL_PLANE_POSTGRES_IDENTITY_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-identity-suite-complete
           CONTROL_PLANE_POSTGRES_COMMUNITY_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-community-suite-complete
           CONTROL_PLANE_POSTGRES_COMMUNITY_CREATION_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-community-creation-suite-complete
           CONTROL_PLANE_POSTGRES_CANONICAL_ROUTE_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-canonical-route-suite-complete
+          CONTROL_PLANE_POSTGRES_CANONICAL_ROUTE_MIGRATION_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-canonical-route-migration-suite-complete
           CONTROL_PLANE_POSTGRES_GATES_V2_COMMUNITY_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-gates-v2-community-suite-complete
           CONTROL_PLANE_POSTGRES_FEED_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-feed-suite-complete
           CONTROL_PLANE_POSTGRES_CONTENT_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-content-suite-complete
