@@ -73,12 +73,6 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
-      - name: Start warn-only egress audit
-        uses: ironsh/iron-proxy-action@fa1fd82ec32396d044deba7040a6db576bec927a # v0.1.4
-        with:
-          version: 0.41.0
-          egress-rules: .github/egress/postgres17.yml
-          warn: true
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.0
@@ -88,6 +82,15 @@ jobs:
           CONTROL_PLANE_POSTGRES_GENERATOR_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
           CONTROL_PLANE_POSTGRES_IMAGE: postgres:17@sha256:67f41722b7a8cbdb868a44a4995c846eddfdc2973bccb291ce937dce88ad5675
         run: bun run check:baseline:fresh
+      # Iron Proxy intentionally removes Docker socket access. Start it after
+      # freshness has exercised the pinned pg_dump image; the required check
+      # job separately audits the same pinned setup and dependency install.
+      - name: Start warn-only egress audit
+        uses: ironsh/iron-proxy-action@fa1fd82ec32396d044deba7040a6db576bec927a # v0.1.4
+        with:
+          version: 0.41.0
+          egress-rules: .github/egress/postgres17.yml
+          warn: true
       - name: Remove stale completion sentinel
         run: >-
           rm -f
