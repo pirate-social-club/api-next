@@ -76,7 +76,6 @@ CREATE INDEX hns_root_import_teardown_jobs_claim_idx
 CREATE FUNCTION enqueue_hns_root_import_teardown_job_v1()
 RETURNS TRIGGER
 LANGUAGE plpgsql
-SET search_path TO api_next, pg_catalog
 AS $$
 BEGIN
   IF NEW.state = 'completed' AND OLD.state <> 'completed' THEN
@@ -484,15 +483,44 @@ END;
 $$;
 
 ALTER FUNCTION claim_hns_authority_provision_job_v1(TEXT, INTEGER)
-  SECURITY DEFINER SET search_path TO api_next, pg_catalog;
+  SECURITY DEFINER;
 ALTER FUNCTION finalize_hns_authority_provision_job_v1(
   TEXT, TEXT, BIGINT, TEXT, TEXT, BYTEA, TEXT, BYTEA, TEXT, TEXT
-) SECURITY DEFINER SET search_path TO api_next, pg_catalog;
+) SECURITY DEFINER;
 ALTER FUNCTION claim_hns_root_import_observation_job_v1(TEXT, INTEGER)
-  SECURITY DEFINER SET search_path TO api_next, pg_catalog;
+  SECURITY DEFINER;
 ALTER FUNCTION finalize_hns_root_import_observation_job_v1(
   TEXT, TEXT, BIGINT, TEXT, TEXT, BYTEA, TEXT, TEXT
-) SECURITY DEFINER SET search_path TO api_next, pg_catalog;
+) SECURITY DEFINER;
+
+-- Bind every executor boundary to the schema where this migration is
+-- installed. Naming the schema dynamically preserves isolated-schema tests
+-- while keeping pg_temp after the trusted application schema.
+DO $$
+DECLARE
+  installed_schema TEXT := current_schema();
+  function_signature TEXT;
+BEGIN
+  IF installed_schema IS NULL THEN
+    RAISE EXCEPTION 'HNS root-import readiness migration requires a current schema';
+  END IF;
+  FOREACH function_signature IN ARRAY ARRAY[
+    'enqueue_hns_root_import_teardown_job_v1()',
+    'claim_hns_authority_provision_job_v1(text,integer)',
+    'finalize_hns_authority_provision_job_v1(text,text,bigint,text,text,bytea,text,bytea,text,text)',
+    'claim_hns_root_import_observation_job_v1(text,integer)',
+    'finalize_hns_root_import_observation_job_v1(text,text,bigint,text,text,bytea,text,text)'
+  ]
+  LOOP
+    EXECUTE format(
+      'ALTER FUNCTION %I.%s SET search_path TO %I, pg_temp',
+      installed_schema,
+      function_signature,
+      installed_schema
+    );
+  END LOOP;
+END;
+$$;
 
 REVOKE ALL ON FUNCTION claim_hns_authority_provision_job_v1(TEXT, INTEGER) FROM PUBLIC;
 REVOKE ALL ON FUNCTION finalize_hns_authority_provision_job_v1(
