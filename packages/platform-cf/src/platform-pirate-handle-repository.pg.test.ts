@@ -3,8 +3,11 @@ import { projectIdentityAccount } from "@pirate/application/use-cases/identity-a
 import { getPublicProfileByHandle } from "@pirate/application/use-cases/public-profile";
 import { platformPirateHandleStateV1Hash } from "@pirate/domain";
 import { Effect } from "effect";
-import { Client } from "pg";
-import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
+import type { Client } from "pg";
+import {
+  applyPostgresTestBaselineConnection,
+  withReusablePostgresTestSchema,
+} from "../../../scripts/postgres-test-baseline.ts";
 import { makeControlPlaneIdentityStore } from "./identity-repository.ts";
 import {
   createActivePersonaFixture,
@@ -27,8 +30,6 @@ const sentinelContents = "api-next-control-plane-postgres-platform-pirate-rename
 let completed = 0;
 const testCount = 3;
 
-const schemaIdentifier = (): string =>
-  `api_next_platform_pirate_${crypto.randomUUID().replaceAll("-", "")}`;
 const quoteIdentifier = (value: string): string => `"${value.replaceAll('"', '""')}"`;
 const connectionForSchema = (raw: string, schema: string): string => {
   const separator = raw.includes("?") ? "&" : "?";
@@ -89,19 +90,16 @@ const account = (userId: string, handleId: string, label: string) => ({
 
 async function withSchema<A>(use: (connection: string, admin: Client) => Promise<A>): Promise<A> {
   if (connectionString === undefined) throw new Error("test URL was not configured");
-  const schema = schemaIdentifier();
-  const admin = new Client({ connectionString });
-  await admin.connect();
-  await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
-  await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
-  try {
-    const scoped = connectionForSchema(connectionString, schema);
-    await applyPostgresTestBaselineConnection({ connectionString: scoped });
-    return await use(scoped, admin);
-  } finally {
-    await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
-    await admin.end();
-  }
+  return withReusablePostgresTestSchema({
+    baseConnectionString: connectionString,
+    schemaName: "packages_platform_cf_src_platform_pirate_handle_repository_pg_test_ts",
+    use: async ({ admin, schema }) => {
+      await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
+      const scoped = connectionForSchema(connectionString, schema);
+      await applyPostgresTestBaselineConnection({ connectionString: scoped });
+      return await use(scoped, admin);
+    },
+  });
 }
 
 const authority = async (admin: Client, accountId: string) => {

@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { applyPostgresTestBaseline } from "./postgres.ts";
+import {
+  applyPostgresTestBaseline,
+  postgresTestSchemaCatalogFingerprint,
+  resetPostgresTestBaseline,
+} from "./postgres.ts";
 
 describe("PostgreSQL test baseline", () => {
   test("applies the tracked baseline atomically after binding the current schema", async () => {
@@ -45,5 +49,33 @@ describe("PostgreSQL test baseline", () => {
         },
       }),
     ).rejects.toBe(failure);
+  });
+
+  test("resets baseline data atomically", async () => {
+    const queries: string[] = [];
+    await resetPostgresTestBaseline({
+      query: async (text) => {
+        queries.push(text);
+      },
+    });
+
+    expect(queries[0]).toBe("BEGIN");
+    expect(queries[1]).toContain("TRUNCATE TABLE");
+    expect(queries[1]).toContain("RESTART IDENTITY CASCADE");
+    expect(queries.at(-1)).toBe("COMMIT");
+  });
+
+  test("requires a catalog fingerprint result", async () => {
+    await expect(
+      postgresTestSchemaCatalogFingerprint({ query: async () => ({ rows: [] }) }),
+    ).rejects.toThrow("catalog fingerprint was unavailable");
+    await expect(
+      postgresTestSchemaCatalogFingerprint({
+        query: async (text) => {
+          expect(text).toContain("pg_get_constraintdef");
+          return { rows: [{ fingerprint: "catalog-hash" }] };
+        },
+      }),
+    ).resolves.toBe("catalog-hash");
   });
 });

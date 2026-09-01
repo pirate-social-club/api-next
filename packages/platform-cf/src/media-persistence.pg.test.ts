@@ -4,7 +4,10 @@ import type { ControlPlaneDb } from "@pirate/application";
 import { NotFound } from "@pirate/contracts";
 import { Effect } from "effect";
 import { Client } from "pg";
-import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
+import {
+  applyPostgresTestBaselineConnection,
+  withReusablePostgresTestSchema,
+} from "../../../scripts/postgres-test-baseline.ts";
 import type {
   PublicationDecision,
   SongTerms,
@@ -111,9 +114,6 @@ const decision: PublicationDecision = {
   evidenceRef: "publication_evidence_1",
 };
 const reviewDecision: PublicationDecision = { ...decision, outcome: "manual_review" };
-function schemaName(): string {
-  return `api_next_media_${Date.now()}_${crypto.randomUUID().replaceAll("-", "")}`;
-}
 function quoteIdentifier(value: string): string {
   return `"${value.replaceAll('"', '""')}"`;
 }
@@ -153,45 +153,41 @@ async function withCurrentSchema<A>(
   populated = true,
 ): Promise<A> {
   if (connectionString === undefined) throw new Error("Postgres test configuration is unavailable");
-  const schema = schemaName();
-  const admin = new Client({ connectionString });
-  await admin.connect();
-  await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
-  const connection = scopedConnection(connectionString, schema);
-  try {
-    await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
-    await applyPostgresTestBaselineConnection({ connectionString: connection });
-    if (populated) {
-      await admin.query("INSERT INTO users (user_id) VALUES ($1)", [actor]);
-      await admin.query("INSERT INTO users (user_id) VALUES ($1)", [moderator]);
-      await activatePendingPersonaFixtures(admin);
-      await admin.query(
-        "INSERT INTO communities (community_id,display_name,status,created_by_user_id,created_at,updated_at) VALUES ($1,'Media fixture','active',$2,now(),now())",
-        [community, moderator],
-      );
-      await admin.query(
-        "INSERT INTO community_memberships (community_id,membership_id,user_id,status,joined_at,created_at,updated_at) VALUES ($1,'media_pg_membership',$2,'member',now(),now(),now())",
-        [community, actor],
-      );
-      await admin.query(
-        "INSERT INTO community_memberships (community_id,membership_id,user_id,status,joined_at,created_at,updated_at) VALUES ($1,'media_pg_moderator_membership',$2,'member',now(),now(),now())",
-        [community, moderator],
-      );
-      await seedHnsState(admin);
-      const personas = await admin.query<{ account_id: string; persona_id: string }>(
-        "SELECT account_id,persona_id FROM personas WHERE is_first_persona",
-      );
-      personaIdsByConnection.set(
-        connection,
-        new Map(personas.rows.map(({ account_id, persona_id }) => [account_id, persona_id])),
-      );
-    }
-    return await use(admin, connection);
-  } finally {
-    personaIdsByConnection.delete(connection);
-    await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
-    await admin.end();
-  }
+  return withReusablePostgresTestSchema({
+    baseConnectionString: connectionString,
+    schemaName: "packages_platform_cf_src_media_persistence_pg_test_ts",
+    use: async ({ admin, schema }) => {
+      const connection = scopedConnection(connectionString, schema);
+      await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
+      await applyPostgresTestBaselineConnection({ connectionString: connection });
+      if (populated) {
+        await admin.query("INSERT INTO users (user_id) VALUES ($1)", [actor]);
+        await admin.query("INSERT INTO users (user_id) VALUES ($1)", [moderator]);
+        await activatePendingPersonaFixtures(admin);
+        await admin.query(
+          "INSERT INTO communities (community_id,display_name,status,created_by_user_id,created_at,updated_at) VALUES ($1,'Media fixture','active',$2,now(),now())",
+          [community, moderator],
+        );
+        await admin.query(
+          "INSERT INTO community_memberships (community_id,membership_id,user_id,status,joined_at,created_at,updated_at) VALUES ($1,'media_pg_membership',$2,'member',now(),now(),now())",
+          [community, actor],
+        );
+        await admin.query(
+          "INSERT INTO community_memberships (community_id,membership_id,user_id,status,joined_at,created_at,updated_at) VALUES ($1,'media_pg_moderator_membership',$2,'member',now(),now(),now())",
+          [community, moderator],
+        );
+        await seedHnsState(admin);
+        const personas = await admin.query<{ account_id: string; persona_id: string }>(
+          "SELECT account_id,persona_id FROM personas WHERE is_first_persona",
+        );
+        personaIdsByConnection.set(
+          connection,
+          new Map(personas.rows.map(({ account_id, persona_id }) => [account_id, persona_id])),
+        );
+      }
+      return await use(admin, connection);
+    },
+  });
 }
 function run<A>(
   connection: string,

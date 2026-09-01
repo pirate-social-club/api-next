@@ -1,8 +1,11 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import type { IdentityAccountDocument } from "@pirate/application/use-cases/identity-account";
 import { Cause, Effect, Exit, Result } from "effect";
-import { Client } from "pg";
-import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
+import type { Client } from "pg";
+import {
+  applyPostgresTestBaselineConnection,
+  withReusablePostgresTestSchema,
+} from "../../../scripts/postgres-test-baseline.ts";
 import {
   makeControlPlaneIdentityRepository,
   makeControlPlaneIdentityStore,
@@ -72,10 +75,6 @@ const account = (userId: string, handleId: string, label: string): IdentityAccou
   },
 });
 
-function schemaIdentifier(): string {
-  return `api_next_identity_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-}
-
 function quoteIdentifier(value: string): string {
   return `"${value.replaceAll('"', '""')}"`;
 }
@@ -88,17 +87,14 @@ function connectionForSchema(raw: string, schema: string): string {
 
 async function withSchema<A>(use: (connection: string, admin: Client) => Promise<A>): Promise<A> {
   if (connectionString === undefined) throw new Error("test URL was not configured");
-  const schema = schemaIdentifier();
-  const admin = new Client({ connectionString });
-  await admin.connect();
-  await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
-  await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
-  try {
-    return await use(connectionForSchema(connectionString, schema), admin);
-  } finally {
-    await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
-    await admin.end();
-  }
+  return withReusablePostgresTestSchema({
+    baseConnectionString: connectionString,
+    schemaName: "packages_platform_cf_src_identity_pg_test_ts",
+    use: async ({ admin, schema }) => {
+      await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
+      return await use(connectionForSchema(connectionString, schema), admin);
+    },
+  });
 }
 
 async function apply(connection: string): Promise<void> {

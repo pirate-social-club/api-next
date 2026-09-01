@@ -4,7 +4,10 @@ import type { ProviderSessionStart } from "@pirate/application/verification";
 import type { EvidenceBundle, ProofSession } from "@pirate/domain/verification";
 import { Effect } from "effect";
 import { Client } from "pg";
-import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
+import {
+  applyPostgresTestBaselineConnection,
+  withReusablePostgresTestSchema,
+} from "../../../scripts/postgres-test-baseline.ts";
 import { makeControlPlaneCommunityCreationStore } from "./community-creation-repository.ts";
 import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
@@ -34,10 +37,6 @@ const humanPolicy = {
   ] as const,
 };
 
-function schemaIdentifier(): string {
-  return `api_next_creation_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-}
-
 function quoteIdentifier(value: string): string {
   return `"${value.replaceAll('"', '""')}"`;
 }
@@ -49,17 +48,14 @@ function connectionForSchema(raw: string, schema: string): string {
 
 async function withSchema<A>(use: (connection: string, admin: Client) => Promise<A>): Promise<A> {
   if (connectionString === undefined) throw new Error("test URL was not configured");
-  const schema = schemaIdentifier();
-  const admin = new Client({ connectionString });
-  await admin.connect();
-  await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
-  await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
-  try {
-    return await use(connectionForSchema(connectionString, schema), admin);
-  } finally {
-    await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
-    await admin.end();
-  }
+  return withReusablePostgresTestSchema({
+    baseConnectionString: connectionString,
+    schemaName: "packages_platform_cf_src_community_creation_repository_pg_test_ts",
+    use: async ({ admin, schema }) => {
+      await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
+      return await use(connectionForSchema(connectionString, schema), admin);
+    },
+  });
 }
 
 async function firstPersonaId(admin: Client, accountId: string): Promise<string> {

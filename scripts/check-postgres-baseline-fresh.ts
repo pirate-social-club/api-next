@@ -5,15 +5,18 @@ import { generatePostgresBaseline } from "./generate-postgres-baseline.ts";
 
 const temporaryDirectory = await mkdtemp(join(tmpdir(), "api-next-postgres-baseline-check-"));
 const generatedPath = join(temporaryDirectory, "schema.sql");
+const generatedResetPath = join(temporaryDirectory, "test-reset.sql");
 try {
-  await generatePostgresBaseline(generatedPath);
-  const [actual, generated] = await Promise.all([
+  await generatePostgresBaseline(generatedPath, generatedResetPath);
+  const [actual, generated, actualReset, generatedReset] = await Promise.all([
     readFile(new URL("../db/postgres/schema.sql", import.meta.url), "utf8"),
     readFile(generatedPath, "utf8"),
+    readFile(new URL("../db/postgres/test-reset.sql", import.meta.url), "utf8"),
+    readFile(generatedResetPath, "utf8"),
   ]);
-  if (actual !== generated) {
+  if (actual !== generated || actualReset !== generatedReset) {
     console.error(
-      "Postgres baseline is stale. Run bun run db:generate:baseline; the generator verifies migration history before writing.",
+      "Postgres baseline or test reset is stale. Run bun run db:generate:baseline; the generator verifies migration history before writing.",
     );
     process.exitCode = 1;
   }

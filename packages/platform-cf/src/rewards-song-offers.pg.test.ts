@@ -1,7 +1,10 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { Effect } from "effect";
-import { Client } from "pg";
-import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
+import type { Client } from "pg";
+import {
+  applyPostgresTestBaselineConnection,
+  withReusablePostgresTestSchema,
+} from "../../../scripts/postgres-test-baseline.ts";
 import { makeControlPlaneCustodySolvencyStore } from "./custody-solvency-repository.ts";
 import { makeMegapotAllocationCoordinator } from "./megapot-allocation-coordinator.ts";
 import { makeControlPlaneMegapotAllocationStore } from "./megapot-allocation-repository.ts";
@@ -42,8 +45,6 @@ const address = (byte: string): string => `0x${byte.repeat(40)}`;
 const bytes32 = (byte: string): string => `0x${byte.repeat(64)}`;
 const hash = (byte: string): string => byte.repeat(64);
 
-const schemaIdentifier = (): string =>
-  `api_next_rewards_offers_${crypto.randomUUID().replaceAll("-", "")}`;
 const quoteIdentifier = (value: string): string => `"${value.replaceAll('"', '""')}"`;
 const connectionForSchema = (raw: string, schema: string): string => {
   const separator = raw.includes("?") ? "&" : "?";
@@ -54,21 +55,17 @@ async function withSchema<A>(
   use: (admin: Client, scopedConnection: string) => Promise<A>,
 ): Promise<A> {
   if (connectionString === undefined) throw new Error("test URL was not configured");
-  const schema = schemaIdentifier();
-  const admin = new Client({ connectionString });
-  await admin.connect();
-  await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
-  await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
-  try {
-    await applyPostgresTestBaselineConnection({
-      connectionString: connectionForSchema(connectionString, schema),
-    });
-    return await use(admin, connectionForSchema(connectionString, schema));
-  } finally {
-    await admin.query("ROLLBACK");
-    await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
-    await admin.end();
-  }
+  return withReusablePostgresTestSchema({
+    baseConnectionString: connectionString,
+    schemaName: "packages_platform_cf_src_rewards_song_offers_pg_test_ts",
+    use: async ({ admin, schema }) => {
+      await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
+      await applyPostgresTestBaselineConnection({
+        connectionString: connectionForSchema(connectionString, schema),
+      });
+      return await use(admin, connectionForSchema(connectionString, schema));
+    },
+  });
 }
 
 type SeedIdentity = Readonly<{

@@ -1,0 +1,56 @@
+export const reusablePostgresTestSuites = [
+  "packages/platform-cf/src/activity-qualification-repository.pg.test.ts",
+  "packages/platform-cf/src/community-creation-repository.pg.test.ts",
+  "packages/platform-cf/src/community-purchase-funding-producer-repository.pg.test.ts",
+  "packages/platform-cf/src/community-repository.pg.test.ts",
+  "packages/platform-cf/src/community-route-repository.pg.test.ts",
+  "packages/platform-cf/src/dance-reference-persistence.pg.test.ts",
+  "packages/platform-cf/src/feed-repository.pg.test.ts",
+  "packages/platform-cf/src/hns-control-observer-repository.pg.test.ts",
+  "packages/platform-cf/src/hns-route-revalidation-scheduler.pg.test.ts",
+  "packages/platform-cf/src/identity.pg.test.ts",
+  "packages/platform-cf/src/media-persistence.pg.test.ts",
+  "packages/platform-cf/src/namespace-ownership-persistence.pg.test.ts",
+  "packages/platform-cf/src/platform-pirate-handle-repository.pg.test.ts",
+  "packages/platform-cf/src/public-profile.pg.test.ts",
+  "packages/platform-cf/src/rewards-qualification.pg.test.ts",
+  "packages/platform-cf/src/rewards-song-offers.pg.test.ts",
+  "packages/platform-cf/src/route-revalidation-completion-repository.pg.test.ts",
+  "scripts/community-purchase-funding-plans.pg.test.ts",
+  "scripts/very-staging-community-fixture.pg.test.ts",
+] as const;
+
+export const freshSchemaPostgresTestSuites = [
+  "packages/platform-cf/src/community-purchase-funding-repository.pg.test.ts",
+  "packages/platform-cf/src/content-repository.pg.test.ts",
+  "packages/platform-cf/src/data-registration-repository.pg.test.ts",
+  "packages/platform-cf/src/gates-v2-community.pg.test.ts",
+  "packages/platform-cf/src/handle-sales-repository.pg.test.ts",
+  "packages/platform-cf/src/hns-host-persistence-repository.pg.test.ts",
+  "packages/platform-cf/src/learner-audio-deletion-repository.pg.test.ts",
+  "packages/platform-cf/src/localization-foundation.pg.test.ts",
+  "packages/platform-cf/src/optional-route-v2-migration.pg.test.ts",
+  "packages/platform-cf/src/persona-repository.pg.test.ts",
+  "packages/platform-cf/src/public-community-threads-repository.pg.test.ts",
+  "packages/platform-cf/src/study-v2-foundation.pg.test.ts",
+  "packages/platform-cf/src/study-translation-repository.pg.test.ts",
+  "packages/platform-cf/src/verification-completion-repository.pg.test.ts",
+  "packages/platform-cf/src/verification-start-repository.pg.test.ts",
+  "scripts/public-profile-backfill.pg.test.ts",
+] as const;
+
+export const noBaselinePostgresTestSuites = [
+  "packages/platform-cf/src/community-moderation-foundation.pg.test.ts",
+  "packages/platform-cf/src/community-route-migration.pg.test.ts",
+  "packages/platform-cf/src/media-persistence-migrations.pg.test.ts",
+  "packages/platform-cf/src/postgres-foundation.pg.test.ts",
+  "packages/platform-cf/src/postgres-migrations-runner.pg.test.ts",
+  "packages/platform-cf/src/postgres.pg.test.ts",
+  "packages/platform-cf/src/text-submission-repository.pg.test.ts",
+] as const;
+
+export const classifiedPostgresTestSuites = [
+  ...reusablePostgresTestSuites,
+  ...freshSchemaPostgresTestSuites,
+  ...noBaselinePostgresTestSuites,
+] as const;

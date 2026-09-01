@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 
-import { applyPostgresTestBaselineConnection } from "./postgres-test-baseline.ts";
+import {
+  applyPostgresTestBaselineConnection,
+  withReusablePostgresTestSchema,
+} from "./postgres-test-baseline.ts";
 import {
   loadPublicProfileBackfillPgDriver,
   type PublicProfileBackfillPgClient,
@@ -27,10 +30,6 @@ const suite =
 const COMMUNITY_ID = "community-very-staging-fixture-lifecycle-test";
 const OPERATOR_USER_ID = "operator-very-staging-fixture";
 
-function schemaIdentifier(): string {
-  return `api_next_very_staging_fixture_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-}
-
 function quoteIdentifier(value: string): string {
   return `"${value.replaceAll('"', '""')}"`;
 }
@@ -47,22 +46,19 @@ async function withSchema<A>(
 ): Promise<A> {
   if (connectionString === undefined) throw new Error("test URL was not configured");
   if (PgClientConstructor === undefined) throw new Error("package-local pg driver unavailable");
-  const schema = schemaIdentifier();
-  const scopedUrl = connectionForSchema(connectionString, schema);
-  const admin = new PgClientConstructor({ connectionString });
-  await admin.connect();
-  await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
-  try {
-    await applyPostgresTestBaselineConnection({ connectionString: scopedUrl });
-    await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
-    await admin.query("INSERT INTO users (user_id, status) VALUES ($1, 'active')", [
-      OPERATOR_USER_ID,
-    ]);
-    return await use({ admin, scopedUrl });
-  } finally {
-    await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
-    await admin.end();
-  }
+  return withReusablePostgresTestSchema({
+    baseConnectionString: connectionString,
+    schemaName: "scripts_very_staging_community_fixture_pg_test_ts",
+    use: async ({ admin, schema }) => {
+      const scopedUrl = connectionForSchema(connectionString, schema);
+      await applyPostgresTestBaselineConnection({ connectionString: scopedUrl });
+      await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
+      await admin.query("INSERT INTO users (user_id, status) VALUES ($1, 'active')", [
+        OPERATOR_USER_ID,
+      ]);
+      return await use({ admin, scopedUrl });
+    },
+  });
 }
 
 function options(

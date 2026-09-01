@@ -5,8 +5,11 @@ import {
 } from "@pirate/application";
 import { communityPurchaseAtomicAmount } from "@pirate/domain";
 import { Effect } from "effect";
-import { Client } from "pg";
-import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
+import type { Client } from "pg";
+import {
+  applyPostgresTestBaselineConnection,
+  withReusablePostgresTestSchema,
+} from "../../../scripts/postgres-test-baseline.ts";
 import { makeControlPlaneCommunityPurchaseFundingProducerStore } from "./community-purchase-funding-repository";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres";
 
@@ -16,10 +19,6 @@ if (required && connectionString === undefined) {
   throw new Error("CONTROL_PLANE_POSTGRES_TEST_URL is required for the Postgres 17 suite");
 }
 const suite = connectionString === undefined ? describe.skip : describe;
-
-function schemaIdentifier(): string {
-  return `api_next_producer_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-}
 
 function quoteIdentifier(value: string): string {
   return `"${value.replaceAll('"', '""')}"`;
@@ -35,52 +34,50 @@ async function withSchema<A>(
   options: Readonly<{ readonly verificationRequired?: boolean }> = {},
 ): Promise<A> {
   if (connectionString === undefined) throw new Error("test URL was not configured");
-  const schema = schemaIdentifier();
-  const admin = new Client({ connectionString });
-  await admin.connect();
-  await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
-  try {
-    const connection = connectionForSchema(connectionString, schema);
-    await applyPostgresTestBaselineConnection({ connectionString: connection });
-    await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
-    await admin.query(`INSERT INTO users (user_id) VALUES ('user_1'), ('user_2')`);
-    await admin.query(`INSERT INTO communities (
-      community_id, display_name, created_by_user_id, created_at, updated_at
-    ) VALUES ('community_1', 'Community One', 'user_1', clock_timestamp(), clock_timestamp())`);
-    await admin.query(`INSERT INTO community_memberships (
-      community_id, membership_id, user_id, status, created_at, updated_at
-    ) VALUES ('community_1', 'membership_1', 'user_1', 'member', clock_timestamp(), clock_timestamp())`);
-    await admin.query(`INSERT INTO community_commerce_policy_revisions (
-      community_id, policy_version, source_revision, issued_by
-    ) VALUES ('community_1', 7, 'source-7', 'user_1')`);
-    await admin.query(`INSERT INTO community_commerce_listings (
-      listing_id, community_id, policy_version, availability_mode, available_quantity
-    ) VALUES ('listing_1', 'community_1', 7, 'finite', 2)`);
-    await admin.query(`INSERT INTO community_commerce_eligibility_policy_versions (
-      community_id, policy_version, verification_required
-    ) VALUES ('community_1', 7, ${options.verificationRequired === true ? "TRUE" : "FALSE"})`);
-    await admin.query(`INSERT INTO community_commerce_pricing_policy_versions (
-      community_id, policy_version, amount_atomic
-    ) VALUES ('community_1', 7, 12500000)`);
-    await admin.query(`INSERT INTO community_commerce_money_route_policy_versions (
-      community_id, policy_version, chain_id, token_contract, token_decimals,
-      treasury_address, required_confirmations
-    ) VALUES ('community_1', 7, 8453, '0x${"11".repeat(20)}', 6,
-      '0x${"33".repeat(20)}', 3)`);
-    await admin.query(`INSERT INTO community_commerce_allocation_policy_versions (
-      community_id, policy_version
-    ) VALUES ('community_1', 7)`);
-    await admin.query(`INSERT INTO community_commerce_settlement_policy_versions (
-      community_id, policy_version, settlement_mode
-    ) VALUES ('community_1', 7, 'delivery_only_story_settlement')`);
-    await admin.query(`INSERT INTO community_commerce_donation_policy_versions (
-      community_id, policy_version, policy_mode, share_bps
-    ) VALUES ('community_1', 7, 'none', 0)`);
-    return await use(connection, admin);
-  } finally {
-    await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
-    await admin.end();
-  }
+  return withReusablePostgresTestSchema({
+    baseConnectionString: connectionString,
+    schemaName:
+      "packages_platform_cf_src_community_purchase_funding_producer_repository_pg_test_ts",
+    use: async ({ admin, schema }) => {
+      const connection = connectionForSchema(connectionString, schema);
+      await applyPostgresTestBaselineConnection({ connectionString: connection });
+      await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
+      await admin.query(`INSERT INTO users (user_id) VALUES ('user_1'), ('user_2')`);
+      await admin.query(`INSERT INTO communities (
+            community_id, display_name, created_by_user_id, created_at, updated_at
+          ) VALUES ('community_1', 'Community One', 'user_1', clock_timestamp(), clock_timestamp())`);
+      await admin.query(`INSERT INTO community_memberships (
+            community_id, membership_id, user_id, status, created_at, updated_at
+          ) VALUES ('community_1', 'membership_1', 'user_1', 'member', clock_timestamp(), clock_timestamp())`);
+      await admin.query(`INSERT INTO community_commerce_policy_revisions (
+            community_id, policy_version, source_revision, issued_by
+          ) VALUES ('community_1', 7, 'source-7', 'user_1')`);
+      await admin.query(`INSERT INTO community_commerce_listings (
+            listing_id, community_id, policy_version, availability_mode, available_quantity
+          ) VALUES ('listing_1', 'community_1', 7, 'finite', 2)`);
+      await admin.query(`INSERT INTO community_commerce_eligibility_policy_versions (
+            community_id, policy_version, verification_required
+          ) VALUES ('community_1', 7, ${options.verificationRequired === true ? "TRUE" : "FALSE"})`);
+      await admin.query(`INSERT INTO community_commerce_pricing_policy_versions (
+            community_id, policy_version, amount_atomic
+          ) VALUES ('community_1', 7, 12500000)`);
+      await admin.query(`INSERT INTO community_commerce_money_route_policy_versions (
+            community_id, policy_version, chain_id, token_contract, token_decimals,
+            treasury_address, required_confirmations
+          ) VALUES ('community_1', 7, 8453, '0x${"11".repeat(20)}', 6,
+            '0x${"33".repeat(20)}', 3)`);
+      await admin.query(`INSERT INTO community_commerce_allocation_policy_versions (
+            community_id, policy_version
+          ) VALUES ('community_1', 7)`);
+      await admin.query(`INSERT INTO community_commerce_settlement_policy_versions (
+            community_id, policy_version, settlement_mode
+          ) VALUES ('community_1', 7, 'delivery_only_story_settlement')`);
+      await admin.query(`INSERT INTO community_commerce_donation_policy_versions (
+            community_id, policy_version, policy_mode, share_bps
+          ) VALUES ('community_1', 7, 'none', 0)`);
+      return await use(connection, admin);
+    },
+  });
 }
 
 function run<A, E>(effect: Effect.Effect<A, E, never>): Promise<A> {

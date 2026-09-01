@@ -10,8 +10,11 @@ import {
   hnsRouteRevalidationResultPreimage,
 } from "@pirate/application/route-revalidation";
 import { Effect } from "effect";
-import { Client } from "pg";
-import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
+import type { Client } from "pg";
+import {
+  applyPostgresTestBaselineConnection,
+  withReusablePostgresTestSchema,
+} from "../../../scripts/postgres-test-baseline.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres";
 import { makeControlPlaneRouteRevalidationCompletionStore } from "./route-revalidation-completion-repository";
 
@@ -24,9 +27,6 @@ const suite = connectionString === undefined ? describe.skip : describe;
 const SHA = "a".repeat(64);
 const SHA_B = "b".repeat(64);
 const SHA_C = "c".repeat(64);
-function schemaName(): string {
-  return `api_next_completion_${crypto.randomUUID().replaceAll("-", "")}`;
-}
 function quoteIdentifier(value: string): string {
   return `"${value.replaceAll('"', '""')}"`;
 }
@@ -37,20 +37,16 @@ function scopedConnection(raw: string, schema: string): string {
 
 async function withSchema<A>(use: (client: Client, connection: string) => Promise<A>): Promise<A> {
   if (connectionString === undefined) throw new Error("Postgres test configuration is unavailable");
-  const schema = schemaName();
-  const admin = new Client({ connectionString });
-  await admin.connect();
-  await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
-  try {
-    const connection = scopedConnection(connectionString, schema);
-    await applyPostgresTestBaselineConnection({ connectionString: connection });
-    await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
-    return await use(admin, connection);
-  } finally {
-    await admin.query("ROLLBACK").catch(() => undefined);
-    await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
-    await admin.end();
-  }
+  return withReusablePostgresTestSchema({
+    baseConnectionString: connectionString,
+    schemaName: "packages_platform_cf_src_route_revalidation_completion_repository_pg_test_ts",
+    use: async ({ admin, schema }) => {
+      const connection = scopedConnection(connectionString, schema);
+      await applyPostgresTestBaselineConnection({ connectionString: connection });
+      await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
+      return await use(admin, connection);
+    },
+  });
 }
 
 async function seedNamespaceAuthority(client: Client, suffix: string): Promise<void> {
