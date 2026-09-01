@@ -363,6 +363,12 @@
           "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
         }
       ],
+      "services": [
+        {
+          "binding": "HNS_OWNER_VERIFIER",
+          "service": "pirate-hns-owner-verifier-production"
+        }
+      ],
       "workflows": [
         {
           "binding": "STUDY_GENERATION_WORKFLOW",
@@ -410,7 +416,9 @@
         "OPENAI_MODERATION_MODEL": "omni-moderation-2024-09-26",
         "OPENAI_MODERATION_BASE_URL": "https://api.openai.com/v1",
         "OPENAI_MODERATION_TIMEOUT_MS": "10000",
-        "HNS_OWNERSHIP_ENABLED": "false",
+        "HNS_OWNERSHIP_ENABLED": "true",
+        "HNS_OWNERSHIP_CONFIGURATION_REFERENCE": "hns-owner-production",
+        "HNS_OWNERSHIP_CONFIGURATION_VERSION": "hns-owner-config-v1",
         "HNS_COMMUNITY_APP_API_ENABLED": "true",
         "HNS_HANDLE_HOST_API_ENABLED": "true",
         "HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN": "https://hns-community-api.pirate.sc",

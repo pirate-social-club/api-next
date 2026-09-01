@@ -3,7 +3,7 @@ import { Client } from "pg";
 type HnsRootObservationClaim = Readonly<{
   readonly observation_job_id: string;
   readonly root_import_session_id: string;
-  readonly operation_kind: "observe_root_v1";
+  readonly operation_kind: "observe_root_v1" | "teardown_root_v1";
   readonly request_bytes: Uint8Array;
   readonly request_sha256: string;
   readonly publish_plan_bytes: Uint8Array;
@@ -90,7 +90,7 @@ export function makePostgresHnsRootObservationQueue(
         if (
           typeof row?.observation_job_id !== "string" ||
           typeof row.root_import_session_id !== "string" ||
-          row.operation_kind !== "observe_root_v1" ||
+          (row.operation_kind !== "observe_root_v1" && row.operation_kind !== "teardown_root_v1") ||
           requestBytes === null ||
           publishPlanBytes === null ||
           provisionResultBytes === null ||

@@ -139,6 +139,15 @@ function challengePresent(
   );
 }
 
+export function hnsGatewayReadinessStatusV1(statusLine: string): 200 | 421 {
+  const match = statusLine.match(/^HTTP\/1\.[01] ([0-9]{3})(?: |$)/u);
+  const status = match?.[1] === undefined ? Number.NaN : Number(match[1]);
+  if (status !== 200 && status !== 421) {
+    throw new Error("HNS gateway readiness response is unhealthy");
+  }
+  return status;
+}
+
 async function probeGateway(input: {
   readonly root_label: string;
   readonly gateway_address: string;
@@ -207,9 +216,10 @@ async function probeGateway(input: {
         const statusLine = new TextDecoder()
           .decode(received.subarray(0, headerEnd))
           .split("\r\n")[0];
-        const match = statusLine?.match(/^HTTP\/1\.[01] ([0-9]{3})(?: |$)/u);
-        const status = match?.[1] === undefined ? Number.NaN : Number(match[1]);
-        if (status !== 200 && status !== 421) {
+        let status: 200 | 421;
+        try {
+          status = hnsGatewayReadinessStatusV1(statusLine ?? "");
+        } catch {
           finish(() => reject(new Error("HNS gateway readiness response is unhealthy")));
           return;
         }

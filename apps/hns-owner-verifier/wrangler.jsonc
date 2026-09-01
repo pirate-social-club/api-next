@@ -32,6 +32,42 @@
         "HNS_PROVIDER_CONFIGURATION_REFERENCE": "hns-owner-staging",
         "HNS_PROVIDER_CONFIGURATION_VERSION": "hns-owner-config-v1"
       }
+    },
+    "production": {
+      "name": "pirate-hns-owner-verifier-production",
+      "workers_dev": false,
+      "preview_urls": false,
+      "observability": {
+        "enabled": true,
+        "logs": {
+          "head_sampling_rate": 1
+        }
+      },
+      "hyperdrive": [
+        {
+          "binding": "CONTROL_PLANE",
+          "id": "884b68c5a7904982a86620ed90032b77",
+          "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
+        }
+      ],
+      "vpc_services": [
+        {
+          "binding": "HNS_OBSERVER_DRIVER",
+          "service_id": "01a05d1e-d199-7ee0-bb0b-a327b990ca9f"
+        }
+      ],
+      "vars": {
+        "HNS_OWNERSHIP_SOURCE": "hns_parent_chain_txt",
+        "HNS_CHALLENGE_TTL_SECONDS": "3600",
+        "HNS_EVIDENCE_TTL_SECONDS": "2592000",
+        "HNS_PROVIDER_ENVIRONMENT": "production",
+        "HNS_PROVIDER_CONFIGURATION_REFERENCE": "hns-owner-production",
+        "HNS_PROVIDER_CONFIGURATION_VERSION": "hns-owner-config-v1",
+        "HNS_PROVIDER_CONFIGURATION_DIGEST": "536c663d21e8dad2894788fb7d9a447235484f437b71426b185d2895aaa46489",
+        "HNS_CHAIN_DRIVER_REFERENCE": "hsd-json-rpc:production-primary",
+        "HNS_SNAPSHOT_STORE_REFERENCE": "postgres:hns-control-observer-v1",
+        "HNS_OBSERVER_DEADLINE_MS": "12000"
+      }
     }
   }
 }

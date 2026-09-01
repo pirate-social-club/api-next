@@ -260,16 +260,21 @@ function chainAuthorityRecords(
   return authority;
 }
 
-function decodeProvisionResult(bytes: Uint8Array): Readonly<{
-  root_import_session_id: string;
-  root_label: string;
-  zone_serial: number;
-  ds_records: readonly HnsRootDelegationDsV1[];
-  managed_rrset_sha256: string;
-  shared_tlsa_profile_sha256: string;
-  gateway_deployment_reference: string;
-  gateway_certificate_spki_sha256: string;
-}> {
+export type HnsAuthorityProvisionResultV1 = Readonly<{
+  readonly root_import_session_id: string;
+  readonly root_label: string;
+  readonly zone_created: boolean;
+  readonly zone_serial: number;
+  readonly ds_records: readonly HnsRootDelegationDsV1[];
+  readonly managed_rrset_sha256: string;
+  readonly shared_tlsa_profile_sha256: string;
+  readonly gateway_deployment_reference: string;
+  readonly gateway_certificate_spki_sha256: string;
+}>;
+
+export function decodeHnsAuthorityProvisionResultV1(
+  bytes: Uint8Array,
+): HnsAuthorityProvisionResultV1 {
   const value = decodeStrictHnsJsonBytes(bytes, 1_048_576);
   if (
     !exactObject(value, [
@@ -327,7 +332,7 @@ export async function observeHnsRootReadinessV1(input: {
     throw new HnsRootReadinessObservationError("invalid_request");
   }
   const plan = decodePlan(input.publish_plan_bytes);
-  const provision = decodeProvisionResult(input.provision_result_bytes);
+  const provision = decodeHnsAuthorityProvisionResultV1(input.provision_result_bytes);
   if (
     provision.root_import_session_id !== input.request.root_import_session_id ||
     provision.root_label !== input.request.root_label

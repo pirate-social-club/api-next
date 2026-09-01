@@ -1,0 +1,26 @@
+[Unit]
+Description=Cloudflare private tunnel for the HNS authority observer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+LoadCredential=tunnel.token:/etc/cloudflared/925a2661-9553-49b3-8a48-a2913eb21f2f.token
+ExecStart=/usr/local/bin/cloudflared tunnel --protocol quic run --token-file /run/credentials/cloudflared-hns-authority.service/tunnel.token
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+MemoryMax=128M
+CPUQuota=25%
+TasksMax=32
+
+[Install]
+WantedBy=multi-user.target

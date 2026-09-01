@@ -10,6 +10,7 @@ import { makePostgresHnsRootObservationQueue } from "./observation-queue.ts";
 import {
   makePowerDnsRootInspector,
   makePowerDnsRootProvisioner,
+  makePowerDnsRootTeardown,
   type PowerDnsRootProvisionConfig,
 } from "./powerdns.ts";
 import { makePostgresHnsAuthorityProvisionQueue } from "./queue.ts";
@@ -140,6 +141,7 @@ async function main(serve: boolean): Promise<void> {
   };
   const ensureZone = makePowerDnsRootProvisioner(powerDnsConfig);
   const inspectZone = makePowerDnsRootInspector(powerDnsConfig);
+  const teardownZone = makePowerDnsRootTeardown(powerDnsConfig);
   const observeLive = makeLiveHnsRootReadinessObserverV1({
     chain_network: required("HNS_AUTHORITY_CHAIN_NETWORK"),
     chain_genesis_block_hash: required("HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH"),
@@ -168,6 +170,7 @@ async function main(serve: boolean): Promise<void> {
         inspect_zone: inspectZone,
         observe_live: observeLive,
       },
+      teardown_zone: teardownZone,
       config: {
         environment: required("HNS_AUTHORITY_ENVIRONMENT"),
         valid_for_seconds: readinessValidForSeconds(),

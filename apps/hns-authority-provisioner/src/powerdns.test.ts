@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { buildManagedRootRrsets, makePowerDnsRootProvisioner } from "./powerdns.ts";
+import {
+  buildManagedRootRrsets,
+  makePowerDnsRootProvisioner,
+  makePowerDnsRootTeardown,
+} from "./powerdns.ts";
 
 describe("PowerDNS managed HNS root rrsets", () => {
   test("uses the fixed authority, gateway, challenge, and shared TLSA profile", () => {
@@ -102,5 +106,22 @@ describe("PowerDNS managed HNS root rrsets", () => {
       "GET /api/v1/servers/localhost/zones/newroot./cryptokeys",
     ]);
     expect(calls[1]?.body).toMatchObject({ kind: "Master", dnssec: true, api_rectify: true });
+  });
+
+  test("idempotently deletes one exact abandoned root zone", async () => {
+    const calls: string[] = [];
+    const teardown = makePowerDnsRootTeardown(
+      {
+        api_url: "http://powerdns.test:8081",
+        api_key: "secret-not-logged",
+        server_id: "localhost",
+      },
+      async (url, init) => {
+        calls.push(`${init?.method ?? "GET"} ${new URL(String(url)).pathname}`);
+        return new Response(null, { status: 204 });
+      },
+    );
+    await teardown({ root_label: "newroot" });
+    expect(calls).toEqual(["DELETE /api/v1/servers/localhost/zones/newroot."]);
   });
 });

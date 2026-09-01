@@ -46,6 +46,7 @@
       "name": "@pirate/hns-observer-driver",
       "version": "0.0.0",
       "dependencies": {
+        "@pirate/application": "workspace:*",
         "@pirate/hns-dns-runtime": "workspace:*",
       },
     },

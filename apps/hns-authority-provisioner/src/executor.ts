@@ -3,6 +3,7 @@ import type {
   HnsRootObservationQueue,
 } from "./observation-queue.ts";
 import {
+  decodeHnsAuthorityProvisionResultV1,
   decodeHnsRootReadinessObservationRequestV1,
   type HnsRootReadinessObservationConfig,
   HnsRootReadinessObservationError,
@@ -43,6 +44,7 @@ async function runObservation(input: {
   readonly executor_id: string;
   readonly queue: HnsRootObservationQueue;
   readonly observe: HnsRootReadinessObservationPorts;
+  readonly teardown_zone: (input: { readonly root_label: string }) => Promise<void>;
   readonly observation_config: HnsRootReadinessObservationConfig;
 }): Promise<HnsAuthorityProvisionExecutorResult> {
   const claim = await input.queue.claim(input.executor_id, 60);
@@ -60,6 +62,25 @@ async function runObservation(input: {
       (await sha256(claim.provision_result_bytes)) !== claim.provision_result_sha256
     ) {
       throw new HnsRootReadinessObservationError("invalid_request");
+    }
+    if (claim.operation_kind === "teardown_root_v1") {
+      const provision = decodeHnsAuthorityProvisionResultV1(claim.provision_result_bytes);
+      if (provision.root_import_session_id !== claim.root_import_session_id) {
+        throw new HnsRootReadinessObservationError("authority_mismatch");
+      }
+      if (provision.zone_created) {
+        await input.teardown_zone({ root_label: provision.root_label });
+      }
+      const finalized = await input.queue.finalize({
+        ...base,
+        outcome: "failed",
+        failure_code: "session_expired",
+      });
+      return {
+        outcome: finalized.outcome,
+        observation_job_id: claim.observation_job_id,
+        root_import_session_id: claim.root_import_session_id,
+      };
     }
     const request = decodeHnsRootReadinessObservationRequestV1(claim.request_bytes);
     if (
@@ -89,8 +110,15 @@ async function runObservation(input: {
     };
   } catch (error) {
     const code =
-      error instanceof HnsRootReadinessObservationError ? error.code : "observation_failed";
-    const retry = code === "owner_update_pending" || code === "authority_unavailable";
+      error instanceof HnsRootReadinessObservationError
+        ? error.code
+        : claim.operation_kind === "teardown_root_v1"
+          ? "zone_teardown_unavailable"
+          : "observation_failed";
+    const retry =
+      code === "owner_update_pending" ||
+      code === "authority_unavailable" ||
+      code === "zone_teardown_unavailable";
     const finalized = await input.queue.finalize({
       ...base,
       outcome: retry ? "retry" : "failed",
@@ -111,6 +139,7 @@ export async function runHnsAuthorityProvisionExecutorOnce(input: {
   readonly observation?: Readonly<{
     readonly queue: HnsRootObservationQueue;
     readonly observe: HnsRootReadinessObservationPorts;
+    readonly teardown_zone: (input: { readonly root_label: string }) => Promise<void>;
     readonly config: HnsRootReadinessObservationConfig;
   }>;
 }): Promise<HnsAuthorityProvisionExecutorResult> {
@@ -122,6 +151,7 @@ export async function runHnsAuthorityProvisionExecutorOnce(input: {
           executor_id: input.executor_id,
           queue: input.observation.queue,
           observe: input.observation.observe,
+          teardown_zone: input.observation.teardown_zone,
           observation_config: input.observation.config,
         });
   }

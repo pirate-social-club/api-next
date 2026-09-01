@@ -802,7 +802,7 @@ END;
 $$;
 
 CREATE FUNCTION claim_hns_authority_provision_job_v1(input_executor_id text, input_lease_seconds integer) RETURNS TABLE(provision_job_id text, root_import_session_id text, operation_kind text, request_bytes bytea, request_sha256 text, lease_fence bigint, lease_expires_at timestamp with time zone)
-    LANGUAGE plpgsql
+    LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
     AS $$
 DECLARE
@@ -889,11 +889,12 @@ END;
 $$;
 
 CREATE FUNCTION claim_hns_root_import_observation_job_v1(input_executor_id text, input_lease_seconds integer) RETURNS TABLE(observation_job_id text, root_import_session_id text, operation_kind text, request_bytes bytea, request_sha256 text, publish_plan_bytes bytea, publish_plan_sha256 text, provision_result_bytes bytea, provision_result_sha256 text, lease_fence bigint, lease_expires_at timestamp with time zone)
-    LANGUAGE plpgsql
+    LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
     AS $$
 DECLARE
   candidate hns_root_import_observation_jobs%ROWTYPE;
+  teardown hns_root_import_teardown_jobs%ROWTYPE;
   session hns_root_import_sessions%ROWTYPE;
   provision hns_authority_provision_jobs%ROWTYPE;
   database_now TIMESTAMPTZ := clock_timestamp();
@@ -905,16 +906,89 @@ BEGIN
   THEN
     RAISE EXCEPTION 'invalid HNS root observation claim';
   END IF;
-  SELECT job.* INTO candidate
-    FROM hns_root_import_observation_jobs AS job
+
+  SELECT job.* INTO teardown
+    FROM hns_root_import_teardown_jobs AS job
     JOIN hns_root_import_sessions AS expired_session
       ON expired_session.root_import_session_id = job.root_import_session_id
-   WHERE (
+   WHERE job.attempt_count < 20
+     AND (
+       job.state = 'waiting'
+       OR (job.state = 'leased' AND job.lease_expires_at <= database_now)
+     )
+     AND expired_session.status IN ('awaiting_owner_update', 'observing', 'ready')
+     AND expired_session.expires_at <= database_now
+   ORDER BY job.created_at, job.teardown_job_id
+   FOR UPDATE OF job SKIP LOCKED
+   LIMIT 1;
+  IF FOUND THEN
+    SELECT * INTO session
+      FROM hns_root_import_sessions
+     WHERE hns_root_import_sessions.root_import_session_id = teardown.root_import_session_id
+     FOR UPDATE;
+    SELECT * INTO provision
+      FROM hns_authority_provision_jobs
+     WHERE provision_job_id = session.provision_job_id;
+    IF provision.state <> 'completed' THEN
+      RAISE EXCEPTION 'HNS root teardown provision authority is unavailable';
+    END IF;
+    UPDATE hns_root_import_teardown_jobs AS job
+       SET state = 'leased', attempt_count = teardown.attempt_count + 1,
+           lease_fence = teardown.lease_fence + 1, leased_by = input_executor_id,
+           lease_expires_at = database_now + input_lease_seconds * interval '1 second',
+           failure_code = NULL, updated_at = database_now
+     WHERE job.teardown_job_id = teardown.teardown_job_id;
+    RETURN QUERY SELECT
+      teardown.teardown_job_id, teardown.root_import_session_id,
+      'teardown_root_v1'::TEXT, provision.request_bytes, provision.request_sha256,
+      provision.publish_plan_bytes, provision.publish_plan_sha256,
+      provision.result_bytes, provision.result_sha256,
+      teardown.lease_fence + 1,
+      database_now + input_lease_seconds * interval '1 second';
+    RETURN;
+  END IF;
+
+  SELECT job.* INTO teardown
+    FROM hns_root_import_teardown_jobs AS job
+    JOIN hns_root_import_sessions AS expired_session
+      ON expired_session.root_import_session_id = job.root_import_session_id
+   WHERE job.attempt_count >= 20
+     AND (
+       job.state = 'waiting'
+       OR (job.state = 'leased' AND job.lease_expires_at <= database_now)
+     )
+     AND expired_session.status IN ('awaiting_owner_update', 'observing', 'ready')
+     AND expired_session.expires_at <= database_now
+   ORDER BY job.created_at, job.teardown_job_id
+   FOR UPDATE OF job SKIP LOCKED
+   LIMIT 1;
+  IF FOUND THEN
+    SELECT * INTO session
+      FROM hns_root_import_sessions
+     WHERE hns_root_import_sessions.root_import_session_id = teardown.root_import_session_id
+     FOR UPDATE;
+    UPDATE hns_root_import_teardown_jobs AS job
+       SET state = 'failed', leased_by = NULL, lease_expires_at = NULL,
+           failure_code = 'zone_teardown_attempts_exhausted', completed_at = database_now,
+           updated_at = database_now
+     WHERE job.teardown_job_id = teardown.teardown_job_id;
+    UPDATE hns_root_import_sessions AS exhausted_session
+       SET status = 'failed', revision = session.revision + 1,
+           updated_at = database_now
+     WHERE exhausted_session.root_import_session_id = session.root_import_session_id;
+  END IF;
+
+  SELECT job.* INTO candidate
+    FROM hns_root_import_observation_jobs AS job
+    JOIN hns_root_import_sessions AS selected_session
+      ON selected_session.root_import_session_id = job.root_import_session_id
+   WHERE job.attempt_count >= 20
+     AND (
        job.state = 'queued'
        OR (job.state = 'leased' AND job.lease_expires_at <= database_now)
      )
-     AND expired_session.status = 'observing'
-     AND expired_session.expires_at <= database_now
+     AND selected_session.status = 'observing'
+     AND selected_session.expires_at > database_now
    ORDER BY job.created_at, job.observation_job_id
    FOR UPDATE OF job SKIP LOCKED
    LIMIT 1;
@@ -925,19 +999,21 @@ BEGIN
      FOR UPDATE;
     UPDATE hns_root_import_observation_jobs AS job
        SET state = 'failed', leased_by = NULL, lease_expires_at = NULL,
-           failure_code = 'session_expired', completed_at = database_now,
+           failure_code = 'observation_attempts_exhausted', completed_at = database_now,
            updated_at = database_now
      WHERE job.observation_job_id = candidate.observation_job_id;
-    UPDATE hns_root_import_sessions AS expired_session
-       SET status = 'expired', revision = session.revision + 1,
+    UPDATE hns_root_import_sessions AS exhausted_session
+       SET status = 'failed', revision = session.revision + 1,
            updated_at = database_now
-     WHERE expired_session.root_import_session_id = session.root_import_session_id;
+     WHERE exhausted_session.root_import_session_id = session.root_import_session_id;
   END IF;
+
   SELECT job.* INTO candidate
     FROM hns_root_import_observation_jobs AS job
     JOIN hns_root_import_sessions AS selected_session
       ON selected_session.root_import_session_id = job.root_import_session_id
-   WHERE (
+   WHERE job.attempt_count < 20
+     AND (
        job.state = 'queued'
        OR (job.state = 'leased' AND job.lease_expires_at <= database_now)
      )
@@ -1697,6 +1773,23 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION enqueue_hns_root_import_teardown_job_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+  IF NEW.state = 'completed' AND OLD.state <> 'completed' THEN
+    INSERT INTO hns_root_import_teardown_jobs (
+      teardown_job_id, root_import_session_id
+    ) VALUES (
+      'teardown_' || encode(sha256(convert_to(NEW.root_import_session_id, 'UTF8')), 'hex'),
+      NEW.root_import_session_id
+    ) ON CONFLICT (root_import_session_id) DO NOTHING;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION ensure_handle_persona_public_footprint_v1(input_persona_id text, input_occurred_at timestamp with time zone) RETURNS void
     LANGUAGE plpgsql
     AS $$
@@ -1712,7 +1805,7 @@ END;
 $$;
 
 CREATE FUNCTION finalize_hns_authority_provision_job_v1(input_provision_job_id text, input_executor_id text, input_lease_fence bigint, input_request_sha256 text, input_outcome text, input_publish_plan_bytes bytea, input_publish_plan_sha256 text, input_result_bytes bytea, input_result_sha256 text, input_failure_code text) RETURNS TABLE(outcome text, root_import_session_id text, session_revision bigint)
-    LANGUAGE plpgsql
+    LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
     AS $_$
 DECLARE
@@ -1998,16 +2091,104 @@ END;
 $$;
 
 CREATE FUNCTION finalize_hns_root_import_observation_job_v1(input_observation_job_id text, input_executor_id text, input_lease_fence bigint, input_request_sha256 text, input_outcome text, input_result_bytes bytea, input_result_sha256 text, input_failure_code text) RETURNS TABLE(outcome text, root_import_session_id text, session_revision bigint)
-    LANGUAGE plpgsql
+    LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
     AS $_$
 DECLARE
   job hns_root_import_observation_jobs%ROWTYPE;
+  teardown hns_root_import_teardown_jobs%ROWTYPE;
   session hns_root_import_sessions%ROWTYPE;
+  provision hns_authority_provision_jobs%ROWTYPE;
   database_now TIMESTAMPTZ := clock_timestamp();
 BEGIN
   IF input_outcome NOT IN ('ready', 'retry', 'failed') THEN
     RAISE EXCEPTION 'invalid HNS root observation finalization';
+  END IF;
+  SELECT * INTO teardown
+    FROM hns_root_import_teardown_jobs
+   WHERE teardown_job_id = input_observation_job_id
+   FOR UPDATE;
+  IF FOUND THEN
+    SELECT * INTO session
+      FROM hns_root_import_sessions
+     WHERE hns_root_import_sessions.root_import_session_id = teardown.root_import_session_id
+     FOR UPDATE;
+    SELECT * INTO provision
+      FROM hns_authority_provision_jobs
+     WHERE provision_job_id = session.provision_job_id
+     FOR SHARE;
+    IF teardown.state IN ('completed', 'failed', 'cancelled') THEN
+      IF teardown.state = 'completed'
+        AND input_outcome = 'failed'
+        AND input_request_sha256 = provision.request_sha256
+        AND input_result_bytes IS NULL
+        AND input_result_sha256 IS NULL
+        AND input_failure_code = 'session_expired'
+      THEN
+        RETURN QUERY SELECT 'replayed'::TEXT, session.root_import_session_id, session.revision;
+      ELSE
+        RETURN QUERY SELECT 'conflict'::TEXT, session.root_import_session_id, session.revision;
+      END IF;
+      RETURN;
+    END IF;
+    IF teardown.state <> 'leased'
+      OR teardown.leased_by <> input_executor_id
+      OR teardown.lease_fence <> input_lease_fence
+      OR teardown.lease_expires_at <= database_now
+      OR provision.request_sha256 <> input_request_sha256
+      OR session.status NOT IN ('awaiting_owner_update', 'observing', 'ready')
+      OR session.expires_at > database_now
+      OR input_outcome = 'ready'
+      OR input_result_bytes IS NOT NULL
+      OR input_result_sha256 IS NOT NULL
+      OR input_failure_code IS NULL
+      OR btrim(input_failure_code) <> input_failure_code
+      OR octet_length(input_failure_code) NOT BETWEEN 1 AND 128
+      OR input_failure_code ~ '[[:cntrl:]]'
+    THEN
+      RETURN QUERY SELECT 'lost'::TEXT, session.root_import_session_id, session.revision;
+      RETURN;
+    END IF;
+    IF input_outcome = 'retry' AND teardown.attempt_count < 20 THEN
+      UPDATE hns_root_import_teardown_jobs
+         SET state = 'waiting', leased_by = NULL, lease_expires_at = NULL,
+             failure_code = input_failure_code, updated_at = database_now
+       WHERE teardown_job_id = input_observation_job_id;
+      RETURN QUERY SELECT 'retry'::TEXT, session.root_import_session_id, session.revision;
+      RETURN;
+    END IF;
+    IF input_outcome = 'failed' AND input_failure_code = 'session_expired' THEN
+      UPDATE hns_root_import_teardown_jobs
+         SET state = 'completed', leased_by = NULL, lease_expires_at = NULL,
+             failure_code = NULL, completed_at = database_now, updated_at = database_now
+       WHERE teardown_job_id = input_observation_job_id;
+      UPDATE hns_root_import_observation_jobs AS observation
+         SET state = 'failed', leased_by = NULL, lease_expires_at = NULL,
+             failure_code = 'session_expired', completed_at = database_now,
+             updated_at = database_now
+       WHERE observation.root_import_session_id = session.root_import_session_id
+         AND observation.state IN ('queued', 'leased');
+      UPDATE hns_root_import_sessions
+         SET status = 'expired', revision = session.revision + 1,
+             updated_at = database_now
+       WHERE hns_root_import_sessions.root_import_session_id = session.root_import_session_id;
+      RETURN QUERY SELECT 'failed'::TEXT, session.root_import_session_id, session.revision + 1;
+      RETURN;
+    END IF;
+    UPDATE hns_root_import_teardown_jobs
+       SET state = 'failed', leased_by = NULL, lease_expires_at = NULL,
+           failure_code = CASE
+             WHEN teardown.attempt_count >= 20 THEN 'zone_teardown_attempts_exhausted'
+             ELSE input_failure_code
+           END,
+           completed_at = database_now, updated_at = database_now
+     WHERE teardown_job_id = input_observation_job_id;
+    UPDATE hns_root_import_sessions
+       SET status = 'failed', revision = session.revision + 1,
+           updated_at = database_now
+     WHERE hns_root_import_sessions.root_import_session_id = session.root_import_session_id;
+    RETURN QUERY SELECT 'failed'::TEXT, session.root_import_session_id, session.revision + 1;
+    RETURN;
   END IF;
   SELECT * INTO job
     FROM hns_root_import_observation_jobs
@@ -2076,10 +2257,13 @@ BEGIN
   THEN
     RAISE EXCEPTION 'invalid failed HNS root observation result';
   END IF;
-  IF input_outcome = 'failed' THEN
+  IF input_outcome = 'failed' OR job.attempt_count >= 20 THEN
     UPDATE hns_root_import_observation_jobs
        SET state = 'failed', leased_by = NULL, lease_expires_at = NULL,
-           failure_code = input_failure_code,
+           failure_code = CASE
+             WHEN job.attempt_count >= 20 THEN 'observation_attempts_exhausted'
+             ELSE input_failure_code
+           END,
            completed_at = database_now, updated_at = database_now
      WHERE observation_job_id = input_observation_job_id;
     UPDATE hns_root_import_sessions
@@ -20555,6 +20739,24 @@ CREATE TABLE hns_root_import_sessions (
     CONSTRAINT hns_root_import_sessions_time_check CHECK (((expires_at > created_at) AND (updated_at >= created_at)))
 );
 
+CREATE TABLE hns_root_import_teardown_jobs (
+    teardown_job_id text NOT NULL,
+    root_import_session_id text NOT NULL,
+    state text DEFAULT 'waiting'::text NOT NULL,
+    attempt_count integer DEFAULT 0 NOT NULL,
+    lease_fence bigint DEFAULT 0 NOT NULL,
+    leased_by text,
+    lease_expires_at timestamp with time zone,
+    failure_code text,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    completed_at timestamp with time zone,
+    CONSTRAINT hns_root_import_teardown_jobs_identity_check CHECK (((btrim(teardown_job_id) = teardown_job_id) AND ((octet_length(teardown_job_id) >= 1) AND (octet_length(teardown_job_id) <= 256)) AND (teardown_job_id !~ '[[:cntrl:]]'::text) AND ((attempt_count >= 0) AND (attempt_count <= 20)) AND ((lease_fence >= 0) AND (lease_fence <= '9007199254740991'::bigint)) AND ((leased_by IS NULL) OR ((btrim(leased_by) = leased_by) AND ((octet_length(leased_by) >= 1) AND (octet_length(leased_by) <= 256)) AND (leased_by !~ '[[:cntrl:]]'::text))) AND ((failure_code IS NULL) OR ((btrim(failure_code) = failure_code) AND ((octet_length(failure_code) >= 1) AND (octet_length(failure_code) <= 128)) AND (failure_code !~ '[[:cntrl:]]'::text))))),
+    CONSTRAINT hns_root_import_teardown_jobs_state_check CHECK ((state = ANY (ARRAY['waiting'::text, 'leased'::text, 'completed'::text, 'failed'::text, 'cancelled'::text]))),
+    CONSTRAINT hns_root_import_teardown_jobs_state_shape CHECK ((((state = 'waiting'::text) AND (leased_by IS NULL) AND (lease_expires_at IS NULL) AND (completed_at IS NULL)) OR ((state = 'leased'::text) AND (leased_by IS NOT NULL) AND (lease_expires_at IS NOT NULL) AND (failure_code IS NULL) AND (completed_at IS NULL)) OR ((state = ANY (ARRAY['completed'::text, 'cancelled'::text])) AND (leased_by IS NULL) AND (lease_expires_at IS NULL) AND (failure_code IS NULL) AND (completed_at IS NOT NULL)) OR ((state = 'failed'::text) AND (leased_by IS NULL) AND (lease_expires_at IS NULL) AND (failure_code IS NOT NULL) AND (completed_at IS NOT NULL)))),
+    CONSTRAINT hns_root_import_teardown_jobs_time_check CHECK (((updated_at >= created_at) AND ((completed_at IS NULL) OR (completed_at >= created_at))))
+);
+
 CREATE TABLE home_feed_projection (
     community_id text NOT NULL,
     feed_item_id text NOT NULL,
@@ -24358,6 +24560,8 @@ INSERT INTO handle_qualification_policy_revisions VALUES ('none_v1', 1, NULL, 'n
 
 INSERT INTO handle_reserved_label_revisions VALUES ('reserved_labels_01', 1, '04cfc7880c630f8e46a0b8ccfdfc7390ed704d2be542fff3bbe17b233c2307ed', 'hns', '{abuse,admin,api,app,auth,billing,blog,cdn,dev,docs,gateway,help,hns,login,logout,mail,mod,moderator,new,official,pirate,root,security,settings,staff,staging,status,support,system,www}', '{}', 'active', '2000-01-01 00:00:00+00');
 
+INSERT INTO hns_control_observer_configurations VALUES ('hns-owner-production', 'hns-owner-config-v1', '536c663d21e8dad2894788fb7d9a447235484f437b71426b185d2895aaa46489', '\x7b2276657273696f6e223a227069726174652d686e732d636f6e74726f6c2d6f627365727665722d636f6e66696775726174696f6e2d7631222c2270726f76696465725f6964223a22686e732e6f776e65722e7631222c2270726f76696465725f636f6e66696775726174696f6e5f7265666572656e6365223a22686e732d6f776e65722d70726f64756374696f6e222c2270726f76696465725f636f6e66696775726174696f6e5f76657273696f6e223a22686e732d6f776e65722d636f6e6669672d7631222c22656e7669726f6e6d656e74223a2270726f64756374696f6e222c226f776e6572736869705f736f7572636573223a5b22686e735f706172656e745f636861696e5f747874225d2c22636861696e223a7b226472697665725f7265666572656e6365223a226873642d6a736f6e2d7270633a70726f64756374696f6e2d7072696d617279222c226e6574776f726b223a226d61696e222c2267656e657369735f626c6f636b5f68617368223a2235623665663264336331663363646361646664396130333062613138313165666464313737343066313465313636343839373630373431643037353939326530222c226d696e696d756d5f766572696669636174696f6e5f70726f67726573735f6d696c6c696f6e746873223a3939393030302c226d6178696d756d5f7469705f6167655f7365636f6e6473223a333630302c226d6178696d756d5f6675747572655f7469705f7365636f6e6473223a373230302c2265787065637465645f626c6f636b5f696e74657276616c5f7365636f6e6473223a3630302c226d696e696d756d5f736166655f72656d61696e696e675f626c6f636b73223a3134342c226578706972795f7361666574795f626c6f636b73223a3134342c22726573706f6e73655f6d61785f6279746573223a313034383537367d2c22617574686f72697461746976655f646e73223a6e756c6c2c2265766964656e63655f6c656173655f7365636f6e6473223a323539323030302c226f627365727665725f646561646c696e655f6d73223a31323030302c226f627365727665725f7265736572766174696f6e5f6c656173655f7365636f6e6473223a31352c22736e617073686f745f73746f72655f7265666572656e6365223a22706f7374677265733a686e732d636f6e74726f6c2d6f627365727665722d7631227d', '2000-01-01 00:00:00+00');
+
 INSERT INTO moderation_platform_floor_revisions VALUES ('moderation-platform-floor-v1', 1, '["moderation-platform-floor-v1","moderation-platform-floor-v1",[["harassment","permit"],["harassment/threatening","review"],["hate","review"],["hate/threatening","review"],["illicit","permit"],["illicit/violent","review"],["self-harm","permit"],["self-harm/intent","review"],["self-harm/instructions","review"],["sexual","permit"],["sexual/minors","block"],["violence","permit"],["violence/graphic","permit"]]]', '9c75ee8001386da6856c1cc1248273b3ed7c27de78f30b9a11fa570dc9896d58', '2000-01-01 00:00:00+00');
 
 INSERT INTO moderation_platform_floor_category_decisions VALUES ('moderation-platform-floor-v1', 'harassment', 'permit');
@@ -25304,6 +25508,12 @@ ALTER TABLE ONLY hns_root_import_sessions
 
 ALTER TABLE ONLY hns_root_import_sessions
     ADD CONSTRAINT hns_root_import_sessions_provision_job_id_key UNIQUE (provision_job_id);
+
+ALTER TABLE ONLY hns_root_import_teardown_jobs
+    ADD CONSTRAINT hns_root_import_teardown_jobs_pkey PRIMARY KEY (teardown_job_id);
+
+ALTER TABLE ONLY hns_root_import_teardown_jobs
+    ADD CONSTRAINT hns_root_import_teardown_jobs_root_import_session_id_key UNIQUE (root_import_session_id);
 
 ALTER TABLE ONLY home_feed_projection
     ADD CONSTRAINT home_feed_projection_pkey PRIMARY KEY (community_id, feed_item_id);
@@ -26489,6 +26699,8 @@ CREATE INDEX hns_root_import_observation_jobs_claim_idx ON hns_root_import_obser
 
 CREATE UNIQUE INDEX hns_root_import_sessions_active_root_unique ON hns_root_import_sessions USING btree (root_label) WHERE (status = ANY (ARRAY['provisioning'::text, 'awaiting_owner_update'::text, 'observing'::text, 'ready'::text, 'activated'::text]));
 
+CREATE INDEX hns_root_import_teardown_jobs_claim_idx ON hns_root_import_teardown_jobs USING btree (state, created_at, teardown_job_id);
+
 CREATE UNIQUE INDEX home_feed_projection_post_unique ON home_feed_projection USING btree (community_id, post_id);
 
 CREATE INDEX home_feed_rank_idx ON home_feed_projection USING btree (community_id, rank_score DESC, feed_item_id);
@@ -27056,6 +27268,8 @@ CREATE TRIGGER handle_sale_activation_revision_insert_guard BEFORE INSERT ON com
 CREATE TRIGGER handle_sale_activation_revisions_append_only BEFORE DELETE OR UPDATE ON community_handle_sale_namespace_activation_revisions FOR EACH ROW EXECUTE FUNCTION reject_community_handle_sale_namespace_append_only_change();
 
 CREATE TRIGGER hns_authority_inventories_append_only BEFORE DELETE OR UPDATE ON hns_authority_inventories FOR EACH ROW EXECUTE FUNCTION reject_hns_control_observer_append_only_change();
+
+CREATE TRIGGER hns_authority_provision_jobs_enqueue_teardown AFTER UPDATE OF state ON hns_authority_provision_jobs FOR EACH ROW EXECUTE FUNCTION enqueue_hns_root_import_teardown_job_v1();
 
 CREATE TRIGGER hns_authority_provision_jobs_retain BEFORE DELETE ON hns_authority_provision_jobs FOR EACH ROW EXECUTE FUNCTION reject_hns_authority_provision_job_delete();
 
@@ -28576,6 +28790,9 @@ ALTER TABLE ONLY hns_root_import_sessions
 
 ALTER TABLE ONLY hns_root_import_sessions
     ADD CONSTRAINT hns_root_import_sessions_namespace_actor_fk FOREIGN KEY (namespace_session_id, actor_id) REFERENCES namespace_ownership_sessions(namespace_session_id, actor_id);
+
+ALTER TABLE ONLY hns_root_import_teardown_jobs
+    ADD CONSTRAINT hns_root_import_teardown_jobs_session_fk FOREIGN KEY (root_import_session_id) REFERENCES hns_root_import_sessions(root_import_session_id);
 
 ALTER TABLE ONLY home_feed_projection
     ADD CONSTRAINT home_feed_post_fk FOREIGN KEY (community_id, post_id) REFERENCES posts(community_id, post_id);

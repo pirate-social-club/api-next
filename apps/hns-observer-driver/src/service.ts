@@ -124,13 +124,16 @@ function exchangeErrorResponse(error: unknown): Response {
 
 export function makeHnsObserverDriverService(input: {
   readonly hsd_driver_reference: string;
-  readonly dns_driver_reference: string;
+  readonly dns_driver_reference?: string;
   readonly axfr_driver_reference?: string;
   readonly hsd: HnsObserverDriverHsdCapability;
   readonly dns_views: ReadonlyArray<HnsObserverDriverDnsView>;
   readonly axfr_targets?: ReadonlyArray<HnsObserverDriverAxfrTarget>;
 }): HnsObserverDriverService {
-  if (input.dns_views.length !== 2) {
+  if (
+    (input.dns_driver_reference === undefined && input.dns_views.length !== 0) ||
+    (input.dns_driver_reference !== undefined && input.dns_views.length !== 2)
+  ) {
     throw new HnsObserverDriverExchangeError("upstream_protocol_error");
   }
   const views = new Map<string, HnsObserverDriverDnsView>();
@@ -149,6 +152,7 @@ export function makeHnsObserverDriverService(input: {
   }
   const configuredAxfrTargets = input.axfr_targets ?? [];
   if (
+    (input.axfr_driver_reference !== undefined && input.dns_driver_reference === undefined) ||
     (configuredAxfrTargets.length === 0) !== (input.axfr_driver_reference === undefined) ||
     (configuredAxfrTargets.length !== 0 && configuredAxfrTargets.length !== 2) ||
     (input.axfr_driver_reference !== undefined &&
@@ -332,6 +336,7 @@ export function makeHnsObserverDriverService(input: {
 
       if (
         decoded.request.exchange_kind !== "authoritative_dns_tcp" ||
+        input.dns_driver_reference === undefined ||
         decoded.request.driver_reference !== input.dns_driver_reference ||
         !("request_bytes" in decoded)
       ) {
