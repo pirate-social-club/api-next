@@ -142,6 +142,23 @@ export default defineConfig({
               }
             `,
           },
+          {
+            name: "pirate-http-worker",
+            modules: true,
+            compatibilityDate: "2026-08-01",
+            durableObjects: {
+              KARAOKE_ATTEMPT: { className: "KaraokeAttemptDO", useSQLite: true },
+            },
+            script: `
+              import { DurableObject } from "cloudflare:workers";
+              export class KaraokeAttemptDO extends DurableObject {
+                async redriveFinalization() {
+                  return { outcome: "idle", rearmed: [] };
+                }
+              }
+              export default { fetch() { return new Response("not found", { status: 404 }); } };
+            `,
+          },
         ],
       },
     }),

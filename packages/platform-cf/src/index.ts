@@ -166,6 +166,8 @@ export {
   makeControlPlaneIdentityStore,
 } from "./identity-repository";
 export * from "./karaoke-attempt-do.ts";
+export * from "./karaoke-finalization-recovery.ts";
+export * from "./karaoke-finalization-retry.ts";
 export * from "./karaoke-readiness-repository.ts";
 export * from "./karaoke-repository.ts";
 export * from "./megapot-allocation-coordinator.ts";

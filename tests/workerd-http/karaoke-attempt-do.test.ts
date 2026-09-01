@@ -220,11 +220,20 @@ describe("Karaoke attempt Durable Object", () => {
       await instance.enqueueFinalization("abandoned", abandonedSummary);
       await instance.alarm();
       const row = state.storage.sql
-        .exec<{ recording_state: string; score_state: string }>(
-          "SELECT recording_state,score_state FROM karaoke_outbox WHERE id=1",
+        .exec<{
+          recording_attempts: number;
+          recording_state: string;
+          score_attempts: number;
+          score_state: string;
+        }>(
+          `SELECT recording_attempts,recording_state,score_attempts,score_state
+             FROM karaoke_outbox WHERE id=1`,
         )
         .one();
-      expect(row).toEqual({ recording_state: "pending", score_state: "pending" });
+      expect(row.recording_attempts).toBeGreaterThan(0);
+      expect(row.score_attempts).toBe(row.recording_attempts);
+      expect(row.recording_state).toBe("pending");
+      expect(row.score_state).toBe("pending");
       expect(await state.storage.getAlarm()).toBeGreaterThan(Date.now());
       const terminal = state.storage.sql
         .exec<{ payload_json: string; snapshot_json: string; terminal: number }>(
@@ -236,6 +245,79 @@ describe("Karaoke attempt Durable Object", () => {
       expect(terminal.snapshot_json).toBe("{}");
       expect(terminal.terminal).toBe(1);
       expect(terminal.payload_json).not.toContain("hold on");
+    });
+  });
+
+  it("exhausts locally, then centrally rearms each axis exactly once", async () => {
+    const sessionId = `karaoke-exhausted-${crypto.randomUUID()}`;
+    const stub = env.KARAOKE_ATTEMPT.getByName(sessionId);
+    await stub.initialize(authority(sessionId));
+    await runInDurableObject(stub, async (instance) => {
+      await instance.enqueueFinalization("abandoned", abandonedSummary);
+    });
+
+    await runInDurableObject(stub, async (instance, state) => {
+      for (let attempt = 1; attempt <= 8; attempt += 1) {
+        const current = state.storage.sql
+          .exec<{ score_state: string }>("SELECT score_state FROM karaoke_outbox WHERE id=1")
+          .one();
+        if (current.score_state === "exhausted") break;
+        state.storage.sql.exec(
+          `UPDATE karaoke_outbox
+                SET score_next_attempt_at=0,recording_next_attempt_at=0
+              WHERE id=1`,
+        );
+        await instance.alarm();
+      }
+      const row = state.storage.sql
+        .exec<{
+          recording_attempts: number;
+          recording_state: string;
+          score_attempts: number;
+          score_state: string;
+        }>(
+          `SELECT recording_attempts,recording_state,score_attempts,score_state
+             FROM karaoke_outbox WHERE id=1`,
+        )
+        .one();
+      expect(row).toEqual({
+        recording_attempts: 8,
+        recording_state: "exhausted",
+        score_attempts: 8,
+        score_state: "exhausted",
+      });
+      await state.storage.deleteAlarm();
+      await instance.alarm();
+      expect(await state.storage.getAlarm()).toBeNull();
+    });
+
+    await runInDurableObject(stub, async (instance, state) => {
+      expect(await instance.redriveFinalization()).toEqual({
+        outcome: "scheduled",
+        rearmed: ["score", "recording"],
+      });
+      expect(await instance.redriveFinalization()).toEqual({
+        outcome: "scheduled",
+        rearmed: [],
+      });
+      const row = state.storage.sql
+        .exec<{
+          recording_attempts: number;
+          recording_state: string;
+          score_attempts: number;
+          score_state: string;
+        }>(
+          `SELECT recording_attempts,recording_state,score_attempts,score_state
+             FROM karaoke_outbox WHERE id=1`,
+        )
+        .one();
+      expect(row).toEqual({
+        recording_attempts: 0,
+        recording_state: "pending",
+        score_attempts: 0,
+        score_state: "pending",
+      });
+      expect(await state.storage.getAlarm()).not.toBeNull();
     });
   });
 });

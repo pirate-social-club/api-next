@@ -53,6 +53,7 @@ import {
   makeHnsRouteRevalidationComposition,
   makeHnsRouteRevalidationJob,
 } from "./hns-route-revalidation";
+import { makeKaraokeFinalizationRecoveryJob } from "./karaoke-finalization-recovery";
 import { type MediaJobsBindings, makeMediaMaintenance } from "./media-runtime";
 import { handleMegapotPublicCommitment } from "./megapot-commitment-public";
 import { type MegapotRewardsJobOptions, makeMegapotRewardsJob } from "./megapot-rewards";
@@ -89,6 +90,15 @@ export {
   makeHnsRouteRevalidationComposition,
   makeHnsRouteRevalidationJob,
 } from "./hns-route-revalidation";
+export {
+  KARAOKE_FINALIZATION_RECOVERY_JOB,
+  KARAOKE_FINALIZATION_RECOVERY_LANE,
+  KARAOKE_FINALIZATION_RECOVERY_READS,
+  KARAOKE_FINALIZATION_RECOVERY_SCHEDULE,
+  KARAOKE_FINALIZATION_RECOVERY_TIMEOUT,
+  makeKaraokeFinalizationRecoveryJob,
+} from "./karaoke-finalization-recovery";
+export { karaokeFinalizationRecoveryAlerts } from "./karaoke-finalization-recovery-alerts";
 export {
   MEGAPOT_REWARDS_CYCLE_JOB,
   MEGAPOT_REWARDS_CYCLE_LANE,
@@ -142,10 +152,12 @@ export interface JobsWorkerEnv
     MediaJobsBindings {
   readonly CF_VERSION_METADATA: MegapotRewardsJobOptions["workerVersion"];
   readonly CRON_LOCK: DurableObjectNamespace<ScheduledCronLockDO>;
+  readonly KARAOKE_ATTEMPT?: import("@pirate/platform-cf").KaraokeFinalizationRecoveryNamespace;
   readonly CONTROL_PLANE?: HyperdriveConnection;
   readonly LEARNER_AUDIO?: R2Bucket;
   readonly MEGAPOT_COMMITMENTS?: R2Bucket;
   readonly API_NEXT_ENV?: string;
+  readonly KARAOKE_FINALIZATION_RECOVERY_ENABLED?: string;
   readonly COMMUNITY_MAINTENANCE_ENABLED?: string;
   readonly COMMUNITY_PURCHASE_FUNDING_RPC_URL?: string;
   readonly MEGAPOT_REWARDS_ENABLED?: string;
@@ -702,6 +714,9 @@ export function makeJobsWorkerDeclarations(
   megapot: MegapotRewardsJobOptions | null = null,
   communityMaintenanceEnabled = true,
   learnerAudio?: R2Bucket,
+  karaokeFinalization?: Readonly<{
+    namespace: import("@pirate/platform-cf").KaraokeFinalizationRecoveryNamespace;
+  }>,
 ) {
   const declarations: Array<JobDeclaration<unknown, ControlPlaneDb | AlertCollector>> = [];
   if (communityMaintenanceEnabled) {
@@ -724,6 +739,9 @@ export function makeJobsWorkerDeclarations(
   if (megapot !== null) declarations.push(makeMegapotRewardsJob(sink, megapot));
   if (learnerAudio !== undefined) {
     declarations.push(makeStudySpokenAnswerRecoveryJob(sink, learnerAudio));
+  }
+  if (karaokeFinalization !== undefined) {
+    declarations.push(makeKaraokeFinalizationRecoveryJob(sink, karaokeFinalization.namespace));
   }
   return declarations;
 }
@@ -755,6 +773,15 @@ export default {
       Redacted.value(config.COMMUNITY_PURCHASE_FUNDING_RPC_URL),
       config.API_NEXT_ENV,
     );
+    const karaokeFinalization =
+      env.KARAOKE_FINALIZATION_RECOVERY_ENABLED === "true"
+        ? (() => {
+            if (env.KARAOKE_ATTEMPT === undefined) {
+              throw new Error("KARAOKE_ATTEMPT binding is required for Karaoke recovery");
+            }
+            return { namespace: env.KARAOKE_ATTEMPT };
+          })()
+        : undefined;
     const declarations = makeJobsWorkerDeclarations(
       sink,
       rpcUrl,
@@ -763,6 +790,7 @@ export default {
       megapot,
       config.COMMUNITY_MAINTENANCE_ENABLED,
       env.LEARNER_AUDIO,
+      karaokeFinalization,
     );
     const registry = await Effect.runPromise(buildJobRegistry(declarations));
     const dueByLane = groupDueJobsByLane(registry, event.scheduledTime);
