@@ -96,6 +96,7 @@ type ScriptOverrides = Readonly<{
   abortAt?: number;
   bomAt?: number;
   duplicateEnvelopeAt?: number;
+  terminalLineFeeds?: number;
 }>;
 
 function hsdScript(overrides: ScriptOverrides = {}) {
@@ -190,10 +191,17 @@ function hsdScript(overrides: ScriptOverrides = {}) {
               `{"result":${JSON.stringify(result)},"result":${JSON.stringify(result)},"error":null,"id":null}`,
             )
           : rpc(result);
-      const retainedBytes =
+      const semanticBytes =
         overrides.bomAt === exchangeCalls
           ? Uint8Array.from([0xef, 0xbb, 0xbf, ...responseBytes])
           : responseBytes;
+      const retainedBytes =
+        overrides.terminalLineFeeds === undefined
+          ? semanticBytes
+          : Uint8Array.from([
+              ...semanticBytes,
+              ...Array.from({ length: overrides.terminalLineFeeds }, () => 0x0a),
+            ]);
       return {
         status: overrides.status ?? 200,
         content_type:
@@ -259,6 +267,21 @@ describe("HNS parent-chain HSD observer", () => {
     ]);
   });
 
+  test("accepts HSD's single terminal line feed and retains the exact wire bytes", async () => {
+    const observed = await observe({ terminalLineFeeds: 1 });
+    const decoded = await decodeHnsControlObservationResultBytes(
+      observed.result.result_bytes,
+      requestValue,
+    );
+    expect(decoded.result).toMatchObject({ status: "verified" });
+    expect(observed.result.transcript).toHaveLength(7);
+    expect(
+      observed.result.transcript.every(
+        (entry) => entry.response_bytes?.[entry.response_bytes.byteLength - 1] === 0x0a,
+      ),
+    ).toBe(true);
+  });
+
   test("produces only stable root and TXT negatives", async () => {
     for (const [overrides, expected] of [
       [{ root: "absent" }, "root_absent"],
@@ -295,6 +318,7 @@ describe("HNS parent-chain HSD observer", () => {
       [{ throwAt: 1 }, "chain_transport_unavailable"],
       [{ bomAt: 1 }, "chain_response_invalid"],
       [{ duplicateEnvelopeAt: 1 }, "chain_response_invalid"],
+      [{ terminalLineFeeds: 2 }, "chain_response_invalid"],
       [{ records: [{ type: "FUTURE9", payload: true }] }, "chain_response_invalid"],
     ] as const) {
       const observed = await observe(overrides);

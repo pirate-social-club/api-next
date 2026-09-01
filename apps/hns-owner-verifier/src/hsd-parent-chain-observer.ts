@@ -186,6 +186,15 @@ function requireKeys(value: Record<string, unknown>, expected: ReadonlyArray<str
   }
 }
 
+function hsdJsonPayload(responseBytes: Uint8Array): Uint8Array {
+  // HSD terminates JSON-RPC responses with one LF. Keep the original wire
+  // bytes in the transcript while applying the strict JSON decoder to the
+  // compact JSON payload itself.
+  return responseBytes[responseBytes.byteLength - 1] === 0x0a
+    ? responseBytes.subarray(0, responseBytes.byteLength - 1)
+    : responseBytes;
+}
+
 function readHash(value: unknown): Sha256HexValue {
   if (typeof value !== "string" || !/^[0-9a-f]{64}$/u.test(value)) {
     throw new HsdSemanticUnavailable("chain_response_invalid");
@@ -613,7 +622,10 @@ async function hsdRpc(
   }
   let decoded: unknown;
   try {
-    decoded = decodeStrictHnsJsonBytes(responseBytes, input.configuration.chain.response_max_bytes);
+    decoded = decodeStrictHnsJsonBytes(
+      hsdJsonPayload(responseBytes),
+      input.configuration.chain.response_max_bytes,
+    );
   } catch {
     throw new HsdSemanticUnavailable("chain_response_invalid");
   }
