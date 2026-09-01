@@ -142,6 +142,9 @@ describe("generic HNS Caddy candidate", () => {
     ]);
     expect(dials(routes[4])).toEqual(["127.0.0.1:4049"]);
     expect(dials(routes[5])).toEqual(["127.0.0.1:4069"]);
+    expect((candidate.apps.http.servers.srv0 as Record<string, unknown>).automatic_https).toEqual({
+      skip_certificates: ["pirate", "app.pirate"],
+    });
     expect(JSON.stringify(routes[2])).toBe(verifierBefore);
     expect(JSON.stringify(routes[3])).toBe(dohBefore);
     expect(JSON.stringify(candidate.apps.http.servers.srv0.tls_connection_policies)).toBe(
@@ -154,6 +157,23 @@ describe("generic HNS Caddy candidate", () => {
     const second = buildHnsGenericCaddyCandidate(first.candidate_bytes);
     expect(second.changed).toBe(false);
     expect(second.candidate_bytes).toEqual(first.candidate_bytes);
+  });
+
+  test("preserves existing automatic HTTPS settings while skipping static HNS hosts", () => {
+    const source = fixture();
+    const server = source.apps.http.servers.srv0 as Record<string, unknown>;
+    server.automatic_https = {
+      disable_redirects: true,
+      skip_certificates: ["existing.example", "pirate"],
+    };
+    const built = buildHnsGenericCaddyCandidate(encoder.encode(JSON.stringify(source)));
+    const candidate = JSON.parse(decoder.decode(built.candidate_bytes)) as ReturnType<
+      typeof fixture
+    >;
+    expect((candidate.apps.http.servers.srv0 as Record<string, unknown>).automatic_https).toEqual({
+      disable_redirects: true,
+      skip_certificates: ["existing.example", "pirate", "app.pirate"],
+    });
   });
 
   test("refuses topology, upstream, and trusted-header drift", () => {
@@ -191,6 +211,12 @@ describe("generic HNS Caddy candidate", () => {
           throw new Error("test route is malformed");
         }
         (headers.request as Record<string, unknown>).delete = ["CF-Access-*"];
+        return value;
+      },
+      () => {
+        const value = fixture();
+        const server = value.apps.http.servers.srv0 as Record<string, unknown>;
+        server.automatic_https = { skip_certificates: "pirate" };
         return value;
       },
     ];

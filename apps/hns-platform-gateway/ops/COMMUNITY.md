@@ -88,10 +88,12 @@ accepts only the reviewed production topology. It retains the exact
 `app.jazleeuw`, `*.jazleeuw`, verifier, DoH, port-80, and TLS-policy objects;
 adds exact `pirate` and `app.pirate` routes to `127.0.0.1:4049`; and replaces
 the HTTPS fallback with the existing sanitized community boundary to
-`127.0.0.1:4069`. Unknown hosts then reach the database-driven gateway and
-still fail closed with 421. The rollback output is byte-for-byte identical to
-the input. Validate both outputs with `/usr/local/bin/pirate-caddy` before any
-reload, and probe the static hosts before and after every promotion.
+`127.0.0.1:4069`. It also adds both static HNS-only names to Caddy's automatic
+certificate skip list so their exact matchers never start public ACME issuance.
+Unknown hosts then reach the database-driven gateway and still fail closed with
+421. The rollback output is byte-for-byte identical to the input. Validate both
+outputs with `/usr/local/bin/pirate-caddy` before any reload, and probe the
+static hosts before and after every promotion.
 
 These files are repository templates only. They do not authorize a VPS
 connection, build or install on the VPS, service action, credential ceremony,

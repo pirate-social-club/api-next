@@ -172,6 +172,7 @@ type Topology = Readonly<{
   app_route: JsonObject;
   catchall_index: number;
   state: "source" | "generic";
+  certificate_skips_complete: boolean;
 }>;
 
 function inspectTopology(rootValue: unknown): Topology {
@@ -191,6 +192,18 @@ function inspectTopology(rootValue: unknown): Topology {
   const [httpsServer, serverValue] = httpsEntry;
   const server = object(serverValue, "HTTPS server is malformed");
   const routes = array(server.routes, "HTTPS routes are missing");
+  const automaticHttps =
+    server.automatic_https === undefined
+      ? undefined
+      : object(server.automatic_https, "automatic HTTPS settings are malformed");
+  const skippedCertificates =
+    automaticHttps?.skip_certificates === undefined
+      ? []
+      : strings(
+          automaticHttps.skip_certificates,
+          "automatic HTTPS certificate skip list is malformed",
+        );
+  const certificateSkipsComplete = staticHosts.every((host) => skippedCertificates.includes(host));
 
   const catchalls = routes
     .map((route, index) => ({ route, index }))
@@ -227,6 +240,7 @@ function inspectTopology(rootValue: unknown): Topology {
       app_route: appRoute,
       catchall_index: catchall.index,
       state: "source",
+      certificate_skips_complete: certificateSkipsComplete,
     };
   }
   if (catchallDials[0] === HNS_GENERIC_COMMUNITY_UPSTREAM && staticRoute !== null) {
@@ -241,6 +255,7 @@ function inspectTopology(rootValue: unknown): Topology {
       app_route: appRoute,
       catchall_index: catchall.index,
       state: "generic",
+      certificate_skips_complete: certificateSkipsComplete,
     };
   }
   return rejected("static and generic gateway routes are not in an accepted state");
@@ -258,7 +273,7 @@ export function buildHnsGenericCaddyCandidate(sourceBytes: Uint8Array): HnsGener
   }
   const topology = inspectTopology(parsed);
   const rollbackBytes = Uint8Array.from(sourceBytes);
-  if (topology.state === "generic") {
+  if (topology.state === "generic" && topology.certificate_skips_complete) {
     return {
       candidate_bytes: encoder.encode(JSON.stringify(topology.root)),
       rollback_bytes: rollbackBytes,
@@ -277,16 +292,36 @@ export function buildHnsGenericCaddyCandidate(sourceBytes: Uint8Array): HnsGener
     "candidate HTTPS server is missing",
   );
   const candidateRoutes = array(candidateServer.routes, "candidate routes are missing");
-  const staticRoute = structuredClone(
-    object(candidateRoutes[topology.catchall_index], "candidate catchall is missing"),
-  );
-  staticRoute.match = [{ host: [...staticHosts] }];
-  const genericRoute = structuredClone(topology.app_route);
-  delete genericRoute.match;
-  candidateRoutes.splice(topology.catchall_index, 1, staticRoute, genericRoute);
+  if (topology.state === "source") {
+    const staticRoute = structuredClone(
+      object(candidateRoutes[topology.catchall_index], "candidate catchall is missing"),
+    );
+    staticRoute.match = [{ host: [...staticHosts] }];
+    const genericRoute = structuredClone(topology.app_route);
+    delete genericRoute.match;
+    candidateRoutes.splice(topology.catchall_index, 1, staticRoute, genericRoute);
+  }
+  const candidateAutomaticHttps =
+    candidateServer.automatic_https === undefined
+      ? {}
+      : object(candidateServer.automatic_https, "candidate automatic HTTPS settings are malformed");
+  const candidateSkippedCertificates =
+    candidateAutomaticHttps.skip_certificates === undefined
+      ? []
+      : strings(
+          candidateAutomaticHttps.skip_certificates,
+          "candidate automatic HTTPS certificate skip list is malformed",
+        );
+  candidateAutomaticHttps.skip_certificates = [
+    ...candidateSkippedCertificates,
+    ...staticHosts.filter((host) => !candidateSkippedCertificates.includes(host)),
+  ];
+  candidateServer.automatic_https = candidateAutomaticHttps;
 
   const candidateTopology = inspectTopology(candidateRoot);
-  if (candidateTopology.state !== "generic") rejected("candidate did not reach generic state");
+  if (candidateTopology.state !== "generic" || !candidateTopology.certificate_skips_complete) {
+    rejected("candidate did not reach generic state");
+  }
   return {
     candidate_bytes: encoder.encode(JSON.stringify(candidateRoot)),
     rollback_bytes: rollbackBytes,
