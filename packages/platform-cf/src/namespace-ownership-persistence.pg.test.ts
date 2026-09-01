@@ -2859,15 +2859,15 @@ suite("Postgres namespace ownership persistence foundation", () => {
       await withSchema(async (client, scoped) => {
         let contender: Client | null = null;
         try {
+          await seedActiveRevalidationRoute(client, outcome.suffix);
           const expiresAt =
             outcome.kind === "session_expired"
-              ? new Date(Date.now() + 400).toISOString()
+              ? new Date(Date.now() + 1_000).toISOString()
               : new Date(Date.now() + 3_600_000).toISOString();
-          await seedActiveRevalidationRoute(client, outcome.suffix);
           await insertRevalidationSession(client, outcome.suffix, expiresAt);
           await insertRevalidationAttempt(client, outcome.suffix);
           if (outcome.kind === "session_expired") {
-            await client.query("SELECT pg_sleep(0.6)");
+            await client.query("SELECT pg_sleep(1.2)");
           }
           if (outcome.kind === "verified") {
             await finalizeRevalidationEvidence(client, outcome.suffix);
