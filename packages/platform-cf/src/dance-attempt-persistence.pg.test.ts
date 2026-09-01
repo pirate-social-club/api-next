@@ -1,9 +1,10 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { Effect } from "effect";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { makeDanceAttemptStore } from "./dance-attempt-authoring-repository.ts";
 import { makeDanceAttemptCleanupStore } from "./dance-attempt-cleanup-repository.ts";
+import { makeDanceAttemptProcessingStore } from "./dance-attempt-processing-repository.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -12,11 +13,12 @@ if (required && connectionString === undefined) {
   throw new Error("CONTROL_PLANE_POSTGRES_TEST_URL is required for the Postgres 17 suite");
 }
 const suite = connectionString === undefined ? describe.skip : describe;
+setDefaultTimeout(20_000);
 const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_DANCE_ATTEMPT_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-dance-attempt-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-dance-attempt-suite-complete\n";
-const testCount = 6;
+const testCount = 9;
 let completedTestCount = 0;
 
 const HASH_A = "11".repeat(32);
@@ -149,6 +151,17 @@ async function seedAuthority(admin: Client): Promise<void> {
          TRUE, $4, clock_timestamp()
        )`,
       [HASH_B, HASH_A, HASH_C, HASH_D],
+    );
+    await admin.query(
+      `INSERT INTO dance_reference_artifacts (
+         artifact_id, choreography_id, revision, private_artifact_ref,
+         artifact_sha256, pose_model_version, pose_runtime_version,
+         feature_schema_version, scorer_contract_version, integrity_policy_version
+       ) VALUES (
+         'artifact-1', 'choreography-1', 1, 'private/reference/artifact-1',
+         $1, 'pose-v1', 'runtime-v1', 'features-v1', 'scorer-v1', 'integrity-v1'
+       )`,
+      [HASH_D],
     );
   } finally {
     await admin.query("SET session_replication_role = origin");
@@ -283,6 +296,55 @@ async function finalize(
     await client.query("ROLLBACK");
     throw error;
   }
+}
+
+function scoredOutcome(
+  claim: Awaited<ReturnType<typeof claimProcessing>>,
+  evidenceDigest: string,
+  fingerprintClaimId: string,
+) {
+  if (claim.kind !== "claimed") throw new Error("Dance processing claim was unavailable");
+  return {
+    version: "dance-attempt-processing-outcome-v1" as const,
+    binding: claim.claim.binding,
+    gradeOutcome: "scored" as const,
+    qualificationOutcome: "suppressed_shadow" as const,
+    scoreBps: 7_250,
+    rejectionCode: null,
+    scoredWindowStartMs: claim.claim.frozenInput.scoredWindowStartMs,
+    scoredWindowEndMs: claim.claim.frozenInput.scoredWindowEndMs,
+    scoredDurationMs: claim.claim.frozenInput.expectedScoredDurationMs,
+    evidenceSummary: {
+      schema_version: 1 as const,
+      usable_coverage_bps: 9_500,
+      selected_mirror: "original" as const,
+      meaningful_motion_accepted: true,
+      replay_outcome: "unique" as const,
+      subject_continuity: "stable" as const,
+    },
+    evidenceDigest,
+    fingerprint: {
+      claimId: fingerprintClaimId,
+      policyVersion: "fingerprint-v1",
+      keyVersion: "fingerprint-key-v1",
+      matchScope: "platform_wide" as const,
+      accountScopeId: null,
+      wholeSequenceFingerprint: HASH_A,
+      segmentFingerprints: [HASH_B],
+    },
+  };
+}
+
+function processingStore(schema: string) {
+  return makeDanceAttemptProcessingStore(
+    makeDirectPostgresControlPlaneLayer(connectionForSchema(connectionString as string, schema)),
+  );
+}
+
+function claimProcessing(schema: string, attemptId: string, workerId: string) {
+  return Effect.runPromise(
+    processingStore(schema).claim({ attemptId, workerId, leaseSeconds: 60 }),
+  );
 }
 
 suite("Dance attempt shadow persistence", () => {
@@ -467,6 +529,116 @@ suite("Dance attempt shadow persistence", () => {
         outbox_state: "delivered",
         claims: 1,
         cleanup_state: "pending",
+      });
+      completedTestCount += 1;
+    });
+  });
+
+  test("processing repository claims and commits exact shadow evidence", async () => {
+    await withSchema("processing_complete", async (admin, schema) => {
+      await createPendingAttempt(admin, "1");
+      const store = processingStore(schema);
+      const claimed = await claimProcessing(schema, "attempt-1", "worker-a");
+      if (claimed.kind !== "claimed") throw new Error("attempt was not claimed");
+      expect(claimed.claim.frozenInput).toMatchObject({
+        attemptId: "attempt-1",
+        privateMediaRef: "private/random/1",
+        referenceArtifactRef: "private/reference/artifact-1",
+        scoredWindowStartMs: 2_000,
+        scoredWindowEndMs: 8_000,
+      });
+      expect(
+        await Effect.runPromise(
+          store.complete(claimed.claim, scoredOutcome(claimed, HASH_C, "claim-processing-1")),
+        ),
+      ).toBe("committed");
+      const terminal = await admin.query(
+        `SELECT a.state,e.qualification_outcome,e.grade_outcome,o.state AS outbox_state
+           FROM dance_attempts a JOIN dance_attempt_evidence e USING (attempt_id)
+           JOIN dance_attempt_outbox o USING (attempt_id) WHERE a.attempt_id='attempt-1'`,
+      );
+      expect(terminal.rows[0]).toEqual({
+        state: "completed",
+        qualification_outcome: "suppressed_shadow",
+        grade_outcome: "scored",
+        outbox_state: "delivered",
+      });
+      completedTestCount += 1;
+    });
+  });
+
+  test("concurrent processing fingerprints converge to unique and duplicate terminals", async () => {
+    await withSchema("processing_duplicate", async (admin, schema) => {
+      await createPendingAttempt(admin, "1");
+      await createPendingAttempt(admin, "2");
+      const first = await claimProcessing(schema, "attempt-1", "worker-a");
+      const second = await claimProcessing(schema, "attempt-2", "worker-b");
+      if (first.kind !== "claimed" || second.kind !== "claimed") {
+        throw new Error("concurrent attempts were not claimed");
+      }
+      const firstStore = processingStore(schema);
+      const secondStore = processingStore(schema);
+      const results = await Promise.all([
+        Effect.runPromise(
+          firstStore.complete(first.claim, scoredOutcome(first, HASH_C, "claim-processing-1")),
+        ),
+        Effect.runPromise(
+          secondStore.complete(second.claim, scoredOutcome(second, HASH_D, "claim-processing-2")),
+        ),
+      ]);
+      expect(results).toEqual(["committed", "committed"]);
+      const terminals = await admin.query(
+        `SELECT grade_outcome,rejection_code,count(*)::int AS count
+           FROM dance_attempt_evidence GROUP BY grade_outcome,rejection_code
+           ORDER BY grade_outcome`,
+      );
+      expect(terminals.rows).toEqual([
+        { grade_outcome: "rejected", rejection_code: "duplicate_attempt", count: 1 },
+        { grade_outcome: "scored", rejection_code: null, count: 1 },
+      ]);
+      const counts = await admin.query(
+        `SELECT (SELECT count(*)::int FROM dance_replay_fingerprint_claims) AS claims,
+                (SELECT count(*)::int FROM dance_attempt_evidence) AS evidence`,
+      );
+      expect(counts.rows[0]).toEqual({ claims: 1, evidence: 2 });
+      completedTestCount += 1;
+    });
+  });
+
+  test("third adapter failure is terminal and cannot be claimed again", async () => {
+    await withSchema("processing_exhausted", async (admin, schema) => {
+      await createPendingAttempt(admin, "1");
+      const store = processingStore(schema);
+      for (let attemptNumber = 1; attemptNumber <= 3; attemptNumber += 1) {
+        const claimed = await claimProcessing(schema, "attempt-1", `worker-${attemptNumber}`);
+        if (claimed.kind !== "claimed") throw new Error("retry attempt was not claimed");
+        const disposition = await Effect.runPromise(
+          store.fail({
+            claim: claimed.claim,
+            failureCode: "grader_adapter_failure",
+            retryAfterSeconds: 0,
+          }),
+        );
+        expect(disposition).toBe(attemptNumber < 3 ? "retryable" : "exhausted");
+      }
+      expect(await claimProcessing(schema, "attempt-1", "late-worker")).toEqual({
+        kind: "terminal",
+        status: "failed",
+      });
+      const terminal = await admin.query(
+        `SELECT a.state,e.grade_outcome,e.rejection_code,o.state AS outbox_state,
+                o.delivery_attempts,
+                (SELECT count(*)::int FROM dance_replay_fingerprint_claims) AS fingerprints
+           FROM dance_attempts a JOIN dance_attempt_evidence e USING (attempt_id)
+           JOIN dance_attempt_outbox o USING (attempt_id) WHERE a.attempt_id='attempt-1'`,
+      );
+      expect(terminal.rows[0]).toEqual({
+        state: "processing_failed",
+        grade_outcome: "failed",
+        rejection_code: "grader_adapter_exhausted",
+        outbox_state: "delivered",
+        delivery_attempts: 3,
+        fingerprints: 0,
       });
       completedTestCount += 1;
     });

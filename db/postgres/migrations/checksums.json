@@ -102,6 +102,6 @@
     "0099_hns_root_import_foundation.sql": "2d416fd997b4c5d924f614ae809ace47403a48449d0d194d0bf76e9464d46d9b",
     "0100_rewards_megapot_prize_pool_projection.sql": "1c2c7a4dba458b33a89f26ccfa8c7abfe9aea775d9e4ea95118ebecb82f4c8e6",
     "0101_hns_root_import_production_readiness.sql": "b7e0a1a056ea4e9859eead9ae724ed1967bc799c35f78961273f5acf81e8f6f9",
-    "0101_dance_attempt_shadow.sql": "0111e2cbe97bf62e82059c22fbab7469f91fad5d98a09d20d4430e01667220af"
+    "0101_dance_attempt_shadow.sql": "83dda51d83418b982905f5b9d9b577f4d01dc112842fd6e0b7d5a4c6ac851448"
   }
 }

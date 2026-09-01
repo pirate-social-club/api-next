@@ -435,7 +435,10 @@ FOR EACH ROW EXECUTE FUNCTION guard_dance_replay_fingerprint_claim();
 CREATE TABLE dance_attempt_evidence (
   attempt_id TEXT PRIMARY KEY,
   session_id TEXT NOT NULL,
-  fingerprint_claim_id TEXT NOT NULL UNIQUE,
+  fingerprint_claim_id TEXT UNIQUE,
+  matched_fingerprint_claim_id TEXT REFERENCES dance_replay_fingerprint_claims (
+    fingerprint_claim_id
+  ),
   claim_owner TEXT NOT NULL CHECK (is_dance_identifier(claim_owner)),
   claim_fence BIGINT NOT NULL CHECK (claim_fence BETWEEN 1 AND 9007199254740991),
   grade_outcome TEXT NOT NULL CHECK (grade_outcome IN ('scored', 'rejected', 'failed')),
@@ -447,7 +450,9 @@ CREATE TABLE dance_attempt_evidence (
   scored_window_start_ms BIGINT NOT NULL CHECK (scored_window_start_ms >= 0),
   scored_window_end_ms BIGINT NOT NULL CHECK (scored_window_end_ms > 0),
   scored_duration_ms BIGINT NOT NULL CHECK (scored_duration_ms BETWEEN 6000 AND 30000),
-  evidence_summary JSONB NOT NULL CHECK (jsonb_typeof(evidence_summary) = 'object'),
+  evidence_summary JSONB CHECK (
+    evidence_summary IS NULL OR jsonb_typeof(evidence_summary) = 'object'
+  ),
   evidence_digest TEXT NOT NULL UNIQUE CHECK (evidence_digest ~ '^[0-9a-f]{64}$'),
   completed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
   FOREIGN KEY (attempt_id, session_id) REFERENCES dance_attempts (attempt_id, session_id),
@@ -456,9 +461,15 @@ CREATE TABLE dance_attempt_evidence (
     DEFERRABLE INITIALLY DEFERRED,
   UNIQUE (attempt_id, evidence_digest),
   CONSTRAINT dance_attempt_evidence_grade_shape CHECK (
-    (grade_outcome = 'scored' AND score_bps IS NOT NULL AND rejection_code IS NULL)
-    OR (grade_outcome IN ('rejected', 'failed')
-      AND score_bps IS NULL AND rejection_code IS NOT NULL)
+    (grade_outcome = 'scored' AND score_bps IS NOT NULL AND rejection_code IS NULL
+      AND evidence_summary IS NOT NULL AND fingerprint_claim_id IS NOT NULL
+      AND matched_fingerprint_claim_id IS NULL)
+    OR (grade_outcome = 'rejected' AND score_bps IS NULL AND rejection_code IS NOT NULL
+      AND evidence_summary IS NOT NULL
+      AND NOT (fingerprint_claim_id IS NOT NULL AND matched_fingerprint_claim_id IS NOT NULL))
+    OR (grade_outcome = 'failed' AND score_bps IS NULL AND rejection_code IS NOT NULL
+      AND evidence_summary IS NULL AND fingerprint_claim_id IS NULL
+      AND matched_fingerprint_claim_id IS NULL)
   ),
   CONSTRAINT dance_attempt_evidence_window CHECK (
     scored_window_end_ms - scored_window_start_ms = scored_duration_ms

@@ -19676,7 +19676,8 @@ CREATE TABLE dance_attempt_actions (
 CREATE TABLE dance_attempt_evidence (
     attempt_id text NOT NULL,
     session_id text NOT NULL,
-    fingerprint_claim_id text NOT NULL,
+    fingerprint_claim_id text,
+    matched_fingerprint_claim_id text,
     claim_owner text NOT NULL,
     claim_fence bigint NOT NULL,
     grade_outcome text NOT NULL,
@@ -19686,15 +19687,15 @@ CREATE TABLE dance_attempt_evidence (
     scored_window_start_ms bigint NOT NULL,
     scored_window_end_ms bigint NOT NULL,
     scored_duration_ms bigint NOT NULL,
-    evidence_summary jsonb NOT NULL,
+    evidence_summary jsonb,
     evidence_digest text NOT NULL,
     completed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     CONSTRAINT dance_attempt_evidence_claim_fence_check CHECK (((claim_fence >= 1) AND (claim_fence <= '9007199254740991'::bigint))),
     CONSTRAINT dance_attempt_evidence_claim_owner_check CHECK (is_dance_identifier(claim_owner)),
     CONSTRAINT dance_attempt_evidence_evidence_digest_check CHECK ((evidence_digest ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT dance_attempt_evidence_evidence_summary_check CHECK ((jsonb_typeof(evidence_summary) = 'object'::text)),
+    CONSTRAINT dance_attempt_evidence_evidence_summary_check CHECK (((evidence_summary IS NULL) OR (jsonb_typeof(evidence_summary) = 'object'::text))),
     CONSTRAINT dance_attempt_evidence_grade_outcome_check CHECK ((grade_outcome = ANY (ARRAY['scored'::text, 'rejected'::text, 'failed'::text]))),
-    CONSTRAINT dance_attempt_evidence_grade_shape CHECK ((((grade_outcome = 'scored'::text) AND (score_bps IS NOT NULL) AND (rejection_code IS NULL)) OR ((grade_outcome = ANY (ARRAY['rejected'::text, 'failed'::text])) AND (score_bps IS NULL) AND (rejection_code IS NOT NULL)))),
+    CONSTRAINT dance_attempt_evidence_grade_shape CHECK ((((grade_outcome = 'scored'::text) AND (score_bps IS NOT NULL) AND (rejection_code IS NULL) AND (evidence_summary IS NOT NULL) AND (fingerprint_claim_id IS NOT NULL) AND (matched_fingerprint_claim_id IS NULL)) OR ((grade_outcome = 'rejected'::text) AND (score_bps IS NULL) AND (rejection_code IS NOT NULL) AND (evidence_summary IS NOT NULL) AND (NOT ((fingerprint_claim_id IS NOT NULL) AND (matched_fingerprint_claim_id IS NOT NULL)))) OR ((grade_outcome = 'failed'::text) AND (score_bps IS NULL) AND (rejection_code IS NOT NULL) AND (evidence_summary IS NULL) AND (fingerprint_claim_id IS NULL) AND (matched_fingerprint_claim_id IS NULL)))),
     CONSTRAINT dance_attempt_evidence_qualification_outcome_check CHECK ((qualification_outcome = 'suppressed_shadow'::text)),
     CONSTRAINT dance_attempt_evidence_rejection_code_check CHECK (((rejection_code IS NULL) OR is_dance_identifier(rejection_code))),
     CONSTRAINT dance_attempt_evidence_score_bps_check CHECK (((score_bps >= 0) AND (score_bps <= 10000))),
@@ -29139,6 +29140,9 @@ ALTER TABLE ONLY dance_attempt_evidence
 
 ALTER TABLE ONLY dance_attempt_evidence
     ADD CONSTRAINT dance_attempt_evidence_fingerprint_claim_id_attempt_id_fkey FOREIGN KEY (fingerprint_claim_id, attempt_id) REFERENCES dance_replay_fingerprint_claims(fingerprint_claim_id, attempt_id) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY dance_attempt_evidence
+    ADD CONSTRAINT dance_attempt_evidence_matched_fingerprint_claim_id_fkey FOREIGN KEY (matched_fingerprint_claim_id) REFERENCES dance_replay_fingerprint_claims(fingerprint_claim_id);
 
 ALTER TABLE ONLY dance_attempt_outbox
     ADD CONSTRAINT dance_attempt_outbox_attempt_id_fkey FOREIGN KEY (attempt_id) REFERENCES dance_attempts(attempt_id);

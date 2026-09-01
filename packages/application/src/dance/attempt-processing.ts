@@ -93,7 +93,7 @@ const FingerprintEvidence = Schema.Struct({
 export const DanceAttemptProcessingOutcome = Schema.Struct({
   version: Schema.Literal("dance-attempt-processing-outcome-v1"),
   binding: DanceAttemptProcessingBinding,
-  gradeOutcome: Schema.Literals(["scored", "rejected", "failed"]),
+  gradeOutcome: Schema.Literals(["scored", "rejected"]),
   qualificationOutcome: Schema.Literal("suppressed_shadow"),
   scoreBps: Schema.NullOr(BasisPoints),
   rejectionCode: Schema.NullOr(Identifier),
@@ -108,13 +108,19 @@ export const DanceAttemptProcessingOutcome = Schema.Struct({
     if (outcome.scoredWindowEndMs - outcome.scoredWindowStartMs !== outcome.scoredDurationMs) {
       return "Expected an exact Dance terminal scoring interval";
     }
+    if (
+      (outcome.fingerprint.matchScope === "same_account") !==
+      (outcome.fingerprint.accountScopeId !== null)
+    ) {
+      return "Expected the Dance fingerprint scope to bind its account identity";
+    }
     return outcome.gradeOutcome === "scored"
       ? outcome.scoreBps !== null && outcome.rejectionCode === null
         ? undefined
         : "Expected scored Dance evidence"
       : outcome.scoreBps === null && outcome.rejectionCode !== null
         ? undefined
-        : "Expected rejected or failed Dance evidence";
+        : "Expected rejected Dance evidence";
   }),
 );
 export type DanceAttemptProcessingOutcome = Schema.Schema.Type<
@@ -256,7 +262,7 @@ export function runDanceAttemptProcessing(
     if (completed === "stale") return { kind: "stale" } as const;
     return {
       kind: completed,
-      status: outcome.value.gradeOutcome === "failed" ? "failed" : "completed",
+      status: "completed",
     } as const;
   });
 }
