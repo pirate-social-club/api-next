@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import type { Sha256Hex } from "@pirate/domain/verification";
 import {
   decodeHnsAuthorityInventoryBytes,
+  HNS_AUTHORITY_EVIDENCE_MAX_LIFETIME_SECONDS,
   type HnsAuthorityInventoryV1,
   hnsAuthorityCapabilitySetDigest,
   hnsAuthorityCapabilitySetPreimage,
@@ -222,4 +223,40 @@ test("validates immutable inventory identity and freshness at database time", as
       maximum_inventory_lifetime_seconds: 3_599,
     }),
   ).toThrow("not fresh");
+  expect(() =>
+    validateHnsAuthorityInventoryAtDatabaseTime({
+      ...input,
+      maximum_inventory_lifetime_seconds: HNS_AUTHORITY_EVIDENCE_MAX_LIFETIME_SECONDS + 1,
+    }),
+  ).toThrow("not fresh");
+});
+
+test("admits the deliberate seven-day authority evidence ceiling", async () => {
+  const configuration = configurationV2Value();
+  if (configuration.authority_inventory === null) {
+    throw new Error("configuration fixture inventory policy is missing");
+  }
+  const atCeiling = {
+    ...configuration,
+    authority_inventory: {
+      ...configuration.authority_inventory,
+      maximum_inventory_lifetime_seconds: HNS_AUTHORITY_EVIDENCE_MAX_LIFETIME_SECONDS,
+    },
+  };
+  await expect(
+    decodeHnsControlObserverConfigurationV2Bytes(encoder.encode(JSON.stringify(atCeiling))),
+  ).resolves.toMatchObject({ configuration: atCeiling });
+  await expect(
+    decodeHnsControlObserverConfigurationV2Bytes(
+      encoder.encode(
+        JSON.stringify({
+          ...atCeiling,
+          authority_inventory: {
+            ...atCeiling.authority_inventory,
+            maximum_inventory_lifetime_seconds: HNS_AUTHORITY_EVIDENCE_MAX_LIFETIME_SECONDS + 1,
+          },
+        }),
+      ),
+    ),
+  ).rejects.toThrow(HnsControlObserverConfigurationError);
 });

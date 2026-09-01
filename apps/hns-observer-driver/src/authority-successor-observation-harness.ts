@@ -16,7 +16,10 @@ import {
   prepareHnsAuthoritySuccessorCandidateV1,
   prepareHnsDnsZoneActivationDocumentV1,
 } from "@pirate/application/hns-host-persistence";
-import { decodeHnsAuthorityInventoryBytes } from "@pirate/application/namespace-ownership";
+import {
+  decodeHnsAuthorityInventoryBytes,
+  HNS_AUTHORITY_EVIDENCE_MAX_LIFETIME_SECONDS,
+} from "@pirate/application/namespace-ownership";
 import { deriveHnsAuthoritySuccessorChildZoneObservationV1 } from "./authority-successor-zone-observation.ts";
 
 export const HNS_AUTHORITY_SUCCESSOR_OBSERVATION_VERSION =
@@ -524,7 +527,7 @@ export function makeHnsAuthoritySuccessorObservationSourceV1(input: {
   if (
     !Number.isSafeInteger(input.health_valid_for_seconds) ||
     input.health_valid_for_seconds < 1 ||
-    input.health_valid_for_seconds > 86_400
+    input.health_valid_for_seconds > HNS_AUTHORITY_EVIDENCE_MAX_LIFETIME_SECONDS
   ) {
     throw new HnsAuthoritySuccessorObservationHarnessError("invalid_source_observation");
   }
