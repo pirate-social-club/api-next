@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import type { KaraokeSttAdapterMessage } from "@pirate/application/karaoke-runtime";
 import {
-  connectElevenLabsKaraokeSocket,
   ElevenLabsKaraokeSttAdapter,
   elevenLabsSpeechProviderPolicy,
   type KaraokeSttSocket,
+  makeElevenLabsKaraokeSocketConnect,
 } from "./elevenlabs-karaoke-stt.ts";
 
 class FakeSocket implements KaraokeSttSocket {
@@ -264,27 +264,20 @@ describe("ElevenLabs Karaoke realtime adapter", () => {
   });
 
   test("mints a fresh single-use token before the outbound upgrade", async () => {
-    const originalFetch = globalThis.fetch;
     const requests: Request[] = [];
-    try {
-      globalThis.fetch = (async (input, init) => {
-        const request = new Request(input instanceof Request ? input.url : String(input), init);
-        requests.push(request);
-        if (requests.length === 1) return Response.json({ token: "single-use" });
-        return { status: 101, webSocket: { accept: () => undefined } } as unknown as Response;
-      }) as typeof fetch;
-      await connectElevenLabsKaraokeSocket({
-        apiKey: "provider-key",
-        url: "wss://api.elevenlabs.io/v1/speech-to-text/realtime?model_id=scribe_v2_realtime",
-      });
-      expect(requests[0]?.url).toBe(
-        "https://api.elevenlabs.io/v1/single-use-token/realtime_scribe",
-      );
-      expect(requests[0]?.headers.get("xi-api-key")).toBe("provider-key");
-      expect(new URL(requests[1]?.url ?? "").searchParams.get("token")).toBe("single-use");
-      expect(requests[1]?.headers.get("upgrade")).toBe("websocket");
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
+    const connect = makeElevenLabsKaraokeSocketConnect((async (input, init) => {
+      const request = new Request(input instanceof Request ? input.url : String(input), init);
+      requests.push(request);
+      if (requests.length === 1) return Response.json({ token: "single-use" });
+      return { status: 101, webSocket: { accept: () => undefined } } as unknown as Response;
+    }) as typeof fetch);
+    await connect({
+      apiKey: "provider-key",
+      url: "wss://api.elevenlabs.io/v1/speech-to-text/realtime?model_id=scribe_v2_realtime",
+    });
+    expect(requests[0]?.url).toBe("https://api.elevenlabs.io/v1/single-use-token/realtime_scribe");
+    expect(requests[0]?.headers.get("xi-api-key")).toBe("provider-key");
+    expect(new URL(requests[1]?.url ?? "").searchParams.get("token")).toBe("single-use");
+    expect(requests[1]?.headers.get("upgrade")).toBe("websocket");
   });
 });
