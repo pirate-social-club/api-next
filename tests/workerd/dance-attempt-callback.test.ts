@@ -218,18 +218,28 @@ describe("Dance attempt callback acceptance", () => {
     expect(state.counts().completions).toBe(0);
   });
 
-  it("rejects a callback bound to another attempt or lease fence", async () => {
+  it("rejects a callback bound to another operation, attempt, input, or lease fence", async () => {
     const state = callbackStore();
     const handler = makeDanceAttemptCallbackHandler({ authenticator, store: state.store });
+    const wrongOperation = {
+      ...payload(),
+      operationIdentity: "dance-attempt:attempt-other",
+    };
     const wrongAttempt = {
       ...outcome,
       binding: { ...outcome.binding, attemptId: "attempt-2" },
+    };
+    const wrongInput = {
+      ...outcome,
+      binding: { ...outcome.binding, inputDigest: HASH_B },
     };
     const wrongFence = {
       ...outcome,
       binding: { ...outcome.binding, claimFence: 2 },
     };
+    expect((await handler(await requestFor(wrongOperation))).status).toBe(400);
     expect((await handler(await requestFor(payload(wrongAttempt)))).status).toBe(400);
+    expect((await handler(await requestFor(payload(wrongInput)))).status).toBe(400);
     expect((await handler(await requestFor(payload(wrongFence)))).status).toBe(400);
     expect(state.counts().completions).toBe(0);
   });
