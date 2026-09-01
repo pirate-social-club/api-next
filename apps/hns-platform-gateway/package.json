@@ -10,7 +10,8 @@
   "scripts": {
     "build:vps-bundle": "bun build --target=bun --outfile dist/pirate-hns-platform-gateway.mjs src/main.ts",
     "build:community-vps-bundle": "bun scripts/build-community-vps-bundle.ts",
-    "build:combined-vps-bundle": "bun scripts/build-combined-vps-bundle.ts"
+    "build:combined-vps-bundle": "bun scripts/build-combined-vps-bundle.ts",
+    "build:generic-caddy-candidate": "bun scripts/build-generic-caddy-candidate.ts"
   },
   "dependencies": {
     "@pirate/application": "0.0.0",
