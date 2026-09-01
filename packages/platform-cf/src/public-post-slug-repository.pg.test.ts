@@ -326,7 +326,7 @@ suite("Postgres 17 public post slug aliases", () => {
       expect(firstPage.items).not.toContainEqual({ canonical_path: "/posts/inactive-post" });
       expect(firstPage.next_cursor).toStartWith("pps1.");
       const secondPage = await listSitemap(connection, {
-        cursor: firstPage.next_cursor ?? undefined,
+        ...(firstPage.next_cursor === null ? {} : { cursor: firstPage.next_cursor }),
         limit: 2,
       });
       expect(secondPage).toEqual({

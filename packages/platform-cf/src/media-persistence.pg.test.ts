@@ -2508,10 +2508,12 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
   }, 40_000);
   test("allocates an opaque alias while reconciling an already-published adult song", async () => {
     await withCurrentSchema(async (admin, connection) => {
+      const contentModeration = analysis.contentModeration;
+      if (contentModeration === undefined) throw new Error("missing moderation fixture");
       const adultAnalysis: TrustedSongAnalysis = {
         ...analysis,
         contentModeration: {
-          ...analysis.contentModeration,
+          ...contentModeration,
           resultingContentRating: "adult_18",
         },
       };

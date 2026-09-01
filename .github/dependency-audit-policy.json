@@ -4,6 +4,7 @@
   "requestPathPackages": [
     "@selfxyz/core",
     "@zkpassport/sdk",
+    "cizgile",
     "effect",
     "hono",
     "jose",

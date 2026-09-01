@@ -35,7 +35,7 @@
     "knip": "knip",
     "test": "bun run test:unit && bun run test:node && bun run test:workerd",
     "test:unit": "bun test --path-ignore-patterns='**/*.pg.test.ts' packages apps scripts",
-    "test:node": "node node_modules/vitest/vitest.mjs run --config tests/node/vitest.config.ts",
+    "test:node": "vitest run --config tests/node/vitest.config.ts",
     "test:postgres": "bun scripts/run-postgres-tests.ts",
     "test:workerd": "vitest run --config tests/workerd/vitest.config.ts && vitest run --config tests/workerd-http/vitest.config.ts && vitest run --config tests/workerd-self/vitest.config.ts && vitest run --config tests/workerd-hns-verifier/vitest.config.ts",
     "check:breaking": "bun scripts/check-openapi-breaking.ts --base-sha \"${OPENAPI_BASE_SHA:-HEAD^1}\"",

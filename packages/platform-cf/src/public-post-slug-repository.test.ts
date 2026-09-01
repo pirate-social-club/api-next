@@ -286,7 +286,7 @@ describe("public post slug live-state lookups", () => {
 
     const second = await Effect.runPromise(
       listPublicPostSitemapInTransaction(transaction, {
-        cursor: first.next_cursor ?? undefined,
+        ...(first.next_cursor === null ? {} : { cursor: first.next_cursor }),
         limit: 2,
       }),
     );
