@@ -240,10 +240,8 @@ export const makeControlPlaneKaraokeRepository = () => ({
             yield* lockLearnerAudioAccount(transaction, input.accountId);
             const identity = yield* transaction.execute<Row>({
               label: "karaoke.session.identity",
-              text: `SELECT persona.persona_id,
-                            coalesce($3, clock.timezone) AS timezone
+              text: `SELECT persona.persona_id
                        FROM personas AS persona
-                       LEFT JOIN account_streak_clocks AS clock ON clock.account_id=persona.account_id
                       WHERE persona.account_id=$1 AND persona.status='active'
                         AND persona.persona_id=coalesce($2, (
                           SELECT candidate.persona_id FROM personas AS candidate
@@ -251,13 +249,11 @@ export const makeControlPlaneKaraokeRepository = () => ({
                            ORDER BY candidate.is_first_persona DESC, candidate.created_at,
                                     candidate.persona_id LIMIT 1
                         ))`,
-              values: [input.accountId, input.personaId, input.timezone],
+              values: [input.accountId, input.personaId],
               readonly: true,
             });
             if (identity.rows.length !== 1) return yield* rejected("invalid-input");
             const identityRow = identity.rows[0] as Row;
-            const timezone = nullableText(identityRow, "timezone");
-            if (timezone === null) return yield* rejected("invalid-input");
             const personaId = text(identityRow, "persona_id");
             const replay = yield* transaction.execute<Row>({
               label: "karaoke.session.replay",
@@ -275,6 +271,34 @@ export const makeControlPlaneKaraokeRepository = () => ({
                 return yield* rejected("idempotency-conflict");
               }
               return authorityFromRow(row);
+            }
+            const clock = yield* transaction.execute<Row>({
+              label: "karaoke.session.clock",
+              text: `SELECT timezone FROM account_streak_clocks
+                      WHERE account_id=$1 FOR UPDATE`,
+              values: [input.accountId],
+              readonly: false,
+            });
+            if (clock.rows.length > 1) return yield* failed("invalid-row");
+            const pinnedTimezone =
+              clock.rows.length === 0 ? null : text(clock.rows[0] as Row, "timezone");
+            if (
+              pinnedTimezone !== null &&
+              input.timezone !== null &&
+              input.timezone !== pinnedTimezone
+            ) {
+              return yield* rejected("invalid-input");
+            }
+            const timezone = pinnedTimezone ?? input.timezone ?? "UTC";
+            if (pinnedTimezone === null) {
+              yield* transaction.execute({
+                label: "karaoke.session.clock-pin",
+                text: `INSERT INTO account_streak_clocks (
+                         account_id, timezone, timezone_updated_at, next_change_allowed_at
+                       ) VALUES ($1,$2,$3::timestamptz,$3::timestamptz + interval '7 days')`,
+                values: [input.accountId, timezone, input.createdAt],
+                readonly: false,
+              });
             }
             yield* transaction.execute({
               label: "karaoke.session.insert",
