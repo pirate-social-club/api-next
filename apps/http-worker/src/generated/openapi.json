@@ -101284,6 +101284,58 @@
                                         }
                                       ]
                                     },
+                                    "gross_prize_pool_atomic": {
+                                      "anyOf": [
+                                        {
+                                          "type": "string",
+                                          "allOf": [
+                                            {
+                                              "pattern": "^(?:0|[1-9][0-9]*)$"
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "global_tickets_bought": {
+                                      "anyOf": [
+                                        {
+                                          "type": "string",
+                                          "allOf": [
+                                            {
+                                              "pattern": "^(?:0|[1-9][0-9]*)$"
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "prize_pool_observed_at": {
+                                      "anyOf": [
+                                        {
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "prize_pool_basis": {
+                                      "type": "string",
+                                      "enum": [
+                                        "gross_observed_before_referral_win_share_terminal_last_observed_pre_rollover"
+                                      ]
+                                    },
+                                    "global_tickets_basis": {
+                                      "type": "string",
+                                      "enum": [
+                                        "drawing_wide_all_megapot_buyers"
+                                      ]
+                                    },
                                     "net_winnings_atomic": {
                                       "type": "string",
                                       "allOf": [
@@ -101377,6 +101429,11 @@
                                     "beneficiary_count",
                                     "ticket_price_ceiling_atomic",
                                     "actual_ticket_cost_atomic",
+                                    "gross_prize_pool_atomic",
+                                    "global_tickets_bought",
+                                    "prize_pool_observed_at",
+                                    "prize_pool_basis",
+                                    "global_tickets_basis",
                                     "net_winnings_atomic",
                                     "commitment_reference",
                                     "snapshot_hash",

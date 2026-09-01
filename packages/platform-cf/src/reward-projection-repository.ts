@@ -168,6 +168,15 @@ function publicState(status: InternalMegapotDrawingLifecycleStatus): MegapotPool
 function drawingFromRow(row: Row): PublicMegapotDrawingProjection | null {
   if (row.drawing_id === null || row.drawing_id === undefined) return null;
   const lifecycleStatus = drawingStatus(row);
+  const grossPrizePoolAtomic = nullableBigint(row, "gross_prize_pool_atomic");
+  const globalTicketsBought = nullableBigint(row, "global_tickets_bought");
+  const prizePoolObservedAt = nullableIso(row, "prize_pool_observed_at");
+  if (
+    (grossPrizePoolAtomic === null) !== (globalTicketsBought === null) ||
+    (grossPrizePoolAtomic === null) !== (prizePoolObservedAt === null)
+  ) {
+    throw new Error("invalid prize pool projection tuple");
+  }
   return {
     drawingId: bigint(row, "drawing_id"),
     lifecycleStatus:
@@ -177,6 +186,11 @@ function drawingFromRow(row: Row): PublicMegapotDrawingProjection | null {
     beneficiaryCount: integer(row, "beneficiary_count"),
     ticketPriceCeilingAtomic: bigint(row, "ticket_price_ceiling_atomic"),
     actualTicketCostAtomic: bigint(row, "actual_ticket_cost_atomic"),
+    grossPrizePoolAtomic,
+    globalTicketsBought,
+    prizePoolObservedAt,
+    prizePoolBasis: "gross_observed_before_referral_win_share_terminal_last_observed_pre_rollover",
+    globalTicketsBasis: "drawing_wide_all_megapot_buyers",
     netWinningsAtomic: bigint(row, "net_winnings_atomic"),
     commitmentReference: nullableText(row, "commitment_reference"),
     snapshotHash: nullableText(row, "snapshot_hash"),
@@ -438,6 +452,30 @@ export function makeControlPlaneRewardProjectionRepository() {
                           END AS beneficiary_count,
                           drawing.ticket_price_ceiling_atomic,
                           drawing.actual_ticket_cost_atomic, drawing.net_winnings_atomic,
+                          CASE
+                            WHEN latest_observation.gross_prize_pool_atomic IS NOT NULL
+                              AND (
+                                drawing.terminal_at IS NOT NULL
+                                OR latest_observation.expires_at > clock_timestamp()
+                              )
+                            THEN latest_observation.gross_prize_pool_atomic
+                          END AS gross_prize_pool_atomic,
+                          CASE
+                            WHEN latest_observation.global_tickets_bought IS NOT NULL
+                              AND (
+                                drawing.terminal_at IS NOT NULL
+                                OR latest_observation.expires_at > clock_timestamp()
+                              )
+                            THEN latest_observation.global_tickets_bought
+                          END AS global_tickets_bought,
+                          CASE
+                            WHEN latest_observation.gross_prize_pool_atomic IS NOT NULL
+                              AND (
+                                drawing.terminal_at IS NOT NULL
+                                OR latest_observation.expires_at > clock_timestamp()
+                              )
+                            THEN latest_observation.observed_at
+                          END AS prize_pool_observed_at,
                           commitment.public_reference AS commitment_reference,
                           snapshot.snapshot_hash, ticket.ticket_id,
                           ticket.minted_transaction_hash AS purchase_transaction_hash,
@@ -455,6 +493,18 @@ export function makeControlPlaneRewardProjectionRepository() {
                         WHERE candidate.pool_leg_id=leg.leg_id
                         ORDER BY candidate.drawing_id DESC LIMIT 1
                      ) drawing ON true
+                     LEFT JOIN LATERAL (
+                       SELECT observation.gross_prize_pool_atomic,
+                              observation.global_tickets_bought,
+                              observation.observed_at, observation.expires_at
+                         FROM megapot_drawing_observations observation
+                        WHERE observation.attestation_id=leg.attestation_id
+                          AND observation.drawing_id=drawing.drawing_id
+                        ORDER BY observation.block_number DESC,
+                                 observation.observed_at DESC,
+                                 observation.observation_id
+                        LIMIT 1
+                     ) latest_observation ON true
                      LEFT JOIN LATERAL (
                        SELECT count(*)::integer AS value FROM megapot_pool_shares share
                         WHERE share.pool_leg_id=leg.leg_id

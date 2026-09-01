@@ -214,6 +214,13 @@ export const MegapotPoolDrawingProjectionV1 = Schema.Struct({
   beneficiary_count: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 1_000_000 })),
   ticket_price_ceiling_atomic: AtomicAmount,
   actual_ticket_cost_atomic: NonNegativeAtomicAmount,
+  gross_prize_pool_atomic: Schema.NullOr(NonNegativeAtomicAmount),
+  global_tickets_bought: Schema.NullOr(NonNegativeAtomicAmount),
+  prize_pool_observed_at: Schema.NullOr(CanonicalInstant),
+  prize_pool_basis: Schema.Literal(
+    "gross_observed_before_referral_win_share_terminal_last_observed_pre_rollover",
+  ),
+  global_tickets_basis: Schema.Literal("drawing_wide_all_megapot_buyers"),
   net_winnings_atomic: NonNegativeAtomicAmount,
   commitment_reference: Schema.NullOr(Schema.NonEmptyString),
   snapshot_hash: Schema.NullOr(Bytes32),

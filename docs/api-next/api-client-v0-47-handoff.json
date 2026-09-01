@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.47.0",
+  "releaseType": "megapot-prize-pool-projection-contract",
+  "wireContract": "song-megapot-pool-projection",
+  "sourceCommit": "pending-review",
+  "supersedes": "0.46.0; additively exposes the observed gross Megapot prize pool, drawing-wide ticket count, observation time, and fixed basis labels on the public song pool drawing projection.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.47.0.tgz",
+    "sha256": "797939098ac2c7c48ed5f1711633b3c0e432a2368eb65c3ace2e8de264ae7bb4",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@6da88306bdf03690b279eab1287c63402b14deaab81f9f7a6ef023d68b1e2b12",
+    "openapiSha256": "6da88306bdf03690b279eab1287c63402b14deaab81f9f7a6ef023d68b1e2b12",
+    "clientSha256": "1fee1a7ea8c7cf2cdd3041e1e11c35ff159a5578b9757771149a18c43fe509f6"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "passed",
+      "baselineCommit": "origin/main",
+      "reason": "The response fields are additive and required only inside a drawing projection that is already server-produced."
+    },
+    "focusedContractSuites": "17 passed across the observer, rewards contracts, and HTTP handler suites; the focused PostgreSQL rewards suite passed 16 tests with 114 assertions after rebasing onto migration 0099.",
+    "fullUnitSuite": "2616 passed with PostgreSQL-dependent tests excluded by the ordinary unit scope after rebasing onto migration 0099.",
+    "fullWorkerdSuite": "not run locally because prior Workerd fan-out exhausted the constrained host; protected CI remains authoritative",
+    "packageVerifier": "passed",
+    "repositoryCheck": "passed with the pre-existing karaoke non-null assertion warnings and deprecated Biome configuration notice"
+  }
+}

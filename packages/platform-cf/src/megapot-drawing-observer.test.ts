@@ -6,7 +6,7 @@ import type {
 } from "@pirate/application";
 import { Effect } from "effect";
 import { makeMegapotDrawingObserver } from "./megapot-drawing-observer.ts";
-import type { MegapotV2DeploymentAttestation } from "./megapot-v2.ts";
+import type { MegapotV2DeploymentAttestation, MegapotV2DrawingState } from "./megapot-v2.ts";
 import type { MegapotV2RpcClient } from "./megapot-v2-rpc.ts";
 
 const address = (byte: string): string => `0x${byte.repeat(40)}`;
@@ -44,7 +44,10 @@ const deployment = (value: MegapotDrawingObserverCandidate): MegapotV2Deployment
   ticketNftCodeHash: value.ticketNftCodeHash,
 });
 
-function rpc(authority: MegapotDrawingObserverCandidate): MegapotV2RpcClient {
+function rpc(
+  authority: MegapotDrawingObserverCandidate,
+  drawingOverrides: Partial<MegapotV2DrawingState> = {},
+): MegapotV2RpcClient {
   return {
     deployment: deployment(authority),
     attestDeployment: async () => ({
@@ -78,6 +81,7 @@ function rpc(authority: MegapotDrawingObserverCandidate): MegapotV2RpcClient {
         bonusballMax: 13,
         payoutCalculator: address("a"),
         jackpotLock: false,
+        ...drawingOverrides,
       };
     },
     readDrawingTierPayouts: async () => [],
@@ -131,6 +135,8 @@ describe("Megapot drawing observer", () => {
     const result = await Effect.runPromise(observer.observe(authority.attestationId));
     expect(result).toMatchObject({
       drawingId: 101n,
+      grossPrizePoolAtomic: 1_000_000n,
+      globalTicketsBought: 7n,
       ticketPriceAtomic: 10_000n,
       drawingTime: "2026-04-30T00:00:00.000Z",
       blockTimestamp: "2026-04-29T00:00:00.000Z",
@@ -138,6 +144,45 @@ describe("Megapot drawing observer", () => {
     });
     expect(recorded[0]?.observationId).toMatch(/^drawing_observation_[0-9a-f]{64}$/u);
     expect(recorded[0]?.rawStateHash).toMatch(/^[0-9a-f]{64}$/u);
+    expect(recorded[0]?.legacyRawStateHash).toMatch(/^[0-9a-f]{64}$/u);
+    expect(recorded[0]?.rawStateHash).not.toBe(recorded[0]?.legacyRawStateHash);
+  });
+
+  test("includes the gross pool and global ticket count only in the v2 identity", async () => {
+    const authority = candidate();
+    const observe = async (drawingOverrides: Partial<MegapotV2DrawingState>) => {
+      let recorded: MegapotDrawingObservationRecord | undefined;
+      const store: MegapotDrawingObservationStore = {
+        loadCandidate: () => Effect.succeed(authority),
+        recordAndOpen: (observation) => {
+          recorded = observation;
+          return Effect.succeed({ ...observation, openedPoolLegIds: [] });
+        },
+      };
+      await Effect.runPromise(
+        makeMegapotDrawingObserver({
+          store,
+          rpc: rpc(authority, drawingOverrides),
+          observationTtlMs: 60_000,
+          now: () => Date.parse("2026-04-29T00:01:00.000Z"),
+        }).observe(authority.attestationId),
+      );
+      if (recorded === undefined) throw new Error("observation was not recorded");
+      return recorded;
+    };
+
+    const baseline = await observe({});
+    const changedPool = await observe({ prizePool: baseline.grossPrizePoolAtomic + 1n });
+    const changedTickets = await observe({
+      globalTicketsBought: baseline.globalTicketsBought + 1n,
+    });
+
+    expect(changedPool.legacyRawStateHash).toBe(baseline.legacyRawStateHash);
+    expect(changedTickets.legacyRawStateHash).toBe(baseline.legacyRawStateHash);
+    expect(changedPool.rawStateHash).not.toBe(baseline.rawStateHash);
+    expect(changedTickets.rawStateHash).not.toBe(baseline.rawStateHash);
+    expect(changedPool.observationId).not.toBe(baseline.observationId);
+    expect(changedTickets.observationId).not.toBe(baseline.observationId);
   });
 
   test("rejects an RPC configured for a different deployment", async () => {

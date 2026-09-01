@@ -2525,6 +2525,8 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         attestationId: authority.attestationId,
         chainId: authority.chainId,
         drawingId: 100n,
+        grossPrizePoolAtomic: 9_007_199_254_740_993n,
+        globalTicketsBought: 7n,
         ticketPriceAtomic: 10_000n,
         drawingTime: new Date(now + 60 * 60 * 1_000).toISOString(),
         ballMax: 25,
@@ -2534,11 +2536,12 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         referralWinShareWei: 100_000_000_000_000_000n,
         blockNumber: 140n,
         blockHash: bytes32("5"),
-        blockTimestamp: new Date(now - 60_000).toISOString(),
+        blockTimestamp: new Date(now - 5 * 60_000).toISOString(),
         confirmations: 1,
-        observedAt: new Date(now).toISOString(),
-        expiresAt: new Date(now + 15 * 60 * 1_000).toISOString(),
+        observedAt: new Date(now - 4 * 60_000).toISOString(),
+        expiresAt: new Date(now + 11 * 60_000).toISOString(),
         rawStateHash: hash("5"),
+        legacyRawStateHash: hash("4"),
       } as const;
       const first = await Effect.runPromise(store.recordAndOpen(observation));
       const replay = await Effect.runPromise(store.recordAndOpen(observation));
@@ -2567,6 +2570,225 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         [ending.legId],
       );
       expect(drawingsAfterOfferEnd.rows).toEqual([]);
+
+      const persisted = await admin.query<{
+        readonly gross_prize_pool_atomic: string | null;
+        readonly global_tickets_bought: string | null;
+      }>(
+        `SELECT gross_prize_pool_atomic::text, global_tickets_bought::text
+           FROM megapot_drawing_observations WHERE observation_id=$1`,
+        [observation.observationId],
+      );
+      expect(persisted.rows).toEqual([
+        {
+          gross_prize_pool_atomic: "9007199254740993",
+          global_tickets_bought: "7",
+        },
+      ]);
+      await expect(
+        admin.query(
+          `INSERT INTO megapot_drawing_observations (
+             observation_id,attestation_id,chain_id,drawing_id,
+             gross_prize_pool_atomic,global_tickets_bought,ticket_price_atomic,
+             drawing_time,ball_max,bonusball_max,drawing_locked,referral_fee_wei,
+             referral_win_share_wei,block_number,block_hash,block_timestamp,
+             confirmations,observed_at,expires_at,raw_state_hash
+           )
+           SELECT 'drawing-observation-repository-invalid-pair',attestation_id,chain_id,
+                  drawing_id,NULL,1,ticket_price_atomic,drawing_time,ball_max,bonusball_max,
+                  drawing_locked,referral_fee_wei,referral_win_share_wei,139,$2,
+                  block_timestamp,confirmations,observed_at,expires_at,$3
+             FROM megapot_drawing_observations WHERE observation_id=$1`,
+          [observation.observationId, bytes32("9"), hash("9")],
+        ),
+      ).rejects.toMatchObject({
+        code: "23514",
+        constraint: "megapot_drawing_observations_prize_pool_pair",
+      });
+
+      const projections = makeControlPlaneRewardProjectionStore(
+        makeDirectPostgresControlPlaneLayer(scopedConnection),
+      );
+      const standingBeforeRefresh = await Effect.runPromise(
+        projections.findStanding({ accountId: identity.accountId, legId }),
+      );
+      const laterObservation = {
+        ...observation,
+        observationId: "drawing-observation-repository-100-later",
+        grossPrizePoolAtomic: 18_014_398_509_481_987n,
+        globalTicketsBought: 11n,
+        blockNumber: 141n,
+        blockHash: bytes32("6"),
+        blockTimestamp: new Date(now - 4 * 60_000).toISOString(),
+        observedAt: new Date(now - 3 * 60_000).toISOString(),
+        expiresAt: new Date(now + 12 * 60_000).toISOString(),
+        rawStateHash: hash("6"),
+        legacyRawStateHash: hash("a"),
+      } as const;
+      await Effect.runPromise(store.recordAndOpen(laterObservation));
+      await Effect.runPromise(store.recordAndOpen(observation));
+      const latestPool = await Effect.runPromise(
+        projections.findPublicSongPool({
+          communityId: identity.communityId,
+          postId: identity.postId,
+        }),
+      );
+      expect(latestPool?.drawing).toMatchObject({
+        drawingId: 100n,
+        grossPrizePoolAtomic: 18_014_398_509_481_987n,
+        globalTicketsBought: 11n,
+        prizePoolObservedAt: laterObservation.observedAt,
+        prizePoolBasis:
+          "gross_observed_before_referral_win_share_terminal_last_observed_pre_rollover",
+        globalTicketsBasis: "drawing_wide_all_megapot_buyers",
+      });
+      const standingAfterRefresh = await Effect.runPromise(
+        projections.findStanding({ accountId: identity.accountId, legId }),
+      );
+      expect(standingAfterRefresh).toEqual(standingBeforeRefresh);
+
+      const expiredObservation = {
+        ...observation,
+        observationId: "drawing-observation-repository-100-expired",
+        grossPrizePoolAtomic: 27_021_597_764_222_981n,
+        globalTicketsBought: 13n,
+        blockNumber: 142n,
+        blockHash: bytes32("7"),
+        blockTimestamp: new Date(now - 3 * 60_000).toISOString(),
+        observedAt: new Date(now - 2 * 60_000).toISOString(),
+        expiresAt: new Date(now - 60_000).toISOString(),
+        rawStateHash: hash("7"),
+        legacyRawStateHash: hash("b"),
+      } as const;
+      await Effect.runPromise(store.recordAndOpen(expiredObservation));
+      await expect(
+        Effect.runPromise(
+          store.recordAndOpen({
+            ...expiredObservation,
+            observationId: "drawing-observation-repository-100-conflict",
+            rawStateHash: hash("8"),
+          }),
+        ),
+      ).rejects.toMatchObject({ reason: "conflict" });
+      const staleOpenPool = await Effect.runPromise(
+        projections.findPublicSongPool({
+          communityId: identity.communityId,
+          postId: identity.postId,
+        }),
+      );
+      expect(staleOpenPool?.drawing).toMatchObject({
+        grossPrizePoolAtomic: null,
+        globalTicketsBought: null,
+        prizePoolObservedAt: null,
+      });
+
+      await admin.query("SET session_replication_role = replica");
+      try {
+        await admin.query(
+          `UPDATE megapot_pool_drawings
+              SET status='closed_no_entries', frozen_share_count=0,
+                  fallback_beneficiary=false, cutoff_frozen_at=clock_timestamp(),
+                  terminal_at=clock_timestamp(), version=version+1,
+                  updated_at=clock_timestamp()
+            WHERE pool_leg_id=$1 AND drawing_id=100`,
+          [legId],
+        );
+      } finally {
+        await admin.query("SET session_replication_role = origin");
+      }
+      const terminalPool = await Effect.runPromise(
+        projections.findPublicSongPool({
+          communityId: identity.communityId,
+          postId: identity.postId,
+        }),
+      );
+      expect(terminalPool?.drawing).toMatchObject({
+        lifecycleStatus: "closed_no_entries",
+        grossPrizePoolAtomic: 27_021_597_764_222_981n,
+        globalTicketsBought: 13n,
+        prizePoolObservedAt: expiredObservation.observedAt,
+      });
+
+      const legacyRawStateHash = hash("c");
+      await admin.query(
+        `INSERT INTO megapot_drawing_observations (
+           observation_id,attestation_id,chain_id,drawing_id,ticket_price_atomic,
+           drawing_time,ball_max,bonusball_max,drawing_locked,referral_fee_wei,
+           referral_win_share_wei,block_number,block_hash,block_timestamp,
+           confirmations,observed_at,expires_at,raw_state_hash
+         ) VALUES ($1,$2,$3,100,10000,$4::timestamptz,25,13,false,$5,$6,143,$7,
+           $8::timestamptz,1,$9::timestamptz,$10::timestamptz,$11)`,
+        [
+          "drawing-observation-repository-100-legacy",
+          authority.attestationId,
+          authority.chainId,
+          observation.drawingTime,
+          observation.referralFeeWei.toString(),
+          observation.referralWinShareWei.toString(),
+          bytes32("8"),
+          new Date(now - 2 * 60_000).toISOString(),
+          new Date(now - 60_000).toISOString(),
+          new Date(now + 14 * 60_000).toISOString(),
+          legacyRawStateHash,
+        ],
+      );
+      const legacyReplay = await Effect.runPromise(
+        store.recordAndOpen({
+          ...observation,
+          observationId: "drawing-observation-repository-100-v2-replay",
+          grossPrizePoolAtomic: 36_028_797_018_963_975n,
+          globalTicketsBought: 17n,
+          blockNumber: 143n,
+          blockHash: bytes32("8"),
+          blockTimestamp: new Date(now - 2 * 60_000).toISOString(),
+          observedAt: new Date(now - 60_000).toISOString(),
+          expiresAt: new Date(now + 14 * 60_000).toISOString(),
+          rawStateHash: hash("d"),
+          legacyRawStateHash,
+        }),
+      );
+      expect(legacyReplay).toMatchObject({
+        observationId: "drawing-observation-repository-100-legacy",
+        grossPrizePoolAtomic: null,
+        globalTicketsBought: null,
+      });
+      const legacyPool = await Effect.runPromise(
+        projections.findPublicSongPool({
+          communityId: identity.communityId,
+          postId: identity.postId,
+        }),
+      );
+      expect(legacyPool?.drawing).toMatchObject({
+        grossPrizePoolAtomic: null,
+        globalTicketsBought: null,
+        prizePoolObservedAt: null,
+      });
+
+      await admin.query("SET enable_seqscan=off");
+      try {
+        const explain = await admin.query<{ readonly "QUERY PLAN": string }>(
+          `EXPLAIN (COSTS OFF)
+           SELECT latest.gross_prize_pool_atomic
+             FROM song_reward_offer_legs leg
+             JOIN LATERAL (
+               SELECT candidate.gross_prize_pool_atomic
+                 FROM megapot_drawing_observations candidate
+                WHERE candidate.attestation_id=leg.attestation_id
+                  AND candidate.drawing_id=100
+                ORDER BY candidate.block_number DESC,
+                         candidate.observed_at DESC,
+                         candidate.observation_id
+                LIMIT 1
+             ) latest ON true
+            WHERE leg.leg_id=$1`,
+          [legId],
+        );
+        expect(explain.rows.map((row) => row["QUERY PLAN"]).join("\n")).toContain(
+          "megapot_drawing_observations_latest_idx",
+        );
+      } finally {
+        await admin.query("RESET enable_seqscan");
+      }
     });
     completedTestCount += 1;
   });

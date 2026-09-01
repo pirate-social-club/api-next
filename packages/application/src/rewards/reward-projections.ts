@@ -52,6 +52,11 @@ export type PublicMegapotDrawingProjection = Readonly<{
   beneficiaryCount: number;
   ticketPriceCeilingAtomic: bigint;
   actualTicketCostAtomic: bigint;
+  grossPrizePoolAtomic: bigint | null;
+  globalTicketsBought: bigint | null;
+  prizePoolObservedAt: string | null;
+  prizePoolBasis: "gross_observed_before_referral_win_share_terminal_last_observed_pre_rollover";
+  globalTicketsBasis: "drawing_wide_all_megapot_buyers";
   netWinningsAtomic: bigint;
   commitmentReference: string | null;
   snapshotHash: string | null;
