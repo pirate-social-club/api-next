@@ -22,7 +22,11 @@ import {
   makeCommunityCatalogIntegrityJob,
   makeHnsRouteRevalidationComposition,
   makeJobsWorkerDeclarations,
+  makeStudySpokenAnswerRecoveryJob,
   runScheduled,
+  STUDY_SPOKEN_ANSWER_RECOVERY_JOB,
+  STUDY_SPOKEN_ANSWER_RECOVERY_LANE,
+  STUDY_SPOKEN_ANSWER_RECOVERY_WRITES,
 } from "../../apps/jobs-worker/src/index";
 
 const env = testEnv as unknown as JobsWorkerEnv;
@@ -89,6 +93,74 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
         declaration.writes.some((table) => fundingWrites.has(table)),
       ),
     ).toEqual([funding]);
+  });
+
+  it("registers expired spoken-answer recovery as the sole writer for its tables", () => {
+    const learnerAudio = {} as R2Bucket;
+    const declarations = makeJobsWorkerDeclarations(
+      {},
+      "https://rpc.test/",
+      { enabled: false },
+      "development",
+      null,
+      false,
+      learnerAudio,
+    );
+    const recovery = declarations.find(
+      (declaration) => declaration.name === STUDY_SPOKEN_ANSWER_RECOVERY_JOB,
+    );
+
+    expect(recovery?.lane).toBe(STUDY_SPOKEN_ANSWER_RECOVERY_LANE);
+    expect(recovery?.writes).toEqual(STUDY_SPOKEN_ANSWER_RECOVERY_WRITES);
+    expect(recovery?.requiresAdapterSafety).toBe(true);
+    const recoveryWrites = new Set<string>(STUDY_SPOKEN_ANSWER_RECOVERY_WRITES);
+    expect(
+      declarations.filter((declaration) =>
+        declaration.writes.some((table) => recoveryWrites.has(table)),
+      ),
+    ).toEqual([recovery]);
+  });
+
+  it("emits a persisted alert when expired spoken-answer object absence is unconfirmed", async () => {
+    const logs: PipelineLogFields[] = [];
+    const sink = { log: (_event: string, fields: PipelineLogFields) => logs.push(fields) };
+    const db = {
+      execute: () =>
+        Effect.succeed({
+          rows: [
+            {
+              command_id: "command-1",
+              account_id: "account-1",
+              learner_audio_artifact_id: "artifact-1",
+              expected_object_ref: "learner-audio/study/attempt-1/digest-1",
+            },
+          ],
+          rowCount: 1,
+        }),
+      withTransaction: () => Effect.die("storage failure must not reach finalization"),
+    } as unknown as ControlPlaneDb["Service"];
+    const job = {
+      ...makeStudySpokenAnswerRecoveryJob(sink, {
+        delete: async () => {
+          throw new Error("R2 unavailable");
+        },
+        head: async () => null,
+      }),
+      lane: "workerd-study-spoken-answer-recovery-alert",
+    };
+
+    const result = await handleScheduled(env, job.lane, job, Date.now(), {
+      runtime: Layer.succeed(ControlPlaneDb, db),
+    });
+
+    expect(result.acquired).toBe(true);
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toMatchObject({
+      event: "pipeline.alert",
+      key: "study-spoken-answer-recovery:storage-failure",
+      severity: "medium",
+      count: 1,
+    });
   });
 
   it("can isolate production song maintenance from unrelated community jobs", () => {
