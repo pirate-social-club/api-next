@@ -1,5 +1,10 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
+import type { CommunityCreationIntentDocument } from "@pirate/application";
+import type {
+  ProviderSessionStart,
+  VerificationProviderStartInput,
+} from "@pirate/application/verification";
 import {
   VERY_WEB_CONFIGURATION_REFERENCE,
   VERY_WEB_CONFIGURATION_VERSION,
@@ -18,11 +23,13 @@ import { Effect } from "effect";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { makeControlPlaneCommunityCreationStore } from "./community-creation-repository";
+import { createActivePersonaFixture } from "./persona-wallet.pg-fixture";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres";
 import {
   makeControlPlaneVerificationCompletionStore,
   makeSha256VerificationCompletionHasher,
 } from "./verification-completion-repository";
+import { makeControlPlaneVerificationSessionStartStore } from "./verification-start-repository";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -35,7 +42,7 @@ const sentinelPath =
   "/tmp/api-next-control-plane-postgres-verification-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-verification-suite-complete\n";
 let completedTestCount = 0;
-const foundationTestCount = 8;
+const foundationTestCount = 10;
 // Keep ordinary pending-session fixtures valid independently of the day the
 // CI database runs. Expiry-specific tests override this value with an
 // intentionally past or database-relative timestamp below.
@@ -219,14 +226,19 @@ function evidenceBundle(session: ProofSession, evidenceHash: string): EvidenceBu
   };
 }
 
-function communityCreationProofSession(intentId: string): ProofSession {
+function communityCreationProofSession(input: {
+  readonly ceremonyIntentId: string;
+  readonly sessionId: string;
+  readonly requestHash: string;
+  readonly upstreamSessionRef: string;
+}): ProofSession {
   return {
-    id: "community-creation-proof",
+    id: input.sessionId,
     actor_id: "user-a",
-    intent_id: intentId,
-    request_hash: "c".repeat(64),
+    intent_id: input.ceremonyIntentId,
+    request_hash: input.requestHash,
     provider_id: VERY_WEB_PROVIDER_ID,
-    upstream_session_ref: "very-session-1",
+    upstream_session_ref: input.upstreamSessionRef,
     method: VERY_WEB_METHOD,
     scope: {
       kind: "named",
@@ -312,161 +324,159 @@ function veryEvidenceBundle(session: ProofSession, evidenceHash: string): Eviden
   };
 }
 
-async function cloneCompletedCreationEvidence(
-  admin: Client,
-  input: Readonly<{
-    readonly sourceSessionId: string;
-    readonly sessionId: string;
-    readonly intentId: string;
-    readonly suffix: string;
-  }>,
-): Promise<{ readonly idempotencyKey: string; readonly resultHash: string }> {
+function veryStartInput(session: ProofSession): VerificationProviderStartInput {
+  return {
+    actor_id: session.actor_id,
+    intent_id: session.intent_id,
+    request_hash: session.request_hash,
+    method: session.method,
+    scope: session.scope,
+    request_mode: session.request_mode,
+    provider_configuration: session.provider_configuration,
+    requested_requirements: session.requested_requirements,
+    requested_claim_ids: session.requested_claim_ids,
+    subject_binding_intent: session.subject_binding_intent,
+    protocol_version: session.protocol_version,
+    environment: session.environment,
+  };
+}
+
+function veryProviderStart(session: ProofSession): ProviderSessionStart {
+  return {
+    session,
+    presentation: {
+      kind: "redirect",
+      session_id: session.id,
+      url: `https://very.example/verify/${session.id}`,
+    },
+  };
+}
+
+async function reserveLinkedVeryCeremony(input: {
+  readonly connection: string;
+  readonly creationIntentId: string;
+  readonly expectedRevision: number;
+  readonly ceremonyIntentId: string;
+  readonly generation: number;
+  readonly sessionId: string;
+  readonly requestHash: string;
+  readonly upstreamSessionRef: string;
+  readonly launchIdempotencyKey: string;
+  readonly completionIdempotencyKey: string;
+}) {
+  const session = communityCreationProofSession(input);
+  const startStore = makeControlPlaneVerificationSessionStartStore(
+    makeDirectPostgresControlPlaneLayer(input.connection),
+  );
+  const start = veryStartInput(session);
+  const reservation = await Effect.runPromise(
+    Effect.scoped(
+      startStore.reserve({
+        start,
+        ttl_ms: 60_000,
+        creation: {
+          creation_intent_id: input.creationIntentId,
+          requirement: "human_identity",
+          generation: input.generation,
+          expected_revision: input.expectedRevision,
+          idempotency_key: input.launchIdempotencyKey,
+          provider_id: VERY_WEB_PROVIDER_ID,
+        },
+      }),
+    ),
+  );
+  if (reservation.kind !== "acquired") {
+    throw new Error(`expected a linked Very start reservation, got ${reservation.kind}`);
+  }
+  const finalized = await Effect.runPromise(
+    Effect.scoped(startStore.finalize(reservation.reservation, veryProviderStart(session))),
+  );
+  if (finalized.kind !== "created") {
+    throw new Error(`expected a linked Very session, got ${finalized.kind}`);
+  }
+
+  const completionStore = storeFor(input.connection);
+  const completionReservation = await Effect.runPromise(
+    Effect.scoped(
+      completionStore.reserveAttempt({
+        proof_session_id: session.id,
+        idempotency_key: input.completionIdempotencyKey,
+        lease_ms: 60_000,
+        max_consumed_attempts: 3,
+      }),
+    ),
+  );
+  if (completionReservation.kind !== "acquired") {
+    throw new Error(
+      `expected a linked Very completion reservation, got ${completionReservation.kind}`,
+    );
+  }
+  return { session, attempt: completionReservation.reservation };
+}
+
+async function completeLinkedVeryCeremony(input: {
+  readonly connection: string;
+  readonly intent: CommunityCreationIntentDocument;
+  readonly suffix: string;
+}): Promise<void> {
+  if (input.intent.next_action.kind !== "start_verification") {
+    throw new Error(`expected a linked Very ceremony for ${input.suffix}`);
+  }
+  const startHash = createHash("sha256").update(`start:${input.suffix}`).digest("hex");
+  const evidenceHash = createHash("sha256").update(`evidence:${input.suffix}`).digest("hex");
+  const resultHash = createHash("sha256").update(`result:${input.suffix}`).digest("hex");
   const idempotencyKey = `complete-${input.suffix}`;
-  const eventId = `completion-${input.suffix}`;
-  const receiptId = `receipt-${input.suffix}`;
-  const bindingId = `binding-${input.suffix}`;
-  const clonedEvidenceHash = createHash("sha256").update(input.suffix).digest("hex");
-  await admin.query("BEGIN");
-  try {
-    await admin.query({
-      text: `INSERT INTO proof_sessions (
-        proof_session_id, actor_id, intent_id, request_hash, provider_id,
-        method, issuer, scope_kind, issuer_rp_scope, issuer_rp_action_scope,
-        request_mode, protocol_version, environment, status, upstream_session_ref,
-        requested_requirements, requested_claim_ids, started_at, completed_at,
-        expires_at, subject_binding_intent, completion_idempotency_key,
-        completion_result_hash, terminal_at, provider_configuration_kind,
-        provider_configuration_ref, provider_configuration_version
-      ) SELECT $1, actor_id, $2, request_hash, provider_id,
-               method, issuer, scope_kind, issuer_rp_scope, issuer_rp_action_scope,
-               request_mode, protocol_version, environment, 'pending',
-               upstream_session_ref || '-' || $3, requested_requirements,
-               requested_claim_ids, started_at, NULL, expires_at,
-               subject_binding_intent, NULL, NULL, NULL,
-               provider_configuration_kind, provider_configuration_ref,
-               provider_configuration_version
-          FROM proof_sessions
-         WHERE proof_session_id = $4`,
-      values: [input.sessionId, input.intentId, input.suffix, input.sourceSessionId],
-    });
-    const source = await admin.query<{ result_hash: string; terminal_at: Date }>({
-      text: `SELECT completion_result_hash AS result_hash, terminal_at
-               FROM proof_sessions
-              WHERE proof_session_id = $1`,
-      values: [input.sourceSessionId],
-    });
-    const resultHash = source.rows[0]?.result_hash;
-    const terminalAt = source.rows[0]?.terminal_at;
-    if (resultHash === undefined || terminalAt === undefined) {
-      throw new Error("cloned completion fixture is incomplete");
-    }
-    await admin.query({
-      text: `UPDATE proof_sessions
-                SET status = 'completed', completion_idempotency_key = $1,
-                    completion_result_hash = $2, completed_at = $3, terminal_at = $3,
-                    updated_at = clock_timestamp()
-              WHERE proof_session_id = $4`,
-      values: [idempotencyKey, resultHash, terminalAt, input.sessionId],
-    });
-    await admin.query({
-      text: `INSERT INTO proof_session_completion_events (
-        completion_event_id, proof_session_id, actor_id, idempotency_key,
-        terminal_status, result_hash, terminal_at
-      ) VALUES ($1, $2, 'user-a', $3, 'completed', $4, $5)`,
-      values: [eventId, input.sessionId, idempotencyKey, resultHash, terminalAt],
-    });
-    await admin.query({
-      text: `INSERT INTO evidence_receipts (
-        evidence_receipt_id, proof_session_id, user_id, provider_id, issuer,
-        method, scope_kind, issuer_rp_scope, issuer_rp_action_scope,
-        protocol_version, environment, evidence_kind, evidence_hash,
-        receipt_metadata, observed_at, expires_at, provenance_kind,
-        subject_key_id, subject_binding_event_id, subject_binding_epoch,
-        provider_configuration_kind, provider_configuration_ref,
-        provider_configuration_version
-      ) SELECT $1, $2, user_id, provider_id, issuer, method, scope_kind,
-               issuer_rp_scope, issuer_rp_action_scope, protocol_version,
-               environment, evidence_kind, $4, receipt_metadata,
-               observed_at, expires_at, provenance_kind, subject_key_id,
-               subject_binding_event_id, subject_binding_epoch,
-               provider_configuration_kind, provider_configuration_ref,
-               provider_configuration_version
-          FROM evidence_receipts
-         WHERE proof_session_id = $3`,
-      values: [receiptId, input.sessionId, input.sourceSessionId, clonedEvidenceHash],
-    });
-    await admin.query({
-      text: `INSERT INTO assertion_bindings (
-        binding_group_id, user_id, binding_mode, subject_key_id,
-        evidence_receipt_id, subject_binding_event_id, subject_binding_epoch
-      ) SELECT DISTINCT $1, binding.user_id, binding.binding_mode,
-               binding.subject_key_id, binding.evidence_receipt_id,
-               binding.subject_binding_event_id, binding.subject_binding_epoch
-          FROM assertion_bindings AS binding
-          JOIN assertions AS assertion
-            ON assertion.binding_group_id = binding.binding_group_id
-          JOIN evidence_receipts AS receipt
-            ON receipt.evidence_receipt_id = assertion.evidence_receipt_id
-         WHERE receipt.proof_session_id = $2`,
-      values: [bindingId, input.sourceSessionId],
-    });
-    await admin.query({
-      text: `INSERT INTO assertions (
-        assertion_id, binding_group_id, evidence_receipt_id, subject_key_id,
-        user_id, claim_id, assertion_value, assurance, observed_at, expires_at
-      ) SELECT assertion.assertion_id || '-' || $1, $2, $3,
-               assertion.subject_key_id, assertion.user_id, assertion.claim_id,
-               assertion.assertion_value, assertion.assurance,
-               assertion.observed_at, assertion.expires_at
-          FROM assertions AS assertion
-          JOIN evidence_receipts AS receipt
-            ON receipt.evidence_receipt_id = assertion.evidence_receipt_id
-         WHERE receipt.proof_session_id = $4`,
-      values: [input.suffix, bindingId, receiptId, input.sourceSessionId],
-    });
-    await admin.query("COMMIT");
-    return { idempotencyKey, resultHash };
-  } catch (error) {
-    await admin.query("ROLLBACK");
-    throw error;
+  const linked = await reserveLinkedVeryCeremony({
+    connection: input.connection,
+    creationIntentId: input.intent.intent_id,
+    expectedRevision: input.intent.revision,
+    ceremonyIntentId: input.intent.next_action.ceremony_intent_id,
+    generation: input.intent.next_action.generation,
+    sessionId: `community-creation-proof-${input.suffix}`,
+    requestHash: startHash,
+    upstreamSessionRef: `very-session-${input.suffix}`,
+    launchIdempotencyKey: `launch-${input.suffix}`,
+    completionIdempotencyKey: idempotencyKey,
+  });
+  const committed = await Effect.runPromise(
+    Effect.scoped(
+      storeFor(input.connection).commit({
+        actor_id: linked.session.actor_id,
+        idempotency_key: idempotencyKey,
+        attempt: linked.attempt,
+        expected_session: linked.session,
+        result_hash: resultHash,
+        bundle: veryEvidenceBundle(linked.session, evidenceHash),
+      }),
+    ),
+  );
+  if (committed.kind !== "committed") {
+    throw new Error(`expected a fresh linked Very completion for ${input.suffix}`);
   }
 }
 
-async function markCreationIntentCommitReady(
-  admin: Client,
-  intent: Readonly<Record<string, unknown>> & {
-    readonly intent_id: string;
-    readonly revision: number;
-  },
-  requestHash: string,
-): Promise<void> {
-  const snapshot = {
-    ...intent,
-    revision: intent.revision + 1,
-    status: "commit_ready",
-    next_action: { kind: "commit" },
-  };
-  await admin.query("BEGIN");
-  try {
-    const updated = await admin.query({
-      text: `UPDATE community_creation_intents
-                SET revision = $1, status = 'commit_ready', updated_at = clock_timestamp()
-              WHERE intent_id = $2 AND revision = $3 AND status = 'verification_required'`,
-      values: [snapshot.revision, intent.intent_id, intent.revision],
+function connectionWithApplicationName(connection: string, applicationName: string): string {
+  const url = new URL(connection);
+  url.searchParams.set("application_name", applicationName);
+  return url.toString();
+}
+
+async function waitForApplicationLock(admin: Client, applicationName: string): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const result = await admin.query<{ waiting: boolean }>({
+      text: `SELECT EXISTS (
+        SELECT 1
+          FROM pg_stat_activity
+         WHERE application_name = $1
+           AND state = 'active'
+           AND wait_event_type = 'Lock'
+      ) AS waiting`,
+      values: [applicationName],
     });
-    if (updated.rowCount !== 1) throw new Error("creation intent fixture did not advance");
-    await admin.query({
-      text: `INSERT INTO community_creation_intent_revisions (
-        intent_id, revision, actor_id, operation_kind, idempotency_key,
-        request_hash, status, state_snapshot
-      ) VALUES ($1, $2, 'user-a', 'verification', NULL, $3, 'commit_ready', $4::jsonb)`,
-      values: [intent.intent_id, snapshot.revision, requestHash, JSON.stringify(snapshot)],
-    });
-    await admin.query("COMMIT");
-  } catch (error) {
-    await admin.query("ROLLBACK");
-    throw error;
+    if (result.rows[0]?.waiting === true) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
   }
+  throw new Error(`timed out waiting for ${applicationName} to block on a database lock`);
 }
 
 function storeFor(connection: string) {
@@ -848,16 +858,23 @@ suite("Postgres 17 verification completion repository", () => {
     completedTestCount += 1;
   });
 
-  // The route-v1 two-ceremony equivalent is exercised through the full current
-  // migration plan in community-creation-repository.pg.test.ts. This retained
-  // legacy fixture still assumes a human-only intent and cannot authorize a
-  // canonical route; its quota/race cases must be ported before it is re-enabled.
-  test.skip("atomically advances a Very-backed creation intent and replays once", async () => {
+  test("atomically advances a Very-backed creation intent and replays once", async () => {
     await withSchema(async (connection, admin) => {
+      const primaryCommunityId = "community_123e4567-e89b-42d3-a456-426614174100";
+      const quotaCommunityId = "community_123e4567-e89b-42d3-a456-426614174101";
+      const approvedCommunityId = "community_123e4567-e89b-42d3-a456-426614174102";
+      const raceCommunityIds = [
+        "community_123e4567-e89b-42d3-a456-426614174103",
+        "community_123e4567-e89b-42d3-a456-426614174104",
+      ] as const;
+      await createActivePersonaFixture(admin, {
+        accountId: "user-a",
+        personaId: "persona-user-a",
+      });
       const runtime = makeDirectPostgresControlPlaneLayer(connection);
       const creationStore = makeControlPlaneCommunityCreationStore(runtime, {
         next_intent_id: () => "community-intent-1",
-        next_community_id: () => "community-jazleeuw",
+        next_community_id: () => primaryCommunityId,
         next_subject_claim_id: () => "creation-claim-jazleeuw",
       });
       const created = (
@@ -887,12 +904,30 @@ suite("Postgres 17 verification completion repository", () => {
         )
       ).document;
       expect(created.status).toBe("verification_required");
+      if (created.next_action.kind !== "start_verification") {
+        throw new Error("expected the linked human creation ceremony");
+      }
 
-      const session = communityCreationProofSession(created.intent_id);
-      await insertSession(admin, session);
+      const linked = await reserveLinkedVeryCeremony({
+        connection,
+        creationIntentId: created.intent_id,
+        expectedRevision: created.revision,
+        ceremonyIntentId: created.next_action.ceremony_intent_id,
+        generation: created.next_action.generation,
+        sessionId: "community-creation-proof",
+        requestHash: "c".repeat(64),
+        upstreamSessionRef: "very-session-1",
+        launchIdempotencyKey: "launch-community-creation-proof",
+        completionIdempotencyKey: "callback-community-creation-proof",
+      });
+      const session = linked.session;
       const completionStore = storeFor(connection);
       const request = {
-        ...commitInput(session, "e".repeat(64), "f".repeat(64)),
+        actor_id: session.actor_id,
+        idempotency_key: "callback-community-creation-proof",
+        attempt: linked.attempt,
+        expected_session: session,
+        result_hash: "f".repeat(64),
         bundle: veryEvidenceBundle(session, "e".repeat(64)),
       };
       expect(await Effect.runPromise(Effect.scoped(completionStore.commit(request)))).toEqual({
@@ -964,8 +999,10 @@ suite("Postgres 17 verification completion repository", () => {
         status: "committed",
         next_action: { kind: "none", reason: "committed" },
         committed_resource: {
-          community_id: "community-jazleeuw",
-          href: "/communities/community-jazleeuw",
+          authority_version: "optional_route_v2",
+          community_id: primaryCommunityId,
+          href: `/c/${primaryCommunityId}`,
+          canonical_route: null,
         },
       });
       await expect(Effect.runPromise(creationStore.commit(commitRequest))).resolves.toEqual({
@@ -982,7 +1019,7 @@ suite("Postgres 17 verification completion repository", () => {
       const committedRows = await admin.query<{
         description: string;
         display_name: string;
-        route_slug: string;
+        route_slug: string | null;
         membership_mode: string;
         human_verification_lane: string;
         policy_version_id: string;
@@ -1015,13 +1052,14 @@ suite("Postgres 17 verification completion repository", () => {
             AND binding.policy_version_id = policy.policy_version_id
            JOIN community_creation_subject_claims AS claim
              ON claim.community_id = community.community_id
-          WHERE community.community_id = 'community-jazleeuw'`,
+          WHERE community.community_id = $1`,
+        [primaryCommunityId],
       );
       expect(committedRows.rows).toEqual([
         {
           description: "Verified people",
           display_name: "Jazleeuw",
-          route_slug: "jazleeuw",
+          route_slug: null,
           membership_mode: "gated",
           human_verification_lane: "very",
           policy_version_id: "curated-human-membership-v1",
@@ -1042,24 +1080,27 @@ suite("Postgres 17 verification completion repository", () => {
         commits: number;
         memberships: number;
         follows: number;
-      }>(`SELECT
+      }>(
+        `SELECT
         (SELECT COUNT(*)::integer FROM communities
-          WHERE community_id = 'community-jazleeuw') AS communities,
+          WHERE community_id = $1) AS communities,
         (SELECT COUNT(*)::integer FROM community_creation_subject_claims
           WHERE intent_id = 'community-intent-1') AS claims,
         (SELECT COUNT(*)::integer FROM community_creation_intent_revisions
           WHERE intent_id = 'community-intent-1' AND operation_kind = 'commit') AS commits,
         (SELECT COUNT(*)::integer FROM community_memberships
-          WHERE community_id = 'community-jazleeuw') AS memberships,
+          WHERE community_id = $1) AS memberships,
         (SELECT COUNT(*)::integer FROM community_follows
-          WHERE community_id = 'community-jazleeuw') AS follows`);
+          WHERE community_id = $1) AS follows`,
+        [primaryCommunityId],
+      );
       expect(derivedCounts.rows).toEqual([
-        { communities: 1, claims: 1, commits: 1, memberships: 0, follows: 0 },
+        { communities: 1, claims: 1, commits: 1, memberships: 1, follows: 0 },
       ]);
 
       const secondStore = makeControlPlaneCommunityCreationStore(runtime, {
         next_intent_id: () => "community-intent-2",
-        next_community_id: () => "community-should-not-exist",
+        next_community_id: () => quotaCommunityId,
         next_subject_claim_id: () => "creation-claim-should-not-exist",
       });
       const second = (
@@ -1078,13 +1119,11 @@ suite("Postgres 17 verification completion repository", () => {
           }),
         )
       ).document;
-      const secondEvidence = await cloneCompletedCreationEvidence(admin, {
-        sourceSessionId: "community-creation-proof",
-        sessionId: "community-creation-proof-2",
-        intentId: second.intent_id,
+      await completeLinkedVeryCeremony({
+        connection,
+        intent: second,
         suffix: "community-2",
       });
-      await markCreationIntentCommitReady(admin, second, secondEvidence.resultHash);
       const secondReady = await Effect.runPromise(
         secondStore.get({ actor: { kind: "user", userId: "user-a" }, intentId: second.intent_id }),
       );
@@ -1112,14 +1151,15 @@ suite("Postgres 17 verification completion repository", () => {
       expect(
         (
           await admin.query<{ count: string }>(
-            "SELECT count(*) FROM communities WHERE community_id = 'community-should-not-exist'",
+            "SELECT count(*) FROM communities WHERE community_id = $1",
+            [quotaCommunityId],
           )
         ).rows[0]?.count,
       ).toBe("0");
 
       const thirdStore = makeControlPlaneCommunityCreationStore(runtime, {
         next_intent_id: () => "community-intent-3",
-        next_community_id: () => "community-approved",
+        next_community_id: () => approvedCommunityId,
         next_subject_claim_id: () => "creation-claim-approved",
       });
       const third = (
@@ -1138,13 +1178,11 @@ suite("Postgres 17 verification completion repository", () => {
           }),
         )
       ).document;
-      const thirdEvidence = await cloneCompletedCreationEvidence(admin, {
-        sourceSessionId: "community-creation-proof",
-        sessionId: "community-creation-proof-3",
-        intentId: third.intent_id,
+      await completeLinkedVeryCeremony({
+        connection,
+        intent: third,
         suffix: "community-3",
       });
-      await markCreationIntentCommitReady(admin, third, thirdEvidence.resultHash);
       const thirdReady = await Effect.runPromise(
         thirdStore.get({ actor: { kind: "user", userId: "user-a" }, intentId: third.intent_id }),
       );
@@ -1152,7 +1190,8 @@ suite("Postgres 17 verification completion repository", () => {
       const claimedSubject = await admin.query<{ subject_key_id: string }>(
         `SELECT subject_key_id
            FROM community_creation_subject_claims
-          WHERE community_id = 'community-jazleeuw'`,
+          WHERE community_id = $1`,
+        [primaryCommunityId],
       );
       const claimedSubjectKeyId = claimedSubject.rows[0]?.subject_key_id;
       if (claimedSubjectKeyId === undefined) throw new Error("missing claimed subject fixture");
@@ -1182,7 +1221,7 @@ suite("Postgres 17 verification completion repository", () => {
         outcome: "fresh_created",
         document: {
           status: "committed",
-          committed_resource: { community_id: "community-approved" },
+          committed_resource: { community_id: approvedCommunityId },
         },
       });
       expect(
@@ -1190,7 +1229,8 @@ suite("Postgres 17 verification completion repository", () => {
           await admin.query<{ slot_number: number; approval_id: string }>(
             `SELECT slot_number, approval_id
                FROM community_creation_subject_claims
-              WHERE community_id = 'community-approved'`,
+              WHERE community_id = $1`,
+            [approvedCommunityId],
           )
         ).rows,
       ).toEqual([{ slot_number: 2, approval_id: "approval-community-3" }]);
@@ -1198,12 +1238,12 @@ suite("Postgres 17 verification completion repository", () => {
       const raceStores = [
         makeControlPlaneCommunityCreationStore(runtime, {
           next_intent_id: () => "community-intent-race-a",
-          next_community_id: () => "community-race-a",
+          next_community_id: () => raceCommunityIds[0],
           next_subject_claim_id: () => "creation-claim-race-a",
         }),
         makeControlPlaneCommunityCreationStore(runtime, {
           next_intent_id: () => "community-intent-race-b",
-          next_community_id: () => "community-race-b",
+          next_community_id: () => raceCommunityIds[1],
           next_subject_claim_id: () => "creation-claim-race-b",
         }),
       ] as const;
@@ -1226,13 +1266,11 @@ suite("Postgres 17 verification completion repository", () => {
         ),
       );
       for (const [index, intent] of raceIntents.entries()) {
-        const cloned = await cloneCompletedCreationEvidence(admin, {
-          sourceSessionId: "community-creation-proof",
-          sessionId: `community-creation-proof-race-${index}`,
-          intentId: intent.intent_id,
+        await completeLinkedVeryCeremony({
+          connection,
+          intent,
           suffix: `community-race-${index}`,
         });
-        await markCreationIntentCommitReady(admin, intent, cloned.resultHash);
       }
       await admin.query(
         `INSERT INTO community_creation_quota_approvals (
@@ -1274,16 +1312,16 @@ suite("Postgres 17 verification completion repository", () => {
       }>(
         `SELECT
         (SELECT COUNT(*)::integer FROM communities
-          WHERE community_id IN ('community-race-a', 'community-race-b')) AS communities,
+          WHERE community_id = ANY($2::text[])) AS communities,
         (SELECT COUNT(*)::integer FROM community_creation_subject_claims
           WHERE subject_key_id = $1 AND slot_number = 3) AS slot_claims`,
-        [claimedSubjectKeyId],
+        [claimedSubjectKeyId, raceCommunityIds],
       );
       expect(raceCounts.rows).toEqual([{ communities: 1, slot_claims: 1 }]);
 
       const rollbackStore = makeControlPlaneCommunityCreationStore(runtime, {
         next_intent_id: () => "community-intent-rollback",
-        next_community_id: () => "community-jazleeuw",
+        next_community_id: () => primaryCommunityId,
         next_subject_claim_id: () => "creation-claim-rollback",
       });
       const rollbackIntent = (
@@ -1302,13 +1340,11 @@ suite("Postgres 17 verification completion repository", () => {
           }),
         )
       ).document;
-      const rollbackEvidence = await cloneCompletedCreationEvidence(admin, {
-        sourceSessionId: "community-creation-proof",
-        sessionId: "community-creation-proof-rollback",
-        intentId: rollbackIntent.intent_id,
+      await completeLinkedVeryCeremony({
+        connection,
+        intent: rollbackIntent,
         suffix: "community-rollback",
       });
-      await markCreationIntentCommitReady(admin, rollbackIntent, rollbackEvidence.resultHash);
       await admin.query(
         `INSERT INTO community_creation_quota_approvals (
           approval_id, subject_key_id, actor_id, slot_number,
@@ -1341,23 +1377,38 @@ suite("Postgres 17 verification completion repository", () => {
           }),
         ),
       ).resolves.toMatchObject({ revision: 2, status: "commit_ready" });
-      const rollbackCounts = await admin.query<{ claims: number; policies: number }>(`SELECT
-        (SELECT COUNT(*)::integer FROM community_creation_subject_claims
-          WHERE intent_id = 'community-intent-rollback') AS claims,
-        (SELECT COUNT(*)::integer FROM policy_versions
-          WHERE community_id = 'community-jazleeuw'
-            AND created_by_user_id = 'user-a') AS policies`);
+      const rollbackCounts = await admin.query<{ claims: number; policies: number }>(
+        `SELECT
+          (SELECT COUNT(*)::integer FROM community_creation_subject_claims
+            WHERE intent_id = 'community-intent-rollback') AS claims,
+          (SELECT COUNT(*)::integer FROM policy_versions
+            WHERE community_id = $1
+              AND created_by_user_id = 'user-a') AS policies`,
+        [primaryCommunityId],
+      );
       expect(rollbackCounts.rows).toEqual([{ claims: 0, policies: 1 }]);
     });
     completedTestCount += 1;
   });
 
-  test.skip("serializes Very completion before creation commit without a lock-order cycle", async () => {
+  test("serializes Very completion before creation commit without a lock-order cycle", async () => {
     await withSchema(async (connection, admin) => {
-      const runtime = makeDirectPostgresControlPlaneLayer(connection);
+      const lockOrderCommunityId = "community_123e4567-e89b-42d3-a456-426614174105";
+      const completionApplicationName = "very-completion-lock-order";
+      const creationApplicationName = "community-commit-lock-order";
+      const completionConnection = connectionWithApplicationName(
+        connection,
+        completionApplicationName,
+      );
+      const creationConnection = connectionWithApplicationName(connection, creationApplicationName);
+      await createActivePersonaFixture(admin, {
+        accountId: "user-a",
+        personaId: "persona-user-a",
+      });
+      const runtime = makeDirectPostgresControlPlaneLayer(creationConnection);
       const creationStore = makeControlPlaneCommunityCreationStore(runtime, {
         next_intent_id: () => "community-intent-lock-order",
-        next_community_id: () => "community-lock-order",
+        next_community_id: () => lockOrderCommunityId,
         next_subject_claim_id: () => "creation-claim-lock-order",
       });
       const created = (
@@ -1386,16 +1437,26 @@ suite("Postgres 17 verification completion repository", () => {
           }),
         )
       ).document;
-      const session = {
-        ...communityCreationProofSession(created.intent_id),
-        id: "community-creation-proof-lock-order",
-        upstream_session_ref: "very-session-lock-order",
-      };
-      await insertSession(admin, session);
+      if (created.next_action.kind !== "start_verification") {
+        throw new Error("expected the linked lock-order ceremony");
+      }
+      const linked = await reserveLinkedVeryCeremony({
+        connection,
+        creationIntentId: created.intent_id,
+        expectedRevision: created.revision,
+        ceremonyIntentId: created.next_action.ceremony_intent_id,
+        generation: created.next_action.generation,
+        sessionId: "community-creation-proof-lock-order",
+        requestHash: "7".repeat(64),
+        upstreamSessionRef: "very-session-lock-order",
+        launchIdempotencyKey: "launch-community-creation-proof-lock-order",
+        completionIdempotencyKey: "callback-community-creation-proof-lock-order",
+      });
+      const session = linked.session;
       await admin.query(`CREATE FUNCTION delay_lock_order_receipt()
         RETURNS trigger LANGUAGE plpgsql AS $$
         BEGIN
-          PERFORM pg_sleep(1);
+          PERFORM pg_advisory_xact_lock(918273, 1);
           RETURN NEW;
         END;
         $$`);
@@ -1405,39 +1466,57 @@ suite("Postgres 17 verification completion repository", () => {
         WHEN (NEW.proof_session_id = 'community-creation-proof-lock-order')
         EXECUTE FUNCTION delay_lock_order_receipt()`);
 
-      const completionStore = storeFor(connection);
-      const completion = Effect.runPromise(
-        Effect.scoped(
-          completionStore.commit({
-            ...commitInput(session, "4".repeat(64), "5".repeat(64)),
-            bundle: veryEvidenceBundle(session, "4".repeat(64)),
-          }),
-        ),
-      );
-      await new Promise((resolve) => setTimeout(resolve, 200));
-      const communityCommit = Effect.runPromise(
-        creationStore.commit({
-          actor: { kind: "user", userId: "user-a" },
-          intentId: created.intent_id,
-          requestHash: "6".repeat(64),
-          body: {
-            idempotency_key: "commit-community-lock-order",
-            expected_revision: 2,
-          },
-        }),
-      );
+      const completionStore = storeFor(completionConnection);
+      const pending: Promise<unknown>[] = [];
+      let gateHeld = true;
+      await admin.query("SELECT pg_advisory_lock(918273, 1)");
+      try {
+        const completion = Effect.runPromise(
+          Effect.scoped(
+            completionStore.commit({
+              actor_id: session.actor_id,
+              idempotency_key: "callback-community-creation-proof-lock-order",
+              attempt: linked.attempt,
+              expected_session: session,
+              result_hash: "5".repeat(64),
+              bundle: veryEvidenceBundle(session, "4".repeat(64)),
+            }),
+          ),
+        );
+        pending.push(completion);
+        await waitForApplicationLock(admin, completionApplicationName);
 
-      await expect(completion).resolves.toEqual({
-        kind: "committed",
-        result_hash: "5".repeat(64),
-      });
-      await expect(communityCommit).resolves.toMatchObject({
-        outcome: "fresh_created",
-        document: {
-          status: "committed",
-          committed_resource: { community_id: "community-lock-order" },
-        },
-      });
+        const communityCommit = Effect.runPromise(
+          creationStore.commit({
+            actor: { kind: "user", userId: "user-a" },
+            intentId: created.intent_id,
+            requestHash: "6".repeat(64),
+            body: {
+              idempotency_key: "commit-community-lock-order",
+              expected_revision: 2,
+            },
+          }),
+        );
+        pending.push(communityCommit);
+        await waitForApplicationLock(admin, creationApplicationName);
+
+        await admin.query("SELECT pg_advisory_unlock(918273, 1)");
+        gateHeld = false;
+        await expect(completion).resolves.toEqual({
+          kind: "committed",
+          result_hash: "5".repeat(64),
+        });
+        await expect(communityCommit).resolves.toMatchObject({
+          outcome: "fresh_created",
+          document: {
+            status: "committed",
+            committed_resource: { community_id: lockOrderCommunityId },
+          },
+        });
+      } finally {
+        if (gateHeld) await admin.query("SELECT pg_advisory_unlock(918273, 1)");
+        await Promise.allSettled(pending);
+      }
     });
     completedTestCount += 1;
   });
