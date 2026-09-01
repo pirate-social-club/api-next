@@ -48,10 +48,30 @@ jobs:
       - run: bun run check:breaking
         env:
           OPENAPI_BASE_SHA: ${{ steps.openapi-baseline.outputs.sha }}
-      - name: Wrangler dry run (jobs worker)
-        run: bunx wrangler deploy --dry-run --env "" --config apps/jobs-worker/wrangler.jsonc
-      - name: Wrangler dry run (HTTP worker)
+      - name: Wrangler dry run (HTTP worker, development)
         run: bunx wrangler deploy --dry-run --env "" --config apps/http-worker/wrangler.jsonc
+      - name: Wrangler dry run (HTTP worker, staging)
+        run: bunx wrangler deploy --dry-run --env staging --config apps/http-worker/wrangler.jsonc
+      - name: Wrangler dry run (HTTP worker, production)
+        run: bunx wrangler deploy --dry-run --env production --config apps/http-worker/wrangler.jsonc
+      - name: Wrangler dry run (jobs worker, development)
+        run: bunx wrangler deploy --dry-run --env "" --config apps/jobs-worker/wrangler.jsonc
+      - name: Wrangler dry run (jobs worker, staging)
+        run: bunx wrangler deploy --dry-run --env staging --config apps/jobs-worker/wrangler.jsonc
+      - name: Wrangler dry run (jobs worker, production)
+        run: bunx wrangler deploy --dry-run --env production --config apps/jobs-worker/wrangler.jsonc
+      - name: Wrangler dry run (media processor, development)
+        run: bunx wrangler deploy --dry-run --env "" --config apps/media-processor-worker/wrangler.jsonc
+      - name: Wrangler dry run (media processor, staging)
+        run: bunx wrangler deploy --dry-run --env staging --config apps/media-processor-worker/wrangler.jsonc
+      - name: Wrangler dry run (media processor, production)
+        run: bunx wrangler deploy --dry-run --env production --config apps/media-processor-worker/wrangler.jsonc
+      - name: Wrangler dry run (DATA registration, development)
+        run: bunx wrangler deploy --dry-run --env "" --config apps/data-registration-worker/wrangler.jsonc
+      - name: Wrangler dry run (DATA registration, staging)
+        run: bunx wrangler deploy --dry-run --env staging --config apps/data-registration-worker/wrangler.jsonc
+      - name: Wrangler dry run (DATA registration, production)
+        run: bunx wrangler deploy --dry-run --env production --config apps/data-registration-worker/wrangler.jsonc
       - name: Show egress audit summary
         if: always()
         uses: ironsh/iron-proxy-action/summary@fa1fd82ec32396d044deba7040a6db576bec927a # v0.1.4
