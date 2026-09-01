@@ -486,7 +486,7 @@ function makePollStore(db: ControlPlaneDb["Service"]): HnsOwnerRecoveryPollStore
                           target_response_status = $6,
                           provider_response_sha256 = $7,
                           raw_provider_response_bytes = $8,
-                          terminal_at = clock_timestamp()
+                          terminal_at = date_trunc('milliseconds', clock_timestamp())
                     WHERE route_revalidation_attempt_id = $9
                       AND state = 'leased' AND fence_token = $10
                       AND lease_expires_at > clock_timestamp()`,
