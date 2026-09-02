@@ -42,21 +42,21 @@ describe("fixed FFmpeg no-reorder copy template", () => {
     expect(evidence.paddedPcmSamples % 1_024).toBe(0);
     expect(evidence.audioPrimingSkipSamples).toBe(1_024);
     // Decoding packets exposes the full padded AAC payload. The MP4 track edit
-    // is the public presentation fence and is intentionally shorter.
+    // excludes exactly the terminal padding from public presentation.
     expect(evidence.decodedAudioSamples).toBe(evidence.paddedPcmSamples);
-    expect(evidence.audioDurationSamples).toBe(89_568);
-    expect(evidence.masterAudioPresentationDurationMs).toBeLessThanOrEqual(
-      evidence.masterVideoDurationMs,
+    expect(evidence.audioDurationSamples).toBe(evidence.targetPcmSamples);
+    expect(evidence.decodedAudioSamples - evidence.audioDurationSamples).toBe(
+      evidence.zeroPaddingSamples,
     );
-    expect(
-      evidence.masterVideoDurationMs - evidence.masterAudioPresentationDurationMs,
-    ).toBeLessThan(1_024 / 48);
+    expect(evidence.masterAudioPresentationDurationMs).toBe(evidence.masterVideoDurationMs);
   });
 
   it("uses the frozen server-owned command template", () => {
     expect(evidence.renderArguments).toContain("copy");
     expect(evidence.renderArguments).toContain("aac");
     expect(evidence.renderArguments).toContain("-use_editlist");
+    expect(evidence.renderArguments).toContain("-movie_timescale");
+    expect(evidence.renderArguments).toContain("48000");
     expect(evidence.renderArguments).not.toContain("-c:v libx264");
     expect(evidence.masterSha256).toHaveLength(64);
     expect(evidence.renderWallMs).toBeGreaterThan(0);

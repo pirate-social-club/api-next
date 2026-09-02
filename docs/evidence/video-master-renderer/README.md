@@ -1,4 +1,4 @@
-# Video master renderer spike — checkpoint 1
+# Video master renderer spike — checkpoints 1 and 2
 
 Status: two bounded local evidence checkpoints, 2026-09-02. This is not a runtime
 implementation or a renderer selection. No credential, provider request, R2
@@ -55,16 +55,46 @@ trimmed it to the effective target, and rounded 89,600 target samples up to
 90,112 samples, exactly 88 AAC frames. Only 512 zero samples were added. The
 AAC encoder emitted one 1024-sample priming packet marked `Skip Samples`, which
 the MP4 edit excludes from presentation. Decoding all AAC packet payloads
-returns the full 90,112 padded samples; the public MP4 audio track advertises
-89,568 presentation samples, or 1866.000 ms. It is bounded by the authoritative
-1866.667 ms video track with a 0.667 ms difference, well within one AAC frame.
+returns the full 90,112 padded samples.
 
-One local render-only observation on FFmpeg `6.1.1-3ubuntu5` took 69.6 ms. This
+The first version of checkpoint 2 advertised only 89,568 presentation samples,
+or 1866.000 ms, which was 32 samples short of the exact 89,600-sample video
+duration. The loss was not an AAC-frame limitation. It came from the MP4
+muxer's default 1000-Hz movie timescale: 28/15 seconds is not representable in
+whole milliseconds, so the audio edit was written at 1866 ms.
+
+Raising the server-owned movie timescale to 48,000 makes both 56 video frames
+at 30 fps and 89,600 audio samples exactly representable. The corrected master
+advertises 89,600 audio presentation samples and 1866.667 ms for both tracks.
+Its audio edit has media time 1024 and duration 89,600, while its video edit
+has media time zero and duration 28,672 video ticks; no video packet is hidden.
+
+The isolation matrix showed:
+
+- the default movie timescale produced 89,568 presented samples even with
+  nine-decimal `-t`, manual padding, and `-shortest`;
+- a 48,000-Hz movie timescale produced exactly 89,600 samples with or without
+  manual padding;
+- removing `-shortest` while retaining output `-t` still produced exactly
+  89,600 samples; and
+- removing output `-t` exposed all 90,112 padded samples and lengthened audio
+  beyond video.
+
+Manual 512-sample padding and `-shortest` therefore did not cause the deficit.
+Output `-t` is the presentation fence, and the 48,000-Hz movie timescale makes
+that fence sample-exact. The fixed template retains explicit padding so the
+encoder input frame count is deterministic, retains `-shortest` as a defensive
+bound, and asserts that decoded payload samples minus presented samples equals
+exactly the terminal zero padding.
+
+One corrected-template render-only observation on FFmpeg `6.1.1-3ubuntu5` took
+135.8 ms. This
 is fixture evidence, not a p95 or Container latency claim. The exact template
 uses input seek at the probed keyframe, `atrim`, timestamp reset, AAC-frame
 padding, `-t` at the derived video duration, `-shortest`, video `copy`, AAC at
-48 kHz mono/128 kbps, `+faststart`, and `-use_editlist 1`. Tests assert those
-fixed choices and reject a probe-reported or packet-observed reorder.
+48 kHz mono/128 kbps, `+faststart`, `-use_editlist 1`, and a 48,000-Hz MP4
+movie timescale. Tests assert those fixed choices and reject a probe-reported
+or packet-observed reorder.
 
 ## Local inventory
 

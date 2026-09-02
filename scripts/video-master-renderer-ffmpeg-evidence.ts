@@ -132,7 +132,7 @@ async function probeAudioPackets(path: string) {
 }
 
 function seconds(milliseconds: number): string {
-  return (milliseconds / 1_000).toFixed(6);
+  return (milliseconds / 1_000).toFixed(9);
 }
 
 export async function runNoReorderCopyEvidence(workingDirectory: string) {
@@ -242,6 +242,8 @@ export async function runNoReorderCopyEvidence(workingDirectory: string) {
     "+faststart",
     "-use_editlist",
     "1",
+    "-movie_timescale",
+    String(audioSampleRate),
     masterPath,
   ] as const;
   const renderStarted = performance.now();
