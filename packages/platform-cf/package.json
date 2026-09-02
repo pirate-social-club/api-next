@@ -32,6 +32,7 @@
     "./community-purchase-funding-chain-reader": "./src/community-purchase-funding-chain-reader.ts",
     "./custody-solvency-coordinator": "./src/custody-solvency-coordinator.ts",
     "./custody-solvency-repository": "./src/custody-solvency-repository.ts",
+    "./credential-tombstone-digest": "./src/credential-tombstone-digest.ts",
     "./activity-qualification-repository": "./src/activity-qualification-repository.ts",
     "./karaoke-readiness-repository": "./src/karaoke-readiness-repository.ts",
     "./karaoke-repository": "./src/karaoke-repository.ts",
