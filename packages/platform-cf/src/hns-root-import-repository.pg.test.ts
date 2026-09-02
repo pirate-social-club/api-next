@@ -4,8 +4,10 @@ import {
   buildHnsRootImportPublishPlanV1,
   decodeHnsAuthorityInventoryBytes,
   encodeHnsAuthorityInventory,
+  encodeHnsRootImportNameProofResultV1,
   encodeHnsRootImportReadinessResultV1,
   HNS_AUTHORITY_INVENTORY_VERSION,
+  HNS_ROOT_IMPORT_NAME_PROOF_RESULT_VERSION,
   HNS_ROOT_IMPORT_READINESS_RESULT_VERSION,
   type HnsRootImportActivationRecord,
   type HnsRootImportStartRecord,
@@ -211,7 +213,10 @@ async function beginProvisioning(
           idempotency_key: "provision-root-import-after-ownership",
         },
         poll_request_sha256: SHA_B,
-        ownership_result_sha256: ownershipResultHash,
+        authorization: {
+          kind: "namespace_ownership",
+          result_sha256: ownershipResultHash,
+        },
         provision_job_id: record.provision_job_id,
         provision_request_bytes: request.bytes,
         provision_request_sha256: request.sha256,
@@ -751,6 +756,231 @@ suite("Postgres 17 HNS root-import repository", () => {
           WHERE teardown.root_import_session_id='root-import-session'`,
       );
       expect(state.rows).toEqual([{ teardown_state: "completed", session_status: "expired" }]);
+    });
+  }, 20_000);
+
+  test("provisions from sanitized name proof and tears down a terminal session immediately", async () => {
+    await withSchema(async (connection, admin) => {
+      const store = makeControlPlaneHnsRootImportStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+        { environment: "production" },
+      );
+      const record = startRecord();
+      const started = await Effect.runPromise(Effect.scoped(store.start(record)));
+      if (!("session" in started)) {
+        throw new Error("expected root-import session");
+      }
+      if (started.session.status !== "awaiting_ownership") {
+        throw new Error("expected awaiting ownership");
+      }
+      const signature = btoa("\u0001".repeat(64));
+      const message = started.session.provisioning_authorization.message;
+      const messageSha256 = sha256(new TextEncoder().encode(message));
+      const signatureSha256 = sha256(new TextEncoder().encode(signature));
+      const proofBytes = encodeHnsRootImportNameProofResultV1({
+        version: HNS_ROOT_IMPORT_NAME_PROOF_RESULT_VERSION,
+        root_label: record.root_label,
+        message_sha256: messageSha256,
+        signature_sha256: signatureSha256,
+        safe: true,
+        verified: true,
+      });
+      const request = provisionRequest(record);
+      const rejectedProofBytes = encodeHnsRootImportNameProofResultV1({
+        version: HNS_ROOT_IMPORT_NAME_PROOF_RESULT_VERSION,
+        root_label: record.root_label,
+        message_sha256: messageSha256,
+        signature_sha256: signatureSha256,
+        safe: true,
+        verified: false,
+      });
+      expect(
+        await Effect.runPromise(
+          Effect.scoped(
+            store.beginProvisioning({
+              poll: {
+                actor_id: record.actor_id,
+                creation_intent_id: record.creation_intent_id,
+                root_import_session_id: record.root_import_session_id,
+                expected_revision: 1,
+                idempotency_key: "reject-root-import-name-proof",
+                provisioning_name_signature: signature,
+              },
+              poll_request_sha256: SHA_A,
+              authorization: {
+                kind: "hns_name_signature",
+                result_bytes: rejectedProofBytes,
+                result_sha256: sha256(rejectedProofBytes),
+                message_sha256: messageSha256,
+                signature_sha256: signatureSha256,
+              },
+              provision_job_id: record.provision_job_id,
+              provision_request_bytes: request.bytes,
+              provision_request_sha256: request.sha256,
+            }),
+          ),
+        ),
+      ).toEqual({ kind: "conflict" });
+      expect(
+        (
+          await admin.query("SELECT * FROM claim_hns_authority_provision_job_v1($1,$2)", [
+            "authority-executor",
+            60,
+          ])
+        ).rows,
+      ).toHaveLength(0);
+      const provisioning = await Effect.runPromise(
+        Effect.scoped(
+          store.beginProvisioning({
+            poll: {
+              actor_id: record.actor_id,
+              creation_intent_id: record.creation_intent_id,
+              root_import_session_id: record.root_import_session_id,
+              expected_revision: 1,
+              idempotency_key: "provision-root-import-name-proof",
+              provisioning_name_signature: signature,
+            },
+            poll_request_sha256: SHA_B,
+            authorization: {
+              kind: "hns_name_signature",
+              result_bytes: proofBytes,
+              result_sha256: sha256(proofBytes),
+              message_sha256: messageSha256,
+              signature_sha256: signatureSha256,
+            },
+            provision_job_id: record.provision_job_id,
+            provision_request_bytes: request.bytes,
+            provision_request_sha256: request.sha256,
+          }),
+        ),
+      );
+      expect(provisioning).toMatchObject({
+        kind: "provisioning",
+        session: { status: "provisioning", revision: 2 },
+      });
+      const retained = await admin.query<{
+        provision_authorization_kind: string;
+        ownership_result_sha256: string | null;
+        result_text: string;
+      }>(
+        `SELECT session.provision_authorization_kind,session.ownership_result_sha256,
+                convert_from(proof.result_bytes,'UTF8') AS result_text
+           FROM hns_root_import_sessions AS session
+           JOIN hns_root_import_name_proof_observations AS proof
+             ON proof.root_import_session_id=session.root_import_session_id
+          WHERE session.root_import_session_id=$1`,
+        [record.root_import_session_id],
+      );
+      expect(retained.rows[0]).toMatchObject({
+        provision_authorization_kind: "hns_name_signature",
+        ownership_result_sha256: null,
+      });
+      expect(retained.rows[0]?.result_text).not.toContain(signature);
+
+      const claim = await admin.query<{ lease_fence: string }>(
+        "SELECT * FROM claim_hns_authority_provision_job_v1($1,$2)",
+        ["authority-executor", 60],
+      );
+      expect(claim.rows).toHaveLength(1);
+      const plan = buildHnsRootImportPublishPlanV1({
+        current_records: [],
+        challenge_txt_value: record.challenge_txt_value,
+        ds_records: [
+          { key_tag: 12_345, algorithm: 13, digest_type: 2, digest: "1".repeat(64) },
+          { key_tag: 12_345, algorithm: 13, digest_type: 4, digest: "2".repeat(96) },
+        ],
+      });
+      const planBytes = new TextEncoder().encode(canonicalJson(plan));
+      const resultBytes = new TextEncoder().encode(
+        canonicalJson({ version: "test-provision-result-v1", root_label: record.root_label }),
+      );
+      await admin.query(
+        "SELECT * FROM finalize_hns_authority_provision_job_v1($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+        [
+          record.provision_job_id,
+          "authority-executor",
+          Number(claim.rows[0]?.lease_fence),
+          request.sha256,
+          "completed",
+          Buffer.from(planBytes),
+          sha256(planBytes),
+          Buffer.from(resultBytes),
+          sha256(resultBytes),
+          null,
+        ],
+      );
+      const prematureObservationBytes = new TextEncoder().encode(
+        canonicalJson({ version: "premature-observation", root_label: record.root_label }),
+      );
+      expect(
+        await Effect.runPromise(
+          Effect.scoped(
+            store.beginObservation({
+              poll: {
+                actor_id: record.actor_id,
+                creation_intent_id: record.creation_intent_id,
+                root_import_session_id: record.root_import_session_id,
+                expected_revision: 3,
+                idempotency_key: "observe-before-chain-txt",
+              },
+              poll_request_sha256: SHA_A,
+              ownership_result_sha256: "d".repeat(64),
+              observation_job_id: "premature-name-proof-observation",
+              observation_request_bytes: prematureObservationBytes,
+              observation_request_sha256: sha256(prematureObservationBytes),
+            }),
+          ),
+        ),
+      ).toEqual({ kind: "conflict" });
+      await admin.query("SET session_replication_role = replica");
+      try {
+        await admin.query(
+          "UPDATE hns_root_import_sessions SET status='failed' WHERE root_import_session_id=$1",
+          [record.root_import_session_id],
+        );
+      } finally {
+        await admin.query("SET session_replication_role = origin");
+      }
+      const teardown = await admin.query<{
+        observation_job_id: string;
+        operation_kind: string;
+        request_sha256: string;
+        lease_fence: string;
+      }>("SELECT * FROM claim_hns_root_import_observation_job_v1($1,$2)", [
+        "authority-executor",
+        60,
+      ]);
+      expect(teardown.rows[0]).toMatchObject({ operation_kind: "teardown_root_v1" });
+      const finalized = await admin.query<{
+        outcome: string;
+        root_import_session_id: string;
+        session_revision: string;
+      }>("SELECT * FROM finalize_hns_root_import_observation_job_v1($1,$2,$3,$4,$5,$6,$7,$8)", [
+        teardown.rows[0]?.observation_job_id,
+        "authority-executor",
+        Number(teardown.rows[0]?.lease_fence),
+        teardown.rows[0]?.request_sha256,
+        "failed",
+        null,
+        null,
+        "session_expired",
+      ]);
+      expect(finalized.rows).toEqual([
+        {
+          outcome: "failed",
+          root_import_session_id: record.root_import_session_id,
+          session_revision: "3",
+        },
+      ]);
+      const finalState = await admin.query<{ session_status: string; teardown_state: string }>(
+        `SELECT session.status AS session_status,teardown.state AS teardown_state
+           FROM hns_root_import_sessions AS session
+           JOIN hns_root_import_teardown_jobs AS teardown
+             ON teardown.root_import_session_id=session.root_import_session_id
+          WHERE session.root_import_session_id=$1`,
+        [record.root_import_session_id],
+      );
+      expect(finalState.rows).toEqual([{ session_status: "failed", teardown_state: "completed" }]);
     });
   }, 20_000);
 

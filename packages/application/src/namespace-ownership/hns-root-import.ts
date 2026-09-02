@@ -9,6 +9,10 @@ import {
   type CommunityCreationServices,
   getCommunityCreationIntent,
 } from "../use-cases/community/creation-intents.ts";
+import {
+  decodeHnsRootImportNameProofResultV1,
+  HnsRootImportNameSignature,
+} from "./hns-root-import-name-proof.ts";
 import type { NamespaceOwnershipStartResponse } from "./start.ts";
 
 const CanonicalIdentifier = Schema.NonEmptyString.check(
@@ -56,11 +60,14 @@ export const PollHnsRootImportInput = Schema.Struct({
   ...GetHnsRootImportInput.fields,
   expected_revision: PositiveInteger,
   idempotency_key: CanonicalIdentifier,
+  provisioning_name_signature: Schema.optional(HnsRootImportNameSignature),
 });
 export type PollHnsRootImportInput = Schema.Schema.Type<typeof PollHnsRootImportInput>;
 
 export const ActivateHnsRootImportInput = Schema.Struct({
-  ...PollHnsRootImportInput.fields,
+  ...GetHnsRootImportInput.fields,
+  expected_revision: PositiveInteger,
+  idempotency_key: CanonicalIdentifier,
   actor_kind: Schema.Literals(["user", "admin"]),
   publish_plan_sha256: Sha256Hex,
   readiness_result_sha256: Sha256Hex,
@@ -84,6 +91,21 @@ export type HnsRootImportOwnershipCompletionPort = Readonly<{
     readonly idempotency_key: string;
     readonly channel: "poll_result";
   }) => Effect.Effect<HnsPollResultCompletionResponseV1, unknown>;
+}>;
+
+export type HnsRootImportNameProofVerifierPort = Readonly<{
+  readonly verify: (input: {
+    readonly root_import_session_id: string;
+    readonly root_label: string;
+    readonly message: string;
+    readonly signature: string;
+  }) => Effect.Effect<
+    Readonly<{
+      readonly result_bytes: Uint8Array;
+      readonly result_sha256: string;
+    }>,
+    unknown
+  >;
 }>;
 
 export type HnsRootImportStartRecord = Readonly<{
@@ -121,7 +143,18 @@ export type HnsRootImportPollAuthority = Readonly<{
 export type HnsRootImportProvisionRecord = Readonly<{
   readonly poll: PollHnsRootImportInput;
   readonly poll_request_sha256: string;
-  readonly ownership_result_sha256: string;
+  readonly authorization:
+    | Readonly<{
+        readonly kind: "namespace_ownership";
+        readonly result_sha256: string;
+      }>
+    | Readonly<{
+        readonly kind: "hns_name_signature";
+        readonly result_bytes: Uint8Array;
+        readonly result_sha256: string;
+        readonly message_sha256: string;
+        readonly signature_sha256: string;
+      }>;
   readonly provision_job_id: string;
   readonly provision_request_bytes: Uint8Array;
   readonly provision_request_sha256: string;
@@ -203,6 +236,7 @@ export interface HnsRootImportStore {
 export interface HnsRootImportServices {
   readonly ownership: HnsRootImportOwnershipStartPort;
   readonly completion: HnsRootImportOwnershipCompletionPort;
+  readonly nameProof?: HnsRootImportNameProofVerifierPort;
   readonly community: CommunityCreationServices;
   readonly store: HnsRootImportStore;
   readonly ids?: Readonly<{
@@ -220,6 +254,7 @@ export class HnsRootImportRejected extends Data.TaggedError("HnsRootImportReject
   readonly reason:
     | "invalid"
     | "ownership_unavailable"
+    | "ownership_rejected"
     | "ownership_source_unsupported"
     | "conflict"
     | "not_found";
@@ -390,6 +425,24 @@ export const getHnsRootImport = Effect.fn("getHnsRootImport")(function* (
   return session === null ? yield* new HnsRootImportRejected({ reason: "not_found" }) : session;
 });
 
+function completeRootImportOwnership(
+  input: PollHnsRootImportInput,
+  authority: HnsRootImportPollAuthority,
+  services: HnsRootImportServices,
+) {
+  return services.completion
+    .complete({
+      actor_id: input.actor_id,
+      creation_intent_id: input.creation_intent_id,
+      ceremony_intent_id: authority.session.ceremony_intent_id,
+      session_id: authority.session.namespace_session_id,
+      expected_revision: authority.ownership_expected_revision,
+      idempotency_key: input.idempotency_key,
+      channel: "poll_result",
+    })
+    .pipe(Effect.mapError(() => new HnsRootImportRejected({ reason: "ownership_unavailable" })));
+}
+
 export const pollHnsRootImport = Effect.fn("pollHnsRootImport")(function* (
   untrustedInput: unknown,
   services: HnsRootImportServices,
@@ -404,6 +457,14 @@ export const pollHnsRootImport = Effect.fn("pollHnsRootImport")(function* (
   if (current.revision !== input.expected_revision) {
     return yield* new HnsRootImportRejected({ reason: "conflict" });
   }
+  if (input.provisioning_name_signature !== undefined && current.status !== "awaiting_ownership") {
+    return yield* new HnsRootImportRejected({ reason: "invalid" });
+  }
+  const submittedSignature = input.provisioning_name_signature ?? null;
+  const submittedSignatureSha256 =
+    submittedSignature === null
+      ? null
+      : yield* Effect.promise(() => sha256Bytes(encoder.encode(submittedSignature)));
   const pollIdentity = {
     version: "pirate-hns-root-import-poll-v1",
     actor_id: input.actor_id,
@@ -411,19 +472,112 @@ export const pollHnsRootImport = Effect.fn("pollHnsRootImport")(function* (
     root_import_session_id: input.root_import_session_id,
     expected_revision: input.expected_revision,
     idempotency_key: input.idempotency_key,
+    provisioning_name_signature_sha256: submittedSignatureSha256,
   } as const;
   if (current.status === "awaiting_ownership") {
-    const ownership = yield* services.completion
-      .complete({
-        actor_id: input.actor_id,
-        creation_intent_id: input.creation_intent_id,
-        ceremony_intent_id: current.ceremony_intent_id,
-        session_id: current.namespace_session_id,
-        expected_revision: authority.ownership_expected_revision,
-        idempotency_key: input.idempotency_key,
-        channel: "poll_result",
-      })
-      .pipe(Effect.mapError(() => new HnsRootImportRejected({ reason: "ownership_unavailable" })));
+    let authorization: HnsRootImportProvisionRecord["authorization"];
+    if (input.provisioning_name_signature === undefined) {
+      const ownership = yield* completeRootImportOwnership(input, authority, services);
+      if (ownership.status === "pending" || ownership.status === "unavailable") return current;
+      if (ownership.result_hash === null) {
+        return yield* new HnsRootImportRejected({ reason: "ownership_unavailable" });
+      }
+      if (ownership.status === "rejected" || ownership.status === "expired") {
+        const terminal = yield* services.store.finishOwnershipTerminal({
+          poll: input,
+          ownership_status: ownership.status,
+          ownership_result_sha256: ownership.result_hash,
+        });
+        if (terminal.kind === "not_found") {
+          return yield* new HnsRootImportRejected({ reason: "not_found" });
+        }
+        if (terminal.kind === "conflict") {
+          return yield* new HnsRootImportRejected({ reason: "conflict" });
+        }
+        if ("session" in terminal) return terminal.session;
+        return yield* new HnsRootImportRejected({ reason: "conflict" });
+      }
+      if (ownership.status !== "verified") {
+        return yield* new HnsRootImportRejected({ reason: "ownership_unavailable" });
+      }
+      authorization = { kind: "namespace_ownership", result_sha256: ownership.result_hash };
+    } else {
+      if (services.nameProof === undefined || submittedSignatureSha256 === null) {
+        return yield* new HnsRootImportRejected({ reason: "ownership_unavailable" });
+      }
+      const signature = input.provisioning_name_signature;
+      const message = current.provisioning_authorization.message;
+      const messageSha256 = yield* Effect.promise(() => sha256Bytes(encoder.encode(message)));
+      const verified = yield* services.nameProof
+        .verify({
+          root_import_session_id: current.root_import_session_id,
+          root_label: current.root_label,
+          message,
+          signature,
+        })
+        .pipe(
+          Effect.mapError(() => new HnsRootImportRejected({ reason: "ownership_unavailable" })),
+        );
+      const proof = yield* Effect.tryPromise({
+        try: async () => {
+          const result = decodeHnsRootImportNameProofResultV1(verified.result_bytes);
+          const resultSha256 = await sha256Bytes(verified.result_bytes);
+          if (
+            resultSha256 !== verified.result_sha256 ||
+            result.root_label !== current.root_label ||
+            result.message_sha256 !== messageSha256 ||
+            result.signature_sha256 !== submittedSignatureSha256 ||
+            result.safe !== true
+          ) {
+            throw new TypeError("HNS name-proof result does not match its request");
+          }
+          return { result, resultSha256 };
+        },
+        catch: () => new HnsRootImportRejected({ reason: "ownership_unavailable" }),
+      });
+      if (!proof.result.verified) {
+        return yield* new HnsRootImportRejected({ reason: "ownership_rejected" });
+      }
+      authorization = {
+        kind: "hns_name_signature",
+        result_bytes: new Uint8Array(verified.result_bytes),
+        result_sha256: proof.resultSha256,
+        message_sha256: messageSha256,
+        signature_sha256: submittedSignatureSha256,
+      };
+    }
+    const provisionIdentity = {
+      version: "pirate-hns-authority-provision-request-v1",
+      root_import_session_id: current.root_import_session_id,
+      namespace_session_id: current.namespace_session_id,
+      root_label: current.root_label,
+      challenge_txt_value: authority.challenge_txt_value,
+      expires_at: current.expires_at,
+    } as const;
+    const provisionRequestBytes = encoder.encode(canonicalJson(provisionIdentity));
+    const provisioning = yield* services.store.beginProvisioning({
+      poll: input,
+      poll_request_sha256: yield* Effect.promise(() => sha256(pollIdentity)),
+      authorization,
+      provision_job_id: authority.provision_job_id,
+      provision_request_bytes: provisionRequestBytes,
+      provision_request_sha256: yield* Effect.promise(() => sha256Bytes(provisionRequestBytes)),
+    });
+    if (provisioning.kind === "not_found") {
+      return yield* new HnsRootImportRejected({ reason: "not_found" });
+    }
+    if (provisioning.kind === "conflict") {
+      return yield* new HnsRootImportRejected({ reason: "conflict" });
+    }
+    if ("session" in provisioning) return provisioning.session;
+    return yield* new HnsRootImportRejected({ reason: "conflict" });
+  }
+  if (current.status !== "awaiting_owner_update") {
+    return { ...current, replayed: true };
+  }
+  let ownershipResultSha256 = authority.ownership_result_sha256;
+  if (ownershipResultSha256 === null) {
+    const ownership = yield* completeRootImportOwnership(input, authority, services);
     if (ownership.status === "pending" || ownership.status === "unavailable") return current;
     if (ownership.result_hash === null) {
       return yield* new HnsRootImportRejected({ reason: "ownership_unavailable" });
@@ -446,36 +600,9 @@ export const pollHnsRootImport = Effect.fn("pollHnsRootImport")(function* (
     if (ownership.status !== "verified") {
       return yield* new HnsRootImportRejected({ reason: "ownership_unavailable" });
     }
-    const provisionIdentity = {
-      version: "pirate-hns-authority-provision-request-v1",
-      root_import_session_id: current.root_import_session_id,
-      namespace_session_id: current.namespace_session_id,
-      root_label: current.root_label,
-      challenge_txt_value: authority.challenge_txt_value,
-      expires_at: current.expires_at,
-    } as const;
-    const provisionRequestBytes = encoder.encode(canonicalJson(provisionIdentity));
-    const provisioning = yield* services.store.beginProvisioning({
-      poll: input,
-      poll_request_sha256: yield* Effect.promise(() => sha256(pollIdentity)),
-      ownership_result_sha256: ownership.result_hash,
-      provision_job_id: authority.provision_job_id,
-      provision_request_bytes: provisionRequestBytes,
-      provision_request_sha256: yield* Effect.promise(() => sha256Bytes(provisionRequestBytes)),
-    });
-    if (provisioning.kind === "not_found") {
-      return yield* new HnsRootImportRejected({ reason: "not_found" });
-    }
-    if (provisioning.kind === "conflict") {
-      return yield* new HnsRootImportRejected({ reason: "conflict" });
-    }
-    if ("session" in provisioning) return provisioning.session;
-    return yield* new HnsRootImportRejected({ reason: "conflict" });
+    ownershipResultSha256 = ownership.result_hash;
   }
-  if (current.status !== "awaiting_owner_update") {
-    return { ...current, replayed: true };
-  }
-  if (authority.ownership_result_sha256 === null || authority.provision_result_sha256 === null) {
+  if (authority.provision_result_sha256 === null) {
     return yield* new HnsRootImportRejected({ reason: "conflict" });
   }
   const observationJobId = generatedId(services.ids, "observationJob");
@@ -485,7 +612,7 @@ export const pollHnsRootImport = Effect.fn("pollHnsRootImport")(function* (
     namespace_session_id: current.namespace_session_id,
     root_label: current.root_label,
     challenge_txt_value: authority.challenge_txt_value,
-    ownership_result_sha256: authority.ownership_result_sha256,
+    ownership_result_sha256: ownershipResultSha256,
     publish_plan_sha256: current.publish_plan_sha256,
     provision_result_sha256: authority.provision_result_sha256,
     expires_at: current.expires_at,
@@ -497,7 +624,7 @@ export const pollHnsRootImport = Effect.fn("pollHnsRootImport")(function* (
   const outcome = yield* services.store.beginObservation({
     poll: input,
     poll_request_sha256: yield* Effect.promise(() => sha256(pollIdentity)),
-    ownership_result_sha256: authority.ownership_result_sha256,
+    ownership_result_sha256: ownershipResultSha256,
     observation_job_id: observationJobId,
     observation_request_bytes: observationBytes,
     observation_request_sha256: yield* Effect.promise(() => sha256Bytes(observationBytes)),

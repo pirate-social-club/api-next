@@ -417,6 +417,7 @@ export {
   HNS_PRIVATE_DRIVER_DNS_RESPONSE_MAX_BYTES,
   HNS_PRIVATE_DRIVER_ERROR_MAX_BYTES,
   HNS_PRIVATE_DRIVER_ERROR_VERSION,
+  HNS_PRIVATE_DRIVER_HSD_NAME_PROOF_METHOD,
   HNS_PRIVATE_DRIVER_HSD_PATH,
   HNS_PRIVATE_DRIVER_HSD_RESPONSE_MAX_BYTES,
   HNS_PRIVATE_DRIVER_ORIGIN,
@@ -443,6 +444,20 @@ export {
   isCanonicalHnsPrivateDriverHsdRequest,
 } from "./hns-private-driver.ts";
 export * from "./hns-root-import.ts";
+export type { HnsRootImportNameProofMessageInput } from "./hns-root-import-name-proof.ts";
+export {
+  decodeHnsRootImportNameProofResultV1,
+  encodeHnsRootImportNameProofResultV1,
+  HNS_ROOT_IMPORT_NAME_PROOF_MESSAGE_MAX_BYTES,
+  HNS_ROOT_IMPORT_NAME_PROOF_NETWORK,
+  HNS_ROOT_IMPORT_NAME_PROOF_RESULT_MAX_BYTES,
+  HNS_ROOT_IMPORT_NAME_PROOF_RESULT_VERSION,
+  HNS_ROOT_IMPORT_NAME_PROOF_VERSION,
+  HNS_ROOT_IMPORT_NAME_SIGNATURE_MAX_BYTES,
+  HnsRootImportNameProofResultV1,
+  HnsRootImportNameSignature,
+  hnsRootImportNameProofMessage,
+} from "./hns-root-import-name-proof.ts";
 export * from "./hns-root-import-plan.ts";
 export * from "./hns-root-import-readiness.ts";
 export * from "./operator-control-promotion.ts";

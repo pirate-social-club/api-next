@@ -52,6 +52,35 @@ const Sha256Hex = Schema.String.check(
   ),
 );
 
+function canonicalCompactHnsSignature(value: string): boolean {
+  try {
+    const decoded = atob(value);
+    return decoded.length === 64 && btoa(decoded) === value;
+  } catch {
+    return false;
+  }
+}
+
+const HnsNameSignature = Schema.NonEmptyString.check(
+  Schema.makeFilter((value) =>
+    value.trim() === value &&
+    controlFree(value) &&
+    utf8Length(value) <= 512 &&
+    /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(value) &&
+    canonicalCompactHnsSignature(value)
+      ? undefined
+      : "Expected a canonical compact HNS name signature",
+  ),
+);
+
+const HnsNameProofMessage = Schema.NonEmptyString.check(
+  Schema.makeFilter((value) =>
+    controlFree(value) && utf8Length(value) <= 2_048
+      ? undefined
+      : "Expected a bounded HNS name-proof message",
+  ),
+);
+
 const CanonicalIsoInstant = Schema.String.check(
   Schema.makeFilter((value) => {
     const parsed = Date.parse(value);
@@ -103,6 +132,7 @@ export type HnsRootImportStartRequestV1 = Schema.Schema.Type<typeof HnsRootImpor
 const HnsRootImportPollRequestV1 = Schema.Struct({
   expected_revision: PositiveSafeInteger,
   idempotency_key: OpaqueId,
+  provisioning_name_signature: Schema.optional(HnsNameSignature),
 });
 export type HnsRootImportPollRequestV1 = Schema.Schema.Type<typeof HnsRootImportPollRequestV1>;
 
@@ -142,6 +172,12 @@ const HnsRootImportAwaitingOwnershipResponseV1 = Schema.Struct({
       type: Schema.Literal("TXT"),
       txt: Schema.Tuple([Schema.NonEmptyString]),
     }),
+  }),
+  provisioning_authorization: Schema.Struct({
+    kind: Schema.Literal("hns_name_signature_v1"),
+    wallet_rpc_method: Schema.Literal("signmessagewithname"),
+    message: HnsNameProofMessage,
+    expires_at: CanonicalIsoInstant,
   }),
   publish_plan: Schema.Null,
   publish_plan_sha256: Schema.Null,
@@ -266,7 +302,7 @@ export const PollHnsRootImport = endpoint({
     path: HnsRootImportSessionPath,
     exactRawPathParameters: ["intentId", "sessionId"],
     body: HnsRootImportPollRequestV1,
-    bodyEncoding: "exact-json",
+    bodyEncoding: "json",
     maxBodyBytes: 2_048,
   },
   response: HnsRootImportSessionResponseV1,

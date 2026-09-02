@@ -15,7 +15,10 @@ import {
 export { HNS_OWNER_PROTOCOL_VERSION, HNS_OWNER_PROVIDER_ID } from "@pirate/application";
 export type { HnsOwnerTransport } from "./hns-owner.ts";
 export type { HnsOwnerServiceBinding } from "./hns-owner-service-binding.ts";
-export { makeHnsOwnerServiceBindingTransport } from "./hns-owner-service-binding.ts";
+export {
+  makeHnsOwnerServiceBindingTransport,
+  makeHnsRootImportNameProofServiceBindingVerifier,
+} from "./hns-owner-service-binding.ts";
 
 const exactParseOptions = { onExcessProperty: "error" } as const;
 

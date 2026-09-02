@@ -20,6 +20,7 @@ import {
   type HyperdriveConnection,
   makeHyperdriveControlPlaneLayer,
 } from "@pirate/platform-cf/postgres";
+import { type HnsNameProofRuntime, makeHnsNameProofRuntime } from "./name-proof.ts";
 import type { HnsTargetObserverRuntime } from "./target-observer.ts";
 import {
   makeHnsOwnerAuthoritativeTargetObserverRuntimeV2,
@@ -74,6 +75,29 @@ function sequentialMessageIds() {
       next = (next + 1) & 0xffff;
       return current;
     },
+  });
+}
+
+export function composeHnsNameProofRuntime(
+  env: HnsTargetCompositionBindings,
+  signal: AbortSignal,
+): HnsNameProofRuntime | undefined {
+  const observerDeadline = deadline(env.HNS_OBSERVER_DEADLINE_MS);
+  if (
+    env.HNS_OBSERVER_DRIVER === undefined ||
+    env.HNS_CHAIN_DRIVER_REFERENCE === undefined ||
+    !safeReferencePattern.test(env.HNS_CHAIN_DRIVER_REFERENCE) ||
+    observerDeadline === null ||
+    signal.aborted
+  ) {
+    return undefined;
+  }
+  return makeHnsNameProofRuntime({
+    capability: makeHnsControlObserverHsdPrivateDriverCapability({
+      binding: env.HNS_OBSERVER_DRIVER,
+      driver_reference: env.HNS_CHAIN_DRIVER_REFERENCE,
+      timeout_ms: observerDeadline,
+    }),
   });
 }
 
