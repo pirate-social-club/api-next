@@ -6,6 +6,14 @@ jobs-worker does not own or duplicate that work. Its recovery job only finds
 expired active sessions and completed sessions with pending recordings, then
 wakes the Durable Object by session id.
 
+Before scanning Postgres, each scheduled run calls `redriveFinalization()` on
+the reserved `system:karaoke-finalization-recovery-binding-probe:v1` Durable
+Object name. The probe has no session, learner, provider, R2, or WebSocket
+state. Only `outcome = "missing"` with no rearmed axes is healthy. An RPC
+failure or any other response fails the job through the redacted high-severity
+alert path, so a broken cross-Worker binding is visible before learner work
+depends on it.
+
 `KARAOKE_FINALIZATION_RECOVERY_ENABLED` is an activation fence. Its only
 enabled spelling is the literal string `true`. With any other value, the
 Durable Object records attempts and uses capped exponential backoff but never
@@ -20,8 +28,8 @@ Activate one environment in this order:
 2. Confirm the jobs-worker has a scheduled cron and its `KARAOKE_ATTEMPT`
    binding targets that HTTP worker in the same environment, then deploy the
    jobs-worker with its recovery flag still set to `false`.
-3. Set only the jobs-worker flag to `true`, deploy it, and confirm the scheduled
-   job can invoke the external Durable Object binding.
+3. Set only the jobs-worker flag to `true`, deploy it, and observe a successful
+   sentinel RPC on the target HTTP worker before enabling local exhaustion.
 4. Set the http-worker flag to `true` and deploy it. Only this step enables
    local retry exhaustion.
 5. Confirm Workers Logs contain no missing-object or RPC-failure event. An

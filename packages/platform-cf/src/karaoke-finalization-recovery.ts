@@ -4,6 +4,8 @@ import { Data, Effect, type Layer } from "effect";
 type Row = Readonly<Record<string, unknown>>;
 
 export const KARAOKE_FINALIZATION_RECOVERY_BATCH_LIMIT = 50;
+export const KARAOKE_FINALIZATION_RECOVERY_BINDING_PROBE =
+  "system:karaoke-finalization-recovery-binding-probe:v1";
 
 export interface KaraokeFinalizationRecoveryCandidate {
   readonly sessionId: string;
@@ -39,6 +41,10 @@ export interface KaraokeFinalizationRecoverySummary {
 
 export class KaraokeFinalizationRecoveryInvalidRow extends Data.TaggedError(
   "KaraokeFinalizationRecoveryInvalidRow",
+)<Record<never, never>> {}
+
+export class KaraokeFinalizationRecoveryBindingProbeFailed extends Data.TaggedError(
+  "KaraokeFinalizationRecoveryBindingProbeFailed",
 )<Record<never, never>> {}
 
 const positiveInteger = (value: number, label: string): number => {
@@ -103,8 +109,28 @@ export const redriveKaraokeFinalizations = Effect.fn("redriveKaraokeFinalization
     readonly limit?: number;
   }): Effect.fn.Return<
     KaraokeFinalizationRecoverySummary,
-    ControlPlaneError | KaraokeFinalizationRecoveryInvalidRow
+    | ControlPlaneError
+    | KaraokeFinalizationRecoveryInvalidRow
+    | KaraokeFinalizationRecoveryBindingProbeFailed
   > {
+    const probe: unknown = yield* Effect.tryPromise({
+      try: () =>
+        input.namespace
+          .getByName(KARAOKE_FINALIZATION_RECOVERY_BINDING_PROBE)
+          .redriveFinalization(),
+      catch: () => new KaraokeFinalizationRecoveryBindingProbeFailed(),
+    });
+    if (
+      typeof probe !== "object" ||
+      probe === null ||
+      !("outcome" in probe) ||
+      probe.outcome !== "missing" ||
+      !("rearmed" in probe) ||
+      !Array.isArray(probe.rearmed) ||
+      probe.rearmed.length !== 0
+    ) {
+      return yield* new KaraokeFinalizationRecoveryBindingProbeFailed();
+    }
     const candidates = yield* input.store.listCandidates({
       limit: input.limit ?? KARAOKE_FINALIZATION_RECOVERY_BATCH_LIMIT,
     });
@@ -126,6 +152,12 @@ export const redriveKaraokeFinalizations = Effect.fn("redriveKaraokeFinalization
         rearmed += result.rearmed.length;
       }
     }
-    return { selected: candidates.length, scheduled, rearmed, missing, rpcFailures };
+    return {
+      selected: candidates.length,
+      scheduled,
+      rearmed,
+      missing,
+      rpcFailures,
+    };
   },
 );

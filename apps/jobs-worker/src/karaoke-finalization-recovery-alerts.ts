@@ -8,6 +8,15 @@ interface KaraokeFinalizationRecoveryAlertSummary {
 
 const KARAOKE_FINALIZATION_RECOVERY_ALERT_JOB = "karaoke.finalization-recovery";
 
+export const KARAOKE_FINALIZATION_RECOVERY_EXPECTED_FAILURE_SEVERITY = {
+  ControlPlaneAcquireFailed: "medium",
+  ControlPlaneOperationTimedOut: "medium",
+  ControlPlaneStatementFailed: "medium",
+  ControlPlaneTransactionOutcomeUnknown: "high",
+  KaraokeFinalizationRecoveryBindingProbeFailed: "high",
+  KaraokeFinalizationRecoveryInvalidRow: "high",
+} as const;
+
 export function karaokeFinalizationRecoveryAlerts(
   summary: KaraokeFinalizationRecoveryAlertSummary,
 ): readonly Alert[] {

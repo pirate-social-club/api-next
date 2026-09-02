@@ -1,7 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import { karaokeFinalizationRecoveryAlerts } from "./karaoke-finalization-recovery-alerts.ts";
+import {
+  KARAOKE_FINALIZATION_RECOVERY_EXPECTED_FAILURE_SEVERITY,
+  karaokeFinalizationRecoveryAlerts,
+} from "./karaoke-finalization-recovery-alerts.ts";
 
 describe("Karaoke finalization recovery alerts", () => {
+  test("routes a failed binding probe through the high-severity runner path", () => {
+    expect(
+      KARAOKE_FINALIZATION_RECOVERY_EXPECTED_FAILURE_SEVERITY.KaraokeFinalizationRecoveryBindingProbeFailed,
+    ).toBe("high");
+  });
+
   test("contains only aggregate recovery counts", () => {
     const alerts = karaokeFinalizationRecoveryAlerts({
       rearmed: 2,

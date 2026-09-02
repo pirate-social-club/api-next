@@ -7,7 +7,10 @@ import {
 } from "@pirate/platform-cf";
 import { Effect, Layer } from "effect";
 
-import { karaokeFinalizationRecoveryAlerts } from "./karaoke-finalization-recovery-alerts";
+import {
+  KARAOKE_FINALIZATION_RECOVERY_EXPECTED_FAILURE_SEVERITY,
+  karaokeFinalizationRecoveryAlerts,
+} from "./karaoke-finalization-recovery-alerts";
 import {
   defaultRetrySchedule,
   JobContext,
@@ -27,13 +30,7 @@ export const KARAOKE_FINALIZATION_RECOVERY_READS = [
 ] as const satisfies readonly TableKey[];
 
 const KARAOKE_FINALIZATION_RECOVERY_SEVERITY: SeverityMapping = {
-  expectedFailure: {
-    ControlPlaneAcquireFailed: "medium",
-    ControlPlaneOperationTimedOut: "medium",
-    ControlPlaneStatementFailed: "medium",
-    ControlPlaneTransactionOutcomeUnknown: "high",
-    KaraokeFinalizationRecoveryInvalidRow: "high",
-  },
+  expectedFailure: KARAOKE_FINALIZATION_RECOVERY_EXPECTED_FAILURE_SEVERITY,
   timeout: "high",
   transactionOutcomeUnknown: "high",
   defect: "high",
