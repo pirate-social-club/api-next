@@ -530,7 +530,9 @@ export function hnsProviderIdentityDigest(
 
 export type HnsNamespaceStartInput = Schema.Schema.Type<typeof HnsNamespaceStartInputSchema>;
 
-function assertHnsStartInput(input: HnsNamespaceStartInput): void {
+function assertHnsStartInput(
+  input: Readonly<{ readonly provider_id: string; readonly route: HnsOwnerRoute }>,
+): void {
   if (
     input.provider_id !== HNS_OWNER_PROVIDER_ID ||
     input.route.family !== "hns" ||
