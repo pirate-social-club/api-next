@@ -8,7 +8,7 @@ import {
 import { Clock, IdGen } from "./ports.ts";
 
 describe("Karaoke service", () => {
-  test("creates a bounded single-use realtime session with the public retention split", async () => {
+  test("creates bounded sessions with explicit or omitted client context", async () => {
     let reserved: Parameters<KaraokeAttemptStore["reserveSession"]>[0] | null = null;
     const unused = () => Effect.die("unused Karaoke store operation");
     const store: KaraokeAttemptStore = {
@@ -86,5 +86,32 @@ describe("Karaoke service", () => {
       provider: "elevenlabs",
     });
     expect(result.session_expires_at - Date.UTC(2026, 7, 29, 10)).toBe(30 * 60 * 1_000);
+
+    const explicitContextHash = (reserved as unknown as { readonly requestHash: string })
+      .requestHash;
+    const withoutContext = await Effect.runPromise(
+      service
+        .createAttempt({
+          accountId: "account-1",
+          clientContext: undefined,
+          communityId: "community-1",
+          idempotencyKey: "request-2",
+          personaId: null,
+          postId: "post-1",
+          timezone: "UTC",
+        })
+        .pipe(
+          Effect.provideService(Clock, { now: Effect.succeed(Date.UTC(2026, 7, 29, 10)) }),
+          Effect.provideService(IdGen, { next: Effect.sync(() => String(++id)) }),
+        ),
+    );
+
+    expect(withoutContext).toMatchObject({
+      attempt: "karaoke_attempt_4",
+      id: "karaoke_session_6",
+    });
+    expect((reserved as unknown as { readonly requestHash: string }).requestHash).not.toBe(
+      explicitContextHash,
+    );
   });
 });

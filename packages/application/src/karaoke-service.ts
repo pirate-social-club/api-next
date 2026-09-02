@@ -163,9 +163,10 @@ export const makeKaraokeService = (input: {
     readonly timezone: string | null;
   }) =>
     Effect.gen(function* () {
-      const requestHash = yield* canonicalBodyHash(command).pipe(
-        Effect.mapError(() => rejected("invalid-input")),
-      );
+      const requestHash = yield* canonicalBodyHash({
+        ...command,
+        clientContext: command.clientContext ?? null,
+      }).pipe(Effect.mapError(() => rejected("invalid-input")));
       const ids = yield* IdGen;
       const clock = yield* Clock;
       const now = yield* clock.now;
