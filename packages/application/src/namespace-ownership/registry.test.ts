@@ -57,6 +57,27 @@ const session = {
   upstream_session_ref: "upstream-hns-1",
   expires_at: "2026-08-20T13:00:00.000Z",
 };
+const attachmentStartInput = {
+  operation_kind: "route_attachment" as const,
+  actor_id: "user-1",
+  community_id: "community-1",
+  attachment_intent_id: "attachment-1",
+  ceremony_intent_id: "attachment-ceremony-1",
+  requirement_hash: "d".repeat(64),
+  generation: 1,
+  request_hash: "e".repeat(64),
+  provider_binding_hash: "f".repeat(64),
+  provider_configuration: providerConfiguration,
+  protocol_version: "hns-owner-txt-v1",
+  environment: "staging",
+  route,
+};
+const attachmentSession = {
+  ...attachmentStartInput,
+  provider_id: "test.hns-owner",
+  upstream_session_ref: "upstream-attachment-1",
+  expires_at: "2026-08-20T13:00:00.000Z",
+};
 
 function adapter(
   options: Readonly<{
@@ -64,6 +85,7 @@ function adapter(
     startPresentation?: ProviderPresentation;
     startSession?: typeof session;
     completeResult?: NamespaceOwnershipProviderCompleteResult;
+    attachmentActorId?: string;
   }> = {},
 ): NamespaceOwnershipProviderAdapter {
   const providerId = options.providerId ?? "test.hns-owner";
@@ -93,6 +115,21 @@ function adapter(
         },
       }),
     complete: () => Effect.succeed(options.completeResult ?? { status: "pending" as const }),
+    startRouteAttachment: () =>
+      Effect.succeed({
+        session: {
+          ...attachmentSession,
+          actor_id: options.attachmentActorId ?? attachmentSession.actor_id,
+          provider_id: providerId,
+        },
+        presentation: {
+          kind: "poll" as const,
+          session_id: "upstream-attachment-1",
+          poll_url: "/verification/route-attachment/upstream-attachment-1",
+        },
+      }),
+    completeRouteAttachment: () =>
+      Effect.succeed(options.completeResult ?? { status: "pending" as const }),
   };
 }
 
@@ -172,6 +209,54 @@ describe("namespace ownership provider registry", () => {
 
     await expect(
       Effect.runPromise(provider.start(startInput, startContext)),
+    ).rejects.toBeInstanceOf(NamespaceOwnershipProviderInvalidResponse);
+  });
+
+  test("guards the community-keyed route attachment successor methods", async () => {
+    const registry = await Effect.runPromise(
+      makeNamespaceOwnershipProviderRegistry([adapter()], { now: () => now }),
+    );
+    const provider = await Effect.runPromise(registry.resolve("hns"));
+    if (
+      provider.startRouteAttachment === undefined ||
+      provider.completeRouteAttachment === undefined
+    ) {
+      throw new Error("expected guarded route attachment methods");
+    }
+    const started = await Effect.runPromise(
+      provider.startRouteAttachment(attachmentStartInput, startContext),
+    );
+    expect(started.session).toMatchObject({
+      operation_kind: "route_attachment",
+      community_id: "community-1",
+      attachment_intent_id: "attachment-1",
+    });
+    expect(started.session).not.toHaveProperty("creation_intent_id");
+    await expect(
+      Effect.runPromise(
+        provider.completeRouteAttachment(
+          {
+            session: started.session,
+            submission: { channel: "poll_result", payload: {} },
+          },
+          completeContext,
+        ),
+      ),
+    ).resolves.toEqual({ status: "pending" });
+
+    const substituted = await Effect.runPromise(
+      makeNamespaceOwnershipProviderRegistry([adapter({ attachmentActorId: "user-2" })], {
+        now: () => now,
+      }),
+    );
+    const substitutedProvider = await Effect.runPromise(substituted.resolve("hns"));
+    if (substitutedProvider.startRouteAttachment === undefined) {
+      throw new Error("expected guarded route attachment start");
+    }
+    await expect(
+      Effect.runPromise(
+        substitutedProvider.startRouteAttachment(attachmentStartInput, startContext),
+      ),
     ).rejects.toBeInstanceOf(NamespaceOwnershipProviderInvalidResponse);
   });
 
