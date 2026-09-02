@@ -17,7 +17,8 @@ export type CopyEligibility =
         | "codec_not_h264"
         | "probe_reports_reordered_frames"
         | "packet_timeline_reordered"
-        | "packet_window_not_decodable";
+        | "packet_window_not_decodable"
+        | "copy_start_not_idr";
     };
 
 export type PacketWindow = {
@@ -25,6 +26,10 @@ export type PacketWindow = {
   readonly effectiveDurationMs: number;
   readonly isContiguousDecodePrefix: boolean;
   readonly packetManifestSha256: string;
+  readonly decodePresentationOffsetMs: {
+    readonly minimum: number;
+    readonly maximum: number;
+  };
 };
 
 const timestampToleranceMs = 0.002;
@@ -85,6 +90,10 @@ export function selectBriefPacketWindow(
     effectiveDurationMs: visibleEndMs - startMs,
     isContiguousDecodePrefix,
     packetManifestSha256: packetManifestSha256(selected),
+    decodePresentationOffsetMs: {
+      minimum: Math.min(...selected.map((packet) => packet.ptsMs - packet.dtsMs)),
+      maximum: Math.max(...selected.map((packet) => packet.ptsMs - packet.dtsMs)),
+    },
   };
 }
 
@@ -105,6 +114,7 @@ export function copiedPayloadsMatch(
 export function evaluateCopyEligibility(input: {
   readonly codecName: string;
   readonly hasBFrames: number;
+  readonly copyStartIsIdr: boolean;
   readonly packets: readonly ProbedVideoPacket[];
   readonly startMs: number;
   readonly requestedDurationMs: number;
@@ -113,11 +123,11 @@ export function evaluateCopyEligibility(input: {
   if (input.hasBFrames !== 0) {
     return { eligible: false, reason: "probe_reports_reordered_frames" };
   }
+  if (!input.copyStartIsIdr) return { eligible: false, reason: "copy_start_not_idr" };
   if (
     input.packets.some(
       (packet, index) =>
-        Math.abs(packet.ptsMs - packet.dtsMs) > timestampToleranceMs ||
-        (index > 0 && packet.ptsMs + timestampToleranceMs < (input.packets[index - 1]?.ptsMs ?? 0)),
+        index > 0 && packet.ptsMs + timestampToleranceMs < (input.packets[index - 1]?.ptsMs ?? 0),
     )
   ) {
     return { eligible: false, reason: "packet_timeline_reordered" };

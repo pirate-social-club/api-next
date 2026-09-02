@@ -5,6 +5,11 @@ import { join } from "node:path";
 import { Schema } from "effect";
 
 import {
+  isH264IdrAccessUnit,
+  parseFfprobeHexdump,
+  readAvccNalUnitTypes,
+} from "./video-master-renderer-h264.ts";
+import {
   copiedPayloadsMatch,
   evaluateCopyEligibility,
   type ProbedVideoPacket,
@@ -37,6 +42,18 @@ const StreamProbe = Schema.Struct({
       duration: Schema.optional(Schema.String),
       duration_ts: Schema.optional(Schema.Number),
       nb_frames: Schema.optional(Schema.String),
+      channels: Schema.optional(Schema.Number),
+      channel_layout: Schema.optional(Schema.String),
+    }),
+  ),
+});
+
+const PacketDataProbe = Schema.Struct({
+  packets: Schema.Array(
+    Schema.Struct({
+      pts_time: Schema.String,
+      flags: Schema.String,
+      data: Schema.String,
     }),
   ),
 });
@@ -108,7 +125,7 @@ async function probeStreams(path: string) {
     "-v",
     "error",
     "-show_entries",
-    "stream=codec_name,codec_type,has_b_frames,duration,duration_ts,nb_frames",
+    "stream=codec_name,codec_type,has_b_frames,duration,duration_ts,nb_frames,channels,channel_layout",
     "-of",
     "json",
     path,
@@ -129,6 +146,38 @@ async function probeAudioPackets(path: string) {
   ]);
   return Schema.decodeUnknownSync(AudioPacketProbe)(JSON.parse(new TextDecoder().decode(bytes)))
     .packets;
+}
+
+async function probeH264AccessUnit(path: string, startMs: number) {
+  const bytes = await run("ffprobe", [
+    "-v",
+    "error",
+    "-select_streams",
+    "v:0",
+    "-read_intervals",
+    `${seconds(startMs)}%+0.040000000`,
+    "-show_packets",
+    "-show_entries",
+    "packet=pts_time,flags,data",
+    "-show_data",
+    "-of",
+    "json",
+    path,
+  ]);
+  const document = Schema.decodeUnknownSync(PacketDataProbe)(
+    JSON.parse(new TextDecoder().decode(bytes)),
+  );
+  const packet = document.packets.find(
+    (candidate) => Math.abs(Number(candidate.pts_time) * 1_000 - startMs) <= 0.002,
+  );
+  if (!packet?.flags.includes("K")) {
+    throw new Error("copy start packet data is unavailable or not keyframe-flagged");
+  }
+  const accessUnit = parseFfprobeHexdump(packet.data);
+  return {
+    nalUnitTypes: readAvccNalUnitTypes(accessUnit),
+    isIdr: isH264IdrAccessUnit(accessUnit),
+  } as const;
 }
 
 function seconds(milliseconds: number): string {
@@ -179,6 +228,10 @@ export async function runNoReorderCopyEvidence(workingDirectory: string) {
     "sine=frequency=880:sample_rate=48000:duration=8",
     "-c:a",
     "pcm_s16le",
+    "-ac",
+    "2",
+    "-channel_layout",
+    "stereo",
     songPath,
   ]);
 
@@ -190,9 +243,11 @@ export async function runNoReorderCopyEvidence(workingDirectory: string) {
   const sourcePackets = await probeVideoPackets(sourcePath);
   const sourceStart = sourcePackets.filter((packet) => packet.keyframe)[1]?.ptsMs;
   if (sourceStart === undefined) throw new Error("source has no second keyframe");
+  const startAccessUnit = await probeH264AccessUnit(sourcePath, sourceStart);
   const eligibility = evaluateCopyEligibility({
     codecName: sourceVideo.codec_name,
     hasBFrames: sourceVideo.has_b_frames,
+    copyStartIsIdr: startAccessUnit.isIdr,
     packets: sourcePackets,
     startMs: sourceStart,
     requestedDurationMs,
@@ -237,7 +292,9 @@ export async function runNoReorderCopyEvidence(workingDirectory: string) {
     "-ar",
     String(audioSampleRate),
     "-ac",
-    "1",
+    "2",
+    "-channel_layout",
+    "stereo",
     "-movflags",
     "+faststart",
     "-use_editlist",
@@ -253,7 +310,13 @@ export async function runNoReorderCopyEvidence(workingDirectory: string) {
   const masterStreams = await probeStreams(masterPath);
   const masterVideo = masterStreams.find((stream) => stream.codec_type === "video");
   const masterAudio = masterStreams.find((stream) => stream.codec_type === "audio");
-  if (!masterVideo?.duration || !masterAudio?.duration || masterAudio.duration_ts === undefined) {
+  if (
+    !masterVideo?.duration ||
+    !masterAudio?.duration ||
+    masterAudio.duration_ts === undefined ||
+    masterAudio.channels === undefined ||
+    !masterAudio.channel_layout
+  ) {
     throw new Error("master stream probe facts are incomplete");
   }
   const masterVideoPackets = await probeVideoPackets(masterPath);
@@ -277,7 +340,7 @@ export async function runNoReorderCopyEvidence(workingDirectory: string) {
     "-ar",
     String(audioSampleRate),
     "-ac",
-    "1",
+    "2",
     "pipe:1",
   ]);
   const masterBytes = new Uint8Array(await Bun.file(masterPath).arrayBuffer());
@@ -285,6 +348,8 @@ export async function runNoReorderCopyEvidence(workingDirectory: string) {
   return {
     ffmpegVersion: new TextDecoder().decode(await run("ffmpeg", ["-version"])).split("\n")[0],
     sourceHasBFrames: sourceVideo.has_b_frames,
+    sourceStartNalUnitTypes: startAccessUnit.nalUnitTypes,
+    sourceStartIsIdr: startAccessUnit.isIdr,
     sourceStartMs: sourceStart,
     requestedDurationMs,
     effectiveDurationMs: eligibility.window.effectiveDurationMs,
@@ -294,9 +359,19 @@ export async function runNoReorderCopyEvidence(workingDirectory: string) {
     copiedPacketPayloadsMatch: copiedPayloadsMatch(eligibility.window.packets, masterVideoPackets),
     masterVideoDurationMs: masterDurationMs,
     masterAudioPresentationDurationMs: Number(masterAudio.duration) * 1_000,
-    decodedAudioSamples: decodedAudio.byteLength / 2,
-    audioDurationSamples: masterAudio.duration_ts,
-    audioPrimingSkipSamples: priming?.skip_samples ?? 0,
+    audioChannels: masterAudio.channels,
+    audioChannelLayout: masterAudio.channel_layout,
+    decodedAudioSampleValues: decodedAudio.byteLength / 2,
+    decodedAudioSamplesPerChannel: decodedAudio.byteLength / 2 / masterAudio.channels,
+    audioPresentationSamplesPerChannel: masterAudio.duration_ts,
+    audioPresentationSampleValues: masterAudio.duration_ts * masterAudio.channels,
+    audioPrimingSamplesPerChannel: priming?.skip_samples ?? 0,
+    audioPrimingSampleValues: (priming?.skip_samples ?? 0) * masterAudio.channels,
+    audioPaddingSamplesPerChannel: paddedPcmSamples - targetPcmSamples,
+    audioPaddingSampleValues: (paddedPcmSamples - targetPcmSamples) * masterAudio.channels,
+    encodedAacPackets: audioPackets.length,
+    paddedAacFrames: paddedPcmSamples / aacFrameSamples,
+    masterMovieTimescale: audioSampleRate,
     targetPcmSamples,
     paddedPcmSamples,
     zeroPaddingSamples: paddedPcmSamples - targetPcmSamples,

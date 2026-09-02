@@ -65,7 +65,7 @@ describe("video master packet-tail policy", () => {
     );
   });
 
-  it("demotes a stream whenever either probe fact exposes frame reordering", () => {
+  it("demotes a stream when the probe or decode-order presentation timeline exposes reordering", () => {
     const firstPacket = packet(0, 1_000, true);
     const secondPacket = packet(1, 1_033.333);
     const packets = [firstPacket, secondPacket];
@@ -73,21 +73,56 @@ describe("video master packet-tail policy", () => {
       evaluateCopyEligibility({
         codecName: "h264",
         hasBFrames: 2,
+        copyStartIsIdr: true,
         packets,
         startMs: 1_000,
         requestedDurationMs: 60,
       }),
     ).toEqual({ eligible: false, reason: "probe_reports_reordered_frames" });
 
-    const misleadingProbe = [firstPacket, { ...secondPacket, dtsMs: 1_000 }];
+    const misleadingProbe = [firstPacket, { ...secondPacket, ptsMs: 999, dtsMs: 1_000 }];
     expect(
       evaluateCopyEligibility({
         codecName: "h264",
         hasBFrames: 0,
+        copyStartIsIdr: true,
         packets: misleadingProbe,
         startMs: 1_000,
         requestedDurationMs: 60,
       }),
     ).toEqual({ eligible: false, reason: "packet_timeline_reordered" });
+  });
+
+  it("accepts diagnostic decode offsets when presentation stays monotonic", () => {
+    const packets = [
+      { ...packet(0, 1_000, true), dtsMs: 990 },
+      { ...packet(1, 1_033.333), dtsMs: 1_028.333 },
+    ];
+    const result = evaluateCopyEligibility({
+      codecName: "h264",
+      hasBFrames: 0,
+      copyStartIsIdr: true,
+      packets,
+      startMs: 1_000,
+      requestedDurationMs: 70,
+    });
+    expect(result.eligible).toBe(true);
+    if (result.eligible) {
+      expect(result.window.decodePresentationOffsetMs).toEqual({ minimum: 5, maximum: 10 });
+    }
+  });
+
+  it("demotes a keyframe-flagged start without verified IDR evidence", () => {
+    const packets = [packet(0, 1_000, true), packet(1, 1_033.333)];
+    expect(
+      evaluateCopyEligibility({
+        codecName: "h264",
+        hasBFrames: 0,
+        copyStartIsIdr: false,
+        packets,
+        startMs: 1_000,
+        requestedDurationMs: 60,
+      }),
+    ).toEqual({ eligible: false, reason: "copy_start_not_idr" });
   });
 });

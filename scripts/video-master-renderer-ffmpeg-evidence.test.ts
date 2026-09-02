@@ -21,6 +21,8 @@ describe("fixed FFmpeg no-reorder copy template", () => {
   it("admits only the probed no-reordering source and copies the exact packet payload sequence", () => {
     expect(evidence.sourceHasBFrames).toBe(0);
     expect(evidence.sourceStartMs).toBe(1_000);
+    expect(evidence.sourceStartIsIdr).toBe(true);
+    expect(evidence.sourceStartNalUnitTypes).toContain(5);
     expect(evidence.selectedVideoPackets).toBe(56);
     expect(evidence.copiedPacketPayloadsMatch).toBe(true);
     expect(evidence.masterPacketManifestSha256).toBe(evidence.sourcePacketManifestSha256);
@@ -36,18 +38,28 @@ describe("fixed FFmpeg no-reorder copy template", () => {
   });
 
   it("pads PCM only to the AAC frame boundary and bounds public audio to video", () => {
+    expect(evidence.audioChannels).toBe(2);
+    expect(evidence.audioChannelLayout).toBe("stereo");
     expect(evidence.targetPcmSamples).toBe(89_600);
     expect(evidence.paddedPcmSamples).toBe(90_112);
     expect(evidence.zeroPaddingSamples).toBe(512);
     expect(evidence.paddedPcmSamples % 1_024).toBe(0);
-    expect(evidence.audioPrimingSkipSamples).toBe(1_024);
+    expect(evidence.audioPrimingSamplesPerChannel).toBe(1_024);
+    expect(evidence.audioPrimingSampleValues).toBe(2_048);
+    expect(evidence.audioPaddingSamplesPerChannel).toBe(512);
+    expect(evidence.audioPaddingSampleValues).toBe(1_024);
+    expect(evidence.paddedAacFrames).toBe(88);
+    expect(evidence.encodedAacPackets).toBe(89);
+    expect(evidence.masterMovieTimescale).toBe(48_000);
     // Decoding packets exposes the full padded AAC payload. The MP4 track edit
     // excludes exactly the terminal padding from public presentation.
-    expect(evidence.decodedAudioSamples).toBe(evidence.paddedPcmSamples);
-    expect(evidence.audioDurationSamples).toBe(evidence.targetPcmSamples);
-    expect(evidence.decodedAudioSamples - evidence.audioDurationSamples).toBe(
-      evidence.zeroPaddingSamples,
-    );
+    expect(evidence.decodedAudioSamplesPerChannel).toBe(evidence.paddedPcmSamples);
+    expect(evidence.decodedAudioSampleValues).toBe(evidence.paddedPcmSamples * 2);
+    expect(evidence.audioPresentationSamplesPerChannel).toBe(evidence.targetPcmSamples);
+    expect(evidence.audioPresentationSampleValues).toBe(evidence.targetPcmSamples * 2);
+    expect(
+      evidence.decodedAudioSamplesPerChannel - evidence.audioPresentationSamplesPerChannel,
+    ).toBe(evidence.zeroPaddingSamples);
     expect(evidence.masterAudioPresentationDurationMs).toBe(evidence.masterVideoDurationMs);
   });
 

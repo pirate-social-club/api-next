@@ -1,6 +1,6 @@
-# Video master renderer spike — checkpoints 1 and 2
+# Video master renderer spike — checkpoints 1 through 3
 
-Status: two bounded local evidence checkpoints, 2026-09-02. This is not a runtime
+Status: three bounded local evidence checkpoints, 2026-09-02. This is not a runtime
 implementation or a renderer selection. No credential, provider request, R2
 object, Stream input, DATA operation, deployment, or production media was used.
 
@@ -15,9 +15,10 @@ produces a non-contiguous, potentially undecodable packet sequence.
 
 The workspace owner resolved the condition after checkpoint 1:
 
-- copy eligibility is server-probed and requires H.264, `has_b_frames=0`, equal
-  presentation/decode timestamps, monotonic packet presentation, a real
-  keyframe start, and a contiguous decode-order packet window;
+- copy eligibility is server-probed and requires H.264, trusted
+  `has_b_frames=0`, non-regressing presentation timestamps in decode order, a
+  verified IDR access unit at the exact copy start, and a contiguous
+  decode-order packet window;
 - any reordered source demotes to frame-accurate transcode without changing
   the submitted snapped cut; and
 - hidden decode-support packets and edit-list-bounded copied video are rejected.
@@ -25,6 +26,18 @@ The workspace owner resolved the condition after checkpoint 1:
 The pure policy harness in
 `scripts/video-master-renderer-packet-policy.ts` preserves the collision as a
 regression test and implements the settled copy-eligibility fence.
+
+Checkpoint 3 corrects two over-narrow checkpoint-2 assumptions. PTS does not
+have to equal DTS: constant or varying decode/presentation offsets are accepted
+when presentation does not regress in decode order and the trusted stream probe
+reports zero reorder capacity. Minimum and maximum offsets are retained as
+diagnostics and are not eligibility inputs. A generic container keyframe flag
+is no longer sufficient either. The exact start packet must also pass a bounded
+four-byte AVCC reader and contain H.264 NAL type 5, an IDR slice. The reader
+fails closed above 4 MiB or 256 NAL units and on truncated lengths, discontinuous
+ffprobe hex output, forbidden header bits, or malformed units. A synthetic
+packet marked as a keyframe but containing only a non-IDR type-1 intra slice is
+the negative regression fixture and demotes from copy.
 
 ## Checkpoint 2: accepted no-reorder copy profile
 
@@ -50,12 +63,14 @@ All 56 source/master packet payload hashes and flags matched in order. The
 master video therefore becomes the timeline authority at 1866.667 ms without
 requiring whole-MP4 byte identity.
 
-The fixed audio rule selected the canonical PCM interval beginning at 750 ms,
-trimmed it to the effective target, and rounded 89,600 target samples up to
-90,112 samples, exactly 88 AAC frames. Only 512 zero samples were added. The
-AAC encoder emitted one 1024-sample priming packet marked `Skip Samples`, which
-the MP4 edit excludes from presentation. Decoding all AAC packet payloads
-returns the full 90,112 padded samples.
+The fixed stereo audio rule selected the canonical PCM interval beginning at
+750 ms, trimmed it to the effective target, and rounded 89,600 target samples
+per channel up to 90,112 samples per channel, exactly 88 AAC input frames. Only
+512 zero samples per channel, or 1,024 total sample values, were added. The AAC
+encoder emitted 89 packets: 88 content/padding packets plus one 1024-sample-per-
+channel priming packet marked `Skip Samples`. That priming represents 2,048
+sample values and is excluded by the MP4 edit. Decoding all AAC packet payloads
+returns 90,112 samples per channel, or 180,224 total sample values.
 
 The first version of checkpoint 2 advertised only 89,568 presentation samples,
 or 1866.000 ms, which was 32 samples short of the exact 89,600-sample video
@@ -64,10 +79,11 @@ muxer's default 1000-Hz movie timescale: 28/15 seconds is not representable in
 whole milliseconds, so the audio edit was written at 1866 ms.
 
 Raising the server-owned movie timescale to 48,000 makes both 56 video frames
-at 30 fps and 89,600 audio samples exactly representable. The corrected master
-advertises 89,600 audio presentation samples and 1866.667 ms for both tracks.
-Its audio edit has media time 1024 and duration 89,600, while its video edit
-has media time zero and duration 28,672 video ticks; no video packet is hidden.
+at 30 fps and 89,600 audio samples per channel exactly representable. The
+corrected stereo master advertises 89,600 samples per channel, or 179,200 total
+sample values, and exactly 1866.667 ms for both audio and video. Its audio edit
+has media time 1024 and duration 89,600, while its video edit has media time
+zero and duration 28,672 video ticks; no video packet is hidden.
 
 The isolation matrix showed:
 
@@ -87,12 +103,13 @@ encoder input frame count is deterministic, retains `-shortest` as a defensive
 bound, and asserts that decoded payload samples minus presented samples equals
 exactly the terminal zero padding.
 
-One corrected-template render-only observation on FFmpeg `6.1.1-3ubuntu5` took
-135.8 ms. This
-is fixture evidence, not a p95 or Container latency claim. The exact template
+One checkpoint-3 corrected-template render-only observation on FFmpeg
+`6.1.1-3ubuntu5` took 106.0 ms. This is fixture evidence, not a p95 or Container
+latency claim. The exact template
 uses input seek at the probed keyframe, `atrim`, timestamp reset, AAC-frame
 padding, `-t` at the derived video duration, `-shortest`, video `copy`, AAC at
-48 kHz mono/128 kbps, `+faststart`, `-use_editlist 1`, and a 48,000-Hz MP4
+48 kHz stereo/128 kbps with an explicitly pinned `stereo` channel layout,
+`+faststart`, `-use_editlist 1`, and a 48,000-Hz MP4
 movie timescale. Tests assert those fixed choices and reject a probe-reported
 or packet-observed reorder.
 
@@ -136,6 +153,15 @@ Checkpoint 2 replaced the checkpoint-1 no-B-frame fixture with a video-only
 source whose keyframes and timestamps begin exactly on the video time base. It
 froze copied video as the master clock and the explicit AAC-frame padding and
 MP4 presentation rule described above.
+
+Checkpoint 3 probes the exact start packet's bytes rather than trusting its
+container keyframe flag. The accepted fixture begins with NAL type 5 at the
+submitted 1000 ms start. Its 56 copied packet payloads still match the source
+segment byte-for-byte under the same manifest digest, and the master still has
+no hidden support packet or edit-list-hidden video. The timestamp policy tests
+also prove that both constant and varying PTS-minus-DTS offsets remain
+copy-eligible when presentation is monotonic and the trusted reorder-capacity
+probe is zero.
 
 ## Candidate feasibility
 
