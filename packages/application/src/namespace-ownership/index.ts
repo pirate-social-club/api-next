@@ -25,6 +25,10 @@ export {
   NamespaceOwnershipSubmission,
   NamespaceOwnershipSubmissionChannel,
   NamespaceOwnershipUpstreamSessionReference,
+  RouteAttachmentOwnershipProviderCompleteInput,
+  RouteAttachmentOwnershipProviderStartInput,
+  RouteAttachmentOwnershipProviderStartResult,
+  RouteAttachmentOwnershipSession,
 } from "./adapter.ts";
 export type {
   NamespaceOwnershipCompletionAttemptReservation,
