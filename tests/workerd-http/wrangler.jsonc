@@ -11,7 +11,6 @@
   ],
   "vars": {
     "CORS_ORIGIN": "https://solid.test",
-    "ELEVENLABS_ENABLE_LOGGING": "false",
     "KARAOKE_FINALIZATION_RECOVERY_ENABLED": "true",
     "REGISTRATION_IP_LIMIT": "5",
     "REGISTRATION_IP_WINDOW_SECONDS": "900",

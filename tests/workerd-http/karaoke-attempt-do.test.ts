@@ -1,7 +1,7 @@
 /// <reference types="@cloudflare/vitest-pool-workers/types" />
 
 import { runInDurableObject, env as testEnv } from "cloudflare:test";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { KaraokeSessionSummary } from "../../packages/application/src/karaoke-runtime/scoring.ts";
 import type {
   KaraokeRecordingResult,
@@ -118,7 +118,7 @@ describe("Karaoke attempt Durable Object", () => {
     const sessionId = `karaoke-stored-${crypto.randomUUID()}`;
     const stub = env.KARAOKE_ATTEMPT.getByName(sessionId);
     const initialized = await stub.initialize(authority(sessionId));
-    expect(initialized.providerRetention).toBe("not_stored");
+    expect(initialized.providerRetention).toBe("stored");
     const chunk = new Uint8Array(256 * 1024);
     chunk.fill(7);
     const tail = new Uint8Array([1, 2, 3, 4]);
@@ -148,7 +148,7 @@ describe("Karaoke attempt Durable Object", () => {
     expect(cached).toEqual(result);
   });
 
-  it("persists and emits a provider zero-retention refusal exactly once", async () => {
+  it("initializes provider retention as stored without a correction event", async () => {
     const sessionId = `karaoke-retention-${crypto.randomUUID()}`;
     const stub = env.KARAOKE_ATTEMPT.getByName(sessionId);
     const initialized = await stub.initialize(authority(sessionId));
@@ -169,25 +169,17 @@ describe("Karaoke attempt Durable Object", () => {
             "SELECT retention FROM karaoke_provider_retention WHERE id=1",
           )
           .one().retention;
-      expect(retention()).toBe("not_stored");
+      expect(retention()).toBe("stored");
       (instance as unknown as RetentionHarness).recordProviderRetention("not_stored");
-      expect(retention()).toBe("not_stored");
+      expect(retention()).toBe("stored");
       (instance as unknown as RetentionHarness).recordProviderRetention("stored");
       (instance as unknown as RetentionHarness).recordProviderRetention("stored");
       (instance as unknown as RetentionHarness).recordProviderRetention("not_stored");
       expect(retention()).toBe("stored");
     });
 
-    await vi.waitFor(() => expect(events).toHaveLength(1));
-    expect(events[0]).toEqual({
-      attemptId: `attempt-${sessionId}`,
-      eventId: "karaoke_event_1",
-      protocolVersion: 1,
-      provider_retention: "stored",
-      sequence: 1,
-      sessionId,
-      type: "provider_retention_changed",
-    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(events).toEqual([]);
   });
 
   it("aborts an open multipart upload after archival fails", async () => {

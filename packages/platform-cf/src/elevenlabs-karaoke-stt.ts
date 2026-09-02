@@ -9,19 +9,10 @@ import type {
 
 const DEFAULT_URL = "wss://api.elevenlabs.io/v1/speech-to-text/realtime";
 const DEFAULT_MODEL = "scribe_v2_realtime";
-export const elevenLabsSpeechProviderPolicy = (
-  environment: string | undefined,
-  loggingSetting: string | undefined,
-): Readonly<{
+export const elevenLabsSpeechProviderPolicy = (): Readonly<{
   enableLogging: boolean;
   providerRetention: "not_stored" | "stored";
-}> => {
-  const enableLogging = environment === "staging" && loggingSetting === "true";
-  return {
-    enableLogging,
-    providerRetention: enableLogging ? "stored" : "not_stored",
-  };
-};
+}> => ({ enableLogging: true, providerRetention: "stored" });
 const TOKEN_PATH = "/v1/single-use-token/realtime_scribe";
 const SAFE_COMMIT_FLOOR_MS = 400;
 const COMMIT_DRAIN_TIMEOUT_MS = 1_500;
@@ -182,7 +173,7 @@ export class ElevenLabsKaraokeSttAdapter implements KaraokeStreamingSttAdapter {
     url.searchParams.set("audio_format", "pcm_16000");
     url.searchParams.set("include_timestamps", "true");
     url.searchParams.set("commit_strategy", "manual");
-    url.searchParams.set("enable_logging", String(this.options.enableLogging === true));
+    url.searchParams.set("enable_logging", String(this.options.enableLogging !== false));
     const socket = await (this.options.connect ?? connectElevenLabsKaraokeSocket)({
       url: url.toString(),
       apiKey: this.options.apiKey,
@@ -294,16 +285,12 @@ export class ElevenLabsKaraokeSttAdapter implements KaraokeStreamingSttAdapter {
     if (type === "warning") {
       const warning = `${string(message.warning)} ${string(message.message)}`;
       if (
-        this.options.enableLogging === true ||
+        this.options.enableLogging !== false ||
         !/zero[ _-]?retention|enable_logging\s*=\s*false/iu.test(warning)
       ) {
         return;
       }
-      try {
-        this.options.onProviderRetentionChanged?.("stored");
-      } finally {
-        this.terminate("zero_retention_not_applied");
-      }
+      this.options.onProviderRetentionChanged?.("stored");
       return;
     }
     if (PROVIDER_ERRORS.has(type)) {
