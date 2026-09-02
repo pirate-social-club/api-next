@@ -25,6 +25,9 @@ import {
   NamespaceOwnershipProviderUnboundRejected,
   type NamespaceOwnershipSession,
   NamespaceOwnershipUpstreamSessionReference,
+  type RouteAttachmentOwnershipProviderCompleteInput,
+  type RouteAttachmentOwnershipProviderStartInput,
+  type RouteAttachmentOwnershipSession,
 } from "@pirate/application";
 import { HnsTxtChallengeV1 } from "@pirate/contracts";
 import { ProviderConfigurationRef } from "@pirate/domain/verification";
@@ -42,6 +45,19 @@ export type HnsOwnerTransport = Readonly<{
   readonly poll: (
     input: Readonly<{
       readonly session: NamespaceOwnershipSession;
+      readonly payload: unknown;
+      readonly context: NamespaceOwnershipProviderCompleteContext;
+    }>,
+  ) => Effect.Effect<Uint8Array, HnsOwnerTransportFailure>;
+  readonly startRouteAttachment?: (
+    input: Readonly<{
+      readonly input: RouteAttachmentOwnershipProviderStartInput;
+      readonly context: NamespaceOwnershipProviderStartContext;
+    }>,
+  ) => Effect.Effect<HnsOwnerTransportStartResult, HnsOwnerTransportFailure>;
+  readonly pollRouteAttachment?: (
+    input: Readonly<{
+      readonly session: RouteAttachmentOwnershipSession;
       readonly payload: unknown;
       readonly context: NamespaceOwnershipProviderCompleteContext;
     }>,
@@ -118,7 +134,7 @@ function isCanonicalInstant(value: string): boolean {
 }
 
 function sessionMatchesConfiguration(
-  session: NamespaceOwnershipSession,
+  session: NamespaceOwnershipSession | RouteAttachmentOwnershipSession,
   provider_configuration: ProviderConfigurationRef,
   environments: readonly string[],
 ): boolean {
@@ -134,7 +150,7 @@ function sessionMatchesConfiguration(
 
 function targetV3Result(
   bytes: Uint8Array,
-  input: NamespaceOwnershipProviderCompleteInput,
+  input: NamespaceOwnershipProviderCompleteInput | RouteAttachmentOwnershipProviderCompleteInput,
   now: number,
 ): Effect.Effect<
   NamespaceOwnershipProviderCompleteResult,
