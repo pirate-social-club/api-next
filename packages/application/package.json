@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./use-cases/account-erasure-orchestration": "./src/use-cases/account-erasure-orchestration.ts",
     "./community-moderation-runtime": "./src/community-moderation-runtime.ts",
     "./post-slug": "./src/post-slug.ts",
     "./use-cases/content/community-moderation-runtime": "./src/use-cases/content/community-moderation-runtime.ts",
