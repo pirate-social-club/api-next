@@ -106,6 +106,7 @@
     "0103_public_post_slug_aliases.sql": "75c36d6615851a18e5dc0841aed778a3c935812a6da018b8a49170ddca5fdcf1",
     "0104_text_held_revision_visibility.sql": "9df8df4b7459ee4ada09879da7c9aff35cb3ff9b3d11553604704cb11b6569b8",
     "0105_karaoke_finalization_recovery.sql": "b5752e67ee87c1389994a68ac74bec3e51424ec81bea790bfa50aa8df717f52f",
-    "0106_hns_root_import_name_signature_proof.sql": "e61e700c45b98320993f7a4f5f72570c074d505162ebeb8d94bc7f2d7357e1c5"
+    "0106_hns_root_import_name_signature_proof.sql": "e61e700c45b98320993f7a4f5f72570c074d505162ebeb8d94bc7f2d7357e1c5",
+    "0107_song_owner_video_policy.sql": "f228772b3f6dd4c48edec3d4631731f45c413859c0ab7a6bd1edc021e3bb7233"
   }
 }
