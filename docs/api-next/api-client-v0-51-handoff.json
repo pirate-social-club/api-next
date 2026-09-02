@@ -5,11 +5,11 @@
   "version": "0.51.0",
   "releaseType": "song-owner-video-policy-management",
   "wireContract": "song-owner-policy-v1",
-  "sourceCommit": "pending-review",
-  "supersedes": "0.50.0; additively exposes private song-owner policy management, CAS updates, and privacy-safe public derivative-video capability projections.",
+  "sourceCommit": "93ac1def2d79ed55726b9961d747c981f3aef580",
+  "supersedes": "0.50.0; additively exposes private song-owner policy management, CAS updates, and the Spec 013 acceptance-case-10 public projection: the derivative-video policy, its revision, and the can_post_with_song capability. The reward-leg and pool-leg postures stay owner-private.",
   "artifact": {
     "path": "artifacts/api-client/pirate-api-client-0.51.0.tgz",
-    "sha256": "f6b0a5e477018e4756a5e9de8412f58fa50c3d01e58d1c923aa8cc3e9ea232d4",
+    "sha256": "011b3cd28dfaf7133d589be977bee8b792d96c4bf06e25ac68fca23229e9cbba",
     "contents": [
       "package/package.json",
       "package/src/generated/client.ts",
@@ -18,22 +18,24 @@
     ]
   },
   "provenance": {
-    "sourceIdentifier": "api-next-contracts@af0ebec4bcf8d331c8358c7bd886e48ed0dea6eadafbe5ab15d52463d19a26f9",
-    "openapiSha256": "af0ebec4bcf8d331c8358c7bd886e48ed0dea6eadafbe5ab15d52463d19a26f9",
-    "clientSha256": "fc353e1a04adb8f222c24117dd05f4f0d1bd698d1eaaf13e0aa67282e60db022"
+    "sourceIdentifier": "api-next-contracts@6caabc08f0e4b912b6b1d2a0696aacfb19e4ebc30a904a41c0c59dba83946497",
+    "openapiSha256": "6caabc08f0e4b912b6b1d2a0696aacfb19e4ebc30a904a41c0c59dba83946497",
+    "clientSha256": "310129f6e99bdedcb8b57f2f795ae89170bfa85a3a306dff782f861f9c206d32"
   },
   "verification": {
     "checkFresh": "passed",
     "checkBreaking": {
       "status": "passed",
       "baselineCommit": "origin/main",
-      "reason": "The three song-owner policy operations are additive and do not alter existing endpoint paths or response contracts."
+      "reason": "The three song-owner policy operations are additive; no endpoint path or response contract on origin/main changes."
     },
-    "focusedContractSuites": "song-owner policy contract, adapter, HTTP handler, and generated-client tests passed",
-    "fullUnitSuite": "not run; focused tests were run serially",
-    "fullWorkerdSuite": "not run",
-    "postgres17": "song-owner policy persistence suite skipped because CONTROL_PLANE_POSTGRES_TEST_URL is not configured",
-    "packageVerifier": "passed after artifact ledger registration",
-    "repositoryCheck": "static and boundary gates passed; full check retains pre-existing Biome warnings"
+    "focusedContractSuites": "21 focused tests passed across the song-owner policy contract, HTTP-handler, repository, and generated-client suites after the projection trim and admin-viewer null.",
+    "fullUnitSuite": "2837 tests across 435 files passed.",
+    "fullNodeSuite": "20 tests in 1 file passed.",
+    "fullWorkerdSuite": "131 tests across 33 files passed across the four Workerd configurations: 72 general, 48 HTTP, 2 self-verifier, 9 HNS-verifier.",
+    "postgres17": "The isolated namespace-ownership suite passed 35 tests and the 47-file general suite passed 306 tests with 2174 assertions against PostgreSQL 17 in a local host-network container (bridge-network published ports are reset on this host, so the documented --network host harness mode was used); CONTROL_PLANE_POSTGRES_TEST_URL was configured for the run.",
+    "packageVerifier": "passed (bun run verify:api-client): the regenerated artifact byte-matches both the packed package and the release ledger.",
+    "repositoryCheck": "passed in full: Effect version guard, effect-tsgo diagnostics, Biome (only the 42 pre-existing Karaoke non-null warnings and one configuration deprecation remain), both TypeScript projects, binding contract, dependency and HTTP boundaries, 107-migration worktree consistency, generated-contract freshness, and package verification.",
+    "gateScope": "All gates ran 2026-09-02 between the trim commit and the uncommitted reward-consumer edits later present in the lane worktree; the verified tree contained only the trim, the two tranche repairs (export sort, PostgreSQL discovery count), and this release state. sourceCommit 93ac1def is the contracts trim commit; the artifact is byte-verified against the lane tip."
   }
 }
