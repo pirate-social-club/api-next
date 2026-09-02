@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   type AccountErasureAdmissionSnapshot,
   evaluateAccountErasureAdmission,
+  evaluateAccountErasureProfileMedia,
 } from "./account-erasure-orchestration.ts";
 
 const clearSnapshot = (): AccountErasureAdmissionSnapshot => ({
@@ -104,6 +105,34 @@ describe("account erasure admission", () => {
         },
         { category: "custody_status_unknown", owners: ["hns_authority"] },
       ],
+    });
+  });
+});
+
+describe("account erasure profile media", () => {
+  test("clears only an all-null profile-media snapshot", () => {
+    expect(evaluateAccountErasureProfileMedia({ avatar_ref: null, cover_ref: null })).toEqual({
+      outcome: "clear",
+    });
+  });
+
+  test("reports field names without returning reference values", () => {
+    const decision = evaluateAccountErasureProfileMedia({
+      avatar_ref: "opaque-avatar-value",
+      cover_ref: "opaque-cover-value",
+    });
+
+    expect(decision).toEqual({
+      outcome: "authority_required",
+      fields: ["avatar_ref", "cover_ref"],
+    });
+    expect(JSON.stringify(decision)).not.toContain("opaque-");
+  });
+
+  test("fails closed for malformed or omitted runtime values", () => {
+    expect(evaluateAccountErasureProfileMedia({ avatar_ref: undefined, cover_ref: null })).toEqual({
+      outcome: "authority_required",
+      fields: ["avatar_ref"],
     });
   });
 });
