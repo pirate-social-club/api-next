@@ -1,3 +1,5 @@
+import { classifyWorkflowCreateBatch } from "./cloudflare-orchestration-primitives.ts";
+
 export interface CloudflareStudyGenerationWorkflowBinding<Payload> {
   readonly createBatch: (
     options: readonly { readonly id: string; readonly params: Payload }[],
@@ -30,10 +32,11 @@ export const makeCloudflareStudyGenerationWorkflowLauncher = <Payload>(
     payload: Payload,
   ): Promise<"created" | "already_exists" | "restarted" | "resumed"> => {
     const created = await binding.createBatch([{ id: instanceId, params: payload }]);
-    if (created.length === 1) return "created";
-    if (created.length !== 0) {
-      throw new Error("Study Workflow createBatch returned an unexpected instance count");
-    }
+    const creation = classifyWorkflowCreateBatch(
+      created,
+      "Study Workflow createBatch returned an unexpected instance count",
+    );
+    if (creation === "created") return creation;
     const instance = await binding.get(instanceId);
     const status = (await instance.status()).status;
     if (status === "paused") {

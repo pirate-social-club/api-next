@@ -1,4 +1,4 @@
-import { makeCloudflareStudyGenerationWorkflowEntrypoint } from "@pirate/platform-cf/study-generation-workflow-entrypoint";
+import { makeCloudflareWorkflowEntrypoint } from "@pirate/platform-cf/cloudflare-workflow-entrypoint";
 import {
   makeStudyGenerationWorkflowComposition,
   type StudyGenerationRuntimeEnv,
@@ -11,7 +11,7 @@ import {
 } from "./study-generation-workflow.ts";
 
 const runner = makeStudyGenerationWorkflowRunner(makeStudyGenerationWorkflowComposition);
-const CloudflareStudyGenerationWorkflow = makeCloudflareStudyGenerationWorkflowEntrypoint<
+const CloudflareStudyGenerationWorkflow = makeCloudflareWorkflowEntrypoint<
   StudyGenerationRuntimeEnv,
   StudyGenerationWorkflowPayload,
   StudyGenerationWorkflowResult,

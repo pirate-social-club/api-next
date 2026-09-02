@@ -3,6 +3,7 @@ import type {
   StudyTranslationGenerationOutcome,
 } from "@pirate/application/use-cases/rewards/study-generation";
 import type { StudyLearnerBandV2 } from "@pirate/contracts";
+import type { CloudflareWorkflowStepDo } from "@pirate/platform-cf/cloudflare-orchestration-primitives";
 
 export type StudyGenerationWorkflowPayload = Readonly<{
   communityId: string;
@@ -21,16 +22,13 @@ export type StudyGenerationWorkflowResult = Readonly<{
   translation: StudyTranslationGenerationOutcome;
 }>;
 
-export interface StudyGenerationWorkflowStep {
-  readonly do: <T>(
-    name: string,
-    options: Readonly<{
-      retries: Readonly<{ limit: number; delay: string; backoff: "exponential" }>;
-      timeout: string;
-    }>,
-    callback: () => Promise<T>,
-  ) => Promise<T>;
-}
+type StudyGenerationWorkflowStepOptions = Readonly<{
+  retries: Readonly<{ limit: number; delay: string; backoff: "exponential" }>;
+  timeout: string;
+}>;
+
+export interface StudyGenerationWorkflowStep
+  extends CloudflareWorkflowStepDo<StudyGenerationWorkflowStepOptions> {}
 
 export type StudyGenerationWorkflowComposition = Readonly<{
   generateProfile: (input: {

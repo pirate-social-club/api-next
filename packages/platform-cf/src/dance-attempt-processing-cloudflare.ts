@@ -5,6 +5,10 @@ import type {
   DanceAttemptWorkflowPayload,
 } from "@pirate/application/dance/attempt-processing-wakeup";
 import { consumeDanceAttemptQueueMessage } from "@pirate/application/dance/attempt-processing-wakeup";
+import {
+  applyCloudflareQueueDisposition,
+  classifyWorkflowCreateBatch,
+} from "./cloudflare-orchestration-primitives.ts";
 
 /** Narrow provider port. No generated Env or deployed binding exists for Dance attempts. */
 export interface CloudflareDanceAttemptWorkflowBinding {
@@ -42,9 +46,10 @@ export function makeCloudflareDanceAttemptWorkflowLauncher(
       const created = await binding.createBatch([
         { id: await providerWorkflowId(instanceId), params: payload },
       ]);
-      if (created.length === 1) return "created";
-      if (created.length === 0) return "already_exists";
-      throw new Error("Dance attempt Workflow returned an unexpected instance count");
+      return classifyWorkflowCreateBatch(
+        created,
+        "Dance attempt Workflow returned an unexpected instance count",
+      );
     },
   };
 }
@@ -53,15 +58,7 @@ export function applyDanceAttemptQueueDisposition(
   message: Pick<CloudflareDanceAttemptQueueMessage, "ack" | "retry">,
   disposition: DanceAttemptQueueDisposition,
 ): void {
-  if (disposition.disposition === "ack") {
-    message.ack();
-    return;
-  }
-  if (disposition.disposition === "retry") {
-    message.retry({ delaySeconds: disposition.delaySeconds });
-    return;
-  }
-  message.retry();
+  applyCloudflareQueueDisposition(message, disposition);
 }
 
 /**

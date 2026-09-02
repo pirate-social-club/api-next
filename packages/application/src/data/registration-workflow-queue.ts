@@ -1,3 +1,4 @@
+import { processingQueueRetryDelaySeconds } from "../processing-queue-primitives";
 import type { DataRegistrationOutbox, DataRegistrationStore } from "./registration-persistence";
 import { deterministicDataRegistrationWorkflowId } from "./registration-persistence";
 import type { DataRegistrationWorkflowPayload } from "./registration-workflow";
@@ -29,8 +30,6 @@ const message = (body: unknown): string | null => {
   return record.outbox_id.length > 0 && record.outbox_id.length <= 512 ? record.outbox_id : null;
 };
 
-const retryDelay = (attempts: number): number => Math.min(900, 15 * 2 ** Math.max(0, attempts - 1));
-
 const payloadFrom = (outbox: DataRegistrationOutbox): DataRegistrationWorkflowPayload => ({
   outboxId: outbox.outboxId,
   registrationOperationId: outbox.registrationOperationId,
@@ -60,7 +59,7 @@ export async function consumeDataRegistrationQueueMessage(
       ? { disposition: "ack" }
       : {
           disposition: "retry",
-          delaySeconds: retryDelay(refreshed?.deliveryAttempts ?? 1),
+          delaySeconds: processingQueueRetryDelaySeconds(refreshed?.deliveryAttempts ?? 1),
         };
   }
   const operation = await dependencies.store.getOperation(claimed.registrationOperationId);
@@ -93,7 +92,7 @@ export async function consumeDataRegistrationQueueMessage(
     return completed ? { disposition: "ack" } : { disposition: "retry", delaySeconds: 15 };
   } catch {
     const nextEligibleAt = new Date(
-      Date.now() + retryDelay(claimed.deliveryAttempts) * 1_000,
+      Date.now() + processingQueueRetryDelaySeconds(claimed.deliveryAttempts) * 1_000,
     ).toISOString();
     const failed = await dependencies.store.failOutbox({
       outboxId,
@@ -104,7 +103,10 @@ export async function consumeDataRegistrationQueueMessage(
     });
     return !failed || claimed.deliveryAttempts >= 5
       ? { disposition: "dlq" }
-      : { disposition: "retry", delaySeconds: retryDelay(claimed.deliveryAttempts) };
+      : {
+          disposition: "retry",
+          delaySeconds: processingQueueRetryDelaySeconds(claimed.deliveryAttempts),
+        };
   }
 }
 

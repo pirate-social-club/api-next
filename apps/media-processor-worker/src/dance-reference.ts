@@ -6,6 +6,11 @@ import type {
   DanceReferenceWorkflowResume,
 } from "../../../packages/application/src/dance/reference-processing-wakeup.ts";
 import { advanceDanceReferenceWorkflow } from "../../../packages/application/src/dance/reference-processing-wakeup.ts";
+import {
+  type CloudflareWorkflowStepDo,
+  isExplicitlyEnabled,
+  PROCESSING_WORKFLOW_STEP_OPTIONS,
+} from "../../../packages/platform-cf/src/cloudflare-orchestration-primitives.ts";
 import { handleDanceReferenceQueueBatch } from "../../../packages/platform-cf/src/dance-reference-processing-cloudflare.ts";
 
 export type DanceReferenceProcessorWorkerEnv = Readonly<{
@@ -21,19 +26,8 @@ export type ResolveDanceReferenceProcessorComposition<
   Env extends DanceReferenceProcessorWorkerEnv,
 > = (env: Env) => DanceReferenceProcessorComposition;
 
-const isDanceReferenceProcessingEnabled = (value: string | undefined): boolean => value === "true";
-
-const workflowStepOptions = {
-  retries: { limit: 2, delay: "15 seconds", backoff: "exponential" },
-  timeout: "15 minutes",
-} as const;
-
-export interface DanceReferenceWorkflowStep {
-  readonly do: <T>(
-    name: string,
-    options: typeof workflowStepOptions,
-    callback: () => Promise<T>,
-  ) => Promise<T>;
+export interface DanceReferenceWorkflowStep
+  extends CloudflareWorkflowStepDo<typeof PROCESSING_WORKFLOW_STEP_OPTIONS> {
   readonly sleep: (name: string, duration: "10 seconds") => Promise<void>;
 }
 
@@ -50,7 +44,7 @@ export function makeDanceReferenceQueueWorker<Env extends DanceReferenceProcesso
       batch: Parameters<typeof handleDanceReferenceQueueBatch>[0],
       env: Env,
     ): Promise<void> => {
-      if (!isDanceReferenceProcessingEnabled(env.DANCE_REFERENCE_PROCESSING_ENABLED)) {
+      if (!isExplicitlyEnabled(env.DANCE_REFERENCE_PROCESSING_ENABLED)) {
         for (const message of batch.messages) message.retry({ delaySeconds: 900 });
         return;
       }
@@ -75,7 +69,7 @@ export function makeDanceReferenceWorkflowRunner<Env extends DanceReferenceProce
     }>,
     step: DanceReferenceWorkflowStep,
   ): Promise<DanceReferenceWorkflowResult> => {
-    if (!isDanceReferenceProcessingEnabled(env.DANCE_REFERENCE_PROCESSING_ENABLED)) {
+    if (!isExplicitlyEnabled(env.DANCE_REFERENCE_PROCESSING_ENABLED)) {
       return { outcome: "inert" };
     }
     const composition = resolve(env);
@@ -85,7 +79,7 @@ export function makeDanceReferenceWorkflowRunner<Env extends DanceReferenceProce
     while (true) {
       const result = await step.do(
         `dance-reference-processing-${sequence}`,
-        workflowStepOptions,
+        PROCESSING_WORKFLOW_STEP_OPTIONS,
         () =>
           advanceDanceReferenceWorkflow(
             event.payload,

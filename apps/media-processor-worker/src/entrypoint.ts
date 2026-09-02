@@ -1,7 +1,7 @@
+import type { DanceReferenceWorkflowPayload } from "@pirate/application/dance/reference-processing-wakeup";
 import type { MediaProcessingWorkflowPayload } from "@pirate/application/media/processing-contracts";
 import type { MediaProcessingWorkflowResult } from "@pirate/application/media/processing-workflow";
-import { makeCloudflareDanceReferenceWorkflowEntrypoint } from "@pirate/platform-cf/dance-reference-workflow-entrypoint";
-import { makeCloudflareMediaWorkflowEntrypoint } from "@pirate/platform-cf/media-workflow-entrypoint";
+import { makeCloudflareWorkflowEntrypoint } from "@pirate/platform-cf/cloudflare-workflow-entrypoint";
 import { type MediaProcessorRuntimeEnv, makeMediaProcessorComposition } from "./composition.ts";
 import {
   type DanceReferenceWorkflowResult,
@@ -19,7 +19,7 @@ import {
 } from "./index.ts";
 
 const concreteWorkflowRunner = makeMediaProcessingWorkflowRunner(makeMediaProcessorComposition);
-const CloudflareMediaProcessingWorkflow = makeCloudflareMediaWorkflowEntrypoint<
+const CloudflareMediaProcessingWorkflow = makeCloudflareWorkflowEntrypoint<
   MediaProcessorRuntimeEnv,
   MediaProcessingWorkflowPayload,
   MediaProcessingWorkflowResult,
@@ -32,8 +32,9 @@ export class MediaProcessingWorkflow extends CloudflareMediaProcessingWorkflow {
 const danceReferenceRunner = makeDanceReferenceWorkflowRunner(
   makeDanceReferenceProcessorComposition,
 );
-const CloudflareDanceReferenceProcessingWorkflow = makeCloudflareDanceReferenceWorkflowEntrypoint<
+const CloudflareDanceReferenceProcessingWorkflow = makeCloudflareWorkflowEntrypoint<
   DanceReferenceProcessorRuntimeEnv,
+  DanceReferenceWorkflowPayload,
   DanceReferenceWorkflowResult,
   DanceReferenceWorkflowStep
 >(danceReferenceRunner);

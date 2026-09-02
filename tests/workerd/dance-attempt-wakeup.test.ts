@@ -13,8 +13,8 @@ import type {
   DanceAttemptWakeupRecord,
   DanceAttemptWakeupStore,
 } from "../../packages/application/src/dance/attempt-processing-wakeup.ts";
+import { makeCloudflareWorkflowEntrypoint } from "../../packages/platform-cf/src/cloudflare-workflow-entrypoint.ts";
 import { makeCloudflareDanceAttemptWorkflowLauncher } from "../../packages/platform-cf/src/dance-attempt-processing-cloudflare.ts";
-import { makeCloudflareDanceAttemptWorkflowEntrypoint } from "../../packages/platform-cf/src/dance-attempt-workflow-entrypoint.ts";
 
 const HASH_A = "11".repeat(32);
 
@@ -191,7 +191,7 @@ describe("Dance attempt Workerd wake-up recovery", () => {
       createBatch: async () => [{}],
       adapter: null,
     });
-    const Entrypoint = makeCloudflareDanceAttemptWorkflowEntrypoint(
+    const Entrypoint = makeCloudflareWorkflowEntrypoint(
       makeDanceAttemptWorkflowRunner(() => runtime),
     );
     expect(Entrypoint).toBeTypeOf("function");
