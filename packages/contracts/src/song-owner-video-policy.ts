@@ -72,15 +72,18 @@ export const SongOwnerPolicyManagementV1 = Schema.Struct({
 });
 export type SongOwnerPolicyManagementV1 = Schema.Schema.Type<typeof SongOwnerPolicyManagementV1>;
 
-/** Public/Solid projection. Account and audit identity never cross this boundary. */
+/**
+ * Public/Solid projection. Only the presentation and preflight fields Spec 013
+ * acceptance case 10 names: the effective derivative-video policy, its
+ * revision, and the capability boolean. Account and audit identity, the
+ * owner's reward posture, and the song audio revision never cross this
+ * boundary; exposing them would require a Spec 013 amendment.
+ */
 export const PublicSongOwnerPolicyV1 = Schema.Struct({
   object: Schema.Literal("song_owner_policy"),
   community_id: Identifier,
   post_id: Identifier,
-  audio_revision: PositiveInteger,
   policy_revision: PositiveInteger,
-  third_party_reward_legs: SongOwnerThirdPartyRewardLegPolicyV1,
-  pool_leg: SongOwnerPoolLegPolicyV1,
   derivative_video: SongOwnerDerivativeVideoPolicyV1,
   can_post_with_song: Schema.Boolean,
 });

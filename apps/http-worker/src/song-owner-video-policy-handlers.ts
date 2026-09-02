@@ -23,7 +23,8 @@ const ownerAccount = (principal: Principal | null): string => {
 
 const optionalViewerAccount = (principal: Principal | null): string | null => {
   if (principal === null) return null;
-  if (principal.kind !== "user" && principal.kind !== "admin") {
+  if (principal.kind === "admin") return null;
+  if (principal.kind !== "user") {
     throw new AuthError({ message: "Authorization failed" });
   }
   return principal.subject;

@@ -39,10 +39,7 @@ describe("generated api client", () => {
       object: "song_owner_policy",
       community_id: "community-1",
       post_id: "song-1",
-      audio_revision: 1,
       policy_revision: 2,
-      third_party_reward_legs: "allowed",
-      pool_leg: "declined",
       derivative_video: "owner_only",
       can_post_with_song: false,
     } as const;

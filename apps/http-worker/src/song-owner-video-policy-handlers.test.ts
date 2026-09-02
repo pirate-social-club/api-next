@@ -22,10 +22,7 @@ const publicPolicy = {
   object: "song_owner_policy" as const,
   community_id: "community-1",
   post_id: "song-1",
-  audio_revision: 1,
   policy_revision: 2,
-  third_party_reward_legs: "allowed" as const,
-  pool_leg: "declined" as const,
   derivative_video: "owner_only" as const,
   can_post_with_song: false,
 };
@@ -127,6 +124,37 @@ describe("song owner video policy handlers", () => {
         }),
       ),
     ).toThrow();
+  });
+
+  test("treats an admin principal as an anonymous public viewer", async () => {
+    const observed: Array<Record<string, unknown>> = [];
+    const store: SongOwnerPolicyStoreService = {
+      getManagement: () => Effect.succeed(management),
+      update: () => Effect.succeed(management),
+      getPublic: (input) => {
+        observed.push({ operation: "get-public", ...input });
+        return Effect.succeed(publicPolicy);
+      },
+    };
+    const handlers = makeSongOwnerVideoPolicyHandlers({ store });
+
+    await expect(
+      handlers.GetPublicSongOwnerPolicy(
+        request({
+          principal: { kind: "admin", subject: "admin-1" },
+          query: { persona_id: "persona-owner" },
+        }),
+      ),
+    ).resolves.toEqual(publicPolicy);
+    expect(observed).toEqual([
+      {
+        operation: "get-public",
+        communityId: "community-1",
+        postId: "song-1",
+        accountId: null,
+        personaId: "persona-owner",
+      },
+    ]);
   });
 
   test("serves the registered public projection without an owner identity", async () => {

@@ -90,10 +90,7 @@ const publicFromRow = (row: Row): PublicSongOwnerPolicy => ({
   object: "song_owner_policy",
   community_id: text(row, "community_id"),
   post_id: text(row, "post_id"),
-  audio_revision: integer(row, "audio_revision"),
   policy_revision: integer(row, "policy_revision"),
-  third_party_reward_legs: thirdPartyRewardLegs(row),
-  pool_leg: poolLeg(row),
   derivative_video: derivativeVideo(row),
   can_post_with_song: boolean(row, "can_post_with_song"),
 });
@@ -130,9 +127,8 @@ const MANAGEMENT_SELECT = `
    FOR SHARE`;
 
 const PUBLIC_SELECT = `
-  SELECT head.community_id, head.post_id, head.audio_revision,
-         revision.policy_revision, revision.third_party_reward_legs,
-         revision.pool_leg, revision.derivative_video,
+  SELECT head.community_id, head.post_id,
+         revision.policy_revision, revision.derivative_video,
          CASE
            WHEN $3::text IS NULL OR $4::text IS NULL THEN false
            WHEN NOT active_owned_persona($3::text, $4::text) THEN false

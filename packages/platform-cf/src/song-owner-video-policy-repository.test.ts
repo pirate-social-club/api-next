@@ -29,10 +29,7 @@ const managementRow = (overrides: Row = {}): Row => ({
 const publicRow = (overrides: Row = {}): Row => ({
   community_id: "community-1",
   post_id: "song-1",
-  audio_revision: "1",
   policy_revision: "2",
-  third_party_reward_legs: "allowed",
-  pool_leg: "declined",
   derivative_video: "owner_only",
   can_post_with_song: false,
   ...overrides,
@@ -107,14 +104,14 @@ describe("song owner policy Postgres repository", () => {
         object: "song_owner_policy",
         community_id: "community-1",
         post_id: "song-1",
-        audio_revision: 1,
         policy_revision: 2,
-        third_party_reward_legs: "allowed",
-        pool_leg: "declined",
         derivative_video: "owner_only",
         can_post_with_song: false,
       });
       expect(publicExit.value).not.toHaveProperty("owner_account_id");
+      expect(publicExit.value).not.toHaveProperty("third_party_reward_legs");
+      expect(publicExit.value).not.toHaveProperty("pool_leg");
+      expect(publicExit.value).not.toHaveProperty("audio_revision");
     }
     expect(calls.map((call) => call.label)).toEqual([
       "song-owner-policy.management.read",

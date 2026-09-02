@@ -34,10 +34,7 @@ describe("song owner derivative-video policy contracts", () => {
       object: "song_owner_policy",
       community_id: management.community_id,
       post_id: management.post_id,
-      audio_revision: management.audio_revision,
       policy_revision: management.policy_revision,
-      third_party_reward_legs: management.third_party_reward_legs,
-      pool_leg: management.pool_leg,
       derivative_video: management.derivative_video,
       can_post_with_song: false,
     } as const;
