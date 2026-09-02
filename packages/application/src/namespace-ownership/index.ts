@@ -480,6 +480,7 @@ export {
   NamespaceOwnershipProviderRegistry,
   NamespaceOwnershipProviderUnknown,
 } from "./registry.ts";
+export * from "./route-attachment-start.ts";
 export type {
   NamespaceOwnershipStartAuthority,
   NamespaceOwnershipStartAuthorityResolver,
