@@ -19,6 +19,9 @@ export function parseFfprobeHexdump(input: string): Uint8Array {
 }
 
 export function readAvccNalUnitTypes(packet: Uint8Array, lengthSize = 4): readonly number[] {
+  // This ingress is an MP4 packet read by ffprobe, so H.264 NAL units use the
+  // AVCC length-prefixed representation declared by the sample entry. Annex B
+  // start codes belong to elementary streams and are deliberately unsupported.
   if (packet.byteLength === 0 || packet.byteLength > maximumPacketBytes) {
     throw new RangeError("H.264 packet size is outside the probe bound");
   }

@@ -1,6 +1,6 @@
-# Video master renderer spike — checkpoints 1 through 3
+# Video master renderer spike — checkpoints 1 through 4
 
-Status: three bounded local evidence checkpoints, 2026-09-02. This is not a runtime
+Status: four bounded local evidence checkpoints, 2026-09-02. This is not a runtime
 implementation or a renderer selection. No credential, provider request, R2
 object, Stream input, DATA operation, deployment, or production media was used.
 
@@ -163,18 +163,57 @@ also prove that both constant and varying PTS-minus-DTS offsets remain
 copy-eligible when presentation is monotonic and the trusted reorder-capacity
 probe is zero.
 
+## Checkpoint 4: fallback, recovery, and local resources
+
+The credential-free fallback harness generates a 360 by 640 WebM containing
+VP9 video, Opus captured audio, and a non-square 4:3 pixel aspect ratio. It
+starts the accepted cut at 400 ms, between the fixture's two-second keyframes,
+and fully decodes the source rather than rounding the cut. The fixed template
+replaces captured audio with a canonical stereo PCM interval beginning at
+1,250 ms, renders 54 H.264 frames at 320 by 568 and 30 fps, normalizes the
+pixel aspect ratio to 1:1, and writes AAC stereo in MP4.
+
+Both output tracks probe at exactly 1,800 ms, a measured A/V delta of zero for
+this fixture. The MP4 exposes exactly 86,400 audio samples per channel. The
+decoded AAC payload contains 87,040 samples per channel, so the public edit
+excludes the 640-sample terminal AAC-frame padding without extending the video.
+A 900 ms poster was extracted from the normalized final master and probed at
+320 by 568. This proves the local VP9/Opus fallback, non-keyframe-start
+transcode, audio replacement, pixel-aspect normalization, final-timeline poster,
+and exact fixture-level A/V bound. It does not prove arbitrary browser WebM,
+rotation metadata, or a fleet-wide tolerance.
+
+One direct fallback render on the local FFmpeg build took 305.3 ms wall time,
+0.57 user CPU seconds, 0.15 system CPU seconds, and 140,944 KiB maximum resident
+set according to GNU time. These are one synthetic observation on the host,
+not p95, concurrency, limit-enforcement, or Container evidence.
+
+The isolated compare-and-set model now covers attempt-scoped immutable hash and
+probe facts, first-valid-winner selection, a response lost after commit,
+winner observation on retry without renderer reinvocation, duplicate and
+byte-divergent loser disposition, invalid-probe disposition, and canonical
+master replacement rejection. It models the required database transition but
+does not claim a PostgreSQL transaction, object-store cleanup, or crash-safe
+production adapter.
+
 ## Candidate feasibility
 
-Direct FFmpeg is a useful reference oracle and can express the fixed command
-templates without accepting raw arguments from a caller. It is not selected as
-the production adapter by this checkpoint.
+Direct FFmpeg is now a GO as the reference renderer and initial implementation
+candidate for both the accepted copy path and WebM fallback. It can express the
+fixed command templates without accepting raw arguments from a caller. This is
+not a production-environment GO: the executable must still be pinned and
+wrapped with process, isolation, persistence, and cleanup limits.
 
 `@mediabunny/server` is installable and initializes on the repository's Node
 and Bun runtimes. Its current typed Conversion API exposes trimming, automatic
 encoded-sample copy when compatible, forced transcode, and composable outputs.
-This checkpoint did not yet prove a two-input conversion that copies video from
-one source while encoding canonical audio from another, nor compare its packet
-and timestamp behavior with the direct CLI.
+This checkpoint did not prove a two-input conversion that copies video from one
+source while encoding canonical audio from another, nor compare its packet and
+timestamp behavior with the direct CLI. The server extension is absent from the
+repository dependency graph and was not available in the local package cache;
+network installation was outside this credential-free, no-external-call run.
+`@mediabunny/server` therefore remains a NO GO until that exact operation is
+benchmarked, not a rejected library.
 
 Current Cloudflare documentation says Containers run Linux amd64 images with
 ephemeral disk, typical cold starts often in the one-to-three-second range,
@@ -182,6 +221,10 @@ and Durable Object container `exec` has no built-in timeout. A caller must
 enforce process termination and independently persist attempt state and sealed
 outputs. These facts are compatible with continued evaluation but are not a
 GO for the provisional two-second acknowledgement or render p95 targets.
+There is no Worker/Container wrapper in this spike and no suitable local
+FFmpeg container image was already present. Creating a new deployment topology
+or pulling an image solely for this checkpoint would not establish the required
+production behavior, so no local Container execution was claimed.
 
 Sources retrieved 2026-09-02:
 
@@ -192,11 +235,31 @@ Sources retrieved 2026-09-02:
 
 ## Still unverified
 
-The next checkpoint must run the fixture matrix for WebM VP9/Opus to H.264/AAC,
-fixed pixel and rotation behavior, poster extraction, decoded A/V drift, wall
-time distribution, and peak resources. The no-audio source and a non-zero song
-clip start are now covered on the copy path. It must benchmark the same accepted operation through direct
-FFmpeg and `@mediabunny/server`, test timeout/kill behavior, and exercise the
-attempt winner/replay model. Cloudflare Container execution and cold-start
-measurements remain provider-unverified and require a later authorized staging
-exercise; they were not simulated here.
+Rotation metadata, hostile/corrupt media, uncovered-song-tail rejection,
+timeouts and process killing, wall-time distributions, concurrency, enforced
+memory/CPU/disk limits, and real cleanup after crashes remain unverified. The
+no-audio copy source, captured-audio fallback source, non-zero song clip start,
+VP9/Opus conversion, pixel-aspect normalization, poster extraction, exact local
+A/V timing, one local resource observation, and the attempt winner/replay model
+are covered.
+
+The same accepted operation still needs a direct-FFmpeg versus
+`@mediabunny/server` comparison. Cloudflare Container execution, cold starts,
+remote binding behavior, staging R2 reads, Stream ingest, and durable PostgreSQL
+claims remain provider-unverified and require a separately authorized staging
+exercise; none was simulated here.
+
+## Local gates
+
+The post-checkpoint `bun run check` completed successfully. Both Effect
+diagnostic passes reported zero findings, both TypeScript projects passed, and
+the contract, dependency, migration, and generated-client checks passed. Biome
+reported its existing deprecated-configuration notice and 42 existing karaoke
+non-null-assertion warnings without failing the gate; no renderer path was in
+those warnings.
+
+The complete `bun run test` gate also passed: 2,847 Bun unit tests, 20 Node
+tests, and four Workerd groups containing 72, 48, 2, and 9 tests. Workerd
+reported that two optional staging RPC variables were absent; no test failed
+and no external provider operation was attempted. The final focused renderer
+and secret-boundary run passed 36 tests before the full suite.
