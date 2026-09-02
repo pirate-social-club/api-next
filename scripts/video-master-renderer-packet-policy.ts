@@ -3,10 +3,22 @@ import { createHash } from "node:crypto";
 export type ProbedVideoPacket = {
   readonly decodeOrder: number;
   readonly ptsMs: number;
+  readonly dtsMs: number;
   readonly durationMs: number;
   readonly keyframe: boolean;
   readonly payloadSha256: string;
 };
+
+export type CopyEligibility =
+  | { readonly eligible: true; readonly window: PacketWindow }
+  | {
+      readonly eligible: false;
+      readonly reason:
+        | "codec_not_h264"
+        | "probe_reports_reordered_frames"
+        | "packet_timeline_reordered"
+        | "packet_window_not_decodable";
+    };
 
 export type PacketWindow = {
   readonly packets: readonly ProbedVideoPacket[];
@@ -88,4 +100,32 @@ export function copiedPayloadsMatch(
         packet.keyframe === observed[index]?.keyframe,
     )
   );
+}
+
+export function evaluateCopyEligibility(input: {
+  readonly codecName: string;
+  readonly hasBFrames: number;
+  readonly packets: readonly ProbedVideoPacket[];
+  readonly startMs: number;
+  readonly requestedDurationMs: number;
+}): CopyEligibility {
+  if (input.codecName !== "h264") return { eligible: false, reason: "codec_not_h264" };
+  if (input.hasBFrames !== 0) {
+    return { eligible: false, reason: "probe_reports_reordered_frames" };
+  }
+  if (
+    input.packets.some(
+      (packet, index) =>
+        Math.abs(packet.ptsMs - packet.dtsMs) > timestampToleranceMs ||
+        (index > 0 && packet.ptsMs + timestampToleranceMs < (input.packets[index - 1]?.ptsMs ?? 0)),
+    )
+  ) {
+    return { eligible: false, reason: "packet_timeline_reordered" };
+  }
+
+  const window = selectBriefPacketWindow(input.packets, input.startMs, input.requestedDurationMs);
+  if (!window.isContiguousDecodePrefix) {
+    return { eligible: false, reason: "packet_window_not_decodable" };
+  }
+  return { eligible: true, window };
 }

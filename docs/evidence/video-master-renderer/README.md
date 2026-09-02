@@ -1,6 +1,6 @@
 # Video master renderer spike — checkpoint 1
 
-Status: bounded local evidence checkpoint, 2026-09-02. This is not a runtime
+Status: two bounded local evidence checkpoints, 2026-09-02. This is not a runtime
 implementation or a renderer selection. No credential, provider request, R2
 object, Stream input, DATA operation, deployment, or production media was used.
 
@@ -13,18 +13,58 @@ B-frames. Reordered presentation can place an out-of-window reference packet
 before in-window B-frames in decode order. Removing only the reference packet
 produces a non-contiguous, potentially undecodable packet sequence.
 
-The current recommendation is therefore conditional:
+The workspace owner resolved the condition after checkpoint 1:
 
-- make the browser copy profile prohibit reordered frames and prove that on
-  each accepted encoder, or
-- revise the master policy to retain required decode-support packets while an
-  edit/timeline fence bounds visible presentation, or
-- demote every reordered source to frame-accurate transcode.
+- copy eligibility is server-probed and requires H.264, `has_b_frames=0`, equal
+  presentation/decode timestamps, monotonic packet presentation, a real
+  keyframe start, and a contiguous decode-order packet window;
+- any reordered source demotes to frame-accurate transcode without changing
+  the submitted snapped cut; and
+- hidden decode-support packets and edit-list-bounded copied video are rejected.
 
-The second amendment should not ratify the current B-frame wording until one
-of those outcomes is accepted. The pure policy harness in
+The pure policy harness in
 `scripts/video-master-renderer-packet-policy.ts` preserves the collision as a
-regression test rather than silently treating a filtered packet list as valid.
+regression test and implements the settled copy-eligibility fence.
+
+## Checkpoint 2: accepted no-reorder copy profile
+
+The executable harness in `scripts/video-master-renderer-ffmpeg-evidence.ts`
+generates a video-only fragmented MP4 source and a separate canonical PCM song,
+probes eligibility, derives the packet-shaped effective duration, invokes one
+server-owned FFmpeg command template, and probes the resulting master. No
+caller supplies an encoder, filter, map, codec, or process argument.
+
+The frozen source is H.264/yuv420p at 320 by 180 and 30 fps, with a one-second
+GOP and `-bf 0`. The accepted start is the probed keyframe at 1000 ms. For an
+author request of 1887 ms, the last complete source packet ends at
+2866.666 ms, producing an effective source window of 1866.666 ms and 56 video
+packets. FFmpeg reported the copied master video duration as 1866.667 ms, one
+15,360-Hz video time-base tick from the calculated value.
+
+The versioned packet-manifest digest covers the ordered SHA-256 of every packet
+payload plus its keyframe flag. Source and master both produced:
+
+    576eb4d3516f91149df6fefcfc211b8d3487a41d5e15864ee22d5d641d8a36d7
+
+All 56 source/master packet payload hashes and flags matched in order. The
+master video therefore becomes the timeline authority at 1866.667 ms without
+requiring whole-MP4 byte identity.
+
+The fixed audio rule selected the canonical PCM interval beginning at 750 ms,
+trimmed it to the effective target, and rounded 89,600 target samples up to
+90,112 samples, exactly 88 AAC frames. Only 512 zero samples were added. The
+AAC encoder emitted one 1024-sample priming packet marked `Skip Samples`, which
+the MP4 edit excludes from presentation. Decoding all AAC packet payloads
+returns the full 90,112 padded samples; the public MP4 audio track advertises
+89,568 presentation samples, or 1866.000 ms. It is bounded by the authoritative
+1866.667 ms video track with a 0.667 ms difference, well within one AAC frame.
+
+One local render-only observation on FFmpeg `6.1.1-3ubuntu5` took 69.6 ms. This
+is fixture evidence, not a p95 or Container latency claim. The exact template
+uses input seek at the probed keyframe, `atrim`, timestamp reset, AAC-frame
+padding, `-t` at the derived video duration, `-shortest`, video `copy`, AAC at
+48 kHz mono/128 kbps, `+faststart`, and `-use_editlist 1`. Tests assert those
+fixed choices and reject a probe-reported or packet-observed reorder.
 
 ## Local inventory
 
@@ -62,14 +102,10 @@ frames retained their decode dependency. FFmpeg's ordinary CLI `-ss`/`-t`
 template therefore does not implement the brief's filtered-presentation-set
 rule.
 
-The no-B-frame fixture demonstrated a contiguous payload-copy sequence, but it
-also exposed timeline details the next checkpoint must freeze. Seeking to the
-exact probed keyframe produced a small non-zero rebased start, FFmpeg shortened
-the final packet's declared sample duration, and the AAC track ended at
-1.888000 seconds while the copied video ended at 1.866667 seconds. AAC frame
-padding and container edit/timestamp behavior require an explicit master
-duration and A/V tolerance; “trim audio to the same duration” is not by itself
-a byte-level rule.
+Checkpoint 2 replaced the checkpoint-1 no-B-frame fixture with a video-only
+source whose keyframes and timestamps begin exactly on the video time base. It
+froze copied video as the master clock and the explicit AAC-frame padding and
+MP4 presentation rule described above.
 
 ## Candidate feasibility
 
@@ -100,10 +136,10 @@ Sources retrieved 2026-09-02:
 
 ## Still unverified
 
-The next checkpoint must run the executable fixture matrix for WebM VP9/Opus
-to H.264/AAC, non-zero song clip start, source with no audio, fixed pixel and
-rotation behavior, poster extraction, decoded A/V drift, wall time and peak
-resources. It must also benchmark the same accepted operation through direct
+The next checkpoint must run the fixture matrix for WebM VP9/Opus to H.264/AAC,
+fixed pixel and rotation behavior, poster extraction, decoded A/V drift, wall
+time distribution, and peak resources. The no-audio source and a non-zero song
+clip start are now covered on the copy path. It must benchmark the same accepted operation through direct
 FFmpeg and `@mediabunny/server`, test timeout/kill behavior, and exercise the
 attempt winner/replay model. Cloudflare Container execution and cold-start
 measurements remain provider-unverified and require a later authorized staging

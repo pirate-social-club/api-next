@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import {
   copiedPayloadsMatch,
+  evaluateCopyEligibility,
   type ProbedVideoPacket,
   selectBriefPacketWindow,
 } from "./video-master-renderer-packet-policy.ts";
@@ -9,6 +10,7 @@ import {
 const packet = (decodeOrder: number, ptsMs: number, keyframe = false): ProbedVideoPacket => ({
   decodeOrder,
   ptsMs,
+  dtsMs: ptsMs,
   durationMs: 33.333,
   keyframe,
   payloadSha256: decodeOrder.toString(16).padStart(64, "0"),
@@ -61,5 +63,31 @@ describe("video master packet-tail policy", () => {
     expect(() => selectBriefPacketWindow(packets, 1_010, 100)).toThrow(
       "copy start must equal a probed keyframe timestamp",
     );
+  });
+
+  it("demotes a stream whenever either probe fact exposes frame reordering", () => {
+    const firstPacket = packet(0, 1_000, true);
+    const secondPacket = packet(1, 1_033.333);
+    const packets = [firstPacket, secondPacket];
+    expect(
+      evaluateCopyEligibility({
+        codecName: "h264",
+        hasBFrames: 2,
+        packets,
+        startMs: 1_000,
+        requestedDurationMs: 60,
+      }),
+    ).toEqual({ eligible: false, reason: "probe_reports_reordered_frames" });
+
+    const misleadingProbe = [firstPacket, { ...secondPacket, dtsMs: 1_000 }];
+    expect(
+      evaluateCopyEligibility({
+        codecName: "h264",
+        hasBFrames: 0,
+        packets: misleadingProbe,
+        startMs: 1_000,
+        requestedDurationMs: 60,
+      }),
+    ).toEqual({ eligible: false, reason: "packet_timeline_reordered" });
   });
 });
