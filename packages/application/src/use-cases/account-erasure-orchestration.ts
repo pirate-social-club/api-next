@@ -104,6 +104,17 @@ export type AccountErasureAdmissionDecision =
       conflicts: readonly AccountErasureAdmissionConflict[];
     }>;
 
+export const ACCOUNT_ERASURE_PROFILE_MEDIA_FIELDS = ["avatar_ref", "cover_ref"] as const;
+
+export type AccountErasureProfileMediaField = (typeof ACCOUNT_ERASURE_PROFILE_MEDIA_FIELDS)[number];
+
+export type AccountErasureProfileMediaDecision =
+  | Readonly<{ outcome: "clear" }>
+  | Readonly<{
+      outcome: "authority_required";
+      fields: readonly AccountErasureProfileMediaField[];
+    }>;
+
 const blockedConflictByOwner: Readonly<
   Record<
     Exclude<AccountErasureAdmissionOwner, "required_authorities">,
@@ -157,6 +168,20 @@ export const evaluateAccountErasureAdmission = (
       return owners === undefined ? [] : [{ category, owners }];
     }),
   };
+};
+
+/**
+ * The current runtime has no authoritative profile-media object owner. Keep
+ * the values out of the result while identifying every field that prevents a
+ * deletion claim. Malformed or omitted values are intentionally non-null and
+ * therefore fail closed.
+ */
+export const evaluateAccountErasureProfileMedia = (profile: {
+  readonly avatar_ref: unknown;
+  readonly cover_ref: unknown;
+}): AccountErasureProfileMediaDecision => {
+  const fields = ACCOUNT_ERASURE_PROFILE_MEDIA_FIELDS.filter((field) => profile[field] !== null);
+  return fields.length === 0 ? { outcome: "clear" } : { outcome: "authority_required", fields };
 };
 
 export interface AccountErasureWorkflowStore {
