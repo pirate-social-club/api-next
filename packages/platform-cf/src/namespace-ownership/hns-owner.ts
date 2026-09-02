@@ -27,6 +27,7 @@ import {
   NamespaceOwnershipUpstreamSessionReference,
   type RouteAttachmentOwnershipProviderCompleteInput,
   type RouteAttachmentOwnershipProviderStartInput,
+  type RouteAttachmentOwnershipProviderStartResult,
   type RouteAttachmentOwnershipSession,
 } from "@pirate/application";
 import { HnsTxtChallengeV1 } from "@pirate/contracts";
@@ -350,6 +351,164 @@ export function makeHnsOwnerAdapter(
       }
       return options.transport
         .poll({ session: input.session, payload: input.submission.payload, context })
+        .pipe(
+          Effect.mapError((error) =>
+            error instanceof NamespaceOwnershipProviderUnavailable ||
+            error instanceof NamespaceOwnershipProviderRejected ||
+            error instanceof NamespaceOwnershipProviderUnboundRejected ||
+            error instanceof NamespaceOwnershipProviderObservationRejected ||
+            error instanceof NamespaceOwnershipProviderInvalidResponse
+              ? error
+              : invalid("complete"),
+          ),
+          Effect.flatMap(
+            (
+              bytes,
+            ): Effect.Effect<
+              NamespaceOwnershipProviderCompleteResult,
+              | NamespaceOwnershipProviderInvalidResponse
+              | NamespaceOwnershipProviderObservationRejected
+            > => {
+              if (options.target_observation_contract === "v3") {
+                return targetV3Result(bytes, input, now());
+              }
+              let decoded: HnsOwnerRawResponse;
+              try {
+                decoded = decodeHnsOwnerResponseBytes(bytes);
+              } catch {
+                return Effect.fail(invalid("complete"));
+              }
+              if (
+                options.target_observation_contract === "v2" &&
+                !("observation_contract_version" in decoded.response)
+              ) {
+                return Effect.fail(invalid("complete"));
+              }
+              if (decoded.response.status === "pending") {
+                return Effect.succeed({ status: "pending" as const });
+              }
+              const result = decoded.response;
+              if (
+                result.upstream_session_ref !== input.session.upstream_session_ref ||
+                result.challenge_name !==
+                  hnsOwnerChallengeName(result.ownership_source, input.session.route.root_label) ||
+                result.challenge_value !==
+                  hnsOwnerChallengeValue(input.session.upstream_session_ref) ||
+                result.root_exists !== true ||
+                result.root_control_verified !== true ||
+                result.expiry_horizon_sufficient !== true
+              ) {
+                return Effect.fail(observationRejected());
+              }
+              if (
+                !isCanonicalInstant(result.observed_at) ||
+                !isCanonicalInstant(result.expires_at) ||
+                Date.parse(result.observed_at) > now() ||
+                Date.parse(result.expires_at) <= now() ||
+                Date.parse(result.expires_at) <= Date.parse(result.observed_at)
+              ) {
+                return Effect.fail(invalid("complete"));
+              }
+              return Effect.succeed({
+                status: "verified" as const,
+                evidence_kind: "raw_provider_response_v1" as const,
+                provider_evidence_ref: result.provider_evidence_ref,
+                raw_response_bytes: decoded.response_bytes,
+                observation: result,
+                observed_at: result.observed_at,
+                expires_at: result.expires_at,
+              });
+            },
+          ),
+        );
+    },
+    startRouteAttachment: (
+      input: RouteAttachmentOwnershipProviderStartInput,
+      context: NamespaceOwnershipProviderStartContext,
+    ): Effect.Effect<RouteAttachmentOwnershipProviderStartResult, HnsOwnerTransportFailure> => {
+      if (
+        options.transport.startRouteAttachment === undefined ||
+        input.route.family !== "hns" ||
+        input.route.app_host !== null ||
+        !environments.includes(input.environment) ||
+        input.protocol_version !== HNS_OWNER_PROTOCOL_VERSION ||
+        !sameConfiguration(input.provider_configuration, provider_configuration)
+      ) {
+        return Effect.fail(unboundRejected("start"));
+      }
+      return options.transport.startRouteAttachment({ input, context }).pipe(
+        Effect.mapError((error) =>
+          error instanceof NamespaceOwnershipProviderUnavailable ||
+          error instanceof NamespaceOwnershipProviderRejected ||
+          error instanceof NamespaceOwnershipProviderUnboundRejected ||
+          error instanceof NamespaceOwnershipProviderInvalidResponse
+            ? error
+            : invalid("start"),
+        ),
+        Effect.flatMap((untrusted) => {
+          let document: unknown;
+          try {
+            document = decodeStrictHnsJsonBytes(untrusted, 65_536);
+          } catch {
+            return Effect.fail(invalid("start"));
+          }
+          const decoded = Schema.decodeUnknownOption(
+            HnsTransportStart,
+            exactParseOptions,
+          )(document);
+          if (Option.isNone(decoded)) return Effect.fail(invalid("start"));
+          if (
+            !isCanonicalInstant(decoded.value.expires_at) ||
+            Date.parse(decoded.value.expires_at) <= now()
+          ) {
+            return Effect.fail(invalid("start"));
+          }
+          const session: RouteAttachmentOwnershipSession = {
+            ...input,
+            provider_id: HNS_OWNER_PROVIDER_ID,
+            upstream_session_ref: decoded.value.upstream_session_ref,
+            expires_at: decoded.value.expires_at,
+          };
+          const presentation = decoded.value.presentation;
+          if (
+            presentation.session_id !== decoded.value.upstream_session_ref ||
+            presentation.payload.expires_at !== decoded.value.expires_at ||
+            presentation.payload.challenge_name !==
+              hnsOwnerChallengeName(
+                presentation.payload.ownership_source,
+                input.route.root_label,
+              ) ||
+            presentation.payload.challenge_value !==
+              hnsOwnerChallengeValue(decoded.value.upstream_session_ref)
+          ) {
+            return Effect.fail(invalid("start"));
+          }
+          return Effect.succeed({ session, presentation });
+        }),
+      );
+    },
+    completeRouteAttachment: (
+      input: RouteAttachmentOwnershipProviderCompleteInput,
+      context: NamespaceOwnershipProviderCompleteContext,
+    ): Effect.Effect<NamespaceOwnershipProviderCompleteResult, HnsOwnerTransportFailure> => {
+      if (
+        options.transport.pollRouteAttachment === undefined ||
+        input.submission.channel !== "poll_result" ||
+        typeof input.submission.payload !== "object" ||
+        input.submission.payload === null ||
+        Array.isArray(input.submission.payload) ||
+        Object.keys(input.submission.payload).length !== 0 ||
+        !sessionMatchesConfiguration(input.session, provider_configuration, environments) ||
+        Date.parse(input.session.expires_at) <= now()
+      ) {
+        return Effect.fail(unboundRejected("complete"));
+      }
+      return options.transport
+        .pollRouteAttachment({
+          session: input.session,
+          payload: input.submission.payload,
+          context,
+        })
         .pipe(
           Effect.mapError((error) =>
             error instanceof NamespaceOwnershipProviderUnavailable ||
