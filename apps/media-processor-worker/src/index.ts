@@ -8,6 +8,10 @@ import {
   type MediaProcessingWorkflowResult,
   runMediaProcessingWorkflow,
 } from "../../../packages/application/src/media/processing-workflow.ts";
+import {
+  type CloudflareWorkflowStepDo,
+  PROCESSING_WORKFLOW_STEP_OPTIONS,
+} from "../../../packages/platform-cf/src/cloudflare-orchestration-primitives.ts";
 import { handleMediaProcessingQueueBatch } from "../../../packages/platform-cf/src/media-processing-cloudflare.ts";
 import { isMediaProcessingEnabled } from "./posture.ts";
 
@@ -76,22 +80,13 @@ const nextEventType = (
   }
 };
 
-const workflowStepOptions = {
-  retries: { limit: 2, delay: "15 seconds", backoff: "exponential" },
-  timeout: "15 minutes",
-} as const;
-
 export type MediaProcessingWorkflowEvent = Readonly<{
   readonly payload: Readonly<MediaProcessingWorkflowPayload>;
   readonly instanceId: string;
 }>;
 
-export interface MediaProcessingWorkflowStep {
-  readonly do: <T>(
-    name: string,
-    options: typeof workflowStepOptions,
-    callback: () => Promise<T>,
-  ) => Promise<T>;
+export interface MediaProcessingWorkflowStep
+  extends CloudflareWorkflowStepDo<typeof PROCESSING_WORKFLOW_STEP_OPTIONS> {
   readonly waitForEvent: <T>(
     name: string,
     options: Readonly<{ readonly type: string; readonly timeout: string }>,
@@ -123,7 +118,7 @@ export function makeMediaProcessingWorkflowRunner<Env extends MediaProcessorWork
         result: MediaProcessingWorkflowResult;
       }> = await step.do(
         `media-processing-${sequence}-${eventType ?? "launch"}`,
-        workflowStepOptions,
+        PROCESSING_WORKFLOW_STEP_OPTIONS,
         async () => {
           const resolvedEventType =
             eventType ??

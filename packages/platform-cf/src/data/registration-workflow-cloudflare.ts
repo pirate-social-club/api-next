@@ -5,6 +5,11 @@ import type {
   DataRegistrationWorkflowLauncher,
 } from "@pirate/application/data/registration-workflow-queue";
 import { consumeDataRegistrationQueueMessage } from "@pirate/application/data/registration-workflow-queue";
+import {
+  applyCloudflareQueueDisposition,
+  classifyWorkflowCreateBatch,
+  isPresentWorkflowStatus,
+} from "../cloudflare-orchestration-primitives.ts";
 
 export interface CloudflareDataRegistrationWorkflowBinding {
   readonly get: (instanceId: string) => Promise<{
@@ -46,11 +51,7 @@ export function makeCloudflareDataRegistrationWorkflowLauncher(
     try {
       const instance = await binding.get(await cloudflareDataRegistrationWorkflowId(instanceId));
       const status = (await instance.status()).status;
-      return ["queued", "running", "paused", "waiting", "waitingForPause", "rollingBack"].includes(
-        status,
-      )
-        ? "present"
-        : "missing";
+      return isPresentWorkflowStatus(status) ? "present" : "missing";
     } catch (error) {
       if (isMissing(error)) return "missing";
       throw error;
@@ -61,9 +62,10 @@ export function makeCloudflareDataRegistrationWorkflowLauncher(
     create: async (instanceId, payload) => {
       const providerInstanceId = await cloudflareDataRegistrationWorkflowId(instanceId);
       const created = await binding.createBatch([{ id: providerInstanceId, params: payload }]);
-      if (created.length === 1) return "created";
-      if (created.length === 0) return "already_exists";
-      throw new Error("Workflow createBatch returned an unexpected instance count");
+      return classifyWorkflowCreateBatch(
+        created,
+        "Workflow createBatch returned an unexpected instance count",
+      );
     },
   };
 }
@@ -72,15 +74,7 @@ export function applyDataRegistrationQueueDisposition(
   message: Pick<CloudflareDataRegistrationQueueMessage, "ack" | "retry">,
   disposition: DataRegistrationQueueDisposition,
 ): void {
-  if (disposition.disposition === "ack") {
-    message.ack();
-    return;
-  }
-  if (disposition.disposition === "retry") {
-    message.retry({ delaySeconds: disposition.delaySeconds });
-    return;
-  }
-  message.retry();
+  applyCloudflareQueueDisposition(message, disposition);
 }
 
 export async function handleDataRegistrationQueueBatch(

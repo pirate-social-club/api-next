@@ -88,8 +88,8 @@ const alias = {
     "../../packages/platform-cf/src/media-processing-store.ts",
     import.meta.url,
   ).pathname,
-  "@pirate/platform-cf/media-workflow-entrypoint": new URL(
-    "../../packages/platform-cf/src/media-workflow-entrypoint.ts",
+  "@pirate/platform-cf/cloudflare-workflow-entrypoint": new URL(
+    "../../packages/platform-cf/src/cloudflare-workflow-entrypoint.ts",
     import.meta.url,
   ).pathname,
   "@pirate/platform-cf/data/registration-workflow-cloudflare": new URL(

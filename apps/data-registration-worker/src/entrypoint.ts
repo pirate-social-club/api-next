@@ -1,5 +1,8 @@
-import type { DataRegistrationWorkflowResult } from "@pirate/application/data/registration-workflow";
-import { makeCloudflareDataRegistrationWorkflowEntrypoint } from "@pirate/platform-cf/data/registration-workflow-entrypoint";
+import type {
+  DataRegistrationWorkflowPayload,
+  DataRegistrationWorkflowResult,
+} from "@pirate/application/data/registration-workflow";
+import { makeCloudflareWorkflowEntrypoint } from "@pirate/platform-cf/cloudflare-workflow-entrypoint";
 import { type DataRegistrationRuntimeEnv, makeDataRegistrationComposition } from "./composition.ts";
 import {
   type DataRegistrationWorkflowStep,
@@ -8,8 +11,9 @@ import {
 } from "./index.ts";
 
 const runner = makeDataRegistrationWorkflowRunner(makeDataRegistrationComposition);
-const CloudflareDataRegistrationWorkflow = makeCloudflareDataRegistrationWorkflowEntrypoint<
+const CloudflareDataRegistrationWorkflow = makeCloudflareWorkflowEntrypoint<
   DataRegistrationRuntimeEnv,
+  DataRegistrationWorkflowPayload,
   DataRegistrationWorkflowResult,
   DataRegistrationWorkflowStep
 >(runner);

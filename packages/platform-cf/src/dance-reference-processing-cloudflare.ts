@@ -5,6 +5,10 @@ import type {
   DanceReferenceWorkflowPayload,
 } from "@pirate/application/dance/reference-processing-wakeup";
 import { consumeDanceReferenceQueueMessage } from "@pirate/application/dance/reference-processing-wakeup";
+import {
+  applyCloudflareQueueDisposition,
+  classifyWorkflowCreateBatch,
+} from "./cloudflare-orchestration-primitives.ts";
 
 export interface CloudflareDanceReferenceWorkflowBinding {
   readonly createBatch: (
@@ -41,9 +45,10 @@ export function makeCloudflareDanceReferenceWorkflowLauncher(
       const created = await binding.createBatch([
         { id: await providerWorkflowId(instanceId), params: payload },
       ]);
-      if (created.length === 1) return "created";
-      if (created.length === 0) return "already_exists";
-      throw new Error("Dance reference Workflow returned an unexpected instance count");
+      return classifyWorkflowCreateBatch(
+        created,
+        "Dance reference Workflow returned an unexpected instance count",
+      );
     },
   };
 }
@@ -52,15 +57,7 @@ export function applyDanceReferenceQueueDisposition(
   message: Pick<CloudflareDanceReferenceQueueMessage, "ack" | "retry">,
   disposition: DanceReferenceQueueDisposition,
 ): void {
-  if (disposition.disposition === "ack") {
-    message.ack();
-    return;
-  }
-  if (disposition.disposition === "retry") {
-    message.retry({ delaySeconds: disposition.delaySeconds });
-    return;
-  }
-  message.retry();
+  applyCloudflareQueueDisposition(message, disposition);
 }
 
 export async function handleDanceReferenceQueueBatch(

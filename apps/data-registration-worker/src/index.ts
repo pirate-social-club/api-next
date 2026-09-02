@@ -5,6 +5,10 @@ import type {
 } from "../../../packages/application/src/data/registration-workflow.ts";
 import { advanceDataRegistrationWorkflow } from "../../../packages/application/src/data/registration-workflow.ts";
 import type { DataRegistrationQueueDependencies } from "../../../packages/application/src/data/registration-workflow-queue.ts";
+import {
+  type CloudflareWorkflowStepDo,
+  PROCESSING_WORKFLOW_STEP_OPTIONS,
+} from "../../../packages/platform-cf/src/cloudflare-orchestration-primitives.ts";
 import { handleDataRegistrationQueueBatch } from "../../../packages/platform-cf/src/data/registration-workflow-cloudflare.ts";
 import { isDataRegistrationEnabled } from "./posture.ts";
 
@@ -21,17 +25,8 @@ export type ResolveDataRegistrationComposition<Env extends DataRegistrationWorke
   env: Env,
 ) => DataRegistrationWorkerComposition;
 
-const workflowStepOptions = {
-  retries: { limit: 2, delay: "15 seconds", backoff: "exponential" },
-  timeout: "15 minutes",
-} as const;
-
-export interface DataRegistrationWorkflowStep {
-  readonly do: <T>(
-    name: string,
-    options: typeof workflowStepOptions,
-    callback: () => Promise<T>,
-  ) => Promise<T>;
+export interface DataRegistrationWorkflowStep
+  extends CloudflareWorkflowStepDo<typeof PROCESSING_WORKFLOW_STEP_OPTIONS> {
   readonly sleep: (name: string, duration: "15 seconds") => Promise<void>;
 }
 
@@ -78,8 +73,10 @@ export function makeDataRegistrationWorkflowRunner<Env extends DataRegistrationW
     const composition = withPosture(env, resolve(env));
     let sequence = 0;
     while (true) {
-      const result = await step.do(`data-registration-${sequence}`, workflowStepOptions, async () =>
-        advanceDataRegistrationWorkflow(event.payload, composition.workflow),
+      const result = await step.do(
+        `data-registration-${sequence}`,
+        PROCESSING_WORKFLOW_STEP_OPTIONS,
+        async () => advanceDataRegistrationWorkflow(event.payload, composition.workflow),
       );
       if (
         result.outcome === "registered" ||

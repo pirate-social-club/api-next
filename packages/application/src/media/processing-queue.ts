@@ -1,3 +1,4 @@
+import { processingQueueRetryDelaySeconds } from "../processing-queue-primitives.ts";
 import {
   decodeMediaProcessingQueueMessage,
   type MediaProcessingObserver,
@@ -17,8 +18,6 @@ export type MediaProcessingQueueDependencies = Readonly<{
   readonly workerId: string;
   readonly observe?: MediaProcessingObserver;
 }>;
-
-const retryDelaySeconds = (attempt: number): number => Math.min(900, 15 * 2 ** (attempt - 1));
 
 function workflowPayload(record: {
   readonly outboxId: string;
@@ -82,7 +81,7 @@ export async function consumeMediaProcessingQueueMessage(
     if (refreshed?.state === "delivered") return { disposition: "ack" };
     return {
       disposition: "retry",
-      delaySeconds: retryDelaySeconds(Math.max(1, refreshed?.deliveryAttempts ?? 1)),
+      delaySeconds: processingQueueRetryDelaySeconds(Math.max(1, refreshed?.deliveryAttempts ?? 1)),
     };
   }
 
@@ -151,6 +150,9 @@ export async function consumeMediaProcessingQueueMessage(
       submissionId: claimed.submissionId,
       workflowRevision: claimed.workflowRevision,
     });
-    return { disposition: "retry", delaySeconds: retryDelaySeconds(attempts) };
+    return {
+      disposition: "retry",
+      delaySeconds: processingQueueRetryDelaySeconds(attempts),
+    };
   }
 }

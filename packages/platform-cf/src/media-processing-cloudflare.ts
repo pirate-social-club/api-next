@@ -8,6 +8,11 @@ import type {
   MediaProcessingQueueDisposition,
 } from "../../application/src/media/processing-queue.ts";
 import { consumeMediaProcessingQueueMessage } from "../../application/src/media/processing-queue.ts";
+import {
+  applyCloudflareQueueDisposition,
+  classifyWorkflowCreateBatch,
+  isPresentWorkflowStatus,
+} from "./cloudflare-orchestration-primitives.ts";
 
 export interface CloudflareMediaWorkflowBinding {
   readonly get: (instanceId: string) => Promise<{
@@ -57,9 +62,7 @@ async function workflowIsPresent(
 ): Promise<boolean> {
   const instance = await binding.get(instanceId);
   const status = await instance.status();
-  return ["queued", "running", "paused", "waiting", "waitingForPause", "rollingBack"].includes(
-    status.status,
-  );
+  return isPresentWorkflowStatus(status.status);
 }
 
 /**
@@ -82,9 +85,10 @@ export function makeCloudflareMediaProcessingWorkflowLauncher(
     },
     create: async (instanceId, payload) => {
       const created = await binding.createBatch([{ id: instanceId, params: payload }]);
-      if (created.length === 1) return "created";
-      if (created.length === 0) return "already_exists";
-      throw new Error("Workflow createBatch returned an unexpected instance count");
+      return classifyWorkflowCreateBatch(
+        created,
+        "Workflow createBatch returned an unexpected instance count",
+      );
     },
     notify: async (instanceId, eventType, payload) => {
       const instance = await binding.get(instanceId);
@@ -98,15 +102,7 @@ export function applyMediaProcessingQueueDisposition(
   message: Pick<CloudflareMediaQueueMessage, "ack" | "retry">,
   disposition: MediaProcessingQueueDisposition,
 ): void {
-  if (disposition.disposition === "ack") {
-    message.ack();
-    return;
-  }
-  if (disposition.disposition === "retry") {
-    message.retry({ delaySeconds: disposition.delaySeconds });
-    return;
-  }
-  message.retry();
+  applyCloudflareQueueDisposition(message, disposition);
 }
 
 /** Each delivery gets exactly one terminal Queue action. */
