@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.51.0",
+  "releaseType": "song-owner-video-policy-management",
+  "wireContract": "song-owner-policy-v1",
+  "sourceCommit": "pending-review",
+  "supersedes": "0.50.0; additively exposes private song-owner policy management, CAS updates, and privacy-safe public derivative-video capability projections.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.51.0.tgz",
+    "sha256": "f6b0a5e477018e4756a5e9de8412f58fa50c3d01e58d1c923aa8cc3e9ea232d4",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@af0ebec4bcf8d331c8358c7bd886e48ed0dea6eadafbe5ab15d52463d19a26f9",
+    "openapiSha256": "af0ebec4bcf8d331c8358c7bd886e48ed0dea6eadafbe5ab15d52463d19a26f9",
+    "clientSha256": "fc353e1a04adb8f222c24117dd05f4f0d1bd698d1eaaf13e0aa67282e60db022"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "passed",
+      "baselineCommit": "origin/main",
+      "reason": "The three song-owner policy operations are additive and do not alter existing endpoint paths or response contracts."
+    },
+    "focusedContractSuites": "song-owner policy contract, adapter, HTTP handler, and generated-client tests passed",
+    "fullUnitSuite": "not run; focused tests were run serially",
+    "fullWorkerdSuite": "not run",
+    "postgres17": "song-owner policy persistence suite skipped because CONTROL_PLANE_POSTGRES_TEST_URL is not configured",
+    "packageVerifier": "passed after artifact ledger registration",
+    "repositoryCheck": "static and boundary gates passed; full check retains pre-existing Biome warnings"
+  }
+}

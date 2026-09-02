@@ -339,6 +339,7 @@ export {
   SessionTokenVerificationError,
   type SessionTokenVerifier,
 } from "./session-tokens";
+export * from "./song-owner-video-policy-repository.ts";
 export * from "./song-reward-offer-repository.ts";
 export * from "./study-spoken-answer-recovery.ts";
 export * from "./study-translation-repository.ts";

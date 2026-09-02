@@ -40,6 +40,7 @@ export * from "./rewards/reward-projections.ts";
 export * from "./rewards/reward-refund.ts";
 export * from "./rewards/song-reward-offers.ts";
 export * from "./route-revalidation/index.ts";
+export * from "./song-owner-video-policy.ts";
 export * from "./study-item-source.ts";
 export * from "./study-item-source-v2.ts";
 export * from "./study-language-profile.ts";

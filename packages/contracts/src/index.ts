@@ -31,6 +31,7 @@ export * from "./registry.ts";
 export * from "./rewards-qualification.ts";
 export * from "./rewards-song-offers.ts";
 export * from "./study-v2.ts";
+export * from "./song-owner-video-policy.ts";
 export * from "./text-moderation.ts";
 export * from "./v1.ts";
 export * from "./verification.ts";

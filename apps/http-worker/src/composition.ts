@@ -153,6 +153,7 @@ import {
   makeRs256SessionTokenMinter,
   makeRs256SessionTokenVerifier,
 } from "@pirate/platform-cf/session-tokens";
+import { makeControlPlaneSongOwnerPolicyStore } from "@pirate/platform-cf/song-owner-video-policy-repository";
 import { makeControlPlaneSongRewardOfferStore } from "@pirate/platform-cf/song-reward-offer-repository";
 import {
   type CloudflareStudyGenerationWorkflowBinding,
@@ -207,6 +208,7 @@ import { makePlatformPirateHandleHandlers } from "./platform-pirate-handle-handl
 import { makeProductHandlers } from "./product-handlers.ts";
 import { makePublicPostRouteHandlers } from "./public-post-route-handlers.ts";
 import { makeSongRewardOfferHandlers } from "./rewards-song-offer-handlers.ts";
+import { makeSongOwnerVideoPolicyHandlers } from "./song-owner-video-policy-handlers.ts";
 import { makeStudyGenerationHandlers } from "./study-generation-handlers.ts";
 import type { StudyGenerationWorkflowPayload } from "./study-generation-workflow.ts";
 import { makeProductionStudySpokenServices } from "./study-spoken-production-composition.ts";
@@ -731,6 +733,9 @@ export async function createProductionHttpWorker(
   const textPostStore = makeControlPlaneTextSubmissionStore(controlPlane);
   const moderationStore = makeControlPlaneCommunityModerationStore(controlPlane);
   const ageAccessStore = makeControlPlaneAgeAccessStore(controlPlane);
+  const songOwnerVideoPolicyHandlers = makeSongOwnerVideoPolicyHandlers({
+    store: makeControlPlaneSongOwnerPolicyStore(controlPlane),
+  });
   // The runtime is installed even when no provider credentials are enabled.
   // Unavailability is a durable manual-review result, never an allow fallback.
   const textModeration: TextModeration["Service"] = {
@@ -1238,6 +1243,7 @@ export async function createProductionHttpWorker(
       ...handleSalesHandlers,
       ...platformPirateHandleHandlers,
       ...songRewardOfferHandlers,
+      ...songOwnerVideoPolicyHandlers,
       ...mediaHandlers,
       ...danceReferenceHandlers,
       ...danceAttemptHandlers,
