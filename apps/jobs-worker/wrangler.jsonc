@@ -194,7 +194,7 @@
       },
       "vars": {
         "API_NEXT_ENV": "staging",
-        "KARAOKE_FINALIZATION_RECOVERY_ENABLED": "false",
+        "KARAOKE_FINALIZATION_RECOVERY_ENABLED": "true",
         "COMMUNITY_MAINTENANCE_ENABLED": "true",
         "MEDIA_PROCESSING_ENABLED": "true",
         "DATA_REGISTRATION_ENABLED": "true",

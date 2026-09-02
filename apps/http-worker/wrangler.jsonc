@@ -220,7 +220,7 @@
       "vars": {
         "API_NEXT_ENV": "staging",
         "ELEVENLABS_ENABLE_LOGGING": "false",
-        "KARAOKE_FINALIZATION_RECOVERY_ENABLED": "false",
+        "KARAOKE_FINALIZATION_RECOVERY_ENABLED": "true",
         "STUDY_GENERATION_ENABLED": "false",
         "STUDY_GENERATION_OPENROUTER_MODEL": "",
         "MEGAPOT_REWARDS_ENABLED": "true",
