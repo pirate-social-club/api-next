@@ -1,6 +1,6 @@
-# Video master renderer spike — checkpoints 1 through 4
+# Video master renderer spike — checkpoints 1 through 5
 
-Status: four bounded local evidence checkpoints, 2026-09-02. This is not a runtime
+Status: five bounded local evidence checkpoints, 2026-09-02. This is not a runtime
 implementation or a renderer selection. No credential, provider request, R2
 object, Stream input, DATA operation, deployment, or production media was used.
 
@@ -196,6 +196,44 @@ master replacement rejection. It models the required database transition but
 does not claim a PostgreSQL transaction, object-store cleanup, or crash-safe
 production adapter.
 
+## Checkpoint 5: remaining host boundaries
+
+A one-second H.264 MP4 fixture is remuxed with a 90-degree display matrix. The
+fixed transcode lets FFmpeg apply that display transform during decode, bakes
+the result into a 320 by 568 H.264/yuv420p master, normalizes sample aspect to
+1:1, and explicitly clears rotation metadata. The input probes as stored 320 by
+180 with 90-degree display rotation; the 30-frame output probes as 320 by 568
+with zero display rotation. This is host evidence for MP4 display matrices, not
+an assertion about every camera or container's orientation metadata.
+
+Canonical-song coverage is now decided in integer 48 kHz sample coordinates.
+The half-open interval is accepted when its exclusive end equals the probed
+canonical duration and rejected when the song is even one sample short. The
+validator also fails closed on fractional, negative, empty, and overflowing
+timelines before rendering.
+
+The host-boundary harness gives probe and process failures a fixed public
+`invalid_source` response and retains only a SHA-256 of private diagnostics in
+the returned evidence. A corrupt MP4 whose path and bytes contain a private
+marker is rejected without either value appearing in the public failure. The
+same bounded runner kills an intentionally hung process after 150 ms and a
+process that exceeds a 1,024-byte diagnostic cap. A 1,025-byte attempt artifact
+is rejected against a 1,024-byte fixture limit, and the attempt directory is
+removed after the timeout drill.
+
+A local semaphore capped at two permits completed six synthetic jobs while
+observing at most two active jobs. This proves the isolated scheduling primitive
+and the diagnostic, time, and attempt-disk boundaries. It does not enforce or
+prove production CPU, memory, filesystem, or container quotas.
+
+Five repeated direct-FFmpeg fallback renders on the otherwise uncontrolled
+development host measured 234.8/267.1/1136.1 ms minimum/median/maximum wall
+time. User CPU was 0.50/0.58/0.85 seconds, system CPU was
+0.11/0.12/0.22 seconds, and maximum resident set was
+140,228/140,736/140,952 KiB. The outlying wall sample is retained. Five serial
+synthetic runs are enough to expose host variance, but not to establish a p95,
+capacity limit, or production latency budget.
+
 ## Candidate feasibility
 
 Direct FFmpeg is now a GO as the reference renderer and initial implementation
@@ -204,16 +242,32 @@ fixed command templates without accepting raw arguments from a caller. This is
 not a production-environment GO: the executable must still be pinned and
 wrapped with process, isolation, persistence, and cleanup limits.
 
-`@mediabunny/server` is installable and initializes on the repository's Node
-and Bun runtimes. Its current typed Conversion API exposes trimming, automatic
-encoded-sample copy when compatible, forced transcode, and composable outputs.
-This checkpoint did not prove a two-input conversion that copies video from one
-source while encoding canonical audio from another, nor compare its packet and
-timestamp behavior with the direct CLI. The server extension is absent from the
-repository dependency graph and was not available in the local package cache;
-network installation was outside this credential-free, no-external-call run.
-`@mediabunny/server` therefore remains a NO GO until that exact operation is
-benchmarked, not a rejected library.
+`@mediabunny/server` is installable and its current typed Conversion API exposes
+trimming, automatic encoded-sample copy when compatible, forced transcode, and
+composable outputs. Checkpoint 5 created a fresh temporary project outside the
+repository and installed exact `mediabunny@1.55.5` and
+`@mediabunny/server@1.55.5`, resolving `node-av@6.1.1`. The server package's
+resolved integrity was:
+
+    sha512-Yow7q+vIAPIqB1ptWWM5fDmLOsqed/qX1zglibKnYzeAu0fG6Asc3x8cOsa3405gLGfxh1790haa/eJl3M/UOg==
+
+Registration with hardware acceleration disabled succeeded. The benchmark used
+two composable conversions targeting one in-memory-fast-start MP4: the WebM
+conversion discarded captured audio and forced VP9 video to AVC at 320 by 568,
+30 fps, from 0.4 through 2.2 seconds; the WAV conversion discarded video and
+forced the canonical 1.25-through-3.05-second interval to 48 kHz stereo AAC at
+128 kbps. Output start, both conversions, and output finalize were all owned by
+the benchmark.
+
+The operation aborted before producing evidence under both repository runtimes.
+Bun 1.4.0 reported `malloc(): corrupted top size` and then a Bun native panic.
+Node 24.14.0 reported a fatal glibc `_int_malloc` arena assertion. The temporary
+install had two lifecycle scripts blocked by Bun's default trust policy; they
+were not enabled or retried. This is a reproducible NO GO for this exact pinned
+temporary installation and operation on the local host. It does not establish
+that composable two-input output is impossible or assign the fault to
+Mediabunny, NodeAV, Bun, glibc, or the scheduling pattern without a smaller
+upstream reproducer. No product dependency or lockfile changed.
 
 Current Cloudflare documentation says Containers run Linux amd64 images with
 ephemeral disk, typical cold starts often in the one-to-three-second range,
@@ -235,19 +289,20 @@ Sources retrieved 2026-09-02:
 
 ## Still unverified
 
-Rotation metadata, hostile/corrupt media, uncovered-song-tail rejection,
-timeouts and process killing, wall-time distributions, concurrency, enforced
-memory/CPU/disk limits, and real cleanup after crashes remain unverified. The
-no-audio copy source, captured-audio fallback source, non-zero song clip start,
-VP9/Opus conversion, pixel-aspect normalization, poster extraction, exact local
-A/V timing, one local resource observation, and the attempt winner/replay model
-are covered.
+Arbitrary container/codec rotation metadata, broader hostile-media parsing,
+production timeout behavior, enforced CPU and memory limits, persistent-disk
+quotas, concurrent real FFmpeg load, and real cleanup after crashes remain
+unverified. The MP4 display-matrix case, corrupt-source redaction, exact
+canonical-song coverage rejection, process timeout/kill, diagnostic and attempt
+artifact bounds, local semaphore, and five-run host distribution are now
+covered in addition to the earlier media cases.
 
-The same accepted operation still needs a direct-FFmpeg versus
-`@mediabunny/server` comparison. Cloudflare Container execution, cold starts,
-remote binding behavior, staging R2 reads, Stream ingest, and durable PostgreSQL
-claims remain provider-unverified and require a separately authorized staging
-exercise; none was simulated here.
+The direct-FFmpeg versus `@mediabunny/server` comparison ended in a pinned local
+native abort before media output, so it has no packet, timing, or resource result
+to compare. Cloudflare Container execution, cold starts, remote binding
+behavior, staging R2 reads, Stream ingest, and durable PostgreSQL claims remain
+provider-unverified and require a separately authorized staging exercise; none
+was simulated here.
 
 ## Local gates
 
@@ -263,3 +318,10 @@ tests, and four Workerd groups containing 72, 48, 2, and 9 tests. Workerd
 reported that two optional staging RPC variables were absent; no test failed
 and no external provider operation was attempted. The final focused renderer
 and secret-boundary run passed 36 tests before the full suite.
+
+After checkpoint 5, the complete `bun run check` passed again with the same 42
+unrelated karaoke warnings and configuration notice. The affected full
+`bun run test:unit` suite passed 2,855 tests across 440 files, and the focused
+renderer plus secret-boundary run passed 44 tests. Node and Workerd integration
+suites were not rerun after checkpoint 5 because the changes are isolated host
+scripts and evidence; their last complete run is the checkpoint-4 result above.
