@@ -58,6 +58,107 @@ export type AccountErasureWorkflowResult = Readonly<{
   status: Exclude<AccountErasureRequestStatus, "running">;
 }>;
 
+export const ACCOUNT_ERASURE_ADMISSION_OWNERS = [
+  "community_ownership",
+  "hns_authority",
+  "operator_principal",
+  "persona_wallet_custody",
+  "financial_effects",
+  "required_authorities",
+] as const;
+
+export type AccountErasureAdmissionOwner = (typeof ACCOUNT_ERASURE_ADMISSION_OWNERS)[number];
+
+export type AccountErasureAdmissionCheck = "clear" | "blocked" | "unknown";
+
+/**
+ * A complete snapshot is required even when an earlier owner already blocks
+ * admission. This lets the command return every bounded next action without
+ * weakening fail-closed treatment of an unavailable owner.
+ */
+export type AccountErasureAdmissionSnapshot = Readonly<
+  Record<AccountErasureAdmissionOwner, AccountErasureAdmissionCheck>
+>;
+
+export const ACCOUNT_ERASURE_ADMISSION_CONFLICTS = [
+  "community_owner_transfer_required",
+  "hns_authority_transfer_required",
+  "operator_policy_required",
+  "custody_not_empty",
+  "financial_effect_pending",
+  "custody_status_unknown",
+] as const;
+
+export type AccountErasureAdmissionConflictCategory =
+  (typeof ACCOUNT_ERASURE_ADMISSION_CONFLICTS)[number];
+
+export type AccountErasureAdmissionConflict = Readonly<{
+  category: AccountErasureAdmissionConflictCategory;
+  owners: readonly AccountErasureAdmissionOwner[];
+}>;
+
+export type AccountErasureAdmissionDecision =
+  | Readonly<{ outcome: "admitted" }>
+  | Readonly<{
+      outcome: "conflict";
+      conflicts: readonly AccountErasureAdmissionConflict[];
+    }>;
+
+const blockedConflictByOwner: Readonly<
+  Record<
+    Exclude<AccountErasureAdmissionOwner, "required_authorities">,
+    AccountErasureAdmissionConflictCategory
+  >
+> = {
+  community_ownership: "community_owner_transfer_required",
+  hns_authority: "hns_authority_transfer_required",
+  operator_principal: "operator_policy_required",
+  persona_wallet_custody: "custody_not_empty",
+  financial_effects: "financial_effect_pending",
+};
+
+/**
+ * Converts an already-collected, complete admission snapshot into the stable
+ * public conflict taxonomy from account_erasure_policy_v1@1. Unknown checks
+ * are combined without hiding which bounded owner needs attention.
+ */
+export const evaluateAccountErasureAdmission = (
+  snapshot: AccountErasureAdmissionSnapshot,
+): AccountErasureAdmissionDecision => {
+  const conflicts = new Map<
+    AccountErasureAdmissionConflictCategory,
+    AccountErasureAdmissionOwner[]
+  >();
+  const addConflict = (
+    category: AccountErasureAdmissionConflictCategory,
+    owner: AccountErasureAdmissionOwner,
+  ): void => {
+    const owners = conflicts.get(category);
+    if (owners === undefined) conflicts.set(category, [owner]);
+    else owners.push(owner);
+  };
+
+  for (const owner of ACCOUNT_ERASURE_ADMISSION_OWNERS) {
+    const check = snapshot[owner];
+    if (check === "clear") continue;
+    if (check !== "blocked" || owner === "required_authorities") {
+      addConflict("custody_status_unknown", owner);
+      continue;
+    }
+    addConflict(blockedConflictByOwner[owner], owner);
+  }
+
+  if (conflicts.size === 0) return { outcome: "admitted" };
+
+  return {
+    outcome: "conflict",
+    conflicts: ACCOUNT_ERASURE_ADMISSION_CONFLICTS.flatMap((category) => {
+      const owners = conflicts.get(category);
+      return owners === undefined ? [] : [{ category, owners }];
+    }),
+  };
+};
+
 export interface AccountErasureWorkflowStore {
   readonly claim: (erasureRequestId: string) => Promise<AccountErasureClaimResult>;
   /**
