@@ -7,8 +7,6 @@ import {
 import { Effect } from "effect";
 
 export const ELEVENLABS_STUDY_BATCH_ENDPOINT =
-  "https://api.elevenlabs.io/v1/speech-to-text?enable_logging=false" as const;
-export const ELEVENLABS_STUDY_BATCH_LOGGED_ENDPOINT =
   "https://api.elevenlabs.io/v1/speech-to-text?enable_logging=true" as const;
 export const ELEVENLABS_STUDY_BATCH_MODEL = "scribe_v2" as const;
 export const ELEVENLABS_STUDY_BATCH_ADAPTER_REVISION =
@@ -87,18 +85,13 @@ function decodeTranscript(value: unknown): StudyBatchTranscript {
 export function makeElevenLabsStudyBatchTranscriber(
   options: Readonly<{
     apiKey: string;
-    enableLogging?: boolean;
     fetch?: StudyBatchFetch;
     timeoutMs?: number;
   }>,
 ): StudyBatchTranscriber {
   const fetchImpl = options.fetch ?? fetch;
   const apiKey = options.apiKey;
-  const endpoint =
-    options.enableLogging === true
-      ? ELEVENLABS_STUDY_BATCH_LOGGED_ENDPOINT
-      : ELEVENLABS_STUDY_BATCH_ENDPOINT;
-  const providerRetention = options.enableLogging === true ? "stored" : "not_stored";
+  const providerRetention = "stored" as const;
   const timeoutMs = options.timeoutMs ?? TIMEOUT_MS;
   return {
     providerRetention,
@@ -118,7 +111,7 @@ export function makeElevenLabsStudyBatchTranscriber(
           const timeout = setTimeout(() => controller.abort(), timeoutMs);
           let response: Response;
           try {
-            response = await fetchImpl(endpoint, {
+            response = await fetchImpl(ELEVENLABS_STUDY_BATCH_ENDPOINT, {
               method: "POST",
               headers: { "xi-api-key": apiKey },
               body: form,

@@ -90,7 +90,6 @@ declare const WebSocketPair: {
 export interface KaraokeAttemptDoBindings {
   readonly API_NEXT_ENV?: string;
   readonly CONTROL_PLANE: HyperdriveConnection;
-  readonly ELEVENLABS_ENABLE_LOGGING?: string;
   readonly ELEVENLABS_API_KEY?: string;
   readonly KARAOKE_FINALIZATION_RECOVERY_ENABLED?: string;
   readonly LEARNER_AUDIO?: KaraokeR2Bucket;
@@ -843,10 +842,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
   }
 
   private providerPolicy() {
-    return elevenLabsSpeechProviderPolicy(
-      this.runtimeEnv.API_NEXT_ENV,
-      this.runtimeEnv.ELEVENLABS_ENABLE_LOGGING,
-    );
+    return elevenLabsSpeechProviderPolicy();
   }
 
   private finalizationExhaustionEnabled(): boolean {

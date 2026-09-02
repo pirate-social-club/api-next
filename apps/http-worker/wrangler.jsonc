@@ -87,7 +87,6 @@
   ],
   "vars": {
     "API_NEXT_ENV": "development",
-    "ELEVENLABS_ENABLE_LOGGING": "false",
     "KARAOKE_FINALIZATION_RECOVERY_ENABLED": "false",
     "STUDY_GENERATION_ENABLED": "false",
     "STUDY_GENERATION_OPENROUTER_MODEL": "",
@@ -219,7 +218,6 @@
       ],
       "vars": {
         "API_NEXT_ENV": "staging",
-        "ELEVENLABS_ENABLE_LOGGING": "false",
         "KARAOKE_FINALIZATION_RECOVERY_ENABLED": "true",
         "STUDY_GENERATION_ENABLED": "false",
         "STUDY_GENERATION_OPENROUTER_MODEL": "",
@@ -394,7 +392,6 @@
       ],
       "vars": {
         "API_NEXT_ENV": "production",
-        "ELEVENLABS_ENABLE_LOGGING": "false",
         "KARAOKE_FINALIZATION_RECOVERY_ENABLED": "false",
         "STUDY_GENERATION_ENABLED": "false",
         "STUDY_GENERATION_OPENROUTER_MODEL": "",

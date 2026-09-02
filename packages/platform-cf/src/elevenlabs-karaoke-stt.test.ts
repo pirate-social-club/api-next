@@ -54,30 +54,14 @@ const frame = (bytes: number, songStartMs = 1_000) => ({
 });
 
 describe("ElevenLabs Karaoke realtime adapter", () => {
-  test("requires an explicit staging override while defaults and production stay zero retention", () => {
-    expect(elevenLabsSpeechProviderPolicy(undefined, undefined)).toEqual({
-      enableLogging: false,
-      providerRetention: "not_stored",
-    });
-    expect(elevenLabsSpeechProviderPolicy("staging", undefined)).toEqual({
-      enableLogging: false,
-      providerRetention: "not_stored",
-    });
-    expect(elevenLabsSpeechProviderPolicy("staging", "false")).toEqual({
-      enableLogging: false,
-      providerRetention: "not_stored",
-    });
-    expect(elevenLabsSpeechProviderPolicy("staging", "true")).toEqual({
+  test("uses standard stored retention in every environment", () => {
+    expect(elevenLabsSpeechProviderPolicy()).toEqual({
       enableLogging: true,
       providerRetention: "stored",
     });
-    expect(elevenLabsSpeechProviderPolicy("production", "true")).toEqual({
-      enableLogging: false,
-      providerRetention: "not_stored",
-    });
   });
 
-  test("requests manual timestamped zero-log scoring and enforces the safe commit floor", async () => {
+  test("requests manual timestamped stored scoring and enforces the safe commit floor", async () => {
     const socket = new FakeSocket();
     let connectedUrl = "";
     const messages: KaraokeSttAdapterMessage[] = [];
@@ -100,7 +84,7 @@ describe("ElevenLabs Karaoke realtime adapter", () => {
     expect(url.searchParams.get("model_id")).toBe("scribe_v2_realtime");
     expect(url.searchParams.get("commit_strategy")).toBe("manual");
     expect(url.searchParams.get("include_timestamps")).toBe("true");
-    expect(url.searchParams.get("enable_logging")).toBe("false");
+    expect(url.searchParams.get("enable_logging")).toBe("true");
     expect(url.searchParams.has("disable_logging")).toBe(false);
 
     await adapter.sendPcm16(frame(12_000));
@@ -130,10 +114,10 @@ describe("ElevenLabs Karaoke realtime adapter", () => {
     expect(messages[0]?.event.words.map((word) => word.startMs)).toEqual([1_100, 1_450]);
   });
 
-  test("fails closed and records provider storage when zero retention is refused", async () => {
+  test("treats an unsupported-ZRM warning as non-terminal in stored mode", async () => {
     const socket = new FakeSocket();
     const order: string[] = [];
-    let retention = "not_stored";
+    let retention = "stored";
     let terminal = "";
     const adapter = new ElevenLabsKaraokeSttAdapter({
       apiKey: "secret",
@@ -160,14 +144,14 @@ describe("ElevenLabs Karaoke realtime adapter", () => {
     });
     await Bun.sleep(0);
     expect(retention).toBe("stored");
-    expect(terminal).toBe("zero_retention_not_applied");
-    expect(order).toEqual(["retention:stored", "terminal:zero_retention_not_applied"]);
-    expect(socket.closed).toBe(true);
+    expect(terminal).toBe("");
+    expect(order).toEqual([]);
+    expect(socket.closed).toBe(false);
     await adapter.sendPcm16(frame(16_000));
-    expect(socket.sent).toHaveLength(0);
+    expect(socket.sent).toHaveLength(1);
   });
 
-  test("does not request zero retention or fail on warnings in staging logging mode", async () => {
+  test("does not fail on ordinary provider warnings in stored mode", async () => {
     const socket = new FakeSocket();
     const retentionChanges: string[] = [];
     let connectedUrl = "";
@@ -198,15 +182,15 @@ describe("ElevenLabs Karaoke realtime adapter", () => {
     expect(socket.closed).toBe(false);
   });
 
-  test("still closes when persistence of the zero-retention warning fails", async () => {
+  test("records an explicit future zero-retention fallback without terminating", async () => {
     const socket = new FakeSocket();
+    const retentionChanges: string[] = [];
     let terminal = "";
     const adapter = new ElevenLabsKaraokeSttAdapter({
       apiKey: "secret",
+      enableLogging: false,
       connect: async () => socket,
-      onProviderRetentionChanged: () => {
-        throw new Error("storage unavailable");
-      },
+      onProviderRetentionChanged: (retention) => retentionChanges.push(retention),
     });
     await adapter.start({
       attemptId: "attempt-1",
@@ -219,8 +203,9 @@ describe("ElevenLabs Karaoke realtime adapter", () => {
     });
     socket.emit({ message_type: "warning", warning: "zero retention not applied" });
     await Bun.sleep(0);
-    expect(socket.closed).toBe(true);
-    expect(terminal).toBe("zero_retention_not_applied");
+    expect(retentionChanges).toEqual(["stored"]);
+    expect(socket.closed).toBe(false);
+    expect(terminal).toBe("");
   });
 
   test("separates retryable drops from terminal provider failures", async () => {

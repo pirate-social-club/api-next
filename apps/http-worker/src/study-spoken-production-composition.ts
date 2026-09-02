@@ -1,4 +1,3 @@
-import { elevenLabsSpeechProviderPolicy } from "@pirate/platform-cf/elevenlabs-karaoke-stt";
 import {
   makeElevenLabsStudyBatchTranscriber,
   makeR2StudyAudioArchive,
@@ -10,8 +9,6 @@ type StudyAudioArchive = ReturnType<typeof makeR2StudyAudioArchive>;
 type StudyBatchTranscriber = ReturnType<typeof makeElevenLabsStudyBatchTranscriber>;
 
 export interface StudySpokenProductionBindings {
-  readonly API_NEXT_ENV?: string;
-  readonly ELEVENLABS_ENABLE_LOGGING?: string;
   readonly ELEVENLABS_API_KEY?: string;
   readonly LEARNER_AUDIO?: StudyAudioBucket;
 }
@@ -41,14 +38,9 @@ export function makeProductionStudySpokenServices(
 
   const apiKey = bindings.ELEVENLABS_API_KEY;
   if (apiKey === undefined || apiKey === "" || apiKey.trim() !== apiKey) return undefined;
-  const providerPolicy = elevenLabsSpeechProviderPolicy(
-    bindings.API_NEXT_ENV,
-    bindings.ELEVENLABS_ENABLE_LOGGING,
-  );
   return {
     transcriber: makeElevenLabsStudyBatchTranscriber({
       apiKey,
-      enableLogging: providerPolicy.enableLogging,
       ...(dependencies.study_batch_fetch === undefined
         ? {}
         : { fetch: dependencies.study_batch_fetch }),

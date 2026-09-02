@@ -79,7 +79,6 @@ const HTTP_BINDING_KINDS = {
   OPENAI_MODERATION_MODEL: "var",
   OPENAI_MODERATION_BASE_URL: "var",
   OPENAI_MODERATION_TIMEOUT_MS: "var",
-  ELEVENLABS_ENABLE_LOGGING: "var",
   KARAOKE_FINALIZATION_RECOVERY_ENABLED: "var",
   ELEVENLABS_API_KEY: "secret",
   STUDY_GENERATION_ENABLED: "var",
@@ -322,7 +321,6 @@ const HTTP_ALWAYS_REQUIRED = [
   "MEGAPOT_ATTESTATION_ID",
   "MEGAPOT_REQUIRED_CONFIRMATIONS",
   "OPENAI_MODERATION_ENABLED",
-  "ELEVENLABS_ENABLE_LOGGING",
 ] as const;
 
 const HTTP_MEGAPOT_REQUIRED = ["MEGAPOT_V2_RPC_URL"] as const;
@@ -683,11 +681,11 @@ describe("source-to-Wrangler binding contract", () => {
     );
   });
 
-  test("declares fail-closed ElevenLabs logging in every HTTP environment", () => {
+  test("does not declare the retired ElevenLabs logging policy variable", () => {
     for (const environmentName of ENVIRONMENTS) {
-      expect(
-        declaredEnvironment(configs.http, environmentName).vars.ELEVENLABS_ENABLE_LOGGING,
-      ).toBe("false");
+      expect(declaredEnvironment(configs.http, environmentName).vars).not.toHaveProperty(
+        "ELEVENLABS_ENABLE_LOGGING",
+      );
     }
   });
 

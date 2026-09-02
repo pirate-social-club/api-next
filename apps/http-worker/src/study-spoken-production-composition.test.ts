@@ -40,7 +40,7 @@ describe("Study spoken production composition", () => {
     expect(storedObjects).toHaveLength(0);
 
     if (study === undefined) throw new Error("Study speech must be enabled in this fixture");
-    expect(study.transcriber.providerRetention).toBe("not_stored");
+    expect(study.transcriber.providerRetention).toBe("stored");
     await expect(
       Effect.runPromise(
         study.transcriber.transcribe({
@@ -51,7 +51,7 @@ describe("Study spoken production composition", () => {
       ),
     ).resolves.toMatchObject({ transcript: "Hold on" });
     expect(providerRequests).toHaveLength(1);
-    expect(providerRequests[0]?.url).toContain("enable_logging=false");
+    expect(providerRequests[0]?.url).toContain("enable_logging=true");
     expect(providerRequests[0]?.init.headers).toEqual({
       "xi-api-key": "fixture-elevenlabs-key",
     });
@@ -70,23 +70,11 @@ describe("Study spoken production composition", () => {
     expect(storedObjects).toHaveLength(1);
   });
 
-  test("allows provider retention only through the explicit staging diagnostic override", async () => {
+  test("uses stored provider retention for every composition", async () => {
     const urls: string[] = [];
-    const cases = [
-      { API_NEXT_ENV: "staging", ELEVENLABS_ENABLE_LOGGING: undefined, stored: false },
-      { API_NEXT_ENV: "staging", ELEVENLABS_ENABLE_LOGGING: "false", stored: false },
-      { API_NEXT_ENV: "staging", ELEVENLABS_ENABLE_LOGGING: "true", stored: true },
-      { API_NEXT_ENV: "production", ELEVENLABS_ENABLE_LOGGING: "true", stored: false },
-    ] as const;
-    for (const testCase of cases) {
+    for (let index = 0; index < 4; index += 1) {
       const study = makeProductionStudySpokenServices(
-        {
-          API_NEXT_ENV: testCase.API_NEXT_ENV,
-          ELEVENLABS_API_KEY: "fixture-elevenlabs-key",
-          ...(testCase.ELEVENLABS_ENABLE_LOGGING === undefined
-            ? {}
-            : { ELEVENLABS_ENABLE_LOGGING: testCase.ELEVENLABS_ENABLE_LOGGING }),
-        },
+        { ELEVENLABS_API_KEY: "fixture-elevenlabs-key" },
         {
           study_batch_fetch: async (url) => {
             urls.push(url);
@@ -95,7 +83,7 @@ describe("Study spoken production composition", () => {
         },
       );
       if (study === undefined) throw new Error("Study speech must be enabled in this fixture");
-      expect(study.transcriber.providerRetention).toBe(testCase.stored ? "stored" : "not_stored");
+      expect(study.transcriber.providerRetention).toBe("stored");
       await Effect.runPromise(
         study.transcriber.transcribe({
           audio: new Uint8Array([1]),
@@ -104,9 +92,7 @@ describe("Study spoken production composition", () => {
         }),
       );
     }
-    expect(urls[0]).toContain("enable_logging=false");
-    expect(urls[1]).toContain("enable_logging=false");
-    expect(urls[2]).toContain("enable_logging=true");
-    expect(urls[3]).toContain("enable_logging=false");
+    expect(urls).toHaveLength(4);
+    expect(urls.every((url) => url.includes("enable_logging=true"))).toBe(true);
   });
 });
