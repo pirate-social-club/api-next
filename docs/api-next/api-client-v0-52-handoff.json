@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.52.0",
+  "releaseType": "community-creation-requirement-removal",
+  "wireContract": "community-creation-v2",
+  "sourceCommit": "pending-review",
+  "supersedes": "0.51.0; the optional-route community creation intent's requirements map no longer requires a human_identity entry, because new intents carry no creator requirement under the 2026-09-03 spec 012 amendment; grandfathered intents still present the entry and every endpoint path is unchanged.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.52.0.tgz",
+    "sha256": "4f63398867b7952655c76ba2fe2442f1134b4fe7c485bcf4fddf59184a46dc99",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@9d3d4781be512fbcacbee414b321305be0966126f3d172d5b58615b5d2101bc1",
+    "openapiSha256": "9d3d4781be512fbcacbee414b321305be0966126f3d172d5b58615b5d2101bc1",
+    "clientSha256": "56f23c43fa89bd3aee982bd1b16ad48255c7e1ae15efd3fb48af021c8c965f1f"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "passed with four reviewed clean-break waivers",
+      "baselineCommit": "0d258cc7381a2eda4d41bfbc9e831f4aa2f699f4",
+      "reason": "The V2 requirements entry became optional on the create, read, update, and commit responses; consumers that read requirements.human_identity must treat its absence as a requirement-free intent."
+    },
+    "focusedSuites": "Community creation repository (5) and verification completion (10) PostgreSQL 17 suites passed, including a grandfathered-intent fixture that reproduces the pre-amendment ceremony, quota, and commit path; contracts, domain, and application community suites passed.",
+    "fullUnitSuite": "2839 tests passed across the bun unit configuration.",
+    "packageVerifier": "pending until this ledger entry lands",
+    "repositoryCheck": "pending; see the lane record"
+  }
+}
