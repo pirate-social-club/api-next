@@ -244,7 +244,10 @@ describe("community creation intent state machine", () => {
       communityCreationIntentInvariant({ ...requirementFree, status: "verification_required" }),
     ).toBe("verification_required_without_authority");
     expect(
-      communityCreationIntentInvariant({ ...requirementFree, verification_provider_id: "very.web" }),
+      communityCreationIntentInvariant({
+        ...requirementFree,
+        verification_provider_id: "very.web",
+      }),
     ).toBe("verification_authority_shape");
     const expired = transitionCommunityCreationIntent(requirementFree, {
       type: "expired",

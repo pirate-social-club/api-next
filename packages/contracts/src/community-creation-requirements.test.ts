@@ -44,7 +44,9 @@ describe("community creation requirement contracts", () => {
       human_identity: human,
     });
     expect(decodeCommunityCreationRequirementsV2({})).toEqual({});
-    expect(() => decodeCommunityCreationRequirementsV2({ namespace_ownership: namespace })).toThrow();
+    expect(() =>
+      decodeCommunityCreationRequirementsV2({ namespace_ownership: namespace }),
+    ).toThrow();
     expect(() =>
       decodeCommunityCreationRequirementsV2({
         human_identity: human,
