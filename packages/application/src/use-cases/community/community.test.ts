@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Conflict, GateUnsatisfied, InternalError, NotFound } from "@pirate/contracts";
+import { BadRequest, Conflict, GateUnsatisfied, InternalError, NotFound } from "@pirate/contracts";
 import { Effect } from "effect";
 import {
   type CommunityPreviewDocument,
@@ -34,6 +34,7 @@ const preview = (communityId: string): CommunityPreviewDocument => ({
 const eligibility = (
   communityId: string,
   status: JoinEligibilityDocument["status"] = "joinable",
+  membershipMode: JoinEligibilityDocument["membership_mode"] = "open",
 ): JoinEligibilityDocument => {
   const next_action: JoinEligibilityDocument["next_action"] =
     status === "already_joined"
@@ -56,7 +57,11 @@ const eligibility = (
   return {
     community: communityId,
     membership_mode:
-      status === "gate_failed" || status === "verification_required" ? "gated" : "open",
+      membershipMode === "request"
+        ? "request"
+        : status === "gate_failed" || status === "verification_required"
+          ? "gated"
+          : "open",
     human_verification_lane: null,
     joinable_now: status === "joinable",
     status,
@@ -115,6 +120,69 @@ describe("community application use cases", () => {
       Effect.runPromise(joinCommunity({ communityId: "community-a", actor }, scoped)),
     ).rejects.toBeInstanceOf(GateUnsatisfied);
     expect(joinCalls).toBe(0);
+  });
+
+  test("requires a persona choice at a terminal join and forbids one on a request-mode join", async () => {
+    let joinCalls = 0;
+    const scoped = services({
+      join: () => {
+        joinCalls += 1;
+        return Effect.succeed({ community: "community-a", status: "joined" as const });
+      },
+    });
+
+    await expect(
+      Effect.runPromise(joinCommunity({ communityId: "community-a", actor }, scoped)),
+    ).rejects.toBeInstanceOf(BadRequest);
+    await expect(
+      Effect.runPromise(
+        joinCommunity(
+          {
+            communityId: "community-a",
+            actor,
+            body: { persona: { kind: "existing", persona_id: "persona-a" } },
+          },
+          scoped,
+        ),
+      ),
+    ).resolves.toMatchObject({ community: "community-a", status: "joined" });
+    expect(joinCalls).toBe(1);
+
+    const requestMode = services({
+      getJoinEligibility: () =>
+        Effect.succeed(eligibility("community-a", "requestable", "request")),
+      join: () => {
+        joinCalls += 1;
+        return Effect.succeed({ community: "community-a", status: "requested" as const });
+      },
+    });
+    await expect(
+      Effect.runPromise(
+        joinCommunity(
+          {
+            communityId: "community-a",
+            actor,
+            body: { persona: { kind: "create_new" } },
+          },
+          requestMode,
+        ),
+      ),
+    ).rejects.toBeInstanceOf(BadRequest);
+    await expect(
+      Effect.runPromise(
+        joinCommunity({ communityId: "community-a", actor, body: {} }, requestMode),
+      ),
+    ).resolves.toMatchObject({ community: "community-a", status: "requested" });
+  });
+
+  test("keeps an already-member join idempotent without a persona choice", async () => {
+    const scoped = services({
+      getJoinEligibility: () => Effect.succeed(eligibility("community-a", "already_joined")),
+    });
+
+    await expect(
+      Effect.runPromise(joinCommunity({ communityId: "community-a", actor }, scoped)),
+    ).resolves.toMatchObject({ community: "community-a", status: "joined" });
   });
 
   test("allows a nonmember to follow a live community", async () => {

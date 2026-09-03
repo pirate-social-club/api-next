@@ -34,6 +34,21 @@ const nullableBoundedText = (maximumLength: number, label: string) =>
 export const PersonaIdV1 = boundedIdentifier("persona identifier");
 export type PersonaIdV1 = Schema.Schema.Type<typeof PersonaIdV1>;
 
+/**
+ * Server-validated persona choice for a terminal community membership or
+ * community-creation commit (spec 014 section 10.2). A browser never invents
+ * a persona id or a binding: it either names an existing owned persona or
+ * asks the server to mint one in the same commit.
+ */
+export const PersonaCommunityChoiceV1 = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("existing"),
+    persona_id: PersonaIdV1,
+  }),
+  Schema.Struct({ kind: Schema.Literal("create_new") }),
+]);
+export type PersonaCommunityChoiceV1 = Schema.Schema.Type<typeof PersonaCommunityChoiceV1>;
+
 export const PersonaStatusV1 = Schema.Literals(["active", "suspended", "retired"]);
 export type PersonaStatusV1 = Schema.Schema.Type<typeof PersonaStatusV1>;
 

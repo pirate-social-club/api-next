@@ -5,6 +5,7 @@ import {
   CreatePersona,
   ListMyPersonas,
   PersonaChainAccountKindV1,
+  PersonaCommunityChoiceV1,
   PersonaEvmWalletAssignmentV1,
   PersonaEvmWalletPreparationV1,
   PreparePersonaEvmWallet,
@@ -127,6 +128,23 @@ describe("account-owned persona contracts", () => {
     expect(Object.keys(request.properties ?? {})).toEqual(["proof"]);
     expect(JSON.stringify(request)).not.toContain("wallet_address");
     expect(JSON.stringify(request)).not.toContain("hd_wallet_index");
+  });
+
+  test("accepts only a closed persona choice without a client-invented identity", () => {
+    expect(
+      strictDecode(PersonaCommunityChoiceV1)({ kind: "existing", persona_id: "persona_a" }),
+    ).toEqual({ kind: "existing", persona_id: "persona_a" });
+    expect(strictDecode(PersonaCommunityChoiceV1)({ kind: "create_new" })).toEqual({
+      kind: "create_new",
+    });
+    expect(() =>
+      strictDecode(PersonaCommunityChoiceV1)({ kind: "create_new", persona_id: "x" }),
+    ).toThrow();
+    expect(() => strictDecode(PersonaCommunityChoiceV1)({ kind: "reuse" })).toThrow();
+    expect(() =>
+      strictDecode(PersonaCommunityChoiceV1)({ kind: "existing", persona_id: "" }),
+    ).toThrow();
+    expect(() => strictDecode(PersonaCommunityChoiceV1)({ kind: "existing" })).toThrow();
   });
 
   test("retires or cancels a persona through an owner-private idempotent action", () => {

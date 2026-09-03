@@ -58,6 +58,19 @@ async function insertCommunityOwner(admin: Client): Promise<void> {
   );
 }
 
+async function insertJoinAccounts(admin: Client): Promise<void> {
+  await insertCommunityOwner(admin);
+  await admin.query(
+    `INSERT INTO users (user_id, status, account)
+     VALUES ('user-a', 'active', '{}'::jsonb),
+            ('user-b', 'active', '{}'::jsonb),
+            ('user-c', 'active', '{}'::jsonb),
+            ('user-left', 'active', '{}'::jsonb),
+            ('user-banned', 'active', '{}'::jsonb),
+            ('user-pending', 'active', '{}'::jsonb)`,
+  );
+}
+
 suite("Postgres 17 community repository", () => {
   test("keeps membership and follow state scoped to the requested community", async () => {
     await withSchema(async (connection, admin) => {
@@ -110,7 +123,7 @@ suite("Postgres 17 community repository", () => {
   test("makes join and follow idempotent while protecting active follows", async () => {
     await withSchema(async (connection, admin) => {
       await applyPostgresTestBaselineConnection({ connectionString: connection });
-      await insertCommunityOwner(admin);
+      await insertJoinAccounts(admin);
       await admin.query({
         text: `INSERT INTO communities
           (community_id, display_name, status, created_by_user_id, created_at, updated_at)
@@ -121,7 +134,7 @@ suite("Postgres 17 community repository", () => {
         store.join({
           communityId: "community-open",
           actor: { userId: "user-a", kind: "user" },
-          body: {},
+          body: { persona: { kind: "create_new" } },
         }),
       );
       const secondJoin = await runStore(connection, (store) =>
@@ -131,8 +144,10 @@ suite("Postgres 17 community repository", () => {
           body: {},
         }),
       );
-      expect(firstJoin).toEqual({ community: "community-open", status: "joined" });
-      expect(secondJoin).toEqual(firstJoin);
+      expect(firstJoin).toMatchObject({ community: "community-open", status: "joined" });
+      expect(firstJoin.persona_id).toMatch(/^persona_[0-9a-f-]{36}$/);
+      expect(secondJoin).toMatchObject({ community: "community-open", status: "joined" });
+      expect("persona_id" in secondJoin).toBe(false);
 
       const membership = await admin.query({
         text: "SELECT membership_id FROM community_memberships WHERE community_id = $1 AND user_id = $2",
@@ -289,7 +304,7 @@ suite("Postgres 17 community repository", () => {
   test("allows follow regardless of membership state while left members rejoin atomically", async () => {
     await withSchema(async (connection, admin) => {
       await applyPostgresTestBaselineConnection({ connectionString: connection });
-      await insertCommunityOwner(admin);
+      await insertJoinAccounts(admin);
       await admin.query({
         text: `INSERT INTO communities
           (community_id, display_name, status, membership_mode, created_by_user_id, created_at, updated_at)
@@ -332,10 +347,10 @@ suite("Postgres 17 community repository", () => {
           store.join({
             communityId: "community-states",
             actor: { userId: "user-left", kind: "user" },
-            body: {},
+            body: { persona: { kind: "create_new" } },
           }),
         ),
-      ).resolves.toEqual({ community: "community-states", status: "joined" });
+      ).resolves.toMatchObject({ community: "community-states", status: "joined" });
       const follow = await admin.query({
         text: "SELECT status FROM community_follows WHERE community_id = $1 AND user_id = $2",
         values: ["community-states", "user-left"],
@@ -348,7 +363,7 @@ suite("Postgres 17 community repository", () => {
   test("serializes concurrent join/follow/unfollow operations under the community lock", async () => {
     await withSchema(async (connection, admin) => {
       await applyPostgresTestBaselineConnection({ connectionString: connection });
-      await insertCommunityOwner(admin);
+      await insertJoinAccounts(admin);
       await admin.query({
         text: `INSERT INTO communities
           (community_id, display_name, status, created_by_user_id, created_at, updated_at)
@@ -360,12 +375,13 @@ suite("Postgres 17 community repository", () => {
             store.join({
               communityId: "community-concurrent",
               actor: { userId: "user-a", kind: "user" },
-              body: {},
+              body: { persona: { kind: "create_new" } },
             }),
           ),
         ),
       );
       expect(joins.every((result) => result.status === "joined")).toBe(true);
+      expect(joins.filter((result) => "persona_id" in result)).toHaveLength(1);
 
       const follows = await Promise.all(
         Array.from({ length: 6 }, () =>
@@ -401,8 +417,166 @@ suite("Postgres 17 community repository", () => {
     completedTestCount += 1;
   }, 30_000);
 
+  test("resolves the persona choice only at the terminal membership commit", async () => {
+    await withSchema(async (connection, admin) => {
+      await applyPostgresTestBaselineConnection({ connectionString: connection });
+      await insertJoinAccounts(admin);
+      await admin.query({
+        text: `INSERT INTO communities
+          (community_id, display_name, status, membership_mode, created_by_user_id, created_at, updated_at)
+          VALUES ('persona-home', 'Home', 'active', 'open', 'owner', now(), now()),
+                 ('persona-away', 'Away', 'active', 'open', 'owner', now(), now()),
+                 ('persona-request', 'Request', 'active', 'request', 'owner', now(), now())`,
+      });
+      await admin.query("SET session_replication_role = replica");
+      await admin.query({
+        text: `INSERT INTO personas (persona_id, account_id, status, is_first_persona)
+               VALUES ('persona-seed-a', 'user-a', 'active', false),
+                      ('persona-foreign', 'user-b', 'active', false)`,
+      });
+      await admin.query({
+        text: `INSERT INTO persona_profiles (persona_id, revision)
+               VALUES ('persona-seed-a', 1), ('persona-foreign', 1)`,
+      });
+      await admin.query("SET session_replication_role = origin");
+
+      // Case 2: the first unbound platform persona binds exactly once.
+      const boundJoin = await runStore(connection, (store) =>
+        store.join({
+          communityId: "persona-home",
+          actor: { userId: "user-a", kind: "user" },
+          body: { persona: { kind: "existing", persona_id: "persona-seed-a" } },
+        }),
+      );
+      expect(boundJoin).toEqual({
+        community: "persona-home",
+        status: "joined",
+        persona_id: "persona-seed-a",
+      });
+      const homeBinding = await admin.query({
+        text: `SELECT account_id, community_id, binding_source FROM persona_community_bindings
+                WHERE persona_id = $1`,
+        values: ["persona-seed-a"],
+      });
+      expect(homeBinding.rows).toEqual([
+        { account_id: "user-a", community_id: "persona-home", binding_source: "first_membership" },
+      ]);
+
+      // A changed target is a typed conflict and leaves no membership row.
+      await expect(
+        runStore(connection, (store) =>
+          store.join({
+            communityId: "persona-away",
+            actor: { userId: "user-a", kind: "user" },
+            body: { persona: { kind: "existing", persona_id: "persona-seed-a" } },
+          }),
+        ),
+      ).rejects.toMatchObject({ _tag: "CommunityRepositoryError", reason: "constraint" });
+      const awayMembership = await admin.query({
+        text: `SELECT COUNT(*)::int AS count FROM community_memberships
+                WHERE community_id = 'persona-away' AND user_id = 'user-a'`,
+      });
+      expect(awayMembership.rows[0]?.count).toBe(0);
+
+      // Case 1: a persona already bound to the target community rejoins after leaving.
+      await admin.query({
+        text: `UPDATE community_memberships SET status = 'left', left_at = now()
+                WHERE community_id = 'persona-home' AND user_id = 'user-a'`,
+      });
+      const rejoin = await runStore(connection, (store) =>
+        store.join({
+          communityId: "persona-home",
+          actor: { userId: "user-a", kind: "user" },
+          body: { persona: { kind: "existing", persona_id: "persona-seed-a" } },
+        }),
+      );
+      expect(rejoin).toEqual({
+        community: "persona-home",
+        status: "joined",
+        persona_id: "persona-seed-a",
+      });
+
+      // Case 3: create_new mints the persona and its binding in the commit.
+      const mintedJoin = await runStore(connection, (store) =>
+        store.join({
+          communityId: "persona-away",
+          actor: { userId: "user-a", kind: "user" },
+          body: { persona: { kind: "create_new" } },
+        }),
+      );
+      expect(mintedJoin).toMatchObject({ community: "persona-away", status: "joined" });
+      const mintedId = mintedJoin.persona_id;
+      expect(typeof mintedId).toBe("string");
+      const minted = await admin.query({
+        text: `SELECT persona.status,
+                      (pending_profile.persona_id IS NOT NULL) AS has_pending_profile,
+                      wallet.status AS wallet_status,
+                      binding.community_id AS bound_community,
+                      binding.binding_source
+                 FROM personas AS persona
+                 LEFT JOIN persona_pending_profiles AS pending_profile
+                   ON pending_profile.persona_id = persona.persona_id
+                 LEFT JOIN persona_wallet_assignments AS wallet
+                   ON wallet.persona_id = persona.persona_id
+                  AND wallet.chain_account_kind = 'evm'
+                 LEFT JOIN persona_community_bindings AS binding
+                   ON binding.persona_id = persona.persona_id
+                WHERE persona.persona_id = $1`,
+        values: [mintedId],
+      });
+      expect(minted.rows).toEqual([
+        {
+          status: "pending_wallet",
+          has_pending_profile: true,
+          wallet_status: "pending",
+          bound_community: "persona-away",
+          binding_source: "first_membership",
+        },
+      ]);
+
+      // A foreign persona is an enumeration-safe conflict before any write.
+      await expect(
+        runStore(connection, (store) =>
+          store.join({
+            communityId: "persona-home",
+            actor: { userId: "user-c", kind: "user" },
+            body: { persona: { kind: "existing", persona_id: "persona-foreign" } },
+          }),
+        ),
+      ).rejects.toMatchObject({ _tag: "CommunityRepositoryError", reason: "constraint" });
+
+      // A terminal commit without a choice fails closed.
+      await expect(
+        runStore(connection, (store) =>
+          store.join({
+            communityId: "persona-away",
+            actor: { userId: "user-c", kind: "user" },
+            body: {},
+          }),
+        ),
+      ).rejects.toMatchObject({ _tag: "CommunityRepositoryError", reason: "constraint" });
+
+      // A request-mode intent never pre-binds identity.
+      await expect(
+        runStore(connection, (store) =>
+          store.join({
+            communityId: "persona-request",
+            actor: { userId: "user-a", kind: "user" },
+            body: { persona: { kind: "create_new" } },
+          }),
+        ),
+      ).rejects.toMatchObject({ _tag: "CommunityRepositoryError", reason: "constraint" });
+      const requestBindings = await admin.query({
+        text: `SELECT COUNT(*)::int AS count FROM persona_community_bindings
+                WHERE account_id = 'user-a' AND community_id = 'persona-request'`,
+      });
+      expect(requestBindings.rows[0]?.count).toBe(0);
+    });
+    completedTestCount += 1;
+  }, 30_000);
+
   afterAll(async () => {
-    if (connectionString !== undefined && completedTestCount === 6) {
+    if (connectionString !== undefined && completedTestCount === 7) {
       await Bun.write(sentinelPath, sentinelContents);
     }
   });

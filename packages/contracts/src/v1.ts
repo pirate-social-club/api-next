@@ -34,7 +34,12 @@ import {
   UploadObjectMissing,
 } from "./errors.ts";
 import { LanguageTagV1 } from "./language.ts";
-import { PersonaEvmWalletPreparationV1, PersonaIdV1, PublicPersonaV1 } from "./personas.ts";
+import {
+  PersonaCommunityChoiceV1,
+  PersonaEvmWalletPreparationV1,
+  PersonaIdV1,
+  PublicPersonaV1,
+} from "./personas.ts";
 import { TextContentSubmissionV1 } from "./text-moderation.ts";
 
 /**
@@ -1392,12 +1397,20 @@ export const JoinCommunity = endpoint({
   auth: Auth.userOrAdmin(),
   request: {
     path: PathCommunity,
-    body: Schema.Struct({ note: Schema.optional(Schema.NullOr(Schema.String)) }),
+    body: Schema.Struct({
+      note: Schema.optional(Schema.NullOr(Schema.String)),
+      // Spec 014 section 10.2: a terminal membership commit must resolve a
+      // persona; a request-mode join carries no choice because an intent
+      // never pre-binds identity.
+      persona: Schema.optional(PersonaCommunityChoiceV1),
+    }),
     bodyRequired: false,
   },
   response: Schema.Struct({
     community: Schema.String,
     status: Schema.Literals(["joined", "requested", "left"]),
+    // Present only when this commit resolved or minted the membership persona.
+    persona_id: Schema.optional(PersonaIdV1),
   }),
   successStatus: 200,
   errors: [

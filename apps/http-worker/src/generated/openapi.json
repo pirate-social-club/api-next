@@ -42489,6 +42489,51 @@
                         "type": "null"
                       }
                     ]
+                  },
+                  "persona": {
+                    "anyOf": [
+                      {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "existing"
+                                ]
+                              },
+                              "persona_id": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "persona_id"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "create_new"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "kind"
+                            ],
+                            "additionalProperties": false
+                          }
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   }
                 },
                 "additionalProperties": false
@@ -42513,6 +42558,16 @@
                         "joined",
                         "requested",
                         "left"
+                      ]
+                    },
+                    "persona_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
                       ]
                     }
                   },
