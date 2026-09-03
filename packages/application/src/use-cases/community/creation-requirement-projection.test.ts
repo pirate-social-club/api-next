@@ -4,6 +4,7 @@ import type { CreationRequirementProgress } from "@pirate/domain";
 import {
   publicCommunityCreationRequirements,
   publicCreationRequirementProgress,
+  publicOptionalRouteCommunityCreationRequirements,
 } from "./creation-requirement-projection.ts";
 
 const human: CreationRequirementProgress = {
@@ -43,6 +44,10 @@ describe("community creation requirement public projection", () => {
     });
     expect("provider_binding_hash" in projected).toBe(false);
     expect(() => decodeCreationRequirementProgressV1({ ...human })).toThrow();
+  });
+
+  test("projects a requirement-free optional-route intent as an empty map", () => {
+    expect(publicOptionalRouteCommunityCreationRequirements(null)).toEqual({});
   });
 
   test("pins both keyed requirements and rejects a swapped projection", () => {

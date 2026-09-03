@@ -340,8 +340,11 @@ export const CommunityCreationIntentV2 = Schema.Struct({
       return "Non-committed intents cannot expose a committed resource";
     }
     if (intent.status === "verification_required") {
+      const progress = intent.requirements.human_identity;
+      if (progress === undefined) {
+        return "Requirement-free intents never require verification";
+      }
       if (intent.next_action.kind === "start_verification") {
-        const progress = intent.requirements.human_identity;
         return intent.next_action.creation_intent_id === intent.intent_id &&
           progress.requirement === "human_identity" &&
           progress.status === "pending" &&
@@ -352,8 +355,7 @@ export const CommunityCreationIntentV2 = Schema.Struct({
           : "Verification start action must match its reserved human requirement";
       }
       if (intent.next_action.kind === "wait") {
-        return intent.next_action.requirement === null ||
-          intent.requirements.human_identity.status === "pending"
+        return intent.next_action.requirement === null || progress.status === "pending"
           ? undefined
           : "Verification wait action must name the pending human requirement";
       }

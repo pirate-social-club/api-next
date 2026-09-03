@@ -762,69 +762,73 @@
                       "type": "object",
                       "properties": {
                         "human_identity": {
-                          "type": "object",
-                          "properties": {
-                            "requirement": {
-                              "type": "string",
-                              "enum": [
-                                "human_identity"
-                              ]
-                            },
-                            "status": {
-                              "type": "string",
-                              "enum": [
-                                "unmet",
-                                "pending",
-                                "satisfied",
-                                "failed",
-                                "expired"
-                              ]
-                            },
-                            "requirement_hash": {
-                              "type": "string"
-                            },
-                            "provider_id": {
-                              "type": "string"
-                            },
-                            "generation": {
-                              "type": "integer"
-                            },
-                            "ceremony_intent_id": {
-                              "anyOf": [
-                                {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "requirement": {
+                                  "type": "string",
+                                  "enum": [
+                                    "human_identity"
+                                  ]
+                                },
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "unmet",
+                                    "pending",
+                                    "satisfied",
+                                    "failed",
+                                    "expired"
+                                  ]
+                                },
+                                "requirement_hash": {
                                   "type": "string"
                                 },
-                                {
-                                  "type": "null"
-                                }
-                              ]
-                            },
-                            "satisfied_at": {
-                              "anyOf": [
-                                {
+                                "provider_id": {
                                   "type": "string"
                                 },
-                                {
-                                  "type": "null"
+                                "generation": {
+                                  "type": "integer"
+                                },
+                                "ceremony_intent_id": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "satisfied_at": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
                                 }
-                              ]
+                              },
+                              "required": [
+                                "requirement",
+                                "status",
+                                "requirement_hash",
+                                "provider_id",
+                                "generation",
+                                "ceremony_intent_id",
+                                "satisfied_at"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
                             }
-                          },
-                          "required": [
-                            "requirement",
-                            "status",
-                            "requirement_hash",
-                            "provider_id",
-                            "generation",
-                            "ceremony_intent_id",
-                            "satisfied_at"
-                          ],
-                          "additionalProperties": false
+                          ]
                         }
                       },
-                      "required": [
-                        "human_identity"
-                      ],
                       "additionalProperties": false
                     },
                     "next_action": {
@@ -1504,69 +1508,73 @@
                       "type": "object",
                       "properties": {
                         "human_identity": {
-                          "type": "object",
-                          "properties": {
-                            "requirement": {
-                              "type": "string",
-                              "enum": [
-                                "human_identity"
-                              ]
-                            },
-                            "status": {
-                              "type": "string",
-                              "enum": [
-                                "unmet",
-                                "pending",
-                                "satisfied",
-                                "failed",
-                                "expired"
-                              ]
-                            },
-                            "requirement_hash": {
-                              "type": "string"
-                            },
-                            "provider_id": {
-                              "type": "string"
-                            },
-                            "generation": {
-                              "type": "integer"
-                            },
-                            "ceremony_intent_id": {
-                              "anyOf": [
-                                {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "requirement": {
+                                  "type": "string",
+                                  "enum": [
+                                    "human_identity"
+                                  ]
+                                },
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "unmet",
+                                    "pending",
+                                    "satisfied",
+                                    "failed",
+                                    "expired"
+                                  ]
+                                },
+                                "requirement_hash": {
                                   "type": "string"
                                 },
-                                {
-                                  "type": "null"
-                                }
-                              ]
-                            },
-                            "satisfied_at": {
-                              "anyOf": [
-                                {
+                                "provider_id": {
                                   "type": "string"
                                 },
-                                {
-                                  "type": "null"
+                                "generation": {
+                                  "type": "integer"
+                                },
+                                "ceremony_intent_id": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "satisfied_at": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
                                 }
-                              ]
+                              },
+                              "required": [
+                                "requirement",
+                                "status",
+                                "requirement_hash",
+                                "provider_id",
+                                "generation",
+                                "ceremony_intent_id",
+                                "satisfied_at"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
                             }
-                          },
-                          "required": [
-                            "requirement",
-                            "status",
-                            "requirement_hash",
-                            "provider_id",
-                            "generation",
-                            "ceremony_intent_id",
-                            "satisfied_at"
-                          ],
-                          "additionalProperties": false
+                          ]
                         }
                       },
-                      "required": [
-                        "human_identity"
-                      ],
                       "additionalProperties": false
                     },
                     "next_action": {
@@ -2196,62 +2204,66 @@
                           "type": "object",
                           "properties": {
                             "human_identity": {
-                              "type": "object",
-                              "properties": {
-                                "requirement": {
-                                  "type": "string",
-                                  "enum": [
-                                    "human_identity"
-                                  ]
-                                },
-                                "status": {
-                                  "$ref": "#/$defs/Union_1"
-                                },
-                                "requirement_hash": {
-                                  "type": "string"
-                                },
-                                "provider_id": {
-                                  "type": "string"
-                                },
-                                "generation": {
-                                  "type": "integer"
-                                },
-                                "ceremony_intent_id": {
-                                  "anyOf": [
-                                    {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "requirement": {
+                                      "type": "string",
+                                      "enum": [
+                                        "human_identity"
+                                      ]
+                                    },
+                                    "status": {
+                                      "$ref": "#/$defs/Union_1"
+                                    },
+                                    "requirement_hash": {
                                       "type": "string"
                                     },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
-                                },
-                                "satisfied_at": {
-                                  "anyOf": [
-                                    {
+                                    "provider_id": {
                                       "type": "string"
                                     },
-                                    {
-                                      "type": "null"
+                                    "generation": {
+                                      "type": "integer"
+                                    },
+                                    "ceremony_intent_id": {
+                                      "anyOf": [
+                                        {
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "satisfied_at": {
+                                      "anyOf": [
+                                        {
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
                                     }
-                                  ]
+                                  },
+                                  "required": [
+                                    "requirement",
+                                    "status",
+                                    "requirement_hash",
+                                    "provider_id",
+                                    "generation",
+                                    "ceremony_intent_id",
+                                    "satisfied_at"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "null"
                                 }
-                              },
-                              "required": [
-                                "requirement",
-                                "status",
-                                "requirement_hash",
-                                "provider_id",
-                                "generation",
-                                "ceremony_intent_id",
-                                "satisfied_at"
-                              ],
-                              "additionalProperties": false
+                              ]
                             }
                           },
-                          "required": [
-                            "human_identity"
-                          ],
                           "additionalProperties": false
                         },
                         "next_action": {
@@ -4228,69 +4240,73 @@
                       "type": "object",
                       "properties": {
                         "human_identity": {
-                          "type": "object",
-                          "properties": {
-                            "requirement": {
-                              "type": "string",
-                              "enum": [
-                                "human_identity"
-                              ]
-                            },
-                            "status": {
-                              "type": "string",
-                              "enum": [
-                                "unmet",
-                                "pending",
-                                "satisfied",
-                                "failed",
-                                "expired"
-                              ]
-                            },
-                            "requirement_hash": {
-                              "type": "string"
-                            },
-                            "provider_id": {
-                              "type": "string"
-                            },
-                            "generation": {
-                              "type": "integer"
-                            },
-                            "ceremony_intent_id": {
-                              "anyOf": [
-                                {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "requirement": {
+                                  "type": "string",
+                                  "enum": [
+                                    "human_identity"
+                                  ]
+                                },
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "unmet",
+                                    "pending",
+                                    "satisfied",
+                                    "failed",
+                                    "expired"
+                                  ]
+                                },
+                                "requirement_hash": {
                                   "type": "string"
                                 },
-                                {
-                                  "type": "null"
-                                }
-                              ]
-                            },
-                            "satisfied_at": {
-                              "anyOf": [
-                                {
+                                "provider_id": {
                                   "type": "string"
                                 },
-                                {
-                                  "type": "null"
+                                "generation": {
+                                  "type": "integer"
+                                },
+                                "ceremony_intent_id": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "satisfied_at": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
                                 }
-                              ]
+                              },
+                              "required": [
+                                "requirement",
+                                "status",
+                                "requirement_hash",
+                                "provider_id",
+                                "generation",
+                                "ceremony_intent_id",
+                                "satisfied_at"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
                             }
-                          },
-                          "required": [
-                            "requirement",
-                            "status",
-                            "requirement_hash",
-                            "provider_id",
-                            "generation",
-                            "ceremony_intent_id",
-                            "satisfied_at"
-                          ],
-                          "additionalProperties": false
+                          ]
                         }
                       },
-                      "required": [
-                        "human_identity"
-                      ],
                       "additionalProperties": false
                     },
                     "next_action": {
@@ -5002,62 +5018,66 @@
                           "type": "object",
                           "properties": {
                             "human_identity": {
-                              "type": "object",
-                              "properties": {
-                                "requirement": {
-                                  "type": "string",
-                                  "enum": [
-                                    "human_identity"
-                                  ]
-                                },
-                                "status": {
-                                  "$ref": "#/$defs/Union_1"
-                                },
-                                "requirement_hash": {
-                                  "type": "string"
-                                },
-                                "provider_id": {
-                                  "type": "string"
-                                },
-                                "generation": {
-                                  "type": "integer"
-                                },
-                                "ceremony_intent_id": {
-                                  "anyOf": [
-                                    {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "requirement": {
+                                      "type": "string",
+                                      "enum": [
+                                        "human_identity"
+                                      ]
+                                    },
+                                    "status": {
+                                      "$ref": "#/$defs/Union_1"
+                                    },
+                                    "requirement_hash": {
                                       "type": "string"
                                     },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
-                                },
-                                "satisfied_at": {
-                                  "anyOf": [
-                                    {
+                                    "provider_id": {
                                       "type": "string"
                                     },
-                                    {
-                                      "type": "null"
+                                    "generation": {
+                                      "type": "integer"
+                                    },
+                                    "ceremony_intent_id": {
+                                      "anyOf": [
+                                        {
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "satisfied_at": {
+                                      "anyOf": [
+                                        {
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
                                     }
-                                  ]
+                                  },
+                                  "required": [
+                                    "requirement",
+                                    "status",
+                                    "requirement_hash",
+                                    "provider_id",
+                                    "generation",
+                                    "ceremony_intent_id",
+                                    "satisfied_at"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "null"
                                 }
-                              },
-                              "required": [
-                                "requirement",
-                                "status",
-                                "requirement_hash",
-                                "provider_id",
-                                "generation",
-                                "ceremony_intent_id",
-                                "satisfied_at"
-                              ],
-                              "additionalProperties": false
+                              ]
                             }
                           },
-                          "required": [
-                            "human_identity"
-                          ],
                           "additionalProperties": false
                         },
                         "next_action": {
@@ -6198,62 +6218,66 @@
                           "type": "object",
                           "properties": {
                             "human_identity": {
-                              "type": "object",
-                              "properties": {
-                                "requirement": {
-                                  "type": "string",
-                                  "enum": [
-                                    "human_identity"
-                                  ]
-                                },
-                                "status": {
-                                  "$ref": "#/$defs/Union_1"
-                                },
-                                "requirement_hash": {
-                                  "type": "string"
-                                },
-                                "provider_id": {
-                                  "type": "string"
-                                },
-                                "generation": {
-                                  "type": "integer"
-                                },
-                                "ceremony_intent_id": {
-                                  "anyOf": [
-                                    {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "requirement": {
+                                      "type": "string",
+                                      "enum": [
+                                        "human_identity"
+                                      ]
+                                    },
+                                    "status": {
+                                      "$ref": "#/$defs/Union_1"
+                                    },
+                                    "requirement_hash": {
                                       "type": "string"
                                     },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
-                                },
-                                "satisfied_at": {
-                                  "anyOf": [
-                                    {
+                                    "provider_id": {
                                       "type": "string"
                                     },
-                                    {
-                                      "type": "null"
+                                    "generation": {
+                                      "type": "integer"
+                                    },
+                                    "ceremony_intent_id": {
+                                      "anyOf": [
+                                        {
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "satisfied_at": {
+                                      "anyOf": [
+                                        {
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
                                     }
-                                  ]
+                                  },
+                                  "required": [
+                                    "requirement",
+                                    "status",
+                                    "requirement_hash",
+                                    "provider_id",
+                                    "generation",
+                                    "ceremony_intent_id",
+                                    "satisfied_at"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "null"
                                 }
-                              },
-                              "required": [
-                                "requirement",
-                                "status",
-                                "requirement_hash",
-                                "provider_id",
-                                "generation",
-                                "ceremony_intent_id",
-                                "satisfied_at"
-                              ],
-                              "additionalProperties": false
+                              ]
                             }
                           },
-                          "required": [
-                            "human_identity"
-                          ],
                           "additionalProperties": false
                         },
                         "next_action": {

@@ -53,8 +53,9 @@ export function publicCommunityCreationRequirements(
 }
 
 export function publicOptionalRouteCommunityCreationRequirements(
-  humanIdentity: CreationRequirementProgress,
+  humanIdentity: CreationRequirementProgress | null,
 ): CommunityCreationRequirementsV2 {
+  if (humanIdentity === null) return decodeCommunityCreationRequirementsV2({});
   const projected = publicCreationRequirementProgress(humanIdentity);
   if (projected.requirement !== "human_identity") {
     throw new Error("Optional-route creation requires human identity progress");

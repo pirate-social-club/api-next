@@ -40,8 +40,9 @@ export type CommunityCreationIntentState = Readonly<{
   readonly status: CommunityCreationStatus;
   readonly canonical_policy_revision: number;
   readonly canonical_policy_hash: string;
-  readonly verification_requirement_hash: string;
-  readonly verification_provider_id: string;
+  /** Creator verification authority; both null for a requirement-free intent. */
+  readonly verification_requirement_hash: string | null;
+  readonly verification_provider_id: string | null;
   readonly expires_at: string;
   readonly committed_resource: CommittedCommunityResource | null;
 }>;
@@ -141,10 +142,17 @@ export function communityCreationIntentInvariant(
     return "canonical_policy_revision";
   }
   if (!SHA256_HEX.test(state.canonical_policy_hash)) return "canonical_policy_hash";
-  if (!SHA256_HEX.test(state.verification_requirement_hash)) {
-    return "verification_requirement_hash";
+  if (state.verification_requirement_hash === null || state.verification_provider_id === null) {
+    if (state.verification_requirement_hash !== null || state.verification_provider_id !== null) {
+      return "verification_authority_shape";
+    }
+    if (state.status === "verification_required") return "verification_required_without_authority";
+  } else {
+    if (!SHA256_HEX.test(state.verification_requirement_hash)) {
+      return "verification_requirement_hash";
+    }
+    if (!nonEmptyCanonical(state.verification_provider_id)) return "verification_provider_id";
   }
-  if (!nonEmptyCanonical(state.verification_provider_id)) return "verification_provider_id";
   if (!canonicalInstant(state.expires_at)) return "expires_at";
   if (state.status === "committed") {
     if (
@@ -166,11 +174,13 @@ export function creationNextAction(state: CommunityCreationIntentState): Creatio
     case "draft":
       return { kind: "wait", reason_code: "operation_pending" };
     case "verification_required":
-      return {
-        kind: "start_verification",
-        provider_id: state.verification_provider_id,
-        intent_id: state.intent_id,
-      };
+      return state.verification_provider_id === null
+        ? { kind: "wait", reason_code: "reconciliation_pending" }
+        : {
+            kind: "start_verification",
+            provider_id: state.verification_provider_id,
+            intent_id: state.intent_id,
+          };
     case "commit_ready":
       return { kind: "commit" };
     case "quota_exceeded":

@@ -200,6 +200,11 @@ function compileOptionalRouteDraft(policy: unknown): CompiledHumanDraft | null {
   };
 }
 
+/** A requirement-free draft is commit-ready as soon as its member policy compiles. */
+function requirementFreeStatus(compiled: CompiledHumanDraft): "commit_ready" | "gate_unsupported" {
+  return compiled.status === "gate_unsupported" ? "gate_unsupported" : "commit_ready";
+}
+
 function requirementFromValue(
   value: unknown,
   requirement: "human_identity" | "namespace_ownership",
@@ -252,7 +257,7 @@ function nextActionFromRequirements(
     readonly intentId: string;
     readonly status: string;
     readonly contractVersion: "route_v1" | "optional_route_v2";
-    readonly human: CreationRequirementProgress;
+    readonly human: CreationRequirementProgress | null;
     readonly namespace: CreationRequirementProgress | null;
   }>,
 ) {
@@ -260,6 +265,8 @@ function nextActionFromRequirements(
     return { kind: "wait", requirement: null, reason_code: "operation_pending" } as const;
   }
   if (input.status === "verification_required") {
+    // A requirement-free intent never waits on a creator ceremony.
+    if (input.human === null) return null;
     const requirements: readonly (readonly [
       "human_identity" | "namespace_ownership",
       CreationRequirementProgress,
@@ -319,16 +326,21 @@ function documentFromRow(row: Row): CommunityCreationIntentDocument | null {
   );
   const human = requirementFromValue(row.human_requirement, "human_identity");
   const namespace = requirementFromValue(row.namespace_requirement, "namespace_ownership");
+  // Post-amendment optional-route intents carry no creator authority and no
+  // requirement row; grandfathered and route-v1 intents carry both.
+  const requirementFree =
+    contractVersion === "optional_route_v2" &&
+    requirementHash === null &&
+    providerId === null &&
+    row.human_requirement === null;
   if (
     intentId === null ||
     revision === null ||
     status === null ||
     canonicalPolicyRevision === null ||
     canonicalPolicyHash === null ||
-    requirementHash === null ||
-    providerId === null ||
+    (!requirementFree && (requirementHash === null || providerId === null || human === null)) ||
     expiresAt === null ||
-    human === null ||
     (contractVersion !== "route_v1" && contractVersion !== "optional_route_v2") ||
     (contractVersion === "route_v1" && namespace === null) ||
     (contractVersion === "optional_route_v2" && row.namespace_requirement !== null) ||
@@ -406,6 +418,7 @@ function documentFromRow(row: Row): CommunityCreationIntentDocument | null {
     expires_at: expiresAt,
     committed_resource: committedStateResource,
   };
+  if (contractVersion === "route_v1" && (human === null || namespace === null)) return null;
   const publicIntent = {
     ...(contractVersion === "optional_route_v2"
       ? { creation_contract_version: "optional_route_v2" as const }
@@ -420,7 +433,7 @@ function documentFromRow(row: Row): CommunityCreationIntentDocument | null {
       contractVersion === "optional_route_v2"
         ? publicOptionalRouteCommunityCreationRequirements(human)
         : publicCommunityCreationRequirements({
-            human_identity: human,
+            human_identity: human as CreationRequirementProgress,
             namespace_ownership: namespace as CreationRequirementProgress,
           }),
     next_action: nextAction,
@@ -434,9 +447,19 @@ function documentFromRow(row: Row): CommunityCreationIntentDocument | null {
   return Option.isSome(decoded) ? decoded.value : null;
 }
 
+/** The stored creator authority and the projected requirement map must agree. */
+function creatorAuthorityMatches(
+  document: CommunityCreationIntentDocument,
+  providerId: string | null,
+): boolean {
+  const requirementFree =
+    "creation_contract_version" in document && document.requirements.human_identity === undefined;
+  return requirementFree ? providerId === null : providerId !== null;
+}
+
 function stateFromDocument(
   document: CommunityCreationIntentDocument,
-  providerId: string,
+  providerId: string | null,
 ): CommunityCreationIntentState {
   return {
     intent_id: document.intent_id,
@@ -444,8 +467,11 @@ function stateFromDocument(
     status: document.status,
     canonical_policy_revision: document.canonical_policy_revision,
     canonical_policy_hash: document.canonical_policy_hash,
-    verification_requirement_hash: document.requirements.human_identity.requirement_hash,
-    verification_provider_id: document.requirements.human_identity.provider_id || providerId,
+    verification_requirement_hash: document.requirements.human_identity?.requirement_hash ?? null,
+    verification_provider_id:
+      document.requirements.human_identity === undefined
+        ? null
+        : document.requirements.human_identity.provider_id || providerId,
     expires_at: document.expires_at,
     committed_resource: document.committed_resource,
   };
@@ -664,110 +690,6 @@ function insertRevision(
       JSON.stringify(input.intent),
     ],
     readonly: false,
-  });
-}
-
-function insertInitialCreationRequirements(
-  transaction: ControlPlaneTransaction,
-  input: Readonly<{
-    readonly actorId: string;
-    readonly intentId: string;
-    readonly ceremonyIntentId: string;
-    readonly compiled: CompiledHumanDraft;
-  }>,
-): Effect.Effect<void, CommunityCreationRepositoryFailure> {
-  return Effect.gen(function* () {
-    yield* transaction.execute({
-      label: "community.creation.create.insert-requirements",
-      text: `INSERT INTO community_creation_requirement_states (
-               intent_id, actor_id, requirement_kind, status,
-               requirement_hash, provider_id, provider_binding_hash,
-               provider_configuration_kind, provider_configuration_ref,
-               provider_configuration_version, route_family, route_root_label,
-               route_root_label_display, route_path_segment, generation
-             ) VALUES
-             ($1, $2, 'human_identity', 'unmet', $3, $4, $5, $6, $7, $8,
-              NULL, NULL, NULL, NULL, 0)`,
-      values: [
-        input.intentId,
-        input.actorId,
-        input.compiled.verificationRequirementHash,
-        input.compiled.binding.providerId,
-        input.compiled.humanProviderBindingHash,
-        input.compiled.binding.configurationKind,
-        input.compiled.binding.configurationReference,
-        input.compiled.binding.configurationVersion,
-      ],
-      readonly: false,
-    });
-
-    if (input.compiled.status !== "verification_required") return;
-    const reservation = {
-      actor_id: input.actorId,
-      creation_intent_id: input.intentId,
-      ceremony_intent_id: input.ceremonyIntentId,
-      requirement: "human_identity" as const,
-      generation: 1,
-      requirement_hash: input.compiled.verificationRequirementHash,
-      provider_id: input.compiled.binding.providerId,
-      provider_binding_hash: input.compiled.humanProviderBindingHash,
-      route: null,
-    };
-    const reservationRequest = {
-      ...reservation,
-      version: COMMUNITY_CREATION_CEREMONY_RESERVATION_VERSION,
-    };
-    let reservationHash: string;
-    try {
-      reservationHash = communityCreationCeremonyReservationHash(reservation);
-    } catch {
-      return yield* Effect.fail(failure("create", "constraint"));
-    }
-    yield* transaction.execute({
-      label: "community.creation.create.reserve-human-ceremony",
-      text: `INSERT INTO community_creation_ceremony_attempts (
-               ceremony_intent_id, actor_id, intent_id, requirement_kind,
-               generation, requirement_hash, provider_id, provider_binding_hash,
-               provider_configuration_kind, provider_configuration_ref,
-               provider_configuration_version, route_family, route_root_label,
-               route_root_label_display, route_path_segment,
-               reservation_request_hash, reservation_request, expires_at
-             )
-             SELECT $1, $2, $3, 'human_identity', 1, $4, $5, $6, $7, $8, $9,
-                    NULL, NULL, NULL, NULL, $10, $11::jsonb, intent.expires_at
-               FROM community_creation_intents AS intent
-              WHERE intent.intent_id = $3 AND intent.actor_id = $2
-                AND intent.creation_contract_version = 'optional_route_v2'`,
-      values: [
-        input.ceremonyIntentId,
-        input.actorId,
-        input.intentId,
-        input.compiled.verificationRequirementHash,
-        input.compiled.binding.providerId,
-        input.compiled.humanProviderBindingHash,
-        input.compiled.binding.configurationKind,
-        input.compiled.binding.configurationReference,
-        input.compiled.binding.configurationVersion,
-        reservationHash,
-        JSON.stringify(reservationRequest),
-      ],
-      readonly: false,
-    });
-    const advanced = yield* transaction.execute({
-      label: "community.creation.create.advance-human-requirement",
-      text: `UPDATE community_creation_requirement_states
-                SET status = 'pending', generation = 1,
-                    current_ceremony_intent_id = $1,
-                    updated_at = clock_timestamp()
-              WHERE intent_id = $2 AND actor_id = $3
-                AND requirement_kind = 'human_identity'
-                AND status = 'unmet' AND generation = 0`,
-      values: [input.ceremonyIntentId, input.intentId, input.actorId],
-      readonly: false,
-    });
-    if (advanced.rowCount !== 1) {
-      return yield* Effect.fail(failure("create", "invalid-row"));
-    }
   });
 }
 
@@ -1282,6 +1204,9 @@ export function advanceCommunityCreationVerificationInTransaction(
       return { kind: "stale", reason: "intent_expired" } as const;
     }
 
+    if (document.requirements.human_identity === undefined) {
+      return { kind: "stale", reason: "intent_not_verification_required" } as const;
+    }
     const exactBinding =
       document.requirements.human_identity.requirement_hash ===
         HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH &&
@@ -1774,10 +1699,8 @@ export function makeControlPlaneCommunityCreationRepository(
           });
           if (replay !== null) return { document: replay, outcome: "replayed" as const };
 
-          const ceremonyIntentId = nextCeremonyIntentId();
-          if (!validId(ceremonyIntentId)) {
-            return yield* Effect.fail(failure("create", "constraint"));
-          }
+          // Creator-requirement removal amendment: a new intent carries no
+          // creator authority, no requirement row, and no ceremony reservation.
           const inserted = yield* transaction.execute({
             label: "community.creation.create.insert-intent",
             text: `INSERT INTO community_creation_intents (
@@ -1797,14 +1720,14 @@ export function makeControlPlaneCommunityCreationRepository(
               input.actor.userId,
               body.idempotency_key,
               input.requestHash,
-              compiled.status,
+              requirementFreeStatus(compiled),
               JSON.stringify(canonicalDraft),
               compiled.canonicalPolicyHash,
-              compiled.verificationRequirementHash,
-              compiled.binding.providerId,
-              compiled.binding.configurationKind,
-              compiled.binding.configurationReference,
-              compiled.binding.configurationVersion,
+              null,
+              null,
+              null,
+              null,
+              null,
               intentTtlSeconds,
             ],
             readonly: false,
@@ -1812,12 +1735,6 @@ export function makeControlPlaneCommunityCreationRepository(
           if (inserted.rowCount !== 1) {
             return yield* Effect.fail(failure("create", "invalid-row"));
           }
-          yield* insertInitialCreationRequirements(transaction, {
-            actorId: input.actor.userId,
-            intentId,
-            ceremonyIntentId,
-            compiled,
-          });
           const row = yield* loadLockedIntent(transaction, input.actor.userId, intentId, "create");
           if (row === null) return yield* Effect.fail(failure("create", "invalid-row"));
           const document = documentFromRow(row);
@@ -1851,7 +1768,7 @@ export function makeControlPlaneCommunityCreationRepository(
           if (row === null) return null;
           const document = documentFromRow(row);
           const providerId = asString(row.verification_provider_id);
-          if (document === null || providerId === null) {
+          if (document === null || !creatorAuthorityMatches(document, providerId)) {
             return yield* Effect.fail(failure("get", "invalid-row"));
           }
           if (row.expired !== true || TERMINAL_STATUSES.has(document.status)) return document;
@@ -1932,7 +1849,7 @@ export function makeControlPlaneCommunityCreationRepository(
           if (row === null) return yield* Effect.fail(failure("update", "not-found"));
           const document = documentFromRow(row);
           const providerId = asString(row.verification_provider_id);
-          if (document === null || providerId === null) {
+          if (document === null || !creatorAuthorityMatches(document, providerId)) {
             return yield* Effect.fail(failure("update", "invalid-row"));
           }
           if (
@@ -1947,30 +1864,37 @@ export function makeControlPlaneCommunityCreationRepository(
           if (body.expected_revision !== document.revision) {
             return yield* Effect.fail(failure("update", "revision-conflict"));
           }
-          yield* replaceCreationRequirementBindings(transaction, {
-            actorId: input.actor.userId,
-            intentId: input.intentId,
-            compiled,
-          });
-          const ceremonyIntentId = nextCeremonyIntentId();
-          if (!validId(ceremonyIntentId)) {
-            return yield* Effect.fail(failure("update", "constraint"));
+          const requirementFree = document.requirements.human_identity === undefined;
+          let nextStatus: "commit_ready" | "gate_unsupported" | "verification_required";
+          if (requirementFree) {
+            nextStatus = requirementFreeStatus(compiled);
+          } else {
+            // Grandfathered intents keep their pre-amendment creator ceremony.
+            yield* replaceCreationRequirementBindings(transaction, {
+              actorId: input.actor.userId,
+              intentId: input.intentId,
+              compiled,
+            });
+            const ceremonyIntentId = nextCeremonyIntentId();
+            if (!validId(ceremonyIntentId)) {
+              return yield* Effect.fail(failure("update", "constraint"));
+            }
+            const selection =
+              compiled.status === "gate_unsupported"
+                ? "pending"
+                : yield* reserveNextCreationRequirement(transaction, {
+                    actorId: input.actor.userId,
+                    intentId: input.intentId,
+                    ceremonyIntentId,
+                    operation: "update",
+                  });
+            nextStatus =
+              compiled.status === "gate_unsupported"
+                ? "gate_unsupported"
+                : selection === "complete"
+                  ? "commit_ready"
+                  : "verification_required";
           }
-          const selection =
-            compiled.status === "gate_unsupported"
-              ? "pending"
-              : yield* reserveNextCreationRequirement(transaction, {
-                  actorId: input.actor.userId,
-                  intentId: input.intentId,
-                  ceremonyIntentId,
-                  operation: "update",
-                });
-          const nextStatus =
-            compiled.status === "gate_unsupported"
-              ? "gate_unsupported"
-              : selection === "complete"
-                ? "commit_ready"
-                : "verification_required";
           const canonicalDraft = body.draft;
           const updated = yield* transaction.execute({
             label: "community.creation.update.persist-intent",
@@ -1991,11 +1915,11 @@ export function makeControlPlaneCommunityCreationRepository(
               JSON.stringify(canonicalDraft),
               document.canonical_policy_revision + 1,
               compiled.canonicalPolicyHash,
-              compiled.verificationRequirementHash,
-              compiled.binding.providerId,
-              compiled.binding.configurationKind,
-              compiled.binding.configurationReference,
-              compiled.binding.configurationVersion,
+              requirementFree ? null : compiled.verificationRequirementHash,
+              requirementFree ? null : compiled.binding.providerId,
+              requirementFree ? null : compiled.binding.configurationKind,
+              requirementFree ? null : compiled.binding.configurationReference,
+              requirementFree ? null : compiled.binding.configurationVersion,
               input.intentId,
               input.actor.userId,
               document.revision,
@@ -2029,7 +1953,7 @@ export function makeControlPlaneCommunityCreationRepository(
     input: Parameters<CommunityCreationStoreService["commit"]>[0],
     body: Parameters<CommunityCreationStoreService["commit"]>[0]["body"],
     document: CommunityCreationIntentV2,
-    providerId: string,
+    providerId: string | null,
     row: Row,
   ) =>
     Effect.gen(function* () {
@@ -2039,6 +1963,11 @@ export function makeControlPlaneCommunityCreationRepository(
         document.draft.persona_id,
         "commit",
       );
+      const creatorRequirement = document.requirements.human_identity;
+      // Requirement-free commit lands with the creation-quota ruling.
+      if (creatorRequirement === undefined || providerId === null) {
+        return yield* Effect.fail(failure("commit", "constraint"));
+      }
       const compilation = compileCommunityGatePolicy(document.draft.policy);
       const compiledDraft = compileOptionalRouteDraft(document.draft.policy);
       if (
@@ -2046,8 +1975,7 @@ export function makeControlPlaneCommunityCreationRepository(
         compiledDraft === null ||
         compiledDraft.status !== "verification_required" ||
         compilation.canonical_policy_hash !== document.canonical_policy_hash ||
-        compilation.verification_requirement_hash !==
-          document.requirements.human_identity.requirement_hash ||
+        compilation.verification_requirement_hash !== creatorRequirement.requirement_hash ||
         providerId !== compilation.provider_binding.provider_id ||
         row.provider_configuration_kind !==
           compilation.provider_binding.provider_configuration.kind ||
@@ -2551,7 +2479,7 @@ export function makeControlPlaneCommunityCreationRepository(
           communityId,
           CURATED_HUMAN_MEMBERSHIP_POLICY.policy_key,
           CURATED_HUMAN_MEMBERSHIP_POLICY.policy_version_id,
-          document.requirements.human_identity.requirement_hash,
+          compilation.verification_requirement_hash,
           compilation.provider_binding.provider_id,
           compilation.provider_binding.provider_configuration.kind,
           compilation.provider_binding.provider_configuration.reference,
@@ -2595,7 +2523,7 @@ export function makeControlPlaneCommunityCreationRepository(
           communityId,
           evidence.proofSessionId,
           evidence.evidenceReceiptId,
-          document.requirements.human_identity.requirement_hash,
+          creatorRequirement.requirement_hash,
         ],
         readonly: false,
       });
@@ -2678,7 +2606,7 @@ export function makeControlPlaneCommunityCreationRepository(
           if (row === null) return yield* Effect.fail(failure("commit", "not-found"));
           const document = documentFromRow(row);
           const providerId = asString(row.verification_provider_id);
-          if (document === null || providerId === null) {
+          if (document === null || !creatorAuthorityMatches(document, providerId)) {
             return yield* Effect.fail(failure("commit", "invalid-row"));
           }
           if (body.expected_revision !== document.revision) {
