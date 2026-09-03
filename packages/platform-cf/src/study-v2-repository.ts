@@ -401,15 +401,32 @@ export const makeControlPlaneStudyV2Repository = () => ({
               values: [input.accountId, input.postId, input.idempotencyKey],
               readonly: false,
             });
-            if (replay.rows.length === 1) {
-              const row = replay.rows[0] as Row;
-              if (text(row, "request_hash") !== input.requestHash) {
-                return yield* rejected("idempotency-conflict");
-              }
+            if (replay.rows.length > 1) return yield* Effect.fail(failed("invalid-row"));
+            const replayRow = replay.rows[0];
+            if (replayRow !== undefined && text(replayRow, "request_hash") !== input.requestHash) {
+              return yield* rejected("idempotency-conflict");
+            }
+            const authority = yield* transaction.execute<Row>({
+              label: "study-v2.start.authority",
+              text: `SELECT active_owned_persona($1,$2) AS persona_eligible,
+                            active_community_effect($3,$1) AS community_eligible`,
+              values: [input.accountId, input.personaId, input.communityId],
+              readonly: false,
+            });
+            const authorityRow = authority.rows[0];
+            if (
+              authority.rows.length !== 1 ||
+              authorityRow === undefined ||
+              authorityRow.persona_eligible !== true ||
+              authorityRow.community_eligible !== true
+            ) {
+              return yield* rejected("not-found");
+            }
+            if (replayRow !== undefined) {
               const session = yield* readSession(transaction, {
                 accountId: input.accountId,
                 communityId: input.communityId,
-                sessionId: text(row, "session_id"),
+                sessionId: text(replayRow, "session_id"),
               });
               return session ?? (yield* Effect.fail(failed("invalid-row")));
             }

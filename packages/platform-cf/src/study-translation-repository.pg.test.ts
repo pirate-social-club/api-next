@@ -56,7 +56,9 @@ suite("Study translation generation", () => {
       const lineHashes = await Promise.all(lines.map(digest));
       await admin.query("SET session_replication_role = replica");
       try {
-        await admin.query("INSERT INTO users (user_id) VALUES ('study-account')");
+        await admin.query(
+          "INSERT INTO users (user_id) VALUES ('study-account'), ('study-other-account')",
+        );
         await admin.query(
           `INSERT INTO communities (
                community_id, display_name, status, created_by_user_id, created_at, updated_at
@@ -70,8 +72,14 @@ suite("Study translation generation", () => {
                clock_timestamp(),clock_timestamp(),clock_timestamp())`,
         );
         await admin.query(
-          `INSERT INTO personas (persona_id, account_id, status, created_at)
-             VALUES ('study-persona', 'study-account', 'active', clock_timestamp())`,
+          `INSERT INTO personas (
+             persona_id, account_id, status, created_at, retired_at
+           ) VALUES
+             ('study-persona', 'study-account', 'active', clock_timestamp(), NULL),
+             ('study-persona-suspended', 'study-account', 'suspended', clock_timestamp(), NULL),
+             ('study-persona-retired', 'study-account', 'retired', clock_timestamp(),
+               clock_timestamp()),
+             ('study-other-persona', 'study-other-account', 'active', clock_timestamp(), NULL)`,
         );
         await admin.query(
           `INSERT INTO posts (
@@ -380,24 +388,81 @@ suite("Study translation generation", () => {
       ]);
 
       const study = makeControlPlaneStudyV2Repository();
+      const baseStart = {
+        accountId: "study-account",
+        communityId: "study-community",
+        createdAt: "2026-08-29T12:02:00.000Z",
+        targetLanguage: "es",
+        idempotencyKey: "study-session-command",
+        learnerBand: "B1" as const,
+        personaId: "study-persona",
+        postId: "study-post",
+        requestHash: "5".repeat(64),
+        sessionId: "study-session-translation",
+        timezone: "UTC",
+      };
+      const start = (input: Parameters<typeof study.startSession>[0]) =>
+        Effect.runPromise(Effect.scoped(study.startSession(input).pipe(Effect.provide(runtime))));
+      await expect(
+        start({
+          ...baseStart,
+          idempotencyKey: "study-session-foreign-persona",
+          personaId: "study-other-persona",
+          requestHash: "a".repeat(64),
+          sessionId: "study-session-foreign-persona",
+        }),
+      ).rejects.toMatchObject({ reason: "not-found" });
+      await expect(
+        start({
+          ...baseStart,
+          idempotencyKey: "study-session-suspended-persona",
+          personaId: "study-persona-suspended",
+          requestHash: "b".repeat(64),
+          sessionId: "study-session-suspended-persona",
+        }),
+      ).rejects.toMatchObject({ reason: "not-found" });
+      await expect(
+        start({
+          ...baseStart,
+          idempotencyKey: "study-session-retired-persona",
+          personaId: "study-persona-retired",
+          requestHash: "c".repeat(64),
+          sessionId: "study-session-retired-persona",
+        }),
+      ).rejects.toMatchObject({ reason: "not-found" });
       const session = await Effect.runPromise(
-        Effect.scoped(
-          study
-            .startSession({
-              accountId: "study-account",
-              communityId: "study-community",
-              createdAt: "2026-08-29T12:02:00.000Z",
-              targetLanguage: "es",
-              idempotencyKey: "study-session-command",
-              learnerBand: "B1",
-              personaId: "study-persona",
-              postId: "study-post",
-              requestHash: "5".repeat(64),
-              sessionId: "study-session-translation",
-              timezone: "UTC",
-            })
-            .pipe(Effect.provide(runtime)),
-        ),
+        Effect.scoped(study.startSession(baseStart).pipe(Effect.provide(runtime))),
+      );
+      expect(await start(baseStart)).toEqual(session);
+      await admin.query(
+        `UPDATE community_memberships SET status='left'
+          WHERE community_id='study-community' AND user_id='study-account'`,
+      );
+      await expect(start(baseStart)).rejects.toMatchObject({ reason: "not-found" });
+      await expect(start({ ...baseStart, requestHash: "d".repeat(64) })).rejects.toMatchObject({
+        reason: "idempotency-conflict",
+      });
+      await expect(
+        start({
+          ...baseStart,
+          idempotencyKey: "study-session-inactive-membership",
+          requestHash: "e".repeat(64),
+          sessionId: "study-session-inactive-membership",
+        }),
+      ).rejects.toMatchObject({ reason: "not-found" });
+      await expect(
+        start({
+          ...baseStart,
+          accountId: "study-other-account",
+          idempotencyKey: "study-session-missing-membership",
+          personaId: "study-other-persona",
+          requestHash: "f".repeat(64),
+          sessionId: "study-session-missing-membership",
+        }),
+      ).rejects.toMatchObject({ reason: "not-found" });
+      await admin.query(
+        `UPDATE community_memberships SET status='member'
+          WHERE community_id='study-community' AND user_id='study-account'`,
       );
       expect(
         (
