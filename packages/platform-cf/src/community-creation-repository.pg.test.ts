@@ -190,18 +190,124 @@ suite("Postgres 17 community creation repository", () => {
         { verification_requirement_hash: null, verification_provider_id: null },
       ]);
 
-      // Requirement-free commit lands with the creation-quota ruling; until
-      // then the store fails closed rather than minting an unquota'd community.
-      await expect(
-        Effect.runPromise(
-          creationStore.commit({
+      // Commit rechecks the member policy, persona ownership, and the
+      // account-scoped cap; no ceremony, evidence, or subject claim exists.
+      const commitInput = {
+        actor,
+        intentId: document.intent_id,
+        requestHash: "1".repeat(64),
+        body: { idempotency_key: "optional-v2-commit", expected_revision: updated.revision },
+      } as const;
+      const committed = await Effect.runPromise(creationStore.commit(commitInput));
+      const resource = committed.document.committed_resource;
+      expect(committed).toMatchObject({
+        outcome: "fresh_created",
+        document: {
+          creation_contract_version: "optional_route_v2",
+          revision: 3,
+          status: "committed",
+          requirements: {},
+          next_action: { kind: "none", reason: "committed" },
+          committed_resource: { authority_version: "optional_route_v2", canonical_route: null },
+        },
+      });
+      if (resource === null || !("authority_version" in resource)) {
+        throw new Error("expected an optional-route resource");
+      }
+      expect(resource.href).toBe(`/c/${resource.community_id}`);
+      await expect(Effect.runPromise(creationStore.commit(commitInput))).resolves.toEqual({
+        document: committed.document,
+        outcome: "replayed",
+      });
+      const activated = await admin.query(
+        `SELECT community.status, community.route_authority_version,
+                (SELECT COUNT(*)::integer FROM community_memberships
+                  WHERE community_id = community.community_id
+                    AND user_id = $1 AND status = 'member') AS memberships,
+                (SELECT COUNT(*)::integer FROM community_route_authority_grants
+                  WHERE community_id = community.community_id
+                    AND principal_user_id = $1 AND authority = 'manage_routes'
+                    AND status = 'active') AS route_grants,
+                (SELECT COUNT(*)::integer FROM community_policy_current
+                  WHERE community_id = community.community_id) AS current_policies,
+                (SELECT COUNT(*)::integer FROM community_creation_subject_claims
+                  WHERE community_id = community.community_id) AS subject_claims
+           FROM communities AS community
+          WHERE community.community_id = $2`,
+        [actor.userId, resource.community_id],
+      );
+      expect(activated.rows).toEqual([
+        {
+          status: "active",
+          route_authority_version: "optional_route_v2",
+          memberships: 1,
+          route_grants: 1,
+          current_policies: 1,
+          subject_claims: 0,
+        },
+      ]);
+    });
+    completedTestCount += 1;
+  }, 30_000);
+
+  test("settles a requirement-free commit as quota_exceeded at the account cap", async () => {
+    await withSchema(async (connection, admin) => {
+      await applyPostgresTestBaselineConnection({ connectionString: connection });
+      await admin.query({
+        text: "INSERT INTO users (user_id, status, account) VALUES ($1, 'active', '{}'::jsonb)",
+        values: [actor.userId],
+      });
+      const personaId = await firstPersonaId(admin, actor.userId);
+      let sequence = 0;
+      const store = makeControlPlaneCommunityCreationStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+        {
+          intent_ttl_seconds: 86_400,
+          optional_route_account_community_cap: 1,
+          next_intent_id: () => `capped-${++sequence}`,
+          next_ceremony_intent_id: () => `capped-ceremony-${sequence}`,
+          next_community_id: () => `community_${crypto.randomUUID()}`,
+          next_subject_claim_id: () => `capped-subject-claim-${sequence}`,
+        },
+      );
+      const createAndCommit = async (name: string, key: string, hash: string) => {
+        const created = await Effect.runPromise(
+          store.create({
             actor,
-            intentId: document.intent_id,
-            requestHash: "1".repeat(64),
-            body: { idempotency_key: "optional-v2-commit", expected_revision: updated.revision },
+            requestHash: hash,
+            body: {
+              idempotency_key: `${key}-create`,
+              draft: { persona_id: personaId, name, description: null, policy: humanPolicy },
+            },
           }),
-        ),
-      ).rejects.toMatchObject({ _tag: "CommunityCreationRepositoryError", reason: "constraint" });
+        );
+        return Effect.runPromise(
+          store.commit({
+            actor,
+            intentId: created.document.intent_id,
+            requestHash: hash,
+            body: {
+              idempotency_key: `${key}-commit`,
+              expected_revision: created.document.revision,
+            },
+          }),
+        );
+      };
+      const first = await createAndCommit("First", "capped-one", "a".repeat(64));
+      expect(first.outcome).toBe("fresh_created");
+      const second = await createAndCommit("Second", "capped-two", "b".repeat(64));
+      expect(second).toMatchObject({
+        outcome: "fresh_not_created",
+        document: {
+          status: "quota_exceeded",
+          next_action: { kind: "blocked", reason: "quota_exceeded" },
+        },
+      });
+      const communities = await admin.query(
+        "SELECT COUNT(*)::integer AS created FROM communities WHERE created_by_user_id = $1",
+        [actor.userId],
+      );
+      expect(communities.rows).toEqual([{ created: 1 }]);
     });
     completedTestCount += 1;
   }, 30_000);
@@ -712,7 +818,7 @@ suite("Postgres 17 community creation repository", () => {
 });
 
 afterAll(async () => {
-  if (connectionString !== undefined && completedTestCount === 5) {
+  if (connectionString !== undefined && completedTestCount === 6) {
     await Bun.write(sentinelPath, sentinelContents);
   }
 });
