@@ -79,6 +79,7 @@ async function seedSong(
   admin: Client,
   suffix: string,
   walletAddress?: string,
+  thirdPartyRewardLegs: "allowed" | "owner_only" = "allowed",
 ): Promise<SeedIdentity> {
   const accountId = `account-${suffix}`;
   const communityId = `community-${suffix}`;
@@ -142,6 +143,25 @@ async function seedSong(
         `r2://audio-${suffix}`,
         personaId,
       ],
+    );
+    // Publication normally initializes the Spec 013 owner policy through a
+    // trigger this fixture suppresses, so create the same head and revision
+    // explicitly. Every published song carries one in production.
+    await admin.query(
+      `INSERT INTO song_owner_policy_revisions (
+         community_id, post_id, audio_revision, owner_account_id, policy_revision,
+         third_party_reward_legs, pool_leg, derivative_video, policy_hash
+       ) VALUES ($1, $2, 3, $3, 1, $4, 'allowed', 'allowed',
+         song_owner_policy_hash_v1($1, $2, 3, $3, 1, $4, 'allowed', 'allowed'))`,
+      [communityId, postId, accountId, thirdPartyRewardLegs],
+    );
+    await admin.query(
+      `INSERT INTO song_owner_policies (
+         community_id, post_id, audio_revision, owner_account_id,
+         current_policy_revision, current_policy_hash
+       ) VALUES ($1, $2, 3, $3, 1,
+         song_owner_policy_hash_v1($1, $2, 3, $3, 1, $4, 'allowed', 'allowed'))`,
+      [communityId, postId, accountId, thirdPartyRewardLegs],
     );
   } finally {
     await admin.query("SET session_replication_role = origin");
@@ -582,6 +602,92 @@ suite("Postgres 17 Megapot rewards persistence", () => {
       await expect(
         Effect.runPromise(store.openOffer({ ...openInput, requestHash: hash("9") })),
       ).rejects.toMatchObject({ reason: "idempotency-conflict" });
+    });
+    completedTestCount += 1;
+  });
+
+  test("binds offer-open to the current owner policy, not the creation snapshot", async () => {
+    await withSchema(async (admin, scopedConnection) => {
+      const identity = await seedSong(admin, "owner-only", address("d"), "owner_only");
+      const otherAccountId = "account-owner-only-member";
+      await admin.query(
+        `INSERT INTO users (user_id, status, account, created_at)
+         VALUES ($1, 'active', '{}'::jsonb, clock_timestamp() - interval '30 days')`,
+        [otherAccountId],
+      );
+      await activatePendingPersonaFixtures(admin, undefined, address("e"));
+      const otherPersonas = await admin.query<{ readonly persona_id: string }>(
+        `SELECT persona_id FROM personas WHERE account_id=$1 AND is_first_persona`,
+        [otherAccountId],
+      );
+      const otherPersonaId = otherPersonas.rows[0]?.persona_id;
+      if (otherPersonaId === undefined) throw new Error("second persona was not provisioned");
+      await admin.query(
+        `INSERT INTO community_memberships (
+           community_id, membership_id, user_id, status, joined_at, created_at, updated_at
+         ) VALUES ($1, $2, $3, 'member', clock_timestamp() - interval '5 days',
+           clock_timestamp() - interval '5 days', clock_timestamp() - interval '5 days')`,
+        [identity.communityId, "membership-owner-only-member", otherAccountId],
+      );
+      const store = makeControlPlaneSongRewardOfferStore(
+        makeDirectPostgresControlPlaneLayer(scopedConnection),
+      );
+      const openInput = {
+        actionId: "reward-action-owner-only",
+        offerId: "reward-offer-owner-only",
+        accountId: otherAccountId,
+        personaId: otherPersonaId,
+        communityId: identity.communityId,
+        postId: identity.postId,
+        idempotencyKey: "owner-only-1",
+        requestHash: hash("5"),
+        termsHash: hash("6"),
+        rewardPolicy: {
+          version: "scarce_reward_v1",
+          community_id: identity.communityId,
+          offer_id: "reward-offer-owner-only",
+          requirements: ["human.personhood", "credential.subject_unique"],
+          uniqueness: { kind: "single_authority", authority_id: "reward-offer-owner-only" },
+          legal_eligibility: {
+            age: null,
+            geography: null,
+            disclosure: null,
+            environment: "test_staging_empty_v1",
+          },
+        },
+        rewardPolicyHash: hash("a"),
+        startsAt: new Date().toISOString(),
+        endsAt: new Date(Date.now() + 86_400_000).toISOString(),
+        createdAt: new Date().toISOString(),
+      } as const;
+
+      // An ordinary member cannot open an offer the song owner restricted.
+      await expect(Effect.runPromise(store.openOffer(openInput))).rejects.toMatchObject({
+        _tag: "SongRewardOfferRejected",
+        reason: "owner-only",
+      });
+
+      // The song owner always may, and the offer freezes the policy identity.
+      const opened = await Effect.runPromise(
+        store.openOffer({
+          ...openInput,
+          actionId: "reward-action-owner-only-owner",
+          offerId: "reward-offer-owner-only-owner",
+          accountId: identity.accountId,
+          personaId: identity.personaId,
+          idempotencyKey: "owner-only-2",
+        }),
+      );
+      expect(opened).toMatchObject({ replayed: false });
+      const snapshot = await admin.query<{ readonly owner_policy_snapshot: unknown }>(
+        `SELECT owner_policy_snapshot FROM song_reward_offers WHERE offer_id=$1`,
+        [opened.offer.offerId],
+      );
+      expect(snapshot.rows[0]?.owner_policy_snapshot).toMatchObject({
+        post_id: identity.postId,
+        audio_revision: 3,
+        policy_revision: 1,
+      });
     });
     completedTestCount += 1;
   });

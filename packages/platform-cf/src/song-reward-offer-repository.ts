@@ -282,7 +282,11 @@ export function makeControlPlaneSongRewardOfferRepository() {
             }
             const authority = yield* transaction.execute<Row>({
               label: "song-reward-offer.open.authority",
-              text: `SELECT publication.audio_revision
+              text: `SELECT publication.audio_revision,
+                            revision.policy_revision AS owner_policy_revision,
+                            revision.policy_hash AS owner_policy_hash,
+                            revision.third_party_reward_legs,
+                            head.owner_account_id
                        FROM communities community
                        JOIN community_memberships membership
                          ON membership.community_id=community.community_id
@@ -294,11 +298,37 @@ export function makeControlPlaneSongRewardOfferRepository() {
                        JOIN media_publication_projections publication
                          ON publication.community_id=post.community_id
                         AND publication.post_id=post.post_id
+                       JOIN song_owner_policies head
+                         ON head.community_id=post.community_id
+                        AND head.post_id=post.post_id
+                        AND head.audio_revision=publication.audio_revision
+                       JOIN song_owner_policy_revisions revision
+                         ON revision.community_id=head.community_id
+                        AND revision.post_id=head.post_id
+                        AND revision.owner_account_id=head.owner_account_id
+                        AND revision.policy_revision=head.current_policy_revision
+                        AND revision.policy_hash=head.current_policy_hash
                       WHERE community.community_id=$1 AND community.status='active'`,
               values: [input.communityId, input.accountId, input.personaId, input.postId],
               readonly: false,
             });
             if (authority.rows.length !== 1) return yield* rejected("song-unavailable");
+            const authorityRow = authority.rows[0] as Row;
+            if (
+              text(authorityRow, "third_party_reward_legs") === "owner_only" &&
+              text(authorityRow, "owner_account_id") !== input.accountId
+            ) {
+              return yield* rejected("owner-only");
+            }
+            // Spec 015 §4.1: the offer freezes the creation-time policy identity.
+            // Authority is always re-derived from the current policy, never from
+            // this snapshot, so a later owner narrowing binds new legs at once.
+            const ownerPolicySnapshot = {
+              post_id: input.postId,
+              audio_revision: integer(authorityRow, "audio_revision"),
+              policy_revision: integer(authorityRow, "owner_policy_revision"),
+              policy_hash: text(authorityRow, "owner_policy_hash"),
+            };
             const rewardPolicyVersionId = `reward_policy_${input.offerId}`;
             const rewardPolicyKey = `song_reward_offer:${input.offerId}`;
             yield* transaction.execute({
@@ -350,20 +380,19 @@ export function makeControlPlaneSongRewardOfferRepository() {
                        offer_id,community_id,post_id,audio_revision,created_by_account_id,status,
                        starts_at,ends_at,owner_policy_snapshot,terms_hash,reward_policy_version_id,
                        created_at,updated_at
-                     ) VALUES ($1,$2,$3,$4,$5,'draft',$6,$7,
-                       '{"third_party_legs":"allowed","source":"platform_default_v1"}'::jsonb,
-                       $8,$9,$10,$10)`,
+                     ) VALUES ($1,$2,$3,$4,$5,'draft',$6,$7,$11::jsonb,$8,$9,$10,$10)`,
               values: [
                 input.offerId,
                 input.communityId,
                 input.postId,
-                integer(authority.rows[0] as Row, "audio_revision"),
+                integer(authorityRow, "audio_revision"),
                 input.accountId,
                 input.startsAt,
                 input.endsAt,
                 input.termsHash,
                 rewardPolicyVersionId,
                 input.createdAt,
+                JSON.stringify(ownerPolicySnapshot),
               ],
               readonly: false,
             });
@@ -415,8 +444,8 @@ export function makeControlPlaneSongRewardOfferRepository() {
             const authority = yield* transaction.execute<Row>({
               label: "song-reward-offer.leg.authority",
               text: `SELECT offer.status AS offer_status, offer.ends_at,
-                            offer.owner_policy_snapshot->>'third_party_legs' AS third_party_legs,
-                            publication.actor_user_id AS song_owner_account_id,
+                            revision.third_party_reward_legs AS third_party_legs,
+                            head.owner_account_id AS song_owner_account_id,
                             attestation.attestation_id, attestation.environment,
                             attestation.chain_id, attestation.usdc_address,
                             asset.decimals AS token_decimals, observation.drawing_id
@@ -432,6 +461,16 @@ export function makeControlPlaneSongRewardOfferRepository() {
                          ON publication.community_id=offer.community_id
                         AND publication.post_id=offer.post_id
                         AND publication.audio_revision=offer.audio_revision
+                       JOIN song_owner_policies head
+                         ON head.community_id=offer.community_id
+                        AND head.post_id=offer.post_id
+                        AND head.audio_revision=offer.audio_revision
+                       JOIN song_owner_policy_revisions revision
+                         ON revision.community_id=head.community_id
+                        AND revision.post_id=head.post_id
+                        AND revision.owner_account_id=head.owner_account_id
+                        AND revision.policy_revision=head.current_policy_revision
+                        AND revision.policy_hash=head.current_policy_hash
                        JOIN megapot_deployment_attestations attestation ON attestation.status='active'
                        JOIN reward_asset_whitelist asset
                          ON asset.chain_id=attestation.chain_id
@@ -572,8 +611,8 @@ export function makeControlPlaneSongRewardOfferRepository() {
             const authority = yield* transaction.execute<Row>({
               label: "song-reward-offer.asset-leg.authority",
               text: `SELECT offer.status AS offer_status,
-                            offer.owner_policy_snapshot->>'third_party_legs' AS third_party_legs,
-                            publication.actor_user_id AS song_owner_account_id,
+                            revision.third_party_reward_legs AS third_party_legs,
+                            head.owner_account_id AS song_owner_account_id,
                             asset.chain_id, asset.token_address, asset.decimals,
                             asset.symbol, asset.policy_version, attestation.custody_address
                        FROM song_reward_offers offer
@@ -588,6 +627,16 @@ export function makeControlPlaneSongRewardOfferRepository() {
                          ON publication.community_id=offer.community_id
                         AND publication.post_id=offer.post_id
                         AND publication.audio_revision=offer.audio_revision
+                       JOIN song_owner_policies head
+                         ON head.community_id=offer.community_id
+                        AND head.post_id=offer.post_id
+                        AND head.audio_revision=offer.audio_revision
+                       JOIN song_owner_policy_revisions revision
+                         ON revision.community_id=head.community_id
+                        AND revision.post_id=head.post_id
+                        AND revision.owner_account_id=head.owner_account_id
+                        AND revision.policy_revision=head.current_policy_revision
+                        AND revision.policy_hash=head.current_policy_hash
                        JOIN reward_asset_whitelist asset
                          ON asset.chain_id=$4 AND asset.token_address=$5
                         AND asset.decimals=$6 AND asset.symbol=$7 AND asset.policy_version=$8

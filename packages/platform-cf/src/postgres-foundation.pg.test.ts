@@ -1684,6 +1684,8 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "reward_eligibility_decisions_append_only",
         "reward_subject_consumptions_append_only",
         "reward_uniqueness_authorities_append_only",
+        "song_derivative_video_policy_observations_append_only",
+        "song_owner_policy_revisions_append_only",
         "song_streak_days_append_only",
         "subject_key_binding_events_append_only",
         "subject_keys_append_only",
