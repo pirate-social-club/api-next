@@ -1,10 +1,13 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { generateClient, generateOpenApi, registry } from "@pirate/contracts";
 import { serializeApiClientProvenance } from "./api-client-provenance.ts";
 
 const root = new URL("../", import.meta.url);
 const serverGenerated = new URL("apps/http-worker/src/generated/", root);
 const clientGenerated = new URL("packages/api-client/src/generated/", root);
+const clientPackage = JSON.parse(
+  await readFile(new URL("packages/api-client/package.json", root), "utf8"),
+) as { readonly version: string };
 await Promise.all([
   mkdir(serverGenerated, { recursive: true }),
   mkdir(clientGenerated, { recursive: true }),
@@ -16,7 +19,7 @@ await Promise.all([
   writeFile(new URL("client.ts", clientGenerated), clientText),
   writeFile(
     new URL("provenance.json", clientGenerated),
-    serializeApiClientProvenance(openapiText, clientText),
+    serializeApiClientProvenance(openapiText, clientText, clientPackage.version),
   ),
 ]);
 await writeFile(

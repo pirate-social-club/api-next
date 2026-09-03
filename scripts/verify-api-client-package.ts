@@ -170,10 +170,17 @@ async function main(): Promise<void> {
     const manifest = JSON.parse(
       await readFile(join(packedRoot, "src/generated/provenance.json"), "utf8"),
     ) as {
+      readonly package?: string;
+      readonly version?: string;
       readonly sourceIdentifier?: string;
       readonly openapiSha256?: string;
       readonly clientSha256?: string;
     };
+    if (manifest.package !== "@pirate/api-client" || manifest.version !== packedPackage.version) {
+      throw new Error(
+        `Packed client provenance identity ${manifest.package ?? "?"}@${manifest.version ?? "?"} does not match the packed package`,
+      );
+    }
     if (
       !/^api-next-contracts@[a-f0-9]{64}$/.test(manifest.sourceIdentifier ?? "") ||
       !/^[a-f0-9]{64}$/.test(manifest.openapiSha256 ?? "") ||
