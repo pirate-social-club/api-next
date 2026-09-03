@@ -38,11 +38,15 @@ describe("community creation requirement contracts", () => {
     expect(Schema.encodeSync(CommunityCreationRequirementsV1)(decoded)).toEqual(decoded);
   });
 
-  test("freezes V2 to exactly one human identity requirement", () => {
+  test("freezes V2 to at most one grandfathered human identity requirement", () => {
     const decoded = decodeCommunityCreationRequirementsV2({ human_identity: human });
     expect(Schema.encodeSync(CommunityCreationRequirementsV2)(decoded)).toEqual({
       human_identity: human,
     });
+    expect(decodeCommunityCreationRequirementsV2({})).toEqual({});
+    expect(() =>
+      decodeCommunityCreationRequirementsV2({ namespace_ownership: namespace }),
+    ).toThrow();
     expect(() =>
       decodeCommunityCreationRequirementsV2({
         human_identity: human,

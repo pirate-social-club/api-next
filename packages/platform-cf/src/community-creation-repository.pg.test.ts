@@ -1,9 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import type { CommunityCreationStore } from "@pirate/application";
-import type { ProviderSessionStart } from "@pirate/application/verification";
-import type { EvidenceBundle, ProofSession } from "@pirate/domain/verification";
 import { Effect } from "effect";
-import { Client } from "pg";
+import type { Client } from "pg";
 import {
   applyPostgresTestBaselineConnection,
   withReusablePostgresTestSchema,
@@ -11,8 +9,6 @@ import {
 import { makeControlPlaneCommunityCreationStore } from "./community-creation-repository.ts";
 import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
-import { makeControlPlaneVerificationCompletionStore } from "./verification-completion-repository.ts";
-import { makeControlPlaneVerificationSessionStartStore } from "./verification-start-repository.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -84,74 +80,10 @@ function storeFor(
   });
 }
 
-function veryEvidenceBundle(session: ProofSession): EvidenceBundle {
-  if (session.scope.kind !== "named") throw new Error("expected the Very named scope");
-  return {
-    id: "bound-start-bundle",
-    proof_session_id: session.id,
-    subject_keys: [
-      {
-        id: "bound-start-subject",
-        issuer: session.scope.issuer,
-        method: session.method,
-        scope: session.scope,
-        subject_digest: "d".repeat(64),
-      },
-    ],
-    receipts: [
-      {
-        id: "bound-start-receipt",
-        proof_session_id: session.id,
-        provider_id: session.provider_id,
-        issuer: session.scope.issuer,
-        method: session.method,
-        scope: session.scope,
-        provider_configuration: session.provider_configuration,
-        protocol_version: session.protocol_version,
-        environment: session.environment,
-        provenance_kind: "proof_session",
-        evidence_kind: "very.web.server-verified.v1",
-        evidence_hash: "6".repeat(64),
-        metadata: { source: "test" },
-        observed_at: "2026-08-21T00:00:30.000Z",
-        expires_at: "2099-08-21T00:00:00.000Z",
-        subject_key_id: "bound-start-subject",
-      },
-    ],
-    binding_groups: [
-      { id: "bound-start-binding", kind: "same_subject", subject_key_id: "bound-start-subject" },
-    ],
-    assertions: [
-      {
-        id: "bound-start-unique",
-        subject_key_id: "bound-start-subject",
-        evidence_receipt_id: "bound-start-receipt",
-        claim_id: "credential.subject_unique",
-        value: { subject_unique: true },
-        assurance: "provider_attested",
-        binding_group_id: "bound-start-binding",
-        observed_at: "2026-08-21T00:00:30.000Z",
-        expires_at: "2099-08-21T00:00:00.000Z",
-      },
-      {
-        id: "bound-start-personhood",
-        subject_key_id: "bound-start-subject",
-        evidence_receipt_id: "bound-start-receipt",
-        claim_id: "human.personhood",
-        value: { personhood: true },
-        assurance: "provider_attested",
-        binding_group_id: "bound-start-binding",
-        observed_at: "2026-08-21T00:00:30.000Z",
-        expires_at: "2099-08-21T00:00:00.000Z",
-      },
-    ],
-  };
-}
-
 const actor = { userId: "creator-1", kind: "user" as const };
 
 suite("Postgres 17 community creation repository", () => {
-  test("commits V2 after one human ceremony with a permanent namespaceless resource", async () => {
+  test("creates requirement-free V2 intents that are commit-ready without any ceremony", async () => {
     await withSchema(async (connection, admin) => {
       await applyPostgresTestBaselineConnection({ connectionString: connection });
       await admin.query({
@@ -179,127 +111,92 @@ suite("Postgres 17 community creation repository", () => {
       expect(document).toMatchObject({
         creation_contract_version: "optional_route_v2",
         revision: 1,
-        status: "verification_required",
-        requirements: { human_identity: { status: "pending" } },
-      });
-      expect(Object.keys(document.requirements)).toEqual(["human_identity"]);
-      if (document.next_action.kind !== "start_verification") {
-        throw new Error("expected the human creation ceremony");
-      }
-
-      const providerInput = {
-        actor_id: actor.userId,
-        intent_id: document.next_action.ceremony_intent_id,
-        request_hash: "8".repeat(64),
-        method: "palm_web",
-        scope: {
-          kind: "named" as const,
-          scope_semantics: "issuer_rp_scope" as const,
-          issuer: "https://verify.very.org",
-          rp_scope: "pirate-social",
-        },
-        request_mode: "dynamic" as const,
-        provider_configuration: {
-          kind: "dynamic" as const,
-          reference: "very-web",
-          version: "1",
-        },
-        requested_requirements: [
-          { claim_id: "credential.subject_unique" as const },
-          { claim_id: "human.personhood" as const },
-        ],
-        requested_claim_ids: ["credential.subject_unique" as const, "human.personhood" as const],
-        subject_binding_intent: "establish" as const,
-        protocol_version: "very-web-v1",
-        environment: "test",
-      } as const;
-      const startStore = makeControlPlaneVerificationSessionStartStore(
-        makeDirectPostgresControlPlaneLayer(connection),
-      );
-      const reservation = await Effect.runPromise(
-        Effect.scoped(
-          startStore.reserve({
-            start: providerInput,
-            ttl_ms: 60_000,
-            creation: {
-              creation_intent_id: document.intent_id,
-              requirement: "human_identity",
-              generation: document.next_action.generation,
-              expected_revision: document.revision,
-              idempotency_key: "optional-v2-launch",
-              provider_id: "very.web",
-            },
-          }),
-        ),
-      );
-      if (reservation.kind !== "acquired") throw new Error("expected a start reservation");
-      const providerStart: ProviderSessionStart = {
-        session: {
-          id: "optional-v2-proof",
-          ...providerInput,
-          provider_id: "very.web",
-          upstream_session_ref: "very-upstream-optional-v2",
-          status: "pending",
-          started_at: "2026-08-21T00:00:00.000Z",
-          expires_at: "2099-08-21T00:00:00.000Z",
-        },
-        presentation: {
-          kind: "redirect",
-          session_id: "optional-v2-proof",
-          url: "https://very.example/verify/optional-v2",
-        },
-      };
-      await expect(
-        Effect.runPromise(
-          Effect.scoped(startStore.finalize(reservation.reservation, providerStart)),
-        ),
-      ).resolves.toMatchObject({ kind: "created" });
-
-      const completionStore = makeControlPlaneVerificationCompletionStore(
-        makeDirectPostgresControlPlaneLayer(connection),
-      );
-      const completionReservation = await Effect.runPromise(
-        Effect.scoped(
-          completionStore.reserveAttempt({
-            proof_session_id: providerStart.session.id,
-            idempotency_key: "optional-v2-complete",
-            lease_ms: 60_000,
-            max_consumed_attempts: 3,
-          }),
-        ),
-      );
-      if (completionReservation.kind !== "acquired") {
-        throw new Error("expected a completion reservation");
-      }
-      const completion = await Effect.runPromise(
-        Effect.scoped(
-          completionStore.commit({
-            actor_id: actor.userId,
-            idempotency_key: "optional-v2-complete",
-            attempt: completionReservation.reservation,
-            expected_session: providerStart.session,
-            result_hash: "6".repeat(64),
-            bundle: veryEvidenceBundle(providerStart.session),
-          }),
-        ),
-      );
-      expect(completion).toMatchObject({ kind: "committed" });
-
-      const ready = await Effect.runPromise(
-        creationStore.get({ actor, intentId: document.intent_id }),
-      );
-      expect(ready).toMatchObject({
-        creation_contract_version: "optional_route_v2",
-        revision: 2,
         status: "commit_ready",
+        requirements: {},
         next_action: { kind: "commit" },
       });
-      if (ready === null) throw new Error("expected a commit-ready intent");
+      expect(Object.keys(document.requirements)).toEqual([]);
+
+      const stored = await admin.query(
+        `SELECT intent.verification_requirement_hash, intent.verification_provider_id,
+                intent.provider_configuration_kind, intent.provider_configuration_ref,
+                intent.provider_configuration_version,
+                (SELECT COUNT(*)::integer FROM community_creation_requirement_states
+                  WHERE intent_id = intent.intent_id) AS requirement_rows,
+                (SELECT COUNT(*)::integer FROM community_creation_ceremony_attempts
+                  WHERE intent_id = intent.intent_id) AS ceremony_rows
+           FROM community_creation_intents AS intent
+          WHERE intent.intent_id = $1`,
+        [document.intent_id],
+      );
+      expect(stored.rows).toEqual([
+        {
+          verification_requirement_hash: null,
+          verification_provider_id: null,
+          provider_configuration_kind: null,
+          provider_configuration_ref: null,
+          provider_configuration_version: null,
+          requirement_rows: 0,
+          ceremony_rows: 0,
+        },
+      ]);
+
+      // Storage keys the cardinality on the absent creator authority: a
+      // requirement-free intent can never gain a human requirement row.
+      await expect(
+        admin.query({
+          text: `INSERT INTO community_creation_requirement_states (
+                   intent_id, actor_id, requirement_kind, status,
+                   requirement_hash, provider_id, provider_binding_hash,
+                   provider_configuration_kind, provider_configuration_ref,
+                   provider_configuration_version, route_family, route_root_label,
+                   route_root_label_display, route_path_segment, generation
+                 ) VALUES ($1, $2, 'human_identity', 'unmet', $3, 'very.web', $4,
+                           'dynamic', 'very-web', '1', NULL, NULL, NULL, NULL, 0)`,
+          values: [document.intent_id, actor.userId, "a".repeat(64), "b".repeat(64)],
+        }),
+      ).rejects.toThrow(/must carry no human requirement row/u);
+
+      const updated = await Effect.runPromise(
+        creationStore.update({
+          actor,
+          intentId: document.intent_id,
+          requestHash: "7".repeat(64),
+          body: {
+            idempotency_key: "optional-v2-update",
+            expected_revision: 1,
+            draft: {
+              persona_id: personaId,
+              name: "Optional route, revised",
+              description: "Still requirement-free",
+              policy: humanPolicy,
+            },
+          },
+        }),
+      );
+      expect(updated).toMatchObject({
+        revision: 2,
+        status: "commit_ready",
+        requirements: {},
+        next_action: { kind: "commit" },
+        draft: { name: "Optional route, revised" },
+      });
+      const afterUpdate = await admin.query(
+        `SELECT verification_requirement_hash, verification_provider_id
+           FROM community_creation_intents WHERE intent_id = $1`,
+        [document.intent_id],
+      );
+      expect(afterUpdate.rows).toEqual([
+        { verification_requirement_hash: null, verification_provider_id: null },
+      ]);
+
+      // Commit rechecks the member policy, persona ownership, and the
+      // account-scoped cap; no ceremony, evidence, or subject claim exists.
       const commitInput = {
         actor,
         intentId: document.intent_id,
         requestHash: "1".repeat(64),
-        body: { idempotency_key: "optional-v2-commit", expected_revision: ready.revision },
+        body: { idempotency_key: "optional-v2-commit", expected_revision: updated.revision },
       } as const;
       const committed = await Effect.runPromise(creationStore.commit(commitInput));
       const resource = committed.document.committed_resource;
@@ -309,57 +206,108 @@ suite("Postgres 17 community creation repository", () => {
           creation_contract_version: "optional_route_v2",
           revision: 3,
           status: "committed",
-          committed_resource: {
-            authority_version: "optional_route_v2",
-            canonical_route: null,
-          },
+          requirements: {},
+          next_action: { kind: "none", reason: "committed" },
+          committed_resource: { authority_version: "optional_route_v2", canonical_route: null },
         },
       });
       if (resource === null || !("authority_version" in resource)) {
         throw new Error("expected an optional-route resource");
       }
-      expect(resource.community_id).toMatch(
-        /^community_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
-      );
       expect(resource.href).toBe(`/c/${resource.community_id}`);
       await expect(Effect.runPromise(creationStore.commit(commitInput))).resolves.toEqual({
         document: committed.document,
         outcome: "replayed",
       });
-
-      const stored = await admin.query(
-        `SELECT community.canonical_route_binding_id,
-                community.route_authority_version,
-                (SELECT COUNT(*)::integer FROM community_creation_requirement_states
-                  WHERE intent_id = $1 AND requirement_kind = 'human_identity') AS human_rows,
-                (SELECT COUNT(*)::integer FROM community_creation_requirement_states
-                  WHERE intent_id = $1 AND requirement_kind = 'namespace_ownership') AS namespace_rows,
+      const activated = await admin.query(
+        `SELECT community.status, community.route_authority_version,
                 (SELECT COUNT(*)::integer FROM community_memberships
                   WHERE community_id = community.community_id
-                    AND user_id = $2 AND status = 'member') AS memberships,
+                    AND user_id = $1 AND status = 'member') AS memberships,
                 (SELECT COUNT(*)::integer FROM community_route_authority_grants
                   WHERE community_id = community.community_id
-                    AND principal_user_id = $2 AND authority = 'manage_routes'
+                    AND principal_user_id = $1 AND authority = 'manage_routes'
                     AND status = 'active') AS route_grants,
-                (SELECT COUNT(*)::integer FROM community_handle_sales_authority_grants
-                  WHERE community_id = community.community_id
-                    AND principal_account_id = $2 AND authority = 'manage_handle_sales'
-                    AND status = 'active') AS handle_sales_grants
+                (SELECT COUNT(*)::integer FROM community_policy_current
+                  WHERE community_id = community.community_id) AS current_policies,
+                (SELECT COUNT(*)::integer FROM community_creation_subject_claims
+                  WHERE community_id = community.community_id) AS subject_claims
            FROM communities AS community
-          WHERE community.community_id = $3`,
-        [document.intent_id, actor.userId, resource.community_id],
+          WHERE community.community_id = $2`,
+        [actor.userId, resource.community_id],
       );
-      expect(stored.rows).toEqual([
+      expect(activated.rows).toEqual([
         {
-          canonical_route_binding_id: null,
+          status: "active",
           route_authority_version: "optional_route_v2",
-          human_rows: 1,
-          namespace_rows: 0,
           memberships: 1,
           route_grants: 1,
-          handle_sales_grants: 1,
+          current_policies: 1,
+          subject_claims: 0,
         },
       ]);
+    });
+    completedTestCount += 1;
+  }, 30_000);
+
+  test("settles a requirement-free commit as quota_exceeded at the account cap", async () => {
+    await withSchema(async (connection, admin) => {
+      await applyPostgresTestBaselineConnection({ connectionString: connection });
+      await admin.query({
+        text: "INSERT INTO users (user_id, status, account) VALUES ($1, 'active', '{}'::jsonb)",
+        values: [actor.userId],
+      });
+      const personaId = await firstPersonaId(admin, actor.userId);
+      let sequence = 0;
+      const store = makeControlPlaneCommunityCreationStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+        {
+          intent_ttl_seconds: 86_400,
+          optional_route_account_community_cap: 1,
+          next_intent_id: () => `capped-${++sequence}`,
+          next_ceremony_intent_id: () => `capped-ceremony-${sequence}`,
+          next_community_id: () => `community_${crypto.randomUUID()}`,
+          next_subject_claim_id: () => `capped-subject-claim-${sequence}`,
+        },
+      );
+      const createAndCommit = async (name: string, key: string, hash: string) => {
+        const created = await Effect.runPromise(
+          store.create({
+            actor,
+            requestHash: hash,
+            body: {
+              idempotency_key: `${key}-create`,
+              draft: { persona_id: personaId, name, description: null, policy: humanPolicy },
+            },
+          }),
+        );
+        return Effect.runPromise(
+          store.commit({
+            actor,
+            intentId: created.document.intent_id,
+            requestHash: hash,
+            body: {
+              idempotency_key: `${key}-commit`,
+              expected_revision: created.document.revision,
+            },
+          }),
+        );
+      };
+      const first = await createAndCommit("First", "capped-one", "a".repeat(64));
+      expect(first.outcome).toBe("fresh_created");
+      const second = await createAndCommit("Second", "capped-two", "b".repeat(64));
+      expect(second).toMatchObject({
+        outcome: "fresh_not_created",
+        document: {
+          status: "quota_exceeded",
+          next_action: { kind: "blocked", reason: "quota_exceeded" },
+        },
+      });
+      const communities = await admin.query(
+        "SELECT COUNT(*)::integer AS created FROM communities WHERE created_by_user_id = $1",
+        [actor.userId],
+      );
+      expect(communities.rows).toEqual([{ created: 1 }]);
     });
     completedTestCount += 1;
   }, 30_000);
@@ -390,15 +338,8 @@ suite("Postgres 17 community creation repository", () => {
       expect(created).toMatchObject({
         intent_id: "intent-1",
         revision: 1,
-        status: "verification_required",
-        next_action: {
-          kind: "start_verification",
-          requirement: "human_identity",
-          provider_id: "very.web",
-          creation_intent_id: "intent-1",
-          ceremony_intent_id: "intent-ceremony-1",
-          generation: 1,
-        },
+        status: "commit_ready",
+        next_action: { kind: "commit" },
       });
       await expect(create()).resolves.toEqual({ document: created, outcome: "replayed" });
       await expect(
@@ -423,7 +364,7 @@ suite("Postgres 17 community creation repository", () => {
       );
       expect(firstUpdate).toMatchObject({
         revision: 2,
-        status: "verification_required",
+        status: "commit_ready",
         draft: { description: "Reviewed" },
       });
       const secondUpdate = await Effect.runPromise(
@@ -535,8 +476,8 @@ suite("Postgres 17 community creation repository", () => {
         outcome: "fresh",
         document: {
           creation_contract_version: "optional_route_v2",
-          status: "verification_required",
-          next_action: { kind: "start_verification", requirement: "human_identity" },
+          status: "commit_ready",
+          next_action: { kind: "commit" },
         },
       });
 
@@ -573,7 +514,7 @@ suite("Postgres 17 community creation repository", () => {
         values: [expiring.intent_id],
       });
       expect(revisions.rows).toEqual([
-        { operation_kind: "create", status: "verification_required" },
+        { operation_kind: "create", status: "commit_ready" },
         { operation_kind: "expire", status: "expired" },
       ]);
     });
@@ -877,7 +818,7 @@ suite("Postgres 17 community creation repository", () => {
 });
 
 afterAll(async () => {
-  if (connectionString !== undefined && completedTestCount === 5) {
+  if (connectionString !== undefined && completedTestCount === 6) {
     await Bun.write(sentinelPath, sentinelContents);
   }
 });

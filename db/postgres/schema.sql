@@ -14844,6 +14844,58 @@ EXCEPTION WHEN others THEN
 END;
 $_$;
 
+CREATE FUNCTION validate_creation_requirement_cardinality() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  checked_intent_id TEXT;
+  contract_version TEXT;
+  requirement_hash TEXT;
+  human_count BIGINT;
+  namespace_count BIGINT;
+BEGIN
+  checked_intent_id := CASE WHEN TG_OP = 'DELETE' THEN OLD.intent_id ELSE NEW.intent_id END;
+
+  SELECT creation_contract_version, verification_requirement_hash
+    INTO contract_version, requirement_hash
+    FROM community_creation_intents
+   WHERE intent_id = checked_intent_id;
+
+  IF NOT FOUND OR contract_version = 'legacy_slug_v1' THEN
+    RETURN NULL;
+  END IF;
+
+  SELECT
+    COUNT(*) FILTER (WHERE requirement_kind = 'human_identity'),
+    COUNT(*) FILTER (WHERE requirement_kind = 'namespace_ownership')
+    INTO human_count, namespace_count
+    FROM community_creation_requirement_states
+   WHERE intent_id = checked_intent_id;
+
+  IF contract_version = 'route_v1'
+    AND (human_count <> 1 OR namespace_count <> 1) THEN
+    RAISE EXCEPTION 'route-v1 community creation requires one human and one namespace requirement row';
+  END IF;
+
+  IF contract_version = 'optional_route_v2' THEN
+    -- The cardinality is keyed on the creator authority columns, not row
+    -- presence: a requirement-free intent can never gain a requirement row
+    -- and an authority-bearing intent can never lose one.
+    IF requirement_hash IS NULL AND human_count <> 0 THEN
+      RAISE EXCEPTION 'requirement-free optional-route-v2 community creation must carry no human requirement row';
+    END IF;
+    IF requirement_hash IS NOT NULL AND human_count <> 1 THEN
+      RAISE EXCEPTION 'authority-bearing optional-route-v2 community creation requires exactly one human requirement row';
+    END IF;
+    IF namespace_count <> 0 THEN
+      RAISE EXCEPTION 'optional-route-v2 community creation allows no namespace requirement row';
+    END IF;
+  END IF;
+
+  RETURN NULL;
+END;
+$$;
+
 CREATE FUNCTION validate_dance_choreography_consistency() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -17907,6 +17959,20 @@ BEGIN
      AND authority = 'manage_routes'
      AND source_kind = 'creator_owner'
      AND status = 'active';
+
+  IF human_count = 0 THEN
+    -- Requirement-free intent created after the 2026-09-03 amendment: no
+    -- creator ceremony exists, so no satisfied requirement or subject claim
+    -- can or must exist, and the creator authority columns are absent.
+    IF NEW.verification_requirement_hash IS NOT NULL THEN
+      RAISE EXCEPTION 'requirement-free optional-route-v2 intent must not carry creator verification authority';
+    END IF;
+    IF membership_count <> 1 OR authority_count <> 1 THEN
+      RAISE EXCEPTION 'optional-route-v2 commit lacks membership or route authority state';
+    END IF;
+    RETURN NULL;
+  END IF;
+
   SELECT COUNT(*) INTO claim_count
     FROM community_creation_subject_claims AS claim
     JOIN evidence_receipts AS receipt
@@ -18142,46 +18208,6 @@ BEGIN
      AND claim.actor_id = NEW.actor_id;
   IF human_evidence_valid IS DISTINCT FROM TRUE THEN
     RAISE EXCEPTION 'route-v1 committed intent requires live human creation evidence';
-  END IF;
-
-  RETURN NULL;
-END;
-$$;
-
-CREATE FUNCTION validate_route_v1_creation_requirement_cardinality() RETURNS trigger
-    LANGUAGE plpgsql
-    AS $$
-DECLARE
-  checked_intent_id TEXT;
-  contract_version TEXT;
-  human_count BIGINT;
-  namespace_count BIGINT;
-BEGIN
-  checked_intent_id := CASE WHEN TG_OP = 'DELETE' THEN OLD.intent_id ELSE NEW.intent_id END;
-
-  SELECT creation_contract_version INTO contract_version
-    FROM community_creation_intents
-   WHERE intent_id = checked_intent_id;
-
-  IF NOT FOUND OR contract_version = 'legacy_slug_v1' THEN
-    RETURN NULL;
-  END IF;
-
-  SELECT
-    COUNT(*) FILTER (WHERE requirement_kind = 'human_identity'),
-    COUNT(*) FILTER (WHERE requirement_kind = 'namespace_ownership')
-    INTO human_count, namespace_count
-    FROM community_creation_requirement_states
-   WHERE intent_id = checked_intent_id;
-
-  IF contract_version = 'route_v1'
-    AND (human_count <> 1 OR namespace_count <> 1) THEN
-    RAISE EXCEPTION 'route-v1 community creation requires one human and one namespace requirement row';
-  END IF;
-
-  IF contract_version = 'optional_route_v2'
-    AND (human_count <> 1 OR namespace_count <> 0) THEN
-    RAISE EXCEPTION 'optional-route-v2 community creation requires exactly one human requirement row and no namespace requirement row';
   END IF;
 
   RETURN NULL;
@@ -18943,11 +18969,11 @@ CREATE TABLE community_creation_intents (
     draft jsonb NOT NULL,
     canonical_policy_revision integer NOT NULL,
     canonical_policy_hash text NOT NULL,
-    verification_requirement_hash text NOT NULL,
-    verification_provider_id text NOT NULL,
-    provider_configuration_kind text NOT NULL,
-    provider_configuration_ref text NOT NULL,
-    provider_configuration_version text NOT NULL,
+    verification_requirement_hash text,
+    verification_provider_id text,
+    provider_configuration_kind text,
+    provider_configuration_ref text,
+    provider_configuration_version text,
     expires_at timestamp with time zone NOT NULL,
     committed_community_id text,
     committed_resource_href text,
@@ -18959,16 +18985,16 @@ CREATE TABLE community_creation_intents (
     CONSTRAINT community_creation_intents_committed_shape CHECK ((((status = 'committed'::text) AND (committed_community_id IS NOT NULL) AND (committed_resource_href IS NOT NULL) AND (committed_resource_href ~~ '/%'::text)) OR ((status <> 'committed'::text) AND (committed_community_id IS NULL) AND (committed_resource_href IS NULL)))),
     CONSTRAINT community_creation_intents_create_request_hash_check CHECK ((create_request_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT community_creation_intents_creation_contract_version_check CHECK ((creation_contract_version = ANY (ARRAY['legacy_slug_v1'::text, 'route_v1'::text, 'optional_route_v2'::text]))),
+    CONSTRAINT community_creation_intents_creator_authority_shape CHECK ((((verification_requirement_hash IS NULL) AND (verification_provider_id IS NULL) AND (provider_configuration_kind IS NULL) AND (provider_configuration_ref IS NULL) AND (provider_configuration_version IS NULL)) OR ((verification_requirement_hash ~ '^[0-9a-f]{64}$'::text) AND (btrim(verification_provider_id) <> ''::text) AND (provider_configuration_kind = ANY (ARRAY['managed'::text, 'dynamic'::text])) AND (btrim(provider_configuration_ref) <> ''::text) AND (btrim(provider_configuration_version) <> ''::text)))),
     CONSTRAINT community_creation_intents_draft_check CHECK ((jsonb_typeof(draft) = 'object'::text)),
-    CONSTRAINT community_creation_intents_identifiers_not_blank CHECK (((btrim(intent_id) <> ''::text) AND (intent_id = btrim(intent_id)) AND (btrim(actor_id) <> ''::text) AND (actor_id = btrim(actor_id)) AND (btrim(create_idempotency_key) <> ''::text) AND (create_idempotency_key = btrim(create_idempotency_key)) AND (btrim(verification_provider_id) <> ''::text) AND (verification_provider_id = btrim(verification_provider_id)) AND (btrim(provider_configuration_ref) <> ''::text) AND (provider_configuration_ref = btrim(provider_configuration_ref)) AND (btrim(provider_configuration_version) <> ''::text) AND (provider_configuration_version = btrim(provider_configuration_version)))),
+    CONSTRAINT community_creation_intents_identifiers_not_blank CHECK (((btrim(intent_id) <> ''::text) AND (intent_id = btrim(intent_id)) AND (btrim(actor_id) <> ''::text) AND (actor_id = btrim(actor_id)) AND (btrim(create_idempotency_key) <> ''::text) AND (create_idempotency_key = btrim(create_idempotency_key)) AND ((verification_provider_id IS NULL) OR ((btrim(verification_provider_id) <> ''::text) AND (verification_provider_id = btrim(verification_provider_id)))) AND ((provider_configuration_ref IS NULL) OR ((btrim(provider_configuration_ref) <> ''::text) AND (provider_configuration_ref = btrim(provider_configuration_ref)))) AND ((provider_configuration_version IS NULL) OR ((btrim(provider_configuration_version) <> ''::text) AND (provider_configuration_version = btrim(provider_configuration_version)))))),
     CONSTRAINT community_creation_intents_optional_route_v2_committed_shape CHECK (((creation_contract_version <> 'optional_route_v2'::text) OR (status <> 'committed'::text) OR ((committed_community_id ~ '^community_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'::text) AND (committed_resource_href = ('/c/'::text || committed_community_id))))),
     CONSTRAINT community_creation_intents_optional_route_v2_draft_shape CHECK (((creation_contract_version <> 'optional_route_v2'::text) OR ((jsonb_typeof(draft) = 'object'::text) AND (draft ? 'persona_id'::text) AND (draft ? 'name'::text) AND (draft ? 'description'::text) AND (draft ? 'policy'::text) AND (((((draft - 'persona_id'::text) - 'name'::text) - 'description'::text) - 'policy'::text) = '{}'::jsonb) AND (jsonb_typeof((draft -> 'persona_id'::text)) = 'string'::text) AND (btrim((draft ->> 'persona_id'::text)) <> ''::text) AND (jsonb_typeof((draft -> 'name'::text)) = 'string'::text) AND (btrim((draft ->> 'name'::text)) <> ''::text) AND (jsonb_typeof((draft -> 'description'::text)) = ANY (ARRAY['string'::text, 'null'::text])) AND (jsonb_typeof((draft -> 'policy'::text)) = 'object'::text) AND (NOT (draft ? 'slug'::text)) AND (NOT (draft ? 'route_request'::text))))),
     CONSTRAINT community_creation_intents_provider_configuration_kind_check CHECK ((provider_configuration_kind = ANY (ARRAY['managed'::text, 'dynamic'::text]))),
     CONSTRAINT community_creation_intents_revision_check CHECK ((revision > 0)),
     CONSTRAINT community_creation_intents_route_v1_committed_href CHECK (((creation_contract_version <> 'route_v1'::text) OR (status <> 'committed'::text) OR (committed_resource_href ~~ '/c/%'::text))),
     CONSTRAINT community_creation_intents_route_v1_draft_shape CHECK (((creation_contract_version <> 'route_v1'::text) OR ((NOT (draft ? 'slug'::text)) AND (jsonb_typeof((draft -> 'route_request'::text)) = 'object'::text) AND ((draft -> 'route_request'::text) ? 'family'::text) AND ((draft -> 'route_request'::text) ? 'root_label'::text) AND ((((draft -> 'route_request'::text) - 'family'::text) - 'root_label'::text) = '{}'::jsonb) AND (((draft -> 'route_request'::text) ->> 'family'::text) = ANY (ARRAY['hns'::text, 'spaces'::text])) AND (is_community_route_root_label(((draft -> 'route_request'::text) ->> 'family'::text), ((draft -> 'route_request'::text) ->> 'root_label'::text)) IS TRUE)))),
-    CONSTRAINT community_creation_intents_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'verification_required'::text, 'commit_ready'::text, 'committed'::text, 'quota_exceeded'::text, 'gate_unsupported'::text, 'expired'::text, 'cancelled'::text]))),
-    CONSTRAINT community_creation_intents_verification_requirement_hash_check CHECK ((verification_requirement_hash ~ '^[0-9a-f]{64}$'::text))
+    CONSTRAINT community_creation_intents_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'verification_required'::text, 'commit_ready'::text, 'committed'::text, 'quota_exceeded'::text, 'gate_unsupported'::text, 'expired'::text, 'cancelled'::text])))
 );
 
 CREATE TABLE community_creation_quota_approvals (
@@ -28703,6 +28729,10 @@ CREATE TRIGGER community_streak_days_append_only BEFORE DELETE OR UPDATE ON comm
 
 CREATE TRIGGER community_streaks_change_guard BEFORE DELETE OR UPDATE ON community_streaks FOR EACH ROW EXECUTE FUNCTION guard_streak_projection();
 
+CREATE CONSTRAINT TRIGGER creation_intent_requirement_cardinality AFTER INSERT OR UPDATE ON community_creation_intents DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_creation_requirement_cardinality();
+
+CREATE CONSTRAINT TRIGGER creation_requirement_cardinality AFTER INSERT OR DELETE OR UPDATE ON community_creation_requirement_states DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_creation_requirement_cardinality();
+
 CREATE TRIGGER custody_solvency_observations_append_only BEFORE DELETE OR UPDATE ON custody_solvency_observations FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
 
 CREATE TRIGGER dance_attempt_actions_change_guard BEFORE INSERT OR DELETE OR UPDATE ON dance_attempt_actions FOR EACH ROW EXECUTE FUNCTION guard_dance_attempt_action();
@@ -29280,10 +29310,6 @@ CREATE TRIGGER reward_subject_consumptions_append_only BEFORE DELETE OR UPDATE O
 CREATE TRIGGER reward_subject_consumptions_validate BEFORE INSERT ON reward_subject_consumptions FOR EACH ROW EXECUTE FUNCTION gates_v2_validate_reward_subject_consumption();
 
 CREATE TRIGGER reward_uniqueness_authorities_append_only BEFORE DELETE OR UPDATE ON reward_uniqueness_authorities FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
-
-CREATE CONSTRAINT TRIGGER route_v1_creation_intent_requirement_cardinality AFTER INSERT OR UPDATE ON community_creation_intents DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_route_v1_creation_requirement_cardinality();
-
-CREATE CONSTRAINT TRIGGER route_v1_creation_requirement_cardinality AFTER INSERT OR DELETE OR UPDATE ON community_creation_requirement_states DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_route_v1_creation_requirement_cardinality();
 
 CREATE TRIGGER song_dance_presentations_change_guard BEFORE INSERT OR DELETE OR UPDATE ON song_dance_presentations FOR EACH ROW EXECUTE FUNCTION guard_song_dance_presentation();
 

@@ -34,6 +34,7 @@ import {
   compileCommunityGatePolicy,
   creationNextAction,
   HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH,
+  type SupportedCommunityGateCompilation,
   transitionCommunityCreationIntent,
   transitionCreationRequirement,
   VERY_WEB_CONFIGURATION_REFERENCE,
@@ -85,7 +86,12 @@ export type CommunityCreationVerificationAdvanceOutcome =
         | "evidence_invalid";
     }>;
 
+/** Spec 012 creator-requirement removal amendment: the account-scoped creation cap. */
+export const OPTIONAL_ROUTE_ACCOUNT_COMMUNITY_CAP = 100;
+
 export type CommunityCreationRepositoryOptions = Readonly<{
+  /** Active communities one account may have created; test seam, defaults to the ratified cap. */
+  readonly optional_route_account_community_cap?: number;
   readonly intent_ttl_seconds?: number;
   readonly next_intent_id?: () => string;
   readonly next_community_id?: () => string;
@@ -200,6 +206,11 @@ function compileOptionalRouteDraft(policy: unknown): CompiledHumanDraft | null {
   };
 }
 
+/** A requirement-free draft is commit-ready as soon as its member policy compiles. */
+function requirementFreeStatus(compiled: CompiledHumanDraft): "commit_ready" | "gate_unsupported" {
+  return compiled.status === "gate_unsupported" ? "gate_unsupported" : "commit_ready";
+}
+
 function requirementFromValue(
   value: unknown,
   requirement: "human_identity" | "namespace_ownership",
@@ -252,7 +263,7 @@ function nextActionFromRequirements(
     readonly intentId: string;
     readonly status: string;
     readonly contractVersion: "route_v1" | "optional_route_v2";
-    readonly human: CreationRequirementProgress;
+    readonly human: CreationRequirementProgress | null;
     readonly namespace: CreationRequirementProgress | null;
   }>,
 ) {
@@ -260,6 +271,8 @@ function nextActionFromRequirements(
     return { kind: "wait", requirement: null, reason_code: "operation_pending" } as const;
   }
   if (input.status === "verification_required") {
+    // A requirement-free intent never waits on a creator ceremony.
+    if (input.human === null) return null;
     const requirements: readonly (readonly [
       "human_identity" | "namespace_ownership",
       CreationRequirementProgress,
@@ -319,16 +332,21 @@ function documentFromRow(row: Row): CommunityCreationIntentDocument | null {
   );
   const human = requirementFromValue(row.human_requirement, "human_identity");
   const namespace = requirementFromValue(row.namespace_requirement, "namespace_ownership");
+  // Post-amendment optional-route intents carry no creator authority and no
+  // requirement row; grandfathered and route-v1 intents carry both.
+  const requirementFree =
+    contractVersion === "optional_route_v2" &&
+    requirementHash === null &&
+    providerId === null &&
+    row.human_requirement === null;
   if (
     intentId === null ||
     revision === null ||
     status === null ||
     canonicalPolicyRevision === null ||
     canonicalPolicyHash === null ||
-    requirementHash === null ||
-    providerId === null ||
+    (!requirementFree && (requirementHash === null || providerId === null || human === null)) ||
     expiresAt === null ||
-    human === null ||
     (contractVersion !== "route_v1" && contractVersion !== "optional_route_v2") ||
     (contractVersion === "route_v1" && namespace === null) ||
     (contractVersion === "optional_route_v2" && row.namespace_requirement !== null) ||
@@ -406,6 +424,7 @@ function documentFromRow(row: Row): CommunityCreationIntentDocument | null {
     expires_at: expiresAt,
     committed_resource: committedStateResource,
   };
+  if (contractVersion === "route_v1" && (human === null || namespace === null)) return null;
   const publicIntent = {
     ...(contractVersion === "optional_route_v2"
       ? { creation_contract_version: "optional_route_v2" as const }
@@ -420,7 +439,7 @@ function documentFromRow(row: Row): CommunityCreationIntentDocument | null {
       contractVersion === "optional_route_v2"
         ? publicOptionalRouteCommunityCreationRequirements(human)
         : publicCommunityCreationRequirements({
-            human_identity: human,
+            human_identity: human as CreationRequirementProgress,
             namespace_ownership: namespace as CreationRequirementProgress,
           }),
     next_action: nextAction,
@@ -434,9 +453,19 @@ function documentFromRow(row: Row): CommunityCreationIntentDocument | null {
   return Option.isSome(decoded) ? decoded.value : null;
 }
 
+/** The stored creator authority and the projected requirement map must agree. */
+function creatorAuthorityMatches(
+  document: CommunityCreationIntentDocument,
+  providerId: string | null,
+): boolean {
+  const requirementFree =
+    "creation_contract_version" in document && document.requirements.human_identity === undefined;
+  return requirementFree ? providerId === null : providerId !== null;
+}
+
 function stateFromDocument(
   document: CommunityCreationIntentDocument,
-  providerId: string,
+  providerId: string | null,
 ): CommunityCreationIntentState {
   return {
     intent_id: document.intent_id,
@@ -444,8 +473,11 @@ function stateFromDocument(
     status: document.status,
     canonical_policy_revision: document.canonical_policy_revision,
     canonical_policy_hash: document.canonical_policy_hash,
-    verification_requirement_hash: document.requirements.human_identity.requirement_hash,
-    verification_provider_id: document.requirements.human_identity.provider_id || providerId,
+    verification_requirement_hash: document.requirements.human_identity?.requirement_hash ?? null,
+    verification_provider_id:
+      document.requirements.human_identity === undefined
+        ? null
+        : document.requirements.human_identity.provider_id || providerId,
     expires_at: document.expires_at,
     committed_resource: document.committed_resource,
   };
@@ -664,110 +696,6 @@ function insertRevision(
       JSON.stringify(input.intent),
     ],
     readonly: false,
-  });
-}
-
-function insertInitialCreationRequirements(
-  transaction: ControlPlaneTransaction,
-  input: Readonly<{
-    readonly actorId: string;
-    readonly intentId: string;
-    readonly ceremonyIntentId: string;
-    readonly compiled: CompiledHumanDraft;
-  }>,
-): Effect.Effect<void, CommunityCreationRepositoryFailure> {
-  return Effect.gen(function* () {
-    yield* transaction.execute({
-      label: "community.creation.create.insert-requirements",
-      text: `INSERT INTO community_creation_requirement_states (
-               intent_id, actor_id, requirement_kind, status,
-               requirement_hash, provider_id, provider_binding_hash,
-               provider_configuration_kind, provider_configuration_ref,
-               provider_configuration_version, route_family, route_root_label,
-               route_root_label_display, route_path_segment, generation
-             ) VALUES
-             ($1, $2, 'human_identity', 'unmet', $3, $4, $5, $6, $7, $8,
-              NULL, NULL, NULL, NULL, 0)`,
-      values: [
-        input.intentId,
-        input.actorId,
-        input.compiled.verificationRequirementHash,
-        input.compiled.binding.providerId,
-        input.compiled.humanProviderBindingHash,
-        input.compiled.binding.configurationKind,
-        input.compiled.binding.configurationReference,
-        input.compiled.binding.configurationVersion,
-      ],
-      readonly: false,
-    });
-
-    if (input.compiled.status !== "verification_required") return;
-    const reservation = {
-      actor_id: input.actorId,
-      creation_intent_id: input.intentId,
-      ceremony_intent_id: input.ceremonyIntentId,
-      requirement: "human_identity" as const,
-      generation: 1,
-      requirement_hash: input.compiled.verificationRequirementHash,
-      provider_id: input.compiled.binding.providerId,
-      provider_binding_hash: input.compiled.humanProviderBindingHash,
-      route: null,
-    };
-    const reservationRequest = {
-      ...reservation,
-      version: COMMUNITY_CREATION_CEREMONY_RESERVATION_VERSION,
-    };
-    let reservationHash: string;
-    try {
-      reservationHash = communityCreationCeremonyReservationHash(reservation);
-    } catch {
-      return yield* Effect.fail(failure("create", "constraint"));
-    }
-    yield* transaction.execute({
-      label: "community.creation.create.reserve-human-ceremony",
-      text: `INSERT INTO community_creation_ceremony_attempts (
-               ceremony_intent_id, actor_id, intent_id, requirement_kind,
-               generation, requirement_hash, provider_id, provider_binding_hash,
-               provider_configuration_kind, provider_configuration_ref,
-               provider_configuration_version, route_family, route_root_label,
-               route_root_label_display, route_path_segment,
-               reservation_request_hash, reservation_request, expires_at
-             )
-             SELECT $1, $2, $3, 'human_identity', 1, $4, $5, $6, $7, $8, $9,
-                    NULL, NULL, NULL, NULL, $10, $11::jsonb, intent.expires_at
-               FROM community_creation_intents AS intent
-              WHERE intent.intent_id = $3 AND intent.actor_id = $2
-                AND intent.creation_contract_version = 'optional_route_v2'`,
-      values: [
-        input.ceremonyIntentId,
-        input.actorId,
-        input.intentId,
-        input.compiled.verificationRequirementHash,
-        input.compiled.binding.providerId,
-        input.compiled.humanProviderBindingHash,
-        input.compiled.binding.configurationKind,
-        input.compiled.binding.configurationReference,
-        input.compiled.binding.configurationVersion,
-        reservationHash,
-        JSON.stringify(reservationRequest),
-      ],
-      readonly: false,
-    });
-    const advanced = yield* transaction.execute({
-      label: "community.creation.create.advance-human-requirement",
-      text: `UPDATE community_creation_requirement_states
-                SET status = 'pending', generation = 1,
-                    current_ceremony_intent_id = $1,
-                    updated_at = clock_timestamp()
-              WHERE intent_id = $2 AND actor_id = $3
-                AND requirement_kind = 'human_identity'
-                AND status = 'unmet' AND generation = 0`,
-      values: [input.ceremonyIntentId, input.intentId, input.actorId],
-      readonly: false,
-    });
-    if (advanced.rowCount !== 1) {
-      return yield* Effect.fail(failure("create", "invalid-row"));
-    }
   });
 }
 
@@ -1282,6 +1210,9 @@ export function advanceCommunityCreationVerificationInTransaction(
       return { kind: "stale", reason: "intent_expired" } as const;
     }
 
+    if (document.requirements.human_identity === undefined) {
+      return { kind: "stale", reason: "intent_not_verification_required" } as const;
+    }
     const exactBinding =
       document.requirements.human_identity.requirement_hash ===
         HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH &&
@@ -1727,6 +1658,11 @@ export function makeControlPlaneCommunityCreationRepository(
 ): CommunityCreationRepository {
   const intentTtlSeconds = options.intent_ttl_seconds ?? COMMUNITY_CREATION_INTENT_TTL_SECONDS;
   const nextIntentId = options.next_intent_id ?? (() => `community-intent-${crypto.randomUUID()}`);
+  const configuredCap = options.optional_route_account_community_cap;
+  const accountCommunityCap =
+    configuredCap !== undefined && Number.isSafeInteger(configuredCap) && configuredCap >= 0
+      ? configuredCap
+      : OPTIONAL_ROUTE_ACCOUNT_COMMUNITY_CAP;
   const nextCommunityId = options.next_community_id ?? (() => `community_${crypto.randomUUID()}`);
   const nextMembershipId =
     options.next_membership_id ?? (() => `community-membership-${crypto.randomUUID()}`);
@@ -1774,10 +1710,8 @@ export function makeControlPlaneCommunityCreationRepository(
           });
           if (replay !== null) return { document: replay, outcome: "replayed" as const };
 
-          const ceremonyIntentId = nextCeremonyIntentId();
-          if (!validId(ceremonyIntentId)) {
-            return yield* Effect.fail(failure("create", "constraint"));
-          }
+          // Creator-requirement removal amendment: a new intent carries no
+          // creator authority, no requirement row, and no ceremony reservation.
           const inserted = yield* transaction.execute({
             label: "community.creation.create.insert-intent",
             text: `INSERT INTO community_creation_intents (
@@ -1797,14 +1731,14 @@ export function makeControlPlaneCommunityCreationRepository(
               input.actor.userId,
               body.idempotency_key,
               input.requestHash,
-              compiled.status,
+              requirementFreeStatus(compiled),
               JSON.stringify(canonicalDraft),
               compiled.canonicalPolicyHash,
-              compiled.verificationRequirementHash,
-              compiled.binding.providerId,
-              compiled.binding.configurationKind,
-              compiled.binding.configurationReference,
-              compiled.binding.configurationVersion,
+              null,
+              null,
+              null,
+              null,
+              null,
               intentTtlSeconds,
             ],
             readonly: false,
@@ -1812,12 +1746,6 @@ export function makeControlPlaneCommunityCreationRepository(
           if (inserted.rowCount !== 1) {
             return yield* Effect.fail(failure("create", "invalid-row"));
           }
-          yield* insertInitialCreationRequirements(transaction, {
-            actorId: input.actor.userId,
-            intentId,
-            ceremonyIntentId,
-            compiled,
-          });
           const row = yield* loadLockedIntent(transaction, input.actor.userId, intentId, "create");
           if (row === null) return yield* Effect.fail(failure("create", "invalid-row"));
           const document = documentFromRow(row);
@@ -1851,7 +1779,7 @@ export function makeControlPlaneCommunityCreationRepository(
           if (row === null) return null;
           const document = documentFromRow(row);
           const providerId = asString(row.verification_provider_id);
-          if (document === null || providerId === null) {
+          if (document === null || !creatorAuthorityMatches(document, providerId)) {
             return yield* Effect.fail(failure("get", "invalid-row"));
           }
           if (row.expired !== true || TERMINAL_STATUSES.has(document.status)) return document;
@@ -1932,7 +1860,7 @@ export function makeControlPlaneCommunityCreationRepository(
           if (row === null) return yield* Effect.fail(failure("update", "not-found"));
           const document = documentFromRow(row);
           const providerId = asString(row.verification_provider_id);
-          if (document === null || providerId === null) {
+          if (document === null || !creatorAuthorityMatches(document, providerId)) {
             return yield* Effect.fail(failure("update", "invalid-row"));
           }
           if (
@@ -1947,30 +1875,37 @@ export function makeControlPlaneCommunityCreationRepository(
           if (body.expected_revision !== document.revision) {
             return yield* Effect.fail(failure("update", "revision-conflict"));
           }
-          yield* replaceCreationRequirementBindings(transaction, {
-            actorId: input.actor.userId,
-            intentId: input.intentId,
-            compiled,
-          });
-          const ceremonyIntentId = nextCeremonyIntentId();
-          if (!validId(ceremonyIntentId)) {
-            return yield* Effect.fail(failure("update", "constraint"));
+          const requirementFree = document.requirements.human_identity === undefined;
+          let nextStatus: "commit_ready" | "gate_unsupported" | "verification_required";
+          if (requirementFree) {
+            nextStatus = requirementFreeStatus(compiled);
+          } else {
+            // Grandfathered intents keep their pre-amendment creator ceremony.
+            yield* replaceCreationRequirementBindings(transaction, {
+              actorId: input.actor.userId,
+              intentId: input.intentId,
+              compiled,
+            });
+            const ceremonyIntentId = nextCeremonyIntentId();
+            if (!validId(ceremonyIntentId)) {
+              return yield* Effect.fail(failure("update", "constraint"));
+            }
+            const selection =
+              compiled.status === "gate_unsupported"
+                ? "pending"
+                : yield* reserveNextCreationRequirement(transaction, {
+                    actorId: input.actor.userId,
+                    intentId: input.intentId,
+                    ceremonyIntentId,
+                    operation: "update",
+                  });
+            nextStatus =
+              compiled.status === "gate_unsupported"
+                ? "gate_unsupported"
+                : selection === "complete"
+                  ? "commit_ready"
+                  : "verification_required";
           }
-          const selection =
-            compiled.status === "gate_unsupported"
-              ? "pending"
-              : yield* reserveNextCreationRequirement(transaction, {
-                  actorId: input.actor.userId,
-                  intentId: input.intentId,
-                  ceremonyIntentId,
-                  operation: "update",
-                });
-          const nextStatus =
-            compiled.status === "gate_unsupported"
-              ? "gate_unsupported"
-              : selection === "complete"
-                ? "commit_ready"
-                : "verification_required";
           const canonicalDraft = body.draft;
           const updated = yield* transaction.execute({
             label: "community.creation.update.persist-intent",
@@ -1991,11 +1926,11 @@ export function makeControlPlaneCommunityCreationRepository(
               JSON.stringify(canonicalDraft),
               document.canonical_policy_revision + 1,
               compiled.canonicalPolicyHash,
-              compiled.verificationRequirementHash,
-              compiled.binding.providerId,
-              compiled.binding.configurationKind,
-              compiled.binding.configurationReference,
-              compiled.binding.configurationVersion,
+              requirementFree ? null : compiled.verificationRequirementHash,
+              requirementFree ? null : compiled.binding.providerId,
+              requirementFree ? null : compiled.binding.configurationKind,
+              requirementFree ? null : compiled.binding.configurationReference,
+              requirementFree ? null : compiled.binding.configurationVersion,
               input.intentId,
               input.actor.userId,
               document.revision,
@@ -2024,12 +1959,367 @@ export function makeControlPlaneCommunityCreationRepository(
       );
     });
 
+  const settleQuotaExceeded = (
+    transaction: ControlPlaneTransaction,
+    input: Parameters<CommunityCreationStoreService["commit"]>[0],
+    body: Parameters<CommunityCreationStoreService["commit"]>[0]["body"],
+    document: CommunityCreationIntentV2,
+    providerId: string | null,
+  ) =>
+    Effect.gen(function* () {
+      const transitioned = transitionCommunityCreationIntent(
+        stateFromDocument(document, providerId),
+        { type: "commit_quota_exceeded", expected_revision: document.revision },
+      );
+      if (transitioned.kind === "rejected") {
+        return yield* Effect.fail(failure("commit", "constraint"));
+      }
+      const quotaExceeded = Schema.decodeUnknownOption(CommunityCreationIntentContract)({
+        ...document,
+        revision: transitioned.state.revision,
+        status: transitioned.state.status,
+        next_action: creationNextAction(transitioned.state),
+      });
+      if (Option.isNone(quotaExceeded)) {
+        return yield* Effect.fail(failure("commit", "invalid-row"));
+      }
+      const updated = yield* transaction.execute({
+        label: "community.creation.commit-v2.persist-quota-exceeded",
+        text: `UPDATE community_creation_intents
+                  SET revision = $1, status = 'quota_exceeded',
+                      updated_at = clock_timestamp()
+                WHERE intent_id = $2 AND actor_id = $3 AND revision = $4
+                  AND status = 'commit_ready'
+                  AND creation_contract_version = 'optional_route_v2'
+                  AND expires_at > clock_timestamp()`,
+        values: [
+          quotaExceeded.value.revision,
+          input.intentId,
+          input.actor.userId,
+          document.revision,
+        ],
+        readonly: false,
+      });
+      if (updated.rowCount !== 1) {
+        return yield* Effect.fail(failure("commit", "invalid-row"));
+      }
+      yield* insertRevision(transaction, {
+        intent: quotaExceeded.value,
+        actorId: input.actor.userId,
+        operation: "commit",
+        idempotencyKey: body.idempotency_key,
+        requestHash: input.requestHash,
+      });
+      return {
+        document: quotaExceeded.value,
+        outcome: "fresh_not_created" as const,
+      };
+    });
+
+  /** Shared activation for commit-ready intents; `claim` carries the pre-amendment verified-subject quota slot. */
+  const activateOptionalRouteV2 = (
+    transaction: ControlPlaneTransaction,
+    input: Parameters<CommunityCreationStoreService["commit"]>[0],
+    body: Parameters<CommunityCreationStoreService["commit"]>[0]["body"],
+    document: CommunityCreationIntentV2,
+    providerId: string | null,
+    compilation: SupportedCommunityGateCompilation,
+    claim: Readonly<{
+      readonly evidence: CommitEvidence;
+      readonly slotNumber: number;
+      readonly approvalId: string | null;
+      readonly approvalExpiresAt: string | null;
+      readonly requirementHash: string;
+    }> | null,
+  ) =>
+    Effect.gen(function* () {
+      const activationClockResult = yield* transaction.execute<Row>({
+        label: "community.creation.commit-v2.activation-clock",
+        text: "SELECT clock_timestamp() AS activation_now",
+        values: [],
+        readonly: false,
+      });
+      const activationClockRow = oneRow(activationClockResult.rows);
+      const activationNow =
+        activationClockRow === null ? null : asTimestamp(activationClockRow?.activation_now);
+      if (
+        activationClockRow === undefined ||
+        activationNow === null ||
+        Date.parse(document.expires_at) <= Date.parse(activationNow) ||
+        (claim !== null &&
+          claim.evidence.receiptExpiresAt !== null &&
+          Date.parse(claim.evidence.receiptExpiresAt) <= Date.parse(activationNow)) ||
+        (claim !== null &&
+          claim.evidence.assertionExpiresAt !== null &&
+          Date.parse(claim.evidence.assertionExpiresAt) <= Date.parse(activationNow)) ||
+        (claim !== null &&
+          claim.approvalExpiresAt !== null &&
+          Date.parse(claim.approvalExpiresAt) <= Date.parse(activationNow))
+      ) {
+        return yield* Effect.fail(failure("commit", "constraint"));
+      }
+
+      const communityId = nextCommunityId();
+      const membershipId = nextMembershipId();
+      const routeAuthorityGrantId = nextRouteAuthorityGrantId();
+      const subjectClaimId = claim === null ? null : nextSubjectClaimId();
+      if (
+        Option.isNone(Schema.decodeUnknownOption(OptionalRouteCommunityIdV2)(communityId)) ||
+        !validId(membershipId) ||
+        !validId(routeAuthorityGrantId) ||
+        (subjectClaimId !== null && !validId(subjectClaimId))
+      ) {
+        return yield* Effect.fail(failure("commit", "constraint"));
+      }
+      const resource = {
+        authority_version: "optional_route_v2" as const,
+        community_id: communityId,
+        href: `/c/${communityId}`,
+        canonical_route: null,
+        persona_role_presentation: document.persona_role_presentation,
+      };
+      const transitioned = transitionCommunityCreationIntent(
+        stateFromDocument(document, providerId),
+        {
+          type: "commit_completed",
+          expected_revision: document.revision,
+          resource,
+        },
+      );
+      if (transitioned.kind === "rejected") {
+        return yield* Effect.fail(failure("commit", "constraint"));
+      }
+      const committed = Schema.decodeUnknownOption(CommunityCreationIntentContract)({
+        ...document,
+        revision: transitioned.state.revision,
+        status: transitioned.state.status,
+        next_action: creationNextAction(transitioned.state),
+        committed_resource: resource,
+      });
+      if (Option.isNone(committed)) {
+        return yield* Effect.fail(failure("commit", "invalid-row"));
+      }
+
+      yield* transaction.execute({
+        label: "community.creation.commit-v2.insert-community",
+        text: `INSERT INTO communities (
+                 community_id, display_name, status, created_by_user_id,
+                 created_at, updated_at, membership_mode,
+                 human_verification_lane, route_slug, description,
+                 canonical_route_binding_id, route_authority_version
+               ) VALUES (
+                 $1, $2, 'active', $3, $4::timestamptz, $4::timestamptz,
+                 'gated', 'very', NULL, $5, NULL, 'optional_route_v2'
+               )`,
+        values: [
+          communityId,
+          document.draft.name,
+          input.actor.userId,
+          activationNow,
+          document.draft.description,
+        ],
+        readonly: false,
+      });
+      yield* transaction.execute({
+        label: "community.creation.commit-v2.require-owner-byte-agreement",
+        text: "SELECT initialize_community_owner_v1($1, $2, $3::timestamptz)",
+        values: [communityId, input.actor.userId, activationNow],
+        readonly: false,
+      });
+      yield* transaction.execute({
+        label: "community.creation.commit-v2.require-moderation-policy-byte-agreement",
+        text: "SELECT initialize_community_moderation_policy_v1($1, $2::timestamptz)",
+        values: [communityId, activationNow],
+        readonly: false,
+      });
+      yield* transaction.execute({
+        label: "community.creation.commit-v2.insert-creator-membership",
+        text: `INSERT INTO community_memberships (
+                 community_id, membership_id, user_id, status,
+                 joined_at, created_at, updated_at
+               ) VALUES ($1, $2, $3, 'member', $4::timestamptz, $4::timestamptz, $4::timestamptz)`,
+        values: [communityId, membershipId, input.actor.userId, activationNow],
+        readonly: false,
+      });
+      yield* transaction.execute({
+        label: "community.creation.commit-v2.insert-persona-role-presentation",
+        text: `INSERT INTO persona_role_presentations (
+                 community_id, account_id, persona_id, created_at, updated_at
+               ) VALUES ($1, $2, $3, $4::timestamptz, $4::timestamptz)`,
+        values: [communityId, input.actor.userId, document.draft.persona_id, activationNow],
+        readonly: false,
+      });
+      yield* transaction.execute({
+        label: "community.creation.commit-v2.insert-route-authority",
+        text: `INSERT INTO community_route_authority_grants (
+                 grant_id, community_id, principal_user_id, authority,
+                 source_kind, status, granted_at, granted_by_user_id
+               ) VALUES (
+                 $1, $2, $3, 'manage_routes', 'creator_owner', 'active',
+                 $4::timestamptz, $3
+               )`,
+        values: [routeAuthorityGrantId, communityId, input.actor.userId, activationNow],
+        readonly: false,
+      });
+      yield* transaction.execute({
+        label: "community.creation.commit-v2.insert-handle-sales-authority",
+        text: `INSERT INTO community_handle_sales_authority_grants (
+                 grant_id, community_id, principal_account_id, authority,
+                 source_kind, source_policy_ref, status, granted_at,
+                 granted_by_account_id
+               ) VALUES (
+                 community_handle_sales_creator_grant_id_v1($1, $2),
+                 $1, $2, 'manage_handle_sales', 'creator_owner', NULL,
+                 'active', $3::timestamptz, $2
+               )`,
+        values: [communityId, input.actor.userId, activationNow],
+        readonly: false,
+      });
+      yield* transaction.execute({
+        label: "community.creation.commit-v2.insert-policy",
+        text: `INSERT INTO policy_versions (
+                 policy_version_id, community_id, policy_key, revision,
+                 policy_hash, policy, compiled_plan, compiler_version,
+                 uniqueness_model, created_by_user_id, published_at,
+                 policy_purpose
+               ) VALUES (
+                 $1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8,
+                 '{"kind":"none"}'::jsonb, $9, $10::timestamptz, 'access'
+               )`,
+        values: [
+          CURATED_HUMAN_MEMBERSHIP_POLICY.policy_version_id,
+          communityId,
+          CURATED_HUMAN_MEMBERSHIP_POLICY.policy_key,
+          CURATED_HUMAN_MEMBERSHIP_POLICY.policy_revision,
+          CURATED_HUMAN_MEMBERSHIP_POLICY.policy_hash,
+          JSON.stringify(CURATED_HUMAN_MEMBERSHIP_POLICY),
+          JSON.stringify(compilation.compiled_plan),
+          compilation.compiled_plan.compiler_version,
+          input.actor.userId,
+          activationNow,
+        ],
+        readonly: false,
+      });
+      yield* transaction.execute({
+        label: "community.creation.commit-v2.insert-provider-binding",
+        text: `INSERT INTO community_policy_provider_bindings (
+                 community_id, policy_key, policy_version_id,
+                 verification_requirement_hash, provider_id,
+                 provider_configuration_kind, provider_configuration_ref,
+                 provider_configuration_version, method, protocol_version,
+                 issuer, scope_kind, issuer_rp_scope, issuer_rp_action_scope,
+                 request_mode, evaluator_id
+               ) VALUES (
+                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                 $11, $12, $13, NULL, 'dynamic', $14
+               )`,
+        values: [
+          communityId,
+          CURATED_HUMAN_MEMBERSHIP_POLICY.policy_key,
+          CURATED_HUMAN_MEMBERSHIP_POLICY.policy_version_id,
+          compilation.verification_requirement_hash,
+          compilation.provider_binding.provider_id,
+          compilation.provider_binding.provider_configuration.kind,
+          compilation.provider_binding.provider_configuration.reference,
+          compilation.provider_binding.provider_configuration.version,
+          compilation.provider_binding.method,
+          compilation.provider_binding.protocol_version,
+          compilation.provider_binding.scope.issuer,
+          compilation.provider_binding.scope.scope_semantics,
+          compilation.provider_binding.scope.rp_scope,
+          compilation.compiled_plan.evaluator,
+        ],
+        readonly: false,
+      });
+      yield* transaction.execute({
+        label: "community.creation.commit-v2.insert-current-policy",
+        text: `INSERT INTO community_policy_current (
+                 community_id, policy_key, policy_version_id, activated_at
+               ) VALUES ($1, $2, $3, $4::timestamptz)`,
+        values: [
+          communityId,
+          CURATED_HUMAN_MEMBERSHIP_POLICY.policy_key,
+          CURATED_HUMAN_MEMBERSHIP_POLICY.policy_version_id,
+          activationNow,
+        ],
+        readonly: false,
+      });
+      if (claim !== null && subjectClaimId !== null) {
+        // Pre-amendment intents keep the verified-subject quota ledger.
+        yield* transaction.execute({
+          label: "community.creation.commit-v2.insert-subject-claim",
+          text: `INSERT INTO community_creation_subject_claims (
+                   claim_id, subject_key_id, actor_id, slot_number, approval_id,
+                   intent_id, community_id, proof_session_id, evidence_receipt_id,
+                   verification_requirement_hash
+                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+          values: [
+            subjectClaimId,
+            claim.evidence.subjectKeyId,
+            input.actor.userId,
+            claim.slotNumber,
+            claim.approvalId,
+            input.intentId,
+            communityId,
+            claim.evidence.proofSessionId,
+            claim.evidence.evidenceReceiptId,
+            claim.requirementHash,
+          ],
+          readonly: false,
+        });
+      }
+      const updated = yield* transaction.execute({
+        label: "community.creation.commit-v2.persist-intent",
+        text: `UPDATE community_creation_intents
+                  SET revision = $1, status = 'committed',
+                      committed_community_id = $2, committed_resource_href = $3,
+                      updated_at = $7::timestamptz
+                WHERE intent_id = $4 AND actor_id = $5 AND revision = $6
+                  AND status = 'commit_ready'
+                  AND creation_contract_version = 'optional_route_v2'
+                  AND expires_at > $7::timestamptz`,
+        values: [
+          committed.value.revision,
+          communityId,
+          resource.href,
+          input.intentId,
+          input.actor.userId,
+          document.revision,
+          activationNow,
+        ],
+        readonly: false,
+      });
+      if (updated.rowCount !== 1) {
+        return yield* Effect.fail(failure("commit", "invalid-row"));
+      }
+      const updatedRow = yield* loadLockedIntent(
+        transaction,
+        input.actor.userId,
+        input.intentId,
+        "commit",
+        activationNow,
+      );
+      if (updatedRow === null) return yield* Effect.fail(failure("commit", "invalid-row"));
+      const stored = documentFromRow(updatedRow);
+      if (stored === null || JSON.stringify(stored) !== JSON.stringify(committed.value)) {
+        return yield* Effect.fail(failure("commit", "invalid-row"));
+      }
+      yield* insertRevision(transaction, {
+        intent: stored,
+        actorId: input.actor.userId,
+        operation: "commit",
+        idempotencyKey: body.idempotency_key,
+        requestHash: input.requestHash,
+      });
+      return { document: stored, outcome: "fresh_created" as const };
+    });
+
   const commitOptionalRouteV2 = (
     transaction: ControlPlaneTransaction,
     input: Parameters<CommunityCreationStoreService["commit"]>[0],
     body: Parameters<CommunityCreationStoreService["commit"]>[0]["body"],
     document: CommunityCreationIntentV2,
-    providerId: string,
+    providerId: string | null,
     row: Row,
   ) =>
     Effect.gen(function* () {
@@ -2039,15 +2329,50 @@ export function makeControlPlaneCommunityCreationRepository(
         document.draft.persona_id,
         "commit",
       );
+      const creatorRequirement = document.requirements.human_identity;
       const compilation = compileCommunityGatePolicy(document.draft.policy);
+      if (creatorRequirement === undefined) {
+        // Creator-requirement removal amendment: no creator evidence exists, so
+        // commit rechecks the member policy, persona ownership (locked above),
+        // and the account-scoped creation cap only.
+        if (
+          providerId !== null ||
+          compilation.kind !== "supported" ||
+          compilation.canonical_policy_hash !== document.canonical_policy_hash
+        ) {
+          return yield* Effect.fail(failure("commit", "constraint"));
+        }
+        const createdResult = yield* transaction.execute<Row>({
+          label: "community.creation.commit-v2.count-account-communities",
+          text: `SELECT COUNT(*)::integer AS created
+                   FROM communities
+                  WHERE created_by_user_id = $1 AND status = 'active'`,
+          values: [input.actor.userId],
+          readonly: false,
+        });
+        const created = asNonNegativeInteger(oneRow(createdResult.rows)?.created);
+        if (created === null) return yield* Effect.fail(failure("commit", "invalid-row"));
+        if (created >= accountCommunityCap) {
+          return yield* settleQuotaExceeded(transaction, input, body, document, providerId);
+        }
+        return yield* activateOptionalRouteV2(
+          transaction,
+          input,
+          body,
+          document,
+          providerId,
+          compilation,
+          null,
+        );
+      }
+      if (providerId === null) return yield* Effect.fail(failure("commit", "constraint"));
       const compiledDraft = compileOptionalRouteDraft(document.draft.policy);
       if (
         compilation.kind !== "supported" ||
         compiledDraft === null ||
         compiledDraft.status !== "verification_required" ||
         compilation.canonical_policy_hash !== document.canonical_policy_hash ||
-        compilation.verification_requirement_hash !==
-          document.requirements.human_identity.requirement_hash ||
+        compilation.verification_requirement_hash !== creatorRequirement.requirement_hash ||
         providerId !== compilation.provider_binding.provider_id ||
         row.provider_configuration_kind !==
           compilation.provider_binding.provider_configuration.kind ||
@@ -2309,53 +2634,7 @@ export function makeControlPlaneCommunityCreationRepository(
           return yield* Effect.fail(failure("commit", "invalid-row"));
         }
         if (approval === null) {
-          const transitioned = transitionCommunityCreationIntent(
-            stateFromDocument(document, providerId),
-            { type: "commit_quota_exceeded", expected_revision: document.revision },
-          );
-          if (transitioned.kind === "rejected") {
-            return yield* Effect.fail(failure("commit", "constraint"));
-          }
-          const quotaExceeded = Schema.decodeUnknownOption(CommunityCreationIntentContract)({
-            ...document,
-            revision: transitioned.state.revision,
-            status: transitioned.state.status,
-            next_action: creationNextAction(transitioned.state),
-          });
-          if (Option.isNone(quotaExceeded)) {
-            return yield* Effect.fail(failure("commit", "invalid-row"));
-          }
-          const updated = yield* transaction.execute({
-            label: "community.creation.commit-v2.persist-quota-exceeded",
-            text: `UPDATE community_creation_intents
-                      SET revision = $1, status = 'quota_exceeded',
-                          updated_at = clock_timestamp()
-                    WHERE intent_id = $2 AND actor_id = $3 AND revision = $4
-                      AND status = 'commit_ready'
-                      AND creation_contract_version = 'optional_route_v2'
-                      AND expires_at > clock_timestamp()`,
-            values: [
-              quotaExceeded.value.revision,
-              input.intentId,
-              input.actor.userId,
-              document.revision,
-            ],
-            readonly: false,
-          });
-          if (updated.rowCount !== 1) {
-            return yield* Effect.fail(failure("commit", "invalid-row"));
-          }
-          yield* insertRevision(transaction, {
-            intent: quotaExceeded.value,
-            actorId: input.actor.userId,
-            operation: "commit",
-            idempotencyKey: body.idempotency_key,
-            requestHash: input.requestHash,
-          });
-          return {
-            document: quotaExceeded.value,
-            outcome: "fresh_not_created" as const,
-          };
+          return yield* settleQuotaExceeded(transaction, input, body, document, providerId);
         }
         approvalId = asString(approval.approval_id);
         const approvedSlot = asPositiveInteger(approval.slot_number);
@@ -2371,278 +2650,21 @@ export function makeControlPlaneCommunityCreationRepository(
         slotNumber = approvedSlot;
       }
 
-      const activationClockResult = yield* transaction.execute<Row>({
-        label: "community.creation.commit-v2.activation-clock",
-        text: "SELECT clock_timestamp() AS activation_now",
-        values: [],
-        readonly: false,
-      });
-      const activationClockRow = oneRow(activationClockResult.rows);
-      const activationNow =
-        activationClockRow === null ? null : asTimestamp(activationClockRow?.activation_now);
-      if (
-        activationClockRow === undefined ||
-        activationNow === null ||
-        Date.parse(document.expires_at) <= Date.parse(activationNow) ||
-        (evidence.receiptExpiresAt !== null &&
-          Date.parse(evidence.receiptExpiresAt) <= Date.parse(activationNow)) ||
-        (evidence.assertionExpiresAt !== null &&
-          Date.parse(evidence.assertionExpiresAt) <= Date.parse(activationNow)) ||
-        (approvalExpiresAt !== null && Date.parse(approvalExpiresAt) <= Date.parse(activationNow))
-      ) {
-        return yield* Effect.fail(failure("commit", "constraint"));
-      }
-
-      const communityId = nextCommunityId();
-      const membershipId = nextMembershipId();
-      const routeAuthorityGrantId = nextRouteAuthorityGrantId();
-      const subjectClaimId = nextSubjectClaimId();
-      if (
-        Option.isNone(Schema.decodeUnknownOption(OptionalRouteCommunityIdV2)(communityId)) ||
-        !validId(membershipId) ||
-        !validId(routeAuthorityGrantId) ||
-        !validId(subjectClaimId)
-      ) {
-        return yield* Effect.fail(failure("commit", "constraint"));
-      }
-      const resource = {
-        authority_version: "optional_route_v2" as const,
-        community_id: communityId,
-        href: `/c/${communityId}`,
-        canonical_route: null,
-        persona_role_presentation: document.persona_role_presentation,
-      };
-      const transitioned = transitionCommunityCreationIntent(
-        stateFromDocument(document, providerId),
+      return yield* activateOptionalRouteV2(
+        transaction,
+        input,
+        body,
+        document,
+        providerId,
+        compilation,
         {
-          type: "commit_completed",
-          expected_revision: document.revision,
-          resource,
-        },
-      );
-      if (transitioned.kind === "rejected") {
-        return yield* Effect.fail(failure("commit", "constraint"));
-      }
-      const committed = Schema.decodeUnknownOption(CommunityCreationIntentContract)({
-        ...document,
-        revision: transitioned.state.revision,
-        status: transitioned.state.status,
-        next_action: creationNextAction(transitioned.state),
-        committed_resource: resource,
-      });
-      if (Option.isNone(committed)) {
-        return yield* Effect.fail(failure("commit", "invalid-row"));
-      }
-
-      yield* transaction.execute({
-        label: "community.creation.commit-v2.insert-community",
-        text: `INSERT INTO communities (
-                 community_id, display_name, status, created_by_user_id,
-                 created_at, updated_at, membership_mode,
-                 human_verification_lane, route_slug, description,
-                 canonical_route_binding_id, route_authority_version
-               ) VALUES (
-                 $1, $2, 'active', $3, $4::timestamptz, $4::timestamptz,
-                 'gated', 'very', NULL, $5, NULL, 'optional_route_v2'
-               )`,
-        values: [
-          communityId,
-          document.draft.name,
-          input.actor.userId,
-          activationNow,
-          document.draft.description,
-        ],
-        readonly: false,
-      });
-      yield* transaction.execute({
-        label: "community.creation.commit-v2.require-owner-byte-agreement",
-        text: "SELECT initialize_community_owner_v1($1, $2, $3::timestamptz)",
-        values: [communityId, input.actor.userId, activationNow],
-        readonly: false,
-      });
-      yield* transaction.execute({
-        label: "community.creation.commit-v2.require-moderation-policy-byte-agreement",
-        text: "SELECT initialize_community_moderation_policy_v1($1, $2::timestamptz)",
-        values: [communityId, activationNow],
-        readonly: false,
-      });
-      yield* transaction.execute({
-        label: "community.creation.commit-v2.insert-creator-membership",
-        text: `INSERT INTO community_memberships (
-                 community_id, membership_id, user_id, status,
-                 joined_at, created_at, updated_at
-               ) VALUES ($1, $2, $3, 'member', $4::timestamptz, $4::timestamptz, $4::timestamptz)`,
-        values: [communityId, membershipId, input.actor.userId, activationNow],
-        readonly: false,
-      });
-      yield* transaction.execute({
-        label: "community.creation.commit-v2.insert-persona-role-presentation",
-        text: `INSERT INTO persona_role_presentations (
-                 community_id, account_id, persona_id, created_at, updated_at
-               ) VALUES ($1, $2, $3, $4::timestamptz, $4::timestamptz)`,
-        values: [communityId, input.actor.userId, document.draft.persona_id, activationNow],
-        readonly: false,
-      });
-      yield* transaction.execute({
-        label: "community.creation.commit-v2.insert-route-authority",
-        text: `INSERT INTO community_route_authority_grants (
-                 grant_id, community_id, principal_user_id, authority,
-                 source_kind, status, granted_at, granted_by_user_id
-               ) VALUES (
-                 $1, $2, $3, 'manage_routes', 'creator_owner', 'active',
-                 $4::timestamptz, $3
-               )`,
-        values: [routeAuthorityGrantId, communityId, input.actor.userId, activationNow],
-        readonly: false,
-      });
-      yield* transaction.execute({
-        label: "community.creation.commit-v2.insert-handle-sales-authority",
-        text: `INSERT INTO community_handle_sales_authority_grants (
-                 grant_id, community_id, principal_account_id, authority,
-                 source_kind, source_policy_ref, status, granted_at,
-                 granted_by_account_id
-               ) VALUES (
-                 community_handle_sales_creator_grant_id_v1($1, $2),
-                 $1, $2, 'manage_handle_sales', 'creator_owner', NULL,
-                 'active', $3::timestamptz, $2
-               )`,
-        values: [communityId, input.actor.userId, activationNow],
-        readonly: false,
-      });
-      yield* transaction.execute({
-        label: "community.creation.commit-v2.insert-policy",
-        text: `INSERT INTO policy_versions (
-                 policy_version_id, community_id, policy_key, revision,
-                 policy_hash, policy, compiled_plan, compiler_version,
-                 uniqueness_model, created_by_user_id, published_at,
-                 policy_purpose
-               ) VALUES (
-                 $1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8,
-                 '{"kind":"none"}'::jsonb, $9, $10::timestamptz, 'access'
-               )`,
-        values: [
-          CURATED_HUMAN_MEMBERSHIP_POLICY.policy_version_id,
-          communityId,
-          CURATED_HUMAN_MEMBERSHIP_POLICY.policy_key,
-          CURATED_HUMAN_MEMBERSHIP_POLICY.policy_revision,
-          CURATED_HUMAN_MEMBERSHIP_POLICY.policy_hash,
-          JSON.stringify(CURATED_HUMAN_MEMBERSHIP_POLICY),
-          JSON.stringify(compilation.compiled_plan),
-          compilation.compiled_plan.compiler_version,
-          input.actor.userId,
-          activationNow,
-        ],
-        readonly: false,
-      });
-      yield* transaction.execute({
-        label: "community.creation.commit-v2.insert-provider-binding",
-        text: `INSERT INTO community_policy_provider_bindings (
-                 community_id, policy_key, policy_version_id,
-                 verification_requirement_hash, provider_id,
-                 provider_configuration_kind, provider_configuration_ref,
-                 provider_configuration_version, method, protocol_version,
-                 issuer, scope_kind, issuer_rp_scope, issuer_rp_action_scope,
-                 request_mode, evaluator_id
-               ) VALUES (
-                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                 $11, $12, $13, NULL, 'dynamic', $14
-               )`,
-        values: [
-          communityId,
-          CURATED_HUMAN_MEMBERSHIP_POLICY.policy_key,
-          CURATED_HUMAN_MEMBERSHIP_POLICY.policy_version_id,
-          document.requirements.human_identity.requirement_hash,
-          compilation.provider_binding.provider_id,
-          compilation.provider_binding.provider_configuration.kind,
-          compilation.provider_binding.provider_configuration.reference,
-          compilation.provider_binding.provider_configuration.version,
-          compilation.provider_binding.method,
-          compilation.provider_binding.protocol_version,
-          compilation.provider_binding.scope.issuer,
-          compilation.provider_binding.scope.scope_semantics,
-          compilation.provider_binding.scope.rp_scope,
-          compilation.compiled_plan.evaluator,
-        ],
-        readonly: false,
-      });
-      yield* transaction.execute({
-        label: "community.creation.commit-v2.insert-current-policy",
-        text: `INSERT INTO community_policy_current (
-                 community_id, policy_key, policy_version_id, activated_at
-               ) VALUES ($1, $2, $3, $4::timestamptz)`,
-        values: [
-          communityId,
-          CURATED_HUMAN_MEMBERSHIP_POLICY.policy_key,
-          CURATED_HUMAN_MEMBERSHIP_POLICY.policy_version_id,
-          activationNow,
-        ],
-        readonly: false,
-      });
-      yield* transaction.execute({
-        label: "community.creation.commit-v2.insert-subject-claim",
-        text: `INSERT INTO community_creation_subject_claims (
-                 claim_id, subject_key_id, actor_id, slot_number, approval_id,
-                 intent_id, community_id, proof_session_id, evidence_receipt_id,
-                 verification_requirement_hash
-               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-        values: [
-          subjectClaimId,
-          evidence.subjectKeyId,
-          input.actor.userId,
+          evidence,
           slotNumber,
           approvalId,
-          input.intentId,
-          communityId,
-          evidence.proofSessionId,
-          evidence.evidenceReceiptId,
-          document.requirements.human_identity.requirement_hash,
-        ],
-        readonly: false,
-      });
-      const updated = yield* transaction.execute({
-        label: "community.creation.commit-v2.persist-intent",
-        text: `UPDATE community_creation_intents
-                  SET revision = $1, status = 'committed',
-                      committed_community_id = $2, committed_resource_href = $3,
-                      updated_at = $7::timestamptz
-                WHERE intent_id = $4 AND actor_id = $5 AND revision = $6
-                  AND status = 'commit_ready'
-                  AND creation_contract_version = 'optional_route_v2'
-                  AND expires_at > $7::timestamptz`,
-        values: [
-          committed.value.revision,
-          communityId,
-          resource.href,
-          input.intentId,
-          input.actor.userId,
-          document.revision,
-          activationNow,
-        ],
-        readonly: false,
-      });
-      if (updated.rowCount !== 1) {
-        return yield* Effect.fail(failure("commit", "invalid-row"));
-      }
-      const updatedRow = yield* loadLockedIntent(
-        transaction,
-        input.actor.userId,
-        input.intentId,
-        "commit",
-        activationNow,
+          approvalExpiresAt,
+          requirementHash: creatorRequirement.requirement_hash,
+        },
       );
-      if (updatedRow === null) return yield* Effect.fail(failure("commit", "invalid-row"));
-      const stored = documentFromRow(updatedRow);
-      if (stored === null || JSON.stringify(stored) !== JSON.stringify(committed.value)) {
-        return yield* Effect.fail(failure("commit", "invalid-row"));
-      }
-      yield* insertRevision(transaction, {
-        intent: stored,
-        actorId: input.actor.userId,
-        operation: "commit",
-        idempotencyKey: body.idempotency_key,
-        requestHash: input.requestHash,
-      });
-      return { document: stored, outcome: "fresh_created" as const };
     });
 
   const commit: CommunityCreationRepository["commit"] = (input) =>
@@ -2678,7 +2700,7 @@ export function makeControlPlaneCommunityCreationRepository(
           if (row === null) return yield* Effect.fail(failure("commit", "not-found"));
           const document = documentFromRow(row);
           const providerId = asString(row.verification_provider_id);
-          if (document === null || providerId === null) {
+          if (document === null || !creatorAuthorityMatches(document, providerId)) {
             return yield* Effect.fail(failure("commit", "invalid-row"));
           }
           if (body.expected_revision !== document.revision) {

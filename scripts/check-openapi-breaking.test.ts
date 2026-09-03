@@ -166,7 +166,16 @@ describe("OpenAPI clean-break allowance", () => {
     ) as BreakingChangePolicy;
     const unchanged = document([], []);
 
-    expect(repositoryPolicy.breakingChangeWaivers).toEqual([]);
+    // Waivers are one-time allowances bound to an exact baseline; the policy
+    // may hold reviewed entries while a transition is pending, but never a
+    // legacy operation-wide allowance, and never one without its exact diff.
+    expect("cleanBreakOperations" in repositoryPolicy).toBe(false);
+    expect("deprecatedOperations" in repositoryPolicy).toBe(false);
+    for (const waiver of repositoryPolicy.breakingChangeWaivers) {
+      expect(waiver.baselineSha).toMatch(/^[0-9a-f]{40}$/u);
+      expect(waiver.expectedViolations.length).toBeGreaterThan(0);
+      expect(waiver.reason.trim()).not.toBe("");
+    }
     expect(
       filterAllowedBreakingChanges(unchanged, unchanged, repositoryPolicy, BASELINE_SHA),
     ).toEqual([]);

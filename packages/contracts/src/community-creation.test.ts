@@ -178,6 +178,26 @@ describe("community creation contracts", () => {
     });
     expect(decoded.requirements).toEqual(humanOnly);
 
+    // Creator-requirement removal amendment: a new intent carries an empty map
+    // and is commit-ready without any ceremony; it can never require one.
+    const requirementFree = Schema.decodeUnknownSync(CommunityCreationIntent, {
+      onExcessProperty: "error",
+    })({
+      ...v2Base,
+      requirements: {},
+      status: "commit_ready",
+      next_action: { kind: "commit" },
+    });
+    expect(requirementFree.requirements).toEqual({});
+    expect(() =>
+      Schema.decodeUnknownSync(CommunityCreationIntent, { onExcessProperty: "error" })({
+        ...v2Base,
+        requirements: {},
+        status: "verification_required",
+        next_action: { kind: "wait", requirement: null, reason_code: "verification_pending" },
+      }),
+    ).toThrow();
+
     const communityId = "community_123e4567-e89b-42d3-a456-426614174000";
     expect(
       Schema.decodeUnknownSync(CommunityCreationIntent)({

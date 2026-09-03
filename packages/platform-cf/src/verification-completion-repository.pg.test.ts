@@ -22,6 +22,7 @@ import type {
 import { Effect } from "effect";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
+import { seedGrandfatheredCreationIntent } from "./community-creation-grandfathered.pg-fixture";
 import { makeControlPlaneCommunityCreationStore } from "./community-creation-repository";
 import { createActivePersonaFixture } from "./persona-wallet.pg-fixture";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres";
@@ -877,33 +878,27 @@ suite("Postgres 17 verification completion repository", () => {
         next_community_id: () => primaryCommunityId,
         next_subject_claim_id: () => "creation-claim-jazleeuw",
       });
-      const created = (
-        await Effect.runPromise(
-          creationStore.create({
-            actor: { kind: "user", userId: "user-a" },
-            requestHash: "a".repeat(64),
-            body: {
-              idempotency_key: "create-community-1",
-              draft: {
-                persona_id: "persona-user-a",
-                name: "Jazleeuw",
-                description: "Verified people",
-                policy: {
-                  version: 1,
-                  accessPaths: [
-                    {
-                      id: "verified-people",
-                      operator: "and",
-                      requirements: [{ requirement: "human-verification" }],
-                    },
-                  ],
-                },
+      const created = await seedGrandfatheredCreationIntent(admin, creationStore, {
+        intentId: "community-intent-1",
+        actorId: "user-a",
+        requestHash: "a".repeat(64),
+        idempotencyKey: "create-community-1",
+        draft: {
+          persona_id: "persona-user-a",
+          name: "Jazleeuw",
+          description: "Verified people",
+          policy: {
+            version: 1,
+            accessPaths: [
+              {
+                id: "verified-people",
+                operator: "and",
+                requirements: [{ requirement: "human-verification" }],
               },
-            },
-          }),
-        )
-      ).document;
-      expect(created.status).toBe("verification_required");
+            ],
+          },
+        },
+      });
       if (created.next_action.kind !== "start_verification") {
         throw new Error("expected the linked human creation ceremony");
       }
@@ -1103,22 +1098,17 @@ suite("Postgres 17 verification completion repository", () => {
         next_community_id: () => quotaCommunityId,
         next_subject_claim_id: () => "creation-claim-should-not-exist",
       });
-      const second = (
-        await Effect.runPromise(
-          secondStore.create({
-            actor: { kind: "user", userId: "user-a" },
-            requestHash: "3".repeat(64),
-            body: {
-              idempotency_key: "create-community-2",
-              draft: {
-                ...created.draft,
-                persona_id: "persona-user-a",
-                name: "Second community",
-              },
-            },
-          }),
-        )
-      ).document;
+      const second = await seedGrandfatheredCreationIntent(admin, secondStore, {
+        intentId: "community-intent-2",
+        actorId: "user-a",
+        requestHash: "3".repeat(64),
+        idempotencyKey: "create-community-2",
+        draft: {
+          ...created.draft,
+          persona_id: "persona-user-a",
+          name: "Second community",
+        },
+      });
       await completeLinkedVeryCeremony({
         connection,
         intent: second,
@@ -1162,22 +1152,17 @@ suite("Postgres 17 verification completion repository", () => {
         next_community_id: () => approvedCommunityId,
         next_subject_claim_id: () => "creation-claim-approved",
       });
-      const third = (
-        await Effect.runPromise(
-          thirdStore.create({
-            actor: { kind: "user", userId: "user-a" },
-            requestHash: "5".repeat(64),
-            body: {
-              idempotency_key: "create-community-3",
-              draft: {
-                ...created.draft,
-                persona_id: "persona-user-a",
-                name: "Approved community",
-              },
-            },
-          }),
-        )
-      ).document;
+      const third = await seedGrandfatheredCreationIntent(admin, thirdStore, {
+        intentId: "community-intent-3",
+        actorId: "user-a",
+        requestHash: "5".repeat(64),
+        idempotencyKey: "create-community-3",
+        draft: {
+          ...created.draft,
+          persona_id: "persona-user-a",
+          name: "Approved community",
+        },
+      });
       await completeLinkedVeryCeremony({
         connection,
         intent: third,
@@ -1249,20 +1234,17 @@ suite("Postgres 17 verification completion repository", () => {
       ] as const;
       const raceIntents = await Promise.all(
         raceStores.map((store, index) =>
-          Effect.runPromise(
-            store.create({
-              actor: { kind: "user", userId: "user-a" },
-              requestHash: `${index === 0 ? "7" : "8"}`.repeat(64),
-              body: {
-                idempotency_key: `create-community-race-${index}`,
-                draft: {
-                  ...created.draft,
-                  persona_id: "persona-user-a",
-                  name: `Race community ${index}`,
-                },
-              },
-            }),
-          ).then((result) => result.document),
+          seedGrandfatheredCreationIntent(admin, store, {
+            intentId: index === 0 ? "community-intent-race-a" : "community-intent-race-b",
+            actorId: "user-a",
+            requestHash: `${index === 0 ? "7" : "8"}`.repeat(64),
+            idempotencyKey: `create-community-race-${index}`,
+            draft: {
+              ...created.draft,
+              persona_id: "persona-user-a",
+              name: `Race community ${index}`,
+            },
+          }),
         ),
       );
       for (const [index, intent] of raceIntents.entries()) {
@@ -1324,22 +1306,17 @@ suite("Postgres 17 verification completion repository", () => {
         next_community_id: () => primaryCommunityId,
         next_subject_claim_id: () => "creation-claim-rollback",
       });
-      const rollbackIntent = (
-        await Effect.runPromise(
-          rollbackStore.create({
-            actor: { kind: "user", userId: "user-a" },
-            requestHash: "b".repeat(64),
-            body: {
-              idempotency_key: "create-community-rollback",
-              draft: {
-                ...created.draft,
-                persona_id: "persona-user-a",
-                name: "Rollback community",
-              },
-            },
-          }),
-        )
-      ).document;
+      const rollbackIntent = await seedGrandfatheredCreationIntent(admin, rollbackStore, {
+        intentId: "community-intent-rollback",
+        actorId: "user-a",
+        requestHash: "b".repeat(64),
+        idempotencyKey: "create-community-rollback",
+        draft: {
+          ...created.draft,
+          persona_id: "persona-user-a",
+          name: "Rollback community",
+        },
+      });
       await completeLinkedVeryCeremony({
         connection,
         intent: rollbackIntent,
@@ -1411,32 +1388,27 @@ suite("Postgres 17 verification completion repository", () => {
         next_community_id: () => lockOrderCommunityId,
         next_subject_claim_id: () => "creation-claim-lock-order",
       });
-      const created = (
-        await Effect.runPromise(
-          creationStore.create({
-            actor: { kind: "user", userId: "user-a" },
-            requestHash: "3".repeat(64),
-            body: {
-              idempotency_key: "create-community-lock-order",
-              draft: {
-                persona_id: "persona-user-a",
-                name: "Lock order",
-                description: null,
-                policy: {
-                  version: 1,
-                  accessPaths: [
-                    {
-                      id: "verified-people",
-                      operator: "and",
-                      requirements: [{ requirement: "human-verification" }],
-                    },
-                  ],
-                },
+      const created = await seedGrandfatheredCreationIntent(admin, creationStore, {
+        intentId: "community-intent-lock-order",
+        actorId: "user-a",
+        requestHash: "3".repeat(64),
+        idempotencyKey: "create-community-lock-order",
+        draft: {
+          persona_id: "persona-user-a",
+          name: "Lock order",
+          description: null,
+          policy: {
+            version: 1,
+            accessPaths: [
+              {
+                id: "verified-people",
+                operator: "and",
+                requirements: [{ requirement: "human-verification" }],
               },
-            },
-          }),
-        )
-      ).document;
+            ],
+          },
+        },
+      });
       if (created.next_action.kind !== "start_verification") {
         throw new Error("expected the linked lock-order ceremony");
       }

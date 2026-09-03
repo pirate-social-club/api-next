@@ -1,3 +1,48 @@
 {
-  "breakingChangeWaivers": []
+  "breakingChangeWaivers": [
+    {
+      "operationId": "get_communityCreationIntentsIntentId",
+      "kind": "clean-break",
+      "baselineSha": "0d258cc7381a2eda4d41bfbc9e831f4aa2f699f4",
+      "reason": "Creator-requirement removal amendment (spec 012, 2026-09-03): optional-route creation intents carry no creator human_identity requirement, so the V2 requirements map is empty for new intents and the entry is optional; grandfathered intents keep it.",
+      "expectedViolations": [
+        "response GET /community-creation-intents/{intentId}: response property became optional: human_identity",
+        "response GET /community-creation-intents/{intentId}: type changed from object to null"
+      ]
+    },
+    {
+      "operationId": "patch_communityCreationIntentsIntentId",
+      "kind": "clean-break",
+      "baselineSha": "0d258cc7381a2eda4d41bfbc9e831f4aa2f699f4",
+      "reason": "Creator-requirement removal amendment (spec 012, 2026-09-03): optional-route creation intents carry no creator human_identity requirement, so the V2 requirements map is empty for new intents and the entry is optional; grandfathered intents keep it.",
+      "expectedViolations": [
+        "response PATCH /community-creation-intents/{intentId}: response property became optional: human_identity",
+        "response PATCH /community-creation-intents/{intentId}: type changed from object to null"
+      ]
+    },
+    {
+      "operationId": "post_communityCreationIntents",
+      "kind": "clean-break",
+      "baselineSha": "0d258cc7381a2eda4d41bfbc9e831f4aa2f699f4",
+      "reason": "Creator-requirement removal amendment (spec 012, 2026-09-03): optional-route creation intents carry no creator human_identity requirement, so the V2 requirements map is empty for new intents and the entry is optional; grandfathered intents keep it.",
+      "expectedViolations": [
+        "response POST /community-creation-intents status 201: response property became optional: human_identity",
+        "response POST /community-creation-intents status 201: type changed from object to null",
+        "response POST /community-creation-intents: response property became optional: human_identity",
+        "response POST /community-creation-intents: type changed from object to null"
+      ]
+    },
+    {
+      "operationId": "post_communityCreationIntentsIntentIdCommit",
+      "kind": "clean-break",
+      "baselineSha": "0d258cc7381a2eda4d41bfbc9e831f4aa2f699f4",
+      "reason": "Creator-requirement removal amendment (spec 012, 2026-09-03): optional-route creation intents carry no creator human_identity requirement, so the V2 requirements map is empty for new intents and the entry is optional; grandfathered intents keep it.",
+      "expectedViolations": [
+        "response POST /community-creation-intents/{intentId}/commit status 201: response property became optional: human_identity",
+        "response POST /community-creation-intents/{intentId}/commit status 201: type changed from object to null",
+        "response POST /community-creation-intents/{intentId}/commit: response property became optional: human_identity",
+        "response POST /community-creation-intents/{intentId}/commit: type changed from object to null"
+      ]
+    }
+  ]
 }

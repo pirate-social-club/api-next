@@ -112,8 +112,12 @@ export type CreationHumanIdentityRequirementProgressV2 = Schema.Schema.Type<
   typeof CreationHumanIdentityRequirementProgressV2
 >;
 
+/**
+ * Post-amendment optional-route intents carry no creator requirement, so the
+ * map is empty; grandfathered intents keep their single human entry.
+ */
 export const CommunityCreationRequirementsV2 = Schema.Struct({
-  human_identity: CreationHumanIdentityRequirementProgressV2,
+  human_identity: Schema.optional(CreationHumanIdentityRequirementProgressV2),
 });
 export type CommunityCreationRequirementsV2 = Schema.Schema.Type<
   typeof CommunityCreationRequirementsV2

@@ -231,4 +231,28 @@ describe("community creation intent state machine", () => {
       }),
     ).toBe("unexpected_committed_resource");
   });
+
+  test("accepts requirement-free creator authority only as an all-or-nothing null pair", () => {
+    const requirementFree = {
+      ...state("commit_ready"),
+      verification_requirement_hash: null,
+      verification_provider_id: null,
+    };
+    expect(communityCreationIntentInvariant(requirementFree)).toBeNull();
+    expect(creationNextAction(requirementFree)).toEqual({ kind: "commit" });
+    expect(
+      communityCreationIntentInvariant({ ...requirementFree, status: "verification_required" }),
+    ).toBe("verification_required_without_authority");
+    expect(
+      communityCreationIntentInvariant({
+        ...requirementFree,
+        verification_provider_id: "very.web",
+      }),
+    ).toBe("verification_authority_shape");
+    const expired = transitionCommunityCreationIntent(requirementFree, {
+      type: "expired",
+      expected_revision: 1,
+    });
+    expect(expired.kind === "accepted" && expired.state.status).toBe("expired");
+  });
 });
