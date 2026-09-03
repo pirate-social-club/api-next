@@ -240,20 +240,21 @@ export const makeControlPlaneKaraokeRepository = () => ({
             yield* lockLearnerAudioAccount(transaction, input.accountId);
             const identity = yield* transaction.execute<Row>({
               label: "karaoke.session.identity",
-              text: `SELECT persona.persona_id
+              text: `SELECT persona.persona_id,
+                            active_owned_community_persona($1,$2,$3) AS binding_eligible,
+                            active_community_effect($3,$1) AS community_eligible
                        FROM personas AS persona
-                      WHERE persona.account_id=$1 AND persona.status='active'
-                        AND persona.persona_id=coalesce($2, (
-                          SELECT candidate.persona_id FROM personas AS candidate
-                           WHERE candidate.account_id=$1 AND candidate.status='active'
-                           ORDER BY candidate.is_first_persona DESC, candidate.created_at,
-                                    candidate.persona_id LIMIT 1
-                        ))`,
-              values: [input.accountId, input.personaId],
-              readonly: true,
+                      WHERE persona.account_id=$1
+                        AND persona.persona_id=$2
+                        AND persona.status='active'`,
+              values: [input.accountId, input.personaId, input.communityId],
+              readonly: false,
             });
             if (identity.rows.length !== 1) return yield* rejected("invalid-input");
             const identityRow = identity.rows[0] as Row;
+            if (identityRow.binding_eligible !== true || identityRow.community_eligible !== true) {
+              return yield* rejected("invalid-input");
+            }
             const personaId = text(identityRow, "persona_id");
             const replay = yield* transaction.execute<Row>({
               label: "karaoke.session.replay",
@@ -600,7 +601,7 @@ export const makeControlPlaneKaraokeRepository = () => ({
                     WHERE community_id=$1 AND post_id=$2
                     ORDER BY created_at DESC, session_id DESC LIMIT 1
                  ), eligible AS (
-                   SELECT session.account_id, session.persona_id, attempt.final_score_bps,
+                   SELECT session.account_id, attempt.final_score_bps,
                           attempt.completed_at,
                           row_number() OVER (
                             PARTITION BY session.account_id
@@ -622,17 +623,28 @@ export const makeControlPlaneKaraokeRepository = () => ({
                           count(*) OVER () AS total_ranked
                      FROM eligible WHERE account_best=1
                  )
-                 SELECT revision.*, ranked.*, profile.display_name, profile.avatar_ref,
-                        handle.label_display AS public_handle
+                 SELECT revision.*, ranked.*,
+                        presentation.persona_id AS presentation_persona_id,
+                        profile.display_name, profile.avatar_ref,
+                        handle.display_identifier AS public_handle
                    FROM revision
                    LEFT JOIN ranked ON ranked.rank <= $3 OR ranked.account_id=$4
-                   LEFT JOIN persona_profiles AS profile ON profile.persona_id=ranked.persona_id
+                   LEFT JOIN persona_activity_presentations AS presentation
+                     ON presentation.community_id=$1
+                    AND presentation.account_id=ranked.account_id
+                   LEFT JOIN personas AS persona
+                     ON persona.persona_id=presentation.persona_id
+                    AND persona.status='active'
+                   LEFT JOIN persona_profiles AS profile ON profile.persona_id=presentation.persona_id
                    LEFT JOIN LATERAL (
-                     SELECT candidate.label_display FROM public_handle_index AS candidate
-                      WHERE candidate.owner_persona_id=ranked.persona_id AND candidate.status='active'
-                      ORDER BY candidate.updated_at DESC, candidate.handle_id LIMIT 1
+                     SELECT candidate.display_identifier
+                       FROM handle_grants AS candidate
+                      WHERE candidate.community_id=$1
+                        AND candidate.owner_persona_id=presentation.persona_id
+                        AND candidate.status='active'
+                      ORDER BY candidate.issued_at DESC, candidate.grant_id LIMIT 1
                    ) AS handle ON true
-                  ORDER BY ranked.rank, ranked.completed_at, ranked.persona_id`,
+                  ORDER BY ranked.rank, ranked.completed_at, presentation.persona_id`,
           values: [input.communityId, input.postId, input.limit, input.accountId],
           readonly: true,
         });

@@ -133,8 +133,14 @@ export const KaraokeClientContext = Schema.Struct({
   ),
 });
 
+/**
+ * The performing persona is explicit (spec 019, 2026-09-03 amendment): the
+ * request must name an active owned persona bound to the song's exact
+ * community, and neither the API nor Solid falls back to the account's first
+ * active persona.
+ */
 export const KaraokeAttemptCreate = Schema.Struct({
-  persona_id: Schema.optional(PersonaIdV1),
+  persona_id: PersonaIdV1,
   timezone: Schema.optional(Schema.NullOr(Schema.String)),
   client_context: Schema.optional(KaraokeClientContext),
 });
@@ -250,7 +256,7 @@ export const CreateKaraokeAttempt = endpoint({
     path: Schema.Struct({ communityId: Schema.String, postId: Schema.String }),
     headers: KaraokeAttemptCreateHeaders,
     body: KaraokeAttemptCreate,
-    bodyRequired: false,
+    bodyRequired: true,
   },
   response: KaraokeSession,
   successStatus: 201,

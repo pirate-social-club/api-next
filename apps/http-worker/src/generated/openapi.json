@@ -80767,21 +80767,14 @@
           }
         ],
         "requestBody": {
-          "required": false,
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "type": "object",
                 "properties": {
                   "persona_id": {
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
+                    "type": "string"
                   },
                   "timezone": {
                     "anyOf": [
@@ -80859,6 +80852,9 @@
                     ]
                   }
                 },
+                "required": [
+                  "persona_id"
+                ],
                 "additionalProperties": false
               }
             }

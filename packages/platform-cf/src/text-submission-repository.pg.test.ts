@@ -57,14 +57,20 @@ const publicPostSlugMigration = migrations.find(
 const heldVisibilityMigration = migrations.find(
   (migration) => migration.version === "0104_text_held_revision_visibility.sql",
 );
+const personaCommunityBindingMigration = migrations.find(
+  (migration) => migration.version === "0110_persona_community_bindings.sql",
+);
 if (publicPostSlugMigration === undefined)
   throw new Error("Public Post slug alias migration is missing");
 if (heldVisibilityMigration === undefined)
   throw new Error("Held text visibility migration is missing");
+if (personaCommunityBindingMigration === undefined)
+  throw new Error("Persona community binding migration is missing");
 const slugEnabledHistoricalMigrations = [
   ...historicalV1Migrations,
   publicPostSlugMigration,
   heldVisibilityMigration,
+  personaCommunityBindingMigration,
 ];
 afterEach(() => {
   completedTestCount += 1;
@@ -365,6 +371,14 @@ async function seed(admin: Client, schema: string): Promise<void> {
        created_at, updated_at
      ) VALUES ('text-community', 'Text Order 5', 'active', $1, NULL, now(), now())`,
     [actor.userId],
+  );
+  await admin.query(
+    `INSERT INTO persona_community_bindings (
+       persona_id, account_id, community_id, binding_source
+     ) VALUES
+       ($1, $2, 'text-community', 'first_membership'),
+       ($3, $4, 'text-community', 'first_membership')`,
+    [actorPersonaId, actor.userId, otherActorPersonaId, otherActor.userId],
   );
   await admin.query(
     `INSERT INTO community_canonical_route_bindings (
@@ -927,6 +941,17 @@ suite("Postgres 17 terminal text submission repository", () => {
            clock_timestamp(), clock_timestamp(), clock_timestamp())`,
         [communityId, actor.userId],
       );
+      const namespacelessPersonaId = "persona_text_order5_namespaceless";
+      await createActivePersonaFixture(admin, {
+        accountId: actor.userId,
+        personaId: namespacelessPersonaId,
+      });
+      await admin.query(
+        `INSERT INTO persona_community_bindings (
+           persona_id, account_id, community_id, binding_source
+         ) VALUES ($1, $2, $3, 'first_membership')`,
+        [namespacelessPersonaId, actor.userId, communityId],
+      );
 
       const postText = "namespaceless post";
       const postInput = { ...input, body: postText };
@@ -935,15 +960,25 @@ suite("Postgres 17 terminal text submission repository", () => {
       const postRequestHash = await Effect.runPromise(
         canonicalBodyHash({
           community_id: communityId,
-          body: { ...body, idempotency_key: "namespaceless-text-post", body: postText },
+          body: {
+            ...body,
+            idempotency_key: "namespaceless-text-post",
+            persona_id: namespacelessPersonaId,
+            body: postText,
+          },
         }),
       );
       const postResult = await runStore(connection, (store) =>
         store.commitTerminal({
           communityId,
           actor,
-          personaId: actorPersonaId,
-          body: { ...body, idempotency_key: "namespaceless-text-post", body: postText },
+          personaId: namespacelessPersonaId,
+          body: {
+            ...body,
+            idempotency_key: "namespaceless-text-post",
+            persona_id: namespacelessPersonaId,
+            body: postText,
+          },
           moderationInput: postInput,
           idempotencyKey: "namespaceless-text-post",
           requestHash: postRequestHash,
@@ -972,7 +1007,7 @@ suite("Postgres 17 terminal text submission repository", () => {
            body, created_at, updated_at
          ) VALUES ($1, 'namespaceless-comment-target', $2, $3, 'text', 'published',
            'public', 'target', clock_timestamp(), clock_timestamp())`,
-        [communityId, actor.userId, actorPersonaId],
+        [communityId, actor.userId, namespacelessPersonaId],
       );
       const commentText = "namespaceless comment";
       const namespacelessCommentInput = { ...commentInput, body: commentText };
@@ -985,7 +1020,7 @@ suite("Postgres 17 terminal text submission repository", () => {
           post_id: "namespaceless-comment-target",
           body: {
             idempotency_key: "namespaceless-comment",
-            persona_id: actorPersonaId,
+            persona_id: namespacelessPersonaId,
             body: commentText,
           },
         }),
@@ -994,10 +1029,10 @@ suite("Postgres 17 terminal text submission repository", () => {
         store.commitTerminal({
           communityId,
           actor,
-          personaId: actorPersonaId,
+          personaId: namespacelessPersonaId,
           body: {
             idempotency_key: "namespaceless-comment",
-            persona_id: actorPersonaId,
+            persona_id: namespacelessPersonaId,
             body: commentText,
           },
           moderationInput: namespacelessCommentInput,
@@ -1016,6 +1051,46 @@ suite("Postgres 17 terminal text submission repository", () => {
         kind: "created",
         snapshot: { status: "published", published_resource: { kind: "comment" } },
       });
+    });
+  }, 30_000);
+
+  test("rejects an unbound authoring persona before any effect", async () => {
+    await withSchema(async (admin, connection) => {
+      const unboundPersonaId = "persona_text_order5_unbound";
+      await createActivePersonaFixture(admin, {
+        accountId: actor.userId,
+        personaId: unboundPersonaId,
+      });
+      const unboundBody = { ...body, persona_id: unboundPersonaId };
+      const canonical = canonicalTextModerationInput(input);
+      if (canonical.kind === "rejected") throw new Error(canonical.reason);
+      const requestHash = await Effect.runPromise(
+        canonicalBodyHash({
+          community_id: "text-community",
+          body: { ...unboundBody, idempotency_key: "unbound-author-post" },
+        }),
+      );
+      await expect(
+        runStore(connection, (store) =>
+          store.commitTerminal({
+            communityId: "text-community",
+            actor,
+            personaId: unboundPersonaId,
+            body: { ...unboundBody, idempotency_key: "unbound-author-post" },
+            moderationInput: input,
+            idempotencyKey: "unbound-author-post",
+            requestHash,
+            operationId: "operation_unbound_author_post",
+            evaluation,
+          }),
+        ),
+      ).rejects.toMatchObject({ operation: "commit", reason: "not-found" });
+      const stored = await admin.query<{ readonly submissions: number; readonly posts: number }>(
+        `SELECT
+           (SELECT count(*)::int FROM text_content_submissions) AS submissions,
+           (SELECT count(*)::int FROM posts) AS posts`,
+      );
+      expect(stored.rows[0]).toEqual({ submissions: 0, posts: 0 });
     });
   }, 30_000);
 

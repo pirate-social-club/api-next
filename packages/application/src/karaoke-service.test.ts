@@ -62,7 +62,7 @@ describe("Karaoke service", () => {
           clientContext: { headphones: true, platform: "web" },
           communityId: "community-1",
           idempotencyKey: "request-1",
-          personaId: null,
+          personaId: "persona-1",
           postId: "post-1",
           timezone: "UTC",
         })
@@ -96,7 +96,7 @@ describe("Karaoke service", () => {
           clientContext: undefined,
           communityId: "community-1",
           idempotencyKey: "request-2",
-          personaId: null,
+          personaId: "persona-1",
           postId: "post-1",
           timezone: "UTC",
         })

@@ -796,6 +796,72 @@ suite("Postgres 17 activity qualification repository", () => {
       );
       expect(presentation.persona_id).toBe(secondPersonaId);
 
+      // A persona without the exact community binding can never become the
+      // presentation, and the rejection stays enumeration-safe.
+      const unboundPersonaId = `persona-${crypto.randomUUID()}`;
+      await createActivePersonaFixture(admin, {
+        accountId: identity.accountId,
+        personaId: unboundPersonaId,
+        profile: { displayName: "Unbound Persona" },
+      });
+      await expect(
+        Effect.runPromise(
+          provideServices(
+            [],
+            source,
+            "2026-08-25T12:17:00.000Z",
+          )(
+            service.setPresentationPersona({
+              accountId: identity.accountId,
+              communityId: identity.communityId,
+              idempotencyKey: "presentation-unbound",
+              personaId: unboundPersonaId,
+            }),
+          ),
+        ),
+      ).rejects.toMatchObject({
+        _tag: "ActivityQualificationRejected",
+        reason: "persona-ineligible",
+      });
+      const foreignCommunityPersonaId = `persona-${crypto.randomUUID()}`;
+      const foreignCommunityId = `community-${crypto.randomUUID()}`;
+      await admin.query(
+        `INSERT INTO communities (
+           community_id, display_name, status, created_by_user_id, created_at, updated_at
+         ) VALUES ($1,'Foreign community','active',$2,'2026-08-02T00:00:00.000Z',
+           '2026-08-02T00:00:00.000Z')`,
+        [foreignCommunityId, identity.accountId],
+      );
+      await createActivePersonaFixture(admin, {
+        accountId: identity.accountId,
+        personaId: foreignCommunityPersonaId,
+        profile: { displayName: "Foreign Community Persona" },
+      });
+      await bindPersonaToCommunity(admin, {
+        accountId: identity.accountId,
+        communityId: foreignCommunityId,
+        personaId: foreignCommunityPersonaId,
+      });
+      await expect(
+        Effect.runPromise(
+          provideServices(
+            [],
+            source,
+            "2026-08-25T12:18:00.000Z",
+          )(
+            service.setPresentationPersona({
+              accountId: identity.accountId,
+              communityId: identity.communityId,
+              idempotencyKey: "presentation-foreign-community",
+              personaId: foreignCommunityPersonaId,
+            }),
+          ),
+        ),
+      ).rejects.toMatchObject({
+        _tag: "ActivityQualificationRejected",
+        reason: "persona-ineligible",
+      });
+
       const counts = await admin.query<{
         readonly answers: string;
         readonly activity_count: string;
@@ -986,6 +1052,72 @@ suite("Postgres 17 activity qualification repository", () => {
         await admin.query("SET session_replication_role = origin");
       }
       await qualify(lateParticipant, "pool-share-late", new Date().toISOString());
+
+      // A persona without the exact community binding can never become the
+      // presentation, and the rejection stays enumeration-safe.
+      const unboundPersonaId = `persona-${crypto.randomUUID()}`;
+      await createActivePersonaFixture(admin, {
+        accountId: identity.accountId,
+        personaId: unboundPersonaId,
+        profile: { displayName: "Unbound Persona" },
+      });
+      await expect(
+        Effect.runPromise(
+          provideServices(
+            [],
+            source,
+            "2026-08-25T12:17:00.000Z",
+          )(
+            service.setPresentationPersona({
+              accountId: identity.accountId,
+              communityId: identity.communityId,
+              idempotencyKey: "presentation-unbound",
+              personaId: unboundPersonaId,
+            }),
+          ),
+        ),
+      ).rejects.toMatchObject({
+        _tag: "ActivityQualificationRejected",
+        reason: "persona-ineligible",
+      });
+      const foreignCommunityPersonaId = `persona-${crypto.randomUUID()}`;
+      const foreignCommunityId = `community-${crypto.randomUUID()}`;
+      await admin.query(
+        `INSERT INTO communities (
+           community_id, display_name, status, created_by_user_id, created_at, updated_at
+         ) VALUES ($1,'Foreign community','active',$2,'2026-08-02T00:00:00.000Z',
+           '2026-08-02T00:00:00.000Z')`,
+        [foreignCommunityId, identity.accountId],
+      );
+      await createActivePersonaFixture(admin, {
+        accountId: identity.accountId,
+        personaId: foreignCommunityPersonaId,
+        profile: { displayName: "Foreign Community Persona" },
+      });
+      await bindPersonaToCommunity(admin, {
+        accountId: identity.accountId,
+        communityId: foreignCommunityId,
+        personaId: foreignCommunityPersonaId,
+      });
+      await expect(
+        Effect.runPromise(
+          provideServices(
+            [],
+            source,
+            "2026-08-25T12:18:00.000Z",
+          )(
+            service.setPresentationPersona({
+              accountId: identity.accountId,
+              communityId: identity.communityId,
+              idempotencyKey: "presentation-foreign-community",
+              personaId: foreignCommunityPersonaId,
+            }),
+          ),
+        ),
+      ).rejects.toMatchObject({
+        _tag: "ActivityQualificationRejected",
+        reason: "persona-ineligible",
+      });
 
       const counts = await admin.query<{
         readonly consumptions: string;
@@ -1415,6 +1547,72 @@ suite("Postgres 17 activity qualification repository", () => {
       ]);
       expect(results.every(({ session }) => session.qualification !== null)).toBe(true);
 
+      // A persona without the exact community binding can never become the
+      // presentation, and the rejection stays enumeration-safe.
+      const unboundPersonaId = `persona-${crypto.randomUUID()}`;
+      await createActivePersonaFixture(admin, {
+        accountId: identity.accountId,
+        personaId: unboundPersonaId,
+        profile: { displayName: "Unbound Persona" },
+      });
+      await expect(
+        Effect.runPromise(
+          provideServices(
+            [],
+            source,
+            "2026-08-25T12:17:00.000Z",
+          )(
+            service.setPresentationPersona({
+              accountId: identity.accountId,
+              communityId: identity.communityId,
+              idempotencyKey: "presentation-unbound",
+              personaId: unboundPersonaId,
+            }),
+          ),
+        ),
+      ).rejects.toMatchObject({
+        _tag: "ActivityQualificationRejected",
+        reason: "persona-ineligible",
+      });
+      const foreignCommunityPersonaId = `persona-${crypto.randomUUID()}`;
+      const foreignCommunityId = `community-${crypto.randomUUID()}`;
+      await admin.query(
+        `INSERT INTO communities (
+           community_id, display_name, status, created_by_user_id, created_at, updated_at
+         ) VALUES ($1,'Foreign community','active',$2,'2026-08-02T00:00:00.000Z',
+           '2026-08-02T00:00:00.000Z')`,
+        [foreignCommunityId, identity.accountId],
+      );
+      await createActivePersonaFixture(admin, {
+        accountId: identity.accountId,
+        personaId: foreignCommunityPersonaId,
+        profile: { displayName: "Foreign Community Persona" },
+      });
+      await bindPersonaToCommunity(admin, {
+        accountId: identity.accountId,
+        communityId: foreignCommunityId,
+        personaId: foreignCommunityPersonaId,
+      });
+      await expect(
+        Effect.runPromise(
+          provideServices(
+            [],
+            source,
+            "2026-08-25T12:18:00.000Z",
+          )(
+            service.setPresentationPersona({
+              accountId: identity.accountId,
+              communityId: identity.communityId,
+              idempotencyKey: "presentation-foreign-community",
+              personaId: foreignCommunityPersonaId,
+            }),
+          ),
+        ),
+      ).rejects.toMatchObject({
+        _tag: "ActivityQualificationRejected",
+        reason: "persona-ineligible",
+      });
+
       const counts = await admin.query<{
         readonly claims: number;
         readonly credits: number;
@@ -1480,6 +1678,72 @@ suite("Postgres 17 activity qualification repository", () => {
         );
       const [left, right] = await Promise.all([submit(), submit()]);
       expect(left).toEqual(right);
+      // A persona without the exact community binding can never become the
+      // presentation, and the rejection stays enumeration-safe.
+      const unboundPersonaId = `persona-${crypto.randomUUID()}`;
+      await createActivePersonaFixture(admin, {
+        accountId: identity.accountId,
+        personaId: unboundPersonaId,
+        profile: { displayName: "Unbound Persona" },
+      });
+      await expect(
+        Effect.runPromise(
+          provideServices(
+            [],
+            source,
+            "2026-08-25T12:17:00.000Z",
+          )(
+            service.setPresentationPersona({
+              accountId: identity.accountId,
+              communityId: identity.communityId,
+              idempotencyKey: "presentation-unbound",
+              personaId: unboundPersonaId,
+            }),
+          ),
+        ),
+      ).rejects.toMatchObject({
+        _tag: "ActivityQualificationRejected",
+        reason: "persona-ineligible",
+      });
+      const foreignCommunityPersonaId = `persona-${crypto.randomUUID()}`;
+      const foreignCommunityId = `community-${crypto.randomUUID()}`;
+      await admin.query(
+        `INSERT INTO communities (
+           community_id, display_name, status, created_by_user_id, created_at, updated_at
+         ) VALUES ($1,'Foreign community','active',$2,'2026-08-02T00:00:00.000Z',
+           '2026-08-02T00:00:00.000Z')`,
+        [foreignCommunityId, identity.accountId],
+      );
+      await createActivePersonaFixture(admin, {
+        accountId: identity.accountId,
+        personaId: foreignCommunityPersonaId,
+        profile: { displayName: "Foreign Community Persona" },
+      });
+      await bindPersonaToCommunity(admin, {
+        accountId: identity.accountId,
+        communityId: foreignCommunityId,
+        personaId: foreignCommunityPersonaId,
+      });
+      await expect(
+        Effect.runPromise(
+          provideServices(
+            [],
+            source,
+            "2026-08-25T12:18:00.000Z",
+          )(
+            service.setPresentationPersona({
+              accountId: identity.accountId,
+              communityId: identity.communityId,
+              idempotencyKey: "presentation-foreign-community",
+              personaId: foreignCommunityPersonaId,
+            }),
+          ),
+        ),
+      ).rejects.toMatchObject({
+        _tag: "ActivityQualificationRejected",
+        reason: "persona-ineligible",
+      });
+
       const counts = await admin.query<{
         readonly answers: string;
         readonly qualifications: string;

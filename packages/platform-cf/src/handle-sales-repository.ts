@@ -3294,12 +3294,15 @@ export function makeControlPlaneHandleSalesRepository() {
               }
               const persona = yield* transaction.execute<Row>({
                 label: "handle-sales.claim.persona.read",
-                text: `SELECT persona_id FROM personas
+                text: `SELECT persona_id,
+                              active_owned_community_persona($1,$2,$3) AS binding_eligible
+                         FROM personas
                         WHERE account_id=$1 AND persona_id=$2 AND status='active' FOR SHARE`,
-                values: [input.accountId, input.personaId],
+                values: [input.accountId, input.personaId, text(row, "community_id")],
                 readonly: false,
               });
-              if (persona.rows[0] === undefined) return yield* reject("persona_unavailable");
+              if (persona.rows[0] === undefined || persona.rows[0]?.binding_eligible !== true)
+                return yield* reject("persona_unavailable");
               const policyKind = text(row, "policy_kind");
               if (policyKind !== "none_v1") {
                 const human = yield* activeHumanEvidence(transaction, input.accountId, now);

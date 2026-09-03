@@ -16,7 +16,7 @@ export interface KaraokeHandlerServices {
   readonly createAttempt: (input: {
     readonly communityId: string;
     readonly postId: string;
-    readonly personaId: string | null;
+    readonly personaId: string;
     readonly userId: string;
     readonly idempotencyKey: string;
     readonly timezone: string | null;
@@ -63,7 +63,7 @@ const createAttempt: (services: KaraokeHandlerServices) => EndpointHandler =
     const userId = karaokeActor(request.principal);
     const path = karaokePath(request);
     const headers = request.headers as KaraokeHeaders;
-    const body = (request.body ?? {}) as KaraokeAttemptCreateRequest;
+    const body = request.body as KaraokeAttemptCreateRequest;
     if (
       !path.postId ||
       typeof headers["idempotency-key"] !== "string" ||
@@ -73,13 +73,18 @@ const createAttempt: (services: KaraokeHandlerServices) => EndpointHandler =
         message: "Karaoke attempt creation requires postId and Idempotency-Key",
       });
     }
+    if (typeof body?.persona_id !== "string" || body.persona_id.trim() === "") {
+      throw new BadRequest({
+        message: "Karaoke attempt creation requires an explicit persona_id",
+      });
+    }
 
     const result = await services.createAttempt({
       communityId: path.communityId,
       clientContext: body.client_context,
       idempotencyKey: headers["idempotency-key"],
       postId: path.postId,
-      personaId: body.persona_id ?? null,
+      personaId: body.persona_id,
       timezone: body.timezone ?? null,
       userId,
     });
