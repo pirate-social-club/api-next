@@ -252,6 +252,7 @@ TRUNCATE TABLE
   "operator_managed_route_operations",
   "persona_activity_presentation_actions",
   "persona_activity_presentations",
+  "persona_community_bindings",
   "persona_create_actions",
   "persona_pending_first_handles",
   "persona_pending_profiles",

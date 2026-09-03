@@ -397,6 +397,12 @@ suite("canonical community route Postgres repository", () => {
         [communityId],
       );
       await admin.query(
+        `INSERT INTO persona_community_bindings (
+           persona_id, account_id, community_id, binding_source
+         ) VALUES ($2, 'route-actor', $1, 'first_membership')`,
+        [communityId, personaId],
+      );
+      await admin.query(
         `INSERT INTO persona_role_presentations (community_id, account_id, persona_id)
          VALUES ($1, 'route-actor', $2)`,
         [communityId, personaId],

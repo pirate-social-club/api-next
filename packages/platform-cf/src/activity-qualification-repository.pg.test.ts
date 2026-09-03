@@ -47,6 +47,22 @@ const connectionForSchema = (raw: string, schema: string): string => {
   return `${raw}${separator}options=${encodeURIComponent(`-c search_path=${schema}`)}`;
 };
 
+async function bindPersonaToCommunity(
+  admin: Client,
+  identity: Readonly<{
+    readonly accountId: string;
+    readonly communityId: string;
+    readonly personaId: string;
+  }>,
+): Promise<void> {
+  await admin.query(
+    `INSERT INTO persona_community_bindings (
+       persona_id, account_id, community_id, binding_source
+     ) VALUES ($1,$2,$3,'first_membership')`,
+    [identity.personaId, identity.accountId, identity.communityId],
+  );
+}
+
 async function withSchema<A>(
   use: (input: { readonly admin: Client; readonly scopedConnection: string }) => Promise<A>,
 ): Promise<A> {
@@ -104,6 +120,7 @@ async function seedAccountSong(
        '2026-08-03T00:00:00.000Z','2026-08-03T00:00:00.000Z')`,
     [communityId, `membership-${suffix}`, accountId],
   );
+  await bindPersonaToCommunity(admin, { accountId, communityId, personaId });
   await admin.query(
     `INSERT INTO posts (
        community_id, post_id, author_user_id, author_persona_id, post_type,
@@ -174,6 +191,7 @@ async function seedParticipant(
        '2026-08-03T00:00:00.000Z','2026-08-03T00:00:00.000Z')`,
     [identity.communityId, `membership-${suffix}`, accountId],
   );
+  await bindPersonaToCommunity(admin, { ...identity, accountId, personaId });
   return { ...identity, accountId, personaId };
 }
 
@@ -729,6 +747,11 @@ suite("Postgres 17 activity qualification repository", () => {
         personaId: secondPersonaId,
         profile: { displayName: "Second Persona" },
       });
+      await bindPersonaToCommunity(admin, {
+        accountId: identity.accountId,
+        communityId: identity.communityId,
+        personaId: secondPersonaId,
+      });
       const secondSession = await Effect.runPromise(
         provideServices(
           ["session-2", "item-2"],
@@ -939,6 +962,11 @@ suite("Postgres 17 activity qualification repository", () => {
         personaId: secondPersonaId,
         profile: { displayName: "Second Pool Persona" },
       });
+      await bindPersonaToCommunity(admin, {
+        accountId: identity.accountId,
+        communityId: identity.communityId,
+        personaId: secondPersonaId,
+      });
       await qualify(
         { accountId: identity.accountId, personaId: secondPersonaId },
         "pool-share-second-persona",
@@ -1137,6 +1165,11 @@ suite("Postgres 17 activity qualification repository", () => {
         accountId: identity.accountId,
         personaId: secondPersonaId,
         profile: { displayName: "Second Asset Persona" },
+      });
+      await bindPersonaToCommunity(admin, {
+        accountId: identity.accountId,
+        communityId: identity.communityId,
+        personaId: secondPersonaId,
       });
       await qualify(
         { accountId: identity.accountId, personaId: secondPersonaId },

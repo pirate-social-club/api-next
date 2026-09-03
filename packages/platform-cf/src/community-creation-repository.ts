@@ -2142,6 +2142,14 @@ export function makeControlPlaneCommunityCreationRepository(
         readonly: false,
       });
       yield* transaction.execute({
+        label: "community.creation.commit-v2.insert-creator-persona-binding",
+        text: `INSERT INTO persona_community_bindings (
+                 persona_id, account_id, community_id, binding_source, bound_at
+               ) VALUES ($1, $2, $3, 'community_creation', $4::timestamptz)`,
+        values: [document.draft.persona_id, input.actor.userId, communityId, activationNow],
+        readonly: false,
+      });
+      yield* transaction.execute({
         label: "community.creation.commit-v2.insert-persona-role-presentation",
         text: `INSERT INTO persona_role_presentations (
                  community_id, account_id, persona_id, created_at, updated_at

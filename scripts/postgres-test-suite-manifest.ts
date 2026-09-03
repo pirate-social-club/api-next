@@ -49,6 +49,7 @@ export const noBaselinePostgresTestSuites = [
   "packages/platform-cf/src/community-moderation-foundation.pg.test.ts",
   "packages/platform-cf/src/community-route-migration.pg.test.ts",
   "packages/platform-cf/src/media-persistence-migrations.pg.test.ts",
+  "packages/platform-cf/src/persona-community-binding-migration.pg.test.ts",
   "packages/platform-cf/src/postgres-foundation.pg.test.ts",
   "packages/platform-cf/src/postgres-migrations-runner.pg.test.ts",
   "packages/platform-cf/src/postgres.pg.test.ts",
