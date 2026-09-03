@@ -90,6 +90,11 @@ import {
   OpenSongRewardOffer,
 } from "./rewards-song-offers.ts";
 import {
+  GetPublicSongOwnerPolicy,
+  GetSongOwnerPolicy,
+  UpdateSongOwnerPolicy,
+} from "./song-owner-video-policy.ts";
+import {
   GetStudyAvailabilityV2,
   GetStudySessionV2,
   RequestStudyGenerationV2,
@@ -123,6 +128,9 @@ export const registry = {
   RetirePersona,
   ...platformPirateHandleRegistry,
   ...v1Registry,
+  GetSongOwnerPolicy,
+  UpdateSongOwnerPolicy,
+  GetPublicSongOwnerPolicy,
   ...verification,
   ...money,
   StartNamespaceOwnership,

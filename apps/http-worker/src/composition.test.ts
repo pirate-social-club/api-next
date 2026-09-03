@@ -1,11 +1,18 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import type { HnsOwnerTransport } from "@pirate/platform-cf/namespace-ownership-provider-registry";
 import { Effect } from "effect";
-import {
-  createProductionHttpWorker,
-  type HttpWorkerBindings,
-  makeProductionIdentityRegistrationRateLimiter,
-} from "./composition.ts";
+import type { HttpWorkerBindings } from "./composition.ts";
+
+// The unit suite must resolve this file's Durable Object imports without a
+// sibling test registering the process-global mock first; the composition
+// module is imported only after the mock is registered.
+mock.module("cloudflare:workers", () => ({
+  DurableObject: class DurableObject {},
+}));
+
+const { createProductionHttpWorker, makeProductionIdentityRegistrationRateLimiter } = await import(
+  "./composition.ts"
+);
 
 function toPem(label: "PRIVATE KEY" | "PUBLIC KEY", bytes: ArrayBuffer): string {
   const base64 = Buffer.from(bytes).toString("base64");

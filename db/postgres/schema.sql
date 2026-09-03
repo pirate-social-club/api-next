@@ -355,6 +355,137 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION song_owner_policy_hash_v1(input_community_id text, input_post_id text, input_audio_revision bigint, input_owner_account_id text, input_policy_revision bigint, input_third_party_reward_legs text, input_pool_leg text, input_derivative_video text) RETURNS text
+    LANGUAGE sql IMMUTABLE STRICT
+    AS $$
+  SELECT encode(
+    sha256(
+      convert_to(
+        jsonb_build_object(
+          'audio_revision', input_audio_revision,
+          'community_id', input_community_id,
+          'derivative_video', input_derivative_video,
+          'owner_account_id', input_owner_account_id,
+          'policy_revision', input_policy_revision,
+          'pool_leg', input_pool_leg,
+          'post_id', input_post_id,
+          'third_party_reward_legs', input_third_party_reward_legs,
+          'version', 'song-owner-policy-v1'
+        )::TEXT,
+        'UTF8'
+      )
+    ),
+    'hex'
+  )
+$$;
+
+CREATE TABLE song_owner_policy_revisions (
+    community_id text NOT NULL,
+    post_id text NOT NULL,
+    audio_revision bigint NOT NULL,
+    owner_account_id text NOT NULL,
+    policy_revision bigint NOT NULL,
+    third_party_reward_legs text NOT NULL,
+    pool_leg text NOT NULL,
+    derivative_video text NOT NULL,
+    policy_hash text NOT NULL,
+    effective_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT song_owner_policy_revision_hash_exact CHECK ((policy_hash = song_owner_policy_hash_v1(community_id, post_id, audio_revision, owner_account_id, policy_revision, third_party_reward_legs, pool_leg, derivative_video))),
+    CONSTRAINT song_owner_policy_revisions_audio_revision_check CHECK (((audio_revision >= 1) AND (audio_revision <= '9007199254740991'::bigint))),
+    CONSTRAINT song_owner_policy_revisions_derivative_video_check CHECK ((derivative_video = ANY (ARRAY['allowed'::text, 'owner_only'::text, 'blocked'::text]))),
+    CONSTRAINT song_owner_policy_revisions_policy_hash_check CHECK ((policy_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT song_owner_policy_revisions_policy_revision_check CHECK (((policy_revision >= 1) AND (policy_revision <= '9007199254740991'::bigint))),
+    CONSTRAINT song_owner_policy_revisions_pool_leg_check CHECK ((pool_leg = ANY (ARRAY['allowed'::text, 'declined'::text]))),
+    CONSTRAINT song_owner_policy_revisions_third_party_reward_legs_check CHECK ((third_party_reward_legs = ANY (ARRAY['allowed'::text, 'owner_only'::text])))
+);
+
+CREATE FUNCTION append_song_owner_policy_revision_v1(input_community_id text, input_post_id text, input_actor_account_id text, input_expected_policy_revision bigint, input_third_party_reward_legs text, input_pool_leg text, input_derivative_video text) RETURNS SETOF song_owner_policy_revisions
+    LANGUAGE plpgsql STRICT SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  policy_head song_owner_policies%ROWTYPE;
+  next_revision BIGINT;
+  next_hash TEXT;
+  database_now TIMESTAMPTZ := clock_timestamp();
+BEGIN
+  IF input_third_party_reward_legs NOT IN ('allowed', 'owner_only')
+    OR input_pool_leg NOT IN ('allowed', 'declined')
+    OR input_derivative_video NOT IN ('allowed', 'owner_only', 'blocked')
+  THEN
+    RAISE EXCEPTION 'invalid song owner policy values';
+  END IF;
+
+  SELECT * INTO policy_head
+    FROM song_owner_policies
+   WHERE community_id = input_community_id
+     AND post_id = input_post_id
+   FOR UPDATE;
+  IF policy_head.post_id IS NULL THEN
+    RAISE EXCEPTION 'song owner policy not found';
+  END IF;
+  IF policy_head.owner_account_id <> input_actor_account_id THEN
+    RAISE EXCEPTION 'song owner policy actor is not the owner account';
+  END IF;
+  IF policy_head.current_policy_revision <> input_expected_policy_revision THEN
+    RAISE EXCEPTION 'song owner policy revision conflict';
+  END IF;
+  IF policy_head.current_policy_revision = 9007199254740991 THEN
+    RAISE EXCEPTION 'song owner policy revision exhausted';
+  END IF;
+
+  next_revision := policy_head.current_policy_revision + 1;
+  next_hash := song_owner_policy_hash_v1(
+    policy_head.community_id,
+    policy_head.post_id,
+    policy_head.audio_revision,
+    policy_head.owner_account_id,
+    next_revision,
+    input_third_party_reward_legs,
+    input_pool_leg,
+    input_derivative_video
+  );
+
+  INSERT INTO song_owner_policy_revisions (
+    community_id,
+    post_id,
+    audio_revision,
+    owner_account_id,
+    policy_revision,
+    third_party_reward_legs,
+    pool_leg,
+    derivative_video,
+    policy_hash,
+    effective_at
+  ) VALUES (
+    policy_head.community_id,
+    policy_head.post_id,
+    policy_head.audio_revision,
+    policy_head.owner_account_id,
+    next_revision,
+    input_third_party_reward_legs,
+    input_pool_leg,
+    input_derivative_video,
+    next_hash,
+    database_now
+  );
+
+  UPDATE song_owner_policies
+     SET current_policy_revision = next_revision,
+         current_policy_hash = next_hash,
+         updated_at = database_now
+   WHERE community_id = policy_head.community_id
+     AND post_id = policy_head.post_id;
+
+  RETURN QUERY
+  SELECT revision.*
+    FROM song_owner_policy_revisions AS revision
+   WHERE revision.community_id = policy_head.community_id
+     AND revision.post_id = policy_head.post_id
+     AND revision.policy_revision = next_revision;
+END;
+$$;
+
 CREATE FUNCTION begin_hns_root_import_observation_v1(input_actor_id text, input_creation_intent_id text, input_root_import_session_id text, input_expected_revision bigint, input_idempotency_key text, input_request_sha256 text, input_ownership_result_sha256 text, input_observation_job_id text, input_observation_request_bytes bytea, input_observation_request_sha256 text) RETURNS TABLE(outcome text, root_import_session_id text, session_revision bigint)
     LANGUAGE plpgsql
     SET search_path FROM CURRENT
@@ -9003,6 +9134,22 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION guard_song_derivative_video_policy_observations_append_only() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'song derivative video policy observations are append-only';
+END;
+$$;
+
+CREATE FUNCTION guard_song_owner_policy_revisions_append_only() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'song owner policy revisions are append-only';
+END;
+$$;
+
 CREATE FUNCTION guard_song_rating_lowering_v1() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -10091,6 +10238,114 @@ BEGIN
 END;
 $_$;
 
+CREATE FUNCTION initialize_song_owner_policy_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  publication_post posts%ROWTYPE;
+  song_terms media_submission_terms%ROWTYPE;
+  initial_derivative_video TEXT;
+  initial_hash TEXT;
+  database_now TIMESTAMPTZ := clock_timestamp();
+BEGIN
+  SELECT * INTO publication_post
+    FROM posts
+   WHERE community_id = NEW.community_id
+     AND post_id = NEW.post_id
+   FOR SHARE;
+  IF publication_post.post_id IS NULL THEN
+    RAISE EXCEPTION 'song owner policy requires a canonical Post';
+  END IF;
+  IF publication_post.post_type <> 'song' THEN
+    RETURN NEW;
+  END IF;
+  IF publication_post.status <> 'published'
+    OR publication_post.author_user_id IS DISTINCT FROM NEW.actor_account_id
+  THEN
+    RAISE EXCEPTION 'song owner policy requires the canonical published song owner';
+  END IF;
+
+  SELECT * INTO song_terms
+    FROM media_submission_terms
+   WHERE submission_id = NEW.submission_id
+     AND community_id = NEW.community_id
+     AND actor_user_id = NEW.actor_account_id
+     AND operation_id = NEW.operation_id
+     AND creation_revision = NEW.creation_revision
+   FOR SHARE;
+  IF song_terms.submission_id IS NULL THEN
+    RAISE EXCEPTION 'song owner policy requires immutable publication terms';
+  END IF;
+
+  initial_derivative_video := CASE song_terms.license_preset
+    WHEN 'commercial-remix' THEN 'allowed'
+    WHEN 'non-commercial' THEN 'allowed'
+    WHEN 'commercial-use' THEN 'owner_only'
+    ELSE NULL
+  END;
+  IF initial_derivative_video IS NULL THEN
+    RAISE EXCEPTION 'song owner policy license preset is unsupported';
+  END IF;
+
+  initial_hash := song_owner_policy_hash_v1(
+    NEW.community_id,
+    NEW.post_id,
+    NEW.audio_revision,
+    NEW.actor_account_id,
+    1,
+    'allowed',
+    'allowed',
+    initial_derivative_video
+  );
+
+  INSERT INTO song_owner_policy_revisions (
+    community_id,
+    post_id,
+    audio_revision,
+    owner_account_id,
+    policy_revision,
+    third_party_reward_legs,
+    pool_leg,
+    derivative_video,
+    policy_hash,
+    effective_at
+  ) VALUES (
+    NEW.community_id,
+    NEW.post_id,
+    NEW.audio_revision,
+    NEW.actor_account_id,
+    1,
+    'allowed',
+    'allowed',
+    initial_derivative_video,
+    initial_hash,
+    database_now
+  );
+
+  INSERT INTO song_owner_policies (
+    community_id,
+    post_id,
+    audio_revision,
+    owner_account_id,
+    current_policy_revision,
+    current_policy_hash,
+    created_at,
+    updated_at
+  ) VALUES (
+    NEW.community_id,
+    NEW.post_id,
+    NEW.audio_revision,
+    NEW.actor_account_id,
+    1,
+    initial_hash,
+    database_now,
+    database_now
+  );
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION is_dance_identifier(value text, maximum_octets integer DEFAULT 256) RETURNS boolean
     LANGUAGE sql IMMUTABLE STRICT
     AS $$
@@ -10246,6 +10501,151 @@ CREATE FUNCTION moderation_policy_decision_severity_v1(input_decision text) RETU
     WHEN 'block' THEN 3
     ELSE NULL
   END;
+$$;
+
+CREATE TABLE song_derivative_video_policy_observations (
+    operation_id text NOT NULL,
+    observed_at_transition text NOT NULL,
+    creation_revision bigint NOT NULL,
+    community_id text NOT NULL,
+    post_id text NOT NULL,
+    audio_revision bigint NOT NULL,
+    actor_account_id text NOT NULL,
+    owner_policy_revision bigint NOT NULL,
+    owner_policy_hash text NOT NULL,
+    derivative_video text NOT NULL,
+    permitted boolean NOT NULL,
+    denial_reason text,
+    observed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT song_derivative_video_policy_obser_observed_at_transition_check CHECK ((observed_at_transition = ANY (ARRAY['media_reservation_issued'::text, 'publication_allowed'::text, 'publication_committed'::text]))),
+    CONSTRAINT song_derivative_video_policy_observ_owner_policy_revision_check CHECK (((owner_policy_revision >= 1) AND (owner_policy_revision <= '9007199254740991'::bigint))),
+    CONSTRAINT song_derivative_video_policy_observatio_creation_revision_check CHECK (((creation_revision >= 1) AND (creation_revision <= '9007199254740991'::bigint))),
+    CONSTRAINT song_derivative_video_policy_observatio_owner_policy_hash_check CHECK ((owner_policy_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT song_derivative_video_policy_observation_derivative_video_check CHECK ((derivative_video = ANY (ARRAY['allowed'::text, 'owner_only'::text, 'blocked'::text]))),
+    CONSTRAINT song_derivative_video_policy_observation_outcome CHECK (((permitted AND (denial_reason IS NULL)) OR ((NOT permitted) AND (denial_reason =
+CASE derivative_video
+    WHEN 'blocked'::text THEN 'derivative_video_blocked'::text
+    WHEN 'owner_only'::text THEN 'derivative_video_owner_only'::text
+    ELSE NULL::text
+END)))),
+    CONSTRAINT song_derivative_video_policy_observations_audio_revision_check CHECK (((audio_revision >= 1) AND (audio_revision <= '9007199254740991'::bigint))),
+    CONSTRAINT song_derivative_video_policy_observations_denial_reason_check CHECK (((denial_reason IS NULL) OR (denial_reason = ANY (ARRAY['derivative_video_blocked'::text, 'derivative_video_owner_only'::text])))),
+    CONSTRAINT song_derivative_video_policy_observations_operation_id_check CHECK (((btrim(operation_id) <> ''::text) AND (operation_id = btrim(operation_id)) AND (octet_length(operation_id) <= 128) AND (operation_id !~ '[[:cntrl:]]'::text)))
+);
+
+CREATE FUNCTION observe_song_derivative_video_policy_v1(input_operation_id text, input_transition text, input_creation_revision bigint, input_community_id text, input_post_id text, input_audio_revision bigint, input_actor_account_id text) RETURNS SETOF song_derivative_video_policy_observations
+    LANGUAGE plpgsql STRICT SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  policy_head song_owner_policies%ROWTYPE;
+  policy_record song_owner_policy_revisions%ROWTYPE;
+  existing_observation song_derivative_video_policy_observations%ROWTYPE;
+  is_permitted BOOLEAN;
+  reason TEXT;
+BEGIN
+  IF input_transition NOT IN (
+    'media_reservation_issued',
+    'publication_allowed',
+    'publication_committed'
+  ) THEN
+    RAISE EXCEPTION 'invalid song derivative video policy transition';
+  END IF;
+
+  SELECT * INTO existing_observation
+    FROM song_derivative_video_policy_observations
+   WHERE operation_id = input_operation_id
+     AND observed_at_transition = input_transition
+     AND creation_revision = input_creation_revision;
+  IF existing_observation.operation_id IS NOT NULL THEN
+    IF existing_observation.community_id <> input_community_id
+      OR existing_observation.post_id <> input_post_id
+      OR existing_observation.audio_revision <> input_audio_revision
+      OR existing_observation.actor_account_id <> input_actor_account_id
+    THEN
+      RAISE EXCEPTION 'song derivative video policy observation replay conflict';
+    END IF;
+    RETURN NEXT existing_observation;
+    RETURN;
+  END IF;
+
+  SELECT * INTO policy_head
+    FROM song_owner_policies
+   WHERE community_id = input_community_id
+     AND post_id = input_post_id
+   FOR SHARE;
+  IF policy_head.post_id IS NULL
+    OR policy_head.audio_revision <> input_audio_revision
+  THEN
+    RAISE EXCEPTION 'song reference is not policy-addressable';
+  END IF;
+
+  SELECT revision.* INTO policy_record
+    FROM song_owner_policy_revisions AS revision
+   WHERE revision.community_id = policy_head.community_id
+     AND revision.post_id = policy_head.post_id
+     AND revision.policy_revision = policy_head.current_policy_revision;
+  IF policy_record.post_id IS NULL
+    OR policy_record.policy_hash <> policy_head.current_policy_hash
+  THEN
+    RAISE EXCEPTION 'song owner policy head is invalid';
+  END IF;
+
+  is_permitted := policy_record.derivative_video = 'allowed'
+    OR (
+      policy_record.derivative_video = 'owner_only'
+      AND policy_head.owner_account_id = input_actor_account_id
+    );
+  reason := CASE
+    WHEN is_permitted THEN NULL
+    WHEN policy_record.derivative_video = 'blocked' THEN 'derivative_video_blocked'
+    ELSE 'derivative_video_owner_only'
+  END;
+
+  INSERT INTO song_derivative_video_policy_observations (
+    operation_id,
+    observed_at_transition,
+    creation_revision,
+    community_id,
+    post_id,
+    audio_revision,
+    actor_account_id,
+    owner_policy_revision,
+    owner_policy_hash,
+    derivative_video,
+    permitted,
+    denial_reason
+  ) VALUES (
+    input_operation_id,
+    input_transition,
+    input_creation_revision,
+    policy_head.community_id,
+    policy_head.post_id,
+    policy_head.audio_revision,
+    input_actor_account_id,
+    policy_record.policy_revision,
+    policy_record.policy_hash,
+    policy_record.derivative_video,
+    is_permitted,
+    reason
+  )
+  ON CONFLICT (operation_id, observed_at_transition, creation_revision) DO NOTHING;
+
+  SELECT * INTO existing_observation
+    FROM song_derivative_video_policy_observations
+   WHERE operation_id = input_operation_id
+     AND observed_at_transition = input_transition
+     AND creation_revision = input_creation_revision;
+  IF existing_observation.operation_id IS NULL
+    OR existing_observation.community_id <> input_community_id
+    OR existing_observation.post_id <> input_post_id
+    OR existing_observation.audio_revision <> input_audio_revision
+    OR existing_observation.actor_account_id <> input_actor_account_id
+  THEN
+    RAISE EXCEPTION 'song derivative video policy observation replay conflict';
+  END IF;
+  RETURN NEXT existing_observation;
+END;
 $$;
 
 CREATE FUNCTION operator_managed_registry_has_active_root(expected_reference text, expected_version bigint, expected_digest text, expected_root text) RETURNS boolean
@@ -17788,6 +18188,29 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION validate_song_owner_policy_head_change() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'song owner policy heads are retained';
+  END IF;
+  IF TG_OP = 'UPDATE' AND (
+    NEW.community_id IS DISTINCT FROM OLD.community_id
+    OR NEW.post_id IS DISTINCT FROM OLD.post_id
+    OR NEW.audio_revision IS DISTINCT FROM OLD.audio_revision
+    OR NEW.owner_account_id IS DISTINCT FROM OLD.owner_account_id
+    OR NEW.created_at IS DISTINCT FROM OLD.created_at
+    OR NEW.current_policy_revision <> OLD.current_policy_revision + 1
+    OR NEW.current_policy_hash IS NOT DISTINCT FROM OLD.current_policy_hash
+    OR NEW.updated_at < OLD.updated_at
+  ) THEN
+    RAISE EXCEPTION 'song owner policy head must advance by one immutable revision';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION validate_text_content_submission_relations() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -24453,6 +24876,20 @@ CREATE TABLE song_dance_presentations (
     CONSTRAINT song_dance_presentations_presentation_revision_check CHECK (((presentation_revision >= 1) AND (presentation_revision <= '9007199254740991'::bigint)))
 );
 
+CREATE TABLE song_owner_policies (
+    community_id text NOT NULL,
+    post_id text NOT NULL,
+    audio_revision bigint NOT NULL,
+    owner_account_id text NOT NULL,
+    current_policy_revision bigint NOT NULL,
+    current_policy_hash text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT song_owner_policies_audio_revision_check CHECK (((audio_revision >= 1) AND (audio_revision <= '9007199254740991'::bigint))),
+    CONSTRAINT song_owner_policies_current_policy_hash_check CHECK ((current_policy_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT song_owner_policies_current_policy_revision_check CHECK (((current_policy_revision >= 1) AND (current_policy_revision <= '9007199254740991'::bigint)))
+);
+
 CREATE TABLE song_reward_bundle_claim_legs (
     account_id text NOT NULL,
     offer_id text NOT NULL,
@@ -24580,10 +25017,14 @@ CREATE TABLE song_reward_offer_legs (
     updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     token_symbol text,
     asset_policy_version text,
+    owner_policy_kind text DEFAULT 'legacy_pre_policy'::text NOT NULL,
+    owner_policy_revision bigint,
+    owner_policy_hash text,
     CONSTRAINT song_reward_leg_budget_conservation CHECK (((((reserved_atomic + spent_atomic) + fulfilled_atomic) + refunded_atomic) <= funded_atomic)),
     CONSTRAINT song_reward_leg_kind_shape CHECK ((((kind = 'asset_bonus'::text) AND (amount_per_claim_atomic > (0)::numeric) AND ((max_claims >= 1) AND (max_claims <= '9007199254740991'::bigint)) AND (token_symbol IS NOT NULL) AND (btrim(token_symbol) <> ''::text) AND (token_symbol = btrim(token_symbol)) AND (octet_length(token_symbol) <= 32) AND (asset_policy_version IS NOT NULL) AND (btrim(asset_policy_version) <> ''::text) AND (asset_policy_version = btrim(asset_policy_version)) AND (octet_length(asset_policy_version) <= 128) AND (tickets_per_drawing IS NULL) AND (max_ticket_price_atomic IS NULL) AND (entry_cutoff_seconds IS NULL) AND (beneficiary_algorithm_version IS NULL) AND (ticket_selection_version IS NULL) AND (attestation_id IS NULL) AND (participation_starts_drawing_id IS NULL) AND (eligible_activities IS NULL) AND (min_score_bps IS NULL) AND (empty_pool_policy IS NULL) AND (funding_source IS NULL) AND (fallback_beneficiary_account_id IS NULL) AND (fallback_payout_persona_id IS NULL) AND (referral_allocation_version IS NULL) AND (referral_policy_hash IS NULL) AND (referral_disclosed_at IS NULL) AND (legal_activation_gate = 'test_only'::text)) OR ((kind = 'megapot_pool'::text) AND (token_symbol IS NULL) AND (asset_policy_version IS NULL) AND (amount_per_claim_atomic IS NULL) AND (max_claims IS NULL) AND (tickets_per_drawing = 1) AND (max_ticket_price_atomic > (0)::numeric) AND (entry_cutoff_seconds > 0) AND (beneficiary_algorithm_version = 'equal_v1'::text) AND (ticket_selection_version = 'keccak_packed_v1'::text) AND (attestation_id IS NOT NULL) AND (participation_starts_drawing_id >= (0)::numeric) AND reward_distinct_nonempty_text_array(eligible_activities) AND ((min_score_bps >= 7000) AND (min_score_bps <= 10000)) AND (empty_pool_policy = ANY (ARRAY['no_purchase'::text, 'funder_fallback'::text])) AND (funding_source = ANY (ARRAY['leg_budget'::text, 'shared_sponsor_budget'::text]))))),
     CONSTRAINT song_reward_leg_terminal_shape CHECK ((((status = ANY (ARRAY['draft'::text, 'funding'::text, 'active'::text, 'paused'::text, 'operational_hold'::text])) AND (participation_ends_at IS NULL)) OR ((status = ANY (ARRAY['exhausted'::text, 'ended'::text])) AND (participation_ends_at IS NOT NULL)))),
     CONSTRAINT song_reward_leg_time_order CHECK (((participation_ends_at IS NULL) OR (participation_ends_at > participation_starts_at))),
+    CONSTRAINT song_reward_offer_leg_policy_evidence CHECK ((((owner_policy_kind = 'frozen_policy'::text) AND (owner_policy_revision IS NOT NULL) AND (owner_policy_hash IS NOT NULL)) OR ((owner_policy_kind = 'legacy_pre_policy'::text) AND (owner_policy_revision IS NULL) AND (owner_policy_hash IS NULL)))),
     CONSTRAINT song_reward_offer_legs_chain_id_check CHECK ((chain_id > 0)),
     CONSTRAINT song_reward_offer_legs_fulfilled_atomic_check CHECK ((fulfilled_atomic >= (0)::numeric)),
     CONSTRAINT song_reward_offer_legs_funded_atomic_check CHECK ((funded_atomic >= (0)::numeric)),
@@ -24591,6 +25032,9 @@ CREATE TABLE song_reward_offer_legs (
     CONSTRAINT song_reward_offer_legs_leg_id_check CHECK (((btrim(leg_id) <> ''::text) AND (leg_id = btrim(leg_id)) AND (octet_length(leg_id) <= 128))),
     CONSTRAINT song_reward_offer_legs_leg_terms_hash_check CHECK ((leg_terms_hash ~ '^0x[0-9a-f]{64}$'::text)),
     CONSTRAINT song_reward_offer_legs_legal_activation_gate_check CHECK ((legal_activation_gate = ANY (ARRAY['test_only'::text, 'production_approved'::text]))),
+    CONSTRAINT song_reward_offer_legs_owner_policy_hash_check CHECK (((owner_policy_hash IS NULL) OR (owner_policy_hash ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT song_reward_offer_legs_owner_policy_kind_check CHECK ((owner_policy_kind = ANY (ARRAY['frozen_policy'::text, 'legacy_pre_policy'::text]))),
+    CONSTRAINT song_reward_offer_legs_owner_policy_revision_check CHECK (((owner_policy_revision IS NULL) OR ((owner_policy_revision >= 1) AND (owner_policy_revision <= '9007199254740991'::bigint)))),
     CONSTRAINT song_reward_offer_legs_refund_policy_check CHECK ((refund_policy = 'refund_to_funders_pro_rata'::text)),
     CONSTRAINT song_reward_offer_legs_refunded_atomic_check CHECK ((refunded_atomic >= (0)::numeric)),
     CONSTRAINT song_reward_offer_legs_reserved_atomic_check CHECK ((reserved_atomic >= (0)::numeric)),
@@ -27313,6 +27757,27 @@ ALTER TABLE ONLY schema_migrations
 ALTER TABLE ONLY song_dance_presentations
     ADD CONSTRAINT song_dance_presentations_pkey PRIMARY KEY (community_id, song_post_id, audio_revision);
 
+ALTER TABLE ONLY song_derivative_video_policy_observations
+    ADD CONSTRAINT song_derivative_video_policy_observations_pkey PRIMARY KEY (operation_id, observed_at_transition, creation_revision);
+
+ALTER TABLE ONLY song_owner_policies
+    ADD CONSTRAINT song_owner_policies_community_id_post_id_audio_revision_key UNIQUE (community_id, post_id, audio_revision);
+
+ALTER TABLE ONLY song_owner_policies
+    ADD CONSTRAINT song_owner_policies_pkey PRIMARY KEY (community_id, post_id);
+
+ALTER TABLE ONLY song_owner_policies
+    ADD CONSTRAINT song_owner_policies_post_id_key UNIQUE (post_id);
+
+ALTER TABLE ONLY song_owner_policy_revisions
+    ADD CONSTRAINT song_owner_policy_revisions_community_id_post_id_audio_rev_key1 UNIQUE (community_id, post_id, audio_revision, policy_revision, policy_hash);
+
+ALTER TABLE ONLY song_owner_policy_revisions
+    ADD CONSTRAINT song_owner_policy_revisions_community_id_post_id_audio_revi_key UNIQUE (community_id, post_id, audio_revision, owner_account_id, policy_revision, policy_hash);
+
+ALTER TABLE ONLY song_owner_policy_revisions
+    ADD CONSTRAINT song_owner_policy_revisions_pkey PRIMARY KEY (community_id, post_id, policy_revision);
+
 ALTER TABLE ONLY song_reward_bundle_claim_legs
     ADD CONSTRAINT song_reward_bundle_claim_legs_credit_id_key UNIQUE (credit_id);
 
@@ -28566,6 +29031,8 @@ CREATE CONSTRAINT TRIGGER media_publication_projection_rating_guard_v1 AFTER INS
 
 CREATE TRIGGER media_publication_projection_update_guard BEFORE UPDATE ON media_publication_projections FOR EACH ROW EXECUTE FUNCTION guard_media_publication_projection_update();
 
+CREATE TRIGGER media_publication_song_owner_policy_initialize AFTER INSERT ON media_publication_projections FOR EACH ROW EXECUTE FUNCTION initialize_song_owner_policy_v1();
+
 CREATE CONSTRAINT TRIGGER media_reference_binding_pair AFTER UPDATE ON media_post_submissions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_media_reference_binding();
 
 CREATE TRIGGER media_reference_evidence_append_only BEFORE DELETE OR UPDATE ON media_reference_evidence FOR EACH ROW EXECUTE FUNCTION reject_media_append_only_change();
@@ -28819,6 +29286,12 @@ CREATE CONSTRAINT TRIGGER route_v1_creation_intent_requirement_cardinality AFTER
 CREATE CONSTRAINT TRIGGER route_v1_creation_requirement_cardinality AFTER INSERT OR DELETE OR UPDATE ON community_creation_requirement_states DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_route_v1_creation_requirement_cardinality();
 
 CREATE TRIGGER song_dance_presentations_change_guard BEFORE INSERT OR DELETE OR UPDATE ON song_dance_presentations FOR EACH ROW EXECUTE FUNCTION guard_song_dance_presentation();
+
+CREATE TRIGGER song_derivative_video_policy_observations_append_only BEFORE DELETE OR UPDATE ON song_derivative_video_policy_observations FOR EACH ROW EXECUTE FUNCTION guard_song_derivative_video_policy_observations_append_only();
+
+CREATE TRIGGER song_owner_policy_head_change_guard BEFORE DELETE OR UPDATE ON song_owner_policies FOR EACH ROW EXECUTE FUNCTION validate_song_owner_policy_head_change();
+
+CREATE TRIGGER song_owner_policy_revisions_append_only BEFORE DELETE OR UPDATE ON song_owner_policy_revisions FOR EACH ROW EXECUTE FUNCTION guard_song_owner_policy_revisions_append_only();
 
 CREATE CONSTRAINT TRIGGER song_reward_asset_leg_accounting AFTER UPDATE ON song_reward_offer_legs DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_asset_bonus_leg_accounting();
 
@@ -30819,6 +31292,24 @@ ALTER TABLE ONLY song_dance_presentations
 
 ALTER TABLE ONLY song_dance_presentations
     ADD CONSTRAINT song_dance_presentations_updated_by_account_id_fkey FOREIGN KEY (updated_by_account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY song_derivative_video_policy_observations
+    ADD CONSTRAINT song_derivative_video_policy__community_id_post_id_audio_r_fkey FOREIGN KEY (community_id, post_id, audio_revision, owner_policy_revision, owner_policy_hash) REFERENCES song_owner_policy_revisions(community_id, post_id, audio_revision, policy_revision, policy_hash);
+
+ALTER TABLE ONLY song_derivative_video_policy_observations
+    ADD CONSTRAINT song_derivative_video_policy_observations_actor_account_id_fkey FOREIGN KEY (actor_account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY song_owner_policies
+    ADD CONSTRAINT song_owner_policies_community_id_post_id_audio_revision_ow_fkey FOREIGN KEY (community_id, post_id, audio_revision, owner_account_id, current_policy_revision, current_policy_hash) REFERENCES song_owner_policy_revisions(community_id, post_id, audio_revision, owner_account_id, policy_revision, policy_hash);
+
+ALTER TABLE ONLY song_owner_policies
+    ADD CONSTRAINT song_owner_policies_owner_account_id_fkey FOREIGN KEY (owner_account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY song_owner_policy_revisions
+    ADD CONSTRAINT song_owner_policy_revisions_community_id_post_id_fkey FOREIGN KEY (community_id, post_id) REFERENCES posts(community_id, post_id);
+
+ALTER TABLE ONLY song_owner_policy_revisions
+    ADD CONSTRAINT song_owner_policy_revisions_owner_account_id_fkey FOREIGN KEY (owner_account_id) REFERENCES users(user_id);
 
 ALTER TABLE ONLY song_reward_bundle_claim_legs
     ADD CONSTRAINT song_reward_bundle_claim_legs_account_id_offer_id_fkey FOREIGN KEY (account_id, offer_id) REFERENCES song_reward_bundle_claims(account_id, offer_id);

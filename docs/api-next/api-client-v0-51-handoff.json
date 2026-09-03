@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.51.0",
+  "releaseType": "song-owner-video-policy-management",
+  "wireContract": "song-owner-policy-v1",
+  "sourceCommit": "93ac1def2d79ed55726b9961d747c981f3aef580",
+  "supersedes": "0.50.0; additively exposes private song-owner policy management, CAS updates, and the Spec 013 acceptance-case-10 public projection: the derivative-video policy, its revision, and the can_post_with_song capability. The reward-leg and pool-leg postures stay owner-private.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.51.0.tgz",
+    "sha256": "478467f9b1085a7f994e79173153ebda5b4f97a38dd83c1981a817818946a22b",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@6caabc08f0e4b912b6b1d2a0696aacfb19e4ebc30a904a41c0c59dba83946497",
+    "openapiSha256": "6caabc08f0e4b912b6b1d2a0696aacfb19e4ebc30a904a41c0c59dba83946497",
+    "clientSha256": "310129f6e99bdedcb8b57f2f795ae89170bfa85a3a306dff782f861f9c206d32"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "passed",
+      "baselineCommit": "origin/main",
+      "reason": "The three song-owner policy operations are additive; no endpoint path or response contract on origin/main changes."
+    },
+    "focusedContractSuites": "21 focused tests passed across the song-owner policy contract, HTTP-handler, repository, and generated-client suites after the projection trim and admin-viewer null.",
+    "fullUnitSuite": "2837 tests across 435 files passed.",
+    "fullNodeSuite": "20 tests in 1 file passed.",
+    "fullWorkerdSuite": "131 tests across 33 files passed across the four Workerd configurations: 72 general, 48 HTTP, 2 self-verifier, 9 HNS-verifier.",
+    "postgres17": "The isolated namespace-ownership suite passed 35 tests and the 47-file general suite passed 306 tests with 2174 assertions against PostgreSQL 17 in a local host-network container (bridge-network published ports are reset on this host, so the documented --network host harness mode was used); CONTROL_PLANE_POSTGRES_TEST_URL was configured for the run.",
+    "packageVerifier": "passed (bun run verify:api-client): the regenerated artifact byte-matches both the packed package and the release ledger.",
+    "repositoryCheck": "passed in full: Effect version guard, effect-tsgo diagnostics, Biome (only the 42 pre-existing Karaoke non-null warnings and one configuration deprecation remain), both TypeScript projects, binding contract, dependency and HTTP boundaries, 107-migration worktree consistency, generated-contract freshness, and package verification.",
+    "gateScope": "All gates ran 2026-09-02 between the trim commit and the uncommitted reward-consumer edits later present in the lane worktree; the verified tree contained only the trim, the two tranche repairs (export sort, PostgreSQL discovery count), and this release state. sourceCommit 93ac1def is the contracts trim commit; the artifact is byte-verified against the lane tip.",
+    "provenanceCorrection": "Independent review found the first regeneration carried a stale provenance version (0.50.0) inherited from a maintained constant that the 0.51.0 bump missed; the prior ledgered sha 011b3cd2 validated those bytes faithfully. The serializer now receives the version from the generation boundary (packages/api-client/package.json), the package verifier now rejects provenance whose package or version differs from the packed package.json, and this second in-place regeneration (sha 478467f9) is justified by the same zero-consumer evidence: no Solid checkout adopted 0.51.0 at either regeneration. openapi.json and client.ts bytes are unchanged from the first regeneration; only provenance.json and the archive framing differ. Adopted releases are unaffected — the ledgered 0.48.0 artifact's provenance correctly states 0.48.0."
+  }
+}

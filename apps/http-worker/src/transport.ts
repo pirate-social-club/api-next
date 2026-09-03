@@ -594,6 +594,8 @@ const PRIVATE_NO_STORE_ENDPOINTS = new Set([
   "PreparePersonaEvmWallet",
   "ConfirmPersonaEvmWallet",
   "RetirePersona",
+  "GetSongOwnerPolicy",
+  "UpdateSongOwnerPolicy",
 ]);
 const PRIVATE_NO_STORE_PATH = /^(?:\/auth\/register|\/personas(?:\/|$))/u;
 

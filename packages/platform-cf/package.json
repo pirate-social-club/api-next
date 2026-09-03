@@ -101,6 +101,7 @@
     "./reward-funding-coordinator": "./src/reward-funding-coordinator.ts",
     "./reward-funding-repository": "./src/reward-funding-repository.ts",
     "./song-reward-offer-repository": "./src/song-reward-offer-repository.ts",
+    "./song-owner-video-policy-repository": "./src/song-owner-video-policy-repository.ts",
     "./public-profile-repository": "./src/public-profile-repository.ts",
     "./public-post-slug-repository": "./src/public-post-slug-repository.ts",
     "./platform-pirate-handle-repository": "./src/platform-pirate-handle-repository.ts",

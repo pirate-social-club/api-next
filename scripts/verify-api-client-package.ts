@@ -8,7 +8,7 @@ import { sha256 } from "./api-client-provenance.ts";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../", import.meta.url)));
 const packageRoot = join(repositoryRoot, "packages", "api-client");
-const currentVersion = "0.50.0";
+const currentVersion = "0.51.0";
 const packageName = `pirate-api-client-${currentVersion}.tgz`;
 
 interface ReleaseLedger {
@@ -170,10 +170,17 @@ async function main(): Promise<void> {
     const manifest = JSON.parse(
       await readFile(join(packedRoot, "src/generated/provenance.json"), "utf8"),
     ) as {
+      readonly package?: string;
+      readonly version?: string;
       readonly sourceIdentifier?: string;
       readonly openapiSha256?: string;
       readonly clientSha256?: string;
     };
+    if (manifest.package !== "@pirate/api-client" || manifest.version !== packedPackage.version) {
+      throw new Error(
+        `Packed client provenance identity ${manifest.package ?? "?"}@${manifest.version ?? "?"} does not match the packed package`,
+      );
+    }
     if (
       !/^api-next-contracts@[a-f0-9]{64}$/.test(manifest.sourceIdentifier ?? "") ||
       !/^[a-f0-9]{64}$/.test(manifest.openapiSha256 ?? "") ||

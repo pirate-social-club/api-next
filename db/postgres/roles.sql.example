@@ -34,3 +34,18 @@ FROM api_next_app;
 -- The current creation-intent projection advances through guarded revisions
 -- but is retained permanently with its immutable revision ledger.
 REVOKE DELETE ON community_creation_intents FROM api_next_app;
+
+-- Song owner policy changes and video authorization observations are exposed
+-- only through their fenced routines. The immutable ledgers are never writable
+-- directly by the runtime role.
+REVOKE INSERT, UPDATE, DELETE ON
+  song_owner_policy_revisions,
+  song_derivative_video_policy_observations
+FROM api_next_app;
+REVOKE INSERT, UPDATE, DELETE ON song_owner_policies FROM api_next_app;
+GRANT EXECUTE ON FUNCTION append_song_owner_policy_revision_v1(
+  TEXT, TEXT, TEXT, BIGINT, TEXT, TEXT, TEXT
+) TO api_next_app;
+GRANT EXECUTE ON FUNCTION observe_song_derivative_video_policy_v1(
+  TEXT, TEXT, BIGINT, TEXT, TEXT, BIGINT, TEXT
+) TO api_next_app;

@@ -21,6 +21,72 @@ describe("generated api client", () => {
     );
   });
 
+  test("exposes generated song-owner policy management and public projections", async () => {
+    const management = {
+      object: "song_owner_policy",
+      community_id: "community-1",
+      post_id: "song-1",
+      audio_revision: 1,
+      owner_account_id: "account-owner",
+      policy_revision: 2,
+      third_party_reward_legs: "allowed",
+      pool_leg: "declined",
+      derivative_video: "owner_only",
+      policy_hash: "11".repeat(32),
+      effective_at: "2026-09-02T12:00:00.000Z",
+    } as const;
+    const publicPolicy = {
+      object: "song_owner_policy",
+      community_id: "community-1",
+      post_id: "song-1",
+      policy_revision: 2,
+      derivative_video: "owner_only",
+      can_post_with_song: false,
+    } as const;
+    const responses = [management, management, publicPolicy];
+    const urls: string[] = [];
+    const fetchImpl = Object.assign(
+      async (input: string | URL | Request) => {
+        urls.push(String(input));
+        const body = responses.shift();
+        if (body === undefined) throw new Error("unexpected request");
+        return new Response(JSON.stringify(body), { status: 200 });
+      },
+      { preconnect: fetch.preconnect },
+    );
+    const client = createPirateApiClient("https://api.example", fetchImpl);
+
+    await expect(
+      client.get_communitiesCommunityIdPostsPostIdOwnerPolicy({
+        path: { communityId: "community-1", postId: "song-1" },
+        query: { persona_id: "persona-owner" },
+      }),
+    ).resolves.toEqual(management);
+    await expect(
+      client.patch_communitiesCommunityIdPostsPostIdOwnerPolicy({
+        path: { communityId: "community-1", postId: "song-1" },
+        body: {
+          persona_id: "persona-owner",
+          expected_policy_revision: 1,
+          third_party_reward_legs: "allowed",
+          pool_leg: "declined",
+          derivative_video: "owner_only",
+        },
+      }),
+    ).resolves.toEqual(management);
+    await expect(
+      client.get_communitiesCommunityIdPostsPostIdOwnerPolicyPublic({
+        path: { communityId: "community-1", postId: "song-1" },
+        query: { persona_id: "persona-owner" },
+      }),
+    ).resolves.toEqual(publicPolicy);
+    expect(urls).toEqual([
+      "https://api.example/communities/community-1/posts/song-1/owner-policy?persona_id=persona-owner",
+      "https://api.example/communities/community-1/posts/song-1/owner-policy",
+      "https://api.example/communities/community-1/posts/song-1/owner-policy/public?persona_id=persona-owner",
+    ]);
+  });
+
   test("preserves declared errors and distinguishes undeclared wire errors", async () => {
     let response = new Response(
       JSON.stringify({

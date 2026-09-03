@@ -33,6 +33,9 @@ const leg: MegapotPoolLeg = {
   fallbackPayoutPersonaId: null,
   fundedAtomic: 0n,
   legTermsHash: hash("b"),
+  ownerPolicyKind: "frozen_policy",
+  ownerPolicyRevision: 1,
+  ownerPolicyHash: "1".repeat(64),
 };
 const assetLeg: AssetBonusLeg = {
   legId: "reward_asset_leg_1",
@@ -50,6 +53,9 @@ const assetLeg: AssetBonusLeg = {
   fundedAtomic: 0n,
   fulfilledAtomic: 0n,
   legTermsHash: hash("c"),
+  ownerPolicyKind: "frozen_policy",
+  ownerPolicyRevision: 1,
+  ownerPolicyHash: "1".repeat(64),
 };
 
 const intent: RewardFundingIntent = {
