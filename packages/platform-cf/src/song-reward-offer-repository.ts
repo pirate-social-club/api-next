@@ -110,7 +110,8 @@ const LEG_SELECT = `
          attestation.custody_address, leg.max_ticket_price_atomic,
          leg.entry_cutoff_seconds, leg.participation_starts_drawing_id,
          leg.eligible_activities, leg.min_score_bps, leg.empty_pool_policy,
-         leg.fallback_payout_persona_id, leg.funded_atomic, leg.leg_terms_hash
+         leg.fallback_payout_persona_id, leg.funded_atomic, leg.leg_terms_hash,
+         leg.owner_policy_kind, leg.owner_policy_revision, leg.owner_policy_hash
     FROM song_reward_offer_legs leg
     JOIN megapot_deployment_attestations attestation
       ON attestation.attestation_id=leg.attestation_id`;
@@ -120,13 +121,31 @@ const ASSET_LEG_SELECT = `
          leg.chain_id, leg.token_address, leg.token_decimals, leg.token_symbol,
          leg.asset_policy_version, attestation.custody_address,
          leg.amount_per_claim_atomic, leg.max_claims, leg.funded_atomic,
-         leg.fulfilled_atomic, leg.leg_terms_hash
+         leg.fulfilled_atomic, leg.leg_terms_hash,
+         leg.owner_policy_kind, leg.owner_policy_revision, leg.owner_policy_hash
     FROM song_reward_offer_legs leg
     JOIN reward_asset_whitelist asset
       ON asset.chain_id=leg.chain_id AND asset.token_address=leg.token_address
     JOIN megapot_deployment_attestations attestation
       ON attestation.chain_id=leg.chain_id AND attestation.environment=asset.environment
      AND attestation.status='active'`;
+
+const ownerPolicyEvidence = (
+  row: Row,
+): Pick<MegapotPoolLeg, "ownerPolicyKind" | "ownerPolicyRevision" | "ownerPolicyHash"> => {
+  const kind = text(row, "owner_policy_kind");
+  if (kind !== "frozen_policy" && kind !== "legacy_pre_policy") {
+    throw new Error("invalid owner policy evidence kind");
+  }
+  if (kind === "frozen_policy") {
+    return {
+      ownerPolicyKind: kind,
+      ownerPolicyRevision: integer(row, "owner_policy_revision"),
+      ownerPolicyHash: text(row, "owner_policy_hash"),
+    };
+  }
+  return { ownerPolicyKind: kind, ownerPolicyRevision: null, ownerPolicyHash: null };
+};
 
 function legFromRow(row: Row): MegapotPoolLeg {
   const status = text(row, "status");
@@ -159,6 +178,7 @@ function legFromRow(row: Row): MegapotPoolLeg {
     fallbackPayoutPersonaId: nullableText(row, "fallback_payout_persona_id"),
     fundedAtomic: bigint(row, "funded_atomic"),
     legTermsHash: text(row, "leg_terms_hash"),
+    ...ownerPolicyEvidence(row),
   };
 }
 
@@ -187,6 +207,7 @@ function assetLegFromRow(row: Row): AssetBonusLeg {
     fundedAtomic: bigint(row, "funded_atomic"),
     fulfilledAtomic: bigint(row, "fulfilled_atomic"),
     legTermsHash: text(row, "leg_terms_hash"),
+    ...ownerPolicyEvidence(row),
   };
 }
 
@@ -308,7 +329,8 @@ export function makeControlPlaneSongRewardOfferRepository() {
                         AND revision.owner_account_id=head.owner_account_id
                         AND revision.policy_revision=head.current_policy_revision
                         AND revision.policy_hash=head.current_policy_hash
-                      WHERE community.community_id=$1 AND community.status='active'`,
+                        WHERE community.community_id=$1 AND community.status='active'
+                       FOR SHARE OF head`,
               values: [input.communityId, input.accountId, input.personaId, input.postId],
               readonly: false,
             });
@@ -446,6 +468,8 @@ export function makeControlPlaneSongRewardOfferRepository() {
               text: `SELECT offer.status AS offer_status, offer.ends_at,
                             revision.third_party_reward_legs AS third_party_legs,
                             head.owner_account_id AS song_owner_account_id,
+                            revision.policy_revision AS owner_policy_revision,
+                            revision.policy_hash AS owner_policy_hash,
                             attestation.attestation_id, attestation.environment,
                             attestation.chain_id, attestation.usdc_address,
                             asset.decimals AS token_decimals, observation.drawing_id
@@ -484,7 +508,8 @@ export function makeControlPlaneSongRewardOfferRepository() {
                           ORDER BY observed.block_number DESC, observed.observation_id DESC LIMIT 1
                        ) observation ON true
                       WHERE offer.offer_id=$1 AND offer.status IN ('draft','active')
-                        AND offer.ends_at > clock_timestamp()`,
+                        AND offer.ends_at > clock_timestamp()
+                       FOR SHARE OF head`,
               values: [input.offerId, input.accountId, input.personaId],
               readonly: false,
             });
@@ -515,10 +540,12 @@ export function makeControlPlaneSongRewardOfferRepository() {
                        participation_starts_drawing_id,eligible_activities,min_score_bps,
                        empty_pool_policy,funding_source,fallback_beneficiary_account_id,
                        fallback_payout_persona_id,referral_allocation_version,referral_policy_hash,
-                       referral_disclosed_at,legal_activation_gate,created_at,updated_at
+                       referral_disclosed_at,legal_activation_gate,created_at,updated_at,
+                       owner_policy_kind,owner_policy_revision,owner_policy_hash
                      ) VALUES ($1,$2,'megapot_pool','draft',$3,'refund_to_funders_pro_rata',$4,
                        $5,$6,$7,$8,1,$9,$10,'equal_v1','keccak_packed_v1',$11,$12,$13,$14,
-                       $15,'leg_budget',$16,$17,$18,$19,$20,'test_only',$5,$5)`,
+                       $15,'leg_budget',$16,$17,$18,$19,$20,'test_only',$5,$5,
+                       'frozen_policy',$21,$22)`,
               values: [
                 input.legId,
                 input.offerId,
@@ -540,6 +567,8 @@ export function makeControlPlaneSongRewardOfferRepository() {
                 input.referralAllocationVersion,
                 input.referralPolicyHash,
                 input.referralDisclosedAt,
+                integer(row, "owner_policy_revision"),
+                text(row, "owner_policy_hash"),
               ],
               readonly: false,
             });
@@ -613,6 +642,8 @@ export function makeControlPlaneSongRewardOfferRepository() {
               text: `SELECT offer.status AS offer_status,
                             revision.third_party_reward_legs AS third_party_legs,
                             head.owner_account_id AS song_owner_account_id,
+                            revision.policy_revision AS owner_policy_revision,
+                            revision.policy_hash AS owner_policy_hash,
                             asset.chain_id, asset.token_address, asset.decimals,
                             asset.symbol, asset.policy_version, attestation.custody_address
                        FROM song_reward_offers offer
@@ -646,8 +677,9 @@ export function makeControlPlaneSongRewardOfferRepository() {
                          ON attestation.chain_id=asset.chain_id
                         AND attestation.environment=asset.environment
                         AND attestation.status='active'
-                      WHERE offer.offer_id=$1 AND offer.status IN ('draft','active')
-                        AND offer.ends_at > clock_timestamp()`,
+                       WHERE offer.offer_id=$1 AND offer.status IN ('draft','active')
+                        AND offer.ends_at > clock_timestamp()
+                       FOR SHARE OF head`,
               values: [
                 input.offerId,
                 input.accountId,
@@ -674,9 +706,11 @@ export function makeControlPlaneSongRewardOfferRepository() {
                        leg_id,offer_id,kind,status,funder_account_id,refund_policy,leg_terms_hash,
                        participation_starts_at,chain_id,token_address,token_decimals,
                        token_symbol,asset_policy_version,amount_per_claim_atomic,max_claims,
-                       legal_activation_gate,created_at,updated_at
+                       legal_activation_gate,created_at,updated_at,
+                       owner_policy_kind,owner_policy_revision,owner_policy_hash
                      ) VALUES ($1,$2,'asset_bonus','draft',$3,'refund_to_funders_pro_rata',$4,
-                       $5,$6,$7,$8,$9,$10,$11,$12,'test_only',$5,$5)`,
+                       $5,$6,$7,$8,$9,$10,$11,$12,'test_only',$5,$5,
+                       'frozen_policy',$13,$14)`,
               values: [
                 input.legId,
                 input.offerId,
@@ -690,6 +724,8 @@ export function makeControlPlaneSongRewardOfferRepository() {
                 input.assetPolicyVersion,
                 input.amountPerClaimAtomic.toString(),
                 input.maxClaims,
+                integer(row, "owner_policy_revision"),
+                text(row, "owner_policy_hash"),
               ],
               readonly: false,
             });

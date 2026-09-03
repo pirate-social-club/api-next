@@ -44,43 +44,54 @@ export type SongRewardOffer = Readonly<{
   termsHash: string;
 }>;
 
-export type MegapotPoolLeg = Readonly<{
-  legId: string;
-  offerId: string;
-  status: "draft" | "funding" | "active" | "paused" | "exhausted" | "ended" | "operational_hold";
-  funderAccountId: string;
-  chainId: number;
-  tokenAddress: string;
-  tokenDecimals: number;
-  custodyAddress: string;
-  maxTicketPriceAtomic: bigint;
-  entryCutoffSeconds: number;
-  participationStartsDrawingId: bigint;
-  eligibleActivities: readonly ("study" | "karaoke")[];
-  minScoreBps: number;
-  emptyPoolPolicy: "no_purchase" | "funder_fallback";
-  fallbackPayoutPersonaId: string | null;
-  fundedAtomic: bigint;
-  legTermsHash: string;
+export type SongOwnerPolicyEvidence = Readonly<{
+  /** frozen_policy legs record the exact revision that authorized them. */
+  ownerPolicyKind: "frozen_policy" | "legacy_pre_policy";
+  ownerPolicyRevision: number | null;
+  ownerPolicyHash: string | null;
 }>;
 
-export type AssetBonusLeg = Readonly<{
-  legId: string;
-  offerId: string;
-  status: "draft" | "funding" | "active" | "paused" | "exhausted" | "ended" | "operational_hold";
-  funderAccountId: string;
-  chainId: number;
-  tokenAddress: string;
-  tokenDecimals: number;
-  tokenSymbol: string;
-  assetPolicyVersion: string;
-  custodyAddress: string;
-  amountPerClaimAtomic: bigint;
-  maxClaims: number;
-  fundedAtomic: bigint;
-  fulfilledAtomic: bigint;
-  legTermsHash: string;
-}>;
+export type MegapotPoolLeg = Readonly<
+  {
+    legId: string;
+    offerId: string;
+    status: "draft" | "funding" | "active" | "paused" | "exhausted" | "ended" | "operational_hold";
+    funderAccountId: string;
+    chainId: number;
+    tokenAddress: string;
+    tokenDecimals: number;
+    custodyAddress: string;
+    maxTicketPriceAtomic: bigint;
+    entryCutoffSeconds: number;
+    participationStartsDrawingId: bigint;
+    eligibleActivities: readonly ("study" | "karaoke")[];
+    minScoreBps: number;
+    emptyPoolPolicy: "no_purchase" | "funder_fallback";
+    fallbackPayoutPersonaId: string | null;
+    fundedAtomic: bigint;
+    legTermsHash: string;
+  } & SongOwnerPolicyEvidence
+>;
+
+export type AssetBonusLeg = Readonly<
+  {
+    legId: string;
+    offerId: string;
+    status: "draft" | "funding" | "active" | "paused" | "exhausted" | "ended" | "operational_hold";
+    funderAccountId: string;
+    chainId: number;
+    tokenAddress: string;
+    tokenDecimals: number;
+    tokenSymbol: string;
+    assetPolicyVersion: string;
+    custodyAddress: string;
+    amountPerClaimAtomic: bigint;
+    maxClaims: number;
+    fundedAtomic: bigint;
+    fulfilledAtomic: bigint;
+    legTermsHash: string;
+  } & SongOwnerPolicyEvidence
+>;
 
 export type ScarceRewardPolicyV1 = Readonly<{
   version: "scarce_reward_v1";

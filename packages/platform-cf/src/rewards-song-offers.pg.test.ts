@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { Effect } from "effect";
-import type { Client } from "pg";
+import { Client } from "pg";
 import {
   applyPostgresTestBaselineConnection,
   withReusablePostgresTestSchema,
@@ -688,6 +688,373 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         audio_revision: 3,
         policy_revision: 1,
       });
+    });
+    completedTestCount += 1;
+  });
+
+  test("freezes the exact authorizing policy revision on each new leg", async () => {
+    await withSchema(async (admin, scopedConnection) => {
+      const identity = await seedSong(admin, "leg-freeze", address("d"));
+      await seedMegapotAuthority(admin);
+      await admin.query(
+        `INSERT INTO megapot_drawing_observations (
+           observation_id, attestation_id, chain_id, drawing_id,
+           ticket_price_atomic, drawing_time, ball_max, bonusball_max,
+           drawing_locked, referral_fee_wei, referral_win_share_wei,
+           block_number, block_hash, block_timestamp, confirmations,
+           observed_at, expires_at, raw_state_hash
+         ) VALUES (
+           'drawing-observation-leg-freeze', 'megapot-base-sepolia-v2', 84532, 41,
+           10000, clock_timestamp() + interval '1 hour', 25, 13, false,
+           100000000000000000, 100000000000000000, 141, $1,
+           clock_timestamp() - interval '2 minutes', 3, clock_timestamp(),
+           clock_timestamp() + interval '30 minutes', $2
+         )`,
+        [bytes32("4"), hash("4")],
+      );
+      const store = makeControlPlaneSongRewardOfferStore(
+        makeDirectPostgresControlPlaneLayer(scopedConnection),
+      );
+      const opened = await Effect.runPromise(
+        store.openOffer({
+          actionId: "reward-action-leg-freeze-open",
+          offerId: "reward-offer-leg-freeze",
+          accountId: identity.accountId,
+          personaId: identity.personaId,
+          communityId: identity.communityId,
+          postId: identity.postId,
+          idempotencyKey: "leg-freeze-open-1",
+          requestHash: hash("5"),
+          termsHash: hash("6"),
+          rewardPolicy: {
+            version: "scarce_reward_v1",
+            community_id: identity.communityId,
+            offer_id: "reward-offer-leg-freeze",
+            requirements: ["human.personhood", "credential.subject_unique"],
+            uniqueness: { kind: "single_authority", authority_id: "reward-offer-leg-freeze" },
+            legal_eligibility: {
+              age: null,
+              geography: null,
+              disclosure: null,
+              environment: "test_staging_empty_v1",
+            },
+          },
+          rewardPolicyHash: hash("a"),
+          startsAt: new Date().toISOString(),
+          endsAt: new Date(Date.now() + 86_400_000).toISOString(),
+          createdAt: new Date().toISOString(),
+        }),
+      );
+
+      const legInput = (suffix: string, key: string, actionId: string, offerId: string) => ({
+        actionId,
+        legId: `reward-leg-freeze-${suffix}`,
+        offerId,
+        accountId: identity.accountId,
+        personaId: identity.personaId,
+        idempotencyKey: key,
+        requestHash: hash("9"),
+        legTermsHash: bytes32("8"),
+        createdAt: new Date(Date.now() + 1).toISOString(),
+        maxTicketPriceAtomic: 20_000n,
+        entryCutoffSeconds: 300,
+        eligibleActivities: ["study"] as const,
+        minScoreBps: 7_000,
+        emptyPoolPolicy: "no_purchase" as const,
+        fallbackPayoutPersonaId: null,
+        referralAllocationVersion: null,
+        referralPolicyHash: null,
+        referralDisclosedAt: null,
+      });
+      const first = await Effect.runPromise(
+        store.addMegapotPoolLeg(
+          legInput("one", "leg-freeze-1", "reward-action-leg-freeze-one", opened.offer.offerId),
+        ),
+      );
+      expect(first.leg.ownerPolicyKind).toBe("frozen_policy");
+      expect(first.leg.ownerPolicyRevision).toBe(1);
+      expect(first.leg.ownerPolicyHash).toMatch(/^[0-9a-f]{64}$/u);
+
+      // The owner narrows third-party legs; the first leg keeps its frozen
+      // revision while the head advances. The post-narrowing leg freeze at
+      // revision 2 is proved by the interleaving test below.
+      await admin.query(
+        `SELECT * FROM append_song_owner_policy_revision_v1(
+           $1, $2, $3, 1, 'owner_only', 'allowed', 'allowed'
+         )`,
+        [identity.communityId, identity.postId, identity.accountId],
+      );
+      const frozen = await admin.query<{
+        readonly leg_id: string;
+        readonly owner_policy_kind: string;
+        readonly owner_policy_revision: string | null;
+        readonly owner_policy_hash: string | null;
+      }>(
+        `SELECT leg.leg_id, leg.owner_policy_kind, leg.owner_policy_revision::text,
+                leg.owner_policy_hash
+           FROM song_reward_offer_legs leg
+          WHERE leg.leg_id='reward-leg-freeze-one'`,
+        [],
+      );
+      expect(
+        frozen.rows.map((row) => [
+          row.leg_id,
+          row.owner_policy_kind,
+          row.owner_policy_revision,
+          row.owner_policy_hash,
+        ]),
+      ).toEqual([["reward-leg-freeze-one", "frozen_policy", "1", first.leg.ownerPolicyHash]]);
+      const head = await admin.query<{ readonly current_policy_revision: string }>(
+        `SELECT current_policy_revision::text FROM song_owner_policies WHERE post_id=$1`,
+        [identity.postId],
+      );
+      expect(head.rows[0]?.current_policy_revision).toBe("2");
+    });
+    completedTestCount += 1;
+  });
+
+  test("reads legacy pre-policy legs as legacy evidence and rejects partial freezes", async () => {
+    await withSchema(async (admin, scopedConnection) => {
+      const identity = await seedSong(admin, "legacy-leg", address("d"));
+      await seedMegapotAuthority(admin);
+      await admin.query(
+        `INSERT INTO megapot_drawing_observations (
+           observation_id, attestation_id, chain_id, drawing_id,
+           ticket_price_atomic, drawing_time, ball_max, bonusball_max,
+           drawing_locked, referral_fee_wei, referral_win_share_wei,
+           block_number, block_hash, block_timestamp, confirmations,
+           observed_at, expires_at, raw_state_hash
+         ) VALUES (
+           'drawing-observation-legacy-leg', 'megapot-base-sepolia-v2', 84532, 41,
+           10000, clock_timestamp() + interval '1 hour', 25, 13, false,
+           100000000000000000, 100000000000000000, 141, $1,
+           clock_timestamp() - interval '2 minutes', 3, clock_timestamp(),
+           clock_timestamp() + interval '30 minutes', $2
+         )`,
+        [bytes32("4"), hash("4")],
+      );
+      const store = makeControlPlaneSongRewardOfferStore(
+        makeDirectPostgresControlPlaneLayer(scopedConnection),
+      );
+      const opened = await Effect.runPromise(
+        store.openOffer({
+          actionId: "reward-action-legacy-leg-open",
+          offerId: "reward-offer-legacy-leg",
+          accountId: identity.accountId,
+          personaId: identity.personaId,
+          communityId: identity.communityId,
+          postId: identity.postId,
+          idempotencyKey: "legacy-leg-open-1",
+          requestHash: hash("5"),
+          termsHash: hash("6"),
+          rewardPolicy: {
+            version: "scarce_reward_v1",
+            community_id: identity.communityId,
+            offer_id: "reward-offer-legacy-leg",
+            requirements: ["human.personhood", "credential.subject_unique"],
+            uniqueness: { kind: "single_authority", authority_id: "reward-offer-legacy-leg" },
+            legal_eligibility: {
+              age: null,
+              geography: null,
+              disclosure: null,
+              environment: "test_staging_empty_v1",
+            },
+          },
+          rewardPolicyHash: hash("a"),
+          startsAt: new Date().toISOString(),
+          endsAt: new Date(Date.now() + 86_400_000).toISOString(),
+          createdAt: new Date().toISOString(),
+        }),
+      );
+      const legInput = {
+        actionId: "reward-action-legacy-leg-one",
+        legId: "reward-leg-legacy",
+        offerId: opened.offer.offerId,
+        accountId: identity.accountId,
+        personaId: identity.personaId,
+        idempotencyKey: "legacy-leg-1",
+        requestHash: hash("7"),
+        legTermsHash: bytes32("8"),
+        createdAt: new Date(Date.now() + 1).toISOString(),
+        maxTicketPriceAtomic: 20_000n,
+        entryCutoffSeconds: 300,
+        eligibleActivities: ["study"] as const,
+        minScoreBps: 7_000,
+        emptyPoolPolicy: "no_purchase" as const,
+        fallbackPayoutPersonaId: null,
+        referralAllocationVersion: null,
+        referralPolicyHash: null,
+        referralDisclosedAt: null,
+      };
+      const added = await Effect.runPromise(store.addMegapotPoolLeg(legInput));
+
+      // Degrade the row to its honest pre-policy state, then replay exactly:
+      // the replayed projection must read legacy evidence, never invent a revision.
+      await admin.query(
+        `UPDATE song_reward_offer_legs
+            SET owner_policy_kind='legacy_pre_policy',
+                owner_policy_revision=NULL, owner_policy_hash=NULL
+          WHERE leg_id=$1`,
+        [added.leg.legId],
+      );
+      const replayed = await Effect.runPromise(
+        store.addMegapotPoolLeg({
+          ...legInput,
+          actionId: "ignored-replay-action",
+          legId: "ignored-replay-leg",
+        }),
+      );
+      expect(replayed).toMatchObject({
+        replayed: true,
+        leg: {
+          legId: added.leg.legId,
+          ownerPolicyKind: "legacy_pre_policy",
+          ownerPolicyRevision: null,
+          ownerPolicyHash: null,
+        },
+      });
+
+      // A frozen kind without its exact revision and hash is not representable.
+      await expect(
+        admin.query(
+          `UPDATE song_reward_offer_legs SET owner_policy_kind='frozen_policy' WHERE leg_id=$1`,
+          [added.leg.legId],
+        ),
+      ).rejects.toThrow();
+    });
+    completedTestCount += 1;
+  });
+
+  test("policy narrowing cannot interleave between leg authority and insertion", async () => {
+    await withSchema(async (admin, scopedConnection) => {
+      const identity = await seedSong(admin, "leg-race", address("d"));
+      await seedMegapotAuthority(admin);
+      await admin.query(
+        `INSERT INTO megapot_drawing_observations (
+           observation_id, attestation_id, chain_id, drawing_id,
+           ticket_price_atomic, drawing_time, ball_max, bonusball_max,
+           drawing_locked, referral_fee_wei, referral_win_share_wei,
+           block_number, block_hash, block_timestamp, confirmations,
+           observed_at, expires_at, raw_state_hash
+         ) VALUES (
+           'drawing-observation-leg-race', 'megapot-base-sepolia-v2', 84532, 41,
+           10000, clock_timestamp() + interval '1 hour', 25, 13, false,
+           100000000000000000, 100000000000000000, 141, $1,
+           clock_timestamp() - interval '2 minutes', 3, clock_timestamp(),
+           clock_timestamp() + interval '30 minutes', $2
+         )`,
+        [bytes32("4"), hash("4")],
+      );
+      const store = makeControlPlaneSongRewardOfferStore(
+        makeDirectPostgresControlPlaneLayer(scopedConnection),
+      );
+      const opened = await Effect.runPromise(
+        store.openOffer({
+          actionId: "reward-action-leg-race-open",
+          offerId: "reward-offer-leg-race",
+          accountId: identity.accountId,
+          personaId: identity.personaId,
+          communityId: identity.communityId,
+          postId: identity.postId,
+          idempotencyKey: "leg-race-open-1",
+          requestHash: hash("5"),
+          termsHash: hash("6"),
+          rewardPolicy: {
+            version: "scarce_reward_v1",
+            community_id: identity.communityId,
+            offer_id: "reward-offer-leg-race",
+            requirements: ["human.personhood", "credential.subject_unique"],
+            uniqueness: { kind: "single_authority", authority_id: "reward-offer-leg-race" },
+            legal_eligibility: {
+              age: null,
+              geography: null,
+              disclosure: null,
+              environment: "test_staging_empty_v1",
+            },
+          },
+          rewardPolicyHash: hash("a"),
+          startsAt: new Date().toISOString(),
+          endsAt: new Date(Date.now() + 86_400_000).toISOString(),
+          createdAt: new Date().toISOString(),
+        }),
+      );
+
+      // Client A mirrors the repository's leg authority read, including the
+      // FOR SHARE fence on the policy head, inside an open transaction.
+      const authority = new Client({ connectionString: scopedConnection });
+      const narrowing = new Client({ connectionString: scopedConnection });
+      await Promise.all([authority.connect(), narrowing.connect()]);
+      try {
+        await authority.query("BEGIN");
+        const held = await authority.query(
+          `SELECT revision.policy_revision, revision.policy_hash
+             FROM song_reward_offers offer
+             JOIN song_owner_policies head
+               ON head.community_id=offer.community_id
+              AND head.post_id=offer.post_id
+              AND head.audio_revision=offer.audio_revision
+             JOIN song_owner_policy_revisions revision
+               ON revision.community_id=head.community_id
+              AND revision.post_id=head.post_id
+              AND revision.owner_account_id=head.owner_account_id
+              AND revision.policy_revision=head.current_policy_revision
+              AND revision.policy_hash=head.current_policy_hash
+            WHERE offer.offer_id=$1 AND offer.status IN ('draft','active')
+              AND offer.ends_at > clock_timestamp()
+            FOR SHARE OF head`,
+          [opened.offer.offerId],
+        );
+        expect(held.rows).toHaveLength(1);
+
+        // A concurrent narrowing genuinely attempts while A's read fences the
+        // head; under lock_timeout it must fail rather than interleave.
+        await narrowing.query("SET lock_timeout='2s'");
+        await expect(
+          narrowing.query(
+            `SELECT * FROM append_song_owner_policy_revision_v1(
+               $1, $2, $3, 1, 'owner_only', 'allowed', 'allowed'
+             )`,
+            [identity.communityId, identity.postId, identity.accountId],
+          ),
+        ).rejects.toThrow(/lock timeout|lock_timeout|lock not available/i);
+
+        await authority.query("COMMIT");
+
+        // With the fence released, the same narrowing succeeds and the next
+        // leg freezes the new current revision.
+        const appended = await narrowing.query<{ readonly policy_revision: string }>(
+          `SELECT policy_revision::text FROM append_song_owner_policy_revision_v1(
+             $1, $2, $3, 1, 'owner_only', 'allowed', 'allowed'
+           )`,
+          [identity.communityId, identity.postId, identity.accountId],
+        );
+        expect(appended.rows[0]?.policy_revision).toBe("2");
+        const leg = await Effect.runPromise(
+          store.addMegapotPoolLeg({
+            actionId: "reward-action-leg-race-one",
+            legId: "reward-leg-race",
+            offerId: opened.offer.offerId,
+            accountId: identity.accountId,
+            personaId: identity.personaId,
+            idempotencyKey: "leg-race-1",
+            requestHash: hash("7"),
+            legTermsHash: bytes32("8"),
+            createdAt: new Date(Date.now() + 1).toISOString(),
+            maxTicketPriceAtomic: 20_000n,
+            entryCutoffSeconds: 300,
+            eligibleActivities: ["study"] as const,
+            minScoreBps: 7_000,
+            emptyPoolPolicy: "no_purchase" as const,
+            fallbackPayoutPersonaId: null,
+            referralAllocationVersion: null,
+            referralPolicyHash: null,
+            referralDisclosedAt: null,
+          }),
+        );
+        expect(leg.leg.ownerPolicyRevision).toBe(2);
+      } finally {
+        await Promise.all([authority.end(), narrowing.end()]);
+      }
     });
     completedTestCount += 1;
   });
