@@ -180,6 +180,7 @@ export {
   hnsRootIsPirateWritable,
   validateHnsAuthorityInventoryAtDatabaseTime,
 } from "./hns-authority-inventory.ts";
+export * from "./hns-community-root-import.ts";
 export type {
   HnsChainAuthorityRecord,
   HnsControlObservationDecodedRequest,
@@ -448,10 +449,14 @@ export {
   isCanonicalHnsPrivateDriverHsdRequest,
 } from "./hns-private-driver.ts";
 export * from "./hns-root-import.ts";
-export type { HnsRootImportNameProofMessageInput } from "./hns-root-import-name-proof.ts";
+export type {
+  HnsCommunityRootImportNameProofMessageInput,
+  HnsRootImportNameProofMessageInput,
+} from "./hns-root-import-name-proof.ts";
 export {
   decodeHnsRootImportNameProofResultV1,
   encodeHnsRootImportNameProofResultV1,
+  HNS_COMMUNITY_ROOT_IMPORT_NAME_PROOF_VERSION,
   HNS_ROOT_IMPORT_NAME_PROOF_MESSAGE_MAX_BYTES,
   HNS_ROOT_IMPORT_NAME_PROOF_NETWORK,
   HNS_ROOT_IMPORT_NAME_PROOF_RESULT_MAX_BYTES,
@@ -460,6 +465,7 @@ export {
   HNS_ROOT_IMPORT_NAME_SIGNATURE_MAX_BYTES,
   HnsRootImportNameProofResultV1,
   HnsRootImportNameSignature,
+  hnsCommunityRootImportNameProofMessage,
   hnsRootImportNameProofMessage,
 } from "./hns-root-import-name-proof.ts";
 export * from "./hns-root-import-plan.ts";
