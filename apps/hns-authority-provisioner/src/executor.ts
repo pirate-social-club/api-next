@@ -92,6 +92,7 @@ async function runObservation(input: {
       throw new HnsRootReadinessObservationError("invalid_request");
     }
     const result = await observeHnsRootReadinessV1({
+      operation_kind: claim.operation_kind,
       request,
       publish_plan_bytes: claim.publish_plan_bytes,
       provision_result_bytes: claim.provision_result_bytes,

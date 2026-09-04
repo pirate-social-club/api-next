@@ -101,6 +101,7 @@ describe("HNS root readiness observation", () => {
   test("retains exact chain, signed-zone, shared TLSA, and bounded inventory evidence", async () => {
     const state = await fixture();
     const observed = await observeHnsRootReadinessV1({
+      operation_kind: "observe_root_v1",
       request: state.request,
       publish_plan_bytes: state.provision.publish_plan_bytes,
       provision_result_bytes: state.provision.result_bytes,
@@ -144,6 +145,7 @@ describe("HNS root readiness observation", () => {
     let inspectedZone = false;
     await expect(
       observeHnsRootReadinessV1({
+        operation_kind: "observe_root_v1",
         request: state.request,
         publish_plan_bytes: state.provision.publish_plan_bytes,
         provision_result_bytes: state.provision.result_bytes,
@@ -164,6 +166,7 @@ describe("HNS root readiness observation", () => {
   test("refuses forged health facts and mismatched authority-zone evidence", async () => {
     const state = await fixture();
     const observed = await observeHnsRootReadinessV1({
+      operation_kind: "observe_root_v1",
       request: state.request,
       publish_plan_bytes: state.provision.publish_plan_bytes,
       provision_result_bytes: state.provision.result_bytes,
@@ -196,5 +199,45 @@ describe("HNS root readiness observation", () => {
     await expect(
       decodeHnsRootImportReadinessResultV1(encoder.encode(canonicalJson(mismatchedViews))),
     ).rejects.toBeInstanceOf(TypeError);
+  });
+
+  test("keeps import observations expiry-gated while allowing activated-root renewal", async () => {
+    const state = await fixture();
+    const request = { ...state.request, expires_at: "2026-09-07T06:00:00.000Z" };
+    const ports = {
+      inspect_current_resource: async () => state.plan.replacement_records as never,
+      inspect_zone: async () => ({ ...state.zone, created: false }),
+      observe_live: async () => state.live,
+    };
+    const config = {
+      environment: "test",
+      valid_for_seconds: 86_400,
+      now: () => Date.parse("2026-09-08T06:00:00.000Z"),
+    } as const;
+
+    await expect(
+      observeHnsRootReadinessV1({
+        operation_kind: "observe_root_v1",
+        request,
+        publish_plan_bytes: state.provision.publish_plan_bytes,
+        provision_result_bytes: state.provision.result_bytes,
+        ports,
+        config,
+      }),
+    ).rejects.toEqual(new HnsRootReadinessObservationError("invalid_request"));
+
+    const renewed = await observeHnsRootReadinessV1({
+      operation_kind: "renew_health_v1",
+      request,
+      publish_plan_bytes: state.provision.publish_plan_bytes,
+      provision_result_bytes: state.provision.result_bytes,
+      ports,
+      config,
+    });
+    const decoded = await decodeHnsRootImportReadinessResultV1(renewed.result_bytes);
+    expect(decoded.result).toMatchObject({
+      observed_at: "2026-09-08T06:00:00.000Z",
+      valid_until: "2026-09-09T06:00:00.000Z",
+    });
   });
 });
