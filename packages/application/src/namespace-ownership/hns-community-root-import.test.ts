@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Effect } from "effect";
 import {
+  activateHnsCommunityRootImport,
   getHnsCommunityRootImport,
   type HnsCommunityRootImportPreparation,
   HnsCommunityRootImportStorageFailed,
@@ -319,6 +320,104 @@ describe("community HNS root import", () => {
       root_import_session_id: "root-import-1",
     });
     expect(result).toEqual(expected);
+  });
+
+  test("keeps community activation behind the explicit acknowledged command", async () => {
+    let activation: unknown;
+    const ready = {
+      community_id: "community-1",
+      attachment_intent_id: "attachment-1",
+      root_import_session_id: "root-import-1",
+      root_label: "dankmemes",
+      revision: 5,
+      expires_at: "2099-01-01T00:00:00.000Z",
+      replayed: false,
+      status: "ready" as const,
+      publish_plan: {
+        version: "pirate-hns-root-import-publish-plan-v1" as const,
+        replacement_semantics: "complete_resource" as const,
+        current_records: [],
+        preserved_records: [],
+        removed_conflicts: [],
+        added_records: [],
+        replacement_records: [],
+        preserved_unknown_record_types: [],
+        acknowledgement_required: true as const,
+      },
+      publish_plan_sha256: "a".repeat(64),
+      readiness_result_sha256: "b".repeat(64),
+      retry_after_seconds: null,
+    };
+    const result = await Effect.runPromise(
+      activateHnsCommunityRootImport(
+        {
+          actor_id: "actor-1",
+          actor_kind: "user",
+          community_id: "community-1",
+          root_import_session_id: "root-import-1",
+          expected_revision: 5,
+          idempotency_key: "activate-1",
+          publish_plan_sha256: "a".repeat(64),
+          readiness_result_sha256: "b".repeat(64),
+          acknowledged_complete_resource_replacement: true,
+        },
+        {
+          ids: {
+            routeBinding: () => "route-1",
+            dnsActivation: () => "dns-1",
+            appActivation: () => "app-1",
+            saleActivation: () => "sale-1",
+            activationOperation: () => "operation-1",
+          },
+          store: {
+            get: () => Effect.succeed(ready),
+            loadPollAuthority: () =>
+              Effect.succeed({
+                session: ready,
+                ceremony_intent_id: "ceremony-1",
+                namespace_session_id: "namespace-1",
+                ownership_expected_revision: 1,
+                challenge_txt_value: "pirate-verification=challenge",
+                provision_job_id: "provision-1",
+                ownership_result_sha256: "c".repeat(64),
+                provision_result_sha256: "d".repeat(64),
+              }),
+            beginProvisioning: () => Effect.succeed({ kind: "conflict" as const }),
+            beginObservation: () => Effect.succeed({ kind: "conflict" as const }),
+            activate: (input) => {
+              activation = input;
+              return Effect.succeed({
+                kind: "activated" as const,
+                response: {
+                  community_id: "community-1",
+                  attachment_intent_id: "attachment-1",
+                  root_import_session_id: "root-import-1",
+                  root_label: "dankmemes",
+                  revision: 6,
+                  status: "activated" as const,
+                  app_host: "app.dankmemes",
+                  dns_zone_activation_id: "dns-1",
+                  dns_zone_activation_generation: 1 as const,
+                  app_host_activation_id: "app-1",
+                  app_host_activation_generation: 1 as const,
+                  sale_namespace_activation_id: "sale-1",
+                  sale_namespace_activation_generation: 1 as const,
+                  sale_namespace_activation_sha256: "e".repeat(64),
+                  handle_issuance_enabled: true as const,
+                  replayed: false,
+                },
+              });
+            },
+          },
+        },
+      ),
+    );
+    expect(result).toMatchObject({ status: "activated", app_host: "app.dankmemes" });
+    expect(activation).toMatchObject({
+      attachment_intent_id: "attachment-1",
+      route_binding_id: "route-1",
+      request_sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
   });
 
   test("does not disclose a session outside its community origin", async () => {

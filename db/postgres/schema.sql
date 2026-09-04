@@ -29117,6 +29117,8 @@ CREATE INDEX hns_control_observer_reservations_live_lease_idx ON hns_control_obs
 
 CREATE INDEX hns_dns_zone_activation_operations_live_idx ON hns_dns_zone_activation_operations USING btree (lease_expires_at, operation_id) WHERE (state = 'reserved'::text);
 
+CREATE INDEX hns_root_import_activation_operations_attachment_idx ON hns_root_import_activation_operations USING btree (actor_id, community_id, attachment_intent_id) WHERE (origin_kind = 'community_attachment'::text);
+
 CREATE INDEX hns_root_import_observation_jobs_claim_idx ON hns_root_import_observation_jobs USING btree (state, created_at, observation_job_id);
 
 CREATE UNIQUE INDEX hns_root_import_sessions_active_root_unique ON hns_root_import_sessions USING btree (root_label) WHERE (status = ANY (ARRAY['provisioning'::text, 'awaiting_owner_update'::text, 'observing'::text, 'ready'::text, 'activated'::text]));

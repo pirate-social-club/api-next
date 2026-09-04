@@ -1,0 +1,3 @@
+CREATE INDEX hns_root_import_activation_operations_attachment_idx
+  ON hns_root_import_activation_operations(actor_id,community_id,attachment_intent_id)
+  WHERE origin_kind='community_attachment';

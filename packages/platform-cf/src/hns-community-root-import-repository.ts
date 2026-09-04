@@ -3,6 +3,7 @@ import {
   type ControlPlaneError,
   type ControlPlaneResult,
   type ControlPlaneTransaction,
+  type HnsCommunityRootImportActivationStore,
   type HnsCommunityRootImportPollStore,
   type HnsCommunityRootImportPreparation,
   type HnsCommunityRootImportStartRecord,
@@ -21,6 +22,7 @@ import {
   communityCreationProviderBindingHash,
 } from "@pirate/domain";
 import { Effect, type Layer, Option, Schema } from "effect";
+import { makeControlPlaneHnsRootImportStore } from "./hns-root-import-repository.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 type Transaction = ControlPlaneTransaction;
@@ -847,10 +849,15 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
 export function makeControlPlaneHnsCommunityRootImportStartStore(
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
   options: HnsCommunityRootImportRepositoryOptions,
-): HnsCommunityRootImportStartStore & HnsCommunityRootImportPollStore {
+): HnsCommunityRootImportStartStore &
+  HnsCommunityRootImportPollStore &
+  HnsCommunityRootImportActivationStore {
   const repository = makeControlPlaneHnsCommunityRootImportRepository(options);
   const provide = <A>(effect: Effect.Effect<A, unknown, ControlPlaneDb>) =>
     Effect.provide(runtime)(effect).pipe(Effect.mapError(() => storageFailure()));
+  const activationStore = makeControlPlaneHnsRootImportStore(runtime, {
+    environment: options.environment,
+  });
   return {
     prepare: (input) => provide(repository.prepare(input)),
     start: (input) => provide(repository.start(input)),
@@ -858,5 +865,55 @@ export function makeControlPlaneHnsCommunityRootImportStartStore(
     loadPollAuthority: (input) => provide(repository.loadPollAuthority(input)),
     beginProvisioning: (input) => provide(repository.beginProvisioning(input)),
     beginObservation: (input) => provide(repository.beginObservation(input)),
+    activate: (input) =>
+      activationStore
+        .activate({
+          input: {
+            ...input.input,
+            creation_intent_id: input.attachment_intent_id,
+          },
+          request_sha256: input.request_sha256,
+          community_id: input.input.community_id,
+          dns_zone_activation_id: input.dns_zone_activation_id,
+          app_host_activation_id: input.app_host_activation_id,
+          sale_namespace_activation_id: input.sale_namespace_activation_id,
+          operation_id: input.operation_id,
+          community_origin: {
+            attachment_intent_id: input.attachment_intent_id,
+            route_binding_id: input.route_binding_id,
+          },
+        } as Parameters<typeof activationStore.activate>[0] & {
+          readonly community_origin: Readonly<{
+            readonly attachment_intent_id: string;
+            readonly route_binding_id: string;
+          }>;
+        })
+        .pipe(
+          Effect.map((outcome) => {
+            if (!("response" in outcome)) return outcome;
+            return {
+              kind: outcome.kind,
+              response: {
+                community_id: input.input.community_id,
+                attachment_intent_id: input.attachment_intent_id,
+                root_import_session_id: outcome.response.root_import_session_id,
+                root_label: outcome.response.root_label,
+                revision: outcome.response.revision,
+                status: "activated" as const,
+                app_host: outcome.response.app_host,
+                dns_zone_activation_id: outcome.response.dns_zone_activation_id,
+                dns_zone_activation_generation: 1 as const,
+                app_host_activation_id: outcome.response.app_host_activation_id,
+                app_host_activation_generation: 1 as const,
+                sale_namespace_activation_id: outcome.response.sale_namespace_activation_id,
+                sale_namespace_activation_generation: 1 as const,
+                sale_namespace_activation_sha256: outcome.response.sale_namespace_activation_sha256,
+                handle_issuance_enabled: true as const,
+                replayed: outcome.response.replayed,
+              },
+            };
+          }),
+          Effect.mapError(() => storageFailure()),
+        ),
   };
 }

@@ -1,5 +1,7 @@
 import {
+  activateHnsCommunityRootImport,
   getHnsCommunityRootImport,
+  type HnsCommunityRootImportActivationServices,
   type HnsCommunityRootImportPollServices,
   type HnsCommunityRootImportReadStore,
   type HnsCommunityRootImportStartServices,
@@ -35,6 +37,7 @@ function wireFailure(error: unknown): Error {
 export function makeHnsCommunityRootImportHandlers(
   services: HnsCommunityRootImportStartServices &
     HnsCommunityRootImportPollServices &
+    HnsCommunityRootImportActivationServices &
     Readonly<{
       readonly store: HnsCommunityRootImportStartServices["store"] &
         HnsCommunityRootImportReadStore;
@@ -43,6 +46,7 @@ export function makeHnsCommunityRootImportHandlers(
   StartHnsCommunityRootImport: EndpointHandler;
   GetHnsCommunityRootImport: EndpointHandler;
   PollHnsCommunityRootImport: EndpointHandler;
+  ActivateHnsCommunityRootImport: EndpointHandler;
 }> {
   return {
     StartHnsCommunityRootImport: (request) => {
@@ -130,6 +134,37 @@ export function makeHnsCommunityRootImportHandlers(
                   : 200,
             ),
           ),
+          Effect.mapError(wireFailure),
+        ),
+      );
+    },
+    ActivateHnsCommunityRootImport: (request) => {
+      if (
+        request.principal === null ||
+        (request.principal.kind !== "user" && request.principal.kind !== "admin")
+      ) {
+        throw new AuthError({ message: "Authentication required" });
+      }
+      const params = request.params as Readonly<{ communityId: string; sessionId: string }>;
+      const body = request.body as Readonly<{
+        expected_revision: number;
+        idempotency_key: string;
+        publish_plan_sha256: string;
+        readiness_result_sha256: string;
+        acknowledged_complete_resource_replacement: true;
+      }>;
+      return Effect.runPromise(
+        activateHnsCommunityRootImport(
+          {
+            actor_id: request.principal.subject,
+            actor_kind: request.principal.kind,
+            community_id: params.communityId,
+            root_import_session_id: params.sessionId,
+            ...body,
+          },
+          services,
+        ).pipe(
+          Effect.map((result) => withEndpointResult(result, result.replayed ? 200 : 201)),
           Effect.mapError(wireFailure),
         ),
       );

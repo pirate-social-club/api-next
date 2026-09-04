@@ -1,4 +1,5 @@
 import type {
+  HnsCommunityRootImportActivationResponseV1,
   HnsCommunityRootImportSessionResponseV1,
   HnsPollResultCompletionResponseV1,
 } from "@pirate/contracts";
@@ -63,6 +64,29 @@ export const PollHnsCommunityRootImportInput = Schema.Struct({
 });
 export type PollHnsCommunityRootImportInput = Schema.Schema.Type<
   typeof PollHnsCommunityRootImportInput
+>;
+
+const Sha256Hex = Schema.String.check(
+  Schema.makeFilter((value) =>
+    /^[0-9a-f]{64}$/u.test(value) ? undefined : "Expected a lowercase SHA-256 digest",
+  ),
+);
+
+export const ActivateHnsCommunityRootImportInput = Schema.Struct({
+  ...GetHnsCommunityRootImportInput.fields,
+  actor_kind: Schema.Literals(["user", "admin"]),
+  expected_revision: Schema.Int.check(
+    Schema.makeFilter((value) =>
+      Number.isSafeInteger(value) && value > 0 ? undefined : "Expected a positive revision",
+    ),
+  ),
+  idempotency_key: CanonicalIdentifier,
+  publish_plan_sha256: Sha256Hex,
+  readiness_result_sha256: Sha256Hex,
+  acknowledged_complete_resource_replacement: Schema.Literal(true),
+});
+export type ActivateHnsCommunityRootImportInput = Schema.Schema.Type<
+  typeof ActivateHnsCommunityRootImportInput
 >;
 
 export type HnsCommunityRootImportPreparation = Readonly<{
@@ -179,6 +203,30 @@ export interface HnsCommunityRootImportPollStore extends HnsCommunityRootImportR
   ) => Effect.Effect<CommunityPollStoreOutcome, HnsCommunityRootImportStorageFailed>;
 }
 
+export type HnsCommunityRootImportActivationRecord = Readonly<{
+  readonly input: ActivateHnsCommunityRootImportInput;
+  readonly attachment_intent_id: string;
+  readonly request_sha256: string;
+  readonly route_binding_id: string;
+  readonly dns_zone_activation_id: string;
+  readonly app_host_activation_id: string;
+  readonly sale_namespace_activation_id: string;
+  readonly operation_id: string;
+}>;
+
+export type HnsCommunityRootImportActivationOutcome =
+  | Readonly<{
+      readonly kind: "activated" | "replayed";
+      readonly response: HnsCommunityRootImportActivationResponseV1;
+    }>
+  | Readonly<{ readonly kind: "conflict" | "not_found" }>;
+
+export interface HnsCommunityRootImportActivationStore {
+  readonly activate: (
+    input: HnsCommunityRootImportActivationRecord,
+  ) => Effect.Effect<HnsCommunityRootImportActivationOutcome, HnsCommunityRootImportStorageFailed>;
+}
+
 export interface HnsCommunityRootImportPollServices {
   readonly nameProof: Readonly<{
     readonly verify: (input: {
@@ -219,6 +267,17 @@ export interface HnsCommunityRootImportStartServices {
     readonly ceremonyIntent?: () => string;
     readonly rootImportSession?: () => string;
     readonly provisionJob?: () => string;
+  }>;
+}
+
+export interface HnsCommunityRootImportActivationServices {
+  readonly store: HnsCommunityRootImportPollStore & HnsCommunityRootImportActivationStore;
+  readonly ids?: Readonly<{
+    readonly routeBinding?: () => string;
+    readonly dnsActivation?: () => string;
+    readonly appActivation?: () => string;
+    readonly saleActivation?: () => string;
+    readonly activationOperation?: () => string;
   }>;
 }
 
@@ -498,3 +557,73 @@ export const pollHnsCommunityRootImport = Effect.fn("pollHnsCommunityRootImport"
   if (outcome.kind === "conflict") return yield* pollFailure("conflict");
   return "session" in outcome ? outcome.session : yield* pollFailure("conflict");
 });
+
+function activationId(
+  ids: HnsCommunityRootImportActivationServices["ids"],
+  kind:
+    | "routeBinding"
+    | "dnsActivation"
+    | "appActivation"
+    | "saleActivation"
+    | "activationOperation",
+): string {
+  const supplied = ids?.[kind]?.();
+  if (supplied !== undefined) return supplied;
+  const prefix =
+    kind === "routeBinding"
+      ? "community-route"
+      : kind === "dnsActivation"
+        ? "hns-dns"
+        : kind === "appActivation"
+          ? "hns-app"
+          : kind === "saleActivation"
+            ? "hns-sale"
+            : "hns-root-activation";
+  return `${prefix}_${crypto.randomUUID()}`;
+}
+
+export const activateHnsCommunityRootImport = Effect.fn("activateHnsCommunityRootImport")(
+  function* (
+    untrustedInput: unknown,
+    services: HnsCommunityRootImportActivationServices,
+  ): Effect.fn.Return<
+    HnsCommunityRootImportActivationResponseV1,
+    HnsCommunityRootImportRejected | HnsCommunityRootImportStorageFailed
+  > {
+    const decoded = Schema.decodeUnknownOption(
+      ActivateHnsCommunityRootImportInput,
+      exactParseOptions,
+    )(untrustedInput);
+    if (Option.isNone(decoded)) return yield* pollFailure("invalid");
+    const input = decoded.value;
+    const authority = yield* services.store.loadPollAuthority(input);
+    if (authority === null) return yield* pollFailure("not_found");
+    const session = authority.session;
+    const fresh = session.status === "ready" && session.revision === input.expected_revision;
+    const replay =
+      session.status === "activated" && session.revision === input.expected_revision + 1;
+    if (
+      (!fresh && !replay) ||
+      session.publish_plan_sha256 !== input.publish_plan_sha256 ||
+      session.readiness_result_sha256 !== input.readiness_result_sha256
+    ) {
+      return yield* pollFailure("conflict");
+    }
+    const requestSha256 = yield* Effect.promise(() =>
+      sha256({ version: "pirate-hns-community-root-import-activation-v1", ...input }),
+    );
+    const outcome = yield* services.store.activate({
+      input,
+      attachment_intent_id: session.attachment_intent_id,
+      request_sha256: requestSha256,
+      route_binding_id: activationId(services.ids, "routeBinding"),
+      dns_zone_activation_id: activationId(services.ids, "dnsActivation"),
+      app_host_activation_id: activationId(services.ids, "appActivation"),
+      sale_namespace_activation_id: activationId(services.ids, "saleActivation"),
+      operation_id: activationId(services.ids, "activationOperation"),
+    });
+    if (outcome.kind === "not_found") return yield* pollFailure("not_found");
+    if (outcome.kind === "conflict") return yield* pollFailure("conflict");
+    return "response" in outcome ? outcome.response : yield* pollFailure("conflict");
+  },
+);
