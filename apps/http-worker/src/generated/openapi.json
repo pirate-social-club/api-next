@@ -61,8 +61,43 @@
                   "draft": {
                     "type": "object",
                     "properties": {
-                      "persona_id": {
-                        "type": "string"
+                      "persona": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "existing"
+                                ]
+                              },
+                              "persona_id": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "persona_id"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "create_new"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "kind"
+                            ],
+                            "additionalProperties": false
+                          }
+                        ]
                       },
                       "name": {
                         "type": "string",
@@ -374,7 +409,7 @@
                       }
                     },
                     "required": [
-                      "persona_id",
+                      "persona",
                       "name",
                       "description",
                       "policy"
@@ -432,8 +467,43 @@
                     "draft": {
                       "type": "object",
                       "properties": {
-                        "persona_id": {
-                          "type": "string"
+                        "persona": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "existing"
+                                  ]
+                                },
+                                "persona_id": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "persona_id"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "create_new"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
                         },
                         "name": {
                           "type": "string",
@@ -745,7 +815,7 @@
                         }
                       },
                       "required": [
-                        "persona_id",
+                        "persona",
                         "name",
                         "description",
                         "policy"
@@ -1003,7 +1073,14 @@
                       "type": "string"
                     },
                     "persona_role_presentation": {
-                      "$ref": "#/$defs/Objects_"
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/Objects_"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     },
                     "committed_resource": {
                       "anyOf": [
@@ -1178,8 +1255,43 @@
                     "draft": {
                       "type": "object",
                       "properties": {
-                        "persona_id": {
-                          "type": "string"
+                        "persona": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "existing"
+                                  ]
+                                },
+                                "persona_id": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "persona_id"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "create_new"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
                         },
                         "name": {
                           "type": "string",
@@ -1491,7 +1603,7 @@
                         }
                       },
                       "required": [
-                        "persona_id",
+                        "persona",
                         "name",
                         "description",
                         "policy"
@@ -1749,7 +1861,14 @@
                       "type": "string"
                     },
                     "persona_role_presentation": {
-                      "$ref": "#/$defs/Objects_"
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/Objects_"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     },
                     "committed_resource": {
                       "anyOf": [
@@ -2161,8 +2280,43 @@
                         "draft": {
                           "type": "object",
                           "properties": {
-                            "persona_id": {
-                              "type": "string"
+                            "persona": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "existing"
+                                      ]
+                                    },
+                                    "persona_id": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "persona_id"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "create_new"
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "kind"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
                             },
                             "name": {
                               "type": "string",
@@ -2187,7 +2341,7 @@
                             }
                           },
                           "required": [
-                            "persona_id",
+                            "persona",
                             "name",
                             "description",
                             "policy"
@@ -2432,7 +2586,14 @@
                           "type": "string"
                         },
                         "persona_role_presentation": {
-                          "$ref": "#/$defs/Objects_1"
+                          "anyOf": [
+                            {
+                              "$ref": "#/$defs/Objects_1"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "committed_resource": {
                           "anyOf": [
@@ -3538,8 +3699,43 @@
                   "draft": {
                     "type": "object",
                     "properties": {
-                      "persona_id": {
-                        "type": "string"
+                      "persona": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "existing"
+                                ]
+                              },
+                              "persona_id": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "persona_id"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "create_new"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "kind"
+                            ],
+                            "additionalProperties": false
+                          }
+                        ]
                       },
                       "name": {
                         "type": "string",
@@ -3851,7 +4047,7 @@
                       }
                     },
                     "required": [
-                      "persona_id",
+                      "persona",
                       "name",
                       "description",
                       "policy"
@@ -3910,8 +4106,43 @@
                     "draft": {
                       "type": "object",
                       "properties": {
-                        "persona_id": {
-                          "type": "string"
+                        "persona": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "existing"
+                                  ]
+                                },
+                                "persona_id": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "persona_id"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "create_new"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
                         },
                         "name": {
                           "type": "string",
@@ -4223,7 +4454,7 @@
                         }
                       },
                       "required": [
-                        "persona_id",
+                        "persona",
                         "name",
                         "description",
                         "policy"
@@ -4481,7 +4712,14 @@
                       "type": "string"
                     },
                     "persona_role_presentation": {
-                      "$ref": "#/$defs/Objects_"
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/Objects_"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     },
                     "committed_resource": {
                       "anyOf": [
@@ -4975,8 +5213,43 @@
                         "draft": {
                           "type": "object",
                           "properties": {
-                            "persona_id": {
-                              "type": "string"
+                            "persona": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "existing"
+                                      ]
+                                    },
+                                    "persona_id": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "persona_id"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "create_new"
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "kind"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
                             },
                             "name": {
                               "type": "string",
@@ -5001,7 +5274,7 @@
                             }
                           },
                           "required": [
-                            "persona_id",
+                            "persona",
                             "name",
                             "description",
                             "policy"
@@ -5246,7 +5519,14 @@
                           "type": "string"
                         },
                         "persona_role_presentation": {
-                          "$ref": "#/$defs/Objects_1"
+                          "anyOf": [
+                            {
+                              "$ref": "#/$defs/Objects_1"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "committed_resource": {
                           "anyOf": [
@@ -6175,8 +6455,43 @@
                         "draft": {
                           "type": "object",
                           "properties": {
-                            "persona_id": {
-                              "type": "string"
+                            "persona": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "existing"
+                                      ]
+                                    },
+                                    "persona_id": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "persona_id"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "create_new"
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "kind"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
                             },
                             "name": {
                               "type": "string",
@@ -6201,7 +6516,7 @@
                             }
                           },
                           "required": [
-                            "persona_id",
+                            "persona",
                             "name",
                             "description",
                             "policy"
@@ -6446,7 +6761,14 @@
                           "type": "string"
                         },
                         "persona_role_presentation": {
-                          "$ref": "#/$defs/Objects_1"
+                          "anyOf": [
+                            {
+                              "$ref": "#/$defs/Objects_1"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "committed_resource": {
                           "anyOf": [
@@ -30618,6 +30940,9 @@
                   "idempotency_key": {
                     "type": "string"
                   },
+                  "community_id": {
+                    "type": "string"
+                  },
                   "display_name": {
                     "anyOf": [
                       {
@@ -30671,7 +30996,8 @@
                   }
                 },
                 "required": [
-                  "idempotency_key"
+                  "idempotency_key",
+                  "community_id"
                 ],
                 "additionalProperties": false
               }

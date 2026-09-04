@@ -5,8 +5,9 @@ import { Effect } from "effect";
 import { makeCommunityCreationHandlers } from "./community-creation-handlers.ts";
 import { createHttpWorker, type DecodedRequest, type Principal } from "./transport.ts";
 
+const creatorPersonaId = "persona-community-owner";
 const draft = {
-  persona_id: "persona-community-owner",
+  persona: { kind: "existing" as const, persona_id: creatorPersonaId },
   name: "Jazleeuw",
   description: "A community",
   policy: {
@@ -21,11 +22,11 @@ const draft = {
   },
 };
 const persona = {
-  persona_id: draft.persona_id,
+  persona_id: creatorPersonaId,
   object: "persona" as const,
   status: "active" as const,
   profile: {
-    persona_id: draft.persona_id,
+    persona_id: creatorPersonaId,
     object: "persona_profile" as const,
     revision: 1,
     display_name: "Community Captain",

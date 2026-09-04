@@ -12158,12 +12158,14 @@ CREATE FUNCTION public_persona_projection(expected_persona_id text) RETURNS json
   SELECT jsonb_build_object(
     'persona_id', persona.persona_id,
     'object', 'persona',
-    'display_name', profile.display_name,
-    'avatar_ref', profile.avatar_ref,
+    'display_name', COALESCE(profile.display_name, pending_profile.display_name),
+    'avatar_ref', COALESCE(profile.avatar_ref, pending_profile.avatar_ref),
     'primary_public_handle', handle.label_display
   )
     FROM personas AS persona
-    JOIN persona_profiles AS profile ON profile.persona_id = persona.persona_id
+    LEFT JOIN persona_profiles AS profile ON profile.persona_id = persona.persona_id
+    LEFT JOIN persona_pending_profiles AS pending_profile
+      ON pending_profile.persona_id = persona.persona_id
     LEFT JOIN LATERAL (
       SELECT candidate.label_display
         FROM public_handle_index AS candidate
@@ -12173,7 +12175,7 @@ CREATE FUNCTION public_persona_projection(expected_persona_id text) RETURNS json
        LIMIT 1
     ) AS handle ON true
    WHERE persona.persona_id = expected_persona_id
-     AND persona.status = 'active'
+     AND persona.status IN ('active', 'pending_wallet')
 $$;
 
 CREATE FUNCTION raise_text_rating_with_descendants_v1(target_community_id text, target_kind text, target_resource_id text, transition_at timestamp with time zone) RETURNS integer
@@ -12530,7 +12532,20 @@ CREATE FUNCTION require_active_role_persona() RETURNS trigger
     AS $$
 BEGIN
   IF NOT active_owned_persona(NEW.account_id, NEW.persona_id) THEN
-    RAISE EXCEPTION 'active owned persona required';
+    IF NOT EXISTS (
+      SELECT 1
+        FROM personas AS persona
+        JOIN persona_community_bindings AS binding
+          ON binding.persona_id = persona.persona_id
+         AND binding.account_id = persona.account_id
+       WHERE persona.persona_id = NEW.persona_id
+         AND persona.account_id = NEW.account_id
+         AND persona.status = 'pending_wallet'
+         AND binding.community_id = NEW.community_id
+         AND binding.binding_source = 'community_creation'
+    ) THEN
+      RAISE EXCEPTION 'active owned persona required';
+    END IF;
   END IF;
   RETURN NEW;
 END
@@ -19120,6 +19135,7 @@ CREATE TABLE community_creation_intents (
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     creation_contract_version text DEFAULT 'legacy_slug_v1'::text NOT NULL,
+    minted_persona_id text,
     CONSTRAINT community_creation_intents_canonical_policy_hash_check CHECK ((canonical_policy_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT community_creation_intents_canonical_policy_revision_check CHECK ((canonical_policy_revision > 0)),
     CONSTRAINT community_creation_intents_committed_shape CHECK ((((status = 'committed'::text) AND (committed_community_id IS NOT NULL) AND (committed_resource_href IS NOT NULL) AND (committed_resource_href ~~ '/%'::text)) OR ((status <> 'committed'::text) AND (committed_community_id IS NULL) AND (committed_resource_href IS NULL)))),
@@ -19129,7 +19145,7 @@ CREATE TABLE community_creation_intents (
     CONSTRAINT community_creation_intents_draft_check CHECK ((jsonb_typeof(draft) = 'object'::text)),
     CONSTRAINT community_creation_intents_identifiers_not_blank CHECK (((btrim(intent_id) <> ''::text) AND (intent_id = btrim(intent_id)) AND (btrim(actor_id) <> ''::text) AND (actor_id = btrim(actor_id)) AND (btrim(create_idempotency_key) <> ''::text) AND (create_idempotency_key = btrim(create_idempotency_key)) AND ((verification_provider_id IS NULL) OR ((btrim(verification_provider_id) <> ''::text) AND (verification_provider_id = btrim(verification_provider_id)))) AND ((provider_configuration_ref IS NULL) OR ((btrim(provider_configuration_ref) <> ''::text) AND (provider_configuration_ref = btrim(provider_configuration_ref)))) AND ((provider_configuration_version IS NULL) OR ((btrim(provider_configuration_version) <> ''::text) AND (provider_configuration_version = btrim(provider_configuration_version)))))),
     CONSTRAINT community_creation_intents_optional_route_v2_committed_shape CHECK (((creation_contract_version <> 'optional_route_v2'::text) OR (status <> 'committed'::text) OR ((committed_community_id ~ '^community_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'::text) AND (committed_resource_href = ('/c/'::text || committed_community_id))))),
-    CONSTRAINT community_creation_intents_optional_route_v2_draft_shape CHECK (((creation_contract_version <> 'optional_route_v2'::text) OR ((jsonb_typeof(draft) = 'object'::text) AND (draft ? 'persona_id'::text) AND (draft ? 'name'::text) AND (draft ? 'description'::text) AND (draft ? 'policy'::text) AND (((((draft - 'persona_id'::text) - 'name'::text) - 'description'::text) - 'policy'::text) = '{}'::jsonb) AND (jsonb_typeof((draft -> 'persona_id'::text)) = 'string'::text) AND (btrim((draft ->> 'persona_id'::text)) <> ''::text) AND (jsonb_typeof((draft -> 'name'::text)) = 'string'::text) AND (btrim((draft ->> 'name'::text)) <> ''::text) AND (jsonb_typeof((draft -> 'description'::text)) = ANY (ARRAY['string'::text, 'null'::text])) AND (jsonb_typeof((draft -> 'policy'::text)) = 'object'::text) AND (NOT (draft ? 'slug'::text)) AND (NOT (draft ? 'route_request'::text))))),
+    CONSTRAINT community_creation_intents_optional_route_v2_draft_shape CHECK (((creation_contract_version <> 'optional_route_v2'::text) OR ((jsonb_typeof(draft) = 'object'::text) AND (draft ? 'persona'::text) AND (draft ? 'name'::text) AND (draft ? 'description'::text) AND (draft ? 'policy'::text) AND (((((draft - 'persona'::text) - 'name'::text) - 'description'::text) - 'policy'::text) = '{}'::jsonb) AND (jsonb_typeof((draft -> 'persona'::text)) = 'object'::text) AND (jsonb_typeof(((draft -> 'persona'::text) -> 'kind'::text)) = 'string'::text) AND (((draft -> 'persona'::text) ->> 'kind'::text) = ANY (ARRAY['existing'::text, 'create_new'::text])) AND (((((draft -> 'persona'::text) ->> 'kind'::text) = 'existing'::text) AND ((((draft -> 'persona'::text) - 'kind'::text) - 'persona_id'::text) = '{}'::jsonb) AND (jsonb_typeof(((draft -> 'persona'::text) -> 'persona_id'::text)) = 'string'::text) AND (btrim(((draft -> 'persona'::text) ->> 'persona_id'::text)) <> ''::text)) OR ((((draft -> 'persona'::text) ->> 'kind'::text) = 'create_new'::text) AND (((draft -> 'persona'::text) - 'kind'::text) = '{}'::jsonb))) AND (jsonb_typeof((draft -> 'name'::text)) = 'string'::text) AND (btrim((draft ->> 'name'::text)) <> ''::text) AND (jsonb_typeof((draft -> 'description'::text)) = ANY (ARRAY['string'::text, 'null'::text])) AND (jsonb_typeof((draft -> 'policy'::text)) = 'object'::text) AND (NOT (draft ? 'slug'::text)) AND (NOT (draft ? 'route_request'::text))))),
     CONSTRAINT community_creation_intents_provider_configuration_kind_check CHECK ((provider_configuration_kind = ANY (ARRAY['managed'::text, 'dynamic'::text]))),
     CONSTRAINT community_creation_intents_revision_check CHECK ((revision > 0)),
     CONSTRAINT community_creation_intents_route_v1_committed_href CHECK (((creation_contract_version <> 'route_v1'::text) OR (status <> 'committed'::text) OR (committed_resource_href ~~ '/c/%'::text))),
@@ -29802,6 +29818,9 @@ ALTER TABLE ONLY community_creation_intents
 
 ALTER TABLE ONLY community_creation_intents
     ADD CONSTRAINT community_creation_intents_committed_community_id_fkey FOREIGN KEY (committed_community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY community_creation_intents
+    ADD CONSTRAINT community_creation_intents_minted_persona_fk FOREIGN KEY (minted_persona_id) REFERENCES personas(persona_id);
 
 ALTER TABLE ONLY community_creation_quota_approvals
     ADD CONSTRAINT community_creation_quota_approvals_actor_id_fkey FOREIGN KEY (actor_id) REFERENCES users(user_id);

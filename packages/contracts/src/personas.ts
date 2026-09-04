@@ -134,6 +134,12 @@ export type PrivatePersonaV1 = Schema.Schema.Type<typeof PrivatePersonaV1>;
 
 const CreatePersonaRequestV1 = Schema.Struct({
   idempotency_key: boundedIdentifier("idempotency key"),
+  /**
+   * Spec 014 section 10.2: creating a further persona outside onboarding
+   * requires a target community; the new persona is born bound there in the
+   * creation transaction and the account must hold an active membership.
+   */
+  community_id: boundedIdentifier("community identifier"),
   display_name: Schema.optional(nullableBoundedText(80, "display name")),
   bio: Schema.optional(nullableBoundedText(2_000, "bio")),
   preferred_locale: Schema.optional(nullableBoundedText(64, "locale")),

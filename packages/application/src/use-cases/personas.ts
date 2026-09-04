@@ -37,10 +37,16 @@ export type PersonaCreateIntent = Readonly<{
   displayName: string | null;
   bio: string | null;
   preferredLocale: string | null;
+  /** Target community the persona is born bound to (spec 014 section 10.2). */
+  communityId: string;
 }>;
 
 export class PersonaStoreConflict extends Data.TaggedError("PersonaStoreConflict")<{
-  readonly reason: "idempotency-mismatch" | "identifier-collision" | "slot-limit";
+  readonly reason:
+    | "idempotency-mismatch"
+    | "identifier-collision"
+    | "slot-limit"
+    | "membership-required";
 }> {}
 
 export class PersonaStoreRateLimited extends Data.TaggedError("PersonaStoreRateLimited")<{
@@ -200,6 +206,7 @@ export const createPersona = Effect.fn("createPersona")(function* (
     displayName: input.body.display_name ?? null,
     bio: input.body.bio ?? null,
     preferredLocale: input.body.preferred_locale ?? null,
+    communityId: input.body.community_id,
   };
 
   return yield* services.store

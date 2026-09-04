@@ -20,7 +20,7 @@ const policy = {
   ] as const,
 };
 const draft = {
-  persona_id: "persona_community_owner",
+  persona: { kind: "existing" as const, persona_id: "persona_community_owner" },
   name: "Jazleeuw",
   description: null,
   policy,
@@ -28,7 +28,7 @@ const draft = {
 const personaRolePresentation = {
   role: "owner" as const,
   persona: {
-    persona_id: draft.persona_id,
+    persona_id: "persona_community_owner",
     object: "persona" as const,
     display_name: "Community Captain",
     avatar_ref: null,
@@ -36,7 +36,9 @@ const personaRolePresentation = {
   },
 };
 const routeV1Draft = {
-  ...draft,
+  name: draft.name,
+  description: draft.description,
+  policy: draft.policy,
   route_request: { family: "hns" as const, root_label: "jazleeuw" },
 };
 const requirements = {

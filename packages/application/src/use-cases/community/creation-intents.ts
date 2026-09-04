@@ -121,7 +121,11 @@ export const createCommunityCreationIntent = Effect.fn("createCommunityCreationI
 ) {
   yield* validateActor(input.actor);
   const body = yield* decodeBody(CreateCommunityCreationIntent.request.body, input.body);
-  yield* requireSelectedPersona(input.actor.userId, body.draft.persona_id, services);
+  if (body.draft.persona.kind === "existing") {
+    // A create_new choice mints the persona at the terminal creation commit;
+    // there is no persona to select or validate while the intent is a draft.
+    yield* requireSelectedPersona(input.actor.userId, body.draft.persona.persona_id, services);
+  }
   const hash = yield* requestHash(body);
   return yield* services.communityCreationStore
     .create({ actor: input.actor, body, requestHash: hash })
@@ -154,7 +158,9 @@ export const updateCommunityCreationIntent = Effect.fn("updateCommunityCreationI
     return yield* new NotFound({ message: "Community creation intent not found" });
   }
   const body = yield* decodeBody(UpdateCommunityCreationIntent.request.body, input.body);
-  yield* requireSelectedPersona(input.actor.userId, body.draft.persona_id, services);
+  if (body.draft.persona.kind === "existing") {
+    yield* requireSelectedPersona(input.actor.userId, body.draft.persona.persona_id, services);
+  }
   const hash = yield* requestHash(body);
   return yield* services.communityCreationStore
     .update({ intentId: input.intentId, actor: input.actor, body, requestHash: hash })
@@ -176,8 +182,8 @@ export const commitCommunityCreationIntent = Effect.fn("commitCommunityCreationI
   if (current === null) {
     return yield* new NotFound({ message: "Community creation intent not found" });
   }
-  if ("creation_contract_version" in current) {
-    yield* requireSelectedPersona(input.actor.userId, current.draft.persona_id, services);
+  if ("creation_contract_version" in current && current.draft.persona.kind === "existing") {
+    yield* requireSelectedPersona(input.actor.userId, current.draft.persona.persona_id, services);
   }
   const hash = yield* requestHash(body);
   return yield* services.communityCreationStore

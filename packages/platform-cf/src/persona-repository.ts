@@ -128,6 +128,7 @@ const intentHash = (input: {
   readonly displayName: string | null;
   readonly bio: string | null;
   readonly preferredLocale: string | null;
+  readonly communityId: string;
 }): string =>
   createHash("sha256")
     .update(
@@ -135,6 +136,7 @@ const intentHash = (input: {
         display_name: input.displayName,
         bio: input.bio,
         preferred_locale: input.preferredLocale,
+        community_id: input.communityId,
       }),
     )
     .digest("hex");
@@ -230,6 +232,21 @@ export function makeControlPlanePersonaRepository() {
               }
               if (replay.rows.length !== 0) return yield* Effect.die("duplicate persona replay");
 
+              // Spec 014 section 10.2: a further persona outside onboarding is
+              // born bound to a target community and requires an active
+              // membership there. Membership stays an independent account fact.
+              const membership = yield* transaction.execute<{
+                readonly eligible: boolean;
+              }>({
+                label: "personas.create.membership",
+                text: "SELECT active_community_effect($1, $2) AS eligible",
+                values: [intent.communityId, accountId],
+                readonly: true,
+              });
+              if (membership.rows[0]?.eligible !== true) {
+                return yield* new PersonaStoreConflict({ reason: "membership-required" });
+              }
+
               const capacity = yield* transaction.execute<{
                 slot_count: string;
                 recent_count: string;
@@ -301,6 +318,14 @@ export function makeControlPlanePersonaRepository() {
                   intent.preferredLocale,
                   createdAt,
                 ],
+                readonly: false,
+              });
+              yield* transaction.execute({
+                label: "personas.create.born-bound",
+                text: `INSERT INTO persona_community_bindings (
+                         persona_id, account_id, community_id, binding_source
+                       ) VALUES ($1, $2, $3, 'persona_creation')`,
+                values: [personaId, accountId, intent.communityId],
                 readonly: false,
               });
               const assignmentId = `persona_wallet_${crypto.randomUUID().replaceAll("-", "")}`;

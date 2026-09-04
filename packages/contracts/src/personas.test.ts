@@ -91,9 +91,10 @@ describe("account-owned persona contracts", () => {
     expect(strictDecode(PrivatePersonaV1)(privatePersona)).toEqual(privatePersona);
 
     const request = schemaToOpenApi(CreatePersona.request?.body);
-    expect(request.required).toEqual(["idempotency_key"]);
+    expect(request.required).toEqual(["idempotency_key", "community_id"]);
     expect(Object.keys(request.properties ?? {}).sort()).toEqual([
       "bio",
+      "community_id",
       "display_name",
       "idempotency_key",
       "preferred_locale",
