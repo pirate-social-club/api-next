@@ -457,8 +457,8 @@ export type MediaSubmissionRejection =
   | Readonly<{ _tag: "audio_revision_stale"; expectedRevision: number; actualRevision: number }>
   | Readonly<{
       _tag: "capability_unavailable";
-      capability: "track" | "locked_delivery";
-      track: "song";
+      capability: "track" | "locked_delivery" | "song_reference" | "original_sound_reuse";
+      track: "song" | "video";
     }>
   | Readonly<{ _tag: "idempotency_conflict"; submissionId: string }>
   | Readonly<{
