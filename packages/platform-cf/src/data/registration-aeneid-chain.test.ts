@@ -225,6 +225,7 @@ describe("Aeneid DATA registration chain", () => {
   test("rejects intent and offered-license combinations outside the closed matrix", async () => {
     const invalid = [
       { ...baseAuthority, licensePreset: null },
+      { ...baseAuthority, rightsBasis: "derivative" },
       { ...baseAuthority, mediaKind: "video", rightsBasis: "original" },
       {
         ...originalVideoAuthority,

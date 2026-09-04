@@ -108,7 +108,24 @@ describe("DATA registration artifact pipeline", () => {
       publicOrigin: "https://staging.pirate.sc",
     });
     await expect(pipeline.prepare(operation)).rejects.toThrow(
-      "song DATA artifacts require a song intent with offered license terms",
+      "song DATA artifacts require a supported original-song intent with offered license terms",
+    );
+  });
+
+  test("rejects a derivative song before preparing original-song artifacts", async () => {
+    const derivativeAuthority = {
+      ...authority,
+      rightsBasis: "derivative",
+    } as const;
+    const pipeline = makeDataRegistrationArtifactPipeline({
+      authority: { read: async () => derivativeAuthority, listPins: async () => [] },
+      immutableOriginals: fakeBucket,
+      pinning: fakePinning,
+      gateway: fakeGateway,
+      publicOrigin: "https://staging.pirate.sc",
+    });
+    await expect(pipeline.prepare(operation)).rejects.toThrow(
+      "song DATA artifacts require a supported original-song intent with offered license terms",
     );
   });
 

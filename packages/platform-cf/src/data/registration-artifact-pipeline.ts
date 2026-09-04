@@ -401,10 +401,12 @@ export function makeDataRegistrationArtifactPipeline(
       const authority = await options.authority.read(operation);
       if (
         authority.mediaKind !== "song" ||
-        !["original", "derivative"].includes(authority.rightsBasis) ||
+        authority.rightsBasis !== "original" ||
         authority.licensePreset === null
       ) {
-        throw new Error("song DATA artifacts require a song intent with offered license terms");
+        throw new Error(
+          "song DATA artifacts require a supported original-song intent with offered license terms",
+        );
       }
       if (
         authority.postId !== operation.postId ||

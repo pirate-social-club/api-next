@@ -307,7 +307,7 @@ const planCalldata = async (
   }
   if (
     authority.mediaKind !== "song" ||
-    !["original", "derivative"].includes(authority.rightsBasis) ||
+    authority.rightsBasis !== "original" ||
     authority.licensePreset === null
   ) {
     throw new Error("unsupported DATA registration intent");
