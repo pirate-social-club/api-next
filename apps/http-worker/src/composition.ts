@@ -1,4 +1,5 @@
 import type { MediaSubmissionServices } from "@pirate/application/media/submission-service";
+import type { VideoPublicationServices } from "@pirate/application/video/publication";
 import { makeCommunityPurchaseFundingInterpreter } from "@pirate/application/money/community-purchase-funding";
 import { makeCommunityPurchaseFundingObservationUseCase } from "@pirate/application/money/community-purchase-funding-observation";
 import {
@@ -108,6 +109,8 @@ import {
   makeMediaUploadApplicationCommands,
   makeMediaUploadStore,
 } from "@pirate/platform-cf/media-upload-store";
+import { makeR2VideoMultipartGateway } from "@pirate/platform-cf/video-multipart-r2";
+import { makeControlPlaneVideoPublicationStore } from "@pirate/platform-cf/video-publication-repository";
 import { makeControlPlaneMegapotDrawingObservationStore } from "@pirate/platform-cf/megapot-drawing-observation-repository";
 import { makeMegapotV2RpcClient } from "@pirate/platform-cf/megapot-v2-rpc";
 import { makeControlPlaneNamespaceOwnershipCompletionStore } from "@pirate/platform-cf/namespace-ownership-completion-repository";
@@ -332,6 +335,8 @@ export interface HttpWorkerCompositionDependencies {
   readonly study_audio_archive?: StudyAudioArchive;
   /** Test/review injection. Production constructs this only when media is explicitly enabled. */
   readonly media_services?: MediaSubmissionServices;
+  /** Test/review injection for the original-video publication path. */
+  readonly video_publication_services?: VideoPublicationServices;
   /** Sealed-video policy authority. Production remains null until its owning lane lands. */
   readonly dance_reference_authority?: DanceReferenceAuthoringAuthorityResolver;
   /** Test/review injection only. Production has no private Dance attempt authority. */
@@ -725,10 +730,44 @@ export async function createProductionHttpWorker(
       nowIso: () => new Date().toISOString(),
     } satisfies MediaSubmissionServices;
   })();
+  const videoServices = (() => {
+    if (dependencies.video_publication_services !== undefined) {
+      return dependencies.video_publication_services;
+    }
+    if (bindings.MEDIA_UPLOADS_ENABLED !== "true" || mediaServices === null) return undefined;
+    const accountId = bindings.MEDIA_INGRESS_R2_ACCOUNT_ID;
+    const bucket = bindings.MEDIA_INGRESS_R2_BUCKET_NAME;
+    const accessKeyId = bindings.MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID;
+    const secretAccessKey = bindings.MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY;
+    const ingress = bindings.MEDIA_INGRESS;
+    const immutableOriginals = bindings.MEDIA_IMMUTABLE_ORIGINALS;
+    if (
+      accountId === undefined ||
+      bucket === undefined ||
+      accessKeyId === undefined ||
+      secretAccessKey === undefined ||
+      ingress === undefined ||
+      immutableOriginals === undefined
+    ) {
+      throw new Error("HTTP worker video configuration is incomplete or invalid");
+    }
+    return {
+      store: makeControlPlaneVideoPublicationStore(controlPlane),
+      multipart: makeR2VideoMultipartGateway({
+        accountId,
+        bucket,
+        accessKeyId,
+        secretAccessKey,
+      }),
+      sealer: makeR2MediaSealer({ ingress, immutableOriginals }),
+      personaServices: { personaStore },
+      nowIso: () => new Date().toISOString(),
+    } satisfies VideoPublicationServices;
+  })();
   const mediaHandlers =
     mediaServices === null
       ? {}
-      : makeMediaUploadHandlers(makeMediaUploadApplicationCommands(mediaServices));
+      : makeMediaUploadHandlers(makeMediaUploadApplicationCommands(mediaServices, videoServices));
   const contentStore = makeControlPlaneContentStore(controlPlane);
   const textPostStore = makeControlPlaneTextSubmissionStore(controlPlane);
   const moderationStore = makeControlPlaneCommunityModerationStore(controlPlane);
