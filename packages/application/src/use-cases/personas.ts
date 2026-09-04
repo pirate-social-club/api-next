@@ -85,7 +85,8 @@ export class PersonaWalletStoreConflict extends Data.TaggedError("PersonaWalletS
     | "wallet-index-collision"
     | "wallet-address-collision"
     | "reservation-mismatch"
-    | "first-persona-required";
+    | "first-persona-required"
+    | "replacement-required";
 }> {}
 
 export type EmbeddedEvmWalletAttestation = Readonly<{
@@ -129,11 +130,16 @@ export interface PersonaWalletStoreService extends Pick<PersonaStoreService, "fi
     readonly personaId: string;
     readonly attestation: EmbeddedEvmWalletAttestation;
   }) => Effect.Effect<PersonaWalletAssignment, PersonaWalletStoreConflict | unknown>;
-  /** Atomically retires a public persona or cancels a pending one and tombstones its index. */
+  /**
+   * Atomically retires a public persona or cancels a pending one, tombstones
+   * its index, and re-designates any current same-community presentation to
+   * the designated replacement (spec 014 section 10.3).
+   */
   readonly retire: (input: {
     readonly accountId: string;
     readonly personaId: string;
     readonly idempotencyKey: string;
+    readonly replacementPersonaId?: string;
   }) => Effect.Effect<PersonaRetirementV1 | null, PersonaWalletStoreConflict | unknown>;
 }
 
@@ -332,6 +338,9 @@ export const retirePersona = Effect.fn("retirePersona")(function* (
       accountId: input.accountId,
       personaId: input.personaId,
       idempotencyKey: input.body.idempotency_key,
+      ...(input.body.replacement_persona_id === undefined
+        ? {}
+        : { replacementPersonaId: input.body.replacement_persona_id }),
     })
     .pipe(Effect.mapError(walletStoreFailure));
   if (result === null) return yield* new NotFound({ message: "Persona not found" });

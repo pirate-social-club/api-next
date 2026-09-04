@@ -29,7 +29,7 @@ const sentinelPath =
   "/tmp/api-next-control-plane-postgres-persona-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-persona-suite-complete\n";
 const migrations = await loadPostgresMigrations();
-const testCount = 7;
+const testCount = 8;
 let completedTestCount = 0;
 
 const schemaIdentifier = (): string =>
@@ -669,6 +669,127 @@ suite("Postgres 17 account persona and EVM wallet persistence", () => {
       );
       expect(projection.rows[0]?.projection).toBeNull();
       expect(JSON.stringify(projection.rows[0]?.projection)).not.toContain("account-fence-a");
+    });
+    completedTestCount += 1;
+  });
+
+  test("requires an eligible same-community replacement for a presenting persona's retirement", async () => {
+    await withSchema(async (admin, connection) => {
+      await admin.query("INSERT INTO users (user_id) VALUES ('account-replace-a')");
+      await seedBornBoundCommunity(admin, "persona-replace-home", ["account-replace-a"]);
+      await admin.query(
+        `INSERT INTO communities
+           (community_id, display_name, status, created_by_user_id, created_at, updated_at)
+         VALUES ('persona-replace-away', 'Away', 'active', 'account-replace-a', now(), now())`,
+      );
+      await admin.query("SET session_replication_role = replica");
+      await admin.query(
+        `INSERT INTO personas (persona_id, account_id, status, is_first_persona)
+         VALUES ('persona-replace-current', 'account-replace-a', 'active', false),
+                ('persona-replace-next', 'account-replace-a', 'active', false),
+                ('persona-replace-foreign', 'account-replace-a', 'active', false)`,
+      );
+      await admin.query(
+        `INSERT INTO persona_wallet_assignments
+           (assignment_id, persona_id, account_id, chain_account_kind, hd_wallet_index,
+            status, reservation_idempotency_key, created_at, updated_at)
+         VALUES ('wallet-replace-current', 'persona-replace-current', 'account-replace-a',
+                 'evm', 5, 'pending', 'retire-replace-fixture', now(), now())`,
+      );
+      await admin.query(
+        `INSERT INTO persona_community_bindings
+           (persona_id, account_id, community_id, binding_source)
+         VALUES ('persona-replace-current', 'account-replace-a', 'persona-replace-home', 'first_membership'),
+                ('persona-replace-next', 'account-replace-a', 'persona-replace-home', 'persona_creation'),
+                ('persona-replace-foreign', 'account-replace-a', 'persona-replace-away', 'first_membership')`,
+      );
+      await admin.query(
+        `INSERT INTO persona_role_presentations (community_id, account_id, persona_id)
+         VALUES ('persona-replace-home', 'account-replace-a', 'persona-replace-current')`,
+      );
+      await admin.query(
+        `INSERT INTO persona_activity_presentations (community_id, account_id, persona_id)
+         VALUES ('persona-replace-home', 'account-replace-a', 'persona-replace-current')`,
+      );
+      await admin.query("SET session_replication_role = origin");
+      const wallets = makeControlPlanePersonaWalletRepository();
+      const retire = (replacementPersonaId?: string) =>
+        runExit(
+          connection,
+          wallets.retire({
+            accountId: "account-replace-a",
+            personaId: "persona-replace-current",
+            idempotencyKey: "retire-replace-current",
+            ...(replacementPersonaId === undefined ? {} : { replacementPersonaId }),
+          }),
+        );
+
+      // Without a designation the retirement is rejected and nothing changes.
+      expect(failureOf(await retire())).toEqual(
+        new PersonaWalletStoreConflict({ reason: "replacement-required" }),
+      );
+      // A persona bound to another community can never take the presentation.
+      expect(failureOf(await retire("persona-replace-foreign"))).toEqual(
+        new PersonaWalletStoreConflict({ reason: "replacement-required" }),
+      );
+      let unchanged = await admin.query(
+        `SELECT status FROM personas WHERE persona_id = 'persona-replace-current'`,
+      );
+      expect(unchanged.rows[0]?.status).toBe("active");
+      unchanged = await admin.query(
+        `SELECT persona_id FROM persona_role_presentations
+          WHERE community_id = 'persona-replace-home' AND account_id = 'account-replace-a'`,
+      );
+      expect(unchanged.rows[0]?.persona_id).toBe("persona-replace-current");
+
+      // The designated same-community replacement takes both presentations
+      // atomically with the retirement; bindings never move.
+      const retired = await run(
+        connection,
+        wallets.retire({
+          accountId: "account-replace-a",
+          personaId: "persona-replace-current",
+          idempotencyKey: "retire-replace-current",
+          replacementPersonaId: "persona-replace-next",
+        }),
+      );
+      expect(retired).toMatchObject({
+        persona_id: "persona-replace-current",
+        status: "retired",
+        replacement_persona_id: "persona-replace-next",
+      });
+      const state = await admin.query<{
+        readonly persona_status: string;
+        readonly role_persona: string;
+        readonly activity_persona: string;
+        readonly wallet_status: string;
+        readonly current_binding: string;
+        readonly next_binding: string;
+      }>(
+        `SELECT (SELECT status FROM personas WHERE persona_id = 'persona-replace-current') AS persona_status,
+                (SELECT persona_id FROM persona_role_presentations
+                  WHERE community_id = 'persona-replace-home'
+                    AND account_id = 'account-replace-a') AS role_persona,
+                (SELECT persona_id FROM persona_activity_presentations
+                  WHERE community_id = 'persona-replace-home'
+                    AND account_id = 'account-replace-a') AS activity_persona,
+                (SELECT status FROM persona_wallet_assignments
+                  WHERE persona_id = 'persona-replace-current') AS wallet_status,
+                (SELECT community_id FROM persona_community_bindings
+                  WHERE persona_id = 'persona-replace-current') AS current_binding,
+                (SELECT community_id FROM persona_community_bindings
+                  WHERE persona_id = 'persona-replace-next') AS next_binding`,
+      );
+      expect(state.rows).toEqual([
+        {
+          persona_status: "retired",
+          role_persona: "persona-replace-next",
+          activity_persona: "persona-replace-next",
+          wallet_status: "tombstoned",
+          current_binding: "persona-replace-home",
+          next_binding: "persona-replace-home",
+        },
+      ]);
     });
     completedTestCount += 1;
   });

@@ -153,6 +153,9 @@ describe("account-owned persona contracts", () => {
     expect(RetirePersona.auth).toEqual({ policy: { kind: "userOrAdmin" } });
     const request = schemaToOpenApi(RetirePersona.request?.body);
     expect(request.required).toEqual(["idempotency_key"]);
-    expect(Object.keys(request.properties ?? {})).toEqual(["idempotency_key"]);
+    expect(Object.keys(request.properties ?? {}).sort()).toEqual([
+      "idempotency_key",
+      "replacement_persona_id",
+    ]);
   });
 });

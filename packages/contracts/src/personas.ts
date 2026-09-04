@@ -153,12 +153,20 @@ const PreparePersonaEvmWalletRequestV1 = Schema.Struct({
 
 const RetirePersonaRequestV1 = Schema.Struct({
   idempotency_key: boundedIdentifier("idempotency key"),
+  /**
+   * Spec 014 section 10.3: retiring a persona that is a community's current
+   * role or activity presentation must atomically designate another active
+   * persona bound to the same community, or the retirement is rejected.
+   */
+  replacement_persona_id: Schema.optional(PersonaIdV1),
 });
 
 export const PersonaRetirementV1 = Schema.Struct({
   persona_id: PersonaIdV1,
   status: Schema.Literal("retired"),
   retired_at: Schema.String,
+  /** Present only when this retirement re-designated a current presentation. */
+  replacement_persona_id: Schema.optional(PersonaIdV1),
 });
 export type PersonaRetirementV1 = Schema.Schema.Type<typeof PersonaRetirementV1>;
 

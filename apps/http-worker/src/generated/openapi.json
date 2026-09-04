@@ -32248,6 +32248,16 @@
                 "properties": {
                   "idempotency_key": {
                     "type": "string"
+                  },
+                  "replacement_persona_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   }
                 },
                 "required": [
@@ -32277,6 +32287,16 @@
                     },
                     "retired_at": {
                       "type": "string"
+                    },
+                    "replacement_persona_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
