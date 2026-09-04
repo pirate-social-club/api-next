@@ -9,6 +9,7 @@ import {
   HnsCommunityRootImportStorageFailed,
   hnsCommunityRootImportNameProofMessage,
 } from "@pirate/application";
+import { decodeStrictHnsJsonBytes } from "@pirate/application/namespace-ownership";
 import {
   type HnsCommunityRootImportSessionResponseV1 as HnsCommunityRootImportSessionResponse,
   HnsCommunityRootImportSessionResponseV1,
@@ -51,6 +52,28 @@ function instant(value: unknown): string | null {
   if (value instanceof Date && Number.isFinite(value.getTime())) return value.toISOString();
   if (typeof value !== "string" || !Number.isFinite(Date.parse(value))) return null;
   return new Date(Date.parse(value)).toISOString();
+}
+
+function bytes(value: unknown): Uint8Array | null {
+  if (value instanceof Uint8Array) return new Uint8Array(value);
+  if (value instanceof ArrayBuffer) return new Uint8Array(value.slice(0));
+  return null;
+}
+
+function decodePlan(
+  value: unknown,
+): HnsCommunityRootImportSessionResponse["publish_plan"] | undefined {
+  if (value === null || value === undefined) return null;
+  const retained = bytes(value);
+  if (retained === null) return undefined;
+  try {
+    return decodeStrictHnsJsonBytes(
+      retained,
+      1_048_576,
+    ) as HnsCommunityRootImportSessionResponse["publish_plan"];
+  } catch {
+    return undefined;
+  }
 }
 
 async function digest(value: unknown): Promise<string> {
@@ -96,7 +119,7 @@ function decodePreparation(row: Row): HnsCommunityRootImportPreparation | null {
       };
 }
 
-function startResponse(
+function sessionResponse(
   row: Row,
   environment: string,
   replayed: boolean,
@@ -110,6 +133,11 @@ function startResponse(
   const challenge_txt_value = text(row, "challenge_txt_value");
   const revision = integer(row.revision);
   const expires_at = instant(row.expires_at);
+  const status = text(row, "status");
+  const plan = decodePlan(row.publish_plan_bytes);
+  const planHash = row.publish_plan_sha256 === null ? null : text(row, "publish_plan_sha256");
+  const readinessHash =
+    row.readiness_result_sha256 === null ? null : text(row, "readiness_result_sha256");
   if (
     actor_id === null ||
     community_id === null ||
@@ -120,7 +148,8 @@ function startResponse(
     challenge_txt_value === null ||
     revision === null ||
     expires_at === null ||
-    row.status !== "awaiting_ownership"
+    status === null ||
+    plan === undefined
   ) {
     return null;
   }
@@ -140,7 +169,7 @@ function startResponse(
   } catch {
     return null;
   }
-  const candidate = {
+  const base = {
     community_id,
     attachment_intent_id,
     root_import_session_id,
@@ -148,18 +177,61 @@ function startResponse(
     revision,
     expires_at,
     replayed,
-    status: "awaiting_ownership" as const,
-    provisioning_authorization: {
-      kind: "hns_name_signature_v1" as const,
-      wallet_rpc_method: "signmessagewithname" as const,
-      message,
-      expires_at,
-    },
-    publish_plan: null,
-    publish_plan_sha256: null,
-    readiness_result_sha256: null,
-    retry_after_seconds: 5,
-  };
+  } as const;
+  const candidate =
+    status === "awaiting_ownership"
+      ? {
+          ...base,
+          status,
+          provisioning_authorization: {
+            kind: "hns_name_signature_v1" as const,
+            wallet_rpc_method: "signmessagewithname" as const,
+            message,
+            expires_at,
+          },
+          publish_plan: null,
+          publish_plan_sha256: null,
+          readiness_result_sha256: null,
+          retry_after_seconds: 5,
+        }
+      : status === "provisioning"
+        ? {
+            ...base,
+            status,
+            publish_plan: null,
+            publish_plan_sha256: null,
+            readiness_result_sha256: null,
+            retry_after_seconds: 2,
+          }
+        : status === "awaiting_owner_update" || status === "observing"
+          ? {
+              ...base,
+              status,
+              publish_plan: plan,
+              publish_plan_sha256: planHash,
+              readiness_result_sha256: null,
+              retry_after_seconds: 5,
+            }
+          : status === "ready"
+            ? {
+                ...base,
+                status,
+                publish_plan: plan,
+                publish_plan_sha256: planHash,
+                readiness_result_sha256: readinessHash,
+                retry_after_seconds: null,
+              }
+            : status === "activated" || status === "failed" || status === "expired"
+              ? {
+                  ...base,
+                  status,
+                  publish_plan: plan,
+                  publish_plan_sha256: planHash,
+                  readiness_result_sha256: readinessHash,
+                  retry_after_seconds: null,
+                }
+              : null;
+  if (candidate === null) return null;
   const decoded = Schema.decodeUnknownOption(
     HnsCommunityRootImportSessionResponseV1,
     exactParseOptions,
@@ -468,7 +540,7 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
             const existingRow = oneRow(existing);
             if (existingRow === undefined) return yield* Effect.fail(storageFailure());
             if (existingRow !== null) {
-              const response = startResponse(existingRow, options.environment, true);
+              const response = sessionResponse(existingRow, options.environment, true);
               return response !== null && existingRow.start_request_sha256 === input.request_sha256
                 ? ({ kind: "replay", session: response } as const)
                 : ({ kind: "conflict" } as const);
@@ -569,12 +641,29 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
             });
             const row = oneRow(inserted);
             if (row === undefined || row === null) return yield* Effect.fail(storageFailure());
-            const response = startResponse(row, options.environment, false);
+            const response = sessionResponse(row, options.environment, false);
             return response === null
               ? yield* Effect.fail(storageFailure())
               : ({ kind: "created", session: response } as const);
           }),
         );
+      }),
+    get: (
+      input: Parameters<import("@pirate/application").HnsCommunityRootImportReadStore["get"]>[0],
+    ) =>
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        const result = yield* db.execute<Row>({
+          label: "hns.community-root-import.get",
+          text: `SELECT * FROM hns_root_import_sessions
+                  WHERE actor_id=$1 AND community_id=$2
+                    AND root_import_session_id=$3 AND origin_kind='community_attachment'`,
+          values: [input.actor_id, input.community_id, input.root_import_session_id],
+          readonly: true,
+        });
+        const row = oneRow(result);
+        if (row === undefined) return yield* Effect.fail(storageFailure());
+        return row === null ? null : sessionResponse(row, options.environment, false);
       }),
   };
 }
@@ -582,12 +671,14 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
 export function makeControlPlaneHnsCommunityRootImportStartStore(
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
   options: HnsCommunityRootImportRepositoryOptions,
-): HnsCommunityRootImportStartStore {
+): HnsCommunityRootImportStartStore &
+  import("@pirate/application").HnsCommunityRootImportReadStore {
   const repository = makeControlPlaneHnsCommunityRootImportRepository(options);
   const provide = <A>(effect: Effect.Effect<A, unknown, ControlPlaneDb>) =>
     Effect.provide(runtime)(effect).pipe(Effect.mapError(() => storageFailure()));
   return {
     prepare: (input) => provide(repository.prepare(input)),
     start: (input) => provide(repository.start(input)),
+    get: (input) => provide(repository.get(input)),
   };
 }

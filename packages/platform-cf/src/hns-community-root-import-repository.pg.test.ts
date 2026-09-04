@@ -271,6 +271,21 @@ suite("community HNS root-import repositories", () => {
       expect(
         await Effect.runPromise(
           Effect.scoped(
+            communityStore.get({
+              actor_id: actorId,
+              community_id: communityId,
+              root_import_session_id: "community-import-session",
+            }),
+          ),
+        ),
+      ).toMatchObject({
+        community_id: communityId,
+        status: "awaiting_ownership",
+        replayed: false,
+      });
+      expect(
+        await Effect.runPromise(
+          Effect.scoped(
             communityStore.start({
               preparation: prepared.value,
               ownership,
@@ -296,6 +311,17 @@ suite("community HNS root-import repositories", () => {
            clock_timestamp(),clock_timestamp())`,
         [secondCommunityId, actorId],
       );
+      expect(
+        await Effect.runPromise(
+          Effect.scoped(
+            communityStore.get({
+              actor_id: actorId,
+              community_id: secondCommunityId,
+              root_import_session_id: "community-import-session",
+            }),
+          ),
+        ),
+      ).toBeNull();
       await admin.query(
         `INSERT INTO community_route_authority_grants (grant_id,community_id,
            principal_user_id,authority,source_kind,source_policy_ref,status,granted_at,

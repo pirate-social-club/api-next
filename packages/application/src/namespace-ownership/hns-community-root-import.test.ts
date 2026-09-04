@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Effect } from "effect";
 import {
+  getHnsCommunityRootImport,
   type HnsCommunityRootImportPreparation,
   HnsCommunityRootImportStorageFailed,
   startHnsCommunityRootImport,
@@ -93,6 +94,65 @@ function services(options: { readonly mismatch?: boolean; readonly conflict?: bo
 }
 
 describe("community HNS root import", () => {
+  test("loads a session only through its community origin", async () => {
+    const expected = {
+      community_id: "community-1",
+      attachment_intent_id: "attachment-1",
+      root_import_session_id: "root-import-1",
+      root_label: "dankmemes",
+      revision: 2,
+      expires_at: "2026-09-11T00:00:00.000Z",
+      replayed: false,
+      status: "provisioning" as const,
+      publish_plan: null,
+      publish_plan_sha256: null,
+      readiness_result_sha256: null,
+      retry_after_seconds: 2,
+    };
+    let loaded: unknown;
+    const result = await Effect.runPromise(
+      getHnsCommunityRootImport(
+        {
+          actor_id: "actor-1",
+          community_id: "community-1",
+          root_import_session_id: "root-import-1",
+        },
+        {
+          store: {
+            get: (input) => {
+              loaded = input;
+              return Effect.succeed(expected);
+            },
+          },
+        },
+      ),
+    );
+    expect(loaded).toEqual({
+      actor_id: "actor-1",
+      community_id: "community-1",
+      root_import_session_id: "root-import-1",
+    });
+    expect(result).toEqual(expected);
+  });
+
+  test("does not disclose a session outside its community origin", async () => {
+    await expect(
+      Effect.runPromise(
+        getHnsCommunityRootImport(
+          {
+            actor_id: "actor-1",
+            community_id: "community-2",
+            root_import_session_id: "root-import-1",
+          },
+          { store: { get: () => Effect.succeed(null) } },
+        ),
+      ),
+    ).rejects.toMatchObject({
+      _tag: "HnsCommunityRootImportRejected",
+      reason: "not_found",
+    });
+  });
+
   test("creates a community-keyed attachment and retains the provider challenge", async () => {
     const dependencies = services();
     const result = await Effect.runPromise(

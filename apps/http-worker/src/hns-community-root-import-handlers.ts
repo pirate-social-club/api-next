@@ -1,4 +1,6 @@
 import {
+  getHnsCommunityRootImport,
+  type HnsCommunityRootImportReadStore,
   type HnsCommunityRootImportStartServices,
   startHnsCommunityRootImport,
 } from "@pirate/application/namespace-ownership";
@@ -29,8 +31,15 @@ function wireFailure(error: unknown): Error {
 }
 
 export function makeHnsCommunityRootImportHandlers(
-  services: HnsCommunityRootImportStartServices,
-): Readonly<{ StartHnsCommunityRootImport: EndpointHandler }> {
+  services: HnsCommunityRootImportStartServices &
+    Readonly<{
+      readonly store: HnsCommunityRootImportStartServices["store"] &
+        HnsCommunityRootImportReadStore;
+    }>,
+): Readonly<{
+  StartHnsCommunityRootImport: EndpointHandler;
+  GetHnsCommunityRootImport: EndpointHandler;
+}> {
   return {
     StartHnsCommunityRootImport: (request) => {
       if (
@@ -52,6 +61,28 @@ export function makeHnsCommunityRootImportHandlers(
           services,
         ).pipe(
           Effect.map((result) => withEndpointResult(result, result.replayed ? 200 : 202)),
+          Effect.mapError(wireFailure),
+        ),
+      );
+    },
+    GetHnsCommunityRootImport: (request) => {
+      if (
+        request.principal === null ||
+        (request.principal.kind !== "user" && request.principal.kind !== "admin")
+      ) {
+        throw new AuthError({ message: "Authentication required" });
+      }
+      const params = request.params as Readonly<{ communityId: string; sessionId: string }>;
+      return Effect.runPromise(
+        getHnsCommunityRootImport(
+          {
+            actor_id: request.principal.subject,
+            community_id: params.communityId,
+            root_import_session_id: params.sessionId,
+          },
+          services,
+        ).pipe(
+          Effect.map((result) => withEndpointResult(result, 200)),
           Effect.mapError(wireFailure),
         ),
       );

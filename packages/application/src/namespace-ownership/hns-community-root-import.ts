@@ -35,6 +35,15 @@ export type StartHnsCommunityRootImportInput = Schema.Schema.Type<
   typeof StartHnsCommunityRootImportInput
 >;
 
+export const GetHnsCommunityRootImportInput = Schema.Struct({
+  actor_id: CanonicalIdentifier,
+  community_id: CanonicalIdentifier,
+  root_import_session_id: CanonicalIdentifier,
+});
+export type GetHnsCommunityRootImportInput = Schema.Schema.Type<
+  typeof GetHnsCommunityRootImportInput
+>;
+
 export type HnsCommunityRootImportPreparation = Readonly<{
   readonly actor_id: string;
   readonly community_id: string;
@@ -84,6 +93,15 @@ export interface HnsCommunityRootImportStartStore {
   readonly start: (
     input: HnsCommunityRootImportStartRecord,
   ) => Effect.Effect<HnsCommunityRootImportStartOutcome, HnsCommunityRootImportStorageFailed>;
+}
+
+export interface HnsCommunityRootImportReadStore {
+  readonly get: (
+    input: GetHnsCommunityRootImportInput,
+  ) => Effect.Effect<
+    HnsCommunityRootImportSessionResponseV1 | null,
+    HnsCommunityRootImportStorageFailed
+  >;
 }
 
 export interface HnsCommunityRootImportStartServices {
@@ -209,4 +227,24 @@ export const startHnsCommunityRootImport = Effect.fn("startHnsCommunityRootImpor
     return yield* new HnsCommunityRootImportRejected({ reason: "conflict" });
   }
   return outcome.session;
+});
+
+export const getHnsCommunityRootImport = Effect.fn("getHnsCommunityRootImport")(function* (
+  untrustedInput: unknown,
+  services: Readonly<{ readonly store: HnsCommunityRootImportReadStore }>,
+): Effect.fn.Return<
+  HnsCommunityRootImportSessionResponseV1,
+  HnsCommunityRootImportRejected | HnsCommunityRootImportStorageFailed
+> {
+  const decoded = Schema.decodeUnknownOption(
+    GetHnsCommunityRootImportInput,
+    exactParseOptions,
+  )(untrustedInput);
+  if (Option.isNone(decoded)) {
+    return yield* new HnsCommunityRootImportRejected({ reason: "invalid" });
+  }
+  const session = yield* services.store.get(decoded.value);
+  return session === null
+    ? yield* new HnsCommunityRootImportRejected({ reason: "not_found" })
+    : session;
 });
