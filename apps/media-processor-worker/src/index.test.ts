@@ -5,7 +5,11 @@ import type {
 } from "../../../packages/application/src/media/processing-contracts.ts";
 import type { MediaProcessingQueueDependencies } from "../../../packages/application/src/media/processing-queue.ts";
 import type { MediaProcessingWorkflowDependencies } from "../../../packages/application/src/media/processing-workflow.ts";
-import { type MediaProcessingWorkflowStep, makeMediaProcessingWorkflowRunner } from "./index.ts";
+import {
+  type MediaProcessingWorkflowStep,
+  makeMediaProcessingWorkflowRunner,
+  makeMediaProcessorQueueWorker,
+} from "./index.ts";
 import { isMediaProcessingEnabled } from "./posture.ts";
 
 describe("media processor Worker posture", () => {
@@ -14,6 +18,27 @@ describe("media processor Worker posture", () => {
     expect(isMediaProcessingEnabled("false")).toBe(false);
     expect(isMediaProcessingEnabled("TRUE")).toBe(false);
     expect(isMediaProcessingEnabled("true")).toBe(true);
+  });
+
+  test("routes video identities away from the song workflow and retries until composed", async () => {
+    const actions: string[] = [];
+    const worker = makeMediaProcessorQueueWorker(() => ({
+      queue: {} as MediaProcessingQueueDependencies,
+      workflow: {} as MediaProcessingWorkflowDependencies,
+    }));
+    await worker.queue(
+      {
+        messages: [
+          {
+            body: { kind: "video_analysis", outbox_id: "video-analysis-1" },
+            ack: () => actions.push("ack"),
+            retry: (options) => actions.push(`retry:${options?.delaySeconds ?? 0}`),
+          },
+        ],
+      },
+      {},
+    );
+    expect(actions).toEqual(["retry:30"]);
   });
 
   test("runs identifier-only work inside a durable step", async () => {

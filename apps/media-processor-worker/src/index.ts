@@ -9,6 +9,10 @@ import {
   runMediaProcessingWorkflow,
 } from "../../../packages/application/src/media/processing-workflow.ts";
 import {
+  consumeVideoAnalysisQueueMessage,
+  type VideoAnalysisQueueDependencies,
+} from "../../../packages/application/src/video/analysis-queue.ts";
+import {
   type CloudflareWorkflowStepDo,
   PROCESSING_WORKFLOW_STEP_OPTIONS,
 } from "../../../packages/platform-cf/src/cloudflare-orchestration-primitives.ts";
@@ -23,6 +27,7 @@ export type MediaProcessorWorkerEnv = Readonly<{
 
 export type MediaProcessorComposition = Readonly<{
   readonly queue: MediaProcessingQueueDependencies;
+  readonly videoAnalysis?: VideoAnalysisQueueDependencies;
   readonly workflow: MediaProcessingWorkflowDependencies;
 }>;
 
@@ -55,7 +60,42 @@ export function makeMediaProcessorQueueWorker<Env extends MediaProcessorWorkerEn
       env: Env,
     ): Promise<void> => {
       const composition = applyRuntimePosture(env, resolve(env));
-      await handleMediaProcessingQueueBatch(batch, composition.queue);
+      const songMessages: (typeof batch.messages)[number][] = [];
+      const videoMessages: (typeof batch.messages)[number][] = [];
+      for (const message of batch.messages) {
+        if (
+          typeof message.body === "object" &&
+          message.body !== null &&
+          !Array.isArray(message.body) &&
+          (message.body as { readonly kind?: unknown }).kind === "video_analysis"
+        ) {
+          videoMessages.push(message);
+        } else {
+          songMessages.push(message);
+        }
+      }
+      await Promise.all([
+        handleMediaProcessingQueueBatch({ messages: songMessages }, composition.queue),
+        Promise.all(
+          videoMessages.map(async (message) => {
+            if (composition.videoAnalysis === undefined) {
+              message.retry({ delaySeconds: 30 });
+              return;
+            }
+            const disposition = await consumeVideoAnalysisQueueMessage(
+              message.body,
+              composition.videoAnalysis,
+            );
+            if (disposition.disposition === "ack") {
+              message.ack();
+            } else if (disposition.disposition === "dlq") {
+              message.retry();
+            } else {
+              message.retry({ delaySeconds: disposition.delaySeconds });
+            }
+          }),
+        ),
+      ]);
     },
   };
 }

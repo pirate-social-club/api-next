@@ -19,6 +19,21 @@ import {
   reserveMediaUpload,
   retryMediaSubmission,
 } from "@pirate/application/media/submission-service";
+import {
+  cancelVideoSubmission,
+  createVideoSubmission,
+  finalizeVideoSubmission,
+  getVideoSubmission,
+  moderateVideoSubmission,
+  renewVideoUploadParts,
+  reserveVideoUpload,
+  retryVideoPoster,
+  retryVideoSubmission,
+  type VideoPublicationServices,
+} from "@pirate/application/video/publication";
+
+export type { VideoPublicationServices } from "@pirate/application/video/publication";
+
 import { Effect, type Layer } from "effect";
 import {
   MediaSubmissionRepositoryError,
@@ -202,25 +217,73 @@ function readLocatorByAccount(input: {
  * composition owner. Keeping this adapter outside the Worker preserves the
  * application import boundary without widening a shared export barrel.
  */
-export function makeMediaUploadApplicationCommands(services: MediaSubmissionServices) {
+export function makeMediaUploadApplicationCommands(
+  services: MediaSubmissionServices,
+  videoServices?: VideoPublicationServices,
+) {
+  const objectBody = (value: unknown): Readonly<Record<string, unknown>> | null =>
+    typeof value === "object" && value !== null && !Array.isArray(value)
+      ? (value as Readonly<Record<string, unknown>>)
+      : null;
+  const videoForAccount = async (input: {
+    submissionId: string;
+    actor: M2Actor;
+  }): Promise<boolean> =>
+    videoServices !== undefined &&
+    (input.actor.kind === "user" || input.actor.kind === "admin") &&
+    (await videoServices.store.getSubmissionForAccount({
+      submissionId: input.submissionId,
+      actorAccountId: input.actor.userId,
+    })) !== null;
   return {
     reserve: (input: Parameters<typeof reserveMediaUpload>[0]) =>
-      reserveMediaUpload(input, services),
+      videoServices !== undefined && objectBody(input.body)?.track === "video"
+        ? reserveVideoUpload(input, videoServices)
+        : reserveMediaUpload(input, services),
     create: (input: Parameters<typeof createMediaSubmission>[0]) =>
-      createMediaSubmission(input, services),
+      videoServices !== undefined && objectBody(input.body)?.version === "video-start-input-v1"
+        ? createVideoSubmission(input, videoServices)
+        : createMediaSubmission(input, services),
     bindTerms: (input: Parameters<typeof bindMediaTerms>[0]) => bindMediaTerms(input, services),
     bindLyrics: (input: Parameters<typeof bindMediaLyrics>[0]) => bindMediaLyrics(input, services),
     finalize: (input: Parameters<typeof finalizeMediaSubmission>[0]) =>
-      finalizeMediaSubmission(input, services),
-    get: (input: Parameters<typeof getMediaSubmission>[0]) => getMediaSubmission(input, services),
+      videoServices !== undefined && Array.isArray(objectBody(input.body)?.parts)
+        ? finalizeVideoSubmission(input, videoServices)
+        : finalizeMediaSubmission(input, services),
+    renewParts: (input: Parameters<typeof renewVideoUploadParts>[0]) => {
+      if (videoServices === undefined) throw new MediaUploadStoreError({ reason: "unavailable" });
+      return renewVideoUploadParts(input, videoServices);
+    },
+    get: async (input: Parameters<typeof getMediaSubmission>[0]) =>
+      videoServices !== undefined && (await videoForAccount(input))
+        ? getVideoSubmission(input, videoServices)
+        : getMediaSubmission(input, services),
     bindReference: (input: Parameters<typeof bindMediaReference>[0]) =>
       bindMediaReference(input, services),
-    retry: (input: Parameters<typeof retryMediaSubmission>[0]) =>
-      retryMediaSubmission(input, services),
-    cancel: (input: Parameters<typeof cancelMediaSubmission>[0]) =>
-      cancelMediaSubmission(input, services),
-    moderate: (input: Parameters<typeof moderateMediaSubmission>[0]) =>
-      moderateMediaSubmission(input, services),
+    retry: async (input: Parameters<typeof retryMediaSubmission>[0]) =>
+      videoServices !== undefined && (await videoForAccount(input))
+        ? retryVideoSubmission(input, videoServices)
+        : retryMediaSubmission(input, services),
+    retryPoster: (input: Parameters<typeof retryVideoPoster>[0]) => {
+      if (videoServices === undefined) throw new MediaUploadStoreError({ reason: "unavailable" });
+      return retryVideoPoster(input, videoServices);
+    },
+    cancel: async (input: Parameters<typeof cancelMediaSubmission>[0]) =>
+      videoServices !== undefined && (await videoForAccount(input))
+        ? cancelVideoSubmission(input, videoServices)
+        : cancelMediaSubmission(input, services),
+    moderate: async (input: Parameters<typeof moderateMediaSubmission>[0]) => {
+      if (
+        videoServices !== undefined &&
+        (await videoServices.store.getSubmissionForModerator({
+          submissionId: input.submissionId,
+          actor: input.actor,
+        })) !== null
+      ) {
+        return moderateVideoSubmission(input, videoServices);
+      }
+      return moderateMediaSubmission(input, services);
+    },
   };
 }
 

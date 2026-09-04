@@ -83,22 +83,17 @@ de-exported: `HnsCommunityAppGatewayDeploymentManifestV1`,
 
 The retained added export findings are intentional DATA or media processing
 seams: `IPFS_GATEWAY_VERIFICATION_VERSION`; `MEDIA_LYRICS_MAX_LENGTH`;
-`MediaLyricsIdentity`; `MediaTransform`; `readMp3FrameWindow`; the five
-`TRANSLOADIT_ADAPTER_HARD_MAX_*` bounds; and `parseTransloaditAssembly`,
-`readBoundedTransloaditJson`, `TransloaditBodyAborted`, and
-`TransloaditBodyTooLarge`. They define versioned provider limits, pure parsing
-helpers, or adapter contracts retained for the owned media/DATA pipeline; none
-is made reachable by widening Knip entry points or ignores.
+`MediaLyricsIdentity`; `MediaTransform`; and `readMp3FrameWindow`. They define
+owned media/DATA pipeline contracts or pure parsing helpers; none is made
+reachable by widening Knip entry points or ignores.
 
-The retained added type findings are the domain `LyricsAnalysis` state,
+The retained added type findings are the domain `LyricsAnalysis` state and
 repository workflow inputs `AuthorLyricsSnapshot`, `BeginFinalizeInput`,
 `BeginFinalizeOutcome`, `LyricsInput`, `ProcessingAttemptDeferInput`,
-`ProcessingAttemptLookupInput`, and `WorkflowReplacementInput`, plus adapter
-configuration types `DisabledTransloaditOptions`, `TransloaditClock`,
-`TransloaditCredentials`, and `TransloaditTemplates`. These are structural
-inputs to the staged media processor and Transloadit adapter, covered by the
-existing media-lane rationale above. No added finding was classified as a
-Knip configuration false positive, and `knip.json` gained no ignore.
+`ProcessingAttemptLookupInput`, and `WorkflowReplacementInput`. These are
+structural inputs to the staged media processor. No added finding was
+classified as a Knip configuration false positive, and `knip.json` gained no
+ignore.
 
 ## Ratchet rule
 

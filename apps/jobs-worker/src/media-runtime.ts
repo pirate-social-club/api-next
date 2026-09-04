@@ -15,9 +15,14 @@ import {
   type MediaWorkflowSweepResult,
   sweepMissingMediaWorkflows,
 } from "./media-workflow-sweep.ts";
+import {
+  dispatchEligibleVideoAnalysisOutbox,
+  makeVideoAnalysisOutboxDispatchSource,
+} from "./video-analysis-outbox-dispatch.ts";
 
 export type MediaJobsBindings = Readonly<{
   readonly MEDIA_PROCESSING_ENABLED?: string;
+  readonly VIDEO_ANALYSIS_ENABLED?: string;
   readonly MEDIA_PROCESSING_QUEUE?: MediaOutboxDispatchQueue;
   readonly MEDIA_PROCESSING_WORKFLOW?: CloudflareMediaWorkflowBinding;
 }>;
@@ -53,6 +58,8 @@ export function makeMediaMaintenance(
   }
   const queue = env.MEDIA_PROCESSING_QUEUE;
   const source = makeMediaOutboxDispatchSource(runtime);
+  const videoSource =
+    env.VIDEO_ANALYSIS_ENABLED === "true" ? makeVideoAnalysisOutboxDispatchSource(runtime) : null;
   const store = makeMediaProcessingStore(runtime);
   const workflow = makeCloudflareMediaProcessingWorkflowLauncher(
     env.MEDIA_PROCESSING_WORKFLOW,
@@ -60,7 +67,19 @@ export function makeMediaMaintenance(
   );
   return () =>
     runMediaMaintenance({
-      dispatch: () => dispatchEligibleMediaOutbox(source, queue),
+      dispatch: async () => {
+        const [song, video] = await Promise.all([
+          dispatchEligibleMediaOutbox(source, queue),
+          videoSource === null
+            ? Promise.resolve({ selected: 0, sent: 0, failed: 0 })
+            : dispatchEligibleVideoAnalysisOutbox(videoSource, queue),
+        ]);
+        return Object.freeze({
+          selected: song.selected + video.selected,
+          sent: song.sent + video.sent,
+          failed: song.failed + video.failed,
+        });
+      },
       sweep: () => sweepMissingMediaWorkflows({ store, workflow }),
     });
 }

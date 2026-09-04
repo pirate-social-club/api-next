@@ -3,9 +3,15 @@ import { Effect, type Layer } from "effect";
 import { makeControlPlaneMediaOutboxRepository } from "../../../packages/platform-cf/src/media-outbox-repository.ts";
 
 export type MediaOutboxDispatchMessage = Readonly<{ readonly outbox_id: string }>;
+type VideoAnalysisOutboxDispatchMessage = Readonly<{
+  readonly kind: "video_analysis";
+  readonly outbox_id: string;
+}>;
 
 export interface MediaOutboxDispatchQueue {
-  readonly send: (message: MediaOutboxDispatchMessage) => Promise<void>;
+  readonly send: (
+    message: MediaOutboxDispatchMessage | VideoAnalysisOutboxDispatchMessage,
+  ) => Promise<void>;
 }
 
 export interface MediaOutboxDispatchSource {

@@ -87,3 +87,4 @@ export * from "./story/story-settlement-step-state-machine.ts";
 export * from "./study/english-phonetics.ts";
 export * from "./study/lyric-line-identity.ts";
 export * from "./study/review-schedule.ts";
+export * from "./video-submission.ts";

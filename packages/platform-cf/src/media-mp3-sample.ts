@@ -9,6 +9,7 @@ import {
   type MediaTransformProbeOutcome,
   MediaTransformRequestInvalid,
   type MediaTransformService,
+  type MediaTransformVideoProbeInput,
   mediaTransformSampleWindow,
 } from "@pirate/application/media/transform";
 import { Effect } from "effect";
@@ -724,12 +725,14 @@ export function makeR2Mp3SampleMediaTransform(
     throw new MediaTransformRequestInvalid({ reason: "invalid_limits" });
   }
   return {
-    probe: (request) =>
-      Effect.suspend(() => {
-        const invalid = invalidProbeInput(request);
-        if (invalid !== null) return Effect.fail(invalid);
-        return Effect.promise(() => probeFromR2(request, input.immutableOriginals));
-      }),
+    probe: ((request: MediaTransformProbeInput | MediaTransformVideoProbeInput) =>
+      request.version === "media-transform-video-probe-input-v1"
+        ? input.providerTransform.probe(request)
+        : Effect.suspend(() => {
+            const invalid = invalidProbeInput(request);
+            if (invalid !== null) return Effect.fail(invalid);
+            return Effect.promise(() => probeFromR2(request, input.immutableOriginals));
+          })) as MediaTransformService["probe"],
     extractAudioSample: (request) =>
       Effect.suspend(() => {
         const invalid = invalidInput(request);
@@ -745,7 +748,9 @@ export function makeR2Mp3SampleMediaTransform(
       }),
     extractCanonicalAudioSegment: input.providerTransform.extractCanonicalAudioSegment,
     alignVideoSoundtrackToSong: input.providerTransform.alignVideoSoundtrackToSong,
-    cancelAssembly: input.providerTransform.cancelAssembly,
+    extractVideoAudio: input.providerTransform.extractVideoAudio,
+    extractVideoFrames: input.providerTransform.extractVideoFrames,
+    cancelJob: input.providerTransform.cancelJob,
   };
 }
 

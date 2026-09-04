@@ -59,6 +59,7 @@
   },
   "vars": {
     "MEDIA_PROCESSING_ENABLED": "false",
+    "VIDEO_ANALYSIS_ENABLED": "false",
     "DATA_REGISTRATION_ENABLED": "false",
     "DATA_REGISTRATION_CHAIN_ID": "1315",
     "ACRCLOUD_IDENTIFY_HOST": ""
@@ -127,6 +128,7 @@
       },
       "vars": {
         "MEDIA_PROCESSING_ENABLED": "true",
+        "VIDEO_ANALYSIS_ENABLED": "false",
         "DATA_REGISTRATION_ENABLED": "true",
         "DATA_REGISTRATION_CHAIN_ID": "1315",
         "ACRCLOUD_IDENTIFY_HOST": "identify-eu-west-1.acrcloud.com"
@@ -137,7 +139,8 @@
           "ACRCLOUD_ACCESS_SECRET",
           "ELEVENLABS_API_KEY",
           "OPENAI_API_KEY",
-          "OPENROUTER_API_KEY"
+          "OPENROUTER_API_KEY",
+          "QENCODE_API_KEY"
         ]
       }
     },
@@ -198,6 +201,7 @@
       },
       "vars": {
         "MEDIA_PROCESSING_ENABLED": "false",
+        "VIDEO_ANALYSIS_ENABLED": "false",
         "DATA_REGISTRATION_ENABLED": "false",
         "DATA_REGISTRATION_CHAIN_ID": "1315",
         "ACRCLOUD_IDENTIFY_HOST": ""

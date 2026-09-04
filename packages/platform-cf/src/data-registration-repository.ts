@@ -176,9 +176,15 @@ const sameBytes = (left: Uint8Array | null, right: Uint8Array): boolean =>
 const operationFromRow = (row: Row): DataRegistrationOperation => {
   const state = text(row, "state") as DataRegistrationOperationState;
   const failureCode = nullableText(row, "failure_code") as DataRegistrationFailureCode | null;
+  const mediaKind = text(row, "media_kind");
+  const rightsBasis = text(row, "rights_basis");
   if (
     !OPERATION_STATES.has(state) ||
-    (failureCode !== null && !OPERATION_FAILURE_CODES.has(failureCode))
+    (failureCode !== null && !OPERATION_FAILURE_CODES.has(failureCode)) ||
+    !(
+      (mediaKind === "song" && ["original", "derivative"].includes(rightsBasis)) ||
+      (mediaKind === "video" && rightsBasis === "original")
+    )
   ) {
     throw new Error("invalid operation state");
   }
@@ -197,6 +203,8 @@ const operationFromRow = (row: Row): DataRegistrationOperation => {
     publicationAnalysisRevision: bigint(row, "publication_analysis_revision"),
     publicationDecisionRevision: bigint(row, "publication_decision_revision"),
     canonicalAudioSha256: text(row, "canonical_audio_sha256"),
+    mediaKind: mediaKind as DataRegistrationOperation["mediaKind"],
+    rightsBasis: rightsBasis as DataRegistrationOperation["rightsBasis"],
     state,
     workflowRevision: bigint(row, "workflow_revision"),
     workflowInstanceId: text(row, "workflow_instance_id"),
@@ -322,7 +330,7 @@ const OPERATION_SELECT = `
          media_operation_id,post_id,asset_id,chain_id,registration_revision,
          publication_creation_revision,publication_audio_revision,
          publication_analysis_revision,publication_decision_revision,
-         canonical_audio_sha256,state,workflow_revision,workflow_instance_id,
+         canonical_audio_sha256,media_kind,rights_basis,state,workflow_revision,workflow_instance_id,
          current_attempt_id,registered_ip_id,confirmed_transaction_hash,
          confirmed_block_number,confirmed_block_hash,confirmed_log_index,
          confirmed_at,failure_code,failure_evidence_ref

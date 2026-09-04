@@ -392,7 +392,7 @@ export function requireMediaHumanActor(actor: M2Actor): void {
 export async function requireMediaPersona(
   actor: M2Actor,
   personaId: string,
-  services: MediaSubmissionServices,
+  services: Pick<MediaSubmissionServices, "personaStore">,
 ): Promise<PersonaRecord> {
   let persona: PersonaRecord | null;
   try {

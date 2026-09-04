@@ -5,6 +5,7 @@ export const MEDIA_TRANSFORM_SAMPLE_TARGET_MS = 12_000;
 export const MEDIA_TRANSFORM_SAMPLE_MAX_MS = 15_000;
 export const MEDIA_TRANSFORM_SAMPLE_CHANNELS = 1;
 export const MEDIA_TRANSFORM_SAMPLE_RATE_HZ = 44_100;
+export const MEDIA_TRANSFORM_VIDEO_AUDIO_POLICY_V1 = "video-audio-m4a-aac-44100-stereo-v1" as const;
 
 export type MediaTransformSampleVariant = "primary" | "alternate";
 
@@ -31,19 +32,21 @@ export type MediaTransformRuntimeFence = Readonly<{
  *
  * The caller creates and durably records the runtime fence before the first
  * provider effect. Exact logical-attempt replay must reuse that fence. The
- * adapter adds providerJobId only after Transloadit returns an assembly id;
- * adapter memory is never a durability mechanism.
+ * adapter adds providerJobId only after the provider accepts a durable job
+ * identity; adapter memory is never a durability mechanism.
  */
 export type MediaTransformAttempt = Readonly<{
   readonly version: "media-transform-attempt-v1";
   readonly runtimeFence: MediaTransformRuntimeFence;
   readonly providerJobId?: string;
+  readonly providerJobPhase?: "allocated" | "started";
 }>;
 
 export type MediaTransformAcceptedAttempt = Readonly<{
   readonly version: "media-transform-attempt-v1";
   readonly runtimeFence: MediaTransformRuntimeFence;
   readonly providerJobId: string;
+  readonly providerJobPhase?: "allocated" | "started";
 }>;
 
 export type MediaTransformProbeInput = Readonly<{
@@ -117,12 +120,14 @@ type MediaTransformRetryableReason =
   | "timeout"
   | "transport";
 
-export type MediaTransformRejectedReason =
+type MediaTransformRejectedReason =
   | "duration_exceeded"
   | "inconsistent_media_facts"
   | "job_not_found"
   | "no_audio_track"
   | "output_too_large"
+  | "poster_timestamp_out_of_range"
+  | "poster_undecodable"
   | "provider_rejected"
   | "runtime_exceeded"
   | "unauthorized"
@@ -130,7 +135,7 @@ export type MediaTransformRejectedReason =
   | "unsupported_container"
   | "video_track_present";
 
-export type MediaTransformMalformedReason =
+type MediaTransformMalformedReason =
   | "duplicate_results"
   | "malformed_json"
   | "response_too_large"
@@ -182,6 +187,140 @@ export type MediaTransformAudioSampleOutcome =
     }>
   | (MediaTransformProgress & Readonly<{ readonly context?: MediaTransformAttemptContext }>);
 
+export type MediaTransformVideoBinding = Readonly<{
+  readonly operationId: string;
+  readonly videoRevision: number;
+  readonly analysisRevision: number;
+  readonly canonicalVideoSha256: string;
+  readonly requestId: string;
+}>;
+
+export type MediaTransformVideoSource = Readonly<{
+  /** Private, server-owned object key. URLs are deliberately unrepresentable. */
+  readonly objectKey: string;
+  readonly sha256: string;
+  readonly byteLength: number;
+  readonly mediaType: "video/mp4" | "video/quicktime";
+}>;
+
+export type MediaTransformVideoAttemptContext = Readonly<{
+  readonly version: "media-transform-video-attempt-context-v1";
+  readonly operationId: string;
+  readonly videoRevision: number;
+  readonly analysisRevision: number;
+  readonly canonicalVideoSha256: string;
+  readonly requestId: string;
+  readonly adapterRevision: string;
+}>;
+
+export type MediaTransformVideoProbeInput = Readonly<{
+  readonly version: "media-transform-video-probe-input-v1";
+  readonly binding: MediaTransformVideoBinding;
+  readonly source: MediaTransformVideoSource;
+  readonly attempt: MediaTransformAttempt;
+  readonly signal?: AbortSignal;
+}>;
+
+export type MediaTransformVideoAudioInput = Readonly<{
+  readonly version: "media-transform-video-audio-input-v1";
+  readonly binding: MediaTransformVideoBinding;
+  readonly source: MediaTransformVideoSource;
+  readonly extractionPolicyVersion: typeof MEDIA_TRANSFORM_VIDEO_AUDIO_POLICY_V1;
+  readonly attempt: MediaTransformAttempt;
+  readonly signal?: AbortSignal;
+}>;
+
+export type MediaTransformVideoFramesInput = Readonly<{
+  readonly version: "media-transform-video-frames-input-v1";
+  readonly binding: MediaTransformVideoBinding;
+  readonly source: MediaTransformVideoSource;
+  readonly sourceDurationMs: number;
+  readonly sourceDimensions: Readonly<{ readonly width: number; readonly height: number }>;
+  readonly posterTimestampMs: number;
+  readonly posterPolicy: Readonly<{
+    readonly version: "video-poster-policy-v1";
+    readonly policyRevision: number;
+    readonly roles: readonly ["poster", "first", "midpoint"];
+    readonly maxEdgePx: number;
+    readonly maxBytesPerFrame: number;
+    readonly imageType: "image/jpeg";
+  }>;
+  readonly attempt: MediaTransformAttempt;
+  readonly signal?: AbortSignal;
+}>;
+
+export type MediaTransformVideoProbe = Readonly<{
+  readonly evidenceRef: string;
+  readonly durationMs: number;
+  readonly width: number;
+  readonly height: number;
+  readonly frameRateMillihertz: number;
+  readonly videoCodec: "h264" | "hevc";
+  readonly audioCodec: "aac";
+  readonly hasAudio: true;
+}>;
+
+type MediaTransformVideoAudioArtifact = Readonly<{
+  readonly artifactRef: string;
+  readonly canonicalSha256: string;
+  readonly sourceSha256: string;
+  readonly videoRevision: number;
+  readonly mediaType: "audio/mp4";
+  readonly policyRevision: string;
+  readonly adapterRevision: string;
+}>;
+
+export type MediaTransformVideoFrame = Readonly<{
+  readonly role: "poster" | "first" | "midpoint";
+  readonly requestedTimestampMs: number | null;
+  readonly timestampMs: number;
+  readonly sha256: string;
+  readonly artifactRef: string;
+}>;
+
+type MediaTransformVideoFrames = Readonly<{
+  readonly evidenceRef: string;
+  readonly adapterRevision: string;
+  readonly sourceSha256: string;
+  readonly videoRevision: number;
+  readonly posterPolicyRevision: number;
+  readonly frames: readonly [
+    MediaTransformVideoFrame,
+    MediaTransformVideoFrame,
+    MediaTransformVideoFrame,
+  ];
+}>;
+
+type MediaTransformVideoProgress = MediaTransformProgress &
+  Readonly<{ readonly context?: MediaTransformVideoAttemptContext }>;
+
+export type MediaTransformVideoProbeOutcome =
+  | Readonly<{
+      readonly status: "completed";
+      readonly attempt: MediaTransformAttempt;
+      readonly context: MediaTransformVideoAttemptContext;
+      readonly probe: MediaTransformVideoProbe;
+    }>
+  | MediaTransformVideoProgress;
+
+export type MediaTransformVideoAudioOutcome =
+  | Readonly<{
+      readonly status: "completed";
+      readonly attempt: MediaTransformAttempt;
+      readonly context: MediaTransformVideoAttemptContext;
+      readonly artifact: MediaTransformVideoAudioArtifact;
+    }>
+  | MediaTransformVideoProgress;
+
+export type MediaTransformVideoFramesOutcome =
+  | Readonly<{
+      readonly status: "completed";
+      readonly attempt: MediaTransformAttempt;
+      readonly context: MediaTransformVideoAttemptContext;
+      readonly extraction: MediaTransformVideoFrames;
+    }>
+  | MediaTransformVideoProgress;
+
 export type MediaTransformCancelOutcome =
   | Readonly<{ readonly status: "cancellation_accepted"; readonly providerJobId: string }>
   | Readonly<{ readonly status: "unavailable"; readonly reason: "disabled" }>
@@ -212,7 +351,11 @@ export type MediaTransformInvalidReason =
   | "invalid_source_duration"
   | "invalid_template"
   | "invalid_transport"
-  | "invalid_variant";
+  | "invalid_variant"
+  | "invalid_video_binding"
+  | "invalid_video_policy"
+  | "invalid_video_source"
+  | "invalid_video_timestamp";
 
 export class MediaTransformRequestInvalid extends Data.TaggedError("MediaTransformRequestInvalid")<{
   readonly reason: MediaTransformInvalidReason;
@@ -643,15 +786,37 @@ export interface MediaTransformDanceReferenceService {
   >;
 }
 
-export interface MediaTransformService extends MediaTransformDanceReferenceService {
+/** Narrow view of MediaTransform for the video consumer; this is not a second port. */
+export interface MediaTransformVideoCapabilities {
   readonly probe: (
+    input: MediaTransformVideoProbeInput,
+  ) => Effect.Effect<MediaTransformVideoProbeOutcome, MediaTransformRequestInvalid>;
+  readonly extractVideoAudio: (
+    input: MediaTransformVideoAudioInput,
+  ) => Effect.Effect<MediaTransformVideoAudioOutcome, MediaTransformRequestInvalid>;
+  readonly extractVideoFrames: (
+    input: MediaTransformVideoFramesInput,
+  ) => Effect.Effect<MediaTransformVideoFramesOutcome, MediaTransformRequestInvalid>;
+}
+
+type MediaTransformProbeCapability = {
+  (
     input: MediaTransformProbeInput,
-  ) => Effect.Effect<MediaTransformProbeOutcome, MediaTransformRequestInvalid>;
+  ): Effect.Effect<MediaTransformProbeOutcome, MediaTransformRequestInvalid>;
+  (
+    input: MediaTransformVideoProbeInput,
+  ): Effect.Effect<MediaTransformVideoProbeOutcome, MediaTransformRequestInvalid>;
+};
+
+export interface MediaTransformService extends MediaTransformDanceReferenceService {
+  readonly probe: MediaTransformProbeCapability;
   readonly extractAudioSample: (
     input: MediaTransformAudioSampleInput,
   ) => Effect.Effect<MediaTransformAudioSampleOutcome, MediaTransformRequestInvalid>;
+  readonly extractVideoAudio: MediaTransformVideoCapabilities["extractVideoAudio"];
+  readonly extractVideoFrames: MediaTransformVideoCapabilities["extractVideoFrames"];
   /** Cancels provider execution only; it does not prove provider or retained-object erasure. */
-  readonly cancelAssembly: (
+  readonly cancelJob: (
     input: MediaTransformCancelInput,
   ) => Effect.Effect<MediaTransformCancelOutcome, MediaTransformRequestInvalid>;
 }

@@ -13,7 +13,11 @@ const principal = {
 
 const request = (overrides: Partial<DecodedRequest> = {}): DecodedRequest => ({
   body: { fixture: true },
-  params: { communityId: "community_media", submissionId: "submission_media" },
+  params: {
+    communityId: "community_media",
+    submissionId: "submission_media",
+    reservationId: "reservation_media",
+  },
   query: {},
   principal,
   ...overrides,
@@ -32,9 +36,11 @@ describe("media upload handlers", () => {
       bindTerms: call("terms"),
       bindLyrics: call("lyrics"),
       finalize: call("finalize"),
+      renewParts: call("renew-parts"),
       get: call("get"),
       bindReference: call("reference"),
       retry: call("retry"),
+      retryPoster: call("retry-poster"),
       cancel: call("cancel"),
       moderate: call("moderate"),
     };
@@ -47,9 +53,11 @@ describe("media upload handlers", () => {
     await handlers.BindMediaPostSubmissionTerms(request());
     await handlers.BindMediaPostSubmissionLyrics(request());
     await handlers.FinalizeMediaPostSubmission(request());
+    await handlers.RenewVideoUploadParts(request());
     await handlers.GetMediaPostSubmission(request());
     await handlers.BindMediaPostSubmissionReference(request());
     await handlers.RetryMediaPostSubmission(request());
+    await handlers.RetryVideoPostSubmissionPoster(request());
     await handlers.CancelMediaPostSubmission(request());
     await handlers.ModerateMediaPostSubmission(request());
 
@@ -61,9 +69,11 @@ describe("media upload handlers", () => {
       "terms",
       "lyrics",
       "finalize",
+      "renew-parts",
       "get",
       "reference",
       "retry",
+      "retry-poster",
       "cancel",
       "moderate",
     ]);
@@ -72,7 +82,7 @@ describe("media upload handlers", () => {
       actor: { kind: "user", userId: "account_media" },
       body: { fixture: true },
     });
-    expect(observed[5]?.input).toEqual({
+    expect(observed[6]?.input).toEqual({
       submissionId: "submission_media",
       actor: { kind: "user", userId: "account_media" },
     });
@@ -90,9 +100,11 @@ describe("media upload handlers", () => {
       bindTerms: unavailable,
       bindLyrics: unavailable,
       finalize: unavailable,
+      renewParts: unavailable,
       get: unavailable,
       bindReference: unavailable,
       retry: unavailable,
+      retryPoster: unavailable,
       cancel: unavailable,
       moderate: unavailable,
     });

@@ -3,7 +3,6 @@ import type { MediaProcessingProviders } from "@pirate/application/media/process
 import type { MediaTransformSampleArtifact } from "@pirate/application/media/transform";
 import {
   MediaProcessingArtifactFailure,
-  MediaProcessingTransportFailure,
   makeAcrCloudFetchTransport,
   makeElevenLabsAlignmentFetchTransport,
   makeElevenLabsProcessingAlignmentPort,
@@ -11,7 +10,6 @@ import {
   makeOpenRouterFetchTransport,
   makeR2EmbeddedMetadataPort,
   makeR2MediaProcessingArtifactReader,
-  makeTransloaditFetchTransport,
 } from "./media-processing-runtime.ts";
 import { encodeAcrCloudMultipart } from "./media-providers/acrcloud-protocol.ts";
 import type { ElevenLabsAlignmentInput } from "./media-providers/elevenlabs-alignment-types.ts";
@@ -193,22 +191,13 @@ describe("media processor runtime boundary", () => {
     expect(providerReads).toBe(0);
   });
 
-  test("uses exact no-redirect fetch transports and redacts rejected request bodies", async () => {
+  test("uses exact no-redirect fetch transports and rejects unknown endpoints", async () => {
     const requests: Array<Readonly<{ url: string; init: RequestInit | undefined }>> = [];
     const fetcher = async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
       requests.push({ url: String(input), init });
       return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
     };
     const signal = new AbortController().signal;
-    await makeTransloaditFetchTransport(fetcher).request({
-      requestId: "request",
-      method: "POST",
-      url: "https://api2.transloadit.com/assemblies",
-      headers: { "content-type": "application/json" },
-      body: new TextEncoder().encode("signed-secret-body"),
-      signal,
-      redirect: "error",
-    });
     const acrMultipart = encodeAcrCloudMultipart({
       accessKey: "access-key",
       timestamp: "1700000000",
@@ -250,10 +239,10 @@ describe("media processor runtime boundary", () => {
       signal,
       redirect: "error",
     });
-    expect(requests).toHaveLength(4);
+    expect(requests).toHaveLength(3);
     expect(requests.every(({ init }) => init?.redirect === "manual")).toBe(true);
-    expect(requests[3]?.url).toBe("https://openrouter.ai/api/v1/chat/completions");
-    const acrBody = requests[1]?.init?.body;
+    expect(requests[2]?.url).toBe("https://openrouter.ai/api/v1/chat/completions");
+    const acrBody = requests[0]?.init?.body;
     expect(acrBody).toBeInstanceOf(FormData);
     if (!(acrBody instanceof FormData)) throw new TypeError("expected native multipart body");
     expect(acrBody.get("sample_bytes")).toBe("1");
@@ -261,18 +250,6 @@ describe("media processor runtime boundary", () => {
     expect(sample).toBeInstanceOf(File);
     if (!(sample instanceof File)) throw new TypeError("expected multipart sample file");
     expect(new Uint8Array(await sample.arrayBuffer())).toEqual(new Uint8Array([1]));
-
-    const invalid = makeTransloaditFetchTransport(fetcher).request({
-      requestId: "request",
-      method: "POST",
-      url: "https://attacker.invalid/assemblies",
-      headers: {},
-      body: new TextEncoder().encode("must-not-appear"),
-      signal,
-      redirect: "error",
-    });
-    await expect(invalid).rejects.toBeInstanceOf(MediaProcessingTransportFailure);
-    await expect(invalid).rejects.not.toThrow("must-not-appear");
   });
 
   test("binds a retained sample with HEAD plus conditional GET before returning bytes", async () => {

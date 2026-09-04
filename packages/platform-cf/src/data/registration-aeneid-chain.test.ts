@@ -35,6 +35,8 @@ const operation: DataRegistrationOperation = {
   publicationAnalysisRevision: 1n,
   publicationDecisionRevision: 1n,
   canonicalAudioSha256: "a".repeat(64),
+  mediaKind: "song",
+  rightsBasis: "original",
   state: "signing",
   workflowRevision: 1n,
   workflowInstanceId: "data-registration-workflow:data-registration:1315:post-1:1:r1",
@@ -53,6 +55,7 @@ const baseAuthority: DataRegistrationArtifactAuthority = {
   postId: "post-1",
   title: "A staging song",
   projectedAt: "2026-08-27T00:00:00.000Z",
+  contentRating: "general",
   audioAssetRef: "media://immutable/song.mp3",
   audioMediaType: "audio/mpeg",
   audioByteLength: 3n,
@@ -82,6 +85,14 @@ const originalVideoAuthority: DataRegistrationArtifactAuthority = {
   mediaKind: "video",
   rightsBasis: "original",
   licensePreset: null,
+  caption: "An original video",
+  videoAssetRef: "media://immutable/video.mp4",
+  videoMediaType: "video/mp4",
+  videoByteLength: 4n,
+  canonicalVideoSha256: "b".repeat(64),
+  posterArtifactRef: "media://immutable/poster.jpg",
+  posterSha256: "c".repeat(64),
+  originalSoundId: "original-sound-1",
 };
 
 const pin = (

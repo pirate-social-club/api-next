@@ -26,6 +26,8 @@ const operation: DataRegistrationOperation = {
   publicationAnalysisRevision: 1n,
   publicationDecisionRevision: 1n,
   canonicalAudioSha256: "a".repeat(64),
+  mediaKind: "song",
+  rightsBasis: "original",
   state: "pending",
   workflowRevision: 1n,
   workflowInstanceId: "data-registration-workflow:data-registration:1315:post-1:1:r1",
@@ -44,6 +46,7 @@ const authority: DataRegistrationArtifactAuthority = {
   postId: "post-1",
   title: "Explicit staging song",
   projectedAt: "2026-08-27T00:00:00.000Z",
+  contentRating: "general",
   audioAssetRef: "media://immutable/song.mp3",
   audioMediaType: "audio/mpeg",
   audioByteLength: 3n,
@@ -94,7 +97,98 @@ const fakePinning = {} as IpfsPinningService;
 const fakeGateway = {} as IpfsGatewayVerifier;
 const fakeBucket = {} as R2Bucket;
 
+const videoOperation: DataRegistrationOperation = {
+  ...operation,
+  publicationAudioRevision: 1n,
+  canonicalAudioSha256: "c".repeat(64),
+  mediaKind: "video",
+};
+
+const videoAuthority: DataRegistrationArtifactAuthority = {
+  postId: operation.postId,
+  projectedAt: "2026-09-04T00:00:00.000Z",
+  contentRating: "general",
+  mediaKind: "video",
+  rightsBasis: "original",
+  licensePreset: null,
+  caption: "An original video",
+  videoAssetRef: "media://immutable/media-operation-1/video/1",
+  videoMediaType: "video/mp4",
+  videoByteLength: 4n,
+  canonicalVideoSha256: "c".repeat(64),
+  posterArtifactRef: "media://derived/media-operation-1/poster",
+  posterSha256: "d".repeat(64),
+  originalSoundId: "original-sound-1",
+  royaltyAllocations: [
+    {
+      recipientId: "persona-1",
+      address: "0x1111111111111111111111111111111111111111",
+      shareBps: 10_000,
+    },
+  ],
+  acrDecision: "no_match",
+  acrPolicyRevision: "acr-v1",
+  creatorAddress: "0x1111111111111111111111111111111111111111",
+};
+
+const videoBucket = {
+  head: async (key: string) =>
+    key.endsWith("/poster")
+      ? ({ size: 3, httpMetadata: { contentType: "image/jpeg" } } as R2Object)
+      : null,
+} as unknown as R2Bucket;
+
+const verifiedPin = (
+  kind: "canonical_video" | "poster",
+  hash: string,
+  bytes: bigint,
+): DataRegistrationPinVerification => ({
+  ...audioPin,
+  pinVerificationId: `${kind}-primary`,
+  artifactId: `${operation.registrationOperationId}:artifact:${kind}`,
+  artifactKind: kind,
+  cid: `bafy${kind}`,
+  canonicalSha256: hash,
+  byteLength: bytes,
+});
+
 describe("DATA registration artifact pipeline", () => {
+  test("builds original-video metadata only after the sealed video and poster pins", async () => {
+    let pins: readonly DataRegistrationPinVerification[] = [];
+    const pipeline = makeDataRegistrationArtifactPipeline({
+      authority: { read: async () => videoAuthority, listPins: async () => pins },
+      immutableOriginals: videoBucket,
+      pinning: fakePinning,
+      gateway: fakeGateway,
+      publicOrigin: "https://staging.pirate.sc",
+    });
+    expect(
+      (await pipeline.prepare(videoOperation)).map(({ artifact }) => artifact.artifactKind),
+    ).toEqual(["canonical_video", "poster"]);
+
+    pins = [
+      verifiedPin("canonical_video", "c".repeat(64), 4n),
+      verifiedPin("poster", "d".repeat(64), 3n),
+    ];
+    const prepared = await pipeline.prepare(videoOperation);
+    expect(prepared.map(({ artifact }) => artifact.artifactKind)).toEqual([
+      "canonical_video",
+      "poster",
+      "ip_metadata",
+      "nft_metadata",
+    ]);
+    const ipMetadata = prepared.find(({ artifact }) => artifact.artifactKind === "ip_metadata");
+    if (ipMetadata === undefined) throw new Error("video IP metadata fixture missing");
+    expect(JSON.parse(await collect(ipMetadata.open))).toMatchObject({
+      mediaUrl: "ipfs://bafycanonical_video",
+      image: "ipfs://bafyposter",
+      mediaType: "video/mp4",
+      content_rating: "general",
+      rights: { basis: "original", offered_license: null },
+      post: { original_sound_id: "original-sound-1" },
+    });
+  });
+
   test("rejects a null song license before preparing any artifact", async () => {
     const malformedAuthority = {
       ...authority,

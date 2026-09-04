@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.58.0",
+  "releaseType": "original-audio-video-publication",
+  "wireContract": "video-publication-reservation-and-submission",
+  "sourceCommit": "pending-review",
+  "supersedes": "0.57.0; media reservation and submission commands now expose the closed song and original-audio video variants, including fixed multipart upload parts, typed song-reference unavailability, video-only renewal and poster retry, and the video publication lifecycle views.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.58.0.tgz",
+    "sha256": "320a08c3b58b7458f0515a56edc27194b35e9fe2fb853748aae2ba7b4c851c76",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@1b2d90a80dd3ae74455bfcb6f84859b193883b9f77fedf635a786275a766ea16",
+    "openapiSha256": "1b2d90a80dd3ae74455bfcb6f84859b193883b9f77fedf635a786275a766ea16",
+    "clientSha256": "c8b398a1a87e9a45ec42669ec96205308c11d69e29eb635d2edfc3c091069e21"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": "pending; run before publication",
+    "focusedSuites": "pending; see the lane record",
+    "fullUnitSuite": "pending; see the lane record",
+    "packageVerifier": "pending until this ledger entry lands",
+    "repositoryCheck": "pending; see the lane record"
+  }
+}

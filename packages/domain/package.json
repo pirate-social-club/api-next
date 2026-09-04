@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./video-submission": "./src/video-submission.ts",
     "./dance": "./src/dance/index.ts",
     "./verification": "./src/verification/index.ts",
     "./gates-v2": "./src/gates-v2/index.ts"

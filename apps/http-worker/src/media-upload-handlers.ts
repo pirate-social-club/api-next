@@ -14,6 +14,12 @@ type MediaHandlerCommand = Readonly<{
   readonly body: unknown;
 }>;
 
+type MediaReservationCommand = Readonly<{
+  readonly reservationId: string;
+  readonly actor: MediaHandlerActor;
+  readonly body: unknown;
+}>;
+
 export type MediaUploadHandlerServices = Readonly<{
   readonly reserve: (
     input: Readonly<{ communityId: string; actor: MediaHandlerActor; body: unknown }>,
@@ -24,11 +30,13 @@ export type MediaUploadHandlerServices = Readonly<{
   readonly bindTerms: (input: MediaHandlerCommand) => unknown | Promise<unknown>;
   readonly bindLyrics: (input: MediaHandlerCommand) => unknown | Promise<unknown>;
   readonly finalize: (input: MediaHandlerCommand) => unknown | Promise<unknown>;
+  readonly renewParts: (input: MediaReservationCommand) => unknown | Promise<unknown>;
   readonly get: (
     input: Readonly<{ submissionId: string; actor: MediaHandlerActor }>,
   ) => unknown | Promise<unknown>;
   readonly bindReference: (input: MediaHandlerCommand) => unknown | Promise<unknown>;
   readonly retry: (input: MediaHandlerCommand) => unknown | Promise<unknown>;
+  readonly retryPoster: (input: MediaHandlerCommand) => unknown | Promise<unknown>;
   readonly cancel: (input: MediaHandlerCommand) => unknown | Promise<unknown>;
   readonly moderate: (input: MediaHandlerCommand) => unknown | Promise<unknown>;
 }>;
@@ -39,9 +47,11 @@ export type MediaUploadHandlers = Readonly<{
   readonly BindMediaPostSubmissionTerms: EndpointHandler;
   readonly BindMediaPostSubmissionLyrics: EndpointHandler;
   readonly FinalizeMediaPostSubmission: EndpointHandler;
+  readonly RenewVideoUploadParts: EndpointHandler;
   readonly GetMediaPostSubmission: EndpointHandler;
   readonly BindMediaPostSubmissionReference: EndpointHandler;
   readonly RetryMediaPostSubmission: EndpointHandler;
+  readonly RetryVideoPostSubmissionPoster: EndpointHandler;
   readonly CancelMediaPostSubmission: EndpointHandler;
   readonly ModerateMediaPostSubmission: EndpointHandler;
 }>;
@@ -105,6 +115,14 @@ export function makeMediaUploadHandlers(services: MediaUploadHandlerServices): M
         body: request.body,
       });
     },
+    RenewVideoUploadParts: (request) => {
+      const path = request.params as { readonly reservationId: string };
+      return services.renewParts({
+        reservationId: path.reservationId,
+        actor: actor(request.principal),
+        body: request.body,
+      });
+    },
     GetMediaPostSubmission: (request) => {
       const path = request.params as { readonly submissionId: string };
       return services.get({ submissionId: path.submissionId, actor: actor(request.principal) });
@@ -120,6 +138,14 @@ export function makeMediaUploadHandlers(services: MediaUploadHandlerServices): M
     RetryMediaPostSubmission: (request) => {
       const path = request.params as { readonly submissionId: string };
       return services.retry({
+        submissionId: path.submissionId,
+        actor: actor(request.principal),
+        body: request.body,
+      });
+    },
+    RetryVideoPostSubmissionPoster: (request) => {
+      const path = request.params as { readonly submissionId: string };
+      return services.retryPoster({
         submissionId: path.submissionId,
         actor: actor(request.principal),
         body: request.body,

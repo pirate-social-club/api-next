@@ -1,5 +1,11 @@
 import type { MediaProcessingProviders } from "@pirate/application/media/processing-contracts";
-import type { MediaTransformService } from "@pirate/application/media/transform";
+import type {
+  MediaTransformProbeInput,
+  MediaTransformService,
+  MediaTransformVideoCapabilities,
+  MediaTransformVideoProbeInput,
+} from "@pirate/application/media/transform";
+import type { VideoAnalysisProviders } from "@pirate/application/video/analysis";
 import {
   type CloudflareMediaWorkflowBinding,
   makeCloudflareMediaProcessingWorkflowLauncher,
@@ -18,9 +24,19 @@ import { makeMediaProcessingStore } from "@pirate/platform-cf/media-processing-s
 import { makeAcrCloudAdapter } from "@pirate/platform-cf/media-providers/acrcloud";
 import { ElevenLabsAlignmentAdapter } from "@pirate/platform-cf/media-providers/elevenlabs-alignment";
 import { makeOpenRouterClassifierAdapter } from "@pirate/platform-cf/media-providers/openrouter";
-import { disabledTransloaditMediaTransform } from "@pirate/platform-cf/media-transform";
+import { disabledMediaTransform } from "@pirate/platform-cf/media-transform";
 import { makeOpenAiTextModerationProvider } from "@pirate/platform-cf/openai-text-moderation";
 import { makeHyperdriveControlPlaneLayer } from "@pirate/platform-cf/postgres";
+import {
+  makeQencodeMediaTransform,
+  makeQencodeTaskTransport,
+  makeR2QencodeArtifactStore,
+  type QencodeArtifactStore,
+  type QencodeSourceGrantIssuer,
+  type QencodeTaskTransport,
+} from "@pirate/platform-cf/qencode-media-transform";
+import { makeControlPlaneVideoAnalysisOutboxRepository } from "@pirate/platform-cf/video-analysis-outbox-repository";
+import { makeControlPlaneVideoPublicationStore } from "@pirate/platform-cf/video-publication-repository";
 import { Effect } from "effect";
 import type { MediaProcessorComposition, MediaProcessorWorkerEnv } from "./index.ts";
 import { isMediaProcessingEnabled } from "./posture.ts";
@@ -41,9 +57,23 @@ export type MediaProcessorRuntimeEnv = MediaProcessorWorkerEnv &
     readonly ELEVENLABS_API_KEY?: string;
     readonly OPENAI_API_KEY?: string;
     readonly OPENROUTER_API_KEY?: string;
+    readonly QENCODE_API_KEY?: string;
     readonly DATA_REGISTRATION_ENABLED?: string;
     readonly DATA_REGISTRATION_CHAIN_ID?: string;
+    readonly VIDEO_ANALYSIS_ENABLED?: string;
   }>;
+
+export type MediaProcessorRuntimeAdapters = Readonly<{
+  readonly videoAnalysis?: Readonly<{
+    readonly providers: VideoAnalysisProviders;
+    readonly transform?: MediaTransformVideoCapabilities;
+    readonly qencode?: Readonly<{
+      readonly sourceGateway: QencodeSourceGrantIssuer;
+      readonly transport?: QencodeTaskTransport;
+      readonly artifacts?: QencodeArtifactStore;
+    }>;
+  }>;
+}>;
 
 function requiredText(value: string | undefined, name: string): string {
   if (value === undefined || value.trim().length === 0) {
@@ -83,18 +113,48 @@ export function mediaProcessingPhysicalObjectKey(reference: string): string {
 
 function bindPhysicalR2Keys(transform: MediaTransformService): MediaTransformService {
   return {
-    probe: (input) =>
-      Effect.suspend(() =>
-        transform.probe({
-          ...input,
-          source: { objectKey: mediaProcessingPhysicalObjectKey(input.source.objectKey) },
-        }),
-      ),
+    probe: ((input: MediaTransformProbeInput | MediaTransformVideoProbeInput) =>
+      input.version === "media-transform-video-probe-input-v1"
+        ? Effect.suspend(() =>
+            transform.probe({
+              ...input,
+              source: {
+                ...input.source,
+                objectKey: mediaProcessingPhysicalObjectKey(input.source.objectKey),
+              },
+            }),
+          )
+        : Effect.suspend(() =>
+            transform.probe({
+              ...input,
+              source: { objectKey: mediaProcessingPhysicalObjectKey(input.source.objectKey) },
+            }),
+          )) as MediaTransformService["probe"],
     extractAudioSample: (input) =>
       Effect.suspend(() =>
         transform.extractAudioSample({
           ...input,
           source: { objectKey: mediaProcessingPhysicalObjectKey(input.source.objectKey) },
+        }),
+      ),
+    extractVideoAudio: (input) =>
+      Effect.suspend(() =>
+        transform.extractVideoAudio({
+          ...input,
+          source: {
+            ...input.source,
+            objectKey: mediaProcessingPhysicalObjectKey(input.source.objectKey),
+          },
+        }),
+      ),
+    extractVideoFrames: (input) =>
+      Effect.suspend(() =>
+        transform.extractVideoFrames({
+          ...input,
+          source: {
+            ...input.source,
+            objectKey: mediaProcessingPhysicalObjectKey(input.source.objectKey),
+          },
         }),
       ),
     extractCanonicalAudioSegment: (input) =>
@@ -121,7 +181,25 @@ function bindPhysicalR2Keys(transform: MediaTransformService): MediaTransformSer
           },
         }),
       ),
-    cancelAssembly: (input) => transform.cancelAssembly(input),
+    cancelJob: (input) => transform.cancelJob(input),
+  };
+}
+
+function bindVideoPhysicalR2Keys(
+  transform: MediaTransformVideoCapabilities,
+): MediaTransformVideoCapabilities {
+  const source = <A extends { readonly source: { readonly objectKey: string } }>(input: A): A => ({
+    ...input,
+    source: {
+      ...input.source,
+      objectKey: mediaProcessingPhysicalObjectKey(input.source.objectKey),
+    },
+  });
+  return {
+    probe: (input) => Effect.suspend(() => transform.probe(source(input))),
+    extractVideoAudio: (input) => Effect.suspend(() => transform.extractVideoAudio(source(input))),
+    extractVideoFrames: (input) =>
+      Effect.suspend(() => transform.extractVideoFrames(source(input))),
   };
 }
 
@@ -164,7 +242,7 @@ function makeEnabledProviders(env: MediaProcessorRuntimeEnv): MediaProcessingPro
   });
 
   const transform = makeR2Mp3SampleMediaTransform({
-    providerTransform: disabledTransloaditMediaTransform,
+    providerTransform: disabledMediaTransform,
     immutableOriginals,
     derivedArtifacts,
     maximumSampleBytes: 4_000_000,
@@ -215,8 +293,32 @@ function makeEnabledProviders(env: MediaProcessorRuntimeEnv): MediaProcessingPro
 
 const workflowIsNeverMissingByThrownError = (): boolean => false;
 
+function videoTransform(
+  env: MediaProcessorRuntimeEnv,
+  adapters: NonNullable<MediaProcessorRuntimeAdapters["videoAnalysis"]>,
+): MediaTransformVideoCapabilities {
+  if (adapters.transform !== undefined) return adapters.transform;
+  if (adapters.qencode === undefined) {
+    throw new Error("video analysis transform is required when video analysis is enabled");
+  }
+  const apiKey = requiredOperationalSecret(env.QENCODE_API_KEY, "QENCODE_API_KEY");
+  const artifacts =
+    adapters.qencode.artifacts ??
+    makeR2QencodeArtifactStore(
+      requiredBinding(env.MEDIA_DERIVED_ARTIFACTS, "MEDIA_DERIVED_ARTIFACTS"),
+    );
+  return makeQencodeMediaTransform({
+    enabled: true,
+    apiKey,
+    transport: adapters.qencode.transport ?? makeQencodeTaskTransport(),
+    sourceGateway: adapters.qencode.sourceGateway,
+    artifacts,
+  });
+}
+
 export function makeMediaProcessorComposition(
   env: MediaProcessorRuntimeEnv,
+  adapters: MediaProcessorRuntimeAdapters = {},
 ): MediaProcessorComposition {
   const controlPlane = requiredBinding(env.CONTROL_PLANE, "CONTROL_PLANE");
   const workflowBinding = requiredBinding(
@@ -240,9 +342,39 @@ export function makeMediaProcessorComposition(
   );
   const enabled = isMediaProcessingEnabled(env.MEDIA_PROCESSING_ENABLED);
   const workerId = `media-processor-${crypto.randomUUID()}`;
+  const videoAnalysisEnabled = env.VIDEO_ANALYSIS_ENABLED === "true";
+  if (videoAnalysisEnabled && adapters.videoAnalysis === undefined) {
+    throw new Error("video analysis providers are required when video analysis is enabled");
+  }
+  const videoAnalysisRepository =
+    videoAnalysisEnabled && adapters.videoAnalysis !== undefined
+      ? makeControlPlaneVideoAnalysisOutboxRepository(runtime)
+      : undefined;
+  const enabledVideoTransform =
+    videoAnalysisEnabled && adapters.videoAnalysis !== undefined
+      ? videoTransform(env, adapters.videoAnalysis)
+      : undefined;
 
   return {
     queue: { store, workflow, workerId },
+    ...(videoAnalysisRepository !== undefined &&
+    enabledVideoTransform !== undefined &&
+    adapters.videoAnalysis !== undefined
+      ? {
+          videoAnalysis: {
+            outbox: videoAnalysisRepository,
+            runtime: {
+              store: makeControlPlaneVideoPublicationStore(runtime),
+              nowIso: () => new Date().toISOString(),
+              randomUuid: () => crypto.randomUUID(),
+              analysisProviders: adapters.videoAnalysis.providers,
+              transform: bindVideoPhysicalR2Keys(enabledVideoTransform),
+              transformAttempts: videoAnalysisRepository,
+            },
+            workerId,
+          },
+        }
+      : {}),
     workflow: {
       store,
       providers: enabled ? makeEnabledProviders(env) : null,
