@@ -128,6 +128,7 @@ const intentHash = (input: {
   readonly displayName: string | null;
   readonly bio: string | null;
   readonly preferredLocale: string | null;
+  readonly communityId: string;
 }): string =>
   createHash("sha256")
     .update(
@@ -135,6 +136,7 @@ const intentHash = (input: {
         display_name: input.displayName,
         bio: input.bio,
         preferred_locale: input.preferredLocale,
+        community_id: input.communityId,
       }),
     )
     .digest("hex");
@@ -230,6 +232,21 @@ export function makeControlPlanePersonaRepository() {
               }
               if (replay.rows.length !== 0) return yield* Effect.die("duplicate persona replay");
 
+              // Spec 014 section 10.2: a further persona outside onboarding is
+              // born bound to a target community and requires an active
+              // membership there. Membership stays an independent account fact.
+              const membership = yield* transaction.execute<{
+                readonly eligible: boolean;
+              }>({
+                label: "personas.create.membership",
+                text: "SELECT active_community_effect($1, $2) AS eligible",
+                values: [intent.communityId, accountId],
+                readonly: true,
+              });
+              if (membership.rows[0]?.eligible !== true) {
+                return yield* new PersonaStoreConflict({ reason: "membership-required" });
+              }
+
               const capacity = yield* transaction.execute<{
                 slot_count: string;
                 recent_count: string;
@@ -301,6 +318,14 @@ export function makeControlPlanePersonaRepository() {
                   intent.preferredLocale,
                   createdAt,
                 ],
+                readonly: false,
+              });
+              yield* transaction.execute({
+                label: "personas.create.born-bound",
+                text: `INSERT INTO persona_community_bindings (
+                         persona_id, account_id, community_id, binding_source
+                       ) VALUES ($1, $2, $3, 'persona_creation')`,
+                values: [personaId, accountId, intent.communityId],
                 readonly: false,
               });
               const assignmentId = `persona_wallet_${crypto.randomUUID().replaceAll("-", "")}`;
@@ -488,6 +513,7 @@ export function makeControlPlanePersonaWalletRepository() {
       accountId,
       personaId,
       idempotencyKey,
+      replacementPersonaId,
     }: Parameters<PersonaWalletStoreService["retire"]>[0]) =>
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
@@ -515,10 +541,15 @@ export function makeControlPlanePersonaWalletRepository() {
                 if (row?.persona_id !== personaId) {
                   return yield* new PersonaWalletStoreConflict({ reason: "idempotency-mismatch" });
                 }
+                // An exact replay echoes the caller's original designation;
+                // the durable re-designation already happened in that commit.
                 return {
                   persona_id: personaId,
                   status: "retired" as const,
                   retired_at: iso(row.retired_at),
+                  ...(replacementPersonaId === undefined
+                    ? {}
+                    : { replacement_persona_id: replacementPersonaId }),
                 };
               }
               if (replay.rows.length !== 0) return yield* Effect.die("duplicate retirement replay");
@@ -541,6 +572,93 @@ export function makeControlPlanePersonaWalletRepository() {
                 return yield* new PersonaWalletStoreConflict({
                   reason: "first-persona-required",
                 });
+              }
+              // Spec 014 section 10.3: retirement never changes the binding,
+              // but a current role or activity presentation must be
+              // atomically re-designated to another active persona bound to
+              // the same community, or the retirement is rejected.
+              let designatedReplacement: string | null = null;
+              const presentations = yield* transaction.execute<{
+                readonly community_id: string;
+              }>({
+                label: "personas.retire.current-presentations",
+                text: `SELECT binding.community_id
+                         FROM persona_community_bindings AS binding
+                        WHERE binding.persona_id = $1
+                          AND binding.account_id = $2
+                          AND (
+                            EXISTS (
+                              SELECT 1 FROM persona_role_presentations AS role
+                               WHERE role.persona_id = $1
+                                 AND role.account_id = $2
+                                 AND role.community_id = binding.community_id
+                            )
+                            OR EXISTS (
+                              SELECT 1 FROM persona_activity_presentations AS activity
+                               WHERE activity.persona_id = $1
+                                 AND activity.account_id = $2
+                                 AND activity.community_id = binding.community_id
+                            )
+                          )`,
+                values: [personaId, accountId],
+                readonly: true,
+              });
+              if (presentations.rows.length > 1) {
+                return yield* Effect.die("duplicate presentation community");
+              }
+              if (presentations.rows.length === 1) {
+                const communityId = presentations.rows[0]?.community_id;
+                if (communityId === undefined) {
+                  return yield* Effect.die("invalid presentation community");
+                }
+                if (replacementPersonaId === undefined) {
+                  return yield* new PersonaWalletStoreConflict({
+                    reason: "replacement-required",
+                  });
+                }
+                if (replacementPersonaId === personaId || !validId(replacementPersonaId)) {
+                  return yield* new PersonaWalletStoreConflict({
+                    reason: "replacement-required",
+                  });
+                }
+                const eligible = yield* transaction.execute<{ readonly eligible: boolean }>({
+                  label: "personas.retire.replacement-authority",
+                  text: "SELECT active_owned_community_persona($1, $2, $3) AS eligible",
+                  values: [accountId, replacementPersonaId, communityId],
+                  readonly: true,
+                });
+                if (eligible.rows[0]?.eligible !== true) {
+                  return yield* new PersonaWalletStoreConflict({
+                    reason: "replacement-required",
+                  });
+                }
+                const redesignatedRole = yield* transaction.execute({
+                  label: "personas.retire.redesignate-role-presentation",
+                  text: `UPDATE persona_role_presentations
+                           SET persona_id = $3, updated_at = clock_timestamp()
+                         WHERE community_id = $1
+                           AND account_id = $2
+                           AND persona_id = $4`,
+                  values: [communityId, accountId, replacementPersonaId, personaId],
+                  readonly: false,
+                });
+                const redesignatedActivity = yield* transaction.execute({
+                  label: "personas.retire.redesignate-activity-presentation",
+                  text: `UPDATE persona_activity_presentations
+                           SET persona_id = $3, updated_at = clock_timestamp()
+                         WHERE community_id = $1
+                           AND account_id = $2
+                           AND persona_id = $4`,
+                  values: [communityId, accountId, replacementPersonaId, personaId],
+                  readonly: false,
+                });
+                if (redesignatedRole.rowCount !== null && redesignatedRole.rowCount > 1) {
+                  return yield* Effect.die("duplicate role presentation");
+                }
+                if (redesignatedActivity.rowCount !== null && redesignatedActivity.rowCount > 1) {
+                  return yield* Effect.die("duplicate activity presentation");
+                }
+                designatedReplacement = replacementPersonaId;
               }
               let retiredAt = existing?.retired_at;
               if (existing?.status !== "retired") {
@@ -582,6 +700,9 @@ export function makeControlPlanePersonaWalletRepository() {
                 persona_id: personaId,
                 status: "retired" as const,
                 retired_at: iso(retiredAt),
+                ...(designatedReplacement === null
+                  ? {}
+                  : { replacement_persona_id: designatedReplacement }),
               };
             }),
           )

@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.53.0",
+  "releaseType": "karaoke-persona-boundary",
+  "wireContract": "karaoke-session-start-persona",
+  "sourceCommit": "pending-review",
+  "supersedes": "0.52.0; POST /communities/:communityId/posts/:postId/karaoke/attempts now requires a body with persona_id naming an active owned persona bound to the song's exact community (spec 014 section 10 and the 2026-09-03 spec 019 amendment). The request body is no longer optional and the server performs no first-active-persona fallback; consumers must send the explicit performing persona.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.53.0.tgz",
+    "sha256": "da593e15b024a1c7c85ae2fdabf7b68377c66d2090507956104c8561c76f9c9a",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@6a538350e38c1935a03aaf5c1015a5a8feb47692a41ac94c0812e8e06a3a733a",
+    "openapiSha256": "6a538350e38c1935a03aaf5c1015a5a8feb47692a41ac94c0812e8e06a3a733a",
+    "clientSha256": "3a957d2ec6895a52c3881a83c62b7303583900acd04b05eefbc2b4cf4af037ec"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": "pending; run before publication",
+    "focusedSuites": "pending; see the lane record",
+    "fullUnitSuite": "pending; see the lane record",
+    "packageVerifier": "pending until this ledger entry lands",
+    "repositoryCheck": "pending; see the lane record"
+  }
+}

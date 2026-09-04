@@ -109,6 +109,8 @@
     "0106_hns_root_import_name_signature_proof.sql": "e61e700c45b98320993f7a4f5f72570c074d505162ebeb8d94bc7f2d7357e1c5",
     "0107_song_owner_video_policy.sql": "f228772b3f6dd4c48edec3d4631731f45c413859c0ab7a6bd1edc021e3bb7233",
     "0108_song_reward_leg_policy_freeze.sql": "c4f7bb18d83d8a22a3f3b189babb834f81a54098f5c1d1a28e50398bc8e87509",
-    "0109_creation_requirement_removal.sql": "e31e348370e1d55273a0d47366695f4fa0dd097f5e688c8ab523fc60204a8138"
+    "0109_creation_requirement_removal.sql": "e31e348370e1d55273a0d47366695f4fa0dd097f5e688c8ab523fc60204a8138",
+    "0110_persona_community_bindings.sql": "a7d7746c78955dc6b417303484f7c35cf09d13e0709a73210a303919830f29f3",
+    "0111_community_creation_create_new_persona.sql": "9b4fb47d826ba7a8850c2d74221c362cf47d28949ecc6772b5c33f42c9cfcd94"
   }
 }

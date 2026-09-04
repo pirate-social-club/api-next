@@ -577,10 +577,10 @@ suite("Gates v2 curated age community vertical", () => {
           store.join({
             communityId: "community-pass",
             actor: { userId: "user-a", kind: "user" },
-            body: {},
+            body: { persona: { kind: "create_new" } },
           }),
         ),
-      ).resolves.toEqual({ community: "community-pass", status: "joined" });
+      ).resolves.toMatchObject({ community: "community-pass", status: "joined" });
 
       const rows = await admin.query({
         text: `SELECT policy_version_id, policy_hash, evaluation_mode, outcome,
@@ -867,10 +867,10 @@ suite("Gates v2 curated age community vertical", () => {
           store.join({
             communityId: "community-human",
             actor: { userId: "user-a", kind: "user" },
-            body: {},
+            body: { persona: { kind: "create_new" } },
           }),
         ),
-      ).resolves.toEqual({ community: "community-human", status: "joined" });
+      ).resolves.toMatchObject({ community: "community-human", status: "joined" });
 
       const state = await admin.query({
         text: `SELECT
@@ -1055,7 +1055,7 @@ suite("Gates v2 curated age community vertical", () => {
         store.join({
           communityId: "community-join-lock-order",
           actor: { userId: "user-a", kind: "user" },
-          body: {},
+          body: { persona: { kind: "create_new" } },
         }),
       ).finally(() => {
         settled = true;
@@ -1075,7 +1075,7 @@ suite("Gates v2 curated age community vertical", () => {
         await blocker.end();
       }
 
-      await expect(joining).resolves.toEqual({
+      await expect(joining).resolves.toMatchObject({
         community: "community-join-lock-order",
         status: "joined",
       });

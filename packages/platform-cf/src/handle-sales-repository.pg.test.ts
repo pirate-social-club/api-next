@@ -109,6 +109,22 @@ async function seedAccount(
   return personaId;
 }
 
+async function bindPersonaToCommunity(
+  admin: Client,
+  input: Readonly<{
+    readonly accountId: string;
+    readonly communityId: string;
+    readonly personaId: string;
+  }>,
+): Promise<void> {
+  await admin.query(
+    `INSERT INTO persona_community_bindings (
+       persona_id, account_id, community_id, binding_source
+     ) VALUES ($1,$2,$3,'first_membership')`,
+    [input.personaId, input.accountId, input.communityId],
+  );
+}
+
 async function seedSaleNamespace(admin: Client, sellerId: string, communityId: string) {
   await admin.query(
     `INSERT INTO communities (
@@ -526,6 +542,11 @@ suite("community handle sales on PostgreSQL 17", () => {
 
       const communityId = "community_123e4567-e89b-42d3-a456-426614174057";
       const activationId = await seedSaleNamespace(admin, "open-seller-account", communityId);
+      await bindPersonaToCommunity(admin, {
+        accountId: "open-buyer-account",
+        communityId,
+        personaId: buyerPersona,
+      });
       const store = makeControlPlaneHandleSalesStore(
         makeDirectPostgresControlPlaneLayer(scopedConnection),
       );
@@ -601,9 +622,72 @@ suite("community handle sales on PostgreSQL 17", () => {
         ["open-buyer-account"],
       );
       expect(evidenceAfterClaim.rows[0]?.count).toBe(0);
+
+      // A persona bound to a different community can never acquire this
+      // community's handle; the rejection stays enumeration-safe.
+      const foreignCommunityId = "community_123e4567-e89b-42d3-a456-426614174058";
+      await admin.query(
+        `INSERT INTO communities (
+           community_id,display_name,status,created_by_user_id,created_at,updated_at,
+           route_slug,route_authority_version
+         ) VALUES ($1,'Foreign handle community','active','open-seller-account',
+           clock_timestamp(),clock_timestamp(),NULL,'optional_route_v2')`,
+        [foreignCommunityId],
+      );
+      const foreignBoundPersona = await seedAccount(admin, "open-foreign-account", {
+        humanEvidence: false,
+      });
+      await bindPersonaToCommunity(admin, {
+        accountId: "open-foreign-account",
+        communityId: foreignCommunityId,
+        personaId: foreignBoundPersona,
+      });
+      await run(
+        sales.confirmPersonaReuse({
+          accountId: "open-foreign-account",
+          personaId: foreignBoundPersona,
+          offeringId: offering.offering.offering_id,
+          idempotencyKey: "open-foreign-link-key",
+        }),
+      );
+      const foreignQuote = await run(
+        sales.createQuote({
+          accountId: "open-foreign-account",
+          personaId: foreignBoundPersona,
+          offeringId: offering.offering.offering_id,
+          desiredLabel: "foreignbound",
+          idempotencyKey: "open-foreign-quote-key",
+        }),
+      );
+      if (foreignQuote.kind !== "quoted") throw new Error("expected a foreign-bound quote");
+      const foreignReservation = await run(
+        sales.createReservation({
+          accountId: "open-foreign-account",
+          personaId: foreignBoundPersona,
+          quoteId: foreignQuote.quote.quote_id,
+          expectedQuoteHash: foreignQuote.quote.quote_hash,
+          idempotencyKey: "open-foreign-reservation-key",
+        }),
+      );
+      await expect(
+        run(
+          sales.submitFreeClaim({
+            accountId: "open-foreign-account",
+            personaId: foreignBoundPersona,
+            reservationId: foreignReservation.reservation.reservation_id,
+            expectedReservationHash: foreignReservation.reservation.reservation_hash,
+            idempotencyKey: "open-foreign-claim-key",
+          }),
+        ),
+      ).rejects.toMatchObject({ reason: "persona_unavailable" });
+      const foreignGrants = await admin.query<{ readonly count: number }>(
+        `SELECT count(*)::int AS count FROM handle_grants WHERE owner_persona_id=$1`,
+        [foreignBoundPersona],
+      );
+      expect(foreignGrants.rows[0]?.count).toBe(0);
     });
     completedTestCount += 1;
-  }, 20_000);
+  }, 30_000);
 
   test("authors a private direct-grant policy and issues a replay-safe free hosted grant", async () => {
     await withSchema(async ({ admin, scopedConnection }) => {
@@ -611,6 +695,11 @@ suite("community handle sales on PostgreSQL 17", () => {
       const recipientPersona = await seedAccount(admin, "recipient-account");
       const communityId = "community_123e4567-e89b-42d3-a456-426614174053";
       const activationId = await seedSaleNamespace(admin, "seller-account", communityId);
+      await bindPersonaToCommunity(admin, {
+        accountId: "recipient-account",
+        communityId,
+        personaId: recipientPersona,
+      });
       const store = makeControlPlaneHandleSalesStore(
         makeDirectPostgresControlPlaneLayer(scopedConnection),
       );
@@ -792,6 +881,11 @@ suite("community handle sales on PostgreSQL 17", () => {
       const siblingPersona = "persona-recipient-sibling";
       await createActivePersonaFixture(admin, {
         accountId: "recipient-account",
+        personaId: siblingPersona,
+      });
+      await bindPersonaToCommunity(admin, {
+        accountId: "recipient-account",
+        communityId,
         personaId: siblingPersona,
       });
       await run(
@@ -1003,6 +1097,13 @@ suite("community handle sales on PostgreSQL 17", () => {
 
       const contenderA = await seedAccount(admin, "contender-a");
       const contenderB = await seedAccount(admin, "contender-b");
+      for (const personaId of [contenderA, contenderB]) {
+        await bindPersonaToCommunity(admin, {
+          accountId: personaId === contenderA ? "contender-a" : "contender-b",
+          communityId,
+          personaId,
+        });
+      }
       const contenderInputs = [
         { accountId: "contender-a", personaId: contenderA, suffix: "a" },
         { accountId: "contender-b", personaId: contenderB, suffix: "b" },
@@ -1076,6 +1177,13 @@ suite("community handle sales on PostgreSQL 17", () => {
         accountId: "cap-account",
         personaId: capPersonaB,
       });
+      for (const personaId of [capPersonaA, capPersonaB]) {
+        await bindPersonaToCommunity(admin, {
+          accountId: "cap-account",
+          communityId,
+          personaId,
+        });
+      }
       const capReservations = [];
       for (const [personaId, label, suffix] of [
         [capPersonaA, "capalpha", "a"],
@@ -1351,6 +1459,11 @@ suite("community handle sales on PostgreSQL 17", () => {
         "activation-seller",
         communityId,
       );
+      await bindPersonaToCommunity(admin, {
+        accountId: "activation-seller",
+        communityId,
+        personaId: sellerPersona,
+      });
       const store = makeControlPlaneHandleSalesStore(
         makeDirectPostgresControlPlaneLayer(scopedConnection),
       );
@@ -1587,6 +1700,11 @@ suite("community handle sales on PostgreSQL 17", () => {
         items: [{ effectiveness: { kind: "effective_v1" } }],
       });
       const refreshBuyerPersona = await seedAccount(admin, "refresh-buyer");
+      await bindPersonaToCommunity(admin, {
+        accountId: "refresh-buyer",
+        communityId,
+        personaId: refreshBuyerPersona,
+      });
       await run(
         sales.confirmPersonaReuse({
           accountId: "refresh-buyer",

@@ -6,6 +6,7 @@ import {
   type CommunityStoreService,
   ControlPlaneDb,
   type ControlPlaneError,
+  type ControlPlaneTransaction,
   type FollowDocument,
   type JoinDocument,
   type JoinEligibilityDocument,
@@ -131,7 +132,7 @@ const viewerMembershipStatus = (value: unknown): "member" | "not_member" | "bann
   return undefined;
 };
 
-const generatedId = (kind: "membership" | "follow"): string =>
+const generatedId = (kind: "membership" | "follow" | "persona"): string =>
   `${kind}_${globalThis.crypto.randomUUID()}`;
 
 type JoinTransactionOutcome =
@@ -142,6 +143,171 @@ const joined = (document: JoinDocument): JoinTransactionOutcome => ({
   kind: "joined",
   document,
 });
+
+const joinPersonaConflict = () =>
+  new CommunityRepositoryError({ operation: "join", reason: "constraint" });
+
+/**
+ * Spec 014 section 10.2: the terminal membership commit resolves exactly one
+ * of three server-validated cases — an active owned persona already bound to
+ * the target community, a bind-once unbound persona serialized on the persona
+ * row, or a new persona minted with its target-community binding in this
+ * transaction. A persona bound elsewhere is a typed conflict and no membership
+ * row is left behind without an eligible persona. A minted persona follows
+ * the additional-persona lifecycle: it is born pending_wallet with its
+ * reserved HD index and private profile draft, and becomes an eligible public
+ * persona only when the account confirms that wallet.
+ */
+const resolveJoinPersona = (
+  transaction: ControlPlaneTransaction,
+  input: Readonly<{
+    readonly communityId: string;
+    readonly accountId: string;
+    readonly choice: Parameters<CommunityStoreService["join"]>[0]["body"]["persona"];
+  }>,
+): Effect.Effect<string, CommunityRepositoryFailure> =>
+  Effect.gen(function* () {
+    if (input.choice === undefined) return yield* Effect.fail(joinPersonaConflict());
+    if (input.choice.kind === "create_new") {
+      // Serialize wallet-index allocation with the persona creation store.
+      yield* transaction.execute({
+        label: "community.join.mint-account-lock",
+        text: "SELECT pg_advisory_xact_lock(hashtextextended($1, 14000046))",
+        values: [JSON.stringify([input.accountId, "evm"])],
+        readonly: false,
+      });
+      const capacity = yield* transaction.execute<{
+        slot_count: string;
+        recent_count: string;
+      }>({
+        label: "community.join.mint-capacity",
+        text: `SELECT count(*)::text AS slot_count,
+                      count(*) FILTER (
+                        WHERE NOT persona.is_first_persona
+                          AND assignment.created_at > clock_timestamp() - interval '86400 seconds'
+                      )::text AS recent_count
+                 FROM persona_wallet_assignments AS assignment
+                 JOIN personas AS persona USING (persona_id)
+                WHERE assignment.account_id = $1
+                  AND assignment.chain_account_kind = 'evm'`,
+        values: [input.accountId],
+        readonly: true,
+      });
+      const capacityRow = capacity.rows[0];
+      if (
+        capacityRow === undefined ||
+        Number(capacityRow.slot_count) >= 10 ||
+        Number(capacityRow.recent_count) >= 3
+      ) {
+        return yield* Effect.fail(joinPersonaConflict());
+      }
+      const next = yield* transaction.execute<{ hd_wallet_index: string }>({
+        label: "community.join.mint-allocate-index",
+        text: `SELECT (COALESCE(max(hd_wallet_index), -1) + 1)::text AS hd_wallet_index
+                 FROM persona_wallet_assignments
+                WHERE account_id = $1 AND chain_account_kind = 'evm'`,
+        values: [input.accountId],
+        readonly: true,
+      });
+      const hdWalletIndex = Number(next.rows[0]?.hd_wallet_index);
+      if (!Number.isSafeInteger(hdWalletIndex) || hdWalletIndex < 0) {
+        return yield* Effect.fail(invalid("join"));
+      }
+      const personaId = generatedId("persona");
+      yield* transaction.execute({
+        label: "community.join.mint-persona",
+        text: `INSERT INTO personas (
+                 persona_id, account_id, status, is_first_persona, created_at, retired_at
+               ) VALUES ($1, $2, 'pending_wallet', false, clock_timestamp(), NULL)`,
+        values: [personaId, input.accountId],
+        readonly: false,
+      });
+      yield* transaction.execute({
+        label: "community.join.mint-persona-pending-profile",
+        text: `INSERT INTO persona_pending_profiles (
+                 persona_id, display_name, avatar_ref, cover_ref, bio,
+                 preferred_locale, created_at
+               ) VALUES ($1, NULL, NULL, NULL, NULL, NULL, clock_timestamp())`,
+        values: [personaId],
+        readonly: false,
+      });
+      yield* transaction.execute({
+        label: "community.join.mint-persona-wallet-reservation",
+        text: `INSERT INTO persona_wallet_assignments (
+                 assignment_id, persona_id, account_id, chain_account_kind,
+                 privy_wallet_id, hd_wallet_index, address, status,
+                 reservation_idempotency_key, assigned_at, tombstoned_at,
+                 created_at, updated_at
+               ) VALUES ($1, $2, $3, 'evm', NULL, $4, NULL, 'pending', $5, NULL, NULL,
+                         clock_timestamp(), clock_timestamp())`,
+        values: [
+          `persona_wallet_${globalThis.crypto.randomUUID().replaceAll("-", "")}`,
+          personaId,
+          input.accountId,
+          hdWalletIndex,
+          `join-${personaId}`,
+        ],
+        readonly: false,
+      });
+      yield* transaction.execute({
+        label: "community.join.mint-persona-binding",
+        text: `INSERT INTO persona_community_bindings (
+                 persona_id, account_id, community_id, binding_source
+               ) VALUES ($1, $2, $3, 'first_membership')`,
+        values: [personaId, input.accountId, input.communityId],
+        readonly: false,
+      });
+      return personaId;
+    }
+    const personaId = input.choice.persona_id;
+    if (!validId(personaId)) return yield* Effect.fail(invalid("join"));
+    // The persona-row lock serializes bind-once: a concurrent join of the
+    // same persona to another community cannot also win.
+    const locked = yield* transaction.execute<{ readonly persona_id: unknown }>({
+      label: "community.join.lock-persona",
+      text: `SELECT persona_id
+               FROM personas
+              WHERE account_id = $1
+                AND persona_id = $2
+                AND status = 'active'
+              FOR UPDATE`,
+      values: [input.accountId, personaId],
+      readonly: false,
+    });
+    if (locked.rows.length !== 1 || locked.rows[0]?.persona_id !== personaId) {
+      return yield* Effect.fail(joinPersonaConflict());
+    }
+    const binding = yield* transaction.execute<{ readonly community_id: unknown }>({
+      label: "community.join.read-persona-binding",
+      text: `SELECT community_id
+               FROM persona_community_bindings
+              WHERE persona_id = $1`,
+      values: [personaId],
+      readonly: true,
+    });
+    if (binding.rows.length > 1) return yield* Effect.fail(invalid("join"));
+    const boundCommunity =
+      binding.rows.length === 1 ? asPersistedId(row(binding.rows)?.community_id) : null;
+    if (boundCommunity === input.communityId) return personaId;
+    if (boundCommunity !== null) return yield* Effect.fail(joinPersonaConflict());
+    yield* transaction
+      .execute({
+        label: "community.join.bind-persona",
+        text: `INSERT INTO persona_community_bindings (
+               persona_id, account_id, community_id, binding_source
+             ) VALUES ($1, $2, $3, 'first_membership')`,
+        values: [personaId, input.accountId, input.communityId],
+        readonly: false,
+      })
+      .pipe(
+        Effect.catchIf(
+          (error: ControlPlaneError) =>
+            error._tag === "ControlPlaneStatementFailed" && error.sqlState === "23505",
+          () => joinPersonaConflict(),
+        ),
+      );
+    return personaId;
+  });
 
 const row = <T>(rows: readonly T[]): T | undefined => rows[0];
 
@@ -767,7 +933,23 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
             }
           }
 
+          if (mode === "request" && input.body.persona !== undefined) {
+            // A request-mode intent never pre-binds identity (spec 014
+            // section 10.2); the choice is resolved at approval instead.
+            return yield* Effect.fail(joinPersonaConflict());
+          }
+
           const status = mode === "request" ? "pending" : "member";
+          // The persona choice resolves only at the terminal membership
+          // commit, after gate evaluation and before any membership write.
+          const joinPersonaId =
+            status === "member"
+              ? yield* resolveJoinPersona(transaction, {
+                  communityId: input.communityId,
+                  accountId: input.actor.userId,
+                  choice: input.body.persona,
+                })
+              : undefined;
           if (existingStatus === "left") {
             yield* transaction.execute({
               label: "community.memberships.reactivate",
@@ -820,6 +1002,7 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
           return joined({
             community: communityId,
             status: status === "member" ? ("joined" as const) : ("requested" as const),
+            ...(joinPersonaId === undefined ? {} : { persona_id: joinPersonaId }),
           });
         }),
       );

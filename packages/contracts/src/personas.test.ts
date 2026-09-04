@@ -5,6 +5,7 @@ import {
   CreatePersona,
   ListMyPersonas,
   PersonaChainAccountKindV1,
+  PersonaCommunityChoiceV1,
   PersonaEvmWalletAssignmentV1,
   PersonaEvmWalletPreparationV1,
   PreparePersonaEvmWallet,
@@ -90,9 +91,10 @@ describe("account-owned persona contracts", () => {
     expect(strictDecode(PrivatePersonaV1)(privatePersona)).toEqual(privatePersona);
 
     const request = schemaToOpenApi(CreatePersona.request?.body);
-    expect(request.required).toEqual(["idempotency_key"]);
+    expect(request.required).toEqual(["idempotency_key", "community_id"]);
     expect(Object.keys(request.properties ?? {}).sort()).toEqual([
       "bio",
+      "community_id",
       "display_name",
       "idempotency_key",
       "preferred_locale",
@@ -129,11 +131,31 @@ describe("account-owned persona contracts", () => {
     expect(JSON.stringify(request)).not.toContain("hd_wallet_index");
   });
 
+  test("accepts only a closed persona choice without a client-invented identity", () => {
+    expect(
+      strictDecode(PersonaCommunityChoiceV1)({ kind: "existing", persona_id: "persona_a" }),
+    ).toEqual({ kind: "existing", persona_id: "persona_a" });
+    expect(strictDecode(PersonaCommunityChoiceV1)({ kind: "create_new" })).toEqual({
+      kind: "create_new",
+    });
+    expect(() =>
+      strictDecode(PersonaCommunityChoiceV1)({ kind: "create_new", persona_id: "x" }),
+    ).toThrow();
+    expect(() => strictDecode(PersonaCommunityChoiceV1)({ kind: "reuse" })).toThrow();
+    expect(() =>
+      strictDecode(PersonaCommunityChoiceV1)({ kind: "existing", persona_id: "" }),
+    ).toThrow();
+    expect(() => strictDecode(PersonaCommunityChoiceV1)({ kind: "existing" })).toThrow();
+  });
+
   test("retires or cancels a persona through an owner-private idempotent action", () => {
     expect(RetirePersona.path).toBe("/personas/:personaId/retire");
     expect(RetirePersona.auth).toEqual({ policy: { kind: "userOrAdmin" } });
     const request = schemaToOpenApi(RetirePersona.request?.body);
     expect(request.required).toEqual(["idempotency_key"]);
-    expect(Object.keys(request.properties ?? {})).toEqual(["idempotency_key"]);
+    expect(Object.keys(request.properties ?? {}).sort()).toEqual([
+      "idempotency_key",
+      "replacement_persona_id",
+    ]);
   });
 });

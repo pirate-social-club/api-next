@@ -94,7 +94,7 @@ describe("PostgreSQL test discovery", () => {
       .filter((file) => file.length > 0);
     const partition = partitionPostgresTestFiles(files);
 
-    expect(files).toHaveLength(48);
+    expect(files).toHaveLength(50);
     expect(partition.isolated).toEqual([
       "packages/platform-cf/src/namespace-ownership-persistence.pg.test.ts",
     ]);

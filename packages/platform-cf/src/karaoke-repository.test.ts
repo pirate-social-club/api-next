@@ -70,7 +70,16 @@ const sourceResponse = (label: string): Result => {
   if (label === "karaoke.session.catalog") return catalogResult;
   if (label === "learner-audio.account-lock") return { rows: [], rowCount: 1 };
   if (label === "karaoke.session.identity") {
-    return { rows: [{ persona_id: "persona-1" }], rowCount: 1 };
+    return {
+      rows: [
+        {
+          persona_id: "persona-1",
+          binding_eligible: true,
+          community_eligible: true,
+        },
+      ],
+      rowCount: 1,
+    };
   }
   if (label === "karaoke.session.replay") return { rows: [], rowCount: 0 };
   throw new Error(`unexpected SQL label ${label}`);

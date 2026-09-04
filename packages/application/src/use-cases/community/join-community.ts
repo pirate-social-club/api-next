@@ -27,7 +27,9 @@ const mapJoinFailure = (error: CommunityRepositoryError) => {
     });
   }
   if (error.reason === "constraint") {
-    return new Conflict({ message: "Community join conflicts with existing membership" });
+    return new Conflict({
+      message: "Community join conflicts with existing membership or persona state",
+    });
   }
   if (error.reason === "not-found") {
     return new NotFound({ message: "Community not found" });
@@ -71,7 +73,16 @@ export const joinCommunity = Effect.fn("joinCommunity")(function* (
     return yield* new MembershipRequired({ message: "Community membership is unavailable" });
   }
 
+  // Spec 014 section 10.2: a join that commits an active membership must
+  // resolve a persona, while a request-mode join never carries a choice
+  // because an intent does not pre-bind identity.
   const body = input.body ?? {};
+  if (eligibility.membership_mode === "request") {
+    if (body.persona !== undefined) return yield* invalidJoin();
+  } else if (eligibility.status !== "already_joined" && body.persona === undefined) {
+    return yield* invalidJoin();
+  }
+
   return yield* services.communityStore
     .join({ communityId: input.communityId, actor: input.actor, body })
     .pipe(

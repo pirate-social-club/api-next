@@ -34,6 +34,21 @@ const nullableBoundedText = (maximumLength: number, label: string) =>
 export const PersonaIdV1 = boundedIdentifier("persona identifier");
 export type PersonaIdV1 = Schema.Schema.Type<typeof PersonaIdV1>;
 
+/**
+ * Server-validated persona choice for a terminal community membership or
+ * community-creation commit (spec 014 section 10.2). A browser never invents
+ * a persona id or a binding: it either names an existing owned persona or
+ * asks the server to mint one in the same commit.
+ */
+export const PersonaCommunityChoiceV1 = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("existing"),
+    persona_id: PersonaIdV1,
+  }),
+  Schema.Struct({ kind: Schema.Literal("create_new") }),
+]);
+export type PersonaCommunityChoiceV1 = Schema.Schema.Type<typeof PersonaCommunityChoiceV1>;
+
 export const PersonaStatusV1 = Schema.Literals(["active", "suspended", "retired"]);
 export type PersonaStatusV1 = Schema.Schema.Type<typeof PersonaStatusV1>;
 
@@ -119,6 +134,12 @@ export type PrivatePersonaV1 = Schema.Schema.Type<typeof PrivatePersonaV1>;
 
 const CreatePersonaRequestV1 = Schema.Struct({
   idempotency_key: boundedIdentifier("idempotency key"),
+  /**
+   * Spec 014 section 10.2: creating a further persona outside onboarding
+   * requires a target community; the new persona is born bound there in the
+   * creation transaction and the account must hold an active membership.
+   */
+  community_id: boundedIdentifier("community identifier"),
   display_name: Schema.optional(nullableBoundedText(80, "display name")),
   bio: Schema.optional(nullableBoundedText(2_000, "bio")),
   preferred_locale: Schema.optional(nullableBoundedText(64, "locale")),
@@ -132,12 +153,20 @@ const PreparePersonaEvmWalletRequestV1 = Schema.Struct({
 
 const RetirePersonaRequestV1 = Schema.Struct({
   idempotency_key: boundedIdentifier("idempotency key"),
+  /**
+   * Spec 014 section 10.3: retiring a persona that is a community's current
+   * role or activity presentation must atomically designate another active
+   * persona bound to the same community, or the retirement is rejected.
+   */
+  replacement_persona_id: Schema.optional(PersonaIdV1),
 });
 
 export const PersonaRetirementV1 = Schema.Struct({
   persona_id: PersonaIdV1,
   status: Schema.Literal("retired"),
   retired_at: Schema.String,
+  /** Present only when this retirement re-designated a current presentation. */
+  replacement_persona_id: Schema.optional(PersonaIdV1),
 });
 export type PersonaRetirementV1 = Schema.Schema.Type<typeof PersonaRetirementV1>;
 

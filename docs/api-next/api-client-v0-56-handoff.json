@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.56.0",
+  "releaseType": "community-persona-boundary",
+  "wireContract": "retirement-replacement-designation",
+  "sourceCommit": "pending-review",
+  "supersedes": "0.55.0; POST /personas/:personaId/retire accepts an optional replacement_persona_id that must name another active persona bound to the same community when the retiring persona is a current role or activity presentation; the retirement response then carries replacement_persona_id. Retirement without an eligible designation is rejected with 409.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.56.0.tgz",
+    "sha256": "b4b0a498b637b3188026f46c52eadb0297f28937778c5c2f44d96e60f2ab2981",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@716d9047e31b18c5090cce02e0ede58769f4ddea36367c4f8ea38db391248bd9",
+    "openapiSha256": "716d9047e31b18c5090cce02e0ede58769f4ddea36367c4f8ea38db391248bd9",
+    "clientSha256": "bc62d23e67a88c4d56d56b86c230b18226fbf3d0c8d234d022c0b28391c40e62"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": "pending; run before publication",
+    "focusedSuites": "pending; see the lane record",
+    "fullUnitSuite": "pending; see the lane record",
+    "packageVerifier": "pending until this ledger entry lands",
+    "repositoryCheck": "pending; see the lane record"
+  }
+}

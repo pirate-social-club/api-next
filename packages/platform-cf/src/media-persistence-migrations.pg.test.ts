@@ -209,6 +209,14 @@ async function withMigrationSchema<A>(
         connection,
         new Map(personas.rows.map(({ account_id, persona_id }) => [account_id, persona_id])),
       );
+      await admin.query(
+        `INSERT INTO persona_community_bindings (
+           persona_id, account_id, community_id, binding_source
+         ) SELECT persona_id, account_id, $1, 'first_membership'
+             FROM personas WHERE is_first_persona
+         ON CONFLICT DO NOTHING`,
+        [community],
+      );
     }
     return await use(admin, connection);
   } finally {

@@ -409,6 +409,7 @@ export const makeControlPlaneStudyV2Repository = () => ({
             const authority = yield* transaction.execute<Row>({
               label: "study-v2.start.authority",
               text: `SELECT active_owned_persona($1,$2) AS persona_eligible,
+                            active_owned_community_persona($1,$2,$3) AS binding_eligible,
                             active_community_effect($3,$1) AS community_eligible`,
               values: [input.accountId, input.personaId, input.communityId],
               readonly: false,
@@ -418,6 +419,7 @@ export const makeControlPlaneStudyV2Repository = () => ({
               authority.rows.length !== 1 ||
               authorityRow === undefined ||
               authorityRow.persona_eligible !== true ||
+              authorityRow.binding_eligible !== true ||
               authorityRow.community_eligible !== true
             ) {
               return yield* rejected("not-found");

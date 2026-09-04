@@ -1297,11 +1297,15 @@ export function makeControlPlaneMediaSubmissionRepository(
           if (prior.rows.length > 1) return yield* Effect.fail(fail("reserve", "invalid-row"));
           const authority = yield* tx.execute<Row>({
             label: "media-reservation.authority",
-            text: "SELECT (c.status='active' AND m.status='member') AS allowed FROM communities c JOIN community_memberships m ON m.community_id=c.community_id AND m.user_id=$2 WHERE c.community_id=$1 FOR SHARE",
-            values: [input.communityId, input.actorUserId],
+            text: "SELECT (c.status='active' AND m.status='member') AS allowed, active_owned_community_persona($2,$3,$1) AS persona_allowed FROM communities c JOIN community_memberships m ON m.community_id=c.community_id AND m.user_id=$2 WHERE c.community_id=$1 FOR SHARE",
+            values: [input.communityId, input.actorUserId, personaId],
             readonly: false,
           });
-          if (authority.rows.length !== 1 || authority.rows[0]?.allowed !== true)
+          if (
+            authority.rows.length !== 1 ||
+            authority.rows[0]?.allowed !== true ||
+            authority.rows[0]?.persona_allowed !== true
+          )
             return yield* Effect.fail(fail("reserve", "membership-required"));
           const inserted = yield* tx.execute({
             label: "media-reservation.insert",

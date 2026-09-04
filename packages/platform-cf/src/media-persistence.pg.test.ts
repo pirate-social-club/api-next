@@ -184,6 +184,13 @@ async function withCurrentSchema<A>(
           connection,
           new Map(personas.rows.map(({ account_id, persona_id }) => [account_id, persona_id])),
         );
+        await admin.query(
+          `INSERT INTO persona_community_bindings (
+             persona_id, account_id, community_id, binding_source
+           ) SELECT persona_id, account_id, $1, 'first_membership'
+               FROM personas WHERE is_first_persona`,
+          [community],
+        );
       }
       return await use(admin, connection);
     },
@@ -957,6 +964,12 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         personaId: secondPersona,
         profile: { displayName: "Second media persona" },
       });
+      await admin.query(
+        `INSERT INTO persona_community_bindings (
+           persona_id, account_id, community_id, binding_source
+         ) VALUES ($1,$2,$3,'first_membership')`,
+        [secondPersona, actor, community],
+      );
       const reserve = (personaId: string, reservationId: string) =>
         run(connection, (store) =>
           store.reserve({

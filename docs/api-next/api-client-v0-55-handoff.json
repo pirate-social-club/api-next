@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.55.0",
+  "releaseType": "community-persona-boundary",
+  "wireContract": "creation-create-new-and-born-bound-personas",
+  "sourceCommit": "pending-review",
+  "supersedes": "0.54.0; the community-creation draft persona_id becomes a closed persona choice ({kind:existing,persona_id} or {kind:create_new}) and the intent persona_role_presentation is nullable until a create_new persona is minted at commit; POST /personas now requires community_id naming a community with an active membership and the persona is born bound there. Consumers must send the choice union and the persona target.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.55.0.tgz",
+    "sha256": "3e4f8f88b384f20461ffbcf5f845b8b965ba865abd8dc19c63086ee0365927bb",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@306997090770e07672ba14519e5aa753b064e58eeda1df5488688a0438955e9b",
+    "openapiSha256": "306997090770e07672ba14519e5aa753b064e58eeda1df5488688a0438955e9b",
+    "clientSha256": "414b076c4ec7c7bfe74cca5056210f98e2041ba9134fbc6dc55028fd10b0c396"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": "pending; run before publication",
+    "focusedSuites": "pending; see the lane record",
+    "fullUnitSuite": "pending; see the lane record",
+    "packageVerifier": "pending until this ledger entry lands",
+    "repositoryCheck": "pending; see the lane record"
+  }
+}

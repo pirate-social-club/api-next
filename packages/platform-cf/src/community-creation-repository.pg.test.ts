@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import type { CommunityCreationStore } from "@pirate/application";
-import { Effect } from "effect";
+import { Effect, Exit } from "effect";
 import type { Client } from "pg";
 import {
   applyPostgresTestBaselineConnection,
@@ -99,7 +99,7 @@ suite("Postgres 17 community creation repository", () => {
           body: {
             idempotency_key: "optional-v2-create",
             draft: {
-              persona_id: personaId,
+              persona: { kind: "existing" as const, persona_id: personaId },
               name: "Optional route",
               description: null,
               policy: humanPolicy,
@@ -166,7 +166,7 @@ suite("Postgres 17 community creation repository", () => {
             idempotency_key: "optional-v2-update",
             expected_revision: 1,
             draft: {
-              persona_id: personaId,
+              persona: { kind: "existing" as const, persona_id: personaId },
               name: "Optional route, revised",
               description: "Still requirement-free",
               policy: humanPolicy,
@@ -250,6 +250,186 @@ suite("Postgres 17 community creation repository", () => {
     completedTestCount += 1;
   }, 30_000);
 
+  test("mints the create_new creator persona atomically with the creation commit", async () => {
+    await withSchema(async (connection, admin) => {
+      await applyPostgresTestBaselineConnection({ connectionString: connection });
+      await admin.query({
+        text: "INSERT INTO users (user_id, status, account) VALUES ($1, 'active', '{}'::jsonb)",
+        values: [actor.userId],
+      });
+      const creationStore = storeFor(connection, 86_400, "create-new");
+
+      const created = await Effect.runPromise(
+        creationStore.create({
+          actor,
+          requestHash: "6".repeat(64),
+          body: {
+            idempotency_key: "create-new-intent",
+            draft: {
+              persona: { kind: "create_new" },
+              name: "Minted creator",
+              description: null,
+              policy: humanPolicy,
+            },
+          },
+        }),
+      );
+      // No persona exists yet: the presentation stays null while pending and
+      // the intent never carries a client-invented persona id.
+      expect(created.document).toMatchObject({
+        status: "commit_ready",
+        persona_role_presentation: null,
+        draft: { persona: { kind: "create_new" } },
+        next_action: { kind: "commit" },
+      });
+
+      const committed = await Effect.runPromise(
+        creationStore.commit({
+          actor,
+          intentId: created.document.intent_id,
+          requestHash: "5".repeat(64),
+          body: { idempotency_key: "create-new-commit", expected_revision: 1 },
+        }),
+      );
+      expect(committed.outcome).toBe("fresh_created");
+      const document = committed.document;
+      const resource = document.committed_resource;
+      if (
+        resource === null ||
+        !("authority_version" in resource) ||
+        !("creation_contract_version" in document)
+      ) {
+        throw new Error("expected an optional-route resource and document");
+      }
+      const mintedId = document.persona_role_presentation?.persona.persona_id;
+      expect(mintedId).toMatch(/^persona_[0-9a-f]{32}$/u);
+      if (mintedId === undefined) throw new Error("expected a minted persona id");
+      expect(document.persona_role_presentation).toEqual({
+        role: "owner",
+        persona: {
+          persona_id: mintedId,
+          object: "persona",
+          display_name: null,
+          avatar_ref: null,
+          primary_public_handle: null,
+        },
+      });
+      expect(resource.persona_role_presentation.persona.persona_id).toBe(mintedId);
+
+      // The minted persona, its wallet reservation, the community binding,
+      // the creator membership, and the role presentation are one commit.
+      const minted = await admin.query<{
+        readonly status: string;
+        readonly wallet_status: string | null;
+        readonly bound_community: string | null;
+        readonly binding_source: string | null;
+        readonly role_persona: string | null;
+        readonly membership: number;
+        readonly minted_column: string | null;
+      }>(
+        `SELECT persona.status,
+                wallet.status AS wallet_status,
+                binding.community_id AS bound_community,
+                binding.binding_source,
+                (SELECT presentation.persona_id FROM persona_role_presentations AS presentation
+                  WHERE presentation.community_id = binding.community_id
+                    AND presentation.account_id = binding.account_id) AS role_persona,
+                (SELECT COUNT(*)::integer FROM community_memberships
+                  WHERE community_id = binding.community_id AND user_id = binding.account_id
+                    AND status = 'member') AS membership,
+                intent.minted_persona_id AS minted_column
+           FROM personas AS persona
+           LEFT JOIN persona_wallet_assignments AS wallet
+             ON wallet.persona_id = persona.persona_id AND wallet.chain_account_kind = 'evm'
+           LEFT JOIN persona_community_bindings AS binding ON binding.persona_id = persona.persona_id
+           LEFT JOIN community_creation_intents AS intent ON intent.minted_persona_id = persona.persona_id
+          WHERE persona.persona_id = $1`,
+        [mintedId],
+      );
+      expect(minted.rows).toEqual([
+        {
+          status: "pending_wallet",
+          wallet_status: "pending",
+          bound_community: resource.community_id,
+          binding_source: "community_creation",
+          role_persona: mintedId,
+          membership: 1,
+          minted_column: mintedId,
+        },
+      ]);
+
+      // A GET after the commit projects the minted persona without a replay.
+      const reread = await Effect.runPromise(
+        creationStore.get({ actor, intentId: created.document.intent_id }),
+      );
+      if (reread === null || !("creation_contract_version" in reread)) {
+        throw new Error("expected an optional-route document on reread");
+      }
+      expect(reread.persona_role_presentation?.persona.persona_id).toBe(mintedId);
+    });
+    completedTestCount += 1;
+  }, 30_000);
+
+  test("rejects an existing creator persona already bound to another community", async () => {
+    await withSchema(async (connection, admin) => {
+      await applyPostgresTestBaselineConnection({ connectionString: connection });
+      await admin.query({
+        text: "INSERT INTO users (user_id, status, account) VALUES ($1, 'active', '{}'::jsonb)",
+        values: [actor.userId],
+      });
+      const personaId = await firstPersonaId(admin, actor.userId);
+      await admin.query(
+        `INSERT INTO communities
+           (community_id, display_name, status, created_by_user_id, created_at, updated_at)
+         VALUES ('creation-other-home', 'Other', 'active', $1, now(), now())`,
+        [actor.userId],
+      );
+      await admin.query(
+        `INSERT INTO persona_community_bindings
+           (persona_id, account_id, community_id, binding_source)
+         VALUES ($1, $2, 'creation-other-home', 'first_membership')`,
+        [personaId, actor.userId],
+      );
+      const creationStore = storeFor(connection, 86_400, "bound-creator");
+      const created = await Effect.runPromise(
+        creationStore.create({
+          actor,
+          requestHash: "4".repeat(64),
+          body: {
+            idempotency_key: "bound-creator-intent",
+            draft: {
+              persona: { kind: "existing" as const, persona_id: personaId },
+              name: "Changed target",
+              description: null,
+              policy: humanPolicy,
+            },
+          },
+        }),
+      );
+      const exit = await Effect.runPromiseExit(
+        creationStore.commit({
+          actor,
+          intentId: created.document.intent_id,
+          requestHash: "3".repeat(64),
+          body: { idempotency_key: "bound-creator-commit", expected_revision: 1 },
+        }),
+      );
+      expect(Exit.isFailure(exit)).toBe(true);
+      const communities = await admin.query(
+        `SELECT COUNT(*)::int AS count FROM communities
+          WHERE community_id <> 'creation-other-home' AND created_by_user_id = $1`,
+        [actor.userId],
+      );
+      expect(communities.rows[0]?.count).toBe(0);
+      const bindings = await admin.query(
+        "SELECT COUNT(*)::int AS count FROM persona_community_bindings WHERE persona_id = $1",
+        [personaId],
+      );
+      expect(bindings.rows[0]?.count).toBe(1);
+    });
+    completedTestCount += 1;
+  }, 30_000);
+
   test("settles a requirement-free commit as quota_exceeded at the account cap", async () => {
     await withSchema(async (connection, admin) => {
       await applyPostgresTestBaselineConnection({ connectionString: connection });
@@ -277,7 +457,12 @@ suite("Postgres 17 community creation repository", () => {
             requestHash: hash,
             body: {
               idempotency_key: `${key}-create`,
-              draft: { persona_id: personaId, name, description: null, policy: humanPolicy },
+              draft: {
+                persona: { kind: "existing" as const, persona_id: personaId },
+                name,
+                description: null,
+                policy: humanPolicy,
+              },
             },
           }),
         );
@@ -324,7 +509,7 @@ suite("Postgres 17 community creation repository", () => {
       const createBody = {
         idempotency_key: "create-1",
         draft: {
-          persona_id: personaId,
+          persona: { kind: "existing" as const, persona_id: personaId },
           name: "Jazleeuw",
           description: "First draft",
           policy: humanPolicy,
@@ -431,7 +616,7 @@ suite("Postgres 17 community creation repository", () => {
           body: {
             idempotency_key: "unsupported-1",
             draft: {
-              persona_id: personaId,
+              persona: { kind: "existing" as const, persona_id: personaId },
               name: "Unsupported",
               description: null,
               policy: {
@@ -464,7 +649,7 @@ suite("Postgres 17 community creation repository", () => {
           body: {
             idempotency_key: "spaces-unsupported-1",
             draft: {
-              persona_id: personaId,
+              persona: { kind: "existing" as const, persona_id: personaId },
               name: "Second optional route",
               description: null,
               policy: humanPolicy,
@@ -489,7 +674,7 @@ suite("Postgres 17 community creation repository", () => {
           body: {
             idempotency_key: "expiring-1",
             draft: {
-              persona_id: personaId,
+              persona: { kind: "existing" as const, persona_id: personaId },
               name: "Expiring",
               description: null,
               policy: humanPolicy,
@@ -534,7 +719,7 @@ suite("Postgres 17 community creation repository", () => {
       const body = {
         idempotency_key: "race-create",
         draft: {
-          persona_id: personaId,
+          persona: { kind: "existing" as const, persona_id: personaId },
           name: "Race",
           description: null,
           policy: humanPolicy,
@@ -818,7 +1003,7 @@ suite("Postgres 17 community creation repository", () => {
 });
 
 afterAll(async () => {
-  if (connectionString !== undefined && completedTestCount === 6) {
+  if (connectionString !== undefined && completedTestCount === 8) {
     await Bun.write(sentinelPath, sentinelContents);
   }
 });

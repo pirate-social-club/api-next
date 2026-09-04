@@ -63,6 +63,8 @@ suite("Study translation generation", () => {
           `INSERT INTO communities (
                community_id, display_name, status, created_by_user_id, created_at, updated_at
              ) VALUES ('study-community','Study community','active','study-account',
+               clock_timestamp(),clock_timestamp()),
+               ('study-other-community','Other study community','active','study-account',
                clock_timestamp(),clock_timestamp())`,
         );
         await admin.query(
@@ -79,7 +81,17 @@ suite("Study translation generation", () => {
              ('study-persona-suspended', 'study-account', 'suspended', clock_timestamp(), NULL),
              ('study-persona-retired', 'study-account', 'retired', clock_timestamp(),
                clock_timestamp()),
+             ('study-persona-unbound', 'study-account', 'active', clock_timestamp(), NULL),
+             ('study-persona-wrong-community', 'study-account', 'active', clock_timestamp(), NULL),
              ('study-other-persona', 'study-other-account', 'active', clock_timestamp(), NULL)`,
+        );
+        await admin.query(
+          `INSERT INTO persona_community_bindings (
+               persona_id, account_id, community_id, binding_source
+             ) VALUES
+               ('study-persona', 'study-account', 'study-community', 'first_membership'),
+               ('study-persona-wrong-community', 'study-account', 'study-other-community',
+                 'first_membership')`,
         );
         await admin.query(
           `INSERT INTO posts (
@@ -428,6 +440,24 @@ suite("Study translation generation", () => {
           personaId: "study-persona-retired",
           requestHash: "c".repeat(64),
           sessionId: "study-session-retired-persona",
+        }),
+      ).rejects.toMatchObject({ reason: "not-found" });
+      await expect(
+        start({
+          ...baseStart,
+          idempotencyKey: "study-session-unbound-persona",
+          personaId: "study-persona-unbound",
+          requestHash: "9".repeat(64),
+          sessionId: "study-session-unbound-persona",
+        }),
+      ).rejects.toMatchObject({ reason: "not-found" });
+      await expect(
+        start({
+          ...baseStart,
+          idempotencyKey: "study-session-wrong-community-persona",
+          personaId: "study-persona-wrong-community",
+          requestHash: "8".repeat(64),
+          sessionId: "study-session-wrong-community-persona",
         }),
       ).rejects.toMatchObject({ reason: "not-found" });
       const session = await Effect.runPromise(

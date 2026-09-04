@@ -12,7 +12,7 @@ import {
 } from "./community-routes.ts";
 import { endpoint } from "./endpoint.ts";
 import { AuthError, BadRequest, Conflict, InternalError, NotFound } from "./errors.ts";
-import { PersonaIdV1, PublicPersonaV1 } from "./personas.ts";
+import { PersonaCommunityChoiceV1, PublicPersonaV1 } from "./personas.ts";
 
 const PositiveInteger = Schema.Int.check(
   Schema.makeFilter((value) => (value > 0 ? undefined : "Expected a positive integer")),
@@ -85,7 +85,12 @@ export const CommunityCreationDraftV1 = Schema.Struct({
 export type CommunityCreationDraftV1 = Schema.Schema.Type<typeof CommunityCreationDraftV1>;
 
 export const CommunityCreationDraftV2 = Schema.Struct({
-  persona_id: PersonaIdV1,
+  /**
+   * Spec 014 section 10.2: the creator persona is either an existing owned
+   * persona or the server-minted create_new choice resolved at the terminal
+   * creation commit. A browser never invents a persona id or a binding.
+   */
+  persona: PersonaCommunityChoiceV1,
   name: Schema.NonEmptyString,
   description: Schema.NullOr(Schema.String),
   policy: CompiledGatePolicy,
@@ -320,17 +325,24 @@ export const CommunityCreationIntentV2 = Schema.Struct({
   requirements: CommunityCreationRequirementsV2,
   next_action: CommunityCreationNextActionV2,
   expires_at: CanonicalIsoInstant,
-  persona_role_presentation: CommunityPersonaRolePresentationV1,
+  /** Null while a create_new choice waits for its server-minted persona. */
+  persona_role_presentation: Schema.NullOr(CommunityPersonaRolePresentationV1),
   committed_resource: Schema.NullOr(CommittedCommunityResourceV2),
 }).check(
   Schema.makeFilter((intent) => {
-    if (intent.persona_role_presentation.persona.persona_id !== intent.draft.persona_id) {
-      return "Persona role presentation must match the selected draft persona";
+    if (intent.draft.persona.kind === "existing") {
+      if (
+        intent.persona_role_presentation === null ||
+        intent.persona_role_presentation.persona.persona_id !== intent.draft.persona.persona_id
+      ) {
+        return "Persona role presentation must match the selected draft persona";
+      }
     }
     if (intent.status === "committed") {
       return intent.committed_resource !== null &&
+        intent.persona_role_presentation !== null &&
         intent.committed_resource.persona_role_presentation.persona.persona_id ===
-          intent.draft.persona_id &&
+          intent.persona_role_presentation.persona.persona_id &&
         intent.next_action.kind === "none" &&
         intent.next_action.reason === "committed"
         ? undefined

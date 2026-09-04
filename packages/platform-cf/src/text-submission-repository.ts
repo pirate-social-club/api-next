@@ -714,13 +714,18 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
           );
           const persona = yield* transaction.execute({
             label: "text-post.commit.persona-authority",
-            text: `SELECT 1 FROM personas
+            text: `SELECT active_owned_community_persona($1,$2,$3) AS eligible
+                     FROM personas
                     WHERE account_id=$1 AND persona_id=$2 AND status='active'
-                    FOR SHARE`,
-            values: [input.actor.userId, input.personaId],
+                    FOR SHARE OF personas`,
+            values: [input.actor.userId, input.personaId, input.communityId],
             readonly: false,
           });
-          if (persona.rows.length !== 1) return yield* Effect.fail(failure("commit", "not-found"));
+          if (
+            persona.rows.length !== 1 ||
+            booleanValue(persona.rows[0] as Row, "eligible") !== true
+          )
+            return yield* Effect.fail(failure("commit", "not-found"));
           const existing = yield* finalByKey(
             transaction,
             {

@@ -95,7 +95,7 @@ export interface KaraokeAttemptStore {
     readonly createdAt: string;
     readonly expiresAt: string;
     readonly idempotencyKey: string;
-    readonly personaId: string | null;
+    readonly personaId: string;
     readonly postId: string;
     readonly requestHash: string;
     readonly sessionId: string;
@@ -158,7 +158,7 @@ export const makeKaraokeService = (input: {
     readonly clientContext: KaraokeAttemptCreateRequest["client_context"];
     readonly communityId: string;
     readonly idempotencyKey: string;
-    readonly personaId: string | null;
+    readonly personaId: string;
     readonly postId: string;
     readonly timezone: string | null;
   }) =>

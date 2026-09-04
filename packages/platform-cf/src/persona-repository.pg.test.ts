@@ -29,7 +29,7 @@ const sentinelPath =
   "/tmp/api-next-control-plane-postgres-persona-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-persona-suite-complete\n";
 const migrations = await loadPostgresMigrations();
-const testCount = 6;
+const testCount = 8;
 let completedTestCount = 0;
 
 const schemaIdentifier = (): string =>
@@ -94,6 +94,27 @@ const failureOf = <E>(exit: Exit.Exit<unknown, E>): E | undefined => {
   return Result.isSuccess(failure) ? failure.success : undefined;
 };
 
+async function seedBornBoundCommunity(
+  admin: Client,
+  communityId: string,
+  memberIds: readonly string[],
+): Promise<void> {
+  await admin.query(
+    `INSERT INTO communities
+       (community_id, display_name, status, created_by_user_id, created_at, updated_at)
+     VALUES ($1, $1, 'active', $2, now(), now())`,
+    [communityId, memberIds[0] ?? "owner"],
+  );
+  for (const userId of memberIds) {
+    await admin.query(
+      `INSERT INTO community_memberships
+         (community_id, membership_id, user_id, status, created_at, updated_at)
+       VALUES ($1, $2, $3, 'member', now(), now())`,
+      [communityId, `membership-${communityId}-${userId}`, userId],
+    );
+  }
+}
+
 suite("Postgres 17 account persona and EVM wallet persistence", () => {
   test("fails the wallet activation migration before changing a retained walletless schema", async () => {
     if (connectionString === undefined) throw new Error("test URL was not configured");
@@ -157,12 +178,18 @@ suite("Postgres 17 account persona and EVM wallet persistence", () => {
   test("enforces the lifetime slot ceiling and rolling additional-persona rate", async () => {
     await withSchema(async (admin, connection) => {
       await admin.query("INSERT INTO users (user_id) VALUES ('account-slot'),('account-rate')");
+      await seedBornBoundCommunity(admin, "persona-create-home", ["account-slot", "account-rate"]);
       const repository = makeControlPlanePersonaRepository();
       const create = (accountId: string, ordinal: number, createdAt: string) =>
         repository.create({
           accountId,
           idempotencyKey: `create-${ordinal}`,
-          intent: { displayName: null, bio: null, preferredLocale: null },
+          intent: {
+            displayName: null,
+            bio: null,
+            preferredLocale: null,
+            communityId: "persona-create-home",
+          },
           personaId: `persona_${accountId}_${ordinal}`,
           createdAt,
         });
@@ -298,12 +325,18 @@ suite("Postgres 17 account persona and EVM wallet persistence", () => {
       expect(firstPersonaId).not.toContain("account-persona-a");
       expect(first.rows[0]?.display_name).toBe("First Persona");
 
+      await seedBornBoundCommunity(admin, "persona-sibling-home", ["account-persona-a"]);
       const repository = makeControlPlanePersonaRepository();
       const sibling = personaRecord("persona_sibling_a", "2026-08-24T12:01:00.000Z");
       const input = {
         accountId: "account-persona-a",
         idempotencyKey: "persona-create-a",
-        intent: { displayName: "Sibling Persona", bio: null, preferredLocale: "en" },
+        intent: {
+          displayName: "Sibling Persona",
+          bio: null,
+          preferredLocale: "en",
+          communityId: "persona-sibling-home",
+        },
         personaId: sibling.persona_id,
         createdAt: sibling.created_at,
       };
@@ -334,6 +367,10 @@ suite("Postgres 17 account persona and EVM wallet persistence", () => {
       await admin.query(
         "INSERT INTO users (user_id) VALUES ('account-wallet-a'), ('account-wallet-b')",
       );
+      await seedBornBoundCommunity(admin, "persona-wallet-home", [
+        "account-wallet-a",
+        "account-wallet-b",
+      ]);
       const first = await admin.query<{ readonly persona_id: string }>(
         "SELECT persona_id FROM personas WHERE account_id='account-wallet-a' AND is_first_persona",
       );
@@ -352,7 +389,12 @@ suite("Postgres 17 account persona and EVM wallet persistence", () => {
         personas.create({
           accountId: "account-wallet-a",
           idempotencyKey: "persona-wallet-sibling",
-          intent: { displayName: "Sibling Persona", bio: null, preferredLocale: "en" },
+          intent: {
+            displayName: "Sibling Persona",
+            bio: null,
+            preferredLocale: "en",
+            communityId: "persona-wallet-home",
+          },
           personaId: sibling.persona_id,
           createdAt: sibling.created_at,
         }),
@@ -398,7 +440,12 @@ suite("Postgres 17 account persona and EVM wallet persistence", () => {
             personas.create({
               accountId: "account-wallet-a",
               idempotencyKey: `persona-wallet-concurrent-${index}`,
-              intent: { displayName: "Concurrent Persona", bio: null, preferredLocale: "en" },
+              intent: {
+                displayName: "Concurrent Persona",
+                bio: null,
+                preferredLocale: "en",
+                communityId: "persona-wallet-home",
+              },
               personaId: candidate.persona_id,
               createdAt: candidate.created_at,
             }),
@@ -500,6 +547,7 @@ suite("Postgres 17 account persona and EVM wallet persistence", () => {
       await admin.query(
         "INSERT INTO users (user_id) VALUES ('account-fence-a'), ('account-fence-b')",
       );
+      await seedBornBoundCommunity(admin, "persona-fence-home", ["account-fence-a"]);
       const ids = await admin.query<{ readonly account_id: string; readonly persona_id: string }>(
         "SELECT account_id, persona_id FROM personas WHERE is_first_persona ORDER BY account_id",
       );
@@ -578,7 +626,12 @@ suite("Postgres 17 account persona and EVM wallet persistence", () => {
         personas.create({
           accountId: "account-fence-a",
           idempotencyKey: "create-retirement-persona",
-          intent: { displayName: "Retirement fixture", bio: null, preferredLocale: null },
+          intent: {
+            displayName: "Retirement fixture",
+            bio: null,
+            preferredLocale: null,
+            communityId: "persona-fence-home",
+          },
           personaId: retirementPersona,
           createdAt: "2026-08-24T12:00:00.000Z",
         }),
@@ -616,6 +669,211 @@ suite("Postgres 17 account persona and EVM wallet persistence", () => {
       );
       expect(projection.rows[0]?.projection).toBeNull();
       expect(JSON.stringify(projection.rows[0]?.projection)).not.toContain("account-fence-a");
+    });
+    completedTestCount += 1;
+  });
+
+  test("requires an eligible same-community replacement for a presenting persona's retirement", async () => {
+    await withSchema(async (admin, connection) => {
+      await admin.query("INSERT INTO users (user_id) VALUES ('account-replace-a')");
+      await seedBornBoundCommunity(admin, "persona-replace-home", ["account-replace-a"]);
+      await admin.query(
+        `INSERT INTO communities
+           (community_id, display_name, status, created_by_user_id, created_at, updated_at)
+         VALUES ('persona-replace-away', 'Away', 'active', 'account-replace-a', now(), now())`,
+      );
+      await admin.query("SET session_replication_role = replica");
+      await admin.query(
+        `INSERT INTO personas (persona_id, account_id, status, is_first_persona)
+         VALUES ('persona-replace-current', 'account-replace-a', 'active', false),
+                ('persona-replace-next', 'account-replace-a', 'active', false),
+                ('persona-replace-foreign', 'account-replace-a', 'active', false)`,
+      );
+      await admin.query(
+        `INSERT INTO persona_wallet_assignments
+           (assignment_id, persona_id, account_id, chain_account_kind, hd_wallet_index,
+            status, reservation_idempotency_key, created_at, updated_at)
+         VALUES ('wallet-replace-current', 'persona-replace-current', 'account-replace-a',
+                 'evm', 5, 'pending', 'retire-replace-fixture', now(), now())`,
+      );
+      await admin.query(
+        `INSERT INTO persona_community_bindings
+           (persona_id, account_id, community_id, binding_source)
+         VALUES ('persona-replace-current', 'account-replace-a', 'persona-replace-home', 'first_membership'),
+                ('persona-replace-next', 'account-replace-a', 'persona-replace-home', 'persona_creation'),
+                ('persona-replace-foreign', 'account-replace-a', 'persona-replace-away', 'first_membership')`,
+      );
+      await admin.query(
+        `INSERT INTO persona_role_presentations (community_id, account_id, persona_id)
+         VALUES ('persona-replace-home', 'account-replace-a', 'persona-replace-current')`,
+      );
+      await admin.query(
+        `INSERT INTO persona_activity_presentations (community_id, account_id, persona_id)
+         VALUES ('persona-replace-home', 'account-replace-a', 'persona-replace-current')`,
+      );
+      await admin.query("SET session_replication_role = origin");
+      const wallets = makeControlPlanePersonaWalletRepository();
+      const retire = (replacementPersonaId?: string) =>
+        runExit(
+          connection,
+          wallets.retire({
+            accountId: "account-replace-a",
+            personaId: "persona-replace-current",
+            idempotencyKey: "retire-replace-current",
+            ...(replacementPersonaId === undefined ? {} : { replacementPersonaId }),
+          }),
+        );
+
+      // Without a designation the retirement is rejected and nothing changes.
+      expect(failureOf(await retire())).toEqual(
+        new PersonaWalletStoreConflict({ reason: "replacement-required" }),
+      );
+      // A persona bound to another community can never take the presentation.
+      expect(failureOf(await retire("persona-replace-foreign"))).toEqual(
+        new PersonaWalletStoreConflict({ reason: "replacement-required" }),
+      );
+      let unchanged = await admin.query(
+        `SELECT status FROM personas WHERE persona_id = 'persona-replace-current'`,
+      );
+      expect(unchanged.rows[0]?.status).toBe("active");
+      unchanged = await admin.query(
+        `SELECT persona_id FROM persona_role_presentations
+          WHERE community_id = 'persona-replace-home' AND account_id = 'account-replace-a'`,
+      );
+      expect(unchanged.rows[0]?.persona_id).toBe("persona-replace-current");
+
+      // The designated same-community replacement takes both presentations
+      // atomically with the retirement; bindings never move.
+      const retired = await run(
+        connection,
+        wallets.retire({
+          accountId: "account-replace-a",
+          personaId: "persona-replace-current",
+          idempotencyKey: "retire-replace-current",
+          replacementPersonaId: "persona-replace-next",
+        }),
+      );
+      expect(retired).toMatchObject({
+        persona_id: "persona-replace-current",
+        status: "retired",
+        replacement_persona_id: "persona-replace-next",
+      });
+      const state = await admin.query<{
+        readonly persona_status: string;
+        readonly role_persona: string;
+        readonly activity_persona: string;
+        readonly wallet_status: string;
+        readonly current_binding: string;
+        readonly next_binding: string;
+      }>(
+        `SELECT (SELECT status FROM personas WHERE persona_id = 'persona-replace-current') AS persona_status,
+                (SELECT persona_id FROM persona_role_presentations
+                  WHERE community_id = 'persona-replace-home'
+                    AND account_id = 'account-replace-a') AS role_persona,
+                (SELECT persona_id FROM persona_activity_presentations
+                  WHERE community_id = 'persona-replace-home'
+                    AND account_id = 'account-replace-a') AS activity_persona,
+                (SELECT status FROM persona_wallet_assignments
+                  WHERE persona_id = 'persona-replace-current') AS wallet_status,
+                (SELECT community_id FROM persona_community_bindings
+                  WHERE persona_id = 'persona-replace-current') AS current_binding,
+                (SELECT community_id FROM persona_community_bindings
+                  WHERE persona_id = 'persona-replace-next') AS next_binding`,
+      );
+      expect(state.rows).toEqual([
+        {
+          persona_status: "retired",
+          role_persona: "persona-replace-next",
+          activity_persona: "persona-replace-next",
+          wallet_status: "tombstoned",
+          current_binding: "persona-replace-home",
+          next_binding: "persona-replace-home",
+        },
+      ]);
+    });
+    completedTestCount += 1;
+  });
+
+  test("creates additional personas born bound to the requested community", async () => {
+    await withSchema(async (admin, connection) => {
+      await admin.query(
+        "INSERT INTO users (user_id) VALUES ('account-born-a'), ('account-born-b')",
+      );
+      await seedBornBoundCommunity(admin, "persona-born-home", ["account-born-a"]);
+      const repository = makeControlPlanePersonaRepository();
+
+      // Without an active membership the creation is a closed conflict and
+      // nothing is written (spec 014 section 10.2).
+      const denied = await runExit(
+        connection,
+        repository.create({
+          accountId: "account-born-b",
+          idempotencyKey: "born-denied",
+          intent: {
+            displayName: null,
+            bio: null,
+            preferredLocale: null,
+            communityId: "persona-born-home",
+          },
+          personaId: "persona_born_denied",
+          createdAt: "2026-08-24T12:00:00.000Z",
+        }),
+      );
+      expect(failureOf(denied)).toEqual(
+        new PersonaStoreConflict({ reason: "membership-required" }),
+      );
+      const deniedRows = await admin.query(
+        "SELECT count(*)::int AS count FROM personas WHERE persona_id = 'persona_born_denied'",
+      );
+      expect(deniedRows.rows[0]?.count).toBe(0);
+
+      // A member's persona is born bound in the creation transaction.
+      const input = {
+        accountId: "account-born-a",
+        idempotencyKey: "born-member",
+        intent: {
+          displayName: "Born Bound",
+          bio: null,
+          preferredLocale: null,
+          communityId: "persona-born-home",
+        },
+        personaId: "persona_born_member",
+        createdAt: "2026-08-24T12:00:00.000Z",
+      };
+      const created = await run(connection, repository.create(input));
+      expect(created).toMatchObject({ persona_id: "persona_born_member", status: "pending" });
+      const binding = await admin.query<{
+        readonly account_id: string;
+        readonly community_id: string;
+        readonly binding_source: string;
+      }>(
+        "SELECT account_id, community_id, binding_source FROM persona_community_bindings WHERE persona_id = $1",
+        ["persona_born_member"],
+      );
+      expect(binding.rows).toEqual([
+        {
+          account_id: "account-born-a",
+          community_id: "persona-born-home",
+          binding_source: "persona_creation",
+        },
+      ]);
+
+      // Replay is idempotent; a changed target community cannot retarget it.
+      expect(await run(connection, repository.create({ ...input }))).toEqual(created);
+      const retargeted = await runExit(
+        connection,
+        repository.create({
+          ...input,
+          intent: { ...input.intent, communityId: "persona-sibling-home" },
+        }),
+      );
+      expect(failureOf(retargeted)).toEqual(
+        new PersonaStoreConflict({ reason: "idempotency-mismatch" }),
+      );
+      const bindings = await admin.query(
+        "SELECT count(*)::int AS count FROM persona_community_bindings WHERE persona_id = 'persona_born_member'",
+      );
+      expect(bindings.rows[0]?.count).toBe(1);
     });
     completedTestCount += 1;
   });

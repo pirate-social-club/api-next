@@ -313,6 +313,21 @@ CREATE FUNCTION active_community_effect(expected_community_id text, expected_use
   )
 $$;
 
+CREATE FUNCTION active_owned_community_persona(expected_account_id text, expected_persona_id text, expected_community_id text) RETURNS boolean
+    LANGUAGE sql STABLE
+    AS $$
+  SELECT EXISTS (
+    SELECT 1
+      FROM personas AS persona
+      JOIN persona_community_bindings AS binding
+        ON binding.persona_id = persona.persona_id
+       AND binding.community_id = expected_community_id
+     WHERE persona.account_id = expected_account_id
+       AND persona.persona_id = expected_persona_id
+       AND persona.status = 'active'
+  )
+$$;
+
 CREATE FUNCTION active_owned_persona(expected_account_id text, expected_persona_id text) RETURNS boolean
     LANGUAGE sql STABLE
     AS $$
@@ -8554,6 +8569,17 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION guard_persona_community_binding() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    RAISE EXCEPTION 'persona community binding is immutable';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
 CREATE FUNCTION guard_persona_wallet_assignment() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -10664,6 +10690,120 @@ CREATE FUNCTION operator_managed_registry_has_active_root(expected_reference tex
   )
 $$;
 
+CREATE FUNCTION persona_community_binding_evidence_digest_v1() RETURNS text
+    LANGUAGE sql STABLE
+    AS $$
+  SELECT encode(
+    sha256(
+      convert_to(
+        coalesce(
+          string_agg(
+            evidence.persona_id || ':' || evidence.account_id || ':' ||
+              evidence.community_id || ':' || evidence.evidence_count::text,
+            E'\n'
+            ORDER BY evidence.persona_id, evidence.account_id, evidence.community_id
+          ),
+          ''
+        ),
+        'UTF8'
+      )
+    ),
+    'hex'
+  )
+    FROM persona_community_binding_evidence_v1() AS evidence
+$$;
+
+CREATE FUNCTION persona_community_binding_evidence_v1() RETURNS TABLE(persona_id text, account_id text, community_id text, evidence_count bigint)
+    LANGUAGE plpgsql STABLE
+    AS $$
+BEGIN
+  RETURN QUERY
+  SELECT source.persona_id, source.account_id, source.community_id,
+         count(*)::BIGINT AS evidence_count
+    FROM (
+      SELECT post.author_persona_id AS persona_id,
+             post.author_user_id AS account_id,
+             post.community_id
+        FROM posts AS post
+      UNION ALL
+      SELECT comment.author_persona_id,
+             comment.author_user_id,
+             comment.community_id
+        FROM comments AS comment
+      UNION ALL
+      SELECT submission.author_persona_id,
+             submission.actor_user_id,
+             submission.community_id
+        FROM text_content_submissions AS submission
+      UNION ALL
+      SELECT submission.author_persona_id,
+             submission.actor_user_id,
+             submission.community_id
+        FROM media_post_submissions AS submission
+      UNION ALL
+      SELECT reservation.actor_persona_id,
+             reservation.actor_user_id,
+             reservation.community_id
+        FROM media_upload_reservations AS reservation
+      UNION ALL
+      SELECT grant_row.owner_persona_id,
+             grant_row.owner_account_id,
+             grant_row.community_id
+        FROM handle_grants AS grant_row
+      UNION ALL
+      SELECT role_presentation.persona_id,
+             role_presentation.account_id,
+             role_presentation.community_id
+        FROM persona_role_presentations AS role_presentation
+      UNION ALL
+      SELECT activity_presentation.persona_id,
+             activity_presentation.account_id,
+             activity_presentation.community_id
+        FROM persona_activity_presentations AS activity_presentation
+      UNION ALL
+      SELECT study_session.persona_id,
+             study_session.account_id,
+             study_session.community_id
+        FROM study_sessions AS study_session
+      UNION ALL
+      SELECT karaoke_session.persona_id,
+             karaoke_session.account_id,
+             karaoke_session.community_id
+        FROM karaoke_sessions AS karaoke_session
+      UNION ALL
+      SELECT qualification.persona_id,
+             qualification.account_id,
+             qualification.community_id
+        FROM activity_qualifications AS qualification
+    ) AS source
+   GROUP BY source.persona_id, source.account_id, source.community_id;
+  IF to_regclass('dance_choreographies') IS NOT NULL THEN
+    RETURN QUERY
+    SELECT choreography.creator_persona_id,
+           choreography.creator_account_id,
+           choreography.community_id,
+           1::BIGINT AS evidence_count
+      FROM dance_choreographies AS choreography;
+  END IF;
+  IF to_regclass('dance_sessions') IS NOT NULL THEN
+    RETURN QUERY
+    SELECT dance_session.persona_id,
+           dance_session.account_id,
+           dance_session.community_id,
+           1::BIGINT AS evidence_count
+      FROM dance_sessions AS dance_session;
+  END IF;
+  IF to_regclass('study_sessions_v2') IS NOT NULL THEN
+    RETURN QUERY
+    SELECT study_session.persona_id,
+           study_session.account_id,
+           study_session.community_id,
+           1::BIGINT AS evidence_count
+      FROM study_sessions_v2 AS study_session;
+  END IF;
+END
+$$;
+
 CREATE FUNCTION populate_media_persona_lineage() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -12018,12 +12158,14 @@ CREATE FUNCTION public_persona_projection(expected_persona_id text) RETURNS json
   SELECT jsonb_build_object(
     'persona_id', persona.persona_id,
     'object', 'persona',
-    'display_name', profile.display_name,
-    'avatar_ref', profile.avatar_ref,
+    'display_name', COALESCE(profile.display_name, pending_profile.display_name),
+    'avatar_ref', COALESCE(profile.avatar_ref, pending_profile.avatar_ref),
     'primary_public_handle', handle.label_display
   )
     FROM personas AS persona
-    JOIN persona_profiles AS profile ON profile.persona_id = persona.persona_id
+    LEFT JOIN persona_profiles AS profile ON profile.persona_id = persona.persona_id
+    LEFT JOIN persona_pending_profiles AS pending_profile
+      ON pending_profile.persona_id = persona.persona_id
     LEFT JOIN LATERAL (
       SELECT candidate.label_display
         FROM public_handle_index AS candidate
@@ -12033,7 +12175,7 @@ CREATE FUNCTION public_persona_projection(expected_persona_id text) RETURNS json
        LIMIT 1
     ) AS handle ON true
    WHERE persona.persona_id = expected_persona_id
-     AND persona.status = 'active'
+     AND persona.status IN ('active', 'pending_wallet')
 $$;
 
 CREATE FUNCTION raise_text_rating_with_descendants_v1(target_community_id text, target_kind text, target_resource_id text, transition_at timestamp with time zone) RETURNS integer
@@ -12390,7 +12532,20 @@ CREATE FUNCTION require_active_role_persona() RETURNS trigger
     AS $$
 BEGIN
   IF NOT active_owned_persona(NEW.account_id, NEW.persona_id) THEN
-    RAISE EXCEPTION 'active owned persona required';
+    IF NOT EXISTS (
+      SELECT 1
+        FROM personas AS persona
+        JOIN persona_community_bindings AS binding
+          ON binding.persona_id = persona.persona_id
+         AND binding.account_id = persona.account_id
+       WHERE persona.persona_id = NEW.persona_id
+         AND persona.account_id = NEW.account_id
+         AND persona.status = 'pending_wallet'
+         AND binding.community_id = NEW.community_id
+         AND binding.binding_source = 'community_creation'
+    ) THEN
+      RAISE EXCEPTION 'active owned persona required';
+    END IF;
   END IF;
   RETURN NEW;
 END
@@ -18980,6 +19135,7 @@ CREATE TABLE community_creation_intents (
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     creation_contract_version text DEFAULT 'legacy_slug_v1'::text NOT NULL,
+    minted_persona_id text,
     CONSTRAINT community_creation_intents_canonical_policy_hash_check CHECK ((canonical_policy_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT community_creation_intents_canonical_policy_revision_check CHECK ((canonical_policy_revision > 0)),
     CONSTRAINT community_creation_intents_committed_shape CHECK ((((status = 'committed'::text) AND (committed_community_id IS NOT NULL) AND (committed_resource_href IS NOT NULL) AND (committed_resource_href ~~ '/%'::text)) OR ((status <> 'committed'::text) AND (committed_community_id IS NULL) AND (committed_resource_href IS NULL)))),
@@ -18989,7 +19145,7 @@ CREATE TABLE community_creation_intents (
     CONSTRAINT community_creation_intents_draft_check CHECK ((jsonb_typeof(draft) = 'object'::text)),
     CONSTRAINT community_creation_intents_identifiers_not_blank CHECK (((btrim(intent_id) <> ''::text) AND (intent_id = btrim(intent_id)) AND (btrim(actor_id) <> ''::text) AND (actor_id = btrim(actor_id)) AND (btrim(create_idempotency_key) <> ''::text) AND (create_idempotency_key = btrim(create_idempotency_key)) AND ((verification_provider_id IS NULL) OR ((btrim(verification_provider_id) <> ''::text) AND (verification_provider_id = btrim(verification_provider_id)))) AND ((provider_configuration_ref IS NULL) OR ((btrim(provider_configuration_ref) <> ''::text) AND (provider_configuration_ref = btrim(provider_configuration_ref)))) AND ((provider_configuration_version IS NULL) OR ((btrim(provider_configuration_version) <> ''::text) AND (provider_configuration_version = btrim(provider_configuration_version)))))),
     CONSTRAINT community_creation_intents_optional_route_v2_committed_shape CHECK (((creation_contract_version <> 'optional_route_v2'::text) OR (status <> 'committed'::text) OR ((committed_community_id ~ '^community_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'::text) AND (committed_resource_href = ('/c/'::text || committed_community_id))))),
-    CONSTRAINT community_creation_intents_optional_route_v2_draft_shape CHECK (((creation_contract_version <> 'optional_route_v2'::text) OR ((jsonb_typeof(draft) = 'object'::text) AND (draft ? 'persona_id'::text) AND (draft ? 'name'::text) AND (draft ? 'description'::text) AND (draft ? 'policy'::text) AND (((((draft - 'persona_id'::text) - 'name'::text) - 'description'::text) - 'policy'::text) = '{}'::jsonb) AND (jsonb_typeof((draft -> 'persona_id'::text)) = 'string'::text) AND (btrim((draft ->> 'persona_id'::text)) <> ''::text) AND (jsonb_typeof((draft -> 'name'::text)) = 'string'::text) AND (btrim((draft ->> 'name'::text)) <> ''::text) AND (jsonb_typeof((draft -> 'description'::text)) = ANY (ARRAY['string'::text, 'null'::text])) AND (jsonb_typeof((draft -> 'policy'::text)) = 'object'::text) AND (NOT (draft ? 'slug'::text)) AND (NOT (draft ? 'route_request'::text))))),
+    CONSTRAINT community_creation_intents_optional_route_v2_draft_shape CHECK (((creation_contract_version <> 'optional_route_v2'::text) OR ((jsonb_typeof(draft) = 'object'::text) AND (draft ? 'persona'::text) AND (draft ? 'name'::text) AND (draft ? 'description'::text) AND (draft ? 'policy'::text) AND (((((draft - 'persona'::text) - 'name'::text) - 'description'::text) - 'policy'::text) = '{}'::jsonb) AND (jsonb_typeof((draft -> 'persona'::text)) = 'object'::text) AND (jsonb_typeof(((draft -> 'persona'::text) -> 'kind'::text)) = 'string'::text) AND (((draft -> 'persona'::text) ->> 'kind'::text) = ANY (ARRAY['existing'::text, 'create_new'::text])) AND (((((draft -> 'persona'::text) ->> 'kind'::text) = 'existing'::text) AND ((((draft -> 'persona'::text) - 'kind'::text) - 'persona_id'::text) = '{}'::jsonb) AND (jsonb_typeof(((draft -> 'persona'::text) -> 'persona_id'::text)) = 'string'::text) AND (btrim(((draft -> 'persona'::text) ->> 'persona_id'::text)) <> ''::text)) OR ((((draft -> 'persona'::text) ->> 'kind'::text) = 'create_new'::text) AND (((draft -> 'persona'::text) - 'kind'::text) = '{}'::jsonb))) AND (jsonb_typeof((draft -> 'name'::text)) = 'string'::text) AND (btrim((draft ->> 'name'::text)) <> ''::text) AND (jsonb_typeof((draft -> 'description'::text)) = ANY (ARRAY['string'::text, 'null'::text])) AND (jsonb_typeof((draft -> 'policy'::text)) = 'object'::text) AND (NOT (draft ? 'slug'::text)) AND (NOT (draft ? 'route_request'::text))))),
     CONSTRAINT community_creation_intents_provider_configuration_kind_check CHECK ((provider_configuration_kind = ANY (ARRAY['managed'::text, 'dynamic'::text]))),
     CONSTRAINT community_creation_intents_revision_check CHECK ((revision > 0)),
     CONSTRAINT community_creation_intents_route_v1_committed_href CHECK (((creation_contract_version <> 'route_v1'::text) OR (status <> 'committed'::text) OR (committed_resource_href ~~ '/c/%'::text))),
@@ -24136,6 +24292,16 @@ CREATE TABLE persona_activity_presentations (
     CONSTRAINT persona_activity_presentations_time_order CHECK ((updated_at >= created_at))
 );
 
+CREATE TABLE persona_community_bindings (
+    persona_id text NOT NULL,
+    account_id text NOT NULL,
+    community_id text NOT NULL,
+    binding_source text NOT NULL,
+    bound_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT persona_community_bindings_bound_at_not_future CHECK ((bound_at <= clock_timestamp())),
+    CONSTRAINT persona_community_bindings_source_check CHECK ((binding_source = ANY (ARRAY['first_membership'::text, 'community_creation'::text, 'persona_creation'::text, 'migration_single_evidence'::text, 'explicit_migration_resolution'::text])))
+);
+
 CREATE TABLE persona_create_actions (
     account_id text NOT NULL,
     endpoint_template text DEFAULT '/personas'::text NOT NULL,
@@ -27561,6 +27727,12 @@ ALTER TABLE ONLY persona_activity_presentation_actions
 ALTER TABLE ONLY persona_activity_presentations
     ADD CONSTRAINT persona_activity_presentations_pkey PRIMARY KEY (community_id, account_id);
 
+ALTER TABLE ONLY persona_community_bindings
+    ADD CONSTRAINT persona_community_bindings_persona_id_key UNIQUE (persona_id);
+
+ALTER TABLE ONLY persona_community_bindings
+    ADD CONSTRAINT persona_community_bindings_pkey PRIMARY KEY (community_id, account_id, persona_id);
+
 ALTER TABLE ONLY persona_create_actions
     ADD CONSTRAINT persona_create_actions_account_id_persona_id_key UNIQUE (account_id, persona_id);
 
@@ -29219,6 +29391,8 @@ CREATE TRIGGER persona_activity_presentations_active_persona BEFORE INSERT OR UP
 
 CREATE TRIGGER persona_activity_presentations_change_guard BEFORE DELETE OR UPDATE ON persona_activity_presentations FOR EACH ROW EXECUTE FUNCTION guard_persona_activity_presentation();
 
+CREATE TRIGGER persona_community_binding_immutable BEFORE DELETE OR UPDATE ON persona_community_bindings FOR EACH ROW EXECUTE FUNCTION guard_persona_community_binding();
+
 CREATE TRIGGER persona_create_actions_append_only BEFORE DELETE OR UPDATE ON persona_create_actions FOR EACH ROW EXECUTE FUNCTION prevent_persona_create_action_change();
 
 CREATE TRIGGER persona_pending_first_handles_cross_surface_guard BEFORE INSERT OR UPDATE OF handle_id, label_normalized ON persona_pending_first_handles FOR EACH ROW EXECUTE FUNCTION guard_first_persona_handle_reservation();
@@ -29644,6 +29818,9 @@ ALTER TABLE ONLY community_creation_intents
 
 ALTER TABLE ONLY community_creation_intents
     ADD CONSTRAINT community_creation_intents_committed_community_id_fkey FOREIGN KEY (committed_community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY community_creation_intents
+    ADD CONSTRAINT community_creation_intents_minted_persona_fk FOREIGN KEY (minted_persona_id) REFERENCES personas(persona_id);
 
 ALTER TABLE ONLY community_creation_quota_approvals
     ADD CONSTRAINT community_creation_quota_approvals_actor_id_fkey FOREIGN KEY (actor_id) REFERENCES users(user_id);
@@ -31068,10 +31245,16 @@ ALTER TABLE ONLY persona_activity_presentation_actions
     ADD CONSTRAINT persona_activity_presentation_actions_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
 
 ALTER TABLE ONLY persona_activity_presentations
-    ADD CONSTRAINT persona_activity_presentations_account_id_persona_id_fkey FOREIGN KEY (account_id, persona_id) REFERENCES personas(account_id, persona_id);
+    ADD CONSTRAINT persona_activity_presentations_community_binding_fkey FOREIGN KEY (community_id, account_id, persona_id) REFERENCES persona_community_bindings(community_id, account_id, persona_id);
 
 ALTER TABLE ONLY persona_activity_presentations
     ADD CONSTRAINT persona_activity_presentations_community_id_account_id_fkey FOREIGN KEY (community_id, account_id) REFERENCES community_memberships(community_id, user_id);
+
+ALTER TABLE ONLY persona_community_bindings
+    ADD CONSTRAINT persona_community_bindings_account_id_persona_id_fkey FOREIGN KEY (account_id, persona_id) REFERENCES personas(account_id, persona_id);
+
+ALTER TABLE ONLY persona_community_bindings
+    ADD CONSTRAINT persona_community_bindings_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
 
 ALTER TABLE ONLY persona_create_actions
     ADD CONSTRAINT persona_create_actions_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
@@ -31095,7 +31278,7 @@ ALTER TABLE ONLY persona_retirement_replays
     ADD CONSTRAINT persona_retirement_replays_persona_id_fkey FOREIGN KEY (persona_id) REFERENCES personas(persona_id);
 
 ALTER TABLE ONLY persona_role_presentations
-    ADD CONSTRAINT persona_role_presentations_account_id_persona_id_fkey FOREIGN KEY (account_id, persona_id) REFERENCES personas(account_id, persona_id);
+    ADD CONSTRAINT persona_role_presentations_community_binding_fkey FOREIGN KEY (community_id, account_id, persona_id) REFERENCES persona_community_bindings(community_id, account_id, persona_id);
 
 ALTER TABLE ONLY persona_role_presentations
     ADD CONSTRAINT persona_role_presentations_community_id_account_id_fkey FOREIGN KEY (community_id, account_id) REFERENCES community_memberships(community_id, user_id);

@@ -112,6 +112,7 @@ describe("account-owned persona use cases", () => {
           accountId: "account_owner",
           body: {
             idempotency_key: "persona-create-1",
+            community_id: "community_pokemon",
             display_name: "Squirtle",
             preferred_locale: "en",
           },
@@ -143,6 +144,7 @@ describe("account-owned persona use cases", () => {
       displayName: "Squirtle",
       bio: null,
       preferredLocale: "en",
+      communityId: "community_pokemon",
     });
     expect(persona).toMatchObject({
       persona_id: "persona_squirtle",
@@ -155,7 +157,10 @@ describe("account-owned persona use cases", () => {
   test("maps idempotency mismatches to a closed conflict", async () => {
     const exit = await Effect.runPromiseExit(
       createPersona(
-        { accountId: "account_owner", body: { idempotency_key: "reused-key" } },
+        {
+          accountId: "account_owner",
+          body: { idempotency_key: "reused-key", community_id: "community_pokemon" },
+        },
         {
           store: storeWith({
             create: () => Effect.fail(new PersonaStoreConflict({ reason: "idempotency-mismatch" })),

@@ -15,8 +15,9 @@ import {
 } from "./creation-intents.ts";
 
 const actor = { userId: "user-alice", kind: "user" as const };
+const creatorPersonaId = "persona-community-owner";
 const draft = {
-  persona_id: "persona-community-owner",
+  persona: { kind: "existing" as const, persona_id: creatorPersonaId },
   name: "Jazleeuw",
   description: "A community",
   policy: {
@@ -31,11 +32,11 @@ const draft = {
   },
 };
 const persona = {
-  persona_id: draft.persona_id,
+  persona_id: creatorPersonaId,
   object: "persona" as const,
   status: "active" as const,
   profile: {
-    persona_id: draft.persona_id,
+    persona_id: creatorPersonaId,
     object: "persona_profile" as const,
     revision: 1,
     display_name: "Community Captain",
@@ -239,6 +240,49 @@ describe("community creation intent application use cases", () => {
       ).rejects.toBeInstanceOf(NotFound);
     }
     expect(createCalls).toBe(0);
+  });
+
+  test("resolves a create_new choice without any persona selection lookup", async () => {
+    let lookups = 0;
+    let createDraft: unknown = null;
+    const createNewDraft = { ...draft, persona: { kind: "create_new" as const } };
+    const scoped = services({
+      create: ({ body }) => {
+        createDraft = body.draft;
+        return Effect.succeed({ document, outcome: "fresh" });
+      },
+    });
+    const countingPersonaStore = {
+      findOwned: () => {
+        lookups += 1;
+        return Effect.succeed(persona);
+      },
+    };
+
+    await expect(
+      Effect.runPromise(
+        createCommunityCreationIntent(
+          { actor, body: { draft: createNewDraft, idempotency_key: "create-new-1" } },
+          { ...scoped, personaStore: countingPersonaStore },
+        ),
+      ),
+    ).resolves.toEqual({ document, outcome: "fresh" });
+    expect(createDraft).toEqual(createNewDraft);
+    expect(lookups).toBe(0);
+
+    await expect(
+      Effect.runPromise(
+        updateCommunityCreationIntent(
+          {
+            actor,
+            intentId: "intent-1",
+            body: { expected_revision: 2, idempotency_key: "update-new-1", draft: createNewDraft },
+          },
+          { ...scoped, personaStore: countingPersonaStore },
+        ),
+      ),
+    ).resolves.toMatchObject({ revision: 2 });
+    expect(lookups).toBe(0);
   });
 
   test("passes expected revisions and maps stale writers to conflict", async () => {

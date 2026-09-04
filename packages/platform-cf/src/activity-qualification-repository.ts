@@ -492,6 +492,7 @@ export function makeControlPlaneActivityQualificationRepository() {
           const authority = yield* db.execute<Row>({
             label: "activity-qualification.study-start.authority",
             text: `SELECT active_owned_persona($1,$2) AS persona_eligible,
+                          active_owned_community_persona($1,$2,$3) AS binding_eligible,
                           active_community_effect($3,$1) AS community_eligible,
                           clock.timezone
                      FROM users AS account
@@ -504,7 +505,11 @@ export function makeControlPlaneActivityQualificationRepository() {
           if (authority.rows.length !== 1 || authorityRow === undefined) {
             return yield* Effect.fail(rejected("persona-ineligible"));
           }
-          if (authorityRow.persona_eligible !== true || authorityRow.community_eligible !== true) {
+          if (
+            authorityRow.persona_eligible !== true ||
+            authorityRow.binding_eligible !== true ||
+            authorityRow.community_eligible !== true
+          ) {
             return yield* Effect.fail(rejected("persona-ineligible"));
           }
           const pinnedTimezone = nullableText(authorityRow, "timezone");
@@ -566,6 +571,24 @@ export function makeControlPlaneActivityQualificationRepository() {
                 return session;
               }
 
+              const startAuthority = yield* transaction.execute<Row>({
+                label: "activity-qualification.study-start.authority-locked",
+                text: `SELECT active_owned_persona($1,$2) AS persona_eligible,
+                              active_owned_community_persona($1,$2,$3) AS binding_eligible,
+                              active_community_effect($3,$1) AS community_eligible`,
+                values: [input.accountId, input.personaId, input.communityId],
+                readonly: false,
+              });
+              const startAuthorityRow = startAuthority.rows[0];
+              if (
+                startAuthority.rows.length !== 1 ||
+                startAuthorityRow === undefined ||
+                startAuthorityRow.persona_eligible !== true ||
+                startAuthorityRow.binding_eligible !== true ||
+                startAuthorityRow.community_eligible !== true
+              ) {
+                return yield* Effect.fail(rejected("persona-ineligible"));
+              }
               const clock = yield* transaction.execute<Row>({
                 label: "activity-qualification.study-start.clock",
                 text: `SELECT timezone FROM account_streak_clocks
@@ -1104,6 +1127,7 @@ export function makeControlPlaneActivityQualificationRepository() {
               const eligible = yield* transaction.execute<Row>({
                 label: "activity-qualification.presentation.authority",
                 text: `SELECT active_owned_persona($1,$2) AS persona_eligible,
+                              active_owned_community_persona($1,$2,$3) AS binding_eligible,
                               active_community_effect($3,$1) AS community_eligible`,
                 values: [input.accountId, input.personaId, input.communityId],
                 readonly: false,
@@ -1113,6 +1137,7 @@ export function makeControlPlaneActivityQualificationRepository() {
                 eligible.rows.length !== 1 ||
                 row === undefined ||
                 row.persona_eligible !== true ||
+                row.binding_eligible !== true ||
                 row.community_eligible !== true
               ) {
                 return yield* Effect.fail(rejected("persona-ineligible"));
@@ -1196,9 +1221,9 @@ const leaderboard = (
       const rows = yield* db.execute<Row>({
         label: "activity-qualification.leaderboard.read",
         text: `WITH ranked AS (
-                 SELECT streak.account_id, streak.current_count, streak.best_count,
-                        streak.started_day, streak.last_day, streak.total_days,
-                        presentation.persona_id,
+                 SELECT streak.community_id, streak.account_id, streak.current_count,
+                        streak.best_count, streak.started_day, streak.last_day,
+                        streak.total_days, presentation.persona_id,
                         rank() OVER (
                           ORDER BY streak.current_count DESC, streak.best_count DESC
                         ) AS rank
@@ -1211,18 +1236,19 @@ const leaderboard = (
                     AND streak.active_until_at > $${postId === null ? "2" : "3"}::timestamptz
                )
                SELECT ranked.*, profile.display_name, profile.avatar_ref,
-                      handle.label_display AS primary_public_handle
+                      handle.display_identifier AS primary_public_handle
                  FROM ranked
                  JOIN personas AS persona ON persona.persona_id=ranked.persona_id
                                       AND persona.account_id=ranked.account_id
                                       AND persona.status='active'
                  JOIN persona_profiles AS profile ON profile.persona_id=ranked.persona_id
                  LEFT JOIN LATERAL (
-                   SELECT candidate.label_display
-                     FROM public_handle_index AS candidate
-                    WHERE candidate.owner_persona_id=ranked.persona_id
+                   SELECT candidate.display_identifier
+                     FROM handle_grants AS candidate
+                    WHERE candidate.community_id=ranked.community_id
+                      AND candidate.owner_persona_id=ranked.persona_id
                       AND candidate.status='active'
-                    ORDER BY candidate.updated_at DESC, candidate.handle_id
+                    ORDER BY candidate.issued_at DESC, candidate.grant_id
                     LIMIT 1
                  ) AS handle ON true
                 WHERE ranked.rank <= $${postId === null ? "3" : "4"}

@@ -281,7 +281,7 @@ describe("HTTP product handlers", () => {
 
     await handlers.GetCommunityPreview(request({ query: { locale: "ka" }, principal }));
     await handlers.GetJoinEligibility(request({ principal }));
-    await handlers.JoinCommunity(request({ principal }));
+    await handlers.JoinCommunity(request({ principal, body: { persona: { kind: "create_new" } } }));
     await handlers.FollowCommunity(request({ principal, body: {} }));
     await handlers.UnfollowCommunity(request({ principal, body: {} }));
 
@@ -298,7 +298,7 @@ describe("HTTP product handlers", () => {
     expect(observed.join).toEqual({
       communityId: "community-a",
       actor: { userId: "admin-a", kind: "admin", scopes: ["community:write"] },
-      body: {},
+      body: { persona: { kind: "create_new" } },
     });
     expect(observed.follow).toEqual({
       communityId: "community-a",
