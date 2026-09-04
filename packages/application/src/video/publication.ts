@@ -1065,6 +1065,7 @@ export async function retryVideoPoster(
     status: "processing",
     phase: "analysis",
     failureCode: null,
+    posterTimestampMs: body.poster_timestamp_ms,
     decision: null,
     reviewReasons: [],
     approvedHolds: [],

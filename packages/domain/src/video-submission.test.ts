@@ -170,6 +170,14 @@ describe("original-audio video policy", () => {
         null,
       ),
     ).toBe("probe");
+    expect(validateVideoTrustedAnalysis(state, analysis(), null)).toBeNull();
+    expect(
+      validateVideoTrustedAnalysis(
+        state,
+        { ...analysis(), probe: { ...analysis().probe, durationMs: 180_001 } },
+        null,
+      ),
+    ).toBe("probe");
     expect(
       validateVideoTrustedAnalysis(
         state,

@@ -207,6 +207,7 @@ export type VideoSubmissionState = Readonly<{
   reservationId: string;
   intent: "original_audio";
   caption: string | null;
+  posterTimestampMs: number | null;
   authorDeclaredRating: ContentRating;
   creationRevision: number;
   videoRevision: number;
@@ -238,7 +239,12 @@ const positiveInteger = (value: number): boolean => Number.isSafeInteger(value) 
 export function validateVideoTrustedAnalysis(
   state: Pick<
     VideoSubmissionState,
-    "operationId" | "videoRevision" | "video" | "caption" | "analysisRevision"
+    | "operationId"
+    | "videoRevision"
+    | "video"
+    | "caption"
+    | "analysisRevision"
+    | "posterTimestampMs"
   >,
   analysis: VideoTrustedAnalysis,
   canonicalCaptionSha256: string | null,
@@ -277,17 +283,28 @@ export function validateVideoTrustedAnalysis(
     analysis.audio.intent !== "original_audio" ||
     !present(soundtrack.extractedAudioRef) ||
     !SHA256.test(soundtrack.extractedAudioSha256) ||
-    !present(soundtrack.policyRevision)
+    !present(soundtrack.policyRevision) ||
+    (soundtrack.verification === null
+      ? !present(soundtrack.evidenceRef)
+      : !present(soundtrack.verification.evidenceRef) ||
+        !present(soundtrack.verification.adapterRevision))
   )
     return "soundtrack";
   const frames = analysis.frames.extracted;
   const roles: readonly VideoFrameRole[] = ["poster", "first", "midpoint"];
+  const expectedPosterTimestamp =
+    state.posterTimestampMs ?? VIDEO_POSTER_POLICY_V1.defaultPosterTimestampMs;
   if (
     analysis.frames.posterPolicyRevision !== VIDEO_POSTER_POLICY_V1.policyRevision ||
+    !present(analysis.frames.evidenceRef) ||
+    !present(analysis.frames.adapterRevision) ||
     frames.length !== roles.length ||
     frames.some(
       (frame, index) =>
         frame.role !== roles[index] ||
+        (index === 0
+          ? frame.requestedTimestampMs !== expectedPosterTimestamp
+          : frame.requestedTimestampMs !== null) ||
         !Number.isSafeInteger(frame.timestampMs) ||
         frame.timestampMs < 0 ||
         frame.timestampMs >= probe.durationMs ||
@@ -297,11 +314,16 @@ export function validateVideoTrustedAnalysis(
   )
     return "frames";
   if (
+    !present(analysis.safetyRequest.requestId) ||
+    !present(analysis.safetyRequest.evidenceRef) ||
+    !present(analysis.safetyPolicyRevision) ||
+    Object.values(analysis.adapterRevisions).some((revision) => !present(revision)) ||
     analysis.safetyRequest.frameSha256s.length !== roles.length ||
     analysis.safetyRequest.frameSha256s.some((hash, index) => hash !== frames[index]?.sha256) ||
     analysis.safetyRequest.captionSha256 !== canonicalCaptionSha256 ||
     (state.caption === null && analysis.captionSafety !== "not_applicable") ||
-    (state.caption !== null && analysis.captionSafety === "not_applicable")
+    (state.caption !== null && analysis.captionSafety === "not_applicable") ||
+    (analysis.mediaSafety === "allow" && analysis.safetyRequest.minorSafetyEvidenceRef === null)
   )
     return "safety_binding";
   return null;
@@ -359,8 +381,13 @@ export function decideOriginalAudioVideo(
     }
   }
   const reasons = new Set<VideoReviewReason>();
-  if (input.analysis.mediaSafety === "review_required") reasons.add("media_review_required");
-  if (input.analysis.captionSafety === "review_required") reasons.add("caption_review_required");
+  const safetyUnavailable = input.analysis.adapterRevisions.safety === "safety-unavailable";
+  if (safetyUnavailable) {
+    reasons.add("safety_adapter_unavailable");
+  } else {
+    if (input.analysis.mediaSafety === "review_required") reasons.add("media_review_required");
+    if (input.analysis.captionSafety === "review_required") reasons.add("caption_review_required");
+  }
   if (soundtrack.verification === null) {
     reasons.add(
       soundtrack.exhaustion === "acr_exhausted" ? "soundtrack_exhausted" : "soundtrack_skipped",
@@ -392,6 +419,7 @@ export function createOriginalVideoSubmission(
     videoRevision: 0,
     analysisRevision: 0,
     retryCount: 0,
+    posterTimestampMs: null,
     status: "processing",
     phase: "awaiting_upload",
     video: null,

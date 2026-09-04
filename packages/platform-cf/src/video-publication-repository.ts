@@ -622,7 +622,11 @@ export function makeControlPlaneVideoPublicationStore(
                 });
               }
               if (current.state.phase === "awaiting_upload") {
-                const next = { ...current.state, phase: "finalize" as const };
+                const next = {
+                  ...current.state,
+                  phase: "finalize" as const,
+                  posterTimestampMs: input.posterTimestampMs,
+                };
                 yield* updateSubmissionSnapshot(tx, {
                   prior: current.state,
                   next,
@@ -1074,6 +1078,7 @@ export function makeControlPlaneVideoPublicationStore(
                 status: "processing",
                 phase: "analysis",
                 failureCode: null,
+                posterTimestampMs: input.posterTimestampMs,
                 decision: null,
                 reviewReasons: [],
                 approvedHolds: [],
