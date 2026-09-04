@@ -103,5 +103,8 @@ describe("PostgreSQL test discovery", () => {
     expect(partition.general).toContain(
       "packages/platform-cf/src/hns-root-import-repository.pg.test.ts",
     );
+    expect(partition.general).toContain(
+      "packages/platform-cf/src/hns-community-root-import-repository.pg.test.ts",
+    );
   });
 });

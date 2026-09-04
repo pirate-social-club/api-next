@@ -1330,6 +1330,8 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "hns_dns_zone_health_operations",
         "hns_dns_zone_lifecycle_operations",
         "hns_operator_control_promotion_receipts",
+        "hns_root_health_renewal_jobs",
+        "hns_root_health_renewal_scheduler_heartbeat",
         "hns_root_import_activation_operations",
         "hns_root_import_name_proof_observations",
         "hns_root_import_observation_jobs",

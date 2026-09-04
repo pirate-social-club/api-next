@@ -3,7 +3,7 @@ import { Client } from "pg";
 type HnsRootObservationClaim = Readonly<{
   readonly observation_job_id: string;
   readonly root_import_session_id: string;
-  readonly operation_kind: "observe_root_v1" | "teardown_root_v1";
+  readonly operation_kind: "observe_root_v1" | "teardown_root_v1" | "renew_health_v1";
   readonly request_bytes: Uint8Array;
   readonly request_sha256: string;
   readonly publish_plan_bytes: Uint8Array;
@@ -15,6 +15,7 @@ type HnsRootObservationClaim = Readonly<{
 
 type HnsRootObservationFinalizeInput = Readonly<{
   readonly observation_job_id: string;
+  readonly operation_kind: HnsRootObservationClaim["operation_kind"];
   readonly executor_id: string;
   readonly lease_fence: number;
   readonly request_sha256: string;
@@ -75,10 +76,16 @@ export function makePostgresHnsRootObservationQueue(
   return {
     claim: (executorId, leaseSeconds) =>
       withClient(connectionString, async (client) => {
-        const result = await client.query<Record<string, unknown>>(
+        let result = await client.query<Record<string, unknown>>(
           "SELECT * FROM claim_hns_root_import_observation_job_v1($1,$2)",
           [executorId, leaseSeconds],
         );
+        if (result.rows.length === 0) {
+          result = await client.query<Record<string, unknown>>(
+            "SELECT * FROM claim_hns_root_health_renewal_job_v1($1,$2)",
+            [executorId, leaseSeconds],
+          );
+        }
         if (result.rows.length === 0) return null;
         if (result.rows.length !== 1)
           throw new Error("HNS observation queue returned multiple jobs");
@@ -90,7 +97,9 @@ export function makePostgresHnsRootObservationQueue(
         if (
           typeof row?.observation_job_id !== "string" ||
           typeof row.root_import_session_id !== "string" ||
-          (row.operation_kind !== "observe_root_v1" && row.operation_kind !== "teardown_root_v1") ||
+          (row.operation_kind !== "observe_root_v1" &&
+            row.operation_kind !== "teardown_root_v1" &&
+            row.operation_kind !== "renew_health_v1") ||
           requestBytes === null ||
           publishPlanBytes === null ||
           provisionResultBytes === null ||
@@ -120,8 +129,12 @@ export function makePostgresHnsRootObservationQueue(
     finalize: (input) =>
       withClient(connectionString, async (client) => {
         const ready = input.outcome === "ready";
+        const finalizer =
+          input.operation_kind === "renew_health_v1"
+            ? "finalize_hns_root_health_renewal_job_v1"
+            : "finalize_hns_root_import_observation_job_v1";
         const result = await client.query<Record<string, unknown>>(
-          "SELECT * FROM finalize_hns_root_import_observation_job_v1($1,$2,$3,$4,$5,$6,$7,$8)",
+          `SELECT * FROM ${finalizer}($1,$2,$3,$4,$5,$6,$7,$8)`,
           [
             input.observation_job_id,
             input.executor_id,

@@ -1,4 +1,7 @@
-import type { HnsEdgeStatusClock } from "@pirate/application/use-cases/hns-edge-status";
+import type {
+  HnsEdgeStatusClock,
+  HnsRootHealthRenewalStatusStore,
+} from "@pirate/application/use-cases/hns-edge-status";
 import {
   type CloudflareAccessJwtFetch,
   makeCloudflareAccessJwtValidatorV1,
@@ -26,10 +29,13 @@ export function makeProductionHnsEdgeStatusComposition(input: {
   readonly namespace?: HnsEdgeStatusKvNamespace;
   readonly access_fetch?: CloudflareAccessJwtFetch;
   readonly clock?: HnsEdgeStatusClock;
+  readonly renewal_status_store?: HnsRootHealthRenewalStatusStore;
 }): HnsEdgeStatusComposition {
   if (!input.config.HNS_EDGE_STATUS_ENABLED) return makeHnsEdgeStatusComposition(false);
   try {
-    if (input.namespace === undefined) throw new Error("missing status namespace");
+    if (input.namespace === undefined || input.renewal_status_store === undefined) {
+      throw new Error("missing status storage");
+    }
     const clock =
       input.clock ?? Object.freeze({ nowUnixSeconds: () => Math.floor(Date.now() / 1_000) });
     const accessValidator = makeCloudflareAccessJwtValidatorV1({
@@ -42,6 +48,7 @@ export function makeProductionHnsEdgeStatusComposition(input: {
     return makeHnsEdgeStatusComposition(true, {
       access_validator: accessValidator,
       store: makeCloudflareHnsEdgeStatusStore(input.namespace),
+      renewal_status_store: input.renewal_status_store,
       clock,
     });
   } catch {

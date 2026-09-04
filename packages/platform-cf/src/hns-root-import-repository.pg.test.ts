@@ -1199,6 +1199,84 @@ suite("Postgres 17 HNS root-import repository", () => {
         dns_operation_state: "finalized",
       });
       expect(state.rows[0]?.health_seconds_remaining).toBeGreaterThan(3_590);
+
+      const scheduled = await admin.query<{
+        eligible_roots: number;
+        enqueued_roots: number;
+      }>("SELECT * FROM schedule_hns_root_health_renewals_v1(25,259200,7200)");
+      expect(scheduled.rows).toMatchObject([{ eligible_roots: 1, enqueued_roots: 1 }]);
+      const renewalClaim = await admin.query<{
+        observation_job_id: string;
+        operation_kind: string;
+        request_sha256: string;
+        lease_fence: string;
+      }>("SELECT * FROM claim_hns_root_health_renewal_job_v1($1,$2)", [
+        "authority-executor",
+        60,
+      ]);
+      expect(renewalClaim.rows).toMatchObject([{ operation_kind: "renew_health_v1" }]);
+      const renewalReadiness = await makeReadinessArtifact({
+        ownershipResultHash,
+        publishPlanSha256: sha256(provisioned.planBytes),
+        provisionResultSha256: sha256(provisioned.resultBytes),
+      });
+      const renewed = await admin.query<{
+        outcome: string;
+        root_import_session_id: string;
+        session_revision: string;
+      }>("SELECT * FROM finalize_hns_root_health_renewal_job_v1($1,$2,$3,$4,$5,$6,$7,$8)", [
+        renewalClaim.rows[0]?.observation_job_id,
+        "authority-executor",
+        Number(renewalClaim.rows[0]?.lease_fence),
+        renewalClaim.rows[0]?.request_sha256,
+        "ready",
+        Buffer.from(renewalReadiness.result_bytes),
+        renewalReadiness.result_sha256,
+        null,
+      ]);
+      expect(renewed.rows).toEqual([
+        { outcome: "ready", root_import_session_id: "root-import-session", session_revision: "6" },
+      ]);
+      expect(
+        (
+          await admin.query<{ health_generation: string }>(
+            `SELECT max(health_generation) AS health_generation
+               FROM hns_dns_zone_health_observations
+              WHERE dns_zone_activation_id='dns-root-import'`,
+          )
+        ).rows[0]?.health_generation,
+      ).toBe("2");
+      const heartbeat = await admin.query<{
+        fresh: boolean;
+        freshness_threshold_seconds: number;
+      }>(
+        `SELECT last_successful_tick_at > clock_timestamp()-freshness_threshold_seconds*interval '1 second' AS fresh,
+                freshness_threshold_seconds
+           FROM hns_root_health_renewal_scheduler_heartbeat`,
+      );
+      expect(heartbeat.rows).toEqual([{ fresh: true, freshness_threshold_seconds: 7200 }]);
+
+      await admin.query("SELECT * FROM schedule_hns_root_health_renewals_v1(25,259200,7200)");
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        const boundedClaim = await admin.query<{
+          observation_job_id: string;
+          request_sha256: string;
+          lease_fence: string;
+        }>("SELECT * FROM claim_hns_root_health_renewal_job_v1($1,$2)", [
+          "authority-executor",
+          60,
+        ]);
+        const bounded = await admin.query<{ outcome: string }>(
+          "SELECT * FROM finalize_hns_root_health_renewal_job_v1($1,$2,$3,$4,'retry',NULL,NULL,'authority_unavailable')",
+          [
+            boundedClaim.rows[0]?.observation_job_id,
+            "authority-executor",
+            Number(boundedClaim.rows[0]?.lease_fence),
+            boundedClaim.rows[0]?.request_sha256,
+          ],
+        );
+        expect(bounded.rows[0]?.outcome).toBe(attempt < 3 ? "retry" : "failed");
+      }
       expect(await Effect.runPromise(Effect.scoped(store.activate(activation)))).toMatchObject({
         kind: "replayed",
         response: { replayed: true, revision: 6 },

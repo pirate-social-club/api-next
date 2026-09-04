@@ -2,6 +2,8 @@ import {
   type HnsEdgeStatusClock,
   type HnsEdgeStatusProjectionV1,
   type HnsEdgeStatusStore,
+  type HnsRootHealthRenewalStatusStore,
+  type HnsRootHealthRenewalStatusV1,
   makeHnsEdgeStatusService,
 } from "@pirate/application/use-cases/hns-edge-status";
 import type { CloudflareAccessJwtValidatorV1 } from "@pirate/platform-cf/cloudflare-access-jwt";
@@ -12,18 +14,21 @@ export type HnsEdgeStatusComposition =
       enabled: false;
       access_validator: null;
       store: null;
+      renewal_status_store: null;
       clock: null;
     }>
   | Readonly<{
       enabled: true;
       access_validator: CloudflareAccessJwtValidatorV1;
       store: HnsEdgeStatusStore;
+      renewal_status_store: HnsRootHealthRenewalStatusStore;
       clock: HnsEdgeStatusClock;
     }>;
 
 export type HnsEdgeStatusCompositionDependencies = Readonly<{
   access_validator?: CloudflareAccessJwtValidatorV1;
   store?: HnsEdgeStatusStore;
+  renewal_status_store?: HnsRootHealthRenewalStatusStore;
   clock?: HnsEdgeStatusClock;
 }>;
 
@@ -31,6 +36,7 @@ const disabledComposition: HnsEdgeStatusComposition = Object.freeze({
   enabled: false,
   access_validator: null,
   store: null,
+  renewal_status_store: null,
   clock: null,
 });
 
@@ -42,6 +48,7 @@ export function makeHnsEdgeStatusComposition(
   if (
     dependencies.access_validator === undefined ||
     dependencies.store === undefined ||
+    dependencies.renewal_status_store === undefined ||
     dependencies.clock === undefined
   ) {
     throw new Error("HNS edge status composition is incomplete or invalid");
@@ -50,6 +57,7 @@ export function makeHnsEdgeStatusComposition(
     enabled: true,
     access_validator: dependencies.access_validator,
     store: dependencies.store,
+    renewal_status_store: dependencies.renewal_status_store,
     clock: dependencies.clock,
   });
 }
@@ -83,7 +91,11 @@ function row(label: string, value: string, healthy: boolean): string {
   return `<div class="row"><div><span class="dot ${state}"></span>${escapeHtml(label)}</div><strong>${escapeHtml(value)}</strong></div>`;
 }
 
-function renderHnsEdgeStatusPage(status: HnsEdgeStatusProjectionV1): string {
+function renderHnsEdgeStatusPage(
+  status: HnsEdgeStatusProjectionV1,
+  renewal: HnsRootHealthRenewalStatusV1,
+  nowUnixSeconds: number,
+): string {
   const heartbeat =
     status.heartbeat_age_seconds === null
       ? "No report received"
@@ -102,7 +114,26 @@ function renderHnsEdgeStatusPage(status: HnsEdgeStatusProjectionV1): string {
       : `${duration(status.certificate_remaining_seconds)} · expires ${instant(status.certificate_not_after_unix_seconds)} · ${status.spki_matches_tlsa ? "TLSA matches" : "TLSA mismatch"}`;
   const httpStatus = status.app_http_status === null ? "No report" : String(status.app_http_status);
   const failedUnits = status.failed_units.length === 0 ? "None" : status.failed_units.join(", ");
-  const title = status.state === "healthy" ? "HNS healthy" : "HNS needs attention";
+  const renewalAge =
+    renewal.last_successful_tick_unix_seconds === null
+      ? null
+      : Math.max(0, nowUnixSeconds - renewal.last_successful_tick_unix_seconds);
+  const renewalFresh =
+    renewalAge !== null &&
+    renewal.freshness_threshold_seconds !== null &&
+    renewalAge <= renewal.freshness_threshold_seconds;
+  const renewalHeartbeat =
+    renewalAge === null
+      ? "No successful tick"
+      : `${duration(renewalAge)} ago · threshold ${duration(renewal.freshness_threshold_seconds)}`;
+  const rootHealth = `${renewal.healthy_root_count} / ${renewal.active_root_count} healthy${
+    renewal.earliest_health_valid_until_unix_seconds === null
+      ? ""
+      : ` · earliest expiry ${instant(renewal.earliest_health_valid_until_unix_seconds)}`
+  }`;
+  const renewalHealthy = renewalFresh && renewal.healthy_root_count === renewal.active_root_count;
+  const title =
+    status.state === "healthy" && renewalHealthy ? "HNS healthy" : "HNS needs attention";
 
   return `<!doctype html>
 <html lang="en">
@@ -123,6 +154,8 @@ ${row("Authority serials", serials, status.authority_serials_agree)}
 ${row("Certificate and TLSA", certificate, (status.certificate_remaining_seconds ?? -1) > 0 && status.spki_matches_tlsa)}
 ${row("app.jazleeuw HTTP", httpStatus, status.app_http_status === 200)}
 ${row("Failed units", failedUnits, status.failed_units.length === 0)}
+${row("Health renewal scheduler", renewalHeartbeat, renewalFresh)}
+${row("Imported root health", rootHealth, renewalHealthy)}
 </section></main></body>
 </html>`;
 }
@@ -150,13 +183,19 @@ export async function serveHnsEdgeStatusPage(
   }
 
   try {
-    const status = await Effect.runPromise(
-      makeHnsEdgeStatusService({ store: composition.store, clock: composition.clock }).read(),
+    const [status, renewal] = await Promise.all([
+      Effect.runPromise(
+        makeHnsEdgeStatusService({ store: composition.store, clock: composition.clock }).read(),
+      ),
+      Effect.runPromise(composition.renewal_status_store.load()),
+    ]);
+    return new Response(
+      renderHnsEdgeStatusPage(status, renewal, composition.clock.nowUnixSeconds()),
+      {
+        status: status.state === "missing" ? 503 : 200,
+        headers: responseHeaders,
+      },
     );
-    return new Response(renderHnsEdgeStatusPage(status), {
-      status: status.state === "missing" ? 503 : 200,
-      headers: responseHeaders,
-    });
   } catch {
     return new Response("HNS status unavailable", {
       status: 503,

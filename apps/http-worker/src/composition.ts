@@ -84,6 +84,7 @@ import type { HnsEdgeStatusKvNamespace } from "@pirate/platform-cf/hns-edge-stat
 import type { HnsForwarderReplayStoreNamespace } from "@pirate/platform-cf/hns-forwarder-replay-store";
 import { makeControlPlaneHnsHandlePersonaHostAuthoritySource } from "@pirate/platform-cf/hns-handle-host-authority-repository";
 import { makeControlPlaneHnsCommunityAppHostAuthoritySource } from "@pirate/platform-cf/hns-host-persistence-repository";
+import { makeControlPlaneHnsRootHealthRenewalStatusStore } from "@pirate/platform-cf/hns-root-health-renewal-status";
 import { makeControlPlaneHnsRootImportStore } from "@pirate/platform-cf/hns-root-import-repository";
 import {
   makeControlPlaneCredentialCanonicalResolver,
@@ -696,6 +697,7 @@ export async function createProductionHttpWorker(
   });
   const hnsEdgeStatus = makeProductionHnsEdgeStatusComposition({
     config,
+    renewal_status_store: makeControlPlaneHnsRootHealthRenewalStatusStore(controlPlane),
     ...(bindings.HNS_EDGE_STATUS === undefined ? {} : { namespace: bindings.HNS_EDGE_STATUS }),
   });
   const identityStore = makeControlPlaneIdentityStore(controlPlane);

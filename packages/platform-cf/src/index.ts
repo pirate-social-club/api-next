@@ -162,6 +162,7 @@ export {
   makeControlPlaneHnsOwnerRecoveryAuthorityResolver,
   makeControlPlaneHnsOwnerRecoveryStartStore,
 } from "./hns-owner-recovery-start-repository.ts";
+export { makeControlPlaneHnsRootHealthRenewalStatusStore } from "./hns-root-health-renewal-status.ts";
 export {
   type CanonicalIdentity,
   type IdentityRepository,

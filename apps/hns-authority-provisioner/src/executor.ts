@@ -51,6 +51,7 @@ async function runObservation(input: {
   if (claim === null) return { outcome: "idle" };
   const base = {
     observation_job_id: claim.observation_job_id,
+    operation_kind: claim.operation_kind,
     executor_id: input.executor_id,
     lease_fence: claim.lease_fence,
     request_sha256: claim.request_sha256,

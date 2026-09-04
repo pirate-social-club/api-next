@@ -68,6 +68,16 @@ function app() {
       },
     },
     store,
+    renewal_status_store: {
+      load: () =>
+        Effect.succeed({
+          last_successful_tick_unix_seconds: now - 60,
+          freshness_threshold_seconds: 7_200,
+          active_root_count: 1,
+          healthy_root_count: 1,
+          earliest_health_valid_until_unix_seconds: now + 86_400,
+        }),
+    },
     clock: { nowUnixSeconds: () => now },
   });
   if (!composition.enabled) throw new Error("test composition disabled");
@@ -101,7 +111,7 @@ function app() {
 }
 
 describe("HNS edge status HTTP surface", () => {
-  test("accepts the typed heartbeat then renders only the six status rows", async () => {
+  test("accepts the typed heartbeat and renders edge plus renewal status", async () => {
     const worker = app();
     const published = await worker.request(
       new Request("https://worker.test/internal/hns-edge-status", {
@@ -128,7 +138,9 @@ describe("HNS edge status HTTP surface", () => {
     expect(html).toContain("HNS needs attention");
     expect(html).toContain("app.jazleeuw HTTP");
     expect(html).toContain(">421<");
-    expect((html.match(/class="row"/gu) ?? []).length).toBe(6);
+    expect(html).toContain("Health renewal scheduler");
+    expect(html).toContain("Imported root health");
+    expect((html.match(/class="row"/gu) ?? []).length).toBe(8);
     expect(html).not.toContain("email");
   });
 
