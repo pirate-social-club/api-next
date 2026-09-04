@@ -12,7 +12,10 @@ import type {
   MediaTransformVideoProbeInput,
   MediaTransformVideoSource,
 } from "@pirate/application/media/transform";
-import { MediaTransformRequestInvalid } from "@pirate/application/media/transform";
+import {
+  MEDIA_TRANSFORM_VIDEO_AUDIO_POLICY_V1,
+  MediaTransformRequestInvalid,
+} from "@pirate/application/media/transform";
 import type {
   VideoAnalysisProviders,
   VideoAnalysisSource,
@@ -22,7 +25,6 @@ import { Effect } from "effect";
 
 export const LOCAL_VIDEO_FFMPEG_REVISION = "ffmpeg-6.1.1-video-analysis-v1";
 export const LOCAL_VIDEO_PROBE_REVISION = "ffprobe-6.1.1-video-analysis-v1";
-export const LOCAL_VIDEO_AUDIO_EXTRACTION_POLICY = "video-audio-adts-copy-v1";
 export const LOCAL_VIDEO_FRAME_EXTRACTION_POLICY = "video-jpeg-three-frame-v1";
 
 const EXPECTED_VERSION_PREFIX = "ffmpeg version 6.1.1";
@@ -308,7 +310,7 @@ export function makeLocalPinnedFfmpegVideoAnalysisEngine(
       ),
 
     extractVideoAudio: (input) =>
-      input.extractionPolicyVersion !== LOCAL_VIDEO_AUDIO_EXTRACTION_POLICY
+      input.extractionPolicyVersion !== MEDIA_TRANSFORM_VIDEO_AUDIO_POLICY_V1
         ? Effect.fail(new MediaTransformRequestInvalid({ reason: "invalid_video_policy" }))
         : Effect.promise(() =>
             withSource(input.source, async (inputPath, _bytes, directory) => {

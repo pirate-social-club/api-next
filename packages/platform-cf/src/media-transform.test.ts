@@ -9,6 +9,7 @@ import type {
   MediaTransformVideoSongAlignmentInput,
 } from "@pirate/application/media/transform";
 import { MediaTransformRequestInvalid } from "@pirate/application/media/transform";
+import { VIDEO_POSTER_POLICY_V1 } from "@pirate/domain";
 import { Effect, Fiber } from "effect";
 import {
   disabledTransloaditMediaTransform,
@@ -109,14 +110,7 @@ const videoFramesInput: MediaTransformVideoFramesInput = {
   source: videoSource,
   sourceDurationMs: 4_000,
   posterTimestampMs: 1_500,
-  posterPolicy: {
-    version: "video-poster-policy-v1",
-    policyRevision: 1,
-    roles: ["poster", "first", "midpoint"],
-    maxEdgePx: 1_920,
-    maxBytesPerFrame: 2_000_000,
-    imageType: "image/jpeg",
-  },
+  posterPolicy: VIDEO_POSTER_POLICY_V1,
   attempt,
 };
 const danceBinding = {
@@ -529,7 +523,7 @@ describe("video transform capabilities", () => {
     expect(params.template_id).toBe(templates.videoFrames);
     expect(fields.poster_timestamp_seconds).toBe(1.5);
     expect(fields.midpoint_timestamp_seconds).toBe(2);
-    expect(fields.maximum_frame_edge_px).toBe(1_920);
+    expect(fields.maximum_frame_edge_px).toBe(VIDEO_POSTER_POLICY_V1.maxEdgePx);
     expect(params).not.toHaveProperty("steps");
   });
 

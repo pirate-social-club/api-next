@@ -13,6 +13,8 @@ import type {
   MediaTransformVideoFramesInput,
   MediaTransformVideoProbeInput,
 } from "@pirate/application/media/transform";
+import { MEDIA_TRANSFORM_VIDEO_AUDIO_POLICY_V1 } from "@pirate/application/media/transform";
+import { VIDEO_INGEST_POLICY_V1, VIDEO_POSTER_POLICY_V1 } from "@pirate/domain";
 import { Data, type Effect, Predicate } from "effect";
 
 export const TRANSLOADIT_ORIGIN = "https://api2.transloadit.com" as const;
@@ -315,6 +317,7 @@ function snapshotVideoBase(
     !SHA256.test(input.source.sha256) ||
     input.source.sha256 !== input.binding.canonicalVideoSha256 ||
     !validPositiveInteger(input.source.byteLength) ||
+    input.source.byteLength > VIDEO_INGEST_POLICY_V1.maxBytes ||
     (input.source.mediaType !== "video/mp4" && input.source.mediaType !== "video/quicktime")
   ) {
     return { ok: false, reason: "invalid_video_source" };
@@ -355,10 +358,7 @@ export function snapshotVideoAudioInput(
   }
   const base = snapshotVideoBase(input);
   if (!base.ok) return base;
-  if (
-    typeof input.extractionPolicyVersion !== "string" ||
-    !SAFE_ID.test(input.extractionPolicyVersion)
-  ) {
+  if (input.extractionPolicyVersion !== MEDIA_TRANSFORM_VIDEO_AUDIO_POLICY_V1) {
     return { ok: false, reason: "invalid_video_policy" };
   }
   return {
@@ -391,13 +391,13 @@ export function snapshotVideoFramesInput(
   const policy = input.posterPolicy;
   if (
     !Predicate.isObject(policy) ||
-    policy.version !== "video-poster-policy-v1" ||
-    !validPositiveInteger(policy.policyRevision) ||
+    policy.version !== VIDEO_POSTER_POLICY_V1.version ||
+    policy.policyRevision !== VIDEO_POSTER_POLICY_V1.policyRevision ||
     !Array.isArray(policy.roles) ||
-    policy.roles.join(",") !== "poster,first,midpoint" ||
-    !validPositiveInteger(policy.maxEdgePx) ||
-    !validPositiveInteger(policy.maxBytesPerFrame) ||
-    policy.imageType !== "image/jpeg"
+    policy.roles.join(",") !== VIDEO_POSTER_POLICY_V1.roles.join(",") ||
+    policy.maxEdgePx !== VIDEO_POSTER_POLICY_V1.maxEdgePx ||
+    policy.maxBytesPerFrame !== VIDEO_POSTER_POLICY_V1.maxBytesPerFrame ||
+    policy.imageType !== VIDEO_POSTER_POLICY_V1.imageType
   ) {
     return { ok: false, reason: "invalid_video_policy" };
   }
