@@ -39,7 +39,8 @@ export type DataRegistrationArtifactAuthority = Readonly<{
   lyrics: string | null;
   lyricsExplicitness: "not_applicable" | "not_explicit" | "explicit" | "uncertain";
   primaryLanguageBcp47: string | null;
-  licensePreset: "non-commercial" | "commercial-use" | "commercial-remix";
+  /** null registers an original video with no offered license (register_ip only). */
+  licensePreset: "non-commercial" | "commercial-use" | "commercial-remix" | null;
   commercialRemixShareBps: number;
   royaltyAllocations: readonly DataRegistrationRoyaltyAllocation[];
   acrDecision: string;
@@ -396,6 +397,11 @@ export function makeDataRegistrationArtifactPipeline(
           pin.byteLength === authority.audioByteLength,
       );
       if (audioPin?.cid === undefined || audioPin.cid === null) return [audio];
+      if (authority.licensePreset === null) {
+        // The song pipeline always offers a license preset; a null preset is
+        // the original-video register_ip posture and is never defaulted here.
+        throw new Error("song DATA artifacts require an offered license preset");
+      }
 
       const creators = authority.royaltyAllocations.map((allocation) => ({
         name: allocation.recipientId,

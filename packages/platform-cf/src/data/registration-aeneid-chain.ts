@@ -33,6 +33,7 @@ import type {
 
 const ROYALTY_WORKFLOW = "0xa38f42B8d33809917f23997B8423054aAB97322C";
 const LICENSE_WORKFLOW = "0xcC2E862bCee5B6036Db0de6E06Ae87e524a79fd8";
+const REGISTRATION_WORKFLOW = "0xbe39E1C756e921BD25DF86e7AAa31106d1eb0424";
 const IP_ASSET_REGISTRY = "0x77319B4031e6eF1250907aa00018B8B1c67a244b";
 const ROYALTY_POLICY_LAP = "0xBe54FB168b3c982b7AaE60dB6CF75Bd8447b390E";
 const WIP_TOKEN = "0x1514000000000000000000000000000000000000";
@@ -94,7 +95,7 @@ const LICENSE_TERMS_COMPONENTS = [
   { name: "licensingConfig", type: "tuple", components: LICENSING_CONFIG_COMPONENTS },
 ] as const;
 
-const LICENSE_WORKFLOW_ABI = [
+export const LICENSE_WORKFLOW_ABI = [
   {
     type: "function",
     name: "mintAndRegisterIpAndAttachPILTerms",
@@ -114,7 +115,25 @@ const LICENSE_WORKFLOW_ABI = [
   },
 ] as const;
 
-const ROYALTY_WORKFLOW_ABI = [
+export const REGISTRATION_WORKFLOW_ABI = [
+  {
+    type: "function",
+    name: "mintAndRegisterIp",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "spgNftContract", type: "address" },
+      { name: "recipient", type: "address" },
+      { name: "ipMetadata", type: "tuple", components: IP_METADATA_COMPONENTS },
+      { name: "allowDuplicates", type: "bool" },
+    ],
+    outputs: [
+      { name: "ipId", type: "address" },
+      { name: "tokenId", type: "uint256" },
+    ],
+  },
+] as const;
+
+export const ROYALTY_WORKFLOW_ABI = [
   {
     type: "function",
     name: "mintAndRegisterIpAndAttachPILTermsAndDistributeRoyaltyTokens",
@@ -173,11 +192,13 @@ export type DataRegistrationAeneidChainOptions = Readonly<{
 export const DATA_REGISTRATION_AENEID_TARGETS = Object.freeze({
   license: LICENSE_WORKFLOW,
   royalty: ROYALTY_WORKFLOW,
+  original: REGISTRATION_WORKFLOW,
 });
 
 export const DATA_REGISTRATION_AENEID_SELECTORS = Object.freeze({
   license: toFunctionSelector(LICENSE_WORKFLOW_ABI[0]),
   royalty: toFunctionSelector(ROYALTY_WORKFLOW_ABI[0]),
+  original: toFunctionSelector(REGISTRATION_WORKFLOW_ABI[0]),
 });
 
 const sha256 = async (bytes: Uint8Array): Promise<string> =>
@@ -211,6 +232,9 @@ const verifiedPin = (
 };
 
 const licenseTerms = (authority: DataRegistrationArtifactAuthority) => {
+  if (authority.licensePreset === null) {
+    throw new Error("original-video registration attaches no license terms");
+  }
   const commercial = authority.licensePreset !== "non-commercial";
   const remix = authority.licensePreset === "commercial-remix";
   return {
@@ -262,6 +286,21 @@ const planCalldata = async (
     nftMetadataURI: `ipfs://${nftMetadata.cid}`,
     nftMetadataHash: `0x${nftMetadata.canonicalSha256}` as Hex,
   };
+  if (authority.licensePreset === null) {
+    // Spec 013 phase one: an original video registers with no parent IP and
+    // no offered license, so the plain register_ip workflow is the only
+    // admissible path and a default license is never attached.
+    const encoded = encodeFunctionData({
+      abi: REGISTRATION_WORKFLOW_ABI,
+      functionName: "mintAndRegisterIp",
+      args: [options.spgNftContract, authority.creatorAddress as Address, metadata, false],
+    });
+    return {
+      target: REGISTRATION_WORKFLOW,
+      calldata: hexToBytes(encoded),
+      authority,
+    };
+  }
   const terms = [licenseTerms(authority)];
   const distributes = authority.licensePreset !== "non-commercial";
   const encoded = distributes

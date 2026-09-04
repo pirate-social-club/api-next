@@ -219,7 +219,11 @@ export function makeDataRegistrationComposition(
                 DATA_REGISTRATION_AENEID_TARGETS.royalty.toLowerCase() &&
               attempt.methodSelector === DATA_REGISTRATION_AENEID_SELECTORS.royalty
             ? "royalty"
-            : null;
+            : attempt.targetAddress.toLowerCase() ===
+                  DATA_REGISTRATION_AENEID_TARGETS.original.toLowerCase() &&
+                attempt.methodSelector === DATA_REGISTRATION_AENEID_SELECTORS.original
+              ? "original"
+              : null;
       if (operationKind === null) throw new Error("DATA signing policy mismatch");
       const policy: DataRegistrationSigningPolicy = {
         chainId,
