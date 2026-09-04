@@ -42,7 +42,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_TEXT_SUBMISSION_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-text-submission-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-text-submission-suite-complete\n";
-const testCount = 10;
+const testCount = 11;
 let completedTestCount = 0;
 const migrations = await loadPostgresMigrations();
 type LoadedPostgresMigration = (typeof migrations)[number];
