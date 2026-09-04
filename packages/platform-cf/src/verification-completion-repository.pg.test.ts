@@ -893,7 +893,7 @@ suite("Postgres 17 verification completion repository", () => {
         requestHash: "a".repeat(64),
         idempotencyKey: "create-community-1",
         draft: {
-          persona_id: "persona-user-a",
+          persona: { kind: "existing", persona_id: "persona-user-a" },
           name: "Jazleeuw",
           description: "Verified people",
           policy: {
@@ -1114,7 +1114,7 @@ suite("Postgres 17 verification completion repository", () => {
         idempotencyKey: "create-community-2",
         draft: {
           ...created.draft,
-          persona_id: "persona-user-b",
+          persona: { kind: "existing", persona_id: "persona-user-b" },
           name: "Second community",
         },
       });
@@ -1168,7 +1168,7 @@ suite("Postgres 17 verification completion repository", () => {
         idempotencyKey: "create-community-3",
         draft: {
           ...created.draft,
-          persona_id: "persona-user-c",
+          persona: { kind: "existing", persona_id: "persona-user-c" },
           name: "Approved community",
         },
       });
@@ -1250,7 +1250,7 @@ suite("Postgres 17 verification completion repository", () => {
             idempotencyKey: `create-community-race-${index}`,
             draft: {
               ...created.draft,
-              persona_id: "persona-user-d",
+              persona: { kind: "existing", persona_id: "persona-user-d" },
               name: `Race community ${index}`,
             },
           }),
@@ -1322,7 +1322,7 @@ suite("Postgres 17 verification completion repository", () => {
         idempotencyKey: "create-community-rollback",
         draft: {
           ...created.draft,
-          persona_id: "persona-user-f",
+          persona: { kind: "existing", persona_id: "persona-user-f" },
           name: "Rollback community",
         },
       });
@@ -1403,7 +1403,7 @@ suite("Postgres 17 verification completion repository", () => {
         requestHash: "3".repeat(64),
         idempotencyKey: "create-community-lock-order",
         draft: {
-          persona_id: "persona-user-a",
+          persona: { kind: "existing", persona_id: "persona-user-a" },
           name: "Lock order",
           description: null,
           policy: {
