@@ -12433,6 +12433,14 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION reject_hns_community_root_import_preparation_change() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'HNS community root-import preparations are append-only';
+END;
+$$;
+
 CREATE FUNCTION reject_hns_control_observer_append_only_change() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -22139,6 +22147,22 @@ CREATE TABLE hns_community_app_host_operations (
     CONSTRAINT hns_community_app_host_operations_identity_check CHECK ((is_hns_host_persistence_identity(operation_id, 256) AND (operation_kind = ANY (ARRAY['activate'::text, 'transition'::text])) AND is_hns_host_persistence_identity(idempotency_key, 512) AND (request_hash ~ '^[0-9a-f]{64}$'::text) AND is_hns_host_persistence_identity(app_host_activation_id, 256) AND ((expected_activation_generation >= 0) AND (expected_activation_generation <= '9007199254740990'::bigint)) AND (target_status = ANY (ARRAY['active'::text, 'suspended'::text, 'revoked'::text])) AND (result_activation_generation = (expected_activation_generation + 1)) AND (((operation_kind = 'activate'::text) AND (expected_activation_generation = 0) AND (target_status = 'active'::text)) OR (operation_kind = 'transition'::text))))
 );
 
+CREATE TABLE hns_community_root_import_preparations (
+    attachment_intent_id text NOT NULL,
+    actor_id text NOT NULL,
+    community_id text NOT NULL,
+    ceremony_intent_id text NOT NULL,
+    root_label text NOT NULL,
+    root_import_session_id text NOT NULL,
+    provision_job_id text NOT NULL,
+    start_idempotency_key text NOT NULL,
+    start_request_sha256 text NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT hns_community_root_import_preparatio_start_request_sha256_check CHECK ((start_request_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT hns_community_root_import_preparations_identity_check CHECK ((is_hns_host_persistence_identity(root_import_session_id, 256) AND is_hns_host_persistence_identity(provision_job_id, 256) AND is_hns_host_persistence_identity(start_idempotency_key, 256) AND (is_community_route_root_label('hns'::text, root_label) IS TRUE) AND (expires_at > created_at)))
+);
+
 CREATE TABLE hns_control_observer_configurations (
     provider_configuration_reference text NOT NULL,
     provider_configuration_version text NOT NULL,
@@ -27559,6 +27583,21 @@ ALTER TABLE ONLY hns_community_app_host_operations
 ALTER TABLE ONLY hns_community_app_host_operations
     ADD CONSTRAINT hns_community_app_host_operations_pkey PRIMARY KEY (operation_id);
 
+ALTER TABLE ONLY hns_community_root_import_preparations
+    ADD CONSTRAINT hns_community_root_import_pre_actor_id_community_id_start_i_key UNIQUE (actor_id, community_id, start_idempotency_key);
+
+ALTER TABLE ONLY hns_community_root_import_preparations
+    ADD CONSTRAINT hns_community_root_import_preparatio_root_import_session_id_key UNIQUE (root_import_session_id);
+
+ALTER TABLE ONLY hns_community_root_import_preparations
+    ADD CONSTRAINT hns_community_root_import_preparations_ceremony_intent_id_key UNIQUE (ceremony_intent_id);
+
+ALTER TABLE ONLY hns_community_root_import_preparations
+    ADD CONSTRAINT hns_community_root_import_preparations_pkey PRIMARY KEY (attachment_intent_id);
+
+ALTER TABLE ONLY hns_community_root_import_preparations
+    ADD CONSTRAINT hns_community_root_import_preparations_provision_job_id_key UNIQUE (provision_job_id);
+
 ALTER TABLE ONLY hns_control_observer_configurations
     ADD CONSTRAINT hns_control_observer_configurations_digest_unique UNIQUE (provider_configuration_reference, provider_configuration_version, provider_configuration_digest);
 
@@ -29577,6 +29616,8 @@ CREATE TRIGGER hns_community_app_host_current_change_guard BEFORE DELETE OR UPDA
 
 CREATE TRIGGER hns_community_app_host_operations_append_only BEFORE DELETE OR UPDATE ON hns_community_app_host_operations FOR EACH ROW EXECUTE FUNCTION reject_hns_host_persistence_append_only_change();
 
+CREATE TRIGGER hns_community_root_import_preparations_change_guard BEFORE DELETE OR UPDATE ON hns_community_root_import_preparations FOR EACH ROW EXECUTE FUNCTION reject_hns_community_root_import_preparation_change();
+
 CREATE TRIGGER hns_control_observer_configurations_append_only BEFORE DELETE OR UPDATE ON hns_control_observer_configurations FOR EACH ROW EXECUTE FUNCTION reject_hns_control_observer_append_only_change();
 
 CREATE TRIGGER hns_control_observer_operation_prepare BEFORE INSERT ON hns_control_observer_operations FOR EACH ROW EXECUTE FUNCTION prepare_hns_control_observer_operation_insert();
@@ -31137,6 +31178,21 @@ ALTER TABLE ONLY hns_community_app_host_activation_revisions
 
 ALTER TABLE ONLY hns_community_app_host_activation_revisions
     ADD CONSTRAINT hns_community_app_host_activation_revisions_route_fk FOREIGN KEY (community_id, route_binding_id) REFERENCES community_canonical_route_bindings(community_id, route_binding_id);
+
+ALTER TABLE ONLY hns_community_root_import_preparations
+    ADD CONSTRAINT hns_community_root_import_preparation_attachment_intent_id_fkey FOREIGN KEY (attachment_intent_id) REFERENCES community_route_attachment_intents(attachment_intent_id);
+
+ALTER TABLE ONLY hns_community_root_import_preparations
+    ADD CONSTRAINT hns_community_root_import_preparations_actor_id_fkey FOREIGN KEY (actor_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY hns_community_root_import_preparations
+    ADD CONSTRAINT hns_community_root_import_preparations_ceremony_intent_id_fkey FOREIGN KEY (ceremony_intent_id) REFERENCES community_route_attachment_ceremony_attempts(ceremony_intent_id);
+
+ALTER TABLE ONLY hns_community_root_import_preparations
+    ADD CONSTRAINT hns_community_root_import_preparations_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY hns_community_root_import_preparations
+    ADD CONSTRAINT hns_community_root_import_preparations_intent_actor_fk FOREIGN KEY (actor_id, attachment_intent_id) REFERENCES community_route_attachment_intents(actor_id, attachment_intent_id);
 
 ALTER TABLE ONLY hns_control_observer_operations
     ADD CONSTRAINT hns_control_observer_operations_configuration_fk FOREIGN KEY (provider_configuration_reference, provider_configuration_version, provider_configuration_digest) REFERENCES hns_control_observer_configurations(provider_configuration_reference, provider_configuration_version, provider_configuration_digest);

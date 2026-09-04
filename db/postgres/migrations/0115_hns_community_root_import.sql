@@ -53,6 +53,46 @@ CREATE TABLE community_route_attachment_start_reservations (
 CREATE INDEX community_route_attachment_start_reservations_lease_idx
   ON community_route_attachment_start_reservations(state, lease_expires_at);
 
+CREATE TABLE hns_community_root_import_preparations (
+  attachment_intent_id TEXT PRIMARY KEY
+    REFERENCES community_route_attachment_intents(attachment_intent_id),
+  actor_id TEXT NOT NULL REFERENCES users(user_id),
+  community_id TEXT NOT NULL REFERENCES communities(community_id),
+  ceremony_intent_id TEXT NOT NULL UNIQUE
+    REFERENCES community_route_attachment_ceremony_attempts(ceremony_intent_id),
+  root_label TEXT NOT NULL,
+  root_import_session_id TEXT NOT NULL UNIQUE,
+  provision_job_id TEXT NOT NULL UNIQUE,
+  start_idempotency_key TEXT NOT NULL,
+  start_request_sha256 TEXT NOT NULL CHECK (start_request_sha256 ~ '^[0-9a-f]{64}$'),
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  CONSTRAINT hns_community_root_import_preparations_intent_actor_fk
+    FOREIGN KEY (actor_id, attachment_intent_id)
+    REFERENCES community_route_attachment_intents(actor_id, attachment_intent_id),
+  CONSTRAINT hns_community_root_import_preparations_identity_check CHECK (
+    is_hns_host_persistence_identity(root_import_session_id, 256)
+    AND is_hns_host_persistence_identity(provision_job_id, 256)
+    AND is_hns_host_persistence_identity(start_idempotency_key, 256)
+    AND is_community_route_root_label('hns', root_label) IS TRUE
+    AND expires_at > created_at
+  ),
+  UNIQUE (actor_id, community_id, start_idempotency_key)
+);
+
+CREATE FUNCTION reject_hns_community_root_import_preparation_change()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RAISE EXCEPTION 'HNS community root-import preparations are append-only';
+END;
+$$;
+
+CREATE TRIGGER hns_community_root_import_preparations_change_guard
+BEFORE UPDATE OR DELETE ON hns_community_root_import_preparations
+FOR EACH ROW EXECUTE FUNCTION reject_hns_community_root_import_preparation_change();
+
 CREATE TABLE community_route_attachment_namespace_sessions (
   namespace_session_id TEXT PRIMARY KEY,
   actor_id TEXT NOT NULL REFERENCES users(user_id),

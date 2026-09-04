@@ -7,6 +7,7 @@ const migration = await Bun.file(
 describe("community HNS root-import migration", () => {
   test("keeps provider sessions attachment-owned", () => {
     expect(migration).toContain("CREATE TABLE community_route_attachment_start_reservations");
+    expect(migration).toContain("CREATE TABLE hns_community_root_import_preparations");
     expect(migration).toContain("CREATE TABLE community_route_attachment_namespace_sessions");
     expect(migration).toContain(
       "REFERENCES community_route_attachment_intents(actor_id, attachment_intent_id)",
