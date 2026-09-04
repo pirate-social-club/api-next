@@ -112,6 +112,7 @@
     "0109_creation_requirement_removal.sql": "e31e348370e1d55273a0d47366695f4fa0dd097f5e688c8ab523fc60204a8138",
     "0110_persona_community_bindings.sql": "a7d7746c78955dc6b417303484f7c35cf09d13e0709a73210a303919830f29f3",
     "0111_community_creation_create_new_persona.sql": "9b4fb47d826ba7a8850c2d74221c362cf47d28949ecc6772b5c33f42c9cfcd94",
-    "0112_community_membership_follow_invariant.sql": "b756fb8665016a1e093cb5f1a86c9f23ea48d56796193b7554f0154da0789941"
+    "0112_community_membership_follow_invariant.sql": "b756fb8665016a1e093cb5f1a86c9f23ea48d56796193b7554f0154da0789941",
+    "0113_account_community_membership_discovery.sql": "86e30ff9c9c4d5a6983edf61c2c7b5892ec8b2af630368c6d9f23dad81e02c92"
   }
 }

@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.57.0",
+  "releaseType": "account-community-membership-discovery",
+  "wireContract": "GET /users/me/community-memberships",
+  "sourceCommit": "pending-review",
+  "supersedes": "0.56.0; adds authenticated, cursor-paginated discovery of active Community memberships for route-independent posting, with current canonical-route projection and authority-aware resource hrefs.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.57.0.tgz",
+    "sha256": "48409407ce6af0e4e7ec9415beb70e8be42f884ac57971e4ea81fb4b748425cc",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@ea21bce0178071917592a674c731e1a774bda506337ed62f65ee03db01d419fa",
+    "openapiSha256": "ea21bce0178071917592a674c731e1a774bda506337ed62f65ee03db01d419fa",
+    "clientSha256": "48a2b54014a2025d63e13fafdbafeda4fbca70e926e53d9eadea25826c9cbd66"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": "passed",
+    "focusedSuites": "passed; contract, application, repository, product-handler, and transport suites",
+    "fullUnitSuite": "passed; 2,858 Bun unit tests, 20 Node tests, and all Workerd groups",
+    "packageVerifier": "passed",
+    "repositoryCheck": "passed; bun run check and complete PostgreSQL 17 suite (322 tests)"
+  }
+}

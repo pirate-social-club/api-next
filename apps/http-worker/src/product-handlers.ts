@@ -5,6 +5,7 @@ import {
 import { getCommunityPreview } from "@pirate/application/use-cases/community/get-community-preview";
 import { getJoinEligibility } from "@pirate/application/use-cases/community/get-join-eligibility";
 import { joinCommunity } from "@pirate/application/use-cases/community/join-community";
+import { listMyCommunityMemberships } from "@pirate/application/use-cases/community/list-my-community-memberships";
 import {
   type UnfollowCommunityInput,
   unfollowCommunity,
@@ -49,6 +50,7 @@ type TextModerationProviderService = ContentServices["textModerationProvider"];
 type PersonaStoreService = ContentServices["personaStore"];
 type CommunityActor = Parameters<typeof joinCommunity>[0]["actor"];
 type HomeFeedQuery = Parameters<typeof getHomeFeed>[0]["query"];
+type AccountMembershipQuery = Parameters<typeof listMyCommunityMemberships>[0]["query"];
 
 export interface ProductHandlerServices {
   readonly communityStore: CommunityStoreService;
@@ -68,6 +70,7 @@ export type ProductHandlers = Readonly<{
   readonly GetCurrentUser: EndpointHandler;
   readonly GetMyAgeCapability: EndpointHandler;
   readonly PutMyMinimumAgeAttestation: EndpointHandler;
+  readonly ListMyCommunityMemberships: EndpointHandler;
   readonly GetCommunityPreview: EndpointHandler;
   readonly GetJoinEligibility: EndpointHandler;
   readonly JoinCommunity: EndpointHandler;
@@ -115,6 +118,9 @@ const localeQuery = (request: DecodedRequest): LocaleQuery => (request.query ?? 
 
 const feedQuery = (request: DecodedRequest): HomeFeedQuery =>
   (request.query ?? {}) as HomeFeedQuery;
+
+const accountMembershipQuery = (request: DecodedRequest): AccountMembershipQuery =>
+  (request.query ?? {}) as AccountMembershipQuery;
 
 const authorizationFailure = (): AuthError => new AuthError({ message: "Authorization failed" });
 
@@ -220,6 +226,19 @@ const communityPreview = async (request: DecodedRequest, services: ProductHandle
         ...(locale === undefined ? {} : { locale }),
         ...(viewerUserId === undefined ? {} : { viewerUserId }),
       },
+      { communityStore: services.communityStore },
+    ),
+  );
+};
+
+const accountCommunityMemberships = async (
+  request: DecodedRequest,
+  services: ProductHandlerServices,
+) => {
+  const actor = communityActor(request.principal);
+  return Effect.runPromise(
+    listMyCommunityMemberships(
+      { userId: actor.userId, query: accountMembershipQuery(request) },
       { communityStore: services.communityStore },
     ),
   );
@@ -531,6 +550,7 @@ export const makeProductHandlers = (services: ProductHandlerServices): ProductHa
   GetCurrentUser: (request) => currentUser(request, services),
   GetMyAgeCapability: (request) => ageCapabilityHandler(request, services),
   PutMyMinimumAgeAttestation: (request) => ageAttestationHandler(request, services),
+  ListMyCommunityMemberships: (request) => accountCommunityMemberships(request, services),
   GetCommunityPreview: (request) => communityPreview(request, services),
   GetJoinEligibility: (request) => eligibility(request, services),
   JoinCommunity: (request) => join(request, services),

@@ -28341,6 +28341,8 @@ CREATE UNIQUE INDEX community_handle_offering_active_exact_unique ON community_h
 
 CREATE INDEX community_handle_sales_authority_grants_principal_idx ON community_handle_sales_authority_grants USING btree (principal_account_id, community_id, status);
 
+CREATE INDEX community_memberships_account_active_created_idx ON community_memberships USING btree (user_id, created_at, community_id COLLATE "C") WHERE (status = 'member'::text);
+
 CREATE INDEX community_memberships_status_idx ON community_memberships USING btree (community_id, status, updated_at DESC);
 
 CREATE UNIQUE INDEX community_moderation_cases_v2_active_submission_uidx ON community_moderation_cases_v2 USING btree (submission_id) WHERE (view_state = ANY (ARRAY['open'::text, 'hidden'::text, 'platform_held'::text]));

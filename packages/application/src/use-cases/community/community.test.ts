@@ -74,6 +74,12 @@ const eligibility = (
 function services(overrides: Partial<CommunityStore["Service"]> = {}): CommunityServices {
   return {
     communityStore: {
+      listAccountMemberships: () =>
+        Effect.succeed({
+          object: "account_community_membership_page",
+          items: [],
+          next_cursor: null,
+        }),
       membershipStatus: () => Effect.succeed("missing"),
       getPreview: ({ communityId }) => Effect.succeed(preview(communityId)),
       getJoinEligibility: ({ communityId }) => Effect.succeed(eligibility(communityId)),

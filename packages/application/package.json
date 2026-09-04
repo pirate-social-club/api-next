@@ -61,6 +61,7 @@
     "./use-cases/community/get-canonical-community-route": "./src/use-cases/community/get-canonical-community-route.ts",
     "./use-cases/community/get-join-eligibility": "./src/use-cases/community/get-join-eligibility.ts",
     "./use-cases/community/join-community": "./src/use-cases/community/join-community.ts",
+    "./use-cases/community/list-my-community-memberships": "./src/use-cases/community/list-my-community-memberships.ts",
     "./use-cases/community/unfollow-community": "./src/use-cases/community/unfollow-community.ts",
     "./use-cases/content/cast-post-vote": "./src/use-cases/content/cast-post-vote.ts",
     "./use-cases/content/clear-post-vote": "./src/use-cases/content/clear-post-vote.ts",
