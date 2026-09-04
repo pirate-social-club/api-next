@@ -5,6 +5,7 @@ import {
   applyPostgresTestBaselineConnection,
   withReusablePostgresTestSchema,
 } from "../../../scripts/postgres-test-baseline.ts";
+import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture.ts";
 import { makeControlPlaneFeedStore } from "./feed-repository.ts";
 import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
@@ -54,16 +55,11 @@ async function seedCommunity(admin: Client): Promise<void> {
       ('com_alpha', 'Alpha', 'active', 'usr_member', now(), now()),
       ('com_hidden', 'Hidden', 'hidden', 'usr_member', now(), now())`,
   );
-  await admin.query(
-    `INSERT INTO community_memberships
-      (community_id, membership_id, user_id, status, joined_at, created_at, updated_at)
-     VALUES ('com_alpha', 'mem_alpha', 'usr_member', 'member', now(), now(), now())`,
-  );
-  await admin.query(
-    `INSERT INTO community_follows
-      (community_follow_id, community_id, user_id, status, created_at, updated_at)
-     VALUES ('follow_alpha', 'com_alpha', 'usr_member', 'active', now(), now())`,
-  );
+  await insertActiveCommunityMembershipFixture(admin, {
+    communityId: "com_alpha",
+    membershipId: "mem_alpha",
+    userId: "usr_member",
+  });
 }
 
 async function insertProjectedPost(

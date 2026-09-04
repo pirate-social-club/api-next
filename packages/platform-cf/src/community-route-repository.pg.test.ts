@@ -11,6 +11,7 @@ import {
   applyPostgresTestBaselineConnection,
   withReusablePostgresTestSchema,
 } from "../../../scripts/postgres-test-baseline.ts";
+import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture.ts";
 import { makeControlPlaneCommunityRouteExpiryStore } from "./community-route-expiry-repository.ts";
 import { makeControlPlaneCanonicalCommunityRouteStore } from "./community-route-repository.ts";
 import { makeControlPlaneOperatorManagedRouteStore } from "./operator-managed-route-repository.ts";
@@ -390,12 +391,11 @@ suite("canonical community route Postgres repository", () => {
       );
       const personaId = persona.rows[0]?.persona_id;
       if (personaId === undefined) throw new Error("missing route actor persona");
-      await admin.query(
-        `INSERT INTO community_memberships (
-           community_id, membership_id, user_id, status, joined_at, created_at, updated_at
-         ) VALUES ($1, 'route-membership', 'route-actor', 'member', now(), now(), now())`,
-        [communityId],
-      );
+      await insertActiveCommunityMembershipFixture(admin, {
+        communityId,
+        membershipId: "route-membership",
+        userId: "route-actor",
+      });
       await admin.query(
         `INSERT INTO persona_community_bindings (
            persona_id, account_id, community_id, binding_source

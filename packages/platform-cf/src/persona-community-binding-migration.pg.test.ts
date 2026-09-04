@@ -4,6 +4,7 @@ import {
   loadPostgresMigrations,
   runPostgresMigrations,
 } from "../../../scripts/postgres-migrations.ts";
+import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -176,12 +177,11 @@ suite("persona community binding PostgreSQL migration", () => {
 
       // A presentation for the bound persona is accepted; a zero-evidence
       // persona has no binding, so the composite foreign key rejects it.
-      await admin.query(
-        `INSERT INTO community_memberships (
-           community_id, membership_id, user_id, status, joined_at, created_at, updated_at
-         ) VALUES ('binding-community-1','binding-membership-one','binding-account-one','member',
-           clock_timestamp(), clock_timestamp(), clock_timestamp())`,
-      );
+      await insertActiveCommunityMembershipFixture(admin, {
+        communityId: "binding-community-1",
+        membershipId: "binding-membership-one",
+        userId: "binding-account-one",
+      });
       await expect(
         admin.query(
           `INSERT INTO persona_role_presentations (

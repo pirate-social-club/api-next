@@ -23,6 +23,7 @@ import {
 } from "../../../scripts/postgres-test-baseline.ts";
 import { makeControlPlaneAcceptedLyricsStudyItemSource } from "./accepted-lyrics-study-item-source.ts";
 import { makeControlPlaneActivityQualificationStore } from "./activity-qualification-repository.ts";
+import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture.ts";
 import {
   activatePendingPersonaFixtures,
   createActivePersonaFixture,
@@ -113,13 +114,12 @@ async function seedAccountSong(
      ) VALUES ($1,$2,'active',$3,'2026-08-02T00:00:00.000Z','2026-08-02T00:00:00.000Z')`,
     [communityId, `Community ${suffix}`, accountId],
   );
-  await admin.query(
-    `INSERT INTO community_memberships (
-       community_id, membership_id, user_id, status, joined_at, created_at, updated_at
-     ) VALUES ($1,$2,$3,'member','2026-08-03T00:00:00.000Z',
-       '2026-08-03T00:00:00.000Z','2026-08-03T00:00:00.000Z')`,
-    [communityId, `membership-${suffix}`, accountId],
-  );
+  await insertActiveCommunityMembershipFixture(admin, {
+    communityId,
+    membershipId: `membership-${suffix}`,
+    userId: accountId,
+    joinedAt: "2026-08-03T00:00:00.000Z",
+  });
   await bindPersonaToCommunity(admin, { accountId, communityId, personaId });
   await admin.query(
     `INSERT INTO posts (
@@ -184,13 +184,12 @@ async function seedParticipant(
   );
   const personaId = firstPersona.rows[0]?.persona_id;
   if (personaId === undefined) throw new Error("first persona was not provisioned");
-  await admin.query(
-    `INSERT INTO community_memberships (
-       community_id, membership_id, user_id, status, joined_at, created_at, updated_at
-     ) VALUES ($1,$2,$3,'member','2026-08-03T00:00:00.000Z',
-       '2026-08-03T00:00:00.000Z','2026-08-03T00:00:00.000Z')`,
-    [identity.communityId, `membership-${suffix}`, accountId],
-  );
+  await insertActiveCommunityMembershipFixture(admin, {
+    communityId: identity.communityId,
+    membershipId: `membership-${suffix}`,
+    userId: accountId,
+    joinedAt: "2026-08-03T00:00:00.000Z",
+  });
   await bindPersonaToCommunity(admin, { ...identity, accountId, personaId });
   return { ...identity, accountId, personaId };
 }

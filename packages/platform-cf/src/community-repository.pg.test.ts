@@ -83,11 +83,18 @@ suite("Postgres 17 community repository", () => {
                  ($4, $5, 'active', $3, now(), now())`,
         values: ["community-a", "A", "owner", "community-b", "B"],
       });
+      await admin.query("BEGIN");
       await admin.query({
         text: `INSERT INTO community_memberships
           (community_id, membership_id, user_id, status, joined_at, created_at, updated_at)
           VALUES ('community-b', 'membership-b-user-a', 'user-a', 'member', now(), now(), now())`,
       });
+      await admin.query({
+        text: `INSERT INTO community_follows
+          (community_follow_id, community_id, user_id, status, created_at, updated_at)
+          VALUES ('follow-b-user-a', 'community-b', 'user-a', 'active', now(), now())`,
+      });
+      await admin.query("COMMIT");
 
       const preview = await runStore(connection, (store) =>
         store.getPreview({ communityId: "community-a", viewerUserId: "user-a" }),
@@ -112,10 +119,13 @@ suite("Postgres 17 community repository", () => {
         follower_count: 1,
       });
       const follows = await admin.query({
-        text: "SELECT community_id FROM community_follows WHERE user_id = $1",
+        text: "SELECT community_id FROM community_follows WHERE user_id = $1 ORDER BY community_id",
         values: ["user-a"],
       });
-      expect(follows.rows).toEqual([{ community_id: "community-a" }]);
+      expect(follows.rows).toEqual([
+        { community_id: "community-a" },
+        { community_id: "community-b" },
+      ]);
     });
     completedTestCount += 1;
   }, 30_000);

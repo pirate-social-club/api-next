@@ -4,6 +4,7 @@ import {
   applyPostgresTestBaselineConnection,
   withReusablePostgresTestSchema,
 } from "../../../scripts/postgres-test-baseline.ts";
+import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture.ts";
 import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -75,13 +76,12 @@ async function seedAccountSong(
        clock_timestamp() - interval '20 days')`,
     [communityId, `Community ${suffix}`, accountId],
   );
-  await admin.query(
-    `INSERT INTO community_memberships (
-       community_id, membership_id, user_id, status, joined_at, created_at, updated_at
-     ) VALUES ($1, $2, $3, 'member', clock_timestamp() - interval '19 days',
-       clock_timestamp() - interval '19 days', clock_timestamp() - interval '19 days')`,
-    [communityId, `membership-${suffix}`, accountId],
-  );
+  await insertActiveCommunityMembershipFixture(admin, {
+    communityId,
+    membershipId: `membership-${suffix}`,
+    userId: accountId,
+    joinedAt: "2026-08-03T00:00:00.000Z",
+  });
   await admin.query(
     `INSERT INTO posts (
        community_id, post_id, author_user_id, author_persona_id, post_type,

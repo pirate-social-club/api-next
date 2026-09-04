@@ -224,6 +224,9 @@ suite("Postgres 17 community creation repository", () => {
                 (SELECT COUNT(*)::integer FROM community_memberships
                   WHERE community_id = community.community_id
                     AND user_id = $1 AND status = 'member') AS memberships,
+                (SELECT COUNT(*)::integer FROM community_follows
+                  WHERE community_id = community.community_id
+                    AND user_id = $1 AND status = 'active') AS follows,
                 (SELECT COUNT(*)::integer FROM community_route_authority_grants
                   WHERE community_id = community.community_id
                     AND principal_user_id = $1 AND authority = 'manage_routes'
@@ -241,6 +244,7 @@ suite("Postgres 17 community creation repository", () => {
           status: "active",
           route_authority_version: "optional_route_v2",
           memberships: 1,
+          follows: 1,
           route_grants: 1,
           current_policies: 1,
           subject_claims: 0,

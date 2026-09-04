@@ -13,6 +13,7 @@ import type {
   SongTerms,
   TrustedSongAnalysis,
 } from "../../domain/src/media-submission.ts";
+import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture";
 import { makeControlPlaneKaraokeReadinessStore } from "./karaoke-readiness-repository";
 import { makeControlPlaneMediaOutboxRepository } from "./media-outbox-repository";
 import { makeMediaProcessingStore } from "./media-processing-store";
@@ -168,14 +169,16 @@ async function withCurrentSchema<A>(
           "INSERT INTO communities (community_id,display_name,status,created_by_user_id,created_at,updated_at) VALUES ($1,'Media fixture','active',$2,now(),now())",
           [community, moderator],
         );
-        await admin.query(
-          "INSERT INTO community_memberships (community_id,membership_id,user_id,status,joined_at,created_at,updated_at) VALUES ($1,'media_pg_membership',$2,'member',now(),now(),now())",
-          [community, actor],
-        );
-        await admin.query(
-          "INSERT INTO community_memberships (community_id,membership_id,user_id,status,joined_at,created_at,updated_at) VALUES ($1,'media_pg_moderator_membership',$2,'member',now(),now(),now())",
-          [community, moderator],
-        );
+        await insertActiveCommunityMembershipFixture(admin, {
+          communityId: community,
+          membershipId: "media_pg_membership",
+          userId: actor,
+        });
+        await insertActiveCommunityMembershipFixture(admin, {
+          communityId: community,
+          membershipId: "media_pg_moderator_membership",
+          userId: moderator,
+        });
         await seedHnsState(admin);
         const personas = await admin.query<{ account_id: string; persona_id: string }>(
           "SELECT account_id,persona_id FROM personas WHERE is_first_persona",
