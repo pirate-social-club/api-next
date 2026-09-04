@@ -609,6 +609,47 @@ const PostDocument = Schema.Struct({
 });
 export type PostDocument = Schema.Schema.Type<typeof PostDocument>;
 
+export const VideoSoundtrackProjectionV1 = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("original_audio"),
+    original_sound_id: Schema.String,
+    origin_video_post_id: Schema.String,
+    origin_author_persona_id: PersonaIdV1,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("song_reference"),
+    song_reference: Schema.Struct({
+      song_post_id: Schema.String,
+      song_title: Schema.String,
+      song_author_persona_id: PersonaIdV1,
+    }),
+  }),
+]);
+export type VideoSoundtrackProjectionV1 = Schema.Schema.Type<typeof VideoSoundtrackProjectionV1>;
+
+export const VideoPostProjectionV1 = Schema.Struct({
+  track: Schema.Literal("video"),
+  caption: Schema.NullOr(Schema.String),
+  caption_dir: Schema.NullOr(Schema.Literals(["ltr", "rtl", "auto"])),
+  caption_lang: Schema.NullOr(LanguageTagV1),
+  soundtrack: VideoSoundtrackProjectionV1,
+  playback: Schema.Union([
+    Schema.Struct({
+      status: Schema.Literal("ready"),
+      provider: Schema.Literal("stream"),
+      playback_ref: Schema.String,
+    }),
+    Schema.Struct({ status: Schema.Literal("pending") }),
+  ]),
+  thumbnail: Schema.Union([
+    Schema.Struct({ status: Schema.Literal("ready"), artifact_ref: Schema.String }),
+    Schema.Struct({ status: Schema.Literal("pending") }),
+  ]),
+  data_registration: Schema.Literals(["registration_pending", "registered", "failed"]),
+  capabilities: Schema.Struct({ can_post_with_song: Schema.Boolean }),
+});
+export type VideoPostProjectionV1 = Schema.Schema.Type<typeof VideoPostProjectionV1>;
+
 export const LocalizedPost = Schema.Struct({
   post: PostDocument,
   /** API-owned canonical detail path; absent for guarded/non-feed projections. */
@@ -624,6 +665,7 @@ export const LocalizedPost = Schema.Struct({
   streak_summary: Schema.optional(Schema.NullOr(JsonObject)),
   asset_story: Schema.optional(Schema.NullOr(JsonObject)),
   derivative_sources: Schema.optional(Schema.NullOr(Schema.Array(JsonObject))),
+  video: Schema.optional(Schema.NullOr(VideoPostProjectionV1)),
   upvote_count: Schema.Number,
   downvote_count: Schema.Number,
   like_count: Schema.Number,

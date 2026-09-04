@@ -11,6 +11,11 @@ import {
 import { postSlugCanonicalPath } from "@pirate/application/post-slug";
 import { Effect, type Layer } from "effect";
 import { publicPersonaFromSql } from "./public-persona-projection";
+import {
+  videoPostProjectionFromRow,
+  videoPostProjectionJoins,
+  videoPostProjectionSelect,
+} from "./video-post-projection";
 
 const PAGE_SIZE = 20;
 const DEFAULT_LOCALE = "en";
@@ -238,7 +243,7 @@ const feedItemFromRow = (
   }
 
   if (
-    (postType === "text" || postType === "song") &&
+    (postType === "text" || postType === "song" || postType === "video") &&
     contentRating === "adult_18" &&
     !ratingViewAllowed
   ) {
@@ -261,6 +266,8 @@ const feedItemFromRow = (
   const authorPersona = publicPersonaFromSql(row.author_persona);
   const authorAccountId = optionalString(row, "actor_account_id");
   if (authorPersona === undefined) return null;
+  const video = postType === "video" ? videoPostProjectionFromRow(row) : undefined;
+  if (postType === "video" && video === null) return null;
   const community = {
     id: communityId,
     object: "home_feed_community_summary" as const,
@@ -289,7 +296,8 @@ const feedItemFromRow = (
         comments_locked: commentsLocked,
         visibility,
         title: optionalString(row, "title"),
-        body: optionalString(row, "body"),
+        body: postType === "video" ? null : optionalString(row, "body"),
+        ...(postType === "video" ? { caption: optionalString(row, "video_caption") } : {}),
         analysis_state: "allow",
         content_safety_state: "safe",
         age_gate_policy: "none",
@@ -307,6 +315,7 @@ const feedItemFromRow = (
       translation_state: "policy_blocked",
       machine_translated: false,
       source_hash: null,
+      ...(video === undefined || video === null ? {} : { video }),
     },
   };
 };
@@ -342,8 +351,9 @@ const homeFeedStatement = (input: {
                   p.title,
                   p.body,
                   p.content_rating,
+                  ${videoPostProjectionSelect},
                   alias.slug AS canonical_slug,
-                  (p.post_type NOT IN ('text', 'song')
+                  (p.post_type NOT IN ('text', 'song', 'video')
                     OR can_account_view_content_rating_v1($1, p.content_rating)) AS rating_view_allowed,
                   p.comments_locked,
                   p.created_at,
@@ -384,6 +394,7 @@ const homeFeedStatement = (input: {
               AND p.post_id = h.post_id
              JOIN communities AS c
                ON c.community_id = h.community_id
+             ${videoPostProjectionJoins}
              LEFT JOIN post_slug_aliases AS alias
                ON alias.post_id = p.post_id
             WHERE c.status = 'active'
