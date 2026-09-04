@@ -6,6 +6,7 @@ import { hostileCorrectedLyrics } from "../../../../tests/fixtures/media-process
 import type {
   MediaTransformAudioSampleInput,
   MediaTransformProbeInput,
+  MediaTransformService,
 } from "../media/transform.ts";
 import type { MediaIdentificationRequest } from "../media-identification-provider.ts";
 import type { MediaExplicitnessClassifierInput } from "../media-provider-contracts.ts";
@@ -429,7 +430,7 @@ function providers(
             }),
     },
     transform: {
-      probe: (input: MediaTransformProbeInput) => {
+      probe: ((input: MediaTransformProbeInput) => {
         events.push(`effect:probe:${input.binding.canonicalAudioSha256}`);
         return Effect.succeed({
           status: "completed",
@@ -464,7 +465,7 @@ function providers(
             ],
           },
         });
-      },
+      }) as unknown as MediaTransformService["probe"],
       extractAudioSample: (input: MediaTransformAudioSampleInput) => {
         events.push(`effect:sample:${input.variant}`);
         return Effect.succeed({
@@ -499,6 +500,10 @@ function providers(
         Effect.succeed({ status: "unavailable", reason: "disabled", binding: input.binding }),
       alignVideoSoundtrackToSong: (input) =>
         Effect.succeed({ status: "unavailable", reason: "disabled", binding: input.binding }),
+      extractVideoAudio: (input) =>
+        Effect.succeed({ status: "unavailable", reason: "disabled", attempt: input.attempt }),
+      extractVideoFrames: (input) =>
+        Effect.succeed({ status: "unavailable", reason: "disabled", attempt: input.attempt }),
       cancelAssembly: () => Effect.succeed({ status: "unavailable", reason: "disabled" }),
     },
     artifactReader: {
@@ -751,7 +756,7 @@ describe("media processing workflow", () => {
       ...base,
       transform: {
         ...base.transform,
-        probe: (input) => {
+        probe: ((input: MediaTransformProbeInput) => {
           polls += 1;
           if (polls === 1) {
             return Effect.succeed({
@@ -765,7 +770,7 @@ describe("media processing workflow", () => {
           }
           expect(input.attempt.providerJobId).toBe("durable-probe-assembly");
           return base.transform.probe(input);
-        },
+        }) as MediaTransformService["probe"],
       },
     };
 
@@ -964,7 +969,7 @@ describe("media processing workflow", () => {
       ...base,
       transform: {
         ...base.transform,
-        probe: (input) =>
+        probe: ((input: MediaTransformProbeInput) =>
           base.transform.probe(input).pipe(
             Effect.map((outcome) =>
               outcome.status === "completed"
@@ -979,7 +984,7 @@ describe("media processing workflow", () => {
                   }
                 : outcome,
             ),
-          ),
+          )) as MediaTransformService["probe"],
       },
     };
     const result = await runMediaProcessingWorkflow(

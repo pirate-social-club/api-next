@@ -1,4 +1,5 @@
 import { NotFound, type VideoPostSubmissionV1 } from "@pirate/contracts";
+import { Effect } from "effect";
 import type {
   OriginalAudioVerification,
   VideoExtractedFrame,
@@ -9,6 +10,12 @@ import {
   VIDEO_POSTER_POLICY_V1,
 } from "../../../domain/src/video-submission.ts";
 import { mediaSha256Bytes } from "../media/submission-service.ts";
+import type {
+  MediaTransformAttempt,
+  MediaTransformVideoBinding,
+  MediaTransformVideoCapabilities,
+} from "../media/transform.ts";
+import { MEDIA_TRANSFORM_VIDEO_AUDIO_POLICY_V1 } from "../media/transform.ts";
 import {
   acceptTrustedVideoAnalysis,
   recordVideoProcessingFailure,
@@ -63,20 +70,11 @@ export type VideoFrameExtractionResult =
       evidenceRef: string;
     }>;
 
-/** Provider ports return only trusted server facts; no client probe value crosses this boundary. */
+/** Non-transform providers return only trusted server facts. Media transforms use MediaTransform. */
 export type VideoAnalysisProviders = Readonly<{
-  probe: (source: VideoAnalysisSource) => Promise<VideoProbeFact>;
   hash: (
     source: VideoAnalysisSource,
   ) => Promise<Readonly<{ canonicalSha256: string; byteLength: number; evidenceRef: string }>>;
-  extractSoundtrack: (source: VideoAnalysisSource) => Promise<
-    Readonly<{
-      artifactRef: string;
-      canonicalSha256: string;
-      policyRevision: string;
-      adapterRevision: string;
-    }>
-  >;
   identifySoundtrack: (
     input: Readonly<{
       operationId: string;
@@ -84,13 +82,6 @@ export type VideoAnalysisProviders = Readonly<{
       extractedAudioSha256: string;
     }>,
   ) => Promise<VideoSoundtrackFact>;
-  extractFrames: (
-    input: Readonly<{
-      source: VideoAnalysisSource;
-      durationMs: number;
-      posterTimestampMs: number;
-    }>,
-  ) => Promise<VideoFrameExtractionResult>;
   moderate: (
     input: Readonly<{
       operationId: string;
@@ -99,23 +90,55 @@ export type VideoAnalysisProviders = Readonly<{
       frames: readonly [VideoExtractedFrame, VideoExtractedFrame, VideoExtractedFrame];
     }>,
   ) => Promise<VideoSafetyFact>;
-  revisions: Readonly<{ probe: string }>;
 }>;
 
-/**
- * Provider-neutral binary analysis boundary. The engine receives only a
- * server-resolved immutable identity; implementations own every decoder and
- * extraction argument and never accept a client URL or command fragment.
- */
-export type VideoAnalysisMediaEngine = Pick<
-  VideoAnalysisProviders,
-  "probe" | "hash" | "extractSoundtrack" | "extractFrames"
->;
-
 export type VideoAnalysisRuntimeServices = VideoPublicationCommitServices &
-  Readonly<{ analysisProviders: VideoAnalysisProviders }>;
+  Readonly<{
+    analysisProviders: VideoAnalysisProviders;
+    transform: MediaTransformVideoCapabilities;
+  }>;
 
 const encoder = new TextEncoder();
+const VIDEO_TRANSFORM_RUNTIME_MS = 30 * 60 * 1_000;
+
+async function videoTransformBinding(
+  source: VideoAnalysisSource,
+  analysisRevision: number,
+  capability: "probe" | "audio" | "frames",
+): Promise<MediaTransformVideoBinding> {
+  const digest = await mediaSha256Bytes(
+    encoder.encode(
+      [
+        source.operationId,
+        source.videoRevision,
+        analysisRevision,
+        source.canonicalSha256,
+        capability,
+      ].join("\n"),
+    ),
+  );
+  return {
+    operationId: source.operationId,
+    videoRevision: source.videoRevision,
+    analysisRevision,
+    canonicalVideoSha256: source.canonicalSha256,
+    requestId: `video-${capability}-${digest.slice(0, 32)}`,
+  };
+}
+
+function videoTransformAttempt(updatedAt: string): MediaTransformAttempt {
+  const submittedAtMs = Date.parse(updatedAt);
+  if (!Number.isSafeInteger(submittedAtMs) || submittedAtMs < 0) {
+    throw new TypeError("video transform requires a durable submission timestamp");
+  }
+  return {
+    version: "media-transform-attempt-v1",
+    runtimeFence: {
+      submittedAtMs,
+      runtimeDeadlineMs: submittedAtMs + VIDEO_TRANSFORM_RUNTIME_MS,
+    },
+  };
+}
 
 export async function canonicalVideoCaptionSha256(caption: string | null): Promise<string | null> {
   if (caption === null) return null;
@@ -170,6 +193,14 @@ export async function runOriginalVideoAnalysis(
     byteLength: video.sizeBytes,
     mediaType: video.contentType,
   };
+  const transformSource = {
+    objectKey: source.immutableRef,
+    sha256: source.canonicalSha256,
+    byteLength: source.byteLength,
+    mediaType: source.mediaType,
+  } as const;
+  const analysisRevision = state.analysisRevision + 1;
+  const transformAttempt = videoTransformAttempt(record.updatedAt);
 
   let hash: Awaited<ReturnType<VideoAnalysisProviders["hash"]>>;
   try {
@@ -185,8 +216,22 @@ export async function runOriginalVideoAnalysis(
   }
 
   let probe: VideoProbeFact;
+  let probeAdapterRevision: string;
   try {
-    probe = await services.analysisProviders.probe(source);
+    const outcome = await Effect.runPromise(
+      services.transform.probe({
+        version: "media-transform-video-probe-input-v1",
+        binding: await videoTransformBinding(source, analysisRevision, "probe"),
+        source: transformSource,
+        attempt: transformAttempt,
+      }),
+    );
+    if (outcome.status !== "completed") throw new Error("video probe did not complete");
+    probe = {
+      ...outcome.probe,
+      ingestPolicyRevision: VIDEO_INGEST_POLICY_V1.policyRevision,
+    };
+    probeAdapterRevision = outcome.context.adapterRevision;
   } catch {
     return fail(
       { ...input, failureCode: "probe_failed", evidenceRef: "video-probe:failed" },
@@ -209,9 +254,30 @@ export async function runOriginalVideoAnalysis(
     );
   }
 
-  let soundtrack: Awaited<ReturnType<VideoAnalysisProviders["extractSoundtrack"]>>;
+  let soundtrack: Readonly<{
+    artifactRef: string;
+    canonicalSha256: string;
+    policyRevision: string;
+    adapterRevision: string;
+  }>;
   try {
-    soundtrack = await services.analysisProviders.extractSoundtrack(source);
+    const outcome = await Effect.runPromise(
+      services.transform.extractVideoAudio({
+        version: "media-transform-video-audio-input-v1",
+        binding: await videoTransformBinding(source, analysisRevision, "audio"),
+        source: transformSource,
+        extractionPolicyVersion: MEDIA_TRANSFORM_VIDEO_AUDIO_POLICY_V1,
+        attempt: transformAttempt,
+      }),
+    );
+    if (
+      outcome.status !== "completed" ||
+      outcome.artifact.sourceSha256 !== source.canonicalSha256 ||
+      outcome.artifact.videoRevision !== source.videoRevision
+    ) {
+      throw new Error("video audio extraction did not complete");
+    }
+    soundtrack = outcome.artifact;
   } catch {
     return fail(
       { ...input, failureCode: "transform_failed", evidenceRef: "video-soundtrack:failed" },
@@ -238,11 +304,41 @@ export async function runOriginalVideoAnalysis(
     state.posterTimestampMs ?? VIDEO_POSTER_POLICY_V1.defaultPosterTimestampMs;
   let extracted: VideoFrameExtractionResult;
   try {
-    extracted = await services.analysisProviders.extractFrames({
-      source,
-      durationMs: probe.durationMs,
-      posterTimestampMs,
-    });
+    const outcome = await Effect.runPromise(
+      services.transform.extractVideoFrames({
+        version: "media-transform-video-frames-input-v1",
+        binding: await videoTransformBinding(source, analysisRevision, "frames"),
+        source: transformSource,
+        sourceDurationMs: probe.durationMs,
+        posterTimestampMs,
+        posterPolicy: VIDEO_POSTER_POLICY_V1,
+        attempt: transformAttempt,
+      }),
+    );
+    extracted =
+      outcome.status === "completed" &&
+      outcome.extraction.sourceSha256 === source.canonicalSha256 &&
+      outcome.extraction.videoRevision === source.videoRevision &&
+      outcome.extraction.posterPolicyRevision === VIDEO_POSTER_POLICY_V1.policyRevision
+        ? {
+            outcome: "ready",
+            evidenceRef: outcome.extraction.evidenceRef,
+            adapterRevision: outcome.extraction.adapterRevision,
+            frames: outcome.extraction.frames,
+          }
+        : outcome.status === "rejected" &&
+            (outcome.reason === "poster_undecodable" ||
+              outcome.reason === "poster_timestamp_out_of_range")
+          ? {
+              outcome: "failed",
+              reasonCode: outcome.reason,
+              evidenceRef: `video-frames:${source.canonicalSha256}:${outcome.reason}`,
+            }
+          : {
+              outcome: "failed",
+              reasonCode: "transform_failed",
+              evidenceRef: `video-frames:${source.canonicalSha256}:failed`,
+            };
   } catch {
     return fail(
       { ...input, failureCode: "transform_failed", evidenceRef: "video-frames:failed" },
@@ -281,7 +377,7 @@ export async function runOriginalVideoAnalysis(
     version: "video-trusted-analysis-v1",
     operationId: state.operationId,
     videoRevision: state.videoRevision,
-    analysisRevision: state.analysisRevision + 1,
+    analysisRevision,
     finalizedVideoRef: video.immutableRef,
     canonicalVideoSha256: hash.canonicalSha256,
     byteLength: hash.byteLength,
@@ -324,7 +420,7 @@ export async function runOriginalVideoAnalysis(
     automatedRating: safety.automatedRating,
     safetyPolicyRevision: safety.policyRevision,
     adapterRevisions: {
-      probe: services.analysisProviders.revisions.probe,
+      probe: probeAdapterRevision,
       acr: identified.adapterRevision,
       frames: extracted.adapterRevision,
       safety: safety.adapterRevision,

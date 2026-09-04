@@ -3,6 +3,9 @@ import type {
   MediaTransformAudioSampleInput,
   MediaTransformCanonicalAudioSegmentInput,
   MediaTransformProbeInput,
+  MediaTransformVideoAudioInput,
+  MediaTransformVideoFramesInput,
+  MediaTransformVideoProbeInput,
   MediaTransformVideoSongAlignmentInput,
 } from "@pirate/application/media/transform";
 import { MediaTransformRequestInvalid } from "@pirate/application/media/transform";
@@ -38,6 +41,8 @@ const templates = {
   probe: "1".repeat(32),
   samplePrimary: "2".repeat(32),
   sampleAlternate: "3".repeat(32),
+  videoAudio: "4".repeat(32),
+  videoFrames: "5".repeat(32),
 };
 const limits: TransloaditLimits = {
   maxRequestBytes: 16_384,
@@ -70,6 +75,48 @@ const sampleInput: MediaTransformAudioSampleInput = {
   source: { objectKey: "media/sealed/operation-1/audio-r3" },
   sourceDurationMs: 60_000,
   variant: "primary",
+  attempt,
+};
+const videoBinding = {
+  operationId: "video-operation-1",
+  videoRevision: 4,
+  analysisRevision: 2,
+  canonicalVideoSha256: "d".repeat(64),
+  requestId: "video-attempt-1",
+};
+const videoSource = {
+  objectKey: "immutable/video-operation-1/video-r4.mp4",
+  sha256: videoBinding.canonicalVideoSha256,
+  byteLength: 4_000_000,
+  mediaType: "video/mp4" as const,
+};
+const videoProbeInput: MediaTransformVideoProbeInput = {
+  version: "media-transform-video-probe-input-v1",
+  binding: videoBinding,
+  source: videoSource,
+  attempt,
+};
+const videoAudioInput: MediaTransformVideoAudioInput = {
+  version: "media-transform-video-audio-input-v1",
+  binding: videoBinding,
+  source: videoSource,
+  extractionPolicyVersion: "video-audio-adts-copy-v1",
+  attempt,
+};
+const videoFramesInput: MediaTransformVideoFramesInput = {
+  version: "media-transform-video-frames-input-v1",
+  binding: videoBinding,
+  source: videoSource,
+  sourceDurationMs: 4_000,
+  posterTimestampMs: 1_500,
+  posterPolicy: {
+    version: "video-poster-policy-v1",
+    policyRevision: 1,
+    roles: ["poster", "first", "midpoint"],
+    maxEdgePx: 1_920,
+    maxBytesPerFrame: 2_000_000,
+    imageType: "image/jpeg",
+  },
   attempt,
 };
 const danceBinding = {
@@ -159,7 +206,11 @@ function response(
   };
 }
 
-function completed(file: unknown, step: "probe" | "sample" = "probe", id = jobId): unknown {
+function completed(
+  file: unknown,
+  step: "probe" | "sample" | "video_audio" = "probe",
+  id = jobId,
+): unknown {
   return {
     ok: "ASSEMBLY_COMPLETED",
     assembly_id: id,
@@ -215,6 +266,17 @@ describe("disabled Transloadit composition", () => {
     });
     expect(
       await Effect.runPromise(disabledTransloaditMediaTransform.extractAudioSample(sampleInput)),
+    ).toEqual({ status: "unavailable", reason: "disabled", attempt });
+    expect(
+      await Effect.runPromise(disabledTransloaditMediaTransform.probe(videoProbeInput)),
+    ).toEqual({ status: "unavailable", reason: "disabled", attempt });
+    expect(
+      await Effect.runPromise(disabledTransloaditMediaTransform.extractVideoAudio(videoAudioInput)),
+    ).toEqual({ status: "unavailable", reason: "disabled", attempt });
+    expect(
+      await Effect.runPromise(
+        disabledTransloaditMediaTransform.extractVideoFrames(videoFramesInput),
+      ),
     ).toEqual({ status: "unavailable", reason: "disabled", attempt });
     expect(
       await Effect.runPromise(
@@ -337,6 +399,162 @@ describe("fixed Transloadit submission", () => {
       const effect = service.probe({ ...probeInput, source: { objectKey } });
       await expect(Effect.runPromise(effect)).rejects.toBeInstanceOf(MediaTransformRequestInvalid);
     }
+    expect(calls).toBe(0);
+  });
+});
+
+describe("video transform capabilities", () => {
+  test("probes video through the shared capability and binds trusted H.264/AAC facts", async () => {
+    const requests: TransloaditTransportRequest[] = [];
+    const service = adapter((request) => {
+      requests.push(request);
+      return response(
+        completed({
+          type: "video",
+          mime: "video/mp4",
+          ext: "mp4",
+          size: videoSource.byteLength,
+          meta: {
+            duration: 4,
+            width: 320,
+            height: 240,
+            framerate: 30,
+            video_codec: "h264",
+            audio_codec: "aac",
+          },
+        }),
+      );
+    });
+
+    const outcome = await Effect.runPromise(service.probe(videoProbeInput));
+    expect(outcome).toMatchObject({
+      status: "completed",
+      context: {
+        version: "media-transform-video-attempt-context-v1",
+        canonicalVideoSha256: videoSource.sha256,
+        adapterRevision: "transloadit-v1",
+      },
+      probe: {
+        durationMs: 4_000,
+        width: 320,
+        height: 240,
+        frameRateMillihertz: 30_000,
+        videoCodec: "h264",
+        audioCodec: "aac",
+        hasAudio: true,
+      },
+    });
+    const params = paramsFrom(requests[0] as TransloaditTransportRequest);
+    expect(params.template_id).toBe(templates.probe);
+    expect(params).not.toHaveProperty("steps");
+    expect(params).not.toHaveProperty("notify_url");
+  });
+
+  test("extracts one hash-bound AAC artifact using only the fixed video template", async () => {
+    let request: TransloaditTransportRequest | undefined;
+    const service = adapter((next) => {
+      request = next;
+      return response(
+        completed(
+          {
+            type: "audio",
+            mime: "audio/aac",
+            ext: "aac",
+            size: 64_000,
+            meta: { sha256: "e".repeat(64) },
+          },
+          "video_audio",
+        ),
+      );
+    });
+
+    const outcome = await Effect.runPromise(service.extractVideoAudio(videoAudioInput));
+    expect(outcome).toMatchObject({
+      status: "completed",
+      artifact: {
+        canonicalSha256: "e".repeat(64),
+        sourceSha256: videoSource.sha256,
+        videoRevision: videoBinding.videoRevision,
+        mediaType: "audio/aac",
+        policyRevision: videoAudioInput.extractionPolicyVersion,
+        adapterRevision: "transloadit-v1",
+      },
+    });
+    const params = paramsFrom(request as unknown as TransloaditTransportRequest);
+    const fields = params.fields as Readonly<Record<string, unknown>>;
+    expect(params.template_id).toBe(templates.videoAudio);
+    expect(fields.transform_kind).toBe("video_audio");
+    expect(fields.source_object_key).toBe(videoSource.objectKey);
+    expect(fields.output_object_key).toMatch(/soundtrack\.aac$/);
+    expect(params).not.toHaveProperty("steps");
+  });
+
+  test("extracts exactly poster, first, and midpoint frames at bounded timestamps", async () => {
+    let request: TransloaditTransportRequest | undefined;
+    const frame = (timestamp: number, sha256: string) => ({
+      type: "image",
+      mime: "image/jpeg",
+      ext: "jpg",
+      size: 12_000,
+      meta: { width: 320, height: 240, timestamp, sha256 },
+    });
+    const service = adapter((next) => {
+      request = next;
+      return response({
+        ok: "ASSEMBLY_COMPLETED",
+        assembly_id: jobId,
+        execution_duration: 1.25,
+        warnings: [],
+        results: {
+          video_poster: [frame(1.5, "1".repeat(64))],
+          video_first: [frame(0, "2".repeat(64))],
+          video_midpoint: [frame(2, "3".repeat(64))],
+        },
+      });
+    });
+
+    const outcome = await Effect.runPromise(service.extractVideoFrames(videoFramesInput));
+    expect(outcome.status).toBe("completed");
+    if (outcome.status !== "completed") throw new Error("video frame fixture did not complete");
+    expect(outcome.extraction.frames.map(({ role }) => role)).toEqual([
+      "poster",
+      "first",
+      "midpoint",
+    ]);
+    expect(outcome.extraction.frames.map(({ timestampMs }) => timestampMs)).toEqual([
+      1_500, 0, 2_000,
+    ]);
+    const params = paramsFrom(request as unknown as TransloaditTransportRequest);
+    const fields = params.fields as Readonly<Record<string, unknown>>;
+    expect(params.template_id).toBe(templates.videoFrames);
+    expect(fields.poster_timestamp_seconds).toBe(1.5);
+    expect(fields.midpoint_timestamp_seconds).toBe(2);
+    expect(fields.maximum_frame_edge_px).toBe(1_920);
+    expect(params).not.toHaveProperty("steps");
+  });
+
+  test("rejects URL-shaped and hash-mismatched video sources before transport", async () => {
+    let calls = 0;
+    const service = adapter(() => {
+      calls += 1;
+      return response(executing());
+    });
+    await expect(
+      Effect.runPromise(
+        service.extractVideoAudio({
+          ...videoAudioInput,
+          source: { ...videoSource, objectKey: "https://user.invalid/video.mp4" },
+        }),
+      ),
+    ).rejects.toBeInstanceOf(MediaTransformRequestInvalid);
+    await expect(
+      Effect.runPromise(
+        service.extractVideoFrames({
+          ...videoFramesInput,
+          source: { ...videoSource, sha256: "f".repeat(64) },
+        }),
+      ),
+    ).rejects.toBeInstanceOf(MediaTransformRequestInvalid);
     expect(calls).toBe(0);
   });
 });

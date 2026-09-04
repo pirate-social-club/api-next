@@ -1,10 +1,15 @@
 import { describe, expect, test } from "bun:test";
+import { Effect } from "effect";
 import {
   attachImmutableVideo,
   createOriginalVideoSubmission,
   type VideoExtractedFrame,
   type VideoSubmissionState,
 } from "../../../domain/src/video-submission.ts";
+import type {
+  MediaTransformVideoAttemptContext,
+  MediaTransformVideoCapabilities,
+} from "../media/transform.ts";
 import type { PersonaRecord } from "../use-cases/personas.ts";
 import {
   runOriginalVideoAnalysis,
@@ -100,37 +105,10 @@ function providers(overrides: Partial<VideoAnalysisProviders> = {}): VideoAnalys
       byteLength: source.byteLength,
       evidenceRef: "hash:fixture",
     }),
-    probe: async () => ({
-      evidenceRef: "probe:fixture",
-      ingestPolicyRevision: 1,
-      durationMs: 10_000,
-      width: 1_080,
-      height: 1_920,
-      frameRateMillihertz: 30_000,
-      videoCodec: "h264",
-      audioCodec: "aac",
-      hasAudio: true,
-    }),
-    extractSoundtrack: async () => ({
-      artifactRef: "media://derived/video-analysis-operation/audio",
-      canonicalSha256: HASHES[1] as string,
-      policyRevision: "extract-audio-v1",
-      adapterRevision: "extract-audio-fixture",
-    }),
     identifySoundtrack: async () => ({
       verification: { status: "no_match", evidenceRef: "acr:no-match", adapterRevision: "acr-v1" },
       evidenceRef: "acr:no-match",
       adapterRevision: "acr-v1",
-    }),
-    extractFrames: async ({ posterTimestampMs }) => ({
-      outcome: "ready",
-      evidenceRef: "frames:fixture",
-      adapterRevision: "frames-v1",
-      frames: frames().map((frame, index) =>
-        index === 0
-          ? { ...frame, requestedTimestampMs: posterTimestampMs, timestampMs: posterTimestampMs }
-          : frame,
-      ) as [VideoExtractedFrame, VideoExtractedFrame, VideoExtractedFrame],
     }),
     moderate: async ({ caption, captionSha256 }) => ({
       requestId: "safety:fixture",
@@ -142,13 +120,84 @@ function providers(overrides: Partial<VideoAnalysisProviders> = {}): VideoAnalys
       policyRevision: "safety-v1",
       adapterRevision: "safety-adapter-v1",
     }),
-    revisions: { probe: "probe-adapter-v1" },
+    ...overrides,
+  };
+}
+
+function transformContext(
+  binding: Parameters<MediaTransformVideoCapabilities["probe"]>[0]["binding"],
+): MediaTransformVideoAttemptContext {
+  return {
+    version: "media-transform-video-attempt-context-v1",
+    ...binding,
+    adapterRevision: "media-transform-fixture-v1",
+  };
+}
+
+function transform(
+  overrides: Partial<MediaTransformVideoCapabilities> = {},
+): MediaTransformVideoCapabilities {
+  return {
+    probe: (input) =>
+      Effect.succeed({
+        status: "completed",
+        attempt: input.attempt,
+        context: transformContext(input.binding),
+        probe: {
+          evidenceRef: "probe:fixture",
+          durationMs: 10_000,
+          width: 1_080,
+          height: 1_920,
+          frameRateMillihertz: 30_000,
+          videoCodec: "h264",
+          audioCodec: "aac",
+          hasAudio: true,
+        },
+      }),
+    extractVideoAudio: (input) =>
+      Effect.succeed({
+        status: "completed",
+        attempt: input.attempt,
+        context: transformContext(input.binding),
+        artifact: {
+          artifactRef: "media://derived/video-analysis-operation/audio",
+          canonicalSha256: HASHES[1] as string,
+          sourceSha256: input.source.sha256,
+          videoRevision: input.binding.videoRevision,
+          mediaType: "audio/aac",
+          policyRevision: input.extractionPolicyVersion,
+          adapterRevision: "extract-audio-fixture",
+        },
+      }),
+    extractVideoFrames: (input) =>
+      Effect.succeed({
+        status: "completed",
+        attempt: input.attempt,
+        context: transformContext(input.binding),
+        extraction: {
+          evidenceRef: "frames:fixture",
+          adapterRevision: "frames-v1",
+          sourceSha256: input.source.sha256,
+          videoRevision: input.binding.videoRevision,
+          posterPolicyRevision: input.posterPolicy.policyRevision,
+          frames: frames().map((frame, index) =>
+            index === 0
+              ? {
+                  ...frame,
+                  requestedTimestampMs: input.posterTimestampMs,
+                  timestampMs: input.posterTimestampMs,
+                }
+              : frame,
+          ) as [VideoExtractedFrame, VideoExtractedFrame, VideoExtractedFrame],
+        },
+      }),
     ...overrides,
   };
 }
 
 function services(input: {
   providers: VideoAnalysisProviders;
+  transform?: MediaTransformVideoCapabilities;
   onDecision?: (state: VideoSubmissionState) => void;
   onFailure?: (code: string) => void;
 }): VideoAnalysisRuntimeServices {
@@ -198,6 +247,7 @@ function services(input: {
     nowIso: () => "2026-09-04T00:01:00.000Z",
     randomUuid: () => "00000000-0000-4000-8000-000000000001",
     analysisProviders: input.providers,
+    transform: input.transform ?? transform(),
   };
 }
 
@@ -242,12 +292,14 @@ describe("original-video trusted analysis runtime", () => {
     const result = await runOriginalVideoAnalysis(
       { submissionId: "video-analysis-submission", operationId: "video-analysis-operation" },
       services({
-        providers: providers({
-          extractFrames: async () => ({
-            outcome: "failed",
-            reasonCode: "poster_timestamp_out_of_range",
-            evidenceRef: "frames:poster-out-of-range",
-          }),
+        providers: providers(),
+        transform: transform({
+          extractVideoFrames: (input) =>
+            Effect.succeed({
+              status: "rejected",
+              reason: "poster_timestamp_out_of_range",
+              attempt: input.attempt,
+            }),
         }),
         onFailure: (code) => failures.push(code),
       }),

@@ -3,13 +3,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mediaSha256Bytes } from "@pirate/application/media/submission-service";
 import type {
-  VideoAnalysisMediaEngine,
+  MediaTransformVideoAttemptContext,
+  MediaTransformVideoAudioInput,
+  MediaTransformVideoCapabilities,
+  MediaTransformVideoFrame,
+  MediaTransformVideoFramesInput,
+  MediaTransformVideoProbe,
+  MediaTransformVideoProbeInput,
+  MediaTransformVideoSource,
+} from "@pirate/application/media/transform";
+import { MediaTransformRequestInvalid } from "@pirate/application/media/transform";
+import type {
+  VideoAnalysisProviders,
   VideoAnalysisSource,
-  VideoFrameExtractionResult,
-  VideoProbeFact,
 } from "@pirate/application/video/analysis";
-import type { VideoExtractedFrame } from "@pirate/domain";
 import { VIDEO_POSTER_POLICY_V1 } from "@pirate/domain";
+import { Effect } from "effect";
 
 export const LOCAL_VIDEO_FFMPEG_REVISION = "ffmpeg-6.1.1-video-analysis-v1";
 export const LOCAL_VIDEO_PROBE_REVISION = "ffprobe-6.1.1-video-analysis-v1";
@@ -23,7 +32,7 @@ const MAXIMUM_DIAGNOSTIC_BYTES = 64 * 1024;
 const DEFAULT_TIMEOUT_MS = 120_000;
 
 export interface LocalVideoSourceReader {
-  readonly read: (source: VideoAnalysisSource) => Promise<Uint8Array>;
+  readonly read: (source: MediaTransformVideoSource) => Promise<Uint8Array>;
 }
 
 export interface LocalVideoArtifactWriter {
@@ -51,16 +60,14 @@ type ProbeDocument = Readonly<{
   readonly format?: Readonly<Record<string, unknown>>;
 }>;
 
-function validSource(source: VideoAnalysisSource): boolean {
+function validSource(source: MediaTransformVideoSource): boolean {
   return (
-    source.immutableRef.startsWith("media://immutable/") &&
-    !source.immutableRef.includes("\\") &&
-    !source.immutableRef.split("/").includes("..") &&
-    /^[0-9a-f]{64}$/u.test(source.canonicalSha256) &&
+    source.objectKey.startsWith("media://immutable/") &&
+    !source.objectKey.includes("\\") &&
+    !source.objectKey.split("/").includes("..") &&
+    /^[0-9a-f]{64}$/u.test(source.sha256) &&
     Number.isSafeInteger(source.byteLength) &&
-    source.byteLength > 0 &&
-    Number.isSafeInteger(source.videoRevision) &&
-    source.videoRevision > 0
+    source.byteLength > 0
   );
 }
 
@@ -130,7 +137,7 @@ function frameRateMillihertz(value: unknown): number {
   return Math.round(rate);
 }
 
-function parseProbe(document: ProbeDocument, evidenceRef: string): VideoProbeFact {
+function parseProbe(document: ProbeDocument, evidenceRef: string): MediaTransformVideoProbe {
   const streams = document.streams;
   const format = document.format;
   if (!Array.isArray(streams) || format === undefined)
@@ -150,7 +157,6 @@ function parseProbe(document: ProbeDocument, evidenceRef: string): VideoProbeFac
   }
   return {
     evidenceRef,
-    ingestPolicyRevision: 1,
     durationMs: Math.round(parsePositiveNumber(format.duration) * 1_000),
     width,
     height,
@@ -159,6 +165,39 @@ function parseProbe(document: ProbeDocument, evidenceRef: string): VideoProbeFac
     audioCodec: "aac",
     hasAudio: true,
   };
+}
+
+function context(
+  input:
+    | MediaTransformVideoProbeInput
+    | MediaTransformVideoAudioInput
+    | MediaTransformVideoFramesInput,
+): MediaTransformVideoAttemptContext {
+  return {
+    version: "media-transform-video-attempt-context-v1",
+    ...input.binding,
+    adapterRevision: LOCAL_VIDEO_FFMPEG_REVISION,
+  };
+}
+
+function transformSource(source: VideoAnalysisSource): MediaTransformVideoSource {
+  return {
+    objectKey: source.immutableRef,
+    sha256: source.canonicalSha256,
+    byteLength: source.byteLength,
+    mediaType: source.mediaType,
+  };
+}
+
+function acceptedPosterPolicy(input: MediaTransformVideoFramesInput["posterPolicy"]): boolean {
+  return (
+    input.version === VIDEO_POSTER_POLICY_V1.version &&
+    input.policyRevision === VIDEO_POSTER_POLICY_V1.policyRevision &&
+    input.roles.join(",") === VIDEO_POSTER_POLICY_V1.roles.join(",") &&
+    input.maxEdgePx === VIDEO_POSTER_POLICY_V1.maxEdgePx &&
+    input.maxBytesPerFrame === VIDEO_POSTER_POLICY_V1.maxBytesPerFrame &&
+    input.imageType === VIDEO_POSTER_POLICY_V1.imageType
+  );
 }
 
 function seconds(milliseconds: number): string {
@@ -175,7 +214,7 @@ function seconds(milliseconds: number): string {
  */
 export function makeLocalPinnedFfmpegVideoAnalysisEngine(
   options: LocalPinnedFfmpegOptions,
-): VideoAnalysisMediaEngine {
+): MediaTransformVideoCapabilities & Pick<VideoAnalysisProviders, "hash"> {
   const ffmpeg = options.ffmpegBinary ?? "ffmpeg";
   const ffprobe = options.ffprobeBinary ?? "ffprobe";
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -208,7 +247,7 @@ export function makeLocalPinnedFfmpegVideoAnalysisEngine(
   };
 
   const withSource = async <T>(
-    source: VideoAnalysisSource,
+    source: MediaTransformVideoSource,
     use: (inputPath: string, bytes: Uint8Array, directory: string) => Promise<T>,
   ): Promise<T> => {
     if (!validSource(source) || source.byteLength > maximumSourceBytes) {
@@ -219,7 +258,7 @@ export function makeLocalPinnedFfmpegVideoAnalysisEngine(
     if (bytes.byteLength !== source.byteLength || bytes.byteLength > maximumSourceBytes) {
       throw new Error("local video source length mismatch");
     }
-    if ((await mediaSha256Bytes(bytes)) !== source.canonicalSha256) {
+    if ((await mediaSha256Bytes(bytes)) !== source.sha256) {
       throw new Error("local video source hash mismatch");
     }
     const directory = await mkdtemp(join(tmpdir(), "pirate-video-analysis-"));
@@ -234,107 +273,46 @@ export function makeLocalPinnedFfmpegVideoAnalysisEngine(
 
   return {
     hash: (source) =>
-      withSource(source, async (_inputPath, bytes) => ({
+      withSource(transformSource(source), async (_inputPath, bytes) => ({
         canonicalSha256: await mediaSha256Bytes(bytes),
         byteLength: bytes.byteLength,
         evidenceRef: `video-hash:${source.canonicalSha256}`,
       })),
 
-    probe: (source) =>
-      withSource(source, async (inputPath) => {
-        const result = await runTool(
-          [
-            ffprobe,
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration:stream=codec_type,codec_name,width,height,avg_frame_rate",
-            "-of",
-            "json",
-            inputPath,
-          ],
-          timeoutMs,
-        );
-        return parseProbe(
-          JSON.parse(result.stdout) as ProbeDocument,
-          `video-probe:${source.canonicalSha256}:${LOCAL_VIDEO_PROBE_REVISION}`,
-        );
-      }),
+    probe: (input) =>
+      Effect.promise(() =>
+        withSource(input.source, async (inputPath) => {
+          const result = await runTool(
+            [
+              ffprobe,
+              "-v",
+              "error",
+              "-show_entries",
+              "format=duration:stream=codec_type,codec_name,width,height,avg_frame_rate",
+              "-of",
+              "json",
+              inputPath,
+            ],
+            timeoutMs,
+          );
+          return parseProbe(
+            JSON.parse(result.stdout) as ProbeDocument,
+            `video-probe:${input.source.sha256}:${LOCAL_VIDEO_PROBE_REVISION}`,
+          );
+        }).then((probe) => ({
+          status: "completed" as const,
+          attempt: input.attempt,
+          context: context(input),
+          probe,
+        })),
+      ),
 
-    extractSoundtrack: (source) =>
-      withSource(source, async (inputPath, _bytes, directory) => {
-        const outputPath = join(directory, "soundtrack.aac");
-        await runTool(
-          [
-            ffmpeg,
-            "-nostdin",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-i",
-            inputPath,
-            "-map",
-            "0:a:0",
-            "-vn",
-            "-c:a",
-            "copy",
-            "-f",
-            "adts",
-            outputPath,
-          ],
-          timeoutMs,
-        );
-        const bytes = new Uint8Array(await readFile(outputPath));
-        const canonicalSha256 = await mediaSha256Bytes(bytes);
-        const stored = await options.artifactWriter.write({
-          artifactKey: `video/${source.canonicalSha256}/v${source.videoRevision}/soundtrack.aac`,
-          bytes,
-          mediaType: "audio/aac",
-          canonicalSha256,
-        });
-        if (!validIdentifier(stored.artifactRef)) throw new Error("invalid video artifact ref");
-        return {
-          artifactRef: stored.artifactRef,
-          canonicalSha256,
-          policyRevision: LOCAL_VIDEO_AUDIO_EXTRACTION_POLICY,
-          adapterRevision: LOCAL_VIDEO_FFMPEG_REVISION,
-        };
-      }),
-
-    extractFrames: ({ source, durationMs, posterTimestampMs }) =>
-      withSource(
-        source,
-        async (inputPath, _bytes, directory): Promise<VideoFrameExtractionResult> => {
-          if (
-            !Number.isSafeInteger(durationMs) ||
-            durationMs < 1 ||
-            !Number.isSafeInteger(posterTimestampMs) ||
-            posterTimestampMs < 0 ||
-            posterTimestampMs >= durationMs
-          ) {
-            return {
-              outcome: "failed",
-              reasonCode: "poster_timestamp_out_of_range",
-              evidenceRef: `video-frames:${source.canonicalSha256}:poster-out-of-range`,
-            };
-          }
-          const requests = [
-            {
-              role: "poster" as const,
-              requestedTimestampMs: posterTimestampMs,
-              timestampMs: posterTimestampMs,
-            },
-            { role: "first" as const, requestedTimestampMs: null, timestampMs: 0 },
-            {
-              role: "midpoint" as const,
-              requestedTimestampMs: null,
-              timestampMs: Math.floor(durationMs / 2),
-            },
-          ] as const;
-          const extracted: VideoExtractedFrame[] = [];
-          try {
-            for (const request of requests) {
-              const outputPath = join(directory, `${request.role}.jpg`);
+    extractVideoAudio: (input) =>
+      input.extractionPolicyVersion !== LOCAL_VIDEO_AUDIO_EXTRACTION_POLICY
+        ? Effect.fail(new MediaTransformRequestInvalid({ reason: "invalid_video_policy" }))
+        : Effect.promise(() =>
+            withSource(input.source, async (inputPath, _bytes, directory) => {
+              const outputPath = join(directory, "soundtrack.aac");
               await runTool(
                 [
                   ffmpeg,
@@ -344,60 +322,143 @@ export function makeLocalPinnedFfmpegVideoAnalysisEngine(
                   "error",
                   "-i",
                   inputPath,
-                  "-ss",
-                  seconds(request.timestampMs),
-                  "-frames:v",
-                  "1",
-                  "-an",
-                  "-vf",
-                  `scale=w='if(gt(iw,ih),min(${VIDEO_POSTER_POLICY_V1.maxEdgePx},iw),-2)':h='if(gt(iw,ih),-2,min(${VIDEO_POSTER_POLICY_V1.maxEdgePx},ih))'`,
-                  "-q:v",
-                  "2",
+                  "-map",
+                  "0:a:0",
+                  "-vn",
+                  "-c:a",
+                  "copy",
                   "-f",
-                  "image2",
+                  "adts",
                   outputPath,
                 ],
                 timeoutMs,
               );
               const bytes = new Uint8Array(await readFile(outputPath));
-              if (
-                bytes.byteLength === 0 ||
-                bytes.byteLength > VIDEO_POSTER_POLICY_V1.maxBytesPerFrame
-              ) {
-                throw new Error("video frame exceeded the extraction policy");
-              }
               const canonicalSha256 = await mediaSha256Bytes(bytes);
               const stored = await options.artifactWriter.write({
-                artifactKey: `video/${source.canonicalSha256}/v${source.videoRevision}/${request.role}.jpg`,
+                artifactKey: `video/${input.source.sha256}/v${input.binding.videoRevision}/soundtrack.aac`,
                 bytes,
-                mediaType: "image/jpeg",
+                mediaType: "audio/aac",
                 canonicalSha256,
               });
               if (!validIdentifier(stored.artifactRef))
                 throw new Error("invalid video artifact ref");
-              extracted.push({
-                role: request.role,
-                requestedTimestampMs: request.requestedTimestampMs,
-                timestampMs: request.timestampMs,
-                sha256: canonicalSha256,
+              return {
                 artifactRef: stored.artifactRef,
-              });
-            }
-          } catch {
-            return {
-              outcome: "failed",
-              reasonCode: "transform_failed",
-              evidenceRef: `video-frames:${source.canonicalSha256}:transform-failed`,
-            };
-          }
-          return {
-            outcome: "ready",
-            evidenceRef: `video-frames:${source.canonicalSha256}:${LOCAL_VIDEO_FRAME_EXTRACTION_POLICY}`,
-            adapterRevision: LOCAL_VIDEO_FFMPEG_REVISION,
-            frames: extracted as [VideoExtractedFrame, VideoExtractedFrame, VideoExtractedFrame],
-          };
-        },
-      ),
+                canonicalSha256,
+                sourceSha256: input.source.sha256,
+                videoRevision: input.binding.videoRevision,
+                mediaType: "audio/aac" as const,
+                policyRevision: input.extractionPolicyVersion,
+                adapterRevision: LOCAL_VIDEO_FFMPEG_REVISION,
+              };
+            }).then((artifact) => ({
+              status: "completed" as const,
+              attempt: input.attempt,
+              context: context(input),
+              artifact,
+            })),
+          ),
+
+    extractVideoFrames: (input) =>
+      !acceptedPosterPolicy(input.posterPolicy)
+        ? Effect.fail(new MediaTransformRequestInvalid({ reason: "invalid_video_policy" }))
+        : Effect.promise(() =>
+            withSource(input.source, async (inputPath, _bytes, directory) => {
+              const durationMs = input.sourceDurationMs;
+              const posterTimestampMs = input.posterTimestampMs;
+              if (
+                !Number.isSafeInteger(durationMs) ||
+                durationMs < 1 ||
+                !Number.isSafeInteger(posterTimestampMs) ||
+                posterTimestampMs < 0 ||
+                posterTimestampMs >= durationMs
+              ) {
+                throw new TypeError("poster timestamp is outside the source duration");
+              }
+              const requests = [
+                {
+                  role: "poster" as const,
+                  requestedTimestampMs: posterTimestampMs,
+                  timestampMs: posterTimestampMs,
+                },
+                { role: "first" as const, requestedTimestampMs: null, timestampMs: 0 },
+                {
+                  role: "midpoint" as const,
+                  requestedTimestampMs: null,
+                  timestampMs: Math.floor(durationMs / 2),
+                },
+              ] as const;
+              const extracted: MediaTransformVideoFrame[] = [];
+              for (const request of requests) {
+                const outputPath = join(directory, `${request.role}.jpg`);
+                await runTool(
+                  [
+                    ffmpeg,
+                    "-nostdin",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-i",
+                    inputPath,
+                    "-ss",
+                    seconds(request.timestampMs),
+                    "-frames:v",
+                    "1",
+                    "-an",
+                    "-vf",
+                    `scale=w='if(gt(iw,ih),min(${input.posterPolicy.maxEdgePx},iw),-2)':h='if(gt(iw,ih),-2,min(${input.posterPolicy.maxEdgePx},ih))'`,
+                    "-q:v",
+                    "2",
+                    "-f",
+                    "image2",
+                    outputPath,
+                  ],
+                  timeoutMs,
+                );
+                const bytes = new Uint8Array(await readFile(outputPath));
+                if (
+                  bytes.byteLength === 0 ||
+                  bytes.byteLength > input.posterPolicy.maxBytesPerFrame
+                ) {
+                  throw new Error("video frame exceeded the extraction policy");
+                }
+                const canonicalSha256 = await mediaSha256Bytes(bytes);
+                const stored = await options.artifactWriter.write({
+                  artifactKey: `video/${input.source.sha256}/v${input.binding.videoRevision}/${request.role}.jpg`,
+                  bytes,
+                  mediaType: "image/jpeg",
+                  canonicalSha256,
+                });
+                if (!validIdentifier(stored.artifactRef))
+                  throw new Error("invalid video artifact ref");
+                extracted.push({
+                  role: request.role,
+                  requestedTimestampMs: request.requestedTimestampMs,
+                  timestampMs: request.timestampMs,
+                  sha256: canonicalSha256,
+                  artifactRef: stored.artifactRef,
+                });
+              }
+              return {
+                evidenceRef: `video-frames:${input.source.sha256}:${LOCAL_VIDEO_FRAME_EXTRACTION_POLICY}`,
+                adapterRevision: LOCAL_VIDEO_FFMPEG_REVISION,
+                sourceSha256: input.source.sha256,
+                videoRevision: input.binding.videoRevision,
+                posterPolicyRevision: input.posterPolicy.policyRevision,
+                frames: extracted as [
+                  (typeof extracted)[number],
+                  (typeof extracted)[number],
+                  (typeof extracted)[number],
+                ],
+              };
+            }).then((extraction) => ({
+              status: "completed" as const,
+              attempt: input.attempt,
+              context: context(input),
+              extraction,
+            })),
+          ),
   };
 }
 

@@ -11,6 +11,11 @@ import {
   type MediaTransformProbeOutcome,
   type MediaTransformRejectedReason,
   type MediaTransformSampleArtifact,
+  type MediaTransformVideoAttemptContext,
+  type MediaTransformVideoAudioArtifact,
+  type MediaTransformVideoFrame,
+  type MediaTransformVideoFramesInput,
+  type MediaTransformVideoProbe,
   mediaTransformSampleWindow,
 } from "@pirate/application/media/transform";
 import { Predicate } from "effect";
@@ -18,6 +23,8 @@ import {
   headerValue,
   TRANSLOADIT_PROBE_RESULT_STEP,
   TRANSLOADIT_SAMPLE_RESULT_STEP,
+  TRANSLOADIT_VIDEO_AUDIO_RESULT_STEP,
+  TRANSLOADIT_VIDEO_POSTER_RESULT_STEP,
   type TransloaditOperationSnapshot,
   type TransloaditTransportResponse,
   validTransloaditJobId,
@@ -509,8 +516,248 @@ export function sampleFromAssembly(
   });
 }
 
+function videoSha256(meta: Readonly<Record<string, unknown>>): string | null {
+  const value = meta.sha256;
+  return typeof value === "string" && /^[0-9a-f]{64}$/u.test(value) ? value : null;
+}
+
+export function videoProbeFromAssembly(
+  assembly: Extract<TransloaditAssembly, { readonly state: "completed" }>,
+  evidenceRef: string,
+):
+  | Readonly<{ readonly status: "completed"; readonly probe: MediaTransformVideoProbe }>
+  | Readonly<{ readonly status: "rejected"; readonly reason: MediaTransformRejectedReason }>
+  | Readonly<{
+      readonly status: "malformed_response";
+      readonly reason: MediaTransformMalformedReason;
+    }> {
+  const meta = assembly.result.meta;
+  if (!Predicate.isObject(meta) || assembly.result.type !== "video") {
+    return { status: "malformed_response", reason: "unsupported_shape" };
+  }
+  const durationSeconds = finiteNonNegative(meta.duration);
+  const width = positiveInteger(meta.width, 16_384);
+  const height = positiveInteger(meta.height, 16_384);
+  const frameRate = finiteNonNegative(meta.framerate);
+  if (
+    durationSeconds === null ||
+    durationSeconds === 0 ||
+    width === null ||
+    height === null ||
+    frameRate === null ||
+    frameRate === 0
+  ) {
+    return { status: "malformed_response", reason: "unsupported_shape" };
+  }
+  if (meta.video_codec !== "h264") return { status: "rejected", reason: "unsupported_codec" };
+  if (meta.audio_codec === undefined || meta.audio_codec === null || meta.audio_codec === "") {
+    return { status: "rejected", reason: "no_audio_track" };
+  }
+  if (meta.audio_codec !== "aac") return { status: "rejected", reason: "unsupported_codec" };
+  const mime = assembly.result.mime;
+  const extension = assembly.result.ext;
+  if (
+    (mime !== "video/mp4" && mime !== "video/quicktime") ||
+    (extension !== "mp4" && extension !== "mov")
+  ) {
+    return { status: "rejected", reason: "unsupported_container" };
+  }
+  return {
+    status: "completed",
+    probe: Object.freeze({
+      evidenceRef,
+      durationMs: Math.round(durationSeconds * 1_000),
+      width,
+      height,
+      frameRateMillihertz: Math.round(frameRate * 1_000),
+      videoCodec: "h264",
+      audioCodec: "aac",
+      hasAudio: true,
+    }),
+  };
+}
+
+export function videoAudioFromAssembly(
+  assembly: Extract<TransloaditAssembly, { readonly state: "completed" }>,
+  input: Readonly<{
+    readonly sourceSha256: string;
+    readonly videoRevision: number;
+    readonly policyRevision: string;
+    readonly adapterRevision: string;
+    readonly artifactRef: string;
+    readonly maximumBytes: number;
+  }>,
+):
+  | Readonly<{ readonly status: "completed"; readonly artifact: MediaTransformVideoAudioArtifact }>
+  | Readonly<{ readonly status: "rejected"; readonly reason: MediaTransformRejectedReason }>
+  | Readonly<{
+      readonly status: "malformed_response";
+      readonly reason: MediaTransformMalformedReason;
+    }> {
+  const size = positiveInteger(assembly.result.size, input.maximumBytes);
+  const meta = assembly.result.meta;
+  if (size === null) {
+    return typeof assembly.result.size === "number" && assembly.result.size > input.maximumBytes
+      ? { status: "rejected", reason: "output_too_large" }
+      : { status: "malformed_response", reason: "unsupported_shape" };
+  }
+  if (
+    assembly.result.type !== "audio" ||
+    assembly.result.mime !== "audio/aac" ||
+    assembly.result.ext !== "aac" ||
+    !Predicate.isObject(meta)
+  ) {
+    return { status: "malformed_response", reason: "unsupported_shape" };
+  }
+  const sha256 = videoSha256(meta);
+  if (sha256 === null) return { status: "malformed_response", reason: "unsupported_shape" };
+  return {
+    status: "completed",
+    artifact: Object.freeze({
+      artifactRef: input.artifactRef,
+      canonicalSha256: sha256,
+      sourceSha256: input.sourceSha256,
+      videoRevision: input.videoRevision,
+      mediaType: "audio/aac",
+      policyRevision: input.policyRevision,
+      adapterRevision: input.adapterRevision,
+    }),
+  };
+}
+
+function videoFrameFromAssembly(
+  assembly: Extract<TransloaditAssembly, { readonly state: "completed" }>,
+  input: Readonly<{
+    readonly role: MediaTransformVideoFrame["role"];
+    readonly requestedTimestampMs: number | null;
+    readonly expectedTimestampMs: number;
+    readonly maximumTimestampDeltaMs: number;
+    readonly maximumBytes: number;
+    readonly maximumEdgePx: number;
+    readonly artifactRef: string;
+  }>,
+): MediaTransformVideoFrame | "malformed" | "out_of_policy" {
+  const meta = assembly.result.meta;
+  const size = positiveInteger(assembly.result.size, input.maximumBytes);
+  if (
+    size === null ||
+    assembly.result.type !== "image" ||
+    assembly.result.mime !== "image/jpeg" ||
+    assembly.result.ext !== "jpg" ||
+    !Predicate.isObject(meta)
+  ) {
+    return "malformed";
+  }
+  const width = positiveInteger(meta.width, input.maximumEdgePx);
+  const height = positiveInteger(meta.height, input.maximumEdgePx);
+  const timestampSeconds = finiteNonNegative(meta.timestamp);
+  const sha256 = videoSha256(meta);
+  if (width === null || height === null || timestampSeconds === null || sha256 === null) {
+    return "malformed";
+  }
+  const timestampMs = Math.round(timestampSeconds * 1_000);
+  if (Math.abs(timestampMs - input.expectedTimestampMs) > input.maximumTimestampDeltaMs) {
+    return "out_of_policy";
+  }
+  return Object.freeze({
+    role: input.role,
+    requestedTimestampMs: input.requestedTimestampMs,
+    timestampMs,
+    sha256,
+    artifactRef: input.artifactRef,
+  });
+}
+
+export function videoFramesFromAssemblies(
+  assemblies: Readonly<{
+    readonly poster: Extract<TransloaditAssembly, { readonly state: "completed" }>;
+    readonly first: Extract<TransloaditAssembly, { readonly state: "completed" }>;
+    readonly midpoint: Extract<TransloaditAssembly, { readonly state: "completed" }>;
+  }>,
+  input: MediaTransformVideoFramesInput,
+  context: MediaTransformVideoAttemptContext,
+  artifactRefs: Readonly<{
+    readonly poster: string;
+    readonly first: string;
+    readonly midpoint: string;
+  }>,
+):
+  | Readonly<{
+      readonly status: "completed";
+      readonly extraction: Readonly<{
+        readonly evidenceRef: string;
+        readonly adapterRevision: string;
+        readonly sourceSha256: string;
+        readonly videoRevision: number;
+        readonly posterPolicyRevision: number;
+        readonly frames: readonly [
+          MediaTransformVideoFrame,
+          MediaTransformVideoFrame,
+          MediaTransformVideoFrame,
+        ];
+      }>;
+    }>
+  | Readonly<{ readonly status: "rejected"; readonly reason: MediaTransformRejectedReason }>
+  | Readonly<{
+      readonly status: "malformed_response";
+      readonly reason: MediaTransformMalformedReason;
+    }> {
+  const midpointMs = Math.floor(input.sourceDurationMs / 2);
+  const poster = videoFrameFromAssembly(assemblies.poster, {
+    role: "poster",
+    requestedTimestampMs: input.posterTimestampMs,
+    expectedTimestampMs: input.posterTimestampMs,
+    maximumTimestampDeltaMs: 500,
+    maximumBytes: input.posterPolicy.maxBytesPerFrame,
+    maximumEdgePx: input.posterPolicy.maxEdgePx,
+    artifactRef: artifactRefs.poster,
+  });
+  const first = videoFrameFromAssembly(assemblies.first, {
+    role: "first",
+    requestedTimestampMs: null,
+    expectedTimestampMs: 0,
+    maximumTimestampDeltaMs: 500,
+    maximumBytes: input.posterPolicy.maxBytesPerFrame,
+    maximumEdgePx: input.posterPolicy.maxEdgePx,
+    artifactRef: artifactRefs.first,
+  });
+  const midpoint = videoFrameFromAssembly(assemblies.midpoint, {
+    role: "midpoint",
+    requestedTimestampMs: null,
+    expectedTimestampMs: midpointMs,
+    maximumTimestampDeltaMs: 500,
+    maximumBytes: input.posterPolicy.maxBytesPerFrame,
+    maximumEdgePx: input.posterPolicy.maxEdgePx,
+    artifactRef: artifactRefs.midpoint,
+  });
+  if (poster === "out_of_policy" || first === "out_of_policy" || midpoint === "out_of_policy") {
+    return { status: "rejected", reason: "inconsistent_media_facts" };
+  }
+  if (poster === "malformed" || first === "malformed" || midpoint === "malformed") {
+    return { status: "malformed_response", reason: "unsupported_shape" };
+  }
+  return {
+    status: "completed",
+    extraction: Object.freeze({
+      evidenceRef: `video-frames:${input.source.sha256}:${context.adapterRevision}`,
+      adapterRevision: context.adapterRevision,
+      sourceSha256: input.source.sha256,
+      videoRevision: input.binding.videoRevision,
+      posterPolicyRevision: input.posterPolicy.policyRevision,
+      frames: Object.freeze([poster, first, midpoint]) as readonly [
+        MediaTransformVideoFrame,
+        MediaTransformVideoFrame,
+        MediaTransformVideoFrame,
+      ],
+    }),
+  };
+}
+
 export function resultStepFor(operation: TransloaditOperationSnapshot): string {
-  return operation.kind === "probe"
-    ? TRANSLOADIT_PROBE_RESULT_STEP
-    : TRANSLOADIT_SAMPLE_RESULT_STEP;
+  if (operation.kind === "probe" || operation.kind === "video_probe") {
+    return TRANSLOADIT_PROBE_RESULT_STEP;
+  }
+  if (operation.kind === "sample") return TRANSLOADIT_SAMPLE_RESULT_STEP;
+  if (operation.kind === "video_audio") return TRANSLOADIT_VIDEO_AUDIO_RESULT_STEP;
+  return TRANSLOADIT_VIDEO_POSTER_RESULT_STEP;
 }

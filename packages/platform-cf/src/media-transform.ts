@@ -5,9 +5,14 @@ import {
   type MediaTransformAttempt,
   type MediaTransformAudioSampleOutcome,
   type MediaTransformCancelOutcome,
+  type MediaTransformProbeInput,
   type MediaTransformProbeOutcome,
   MediaTransformRequestInvalid,
   type MediaTransformService,
+  type MediaTransformVideoAudioOutcome,
+  type MediaTransformVideoFramesOutcome,
+  type MediaTransformVideoProbeInput,
+  type MediaTransformVideoProbeOutcome,
   mediaTransformSampleWindow,
 } from "@pirate/application/media/transform";
 import { Effect } from "effect";
@@ -20,10 +25,16 @@ import {
   snapshotProbeInput,
   snapshotSampleInput,
   snapshotTransloaditOptions,
+  snapshotVideoAudioInput,
+  snapshotVideoFramesInput,
+  snapshotVideoProbeInput,
   stableTransloaditNonce,
   TRANSLOADIT_ASSEMBLIES_PATH,
   TRANSLOADIT_ORIGIN,
   TRANSLOADIT_SIGNATURE_TTL_MS,
+  TRANSLOADIT_VIDEO_FIRST_RESULT_STEP,
+  TRANSLOADIT_VIDEO_MIDPOINT_RESULT_STEP,
+  TRANSLOADIT_VIDEO_POSTER_RESULT_STEP,
   type TransloaditCancelSnapshot,
   type TransloaditConfig,
   type TransloaditMediaTransformOptions,
@@ -34,6 +45,7 @@ import {
   type TransloaditTransportResult,
   transloaditAttemptContext,
   transloaditJobUrl,
+  transloaditVideoAttemptContext,
   validClockMilliseconds,
 } from "./media-transform-protocol.ts";
 import {
@@ -45,6 +57,9 @@ import {
   type TransloaditAssembly,
   TransloaditBodyAborted,
   TransloaditBodyTooLarge,
+  videoAudioFromAssembly,
+  videoFramesFromAssemblies,
+  videoProbeFromAssembly,
 } from "./media-transform-response.ts";
 
 export * from "./media-transform-protocol.ts";
@@ -55,7 +70,12 @@ export {
   TransloaditBodyTooLarge,
 } from "./media-transform-response.ts";
 
-type OperationOutcome = MediaTransformProbeOutcome | MediaTransformAudioSampleOutcome;
+type OperationOutcome =
+  | MediaTransformProbeOutcome
+  | MediaTransformAudioSampleOutcome
+  | MediaTransformVideoProbeOutcome
+  | MediaTransformVideoAudioOutcome
+  | MediaTransformVideoFramesOutcome;
 type OperationFailure = Exclude<
   OperationOutcome,
   { status: "completed" | "processing" | "submitted" | "unavailable" }
@@ -178,10 +198,17 @@ function acceptedAttemptFor(
 }
 
 function templateFor(config: TransloaditConfig, operation: TransloaditOperationSnapshot): string {
-  if (operation.kind === "probe") return config.templates.probe;
-  return operation.variant === "primary"
-    ? config.templates.samplePrimary
-    : config.templates.sampleAlternate;
+  if (operation.kind === "probe" || operation.kind === "video_probe") {
+    return config.templates.probe;
+  }
+  if (operation.kind === "sample") {
+    return operation.variant === "primary"
+      ? config.templates.samplePrimary
+      : config.templates.sampleAlternate;
+  }
+  return operation.kind === "video_audio"
+    ? config.templates.videoAudio
+    : config.templates.videoFrames;
 }
 
 function outputObjectKey(
@@ -198,6 +225,25 @@ function outputObjectKey(
   ].join("/");
 }
 
+function videoOutputObjectKey(
+  operation: Extract<TransloaditOperationSnapshot, { kind: "video_audio" | "video_frames" }>,
+  artifact: "soundtrack" | "poster" | "first" | "midpoint",
+): string {
+  const extension = artifact === "soundtrack" ? "aac" : "jpg";
+  return [
+    "video-analysis",
+    operation.binding.operationId,
+    `video-r${operation.binding.videoRevision}`,
+    `analysis-r${operation.binding.analysisRevision}`,
+    operation.binding.requestId,
+    `${artifact}.${extension}`,
+  ].join("/");
+}
+
+function videoArtifactRef(objectKey: string): string {
+  return `media://derived/${objectKey}`;
+}
+
 async function createRequest(
   config: TransloaditConfig,
   operation: TransloaditOperationSnapshot,
@@ -206,21 +252,47 @@ async function createRequest(
   const now = config.nowMilliseconds();
   if (!validClockMilliseconds(now)) throw new RangeError("invalid_clock");
   const nonce = await stableTransloaditNonce(operation);
-  const fields: Record<string, string | number> = {
-    operation_id: operation.binding.operationId,
-    audio_revision: operation.binding.audioRevision,
-    analysis_revision: operation.binding.analysisRevision,
-    canonical_audio_sha256: operation.binding.canonicalAudioSha256,
-    request_id: operation.binding.requestId,
-    source_object_key: operation.sourceObjectKey,
-    transform_kind: operation.kind,
-  };
+  const fields: Record<string, string | number> =
+    operation.kind === "probe" || operation.kind === "sample"
+      ? {
+          operation_id: operation.binding.operationId,
+          audio_revision: operation.binding.audioRevision,
+          analysis_revision: operation.binding.analysisRevision,
+          canonical_audio_sha256: operation.binding.canonicalAudioSha256,
+          request_id: operation.binding.requestId,
+          source_object_key: operation.sourceObjectKey,
+          transform_kind: operation.kind,
+        }
+      : {
+          operation_id: operation.binding.operationId,
+          video_revision: operation.binding.videoRevision,
+          analysis_revision: operation.binding.analysisRevision,
+          canonical_video_sha256: operation.binding.canonicalVideoSha256,
+          request_id: operation.binding.requestId,
+          source_object_key: operation.source.objectKey,
+          source_byte_length: operation.source.byteLength,
+          source_media_type: operation.source.mediaType,
+          transform_kind: operation.kind,
+        };
   if (operation.kind === "sample") {
     const window = mediaTransformSampleWindow(operation.sourceDurationMs, operation.variant);
     fields.sample_variant = operation.variant;
     fields.sample_offset_seconds = window.offsetMs / 1_000;
     fields.sample_duration_seconds = window.durationMs / 1_000;
     fields.output_object_key = outputObjectKey(operation);
+  } else if (operation.kind === "video_audio") {
+    fields.extraction_policy_version = operation.extractionPolicyVersion;
+    fields.output_object_key = videoOutputObjectKey(operation, "soundtrack");
+  } else if (operation.kind === "video_frames") {
+    fields.source_duration_seconds = operation.sourceDurationMs / 1_000;
+    fields.poster_timestamp_seconds = operation.posterTimestampMs / 1_000;
+    fields.midpoint_timestamp_seconds = Math.floor(operation.sourceDurationMs / 2) / 1_000;
+    fields.poster_policy_revision = operation.posterPolicy.policyRevision;
+    fields.maximum_frame_edge_px = operation.posterPolicy.maxEdgePx;
+    fields.maximum_frame_bytes = operation.posterPolicy.maxBytesPerFrame;
+    fields.poster_output_object_key = videoOutputObjectKey(operation, "poster");
+    fields.first_output_object_key = videoOutputObjectKey(operation, "first");
+    fields.midpoint_output_object_key = videoOutputObjectKey(operation, "midpoint");
   }
   const params = JSON.stringify({
     auth: {
@@ -279,11 +351,15 @@ function withContext(
   outcome: WithoutOperationMetadata<OperationFailure>,
   providerJobId: string | undefined = operation.resumeJobId,
 ): OperationOutcome {
+  const context =
+    operation.kind === "probe" || operation.kind === "sample"
+      ? transloaditAttemptContext(operation.binding, config.adapterRevision)
+      : transloaditVideoAttemptContext(operation.binding, config.adapterRevision);
   return Object.freeze({
     ...outcome,
     attempt: attemptFor(operation, providerJobId),
-    context: transloaditAttemptContext(operation.binding, config.adapterRevision),
-  });
+    context,
+  }) as unknown as OperationOutcome;
 }
 
 function statusOutcome(
@@ -421,11 +497,15 @@ async function consumeOperationResponse(
   }
   const assembly = parsed.value;
   if (assembly.state === "processing") {
+    const context =
+      operation.kind === "probe" || operation.kind === "sample"
+        ? transloaditAttemptContext(operation.binding, config.adapterRevision)
+        : transloaditVideoAttemptContext(operation.binding, config.adapterRevision);
     return Object.freeze({
       status: operation.resumeJobId === undefined ? "submitted" : "processing",
       attempt: acceptedAttemptFor(operation, assembly.providerJobId),
-      context: transloaditAttemptContext(operation.binding, config.adapterRevision),
-    });
+      context,
+    }) as unknown as OperationOutcome;
   }
   if (assembly.state === "failed") return failedAssemblyOutcome(operation, config, assembly);
   if (
@@ -443,18 +523,104 @@ async function consumeOperationResponse(
       assembly.providerJobId,
     );
   }
-  const context = transloaditAttemptContext(operation.binding, config.adapterRevision);
-  const completed =
-    operation.kind === "probe"
-      ? probeFromAssembly(assembly, context, acceptedAttemptFor(operation, assembly.providerJobId))
-      : sampleFromAssembly(
-          assembly,
-          operation,
-          context,
-          acceptedAttemptFor(operation, assembly.providerJobId),
-          outputObjectKey(operation),
-          config.limits.maxSampleBytes,
-        );
+  const acceptedAttempt = acceptedAttemptFor(operation, assembly.providerJobId);
+  let completed: OperationOutcome | WithoutOperationMetadata<OperationFailure>;
+  if (operation.kind === "probe") {
+    completed = probeFromAssembly(
+      assembly,
+      transloaditAttemptContext(operation.binding, config.adapterRevision),
+      acceptedAttempt,
+    );
+  } else if (operation.kind === "sample") {
+    completed = sampleFromAssembly(
+      assembly,
+      operation,
+      transloaditAttemptContext(operation.binding, config.adapterRevision),
+      acceptedAttempt,
+      outputObjectKey(operation),
+      config.limits.maxSampleBytes,
+    );
+  } else if (operation.kind === "video_probe") {
+    const outcome = videoProbeFromAssembly(
+      assembly,
+      `video-probe:${operation.source.sha256}:${config.adapterRevision}`,
+    );
+    completed =
+      outcome.status === "completed"
+        ? {
+            ...outcome,
+            attempt: acceptedAttempt,
+            context: transloaditVideoAttemptContext(operation.binding, config.adapterRevision),
+          }
+        : outcome;
+  } else if (operation.kind === "video_audio") {
+    const outcome = videoAudioFromAssembly(assembly, {
+      sourceSha256: operation.source.sha256,
+      videoRevision: operation.binding.videoRevision,
+      policyRevision: operation.extractionPolicyVersion,
+      adapterRevision: config.adapterRevision,
+      artifactRef: videoArtifactRef(videoOutputObjectKey(operation, "soundtrack")),
+      maximumBytes: operation.source.byteLength,
+    });
+    completed =
+      outcome.status === "completed"
+        ? {
+            ...outcome,
+            attempt: acceptedAttempt,
+            context: transloaditVideoAttemptContext(operation.binding, config.adapterRevision),
+          }
+        : outcome;
+  } else {
+    const first = parseTransloaditAssembly(
+      value,
+      assembly.providerJobId,
+      TRANSLOADIT_VIDEO_FIRST_RESULT_STEP,
+    );
+    const midpoint = parseTransloaditAssembly(
+      value,
+      assembly.providerJobId,
+      TRANSLOADIT_VIDEO_MIDPOINT_RESULT_STEP,
+    );
+    const poster = parseTransloaditAssembly(
+      value,
+      assembly.providerJobId,
+      TRANSLOADIT_VIDEO_POSTER_RESULT_STEP,
+    );
+    if (
+      !poster.ok ||
+      !first.ok ||
+      !midpoint.ok ||
+      poster.value.state !== "completed" ||
+      first.value.state !== "completed" ||
+      midpoint.value.state !== "completed"
+    ) {
+      completed = { status: "malformed_response", reason: "unsupported_shape" };
+    } else {
+      const context = transloaditVideoAttemptContext(operation.binding, config.adapterRevision);
+      const outcome = videoFramesFromAssemblies(
+        { poster: poster.value, first: first.value, midpoint: midpoint.value },
+        {
+          version: "media-transform-video-frames-input-v1",
+          binding: operation.binding,
+          source: operation.source,
+          sourceDurationMs: operation.sourceDurationMs,
+          posterTimestampMs: operation.posterTimestampMs,
+          posterPolicy: operation.posterPolicy,
+          attempt: acceptedAttempt,
+        },
+        context,
+        {
+          poster: videoArtifactRef(videoOutputObjectKey(operation, "poster")),
+          first: videoArtifactRef(videoOutputObjectKey(operation, "first")),
+          midpoint: videoArtifactRef(videoOutputObjectKey(operation, "midpoint")),
+        },
+      );
+      completed =
+        outcome.status === "completed"
+          ? { ...outcome, attempt: acceptedAttempt, context }
+          : outcome;
+    }
+  }
   if (completed.status === "completed") return completed;
   return withContext(
     operation,
@@ -581,6 +747,8 @@ function invalidConfigurationService(
   return {
     probe: failure,
     extractAudioSample: failure,
+    extractVideoAudio: failure,
+    extractVideoFrames: failure,
     extractCanonicalAudioSegment: failure,
     alignVideoSoundtrackToSong: failure,
     cancelAssembly: failure,
@@ -614,9 +782,17 @@ export function makeTransloaditMediaTransform(
 ): MediaTransformService {
   if (options.enabled !== true) {
     return {
-      probe: (input) =>
-        Effect.succeed({ status: "unavailable", reason: "disabled", attempt: input.attempt }),
+      probe: ((input: MediaTransformProbeInput | MediaTransformVideoProbeInput) =>
+        Effect.succeed({
+          status: "unavailable",
+          reason: "disabled",
+          attempt: input.attempt,
+        })) as MediaTransformService["probe"],
       extractAudioSample: (input) =>
+        Effect.succeed({ status: "unavailable", reason: "disabled", attempt: input.attempt }),
+      extractVideoAudio: (input) =>
+        Effect.succeed({ status: "unavailable", reason: "disabled", attempt: input.attempt }),
+      extractVideoFrames: (input) =>
         Effect.succeed({ status: "unavailable", reason: "disabled", attempt: input.attempt }),
       extractCanonicalAudioSegment: (input) =>
         Effect.succeed({ status: "unavailable", reason: "disabled", binding: input.binding }),
@@ -629,16 +805,16 @@ export function makeTransloaditMediaTransform(
   if (!configuration.ok) return invalidConfigurationService(configuration.reason);
   const config = configuration.value;
   return {
-    probe: (input) => {
-      const snapshot = snapshotProbeInput(input);
+    probe: ((input: MediaTransformProbeInput | MediaTransformVideoProbeInput) => {
+      const snapshot =
+        input.version === "media-transform-video-probe-input-v1"
+          ? snapshotVideoProbeInput(input)
+          : snapshotProbeInput(input);
       if (!snapshot.ok) {
         return Effect.fail(new MediaTransformRequestInvalid({ reason: snapshot.reason }));
       }
-      return operationEffect(config, snapshot.value) as Effect.Effect<
-        MediaTransformProbeOutcome,
-        MediaTransformRequestInvalid
-      >;
-    },
+      return operationEffect(config, snapshot.value);
+    }) as MediaTransformService["probe"],
     extractAudioSample: (input) => {
       const snapshot = snapshotSampleInput(input);
       if (!snapshot.ok) {
@@ -646,6 +822,26 @@ export function makeTransloaditMediaTransform(
       }
       return operationEffect(config, snapshot.value) as Effect.Effect<
         MediaTransformAudioSampleOutcome,
+        MediaTransformRequestInvalid
+      >;
+    },
+    extractVideoAudio: (input) => {
+      const snapshot = snapshotVideoAudioInput(input);
+      if (!snapshot.ok) {
+        return Effect.fail(new MediaTransformRequestInvalid({ reason: snapshot.reason }));
+      }
+      return operationEffect(config, snapshot.value) as Effect.Effect<
+        MediaTransformVideoAudioOutcome,
+        MediaTransformRequestInvalid
+      >;
+    },
+    extractVideoFrames: (input) => {
+      const snapshot = snapshotVideoFramesInput(input);
+      if (!snapshot.ok) {
+        return Effect.fail(new MediaTransformRequestInvalid({ reason: snapshot.reason }));
+      }
+      return operationEffect(config, snapshot.value) as Effect.Effect<
+        MediaTransformVideoFramesOutcome,
         MediaTransformRequestInvalid
       >;
     },

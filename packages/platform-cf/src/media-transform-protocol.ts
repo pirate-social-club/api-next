@@ -8,6 +8,10 @@ import type {
   MediaTransformProbeInput,
   MediaTransformRuntimeFence,
   MediaTransformSampleVariant,
+  MediaTransformVideoAudioInput,
+  MediaTransformVideoBinding,
+  MediaTransformVideoFramesInput,
+  MediaTransformVideoProbeInput,
 } from "@pirate/application/media/transform";
 import { Data, type Effect, Predicate } from "effect";
 
@@ -15,6 +19,10 @@ export const TRANSLOADIT_ORIGIN = "https://api2.transloadit.com" as const;
 export const TRANSLOADIT_ASSEMBLIES_PATH = "/assemblies" as const;
 export const TRANSLOADIT_PROBE_RESULT_STEP = "probe" as const;
 export const TRANSLOADIT_SAMPLE_RESULT_STEP = "sample" as const;
+export const TRANSLOADIT_VIDEO_AUDIO_RESULT_STEP = "video_audio" as const;
+export const TRANSLOADIT_VIDEO_POSTER_RESULT_STEP = "video_poster" as const;
+export const TRANSLOADIT_VIDEO_FIRST_RESULT_STEP = "video_first" as const;
+export const TRANSLOADIT_VIDEO_MIDPOINT_RESULT_STEP = "video_midpoint" as const;
 export const TRANSLOADIT_ADAPTER_HARD_MAX_REQUEST_BYTES = 131_072;
 export const TRANSLOADIT_ADAPTER_HARD_MAX_RESPONSE_BYTES = 2_097_152;
 export const TRANSLOADIT_ADAPTER_HARD_MAX_SAMPLE_BYTES = 5_000_000;
@@ -61,6 +69,8 @@ export type TransloaditTemplates = Readonly<{
   readonly probe: string;
   readonly samplePrimary: string;
   readonly sampleAlternate: string;
+  readonly videoAudio: string;
+  readonly videoFrames: string;
 }>;
 
 export type TransloaditLimits = Readonly<{
@@ -127,13 +137,48 @@ export type TransloaditSampleSnapshot = Readonly<{
   readonly signal?: AbortSignal;
 }>;
 
+type TransloaditVideoSnapshotBase = Readonly<{
+  readonly binding: MediaTransformVideoBinding;
+  readonly source: Readonly<{
+    readonly objectKey: string;
+    readonly sha256: string;
+    readonly byteLength: number;
+    readonly mediaType: "video/mp4" | "video/quicktime";
+  }>;
+  readonly runtimeFence: MediaTransformRuntimeFence;
+  readonly resumeJobId?: string;
+  readonly signal?: AbortSignal;
+}>;
+
+export type TransloaditVideoProbeSnapshot = TransloaditVideoSnapshotBase &
+  Readonly<{ readonly kind: "video_probe" }>;
+
+export type TransloaditVideoAudioSnapshot = TransloaditVideoSnapshotBase &
+  Readonly<{
+    readonly kind: "video_audio";
+    readonly extractionPolicyVersion: string;
+  }>;
+
+export type TransloaditVideoFramesSnapshot = TransloaditVideoSnapshotBase &
+  Readonly<{
+    readonly kind: "video_frames";
+    readonly sourceDurationMs: number;
+    readonly posterTimestampMs: number;
+    readonly posterPolicy: MediaTransformVideoFramesInput["posterPolicy"];
+  }>;
+
 export type TransloaditCancelSnapshot = Readonly<{
   readonly requestId: string;
   readonly providerJobId: string;
   readonly signal?: AbortSignal;
 }>;
 
-export type TransloaditOperationSnapshot = TransloaditProbeSnapshot | TransloaditSampleSnapshot;
+export type TransloaditOperationSnapshot =
+  | TransloaditProbeSnapshot
+  | TransloaditSampleSnapshot
+  | TransloaditVideoProbeSnapshot
+  | TransloaditVideoAudioSnapshot
+  | TransloaditVideoFramesSnapshot;
 
 type ValidationResult<A> =
   | Readonly<{ readonly ok: true; readonly value: A }>
@@ -216,6 +261,20 @@ function validBinding(binding: unknown): binding is MediaTransformBinding {
   );
 }
 
+function validVideoBinding(binding: unknown): binding is MediaTransformVideoBinding {
+  if (!Predicate.isObject(binding)) return false;
+  return (
+    typeof binding.operationId === "string" &&
+    SAFE_ID.test(binding.operationId) &&
+    validPositiveInteger(binding.videoRevision) &&
+    validPositiveInteger(binding.analysisRevision) &&
+    typeof binding.canonicalVideoSha256 === "string" &&
+    SHA256.test(binding.canonicalVideoSha256) &&
+    typeof binding.requestId === "string" &&
+    SAFE_ID.test(binding.requestId)
+  );
+}
+
 export function validTransloaditJobId(value: unknown): value is string {
   return typeof value === "string" && TRANSLOADIT_ID.test(value);
 }
@@ -228,6 +287,133 @@ function frozenBinding(binding: MediaTransformBinding): MediaTransformBinding {
     canonicalAudioSha256: binding.canonicalAudioSha256,
     requestId: binding.requestId,
   });
+}
+
+function frozenVideoBinding(binding: MediaTransformVideoBinding): MediaTransformVideoBinding {
+  return Object.freeze({
+    operationId: binding.operationId,
+    videoRevision: binding.videoRevision,
+    analysisRevision: binding.analysisRevision,
+    canonicalVideoSha256: binding.canonicalVideoSha256,
+    requestId: binding.requestId,
+  });
+}
+
+function snapshotVideoBase(
+  input:
+    | MediaTransformVideoProbeInput
+    | MediaTransformVideoAudioInput
+    | MediaTransformVideoFramesInput,
+): ValidationResult<TransloaditVideoSnapshotBase> {
+  if (!validVideoBinding(input.binding)) {
+    return { ok: false, reason: "invalid_video_binding" };
+  }
+  if (
+    !Predicate.isObject(input.source) ||
+    !validObjectKey(input.source.objectKey) ||
+    typeof input.source.sha256 !== "string" ||
+    !SHA256.test(input.source.sha256) ||
+    input.source.sha256 !== input.binding.canonicalVideoSha256 ||
+    !validPositiveInteger(input.source.byteLength) ||
+    (input.source.mediaType !== "video/mp4" && input.source.mediaType !== "video/quicktime")
+  ) {
+    return { ok: false, reason: "invalid_video_source" };
+  }
+  if (!validSignal(input.signal)) return { ok: false, reason: "invalid_signal" };
+  const attempt = snapshotAttempt(input.attempt);
+  if (!attempt.ok) return attempt;
+  const resumeJobId = attempt.value.providerJobId;
+  return {
+    ok: true,
+    value: Object.freeze({
+      binding: frozenVideoBinding(input.binding),
+      source: Object.freeze({ ...input.source }),
+      runtimeFence: attempt.value.runtimeFence,
+      ...(resumeJobId === undefined ? {} : { resumeJobId }),
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
+    }),
+  };
+}
+
+export function snapshotVideoProbeInput(
+  input: MediaTransformVideoProbeInput,
+): ValidationResult<TransloaditVideoProbeSnapshot> {
+  if (!Predicate.isObject(input) || input.version !== "media-transform-video-probe-input-v1") {
+    return { ok: false, reason: "invalid_input_version" };
+  }
+  const base = snapshotVideoBase(input);
+  return base.ok
+    ? { ok: true, value: Object.freeze({ ...base.value, kind: "video_probe" }) }
+    : base;
+}
+
+export function snapshotVideoAudioInput(
+  input: MediaTransformVideoAudioInput,
+): ValidationResult<TransloaditVideoAudioSnapshot> {
+  if (!Predicate.isObject(input) || input.version !== "media-transform-video-audio-input-v1") {
+    return { ok: false, reason: "invalid_input_version" };
+  }
+  const base = snapshotVideoBase(input);
+  if (!base.ok) return base;
+  if (
+    typeof input.extractionPolicyVersion !== "string" ||
+    !SAFE_ID.test(input.extractionPolicyVersion)
+  ) {
+    return { ok: false, reason: "invalid_video_policy" };
+  }
+  return {
+    ok: true,
+    value: Object.freeze({
+      ...base.value,
+      kind: "video_audio",
+      extractionPolicyVersion: input.extractionPolicyVersion,
+    }),
+  };
+}
+
+export function snapshotVideoFramesInput(
+  input: MediaTransformVideoFramesInput,
+): ValidationResult<TransloaditVideoFramesSnapshot> {
+  if (!Predicate.isObject(input) || input.version !== "media-transform-video-frames-input-v1") {
+    return { ok: false, reason: "invalid_input_version" };
+  }
+  const base = snapshotVideoBase(input);
+  if (!base.ok) return base;
+  if (
+    !validPositiveInteger(input.sourceDurationMs) ||
+    input.sourceDurationMs > 180_000 ||
+    !Number.isSafeInteger(input.posterTimestampMs) ||
+    input.posterTimestampMs < 0 ||
+    input.posterTimestampMs >= input.sourceDurationMs
+  ) {
+    return { ok: false, reason: "invalid_video_timestamp" };
+  }
+  const policy = input.posterPolicy;
+  if (
+    !Predicate.isObject(policy) ||
+    policy.version !== "video-poster-policy-v1" ||
+    !validPositiveInteger(policy.policyRevision) ||
+    !Array.isArray(policy.roles) ||
+    policy.roles.join(",") !== "poster,first,midpoint" ||
+    !validPositiveInteger(policy.maxEdgePx) ||
+    !validPositiveInteger(policy.maxBytesPerFrame) ||
+    policy.imageType !== "image/jpeg"
+  ) {
+    return { ok: false, reason: "invalid_video_policy" };
+  }
+  return {
+    ok: true,
+    value: Object.freeze({
+      ...base.value,
+      kind: "video_frames",
+      sourceDurationMs: input.sourceDurationMs,
+      posterTimestampMs: input.posterTimestampMs,
+      posterPolicy: Object.freeze({
+        ...policy,
+        roles: Object.freeze([...policy.roles]),
+      }) as MediaTransformVideoFramesInput["posterPolicy"],
+    }),
+  };
 }
 
 export function snapshotProbeInput(
@@ -356,7 +542,9 @@ export function snapshotTransloaditOptions(
     !Predicate.isObject(options.templates) ||
     !validTransloaditJobId(options.templates.probe) ||
     !validTransloaditJobId(options.templates.samplePrimary) ||
-    !validTransloaditJobId(options.templates.sampleAlternate)
+    !validTransloaditJobId(options.templates.sampleAlternate) ||
+    !validTransloaditJobId(options.templates.videoAudio) ||
+    !validTransloaditJobId(options.templates.videoFrames)
   ) {
     return { ok: false, reason: "invalid_template" };
   }
@@ -390,6 +578,21 @@ export function transloaditAttemptContext(
     audioRevision: binding.audioRevision,
     analysisRevision: binding.analysisRevision,
     canonicalAudioSha256: binding.canonicalAudioSha256,
+    requestId: binding.requestId,
+    adapterRevision,
+  });
+}
+
+export function transloaditVideoAttemptContext(
+  binding: MediaTransformVideoBinding,
+  adapterRevision: string,
+) {
+  return Object.freeze({
+    version: "media-transform-video-attempt-context-v1" as const,
+    operationId: binding.operationId,
+    videoRevision: binding.videoRevision,
+    analysisRevision: binding.analysisRevision,
+    canonicalVideoSha256: binding.canonicalVideoSha256,
     requestId: binding.requestId,
     adapterRevision,
   });
@@ -430,13 +633,21 @@ export async function stableTransloaditNonce(
   const seed = [
     operation.kind,
     operation.binding.operationId,
-    operation.binding.audioRevision,
+    "audioRevision" in operation.binding
+      ? operation.binding.audioRevision
+      : operation.binding.videoRevision,
     operation.binding.analysisRevision,
-    operation.binding.canonicalAudioSha256,
+    "canonicalAudioSha256" in operation.binding
+      ? operation.binding.canonicalAudioSha256
+      : operation.binding.canonicalVideoSha256,
     operation.binding.requestId,
     operation.runtimeFence.submittedAtMs,
     operation.runtimeFence.runtimeDeadlineMs,
-    operation.kind === "sample" ? operation.variant : "probe",
+    operation.kind === "sample"
+      ? operation.variant
+      : operation.kind === "video_frames"
+        ? `${operation.posterTimestampMs}:${operation.sourceDurationMs}`
+        : operation.kind,
   ].join("\n");
   const digest = await crypto.subtle.digest("SHA-256", textEncoder.encode(seed));
   return hex(new Uint8Array(digest));

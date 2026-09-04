@@ -1,5 +1,10 @@
 import type { MediaProcessingProviders } from "@pirate/application/media/processing-contracts";
-import type { MediaTransformService } from "@pirate/application/media/transform";
+import type {
+  MediaTransformProbeInput,
+  MediaTransformService,
+  MediaTransformVideoCapabilities,
+  MediaTransformVideoProbeInput,
+} from "@pirate/application/media/transform";
 import type { VideoAnalysisProviders } from "@pirate/application/video/analysis";
 import {
   type CloudflareMediaWorkflowBinding,
@@ -50,7 +55,10 @@ export type MediaProcessorRuntimeEnv = MediaProcessorWorkerEnv &
   }>;
 
 export type MediaProcessorRuntimeAdapters = Readonly<{
-  readonly videoAnalysisProviders?: VideoAnalysisProviders;
+  readonly videoAnalysis?: Readonly<{
+    readonly providers: VideoAnalysisProviders;
+    readonly transform: MediaTransformVideoCapabilities;
+  }>;
 }>;
 
 function requiredText(value: string | undefined, name: string): string {
@@ -91,18 +99,48 @@ export function mediaProcessingPhysicalObjectKey(reference: string): string {
 
 function bindPhysicalR2Keys(transform: MediaTransformService): MediaTransformService {
   return {
-    probe: (input) =>
-      Effect.suspend(() =>
-        transform.probe({
-          ...input,
-          source: { objectKey: mediaProcessingPhysicalObjectKey(input.source.objectKey) },
-        }),
-      ),
+    probe: ((input: MediaTransformProbeInput | MediaTransformVideoProbeInput) =>
+      input.version === "media-transform-video-probe-input-v1"
+        ? Effect.suspend(() =>
+            transform.probe({
+              ...input,
+              source: {
+                ...input.source,
+                objectKey: mediaProcessingPhysicalObjectKey(input.source.objectKey),
+              },
+            }),
+          )
+        : Effect.suspend(() =>
+            transform.probe({
+              ...input,
+              source: { objectKey: mediaProcessingPhysicalObjectKey(input.source.objectKey) },
+            }),
+          )) as MediaTransformService["probe"],
     extractAudioSample: (input) =>
       Effect.suspend(() =>
         transform.extractAudioSample({
           ...input,
           source: { objectKey: mediaProcessingPhysicalObjectKey(input.source.objectKey) },
+        }),
+      ),
+    extractVideoAudio: (input) =>
+      Effect.suspend(() =>
+        transform.extractVideoAudio({
+          ...input,
+          source: {
+            ...input.source,
+            objectKey: mediaProcessingPhysicalObjectKey(input.source.objectKey),
+          },
+        }),
+      ),
+    extractVideoFrames: (input) =>
+      Effect.suspend(() =>
+        transform.extractVideoFrames({
+          ...input,
+          source: {
+            ...input.source,
+            objectKey: mediaProcessingPhysicalObjectKey(input.source.objectKey),
+          },
         }),
       ),
     extractCanonicalAudioSegment: (input) =>
@@ -130,6 +168,24 @@ function bindPhysicalR2Keys(transform: MediaTransformService): MediaTransformSer
         }),
       ),
     cancelAssembly: (input) => transform.cancelAssembly(input),
+  };
+}
+
+function bindVideoPhysicalR2Keys(
+  transform: MediaTransformVideoCapabilities,
+): MediaTransformVideoCapabilities {
+  const source = <A extends { readonly source: { readonly objectKey: string } }>(input: A): A => ({
+    ...input,
+    source: {
+      ...input.source,
+      objectKey: mediaProcessingPhysicalObjectKey(input.source.objectKey),
+    },
+  });
+  return {
+    probe: (input) => Effect.suspend(() => transform.probe(source(input))),
+    extractVideoAudio: (input) => Effect.suspend(() => transform.extractVideoAudio(source(input))),
+    extractVideoFrames: (input) =>
+      Effect.suspend(() => transform.extractVideoFrames(source(input))),
   };
 }
 
@@ -250,13 +306,13 @@ export function makeMediaProcessorComposition(
   const enabled = isMediaProcessingEnabled(env.MEDIA_PROCESSING_ENABLED);
   const workerId = `media-processor-${crypto.randomUUID()}`;
   const videoAnalysisEnabled = env.VIDEO_ANALYSIS_ENABLED === "true";
-  if (videoAnalysisEnabled && adapters.videoAnalysisProviders === undefined) {
+  if (videoAnalysisEnabled && adapters.videoAnalysis === undefined) {
     throw new Error("video analysis providers are required when video analysis is enabled");
   }
 
   return {
     queue: { store, workflow, workerId },
-    ...(videoAnalysisEnabled && adapters.videoAnalysisProviders !== undefined
+    ...(videoAnalysisEnabled && adapters.videoAnalysis !== undefined
       ? {
           videoAnalysis: {
             outbox: makeControlPlaneVideoAnalysisOutboxRepository(runtime),
@@ -264,7 +320,8 @@ export function makeMediaProcessorComposition(
               store: makeControlPlaneVideoPublicationStore(runtime),
               nowIso: () => new Date().toISOString(),
               randomUuid: () => crypto.randomUUID(),
-              analysisProviders: adapters.videoAnalysisProviders,
+              analysisProviders: adapters.videoAnalysis.providers,
+              transform: bindVideoPhysicalR2Keys(adapters.videoAnalysis.transform),
             },
             workerId,
           },

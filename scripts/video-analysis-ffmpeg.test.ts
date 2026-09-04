@@ -4,6 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mediaSha256Bytes } from "@pirate/application/media/submission-service";
 import type {
+  MediaTransformAttempt,
+  MediaTransformVideoBinding,
+  MediaTransformVideoSource,
+} from "@pirate/application/media/transform";
+import { MediaTransformRequestInvalid } from "@pirate/application/media/transform";
+import type {
   VideoAnalysisProviders,
   VideoAnalysisRuntimeServices,
   VideoAnalysisSource,
@@ -27,7 +33,6 @@ import { Effect } from "effect";
 import { dispatchEligibleVideoAnalysisOutbox } from "../apps/jobs-worker/src/video-analysis-outbox-dispatch.ts";
 import {
   LOCAL_VIDEO_FFMPEG_REVISION,
-  LOCAL_VIDEO_PROBE_REVISION,
   makeLocalPinnedFfmpegVideoAnalysisEngine,
 } from "./video-analysis-ffmpeg.ts";
 
@@ -94,6 +99,33 @@ function source(): VideoAnalysisSource {
   };
 }
 
+function transformSource(): MediaTransformVideoSource {
+  return {
+    objectKey: source().immutableRef,
+    sha256: fixtureSha256,
+    byteLength: fixtureBytes.byteLength,
+    mediaType: "video/mp4",
+  };
+}
+
+const attempt: MediaTransformAttempt = {
+  version: "media-transform-attempt-v1",
+  runtimeFence: {
+    submittedAtMs: Date.parse("2026-09-04T00:00:00.000Z"),
+    runtimeDeadlineMs: Date.parse("2026-09-04T00:30:00.000Z"),
+  },
+};
+
+function binding(capability: "probe" | "audio" | "frames"): MediaTransformVideoBinding {
+  return {
+    operationId: source().operationId,
+    videoRevision: 1,
+    analysisRevision: 1,
+    canonicalVideoSha256: fixtureSha256,
+    requestId: `trusted-video-${capability}`,
+  };
+}
+
 function makeEngineHarness() {
   const artifacts = new Map<string, Uint8Array>();
   const engine = makeLocalPinnedFfmpegVideoAnalysisEngine({
@@ -113,19 +145,43 @@ describe("local pinned-FFmpeg video analysis engine", () => {
   test("probes, hashes, extracts AAC, and emits the three required JPEG roles", async () => {
     const { artifacts, engine } = makeEngineHarness();
     const hash = await engine.hash(source());
-    const probe = await engine.probe(source());
-    const soundtrack = await engine.extractSoundtrack(source());
-    const frames = await engine.extractFrames({
-      source: source(),
-      durationMs: probe.durationMs,
-      posterTimestampMs: 1_500,
-    });
+    const probeOutcome = await Effect.runPromise(
+      engine.probe({
+        version: "media-transform-video-probe-input-v1",
+        binding: binding("probe"),
+        source: transformSource(),
+        attempt,
+      }),
+    );
+    if (probeOutcome.status !== "completed") throw new Error("trusted fixture probe failed");
+    const audioOutcome = await Effect.runPromise(
+      engine.extractVideoAudio({
+        version: "media-transform-video-audio-input-v1",
+        binding: binding("audio"),
+        source: transformSource(),
+        extractionPolicyVersion: "video-audio-adts-copy-v1",
+        attempt,
+      }),
+    );
+    if (audioOutcome.status !== "completed") throw new Error("trusted fixture audio failed");
+    const frameOutcome = await Effect.runPromise(
+      engine.extractVideoFrames({
+        version: "media-transform-video-frames-input-v1",
+        binding: binding("frames"),
+        source: transformSource(),
+        sourceDurationMs: probeOutcome.probe.durationMs,
+        posterTimestampMs: 1_500,
+        posterPolicy: VIDEO_POSTER_POLICY_V1,
+        attempt,
+      }),
+    );
+    if (frameOutcome.status !== "completed") throw new Error("trusted fixture frames failed");
 
     expect(hash).toMatchObject({
       canonicalSha256: fixtureSha256,
       byteLength: fixtureBytes.byteLength,
     });
-    expect(probe).toMatchObject({
+    expect(probeOutcome.probe).toMatchObject({
       durationMs: 4_000,
       width: 320,
       height: 240,
@@ -134,11 +190,15 @@ describe("local pinned-FFmpeg video analysis engine", () => {
       audioCodec: "aac",
       hasAudio: true,
     });
-    expect(soundtrack).toMatchObject({ adapterRevision: LOCAL_VIDEO_FFMPEG_REVISION });
-    expect(frames.outcome).toBe("ready");
-    if (frames.outcome !== "ready") throw new Error("trusted fixture extraction failed");
-    expect(frames.frames.map((frame) => frame.role)).toEqual(["poster", "first", "midpoint"]);
-    expect(new Set(frames.frames.map((frame) => frame.sha256)).size).toBeGreaterThan(1);
+    expect(audioOutcome.artifact).toMatchObject({ adapterRevision: LOCAL_VIDEO_FFMPEG_REVISION });
+    expect(frameOutcome.extraction.frames.map((frame) => frame.role)).toEqual([
+      "poster",
+      "first",
+      "midpoint",
+    ]);
+    expect(
+      new Set(frameOutcome.extraction.frames.map((frame) => frame.sha256)).size,
+    ).toBeGreaterThan(1);
     expect(artifacts.size).toBe(4);
     expect(
       [...artifacts.entries()]
@@ -147,7 +207,7 @@ describe("local pinned-FFmpeg video analysis engine", () => {
     ).toBe(true);
   });
 
-  test("rejects a URL-shaped source before reading bytes or starting FFmpeg", async () => {
+  test("rejects a URL-shaped source and caller-selected policy before starting FFmpeg", async () => {
     let reads = 0;
     const engine = makeLocalPinnedFfmpegVideoAnalysisEngine({
       sourceReader: {
@@ -161,8 +221,26 @@ describe("local pinned-FFmpeg video analysis engine", () => {
       },
     });
     await expect(
-      engine.hash({ ...source(), immutableRef: "https://user.invalid/video.mp4" }),
+      Effect.runPromise(
+        engine.probe({
+          version: "media-transform-video-probe-input-v1",
+          binding: binding("probe"),
+          source: { ...transformSource(), objectKey: "https://user.invalid/video.mp4" },
+          attempt,
+        }),
+      ),
     ).rejects.toBeInstanceOf(TypeError);
+    await expect(
+      Effect.runPromise(
+        engine.extractVideoAudio({
+          version: "media-transform-video-audio-input-v1",
+          binding: binding("audio"),
+          source: transformSource(),
+          extractionPolicyVersion: "caller-selected-policy",
+          attempt,
+        }),
+      ),
+    ).rejects.toBeInstanceOf(MediaTransformRequestInvalid);
     expect(reads).toBe(0);
   });
 
@@ -222,7 +300,7 @@ describe("local pinned-FFmpeg video analysis engine", () => {
     } as unknown as VideoPublicationStore;
 
     const providers: VideoAnalysisProviders = {
-      ...engine,
+      hash: engine.hash,
       identifySoundtrack: async () => ({
         verification: {
           status: "no_match",
@@ -242,7 +320,6 @@ describe("local pinned-FFmpeg video analysis engine", () => {
         policyRevision: "video-safety-v1",
         adapterRevision: "video-safety-fixture-v1",
       }),
-      revisions: { probe: LOCAL_VIDEO_PROBE_REVISION },
     };
     const runtime = {
       store: publicationStore,
@@ -256,6 +333,7 @@ describe("local pinned-FFmpeg video analysis engine", () => {
       nowIso: () => "2026-09-04T00:01:00.000Z",
       randomUuid: () => "00000000-0000-4000-8000-000000000001",
       analysisProviders: providers,
+      transform: engine,
     } as unknown as VideoAnalysisRuntimeServices;
 
     let outbox: VideoAnalysisOutboxRecord = {
