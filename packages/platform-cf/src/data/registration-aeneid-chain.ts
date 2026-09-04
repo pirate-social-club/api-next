@@ -286,7 +286,11 @@ const planCalldata = async (
     nftMetadataURI: `ipfs://${nftMetadata.cid}`,
     nftMetadataHash: `0x${nftMetadata.canonicalSha256}` as Hex,
   };
-  if (authority.licensePreset === null) {
+  if (
+    authority.mediaKind === "video" &&
+    authority.rightsBasis === "original" &&
+    authority.licensePreset === null
+  ) {
     // Spec 013 phase one: an original video registers with no parent IP and
     // no offered license, so the plain register_ip workflow is the only
     // admissible path and a default license is never attached.
@@ -300,6 +304,13 @@ const planCalldata = async (
       calldata: hexToBytes(encoded),
       authority,
     };
+  }
+  if (
+    authority.mediaKind !== "song" ||
+    !["original", "derivative"].includes(authority.rightsBasis) ||
+    authority.licensePreset === null
+  ) {
+    throw new Error("unsupported DATA registration intent");
   }
   const terms = [licenseTerms(authority)];
   const distributes = authority.licensePreset !== "non-commercial";

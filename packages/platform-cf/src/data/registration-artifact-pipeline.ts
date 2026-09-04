@@ -27,7 +27,7 @@ export type DataRegistrationRoyaltyAllocation = Readonly<{
   shareBps: number;
 }>;
 
-export type DataRegistrationArtifactAuthority = Readonly<{
+type DataRegistrationArtifactAuthorityBase = Readonly<{
   postId: string;
   title: string;
   projectedAt: string;
@@ -39,14 +39,26 @@ export type DataRegistrationArtifactAuthority = Readonly<{
   lyrics: string | null;
   lyricsExplicitness: "not_applicable" | "not_explicit" | "explicit" | "uncertain";
   primaryLanguageBcp47: string | null;
-  /** null registers an original video with no offered license (register_ip only). */
-  licensePreset: "non-commercial" | "commercial-use" | "commercial-remix" | null;
   commercialRemixShareBps: number;
   royaltyAllocations: readonly DataRegistrationRoyaltyAllocation[];
   acrDecision: string;
   acrPolicyRevision: string;
   creatorAddress: string;
 }>;
+
+export type DataRegistrationArtifactAuthority =
+  | (DataRegistrationArtifactAuthorityBase &
+      Readonly<{
+        mediaKind: "song";
+        rightsBasis: "original" | "derivative";
+        licensePreset: "non-commercial" | "commercial-use" | "commercial-remix";
+      }>)
+  | (DataRegistrationArtifactAuthorityBase &
+      Readonly<{
+        mediaKind: "video";
+        rightsBasis: "original";
+        licensePreset: null;
+      }>);
 
 export interface DataRegistrationArtifactAuthorityReader {
   readonly read: (
@@ -126,9 +138,12 @@ export function makePostgresDataRegistrationArtifactAuthorityReader(
             text: `SELECT p.post_id,p.title,p.projected_at,p.audio_asset_ref,p.canonical_audio_sha256,
                           p.cover_artifact_ref,p.lyrics_text,p.lyrics_explicitness,
                           p.primary_language_bcp47,a.content_type,a.size_bytes,
-                          t.license_preset,t.commercial_remix_share_bps,t.royalty_allocations,
+                          s.song_type,t.license_preset,t.commercial_remix_share_bps,t.royalty_allocations,
                           e.acr_decision,e.acr_policy_revision,w.address AS creator_address
                      FROM media_publication_projections p
+                     JOIN media_post_submissions s
+                       ON s.community_id=p.community_id AND s.actor_user_id=p.actor_user_id
+                      AND s.submission_id=p.submission_id AND s.operation_id=p.operation_id
                      JOIN media_audio_revisions a
                        ON a.community_id=p.community_id AND a.actor_user_id=p.actor_user_id
                       AND a.submission_id=p.submission_id AND a.operation_id=p.operation_id
@@ -198,11 +213,13 @@ export function makePostgresDataRegistrationArtifactAuthorityReader(
           const creatorAddress = text(row, "creator_address").toLowerCase();
           const audioSha256 = text(row, "canonical_audio_sha256");
           const explicitness = text(row, "lyrics_explicitness");
+          const songType = text(row, "song_type");
           const licensePreset = text(row, "license_preset");
           if (
             !ADDRESS.test(creatorAddress) ||
             !SHA256.test(audioSha256) ||
             !["not_applicable", "not_explicit", "explicit", "uncertain"].includes(explicitness) ||
+            !["original", "remix"].includes(songType) ||
             !["non-commercial", "commercial-use", "commercial-remix"].includes(licensePreset)
           ) {
             throw new Error("invalid DATA artifact authority");
@@ -220,7 +237,12 @@ export function makePostgresDataRegistrationArtifactAuthorityReader(
             lyricsExplicitness:
               explicitness as DataRegistrationArtifactAuthority["lyricsExplicitness"],
             primaryLanguageBcp47: nullableText(row, "primary_language_bcp47"),
-            licensePreset: licensePreset as DataRegistrationArtifactAuthority["licensePreset"],
+            mediaKind: "song" as const,
+            rightsBasis: songType === "original" ? ("original" as const) : ("derivative" as const),
+            licensePreset: licensePreset as
+              | "non-commercial"
+              | "commercial-use"
+              | "commercial-remix",
             commercialRemixShareBps: integer(row.commercial_remix_share_bps, 0, 10_000),
             royaltyAllocations,
             acrDecision: text(row, "acr_decision"),
@@ -378,6 +400,13 @@ export function makeDataRegistrationArtifactPipeline(
     prepare: async (operation) => {
       const authority = await options.authority.read(operation);
       if (
+        authority.mediaKind !== "song" ||
+        !["original", "derivative"].includes(authority.rightsBasis) ||
+        authority.licensePreset === null
+      ) {
+        throw new Error("song DATA artifacts require a song intent with offered license terms");
+      }
+      if (
         authority.postId !== operation.postId ||
         authority.canonicalAudioSha256 !== operation.canonicalAudioSha256 ||
         authority.coverArtifactRef !== null
@@ -397,12 +426,6 @@ export function makeDataRegistrationArtifactPipeline(
           pin.byteLength === authority.audioByteLength,
       );
       if (audioPin?.cid === undefined || audioPin.cid === null) return [audio];
-      if (authority.licensePreset === null) {
-        // The song pipeline always offers a license preset; a null preset is
-        // the original-video register_ip posture and is never defaulted here.
-        throw new Error("song DATA artifacts require an offered license preset");
-      }
-
       const creators = authority.royaltyAllocations.map((allocation) => ({
         name: allocation.recipientId,
         address: allocation.address,

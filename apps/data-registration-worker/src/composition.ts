@@ -1,3 +1,4 @@
+import type { DataRegistrationSigningAttempt } from "@pirate/application/data/registration-persistence";
 import type {
   DataRegistrationSigningService,
   DataRegistrationWorkflowDependencies,
@@ -119,6 +120,22 @@ const workflowIsNeverMissingByThrownError = (): boolean => false;
 const disabledWorkflow = (): DataRegistrationWorkflowDependencies =>
   ({ options: { enabled: false } }) as DataRegistrationWorkflowDependencies;
 
+export const resolveDataRegistrationOperationKind = (
+  attempt: Pick<DataRegistrationSigningAttempt, "targetAddress" | "methodSelector">,
+): keyof typeof DATA_REGISTRATION_AENEID_TARGETS | null =>
+  attempt.targetAddress.toLowerCase() === DATA_REGISTRATION_AENEID_TARGETS.license.toLowerCase() &&
+  attempt.methodSelector === DATA_REGISTRATION_AENEID_SELECTORS.license
+    ? "license"
+    : attempt.targetAddress.toLowerCase() ===
+          DATA_REGISTRATION_AENEID_TARGETS.royalty.toLowerCase() &&
+        attempt.methodSelector === DATA_REGISTRATION_AENEID_SELECTORS.royalty
+      ? "royalty"
+      : attempt.targetAddress.toLowerCase() ===
+            DATA_REGISTRATION_AENEID_TARGETS.original.toLowerCase() &&
+          attempt.methodSelector === DATA_REGISTRATION_AENEID_SELECTORS.original
+        ? "original"
+        : null;
+
 export function makeDataRegistrationComposition(
   env: DataRegistrationRuntimeEnv,
 ): DataRegistrationWorkerComposition {
@@ -210,20 +227,7 @@ export function makeDataRegistrationComposition(
     sign: async (input) => {
       const attempt = await readers.signingReader.getSigningAttempt(input.submissionAttemptId);
       if (attempt === null) throw new Error("DATA signing attempt missing");
-      const operationKind =
-        attempt.targetAddress.toLowerCase() ===
-          DATA_REGISTRATION_AENEID_TARGETS.license.toLowerCase() &&
-        attempt.methodSelector === DATA_REGISTRATION_AENEID_SELECTORS.license
-          ? "license"
-          : attempt.targetAddress.toLowerCase() ===
-                DATA_REGISTRATION_AENEID_TARGETS.royalty.toLowerCase() &&
-              attempt.methodSelector === DATA_REGISTRATION_AENEID_SELECTORS.royalty
-            ? "royalty"
-            : attempt.targetAddress.toLowerCase() ===
-                  DATA_REGISTRATION_AENEID_TARGETS.original.toLowerCase() &&
-                attempt.methodSelector === DATA_REGISTRATION_AENEID_SELECTORS.original
-              ? "original"
-              : null;
+      const operationKind = resolveDataRegistrationOperationKind(attempt);
       if (operationKind === null) throw new Error("DATA signing policy mismatch");
       const policy: DataRegistrationSigningPolicy = {
         chainId,

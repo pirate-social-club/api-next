@@ -52,6 +52,8 @@ const authority: DataRegistrationArtifactAuthority = {
   lyrics: "Project-owned explicit fixture lyrics.",
   lyricsExplicitness: "explicit",
   primaryLanguageBcp47: "en",
+  mediaKind: "song",
+  rightsBasis: "original",
   licensePreset: "non-commercial",
   commercialRemixShareBps: 1_000,
   royaltyAllocations: [
@@ -93,6 +95,23 @@ const fakeGateway = {} as IpfsGatewayVerifier;
 const fakeBucket = {} as R2Bucket;
 
 describe("DATA registration artifact pipeline", () => {
+  test("rejects a null song license before preparing any artifact", async () => {
+    const malformedAuthority = {
+      ...authority,
+      licensePreset: null,
+    } as unknown as DataRegistrationArtifactAuthority;
+    const pipeline = makeDataRegistrationArtifactPipeline({
+      authority: { read: async () => malformedAuthority, listPins: async () => [] },
+      immutableOriginals: fakeBucket,
+      pinning: fakePinning,
+      gateway: fakeGateway,
+      publicOrigin: "https://staging.pirate.sc",
+    });
+    await expect(pipeline.prepare(operation)).rejects.toThrow(
+      "song DATA artifacts require a song intent with offered license terms",
+    );
+  });
+
   test("pins audio first, then builds metadata against the durable audio CID", async () => {
     let pins: readonly DataRegistrationPinVerification[] = [];
     const pipeline = makeDataRegistrationArtifactPipeline({

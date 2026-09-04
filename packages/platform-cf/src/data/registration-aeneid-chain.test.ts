@@ -61,6 +61,8 @@ const baseAuthority: DataRegistrationArtifactAuthority = {
   lyrics: null,
   lyricsExplicitness: "not_applicable",
   primaryLanguageBcp47: null,
+  mediaKind: "song",
+  rightsBasis: "original",
   licensePreset: "non-commercial",
   commercialRemixShareBps: 1_000,
   royaltyAllocations: [
@@ -73,6 +75,13 @@ const baseAuthority: DataRegistrationArtifactAuthority = {
   acrDecision: "allow",
   acrPolicyRevision: "acr-v1",
   creatorAddress: "0x1111111111111111111111111111111111111111",
+};
+
+const originalVideoAuthority: DataRegistrationArtifactAuthority = {
+  ...baseAuthority,
+  mediaKind: "video",
+  rightsBasis: "original",
+  licensePreset: null,
 };
 
 const pin = (
@@ -185,7 +194,7 @@ describe("Aeneid DATA registration chain", () => {
   });
 
   test("plans an original-video register_ip with no license attachment", async () => {
-    const plan = await chain({ ...baseAuthority, licensePreset: null }).plan(operation, 1);
+    const plan = await chain(originalVideoAuthority).plan(operation, 1);
     expect(plan.reservation).toMatchObject({
       chainId: 1315n,
       signerNamespace: "data_registration",
@@ -211,6 +220,26 @@ describe("Aeneid DATA registration chain", () => {
     // does not decode as either attaching workflow.
     expect(() => decodeFunctionData({ abi: LICENSE_WORKFLOW_ABI, data: calldata })).toThrow();
     expect(() => decodeFunctionData({ abi: ROYALTY_WORKFLOW_ABI, data: calldata })).toThrow();
+  });
+
+  test("rejects intent and offered-license combinations outside the closed matrix", async () => {
+    const invalid = [
+      { ...baseAuthority, licensePreset: null },
+      { ...baseAuthority, mediaKind: "video", rightsBasis: "original" },
+      {
+        ...originalVideoAuthority,
+        rightsBasis: "derivative",
+      },
+      {
+        ...originalVideoAuthority,
+        mediaKind: "song",
+      },
+    ] as unknown as readonly DataRegistrationArtifactAuthority[];
+    for (const authority of invalid) {
+      await expect(chain(authority).plan(operation, 1)).rejects.toThrow(
+        "unsupported DATA registration intent",
+      );
+    }
   });
 
   test("confirms an original-video registration from its IPRegistered log", async () => {
@@ -253,13 +282,13 @@ describe("Aeneid DATA registration chain", () => {
       }
       throw new Error("unexpected RPC method");
     };
-    const result = await chain({ ...baseAuthority, licensePreset: null }, rpc).observeReceipt(
+    const result = await chain(originalVideoAuthority, rpc).observeReceipt(
       operation,
       originalAttempt,
     );
     expect(result).toMatchObject({ status: "mined" });
     head = "0xc";
-    const confirmed = await chain({ ...baseAuthority, licensePreset: null }, rpc).observeReceipt(
+    const confirmed = await chain(originalVideoAuthority, rpc).observeReceipt(
       operation,
       originalAttempt,
     );
@@ -281,7 +310,7 @@ describe("Aeneid DATA registration chain", () => {
       methodSelector: DATA_REGISTRATION_AENEID_SELECTORS.original,
       state: "mined" as const,
     };
-    const result = await chain({ ...baseAuthority, licensePreset: null }, async () => null, {
+    const result = await chain(originalVideoAuthority, async () => null, {
       getLatestMinedReceipt: async () => ({
         receiptObservationId: `${originalAttempt.submissionAttemptId}:receipt:1`,
         registrationOperationId: operation.registrationOperationId,
