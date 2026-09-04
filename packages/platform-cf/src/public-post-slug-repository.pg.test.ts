@@ -6,6 +6,7 @@ import {
   applyPostgresTestBaselineConnection,
   withReusablePostgresTestSchema,
 } from "../../../scripts/postgres-test-baseline.ts";
+import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import {
   ensurePostSlugAliasInTransaction,
@@ -126,12 +127,11 @@ async function seedLiveStateFixtures(admin: Client): Promise<void> {
       ('slug-live-community', 'Slug live fixtures', 'active', 'slug-owner', now(), now()),
       ('slug-hidden-community', 'Slug hidden fixtures', 'hidden', 'slug-owner', now(), now())`,
   );
-  await admin.query(
-    `INSERT INTO community_memberships
-      (community_id, membership_id, user_id, status, joined_at, created_at, updated_at)
-     VALUES
-      ('slug-live-community', 'slug-member-membership', 'slug-member', 'member', now(), now(), now())`,
-  );
+  await insertActiveCommunityMembershipFixture(admin, {
+    communityId: "slug-live-community",
+    membershipId: "slug-member-membership",
+    userId: "slug-member",
+  });
   await admin.query(
     `INSERT INTO posts
       (community_id, post_id, post_type, status, visibility, title, created_at, updated_at,

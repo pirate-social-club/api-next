@@ -12,6 +12,7 @@ import { Effect } from "effect";
 import { Client } from "pg";
 import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
+import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture.ts";
 import { makeDataRegistrationStore } from "./data-registration-repository.ts";
 import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
@@ -100,10 +101,11 @@ async function seedPublishedSong(admin: Client): Promise<{
     "INSERT INTO communities (community_id,display_name,status,created_by_user_id,created_at,updated_at) VALUES ($1,'DATA registration','active',$2,clock_timestamp(),clock_timestamp())",
     [communityId, accountId],
   );
-  await admin.query(
-    "INSERT INTO community_memberships (community_id,membership_id,user_id,status,joined_at,created_at,updated_at) VALUES ($1,$2,$3,'member',clock_timestamp(),clock_timestamp(),clock_timestamp())",
-    [communityId, "membership-data-registration", accountId],
-  );
+  await insertActiveCommunityMembershipFixture(admin, {
+    communityId,
+    membershipId: "membership-data-registration",
+    userId: accountId,
+  });
   await admin.query(
     "INSERT INTO posts (community_id,post_id,author_user_id,author_persona_id,post_type,status,visibility,title,created_at,updated_at) VALUES ($1,$2,$3,$4,'song','published','public','DATA fixture',clock_timestamp(),clock_timestamp())",
     [communityId, postId, accountId, personaId],

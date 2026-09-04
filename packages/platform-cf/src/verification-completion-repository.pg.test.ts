@@ -1099,7 +1099,7 @@ suite("Postgres 17 verification completion repository", () => {
         [primaryCommunityId],
       );
       expect(derivedCounts.rows).toEqual([
-        { communities: 1, claims: 1, commits: 1, memberships: 1, follows: 0 },
+        { communities: 1, claims: 1, commits: 1, memberships: 1, follows: 1 },
       ]);
 
       const secondStore = makeControlPlaneCommunityCreationStore(runtime, {

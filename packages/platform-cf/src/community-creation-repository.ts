@@ -97,6 +97,7 @@ export type CommunityCreationRepositoryOptions = Readonly<{
   readonly next_intent_id?: () => string;
   readonly next_community_id?: () => string;
   readonly next_membership_id?: () => string;
+  readonly next_follow_id?: () => string;
   readonly next_route_authority_grant_id?: () => string;
   readonly next_subject_claim_id?: () => string;
   readonly next_ceremony_intent_id?: () => string;
@@ -1685,6 +1686,7 @@ export function makeControlPlaneCommunityCreationRepository(
   const nextCommunityId = options.next_community_id ?? (() => `community_${crypto.randomUUID()}`);
   const nextMembershipId =
     options.next_membership_id ?? (() => `community-membership-${crypto.randomUUID()}`);
+  const nextFollowId = options.next_follow_id ?? (() => `follow_${crypto.randomUUID()}`);
   const nextRouteAuthorityGrantId =
     options.next_route_authority_grant_id ??
     (() => `community-route-authority-grant-${crypto.randomUUID()}`);
@@ -2203,11 +2205,13 @@ export function makeControlPlaneCommunityCreationRepository(
 
       const communityId = nextCommunityId();
       const membershipId = nextMembershipId();
+      const followId = nextFollowId();
       const routeAuthorityGrantId = nextRouteAuthorityGrantId();
       const subjectClaimId = claim === null ? null : nextSubjectClaimId();
       if (
         Option.isNone(Schema.decodeUnknownOption(OptionalRouteCommunityIdV2)(communityId)) ||
         !validId(membershipId) ||
+        !validId(followId) ||
         !validId(routeAuthorityGrantId) ||
         (subjectClaimId !== null && !validId(subjectClaimId))
       ) {
@@ -2282,6 +2286,15 @@ export function makeControlPlaneCommunityCreationRepository(
                  joined_at, created_at, updated_at
                ) VALUES ($1, $2, $3, 'member', $4::timestamptz, $4::timestamptz, $4::timestamptz)`,
         values: [communityId, membershipId, input.actor.userId, activationNow],
+        readonly: false,
+      });
+      yield* transaction.execute({
+        label: "community.creation.commit-v2.insert-creator-follow",
+        text: `INSERT INTO community_follows (
+                 community_follow_id, community_id, user_id, status,
+                 unfollowed_at, created_at, updated_at
+               ) VALUES ($1, $2, $3, 'active', NULL, $4::timestamptz, $4::timestamptz)`,
+        values: [followId, communityId, input.actor.userId, activationNow],
         readonly: false,
       });
       yield* transaction.execute({

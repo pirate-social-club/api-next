@@ -28,6 +28,7 @@ import {
   loadPostgresMigrations,
   runPostgresMigrations,
 } from "../../../scripts/postgres-migrations";
+import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture";
 import { makeControlPlanePersonaStore } from "./persona-repository";
 import { createActivePersonaFixture } from "./persona-wallet.pg-fixture";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres";
@@ -390,12 +391,11 @@ async function seed(admin: Client, schema: string): Promise<void> {
   await admin.query(
     "UPDATE communities SET canonical_route_binding_id = 'text-binding' WHERE community_id = 'text-community'",
   );
-  await admin.query(
-    `INSERT INTO community_memberships
-       (community_id, membership_id, user_id, status, joined_at, created_at, updated_at)
-     VALUES ('text-community', 'text-membership', $1, 'member', now(), now(), now())`,
-    [actor.userId],
-  );
+  await insertActiveCommunityMembershipFixture(admin, {
+    communityId: "text-community",
+    membershipId: "text-membership",
+    userId: actor.userId,
+  });
   await admin.query("COMMIT");
 }
 
@@ -934,13 +934,11 @@ suite("Postgres 17 terminal text submission repository", () => {
            NULL, 'optional_route_v2', NULL, clock_timestamp(), clock_timestamp())`,
         [communityId, actor.userId],
       );
-      await admin.query(
-        `INSERT INTO community_memberships (
-           community_id, membership_id, user_id, status, joined_at, created_at, updated_at
-         ) VALUES ($1, 'text-membership-namespaceless', $2, 'member',
-           clock_timestamp(), clock_timestamp(), clock_timestamp())`,
-        [communityId, actor.userId],
-      );
+      await insertActiveCommunityMembershipFixture(admin, {
+        communityId,
+        membershipId: "text-membership-namespaceless",
+        userId: actor.userId,
+      });
       const namespacelessPersonaId = "persona_text_order5_namespaceless";
       await createActivePersonaFixture(admin, {
         accountId: actor.userId,

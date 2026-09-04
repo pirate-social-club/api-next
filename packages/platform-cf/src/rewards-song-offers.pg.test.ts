@@ -5,6 +5,7 @@ import {
   applyPostgresTestBaselineConnection,
   withReusablePostgresTestSchema,
 } from "../../../scripts/postgres-test-baseline.ts";
+import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture.ts";
 import { makeControlPlaneCustodySolvencyStore } from "./custody-solvency-repository.ts";
 import { makeMegapotAllocationCoordinator } from "./megapot-allocation-coordinator.ts";
 import { makeControlPlaneMegapotAllocationStore } from "./megapot-allocation-repository.ts";
@@ -103,13 +104,12 @@ async function seedSong(
        clock_timestamp() - interval '20 days')`,
     [communityId, `Community ${suffix}`, accountId],
   );
-  await admin.query(
-    `INSERT INTO community_memberships (
-       community_id, membership_id, user_id, status, joined_at, created_at, updated_at
-     ) VALUES ($1, $2, $3, 'member', clock_timestamp() - interval '19 days',
-       clock_timestamp() - interval '19 days', clock_timestamp() - interval '19 days')`,
-    [communityId, `membership-${suffix}`, accountId],
-  );
+  await insertActiveCommunityMembershipFixture(admin, {
+    communityId,
+    membershipId: `membership-${suffix}`,
+    userId: accountId,
+    joinedAt: "2026-08-03T00:00:00.000Z",
+  });
   await admin.query(
     `INSERT INTO posts (
        community_id, post_id, author_user_id, author_persona_id, post_type,
@@ -622,13 +622,11 @@ suite("Postgres 17 Megapot rewards persistence", () => {
       );
       const otherPersonaId = otherPersonas.rows[0]?.persona_id;
       if (otherPersonaId === undefined) throw new Error("second persona was not provisioned");
-      await admin.query(
-        `INSERT INTO community_memberships (
-           community_id, membership_id, user_id, status, joined_at, created_at, updated_at
-         ) VALUES ($1, $2, $3, 'member', clock_timestamp() - interval '5 days',
-           clock_timestamp() - interval '5 days', clock_timestamp() - interval '5 days')`,
-        [identity.communityId, "membership-owner-only-member", otherAccountId],
-      );
+      await insertActiveCommunityMembershipFixture(admin, {
+        communityId: identity.communityId,
+        membershipId: "membership-owner-only-member",
+        userId: otherAccountId,
+      });
       const store = makeControlPlaneSongRewardOfferStore(
         makeDirectPostgresControlPlaneLayer(scopedConnection),
       );

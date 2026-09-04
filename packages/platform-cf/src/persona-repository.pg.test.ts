@@ -10,6 +10,7 @@ import { Cause, Effect, Exit, Result } from "effect";
 import { Client } from "pg";
 import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
+import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture.ts";
 import {
   makeControlPlanePersonaRepository,
   makeControlPlanePersonaWalletRepository,
@@ -106,12 +107,11 @@ async function seedBornBoundCommunity(
     [communityId, memberIds[0] ?? "owner"],
   );
   for (const userId of memberIds) {
-    await admin.query(
-      `INSERT INTO community_memberships
-         (community_id, membership_id, user_id, status, created_at, updated_at)
-       VALUES ($1, $2, $3, 'member', now(), now())`,
-      [communityId, `membership-${communityId}-${userId}`, userId],
-    );
+    await insertActiveCommunityMembershipFixture(admin, {
+      communityId,
+      membershipId: `membership-${communityId}-${userId}`,
+      userId,
+    });
   }
 }
 

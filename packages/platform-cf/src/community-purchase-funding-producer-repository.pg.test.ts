@@ -10,6 +10,7 @@ import {
   applyPostgresTestBaselineConnection,
   withReusablePostgresTestSchema,
 } from "../../../scripts/postgres-test-baseline.ts";
+import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture.ts";
 import { makeControlPlaneCommunityPurchaseFundingProducerStore } from "./community-purchase-funding-repository";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres";
 
@@ -46,9 +47,11 @@ async function withSchema<A>(
       await admin.query(`INSERT INTO communities (
             community_id, display_name, created_by_user_id, created_at, updated_at
           ) VALUES ('community_1', 'Community One', 'user_1', clock_timestamp(), clock_timestamp())`);
-      await admin.query(`INSERT INTO community_memberships (
-            community_id, membership_id, user_id, status, created_at, updated_at
-          ) VALUES ('community_1', 'membership_1', 'user_1', 'member', clock_timestamp(), clock_timestamp())`);
+      await insertActiveCommunityMembershipFixture(admin, {
+        communityId: "community_1",
+        membershipId: "membership_1",
+        userId: "user_1",
+      });
       await admin.query(`INSERT INTO community_commerce_policy_revisions (
             community_id, policy_version, source_revision, issued_by
           ) VALUES ('community_1', 7, 'source-7', 'user_1')`);
@@ -169,9 +172,11 @@ suite("community purchase funding producer repository", () => {
       await admin.query(`INSERT INTO communities (
         community_id, display_name, created_by_user_id, created_at, updated_at
       ) VALUES ('community_2', 'Community Two', 'user_1', clock_timestamp(), clock_timestamp())`);
-      await admin.query(`INSERT INTO community_memberships (
-        community_id, membership_id, user_id, status, created_at, updated_at
-      ) VALUES ('community_2', 'membership_2', 'user_1', 'member', clock_timestamp(), clock_timestamp())`);
+      await insertActiveCommunityMembershipFixture(admin, {
+        communityId: "community_2",
+        membershipId: "membership_2",
+        userId: "user_1",
+      });
       await admin.query(`INSERT INTO community_commerce_policy_revisions (
         community_id, policy_version, source_revision, issued_by
       ) VALUES ('community_2', 8, 'source-8', 'user_1')`);

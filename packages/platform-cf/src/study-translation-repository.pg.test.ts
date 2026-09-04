@@ -9,6 +9,7 @@ import {
 import { Effect } from "effect";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
+import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { makeControlPlaneStudyLanguageProfileRepository } from "./study-language-profile-repository.ts";
 import {
@@ -67,12 +68,11 @@ suite("Study translation generation", () => {
                ('study-other-community','Other study community','active','study-account',
                clock_timestamp(),clock_timestamp())`,
         );
-        await admin.query(
-          `INSERT INTO community_memberships (
-               community_id, membership_id, user_id, status, joined_at, created_at, updated_at
-             ) VALUES ('study-community','study-membership','study-account','member',
-               clock_timestamp(),clock_timestamp(),clock_timestamp())`,
-        );
+        await insertActiveCommunityMembershipFixture(admin, {
+          communityId: "study-community",
+          membershipId: "study-membership",
+          userId: "study-account",
+        });
         await admin.query(
           `INSERT INTO personas (
              persona_id, account_id, status, created_at, retired_at

@@ -5,6 +5,7 @@ import { clearPostVote } from "@pirate/application/use-cases/content/clear-post-
 import { Cause, Effect, Exit, Result } from "effect";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
+import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture";
 import { makeControlPlaneContentStore } from "./content-repository";
 import { createActivePersonaFixture } from "./persona-wallet.pg-fixture";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres";
@@ -264,12 +265,11 @@ async function seed(admin: Client, routeState: RouteState = "active"): Promise<v
   await createActivePersonaFixture(admin, { accountId: actor.userId, personaId: actorPersonaId });
   await createActivePersonaFixture(admin, { accountId: "usr_bob", personaId: bobPersonaId });
   await seedEffectiveRoute(admin, routeState);
-  await admin.query(
-    `INSERT INTO community_memberships
-      (community_id, membership_id, user_id, status, joined_at, created_at, updated_at)
-     VALUES ('community_1', 'membership_alice', $1, 'member', now(), now(), now())`,
-    [actor.userId],
-  );
+  await insertActiveCommunityMembershipFixture(admin, {
+    communityId: "community_1",
+    membershipId: "membership_alice",
+    userId: actor.userId,
+  });
   await admin.query(
     `INSERT INTO posts
       (community_id, post_id, author_user_id, author_persona_id, post_type, status, visibility, body, created_at, updated_at)
@@ -589,11 +589,11 @@ suite("Postgres 17 content repository", () => {
     await withSchema(async (connection, admin) => {
       await apply(connection);
       await seed(admin);
-      await admin.query(
-        `INSERT INTO community_memberships
-           (community_id, membership_id, user_id, status, joined_at, created_at, updated_at)
-         VALUES ('community_1', 'membership_bob', 'usr_bob', 'member', now(), now(), now())`,
-      );
+      await insertActiveCommunityMembershipFixture(admin, {
+        communityId: "community_1",
+        membershipId: "membership_bob",
+        userId: "usr_bob",
+      });
       await admin.query(
         `UPDATE posts SET upvote_count = 9, downvote_count = 8 WHERE post_id = 'post_parent'`,
       );
@@ -906,13 +906,11 @@ suite("Postgres 17 content repository", () => {
            clock_timestamp(), clock_timestamp(), NULL, NULL, 'optional_route_v2')`,
         [communityId, actor.userId],
       );
-      await admin.query(
-        `INSERT INTO community_memberships (
-           community_id, membership_id, user_id, status, joined_at, created_at, updated_at
-         ) VALUES ($1, 'membership_namespaceless', $2, 'member',
-           clock_timestamp(), clock_timestamp(), clock_timestamp())`,
-        [communityId, actor.userId],
-      );
+      await insertActiveCommunityMembershipFixture(admin, {
+        communityId,
+        membershipId: "membership_namespaceless",
+        userId: actor.userId,
+      });
       await admin.query(
         `INSERT INTO posts (
            community_id, post_id, author_user_id, author_persona_id, post_type, status, visibility,

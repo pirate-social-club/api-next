@@ -12515,6 +12515,30 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION require_active_membership_follow_pair_v1(expected_community_id text, expected_user_id text) RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+      FROM community_memberships AS membership
+     WHERE membership.community_id = expected_community_id
+       AND membership.user_id = expected_user_id
+       AND membership.status = 'member'
+  ) AND NOT EXISTS (
+    SELECT 1
+      FROM community_follows AS follow
+     WHERE follow.community_id = expected_community_id
+       AND follow.user_id = expected_user_id
+       AND follow.status = 'active'
+  ) THEN
+    RAISE EXCEPTION 'active Community membership requires an active follow'
+      USING ERRCODE = '23514',
+            CONSTRAINT = 'community_membership_active_follow_guard_v1';
+  END IF;
+END;
+$$;
+
 CREATE FUNCTION require_active_replay_persona() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -13215,6 +13239,24 @@ BEGIN
   );
 EXCEPTION WHEN OTHERS THEN
   RETURN FALSE;
+END;
+$$;
+
+CREATE FUNCTION validate_active_membership_follow_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    PERFORM require_active_membership_follow_pair_v1(OLD.community_id, OLD.user_id);
+  END IF;
+  IF TG_OP <> 'DELETE' AND (
+    TG_OP = 'INSERT'
+    OR OLD.community_id IS DISTINCT FROM NEW.community_id
+    OR OLD.user_id IS DISTINCT FROM NEW.user_id
+  ) THEN
+    PERFORM require_active_membership_follow_pair_v1(NEW.community_id, NEW.user_id);
+  END IF;
+  RETURN NULL;
 END;
 $$;
 
@@ -28723,6 +28765,8 @@ CREATE CONSTRAINT TRIGGER community_creation_route_v1_commit_guard AFTER INSERT 
 
 CREATE TRIGGER community_creation_subject_claim_append_only BEFORE DELETE OR UPDATE ON community_creation_subject_claims FOR EACH ROW EXECUTE FUNCTION reject_community_creation_immutable_change();
 
+CREATE CONSTRAINT TRIGGER community_follows_active_membership_guard AFTER INSERT OR DELETE OR UPDATE ON community_follows DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_active_membership_follow_v1();
+
 CREATE TRIGGER community_handle_offering_actions_append_only BEFORE DELETE OR UPDATE ON community_handle_offering_actions FOR EACH ROW EXECUTE FUNCTION reject_handle_sales_append_only_change_v1();
 
 CREATE TRIGGER community_handle_offering_current_change_guard BEFORE INSERT OR DELETE OR UPDATE ON community_handle_offering_current FOR EACH ROW EXECUTE FUNCTION guard_community_handle_offering_current_change_v1();
@@ -28732,6 +28776,8 @@ CREATE TRIGGER community_handle_offering_revision_insert_guard BEFORE INSERT ON 
 CREATE TRIGGER community_handle_offering_revisions_append_only BEFORE DELETE OR UPDATE ON community_handle_offering_revisions FOR EACH ROW EXECUTE FUNCTION reject_handle_sales_append_only_change_v1();
 
 CREATE TRIGGER community_handle_sales_authority_grants_change_guard BEFORE DELETE OR UPDATE ON community_handle_sales_authority_grants FOR EACH ROW EXECUTE FUNCTION guard_community_handle_sales_authority_grant_change();
+
+CREATE CONSTRAINT TRIGGER community_memberships_active_follow_guard AFTER INSERT OR DELETE OR UPDATE ON community_memberships DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_active_membership_follow_v1();
 
 CREATE TRIGGER community_moderation_actions_v2_change_guard BEFORE DELETE OR UPDATE ON community_moderation_actions_v2 FOR EACH ROW EXECUTE FUNCTION reject_community_moderation_v2_delete();
 
