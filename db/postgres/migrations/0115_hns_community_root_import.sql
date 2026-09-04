@@ -211,9 +211,12 @@ ALTER TABLE hns_root_import_sessions
     AND (observation_idempotency_key IS NULL OR is_hns_host_persistence_identity(observation_idempotency_key, 256))
   ),
   ADD CONSTRAINT hns_root_import_sessions_generation_check CHECK (
-    ownership_generation BETWEEN 1 AND 9007199254740991
-    AND ownership_expected_revision BETWEEN 1 AND 9007199254740991
-    AND revision BETWEEN 1 AND 9007199254740991
+    (ownership_generation >= 1 AND ownership_generation <= 9007199254740991)
+    AND (
+      ownership_expected_revision >= 1
+      AND ownership_expected_revision <= 9007199254740991
+    )
+    AND (revision >= 1 AND revision <= 9007199254740991)
   ),
   ADD CONSTRAINT hns_root_import_sessions_community_actor_fk
     FOREIGN KEY (actor_id, attachment_intent_id)
