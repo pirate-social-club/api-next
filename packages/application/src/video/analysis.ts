@@ -69,9 +69,7 @@ export type VideoAnalysisProviders = Readonly<{
   hash: (
     source: VideoAnalysisSource,
   ) => Promise<Readonly<{ canonicalSha256: string; byteLength: number; evidenceRef: string }>>;
-  extractSoundtrack: (
-    source: VideoAnalysisSource,
-  ) => Promise<
+  extractSoundtrack: (source: VideoAnalysisSource) => Promise<
     Readonly<{
       artifactRef: string;
       canonicalSha256: string;
@@ -79,22 +77,28 @@ export type VideoAnalysisProviders = Readonly<{
       adapterRevision: string;
     }>
   >;
-  identifySoundtrack: (input: Readonly<{
-    operationId: string;
-    extractedAudioRef: string;
-    extractedAudioSha256: string;
-  }>) => Promise<VideoSoundtrackFact>;
-  extractFrames: (input: Readonly<{
-    source: VideoAnalysisSource;
-    durationMs: number;
-    posterTimestampMs: number;
-  }>) => Promise<VideoFrameExtractionResult>;
-  moderate: (input: Readonly<{
-    operationId: string;
-    caption: string | null;
-    captionSha256: string | null;
-    frames: readonly [VideoExtractedFrame, VideoExtractedFrame, VideoExtractedFrame];
-  }>) => Promise<VideoSafetyFact>;
+  identifySoundtrack: (
+    input: Readonly<{
+      operationId: string;
+      extractedAudioRef: string;
+      extractedAudioSha256: string;
+    }>,
+  ) => Promise<VideoSoundtrackFact>;
+  extractFrames: (
+    input: Readonly<{
+      source: VideoAnalysisSource;
+      durationMs: number;
+      posterTimestampMs: number;
+    }>,
+  ) => Promise<VideoFrameExtractionResult>;
+  moderate: (
+    input: Readonly<{
+      operationId: string;
+      caption: string | null;
+      captionSha256: string | null;
+      frames: readonly [VideoExtractedFrame, VideoExtractedFrame, VideoExtractedFrame];
+    }>,
+  ) => Promise<VideoSafetyFact>;
   revisions: Readonly<{ probe: string }>;
 }>;
 
@@ -106,9 +110,7 @@ const encoder = new TextEncoder();
 export async function canonicalVideoCaptionSha256(caption: string | null): Promise<string | null> {
   if (caption === null) return null;
   return mediaSha256Bytes(
-    encoder.encode(
-      caption.replaceAll("\r\n", "\n").replaceAll("\r", "\n").normalize("NFC").trim(),
-    ),
+    encoder.encode(caption.replaceAll("\r\n", "\n").replaceAll("\r", "\n").normalize("NFC").trim()),
   );
 }
 
@@ -137,11 +139,7 @@ export async function runOriginalVideoAnalysis(
   const record = await services.store.getSubmissionByOperation(input);
   if (record === null) throw new NotFound({ message: "Video submission not found" });
   const video = record.state.video;
-  if (
-    record.state.status !== "processing" ||
-    record.state.phase !== "analysis" ||
-    video === null
-  ) {
+  if (record.state.status !== "processing" || record.state.phase !== "analysis" || video === null) {
     if (record.state.analysis === null) {
       throw new NotFound({ message: "Video analysis is not available" });
     }
@@ -167,12 +165,12 @@ export async function runOriginalVideoAnalysis(
   try {
     hash = await services.analysisProviders.hash(source);
   } catch {
-    return fail({ ...input, failureCode: "hash_failed", evidenceRef: "video-hash:failed" }, services);
+    return fail(
+      { ...input, failureCode: "hash_failed", evidenceRef: "video-hash:failed" },
+      services,
+    );
   }
-  if (
-    hash.canonicalSha256 !== source.canonicalSha256 ||
-    hash.byteLength !== source.byteLength
-  ) {
+  if (hash.canonicalSha256 !== source.canonicalSha256 || hash.byteLength !== source.byteLength) {
     return fail({ ...input, failureCode: "hash_failed", evidenceRef: hash.evidenceRef }, services);
   }
 
@@ -180,7 +178,10 @@ export async function runOriginalVideoAnalysis(
   try {
     probe = await services.analysisProviders.probe(source);
   } catch {
-    return fail({ ...input, failureCode: "probe_failed", evidenceRef: "video-probe:failed" }, services);
+    return fail(
+      { ...input, failureCode: "probe_failed", evidenceRef: "video-probe:failed" },
+      services,
+    );
   }
   if (
     probe.ingestPolicyRevision !== VIDEO_INGEST_POLICY_V1.policyRevision ||
@@ -192,7 +193,10 @@ export async function runOriginalVideoAnalysis(
     probe.audioCodec !== "aac" ||
     probe.hasAudio !== true
   ) {
-    return fail({ ...input, failureCode: "probe_failed", evidenceRef: probe.evidenceRef }, services);
+    return fail(
+      { ...input, failureCode: "probe_failed", evidenceRef: probe.evidenceRef },
+      services,
+    );
   }
 
   let soundtrack: Awaited<ReturnType<VideoAnalysisProviders["extractSoundtrack"]>>;

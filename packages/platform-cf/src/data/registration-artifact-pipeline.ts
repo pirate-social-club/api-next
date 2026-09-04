@@ -39,17 +39,17 @@ type DataRegistrationArtifactAuthorityCommon = Readonly<{
 
 type DataRegistrationSongArtifactAuthority = DataRegistrationArtifactAuthorityCommon &
   Readonly<{
-  title: string;
-  audioAssetRef: string;
-  audioMediaType: string;
-  audioByteLength: bigint;
-  canonicalAudioSha256: string;
-  coverArtifactRef: string | null;
-  lyrics: string | null;
-  lyricsExplicitness: "not_applicable" | "not_explicit" | "explicit" | "uncertain";
-  primaryLanguageBcp47: string | null;
-  commercialRemixShareBps: number;
-}>;
+    title: string;
+    audioAssetRef: string;
+    audioMediaType: string;
+    audioByteLength: bigint;
+    canonicalAudioSha256: string;
+    coverArtifactRef: string | null;
+    lyrics: string | null;
+    lyricsExplicitness: "not_applicable" | "not_explicit" | "explicit" | "uncertain";
+    primaryLanguageBcp47: string | null;
+    commercialRemixShareBps: number;
+  }>;
 
 export type DataRegistrationArtifactAuthority =
   | (DataRegistrationSongArtifactAuthority &
@@ -363,8 +363,11 @@ export function makePostgresDataRegistrationArtifactAuthorityReader(
             canonicalAudioSha256: audioSha256,
             coverArtifactRef: nullableText(row, "cover_artifact_ref"),
             lyrics: nullableText(row, "lyrics_text"),
-            lyricsExplicitness:
-              explicitness as DataRegistrationArtifactAuthority["lyricsExplicitness"],
+            lyricsExplicitness: explicitness as
+              | "not_applicable"
+              | "not_explicit"
+              | "explicit"
+              | "uncertain",
             primaryLanguageBcp47: nullableText(row, "primary_language_bcp47"),
             mediaKind: "song" as const,
             rightsBasis: songType === "original" ? ("original" as const) : ("derivative" as const),

@@ -31,6 +31,9 @@ import {
   retryVideoSubmission,
   type VideoPublicationServices,
 } from "@pirate/application/video/publication";
+
+export type { VideoPublicationServices } from "@pirate/application/video/publication";
+
 import { Effect, type Layer } from "effect";
 import {
   MediaSubmissionRepositoryError,

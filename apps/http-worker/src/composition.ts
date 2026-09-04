@@ -1,5 +1,4 @@
 import type { MediaSubmissionServices } from "@pirate/application/media/submission-service";
-import type { VideoPublicationServices } from "@pirate/application/video/publication";
 import { makeCommunityPurchaseFundingInterpreter } from "@pirate/application/money/community-purchase-funding";
 import { makeCommunityPurchaseFundingObservationUseCase } from "@pirate/application/money/community-purchase-funding-observation";
 import {
@@ -108,9 +107,8 @@ import {
 import {
   makeMediaUploadApplicationCommands,
   makeMediaUploadStore,
+  type VideoPublicationServices,
 } from "@pirate/platform-cf/media-upload-store";
-import { makeR2VideoMultipartGateway } from "@pirate/platform-cf/video-multipart-r2";
-import { makeControlPlaneVideoPublicationStore } from "@pirate/platform-cf/video-publication-repository";
 import { makeControlPlaneMegapotDrawingObservationStore } from "@pirate/platform-cf/megapot-drawing-observation-repository";
 import { makeMegapotV2RpcClient } from "@pirate/platform-cf/megapot-v2-rpc";
 import { makeControlPlaneNamespaceOwnershipCompletionStore } from "@pirate/platform-cf/namespace-ownership-completion-repository";
@@ -181,6 +179,8 @@ import {
   validVeryWebOptions,
 } from "@pirate/platform-cf/verification-provider-registry";
 import { makeControlPlaneVerificationSessionStartStore } from "@pirate/platform-cf/verification-start-repository";
+import { makeR2VideoMultipartGateway } from "@pirate/platform-cf/video-multipart-r2";
+import { makeControlPlaneVideoPublicationStore } from "@pirate/platform-cf/video-publication-repository";
 import { Effect, Redacted, Schema } from "effect";
 import { makeActivityQualificationHandlers } from "./activity-qualification-handlers.ts";
 import { makeCanonicalCommunityRouteHandlers } from "./canonical-community-route-handlers.ts";

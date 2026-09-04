@@ -12,10 +12,7 @@ import {
   type VideoAnalysisProviders,
   type VideoAnalysisRuntimeServices,
 } from "./analysis.ts";
-import type {
-  VideoPublicationStore,
-  VideoSubmissionRecord,
-} from "./publication.ts";
+import type { VideoPublicationStore, VideoSubmissionRecord } from "./publication.ts";
 
 const HASHES = ["a", "b", "c", "d", "e"].map((value) => value.repeat(64));
 const actor = "video-analysis-account";

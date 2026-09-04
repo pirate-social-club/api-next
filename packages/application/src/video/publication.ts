@@ -1074,14 +1074,14 @@ export async function retryVideoPoster(
     projectVideoSubmission({ ...record, state: nextState, updatedAt: services.nowIso() }),
   );
   const outcome = await services.store.retryPoster({
-      submission: record.state,
-      posterTimestampMs: body.poster_timestamp_ms,
-      endpointTemplate: VIDEO_PUBLICATION_ENDPOINTS.retryPoster,
-      idempotencyKey: body.idempotency_key,
-      requestHash,
-      responseBytes: response.bytes,
-      responseSha256: response.sha256,
-    });
+    submission: record.state,
+    posterTimestampMs: body.poster_timestamp_ms,
+    endpointTemplate: VIDEO_PUBLICATION_ENDPOINTS.retryPoster,
+    idempotencyKey: body.idempotency_key,
+    requestHash,
+    responseBytes: response.bytes,
+    responseSha256: response.sha256,
+  });
   return replaySubmission(outcome) ?? response.document;
 }
 
@@ -1131,13 +1131,13 @@ export async function retryVideoSubmission(
     projectVideoSubmission({ ...record, state: nextState, updatedAt: services.nowIso() }),
   );
   const outcome = await services.store.retryTechnical({
-      submission: record.state,
-      endpointTemplate: VIDEO_PUBLICATION_ENDPOINTS.retry,
-      idempotencyKey: body.idempotency_key,
-      requestHash,
-      responseBytes: response.bytes,
-      responseSha256: response.sha256,
-    });
+    submission: record.state,
+    endpointTemplate: VIDEO_PUBLICATION_ENDPOINTS.retry,
+    idempotencyKey: body.idempotency_key,
+    requestHash,
+    responseBytes: response.bytes,
+    responseSha256: response.sha256,
+  });
   return replaySubmission(outcome) ?? response.document;
 }
 
@@ -1255,16 +1255,16 @@ export async function moderateVideoSubmission(
     projectVideoSubmission({ ...record, state: nextState, updatedAt: services.nowIso() }),
   );
   const outcome = await services.store.moderate({
-      submission: record.state,
-      actor: input.actor,
-      expectedCreationRevision: body.expected_creation_revision,
-      action,
-      endpointTemplate: VIDEO_PUBLICATION_ENDPOINTS.moderate,
-      idempotencyKey: body.idempotency_key,
-      requestHash,
-      responseBytes: response.bytes,
-      responseSha256: response.sha256,
-    });
+    submission: record.state,
+    actor: input.actor,
+    expectedCreationRevision: body.expected_creation_revision,
+    action,
+    endpointTemplate: VIDEO_PUBLICATION_ENDPOINTS.moderate,
+    idempotencyKey: body.idempotency_key,
+    requestHash,
+    responseBytes: response.bytes,
+    responseSha256: response.sha256,
+  });
   const replayed = replaySubmission(outcome);
   if (replayed !== null) return replayed;
   return response.document;

@@ -19,7 +19,7 @@ export type R2VideoMultipartOptions = Readonly<{
   bucket: string;
   accessKeyId: string;
   secretAccessKey: string;
-  fetch?: typeof fetch;
+  fetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
   now?: () => Date;
 }>;
 

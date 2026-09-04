@@ -1148,9 +1148,11 @@ export function makeControlPlaneVideoPublicationStore(
                 current.state.retryCount >= 3 ||
                 current.state.video === null ||
                 current.state.failureCode === null ||
-                ["poster_undecodable", "poster_timestamp_out_of_range", "upload_seal_conflict"].includes(
-                  current.state.failureCode,
-                )
+                [
+                  "poster_undecodable",
+                  "poster_timestamp_out_of_range",
+                  "upload_seal_conflict",
+                ].includes(current.state.failureCode)
               ) {
                 throw new Error("video technical retry rejected");
               }
@@ -1252,10 +1254,7 @@ export function makeControlPlaneVideoPublicationStore(
           const db = yield* ControlPlaneDb;
           return yield* db.withTransaction((tx) =>
             Effect.gen(function* () {
-              yield* lock(
-                tx,
-                `video-moderation:${input.actor.userId}:${input.idempotencyKey}`,
-              );
+              yield* lock(tx, `video-moderation:${input.actor.userId}:${input.idempotencyKey}`);
               const prior = yield* commandReplay(tx, {
                 actorAccountId: input.actor.userId,
                 endpointTemplate: input.endpointTemplate,

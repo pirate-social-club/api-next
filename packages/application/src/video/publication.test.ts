@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { BadRequest, Conflict, IdempotencyConflict } from "@pirate/contracts";
+import { BadRequest, type Conflict, IdempotencyConflict } from "@pirate/contracts";
 import { Effect } from "effect";
 import {
   attachImmutableVideo,
@@ -93,8 +93,13 @@ function servicesWith(input: {
       personaStore: {
         findOwned: ({ accountId, personaId }) =>
           Effect.succeed(
-            accountId === actor.userId && [persona.persona_id, "persona_video_second"].includes(personaId)
-              ? { ...persona, persona_id: personaId, profile: { ...persona.profile, persona_id: personaId } }
+            accountId === actor.userId &&
+              [persona.persona_id, "persona_video_second"].includes(personaId)
+              ? {
+                  ...persona,
+                  persona_id: personaId,
+                  profile: { ...persona.profile, persona_id: personaId },
+                }
               : null,
           ),
       },

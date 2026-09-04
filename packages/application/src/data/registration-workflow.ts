@@ -160,10 +160,7 @@ const artifactsAreValidStage = (
   const kinds = new Set(artifacts.map(({ artifact }) => artifact.artifactKind));
   const mediaArtifacts: readonly DataRegistrationArtifactKind[] =
     operation.mediaKind === "video" ? ["canonical_video", "poster"] : ["canonical_audio"];
-  const expected = new Set<DataRegistrationArtifactKind>([
-    ...mediaArtifacts,
-    ...metadataArtifacts,
-  ]);
+  const expected = new Set<DataRegistrationArtifactKind>([...mediaArtifacts, ...metadataArtifacts]);
   return (
     artifacts.length === kinds.size &&
     mediaArtifacts.every((kind) => kinds.has(kind)) &&

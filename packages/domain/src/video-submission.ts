@@ -239,12 +239,7 @@ const positiveInteger = (value: number): boolean => Number.isSafeInteger(value) 
 export function validateVideoTrustedAnalysis(
   state: Pick<
     VideoSubmissionState,
-    | "operationId"
-    | "videoRevision"
-    | "video"
-    | "caption"
-    | "analysisRevision"
-    | "posterTimestampMs"
+    "operationId" | "videoRevision" | "video" | "caption" | "analysisRevision" | "posterTimestampMs"
   >,
   analysis: VideoTrustedAnalysis,
   canonicalCaptionSha256: string | null,

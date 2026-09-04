@@ -85,6 +85,14 @@ const originalVideoAuthority: DataRegistrationArtifactAuthority = {
   mediaKind: "video",
   rightsBasis: "original",
   licensePreset: null,
+  caption: "An original video",
+  videoAssetRef: "media://immutable/video.mp4",
+  videoMediaType: "video/mp4",
+  videoByteLength: 4n,
+  canonicalVideoSha256: "b".repeat(64),
+  posterArtifactRef: "media://immutable/poster.jpg",
+  posterSha256: "c".repeat(64),
+  originalSoundId: "original-sound-1",
 };
 
 const pin = (

@@ -13,13 +13,16 @@ const options = {
 };
 const objectKey = "reservations/media-reservation-00000000-0000-4000-8000-000000000001/source";
 
+const toRequest = (input: string | URL | Request, init?: RequestInit): Request =>
+  input instanceof Request ? new Request(input, init) : new Request(input.toString(), init);
+
 describe("R2 video multipart gateway", () => {
   test("creates a server-owned upload and signs the exact fixed part set", async () => {
     const requests: Request[] = [];
     const gateway = makeR2VideoMultipartGateway({
       ...options,
       fetch: async (input, init) => {
-        const request = new Request(input, init);
+        const request = toRequest(input, init);
         requests.push(request);
         return new Response(
           "<InitiateMultipartUploadResult><UploadId>opaque/upload+id</UploadId></InitiateMultipartUploadResult>",
@@ -49,7 +52,7 @@ describe("R2 video multipart gateway", () => {
     const gateway = makeR2VideoMultipartGateway({
       ...options,
       fetch: async (input, init) => {
-        const request = new Request(input, init);
+        const request = toRequest(input, init);
         if (request.method === "HEAD") return new Response(null, { status: exists ? 200 : 404 });
         if (request.method === "POST") {
           completionCalls += 1;
@@ -76,7 +79,7 @@ describe("R2 video multipart gateway", () => {
     const gateway = makeR2VideoMultipartGateway({
       ...options,
       fetch: async (input, init) => {
-        const request = new Request(input, init);
+        const request = toRequest(input, init);
         if (request.method === "HEAD") {
           heads += 1;
           return new Response(null, { status: 404 });

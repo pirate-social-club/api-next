@@ -57,9 +57,7 @@ const pinFromRow = (row: Row): DataRegistrationPinVerification => {
       "poster",
       "ip_metadata",
       "nft_metadata",
-    ].includes(
-      artifactKind,
-    ) ||
+    ].includes(artifactKind) ||
     !["primary", "independent_gateway"].includes(role) ||
     !["verified", "failed"].includes(outcome)
   ) {

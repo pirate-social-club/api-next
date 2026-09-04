@@ -12,9 +12,9 @@ import {
   publishOriginalVideo,
   type VideoTrustedAnalysis,
 } from "../../domain/src/video-submission.ts";
-import { createActivePersonaFixture } from "./persona-wallet.pg-fixture.ts";
-import { makeDataRegistrationStore } from "./data-registration-repository.ts";
 import { makePostgresDataRegistrationArtifactAuthorityReader } from "./data/registration-artifact-pipeline.ts";
+import { makeDataRegistrationStore } from "./data-registration-repository.ts";
+import { createActivePersonaFixture } from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { makeControlPlaneVideoPublicationStore } from "./video-publication-repository.ts";
 
@@ -298,7 +298,10 @@ suite("video publication PostgreSQL", () => {
         responseBytes,
         responseSha256,
       });
-      const soundtrackApproved = await store.getSubmissionByOperation({ submissionId, operationId });
+      const soundtrackApproved = await store.getSubmissionByOperation({
+        submissionId,
+        operationId,
+      });
       if (soundtrackApproved === null) throw new Error("soundtrack-approved video missing");
       ready = soundtrackApproved;
       expect(ready.state).toMatchObject({ status: "processing", phase: "publish" });
@@ -373,14 +376,12 @@ suite("video publication PostgreSQL", () => {
         { recipient_id: persona, share_bps: 10_000 },
       ]);
       const registrationOperationId = "data-registration:1315:post-video-publication:1";
-      const operation = await makeDataRegistrationStore(layer).getOperation(
-        registrationOperationId,
-      );
+      const operation =
+        await makeDataRegistrationStore(layer).getOperation(registrationOperationId);
       if (operation === null) throw new Error("video DATA operation fixture missing");
       expect(operation).toMatchObject({ mediaKind: "video", rightsBasis: "original" });
-      const authority = await makePostgresDataRegistrationArtifactAuthorityReader(layer).read(
-        operation,
-      );
+      const authority =
+        await makePostgresDataRegistrationArtifactAuthorityReader(layer).read(operation);
       expect(authority).toMatchObject({
         mediaKind: "video",
         rightsBasis: "original",
