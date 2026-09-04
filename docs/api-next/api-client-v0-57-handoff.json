@@ -24,10 +24,10 @@
   },
   "verification": {
     "checkFresh": "passed",
-    "checkBreaking": "pending; run before publication",
+    "checkBreaking": "passed",
     "focusedSuites": "passed; contract, application, repository, product-handler, and transport suites",
-    "fullUnitSuite": "pending; see the lane record",
-    "packageVerifier": "pending until this ledger entry lands",
-    "repositoryCheck": "pending; see the lane record"
+    "fullUnitSuite": "passed; 2,858 Bun unit tests, 20 Node tests, and all Workerd groups",
+    "packageVerifier": "passed",
+    "repositoryCheck": "passed; bun run check and complete PostgreSQL 17 suite (322 tests)"
   }
 }
