@@ -507,7 +507,9 @@ CREATE FUNCTION begin_hns_root_import_observation_v1(input_actor_id text, input_
     AS $_$
 DECLARE
   session hns_root_import_sessions%ROWTYPE;
-  ownership_result community_creation_ceremony_results%ROWTYPE;
+  ownership_ceremony_intent_id TEXT;
+  ownership_outcome_status TEXT;
+  ownership_result_hash TEXT;
   proof hns_root_import_name_proof_observations%ROWTYPE;
   provision hns_authority_provision_jobs%ROWTYPE;
   database_now TIMESTAMPTZ := clock_timestamp();
@@ -515,7 +517,10 @@ BEGIN
   SELECT * INTO session
     FROM hns_root_import_sessions
    WHERE actor_id = input_actor_id
-     AND creation_intent_id = input_creation_intent_id
+     AND (
+       (origin_kind = 'creation_intent' AND creation_intent_id = input_creation_intent_id)
+       OR (origin_kind = 'community_attachment' AND community_id = input_creation_intent_id)
+     )
      AND hns_root_import_sessions.root_import_session_id = input_root_import_session_id
    FOR UPDATE;
   IF NOT FOUND THEN
@@ -552,11 +557,29 @@ BEGIN
     RETURN QUERY SELECT 'conflict'::TEXT, session.root_import_session_id, session.revision;
     RETURN;
   END IF;
-  SELECT * INTO ownership_result
-    FROM community_creation_ceremony_results
-   WHERE ceremony_intent_id = session.ceremony_intent_id
-     AND namespace_session_id = session.namespace_session_id
-   FOR SHARE;
+  SELECT result.ceremony_intent_id, result.outcome_status, result.result_hash
+    INTO ownership_ceremony_intent_id, ownership_outcome_status, ownership_result_hash
+    FROM (
+      SELECT creation_result.ceremony_intent_id,
+             creation_result.outcome_status,
+             creation_result.result_hash
+        FROM community_creation_ceremony_results AS creation_result
+       WHERE session.origin_kind = 'creation_intent'
+         AND creation_result.ceremony_intent_id = session.ceremony_intent_id
+         AND creation_result.namespace_session_id = session.namespace_session_id
+      UNION ALL
+      SELECT attachment_result.ceremony_intent_id,
+             attachment_result.outcome_status,
+             attachment_result.result_hash
+        FROM community_route_attachment_namespace_sessions AS ownership_session
+        JOIN community_route_attachment_ceremony_results AS attachment_result
+          ON attachment_result.ceremony_intent_id = ownership_session.ceremony_intent_id
+       WHERE session.origin_kind = 'community_attachment'
+         AND ownership_session.namespace_session_id = session.namespace_session_id
+         AND ownership_session.actor_id = session.actor_id
+         AND ownership_session.community_id = session.community_id
+         AND ownership_session.attachment_intent_id = session.attachment_intent_id
+    ) AS result;
   SELECT * INTO provision
     FROM hns_authority_provision_jobs
    WHERE provision_job_id = session.provision_job_id
@@ -566,10 +589,10 @@ BEGIN
    WHERE hns_root_import_name_proof_observations.root_import_session_id =
          session.root_import_session_id
    FOR SHARE;
-  IF ownership_result.ceremony_intent_id IS NULL
+  IF ownership_ceremony_intent_id IS NULL
     OR provision.provision_job_id IS NULL
-    OR ownership_result.outcome_status <> 'satisfied'
-    OR ownership_result.result_hash <> input_ownership_result_sha256
+    OR ownership_outcome_status <> 'satisfied'
+    OR ownership_result_hash <> input_ownership_result_sha256
     OR provision.state <> 'completed'
     OR provision.publish_plan_sha256 <> session.publish_plan_sha256
     OR (
@@ -793,7 +816,10 @@ BEGIN
   SELECT * INTO session
     FROM hns_root_import_sessions
    WHERE actor_id = input_actor_id
-     AND creation_intent_id = input_creation_intent_id
+     AND (
+       (origin_kind = 'creation_intent' AND creation_intent_id = input_creation_intent_id)
+       OR (origin_kind = 'community_attachment' AND community_id = input_creation_intent_id)
+     )
      AND hns_root_import_sessions.root_import_session_id = input_root_import_session_id
    FOR UPDATE;
   IF NOT FOUND THEN
@@ -881,12 +907,24 @@ BEGIN
            <> input_authorization_sha256
       OR input_name_proof_message_sha256 !~ '^[0-9a-f]{64}$'
       OR input_name_proof_signature_sha256 !~ '^[0-9a-f]{64}$'
-      OR NOT EXISTS (
-        SELECT 1 FROM namespace_ownership_sessions AS ownership_session
-         WHERE ownership_session.namespace_session_id = session.namespace_session_id
-           AND ownership_session.actor_id = session.actor_id
-           AND ownership_session.status = 'pending'
-           AND ownership_session.expires_at > database_now
+      OR NOT (
+        (session.origin_kind = 'creation_intent' AND EXISTS (
+          SELECT 1 FROM namespace_ownership_sessions AS ownership_session
+           WHERE ownership_session.namespace_session_id = session.namespace_session_id
+             AND ownership_session.actor_id = session.actor_id
+             AND ownership_session.creation_intent_id = session.creation_intent_id
+             AND ownership_session.status = 'pending'
+             AND ownership_session.expires_at > database_now
+        ))
+        OR (session.origin_kind = 'community_attachment' AND EXISTS (
+          SELECT 1 FROM community_route_attachment_namespace_sessions AS ownership_session
+           WHERE ownership_session.namespace_session_id = session.namespace_session_id
+             AND ownership_session.actor_id = session.actor_id
+             AND ownership_session.community_id = session.community_id
+             AND ownership_session.attachment_intent_id = session.attachment_intent_id
+             AND ownership_session.status = 'pending'
+             AND ownership_session.expires_at > database_now
+        ))
       )
     THEN
       RETURN QUERY SELECT 'conflict'::TEXT, session.root_import_session_id, session.revision;

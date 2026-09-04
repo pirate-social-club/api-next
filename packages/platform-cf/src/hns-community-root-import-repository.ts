@@ -3,6 +3,7 @@ import {
   type ControlPlaneError,
   type ControlPlaneResult,
   type ControlPlaneTransaction,
+  type HnsCommunityRootImportPollStore,
   type HnsCommunityRootImportPreparation,
   type HnsCommunityRootImportStartRecord,
   type HnsCommunityRootImportStartStore,
@@ -648,9 +649,7 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
           }),
         );
       }),
-    get: (
-      input: Parameters<import("@pirate/application").HnsCommunityRootImportReadStore["get"]>[0],
-    ) =>
+    get: (input: Parameters<HnsCommunityRootImportPollStore["get"]>[0]) =>
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
         const result = yield* db.execute<Row>({
@@ -665,14 +664,190 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
         if (row === undefined) return yield* Effect.fail(storageFailure());
         return row === null ? null : sessionResponse(row, options.environment, false);
       }),
+    loadPollAuthority: (
+      input: Parameters<HnsCommunityRootImportPollStore["loadPollAuthority"]>[0],
+    ) =>
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        const result = yield* db.execute<Row>({
+          label: "hns.community-root-import.load-poll-authority",
+          text: `SELECT session.*, ownership.ceremony_intent_id,
+                        provision.result_sha256 AS provision_result_sha256
+                   FROM hns_root_import_sessions AS session
+                   JOIN community_route_attachment_namespace_sessions AS ownership
+                     ON ownership.namespace_session_id=session.namespace_session_id
+                    AND ownership.actor_id=session.actor_id
+                    AND ownership.community_id=session.community_id
+                    AND ownership.attachment_intent_id=session.attachment_intent_id
+                   LEFT JOIN hns_authority_provision_jobs AS provision
+                     ON provision.provision_job_id=session.provision_job_id
+                  WHERE session.actor_id=$1 AND session.community_id=$2
+                    AND session.root_import_session_id=$3
+                    AND session.origin_kind='community_attachment'`,
+          values: [input.actor_id, input.community_id, input.root_import_session_id],
+          readonly: true,
+        });
+        const row = oneRow(result);
+        if (row === undefined) return yield* Effect.fail(storageFailure());
+        if (row === null) return null;
+        const session = sessionResponse(row, options.environment, false);
+        const ceremonyIntentId = text(row, "ceremony_intent_id");
+        const namespaceSessionId = text(row, "namespace_session_id");
+        const ownershipRevision = integer(row.ownership_expected_revision);
+        const challenge = text(row, "challenge_txt_value");
+        const provisionJobId = text(row, "provision_job_id");
+        const ownershipResultHash =
+          row.ownership_result_sha256 === null ? null : text(row, "ownership_result_sha256");
+        const provisionResultHash =
+          row.provision_result_sha256 === null ? null : text(row, "provision_result_sha256");
+        if (
+          session === null ||
+          ceremonyIntentId === null ||
+          namespaceSessionId === null ||
+          ownershipRevision === null ||
+          challenge === null ||
+          provisionJobId === null ||
+          (row.ownership_result_sha256 !== null && ownershipResultHash === null) ||
+          (row.provision_result_sha256 !== null && provisionResultHash === null)
+        ) {
+          return yield* Effect.fail(storageFailure());
+        }
+        return {
+          session,
+          ceremony_intent_id: ceremonyIntentId,
+          namespace_session_id: namespaceSessionId,
+          ownership_expected_revision: ownershipRevision,
+          challenge_txt_value: challenge,
+          provision_job_id: provisionJobId,
+          ownership_result_sha256: ownershipResultHash,
+          provision_result_sha256: provisionResultHash,
+        };
+      }),
+    beginProvisioning: (
+      input: Parameters<HnsCommunityRootImportPollStore["beginProvisioning"]>[0],
+    ) =>
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        return yield* db.withTransaction((transaction) =>
+          Effect.gen(function* () {
+            const result = yield* transaction.execute<Row>({
+              label: "hns.community-root-import.begin-provisioning",
+              text: `SELECT * FROM begin_hns_root_import_provision_v2(
+                       $1,$2,$3,$4::bigint,$5,$6,'hns_name_signature',$7,$8::bytea,
+                       $9,$10,$11,$12::bytea,$13
+                     )`,
+              values: [
+                input.poll.actor_id,
+                input.poll.community_id,
+                input.poll.root_import_session_id,
+                input.poll.expected_revision,
+                input.poll.idempotency_key,
+                input.poll_request_sha256,
+                input.proof_result_sha256,
+                input.proof_result_bytes,
+                input.proof_message_sha256,
+                input.proof_signature_sha256,
+                input.provision_job_id,
+                input.provision_request_bytes,
+                input.provision_request_sha256,
+              ],
+              readonly: false,
+            });
+            const outcome = oneRow(result);
+            if (outcome === undefined || outcome === null) {
+              return yield* Effect.fail(storageFailure());
+            }
+            if (outcome.outcome === "not_found") return { kind: "not_found" } as const;
+            if (outcome.outcome === "conflict") return { kind: "conflict" } as const;
+            if (outcome.outcome !== "provisioning" && outcome.outcome !== "replayed") {
+              return yield* Effect.fail(storageFailure());
+            }
+            const loaded = yield* transaction.execute<Row>({
+              label: "hns.community-root-import.load-provisioned-session",
+              text: `SELECT * FROM hns_root_import_sessions
+                      WHERE actor_id=$1 AND community_id=$2 AND root_import_session_id=$3
+                        AND origin_kind='community_attachment'`,
+              values: [
+                input.poll.actor_id,
+                input.poll.community_id,
+                input.poll.root_import_session_id,
+              ],
+              readonly: false,
+            });
+            const row = oneRow(loaded);
+            const session =
+              row === null || row === undefined
+                ? null
+                : sessionResponse(row, options.environment, outcome.outcome === "replayed");
+            return session === null
+              ? yield* Effect.fail(storageFailure())
+              : ({ kind: outcome.outcome, session } as const);
+          }),
+        );
+      }),
+    beginObservation: (input: Parameters<HnsCommunityRootImportPollStore["beginObservation"]>[0]) =>
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        return yield* db.withTransaction((transaction) =>
+          Effect.gen(function* () {
+            const result = yield* transaction.execute<Row>({
+              label: "hns.community-root-import.begin-observation",
+              text: `SELECT * FROM begin_hns_root_import_observation_v1(
+                       $1,$2,$3,$4::bigint,$5,$6,$7,$8,$9::bytea,$10
+                     )`,
+              values: [
+                input.poll.actor_id,
+                input.poll.community_id,
+                input.poll.root_import_session_id,
+                input.poll.expected_revision,
+                input.poll.idempotency_key,
+                input.poll_request_sha256,
+                input.ownership_result_sha256,
+                input.observation_job_id,
+                input.observation_request_bytes,
+                input.observation_request_sha256,
+              ],
+              readonly: false,
+            });
+            const outcome = oneRow(result);
+            if (outcome === undefined || outcome === null) {
+              return yield* Effect.fail(storageFailure());
+            }
+            if (outcome.outcome === "not_found") return { kind: "not_found" } as const;
+            if (outcome.outcome === "conflict") return { kind: "conflict" } as const;
+            if (outcome.outcome !== "observing" && outcome.outcome !== "replayed") {
+              return yield* Effect.fail(storageFailure());
+            }
+            const loaded = yield* transaction.execute<Row>({
+              label: "hns.community-root-import.load-observing-session",
+              text: `SELECT * FROM hns_root_import_sessions
+                      WHERE actor_id=$1 AND community_id=$2 AND root_import_session_id=$3
+                        AND origin_kind='community_attachment'`,
+              values: [
+                input.poll.actor_id,
+                input.poll.community_id,
+                input.poll.root_import_session_id,
+              ],
+              readonly: false,
+            });
+            const row = oneRow(loaded);
+            const session =
+              row === null || row === undefined
+                ? null
+                : sessionResponse(row, options.environment, outcome.outcome === "replayed");
+            return session === null
+              ? yield* Effect.fail(storageFailure())
+              : ({ kind: outcome.outcome, session } as const);
+          }),
+        );
+      }),
   };
 }
 
 export function makeControlPlaneHnsCommunityRootImportStartStore(
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
   options: HnsCommunityRootImportRepositoryOptions,
-): HnsCommunityRootImportStartStore &
-  import("@pirate/application").HnsCommunityRootImportReadStore {
+): HnsCommunityRootImportStartStore & HnsCommunityRootImportPollStore {
   const repository = makeControlPlaneHnsCommunityRootImportRepository(options);
   const provide = <A>(effect: Effect.Effect<A, unknown, ControlPlaneDb>) =>
     Effect.provide(runtime)(effect).pipe(Effect.mapError(() => storageFailure()));
@@ -680,5 +855,8 @@ export function makeControlPlaneHnsCommunityRootImportStartStore(
     prepare: (input) => provide(repository.prepare(input)),
     start: (input) => provide(repository.start(input)),
     get: (input) => provide(repository.get(input)),
+    loadPollAuthority: (input) => provide(repository.loadPollAuthority(input)),
+    beginProvisioning: (input) => provide(repository.beginProvisioning(input)),
+    beginObservation: (input) => provide(repository.beginObservation(input)),
   };
 }

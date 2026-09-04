@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
+import {
+  encodeHnsRootImportNameProofResultV1,
+  HNS_ROOT_IMPORT_NAME_PROOF_RESULT_VERSION,
+} from "@pirate/application";
 import { Effect } from "effect";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
@@ -21,6 +25,11 @@ const suite = connectionString === undefined ? describe.skip : describe;
 const communityId = "community_123e4567-e89b-42d3-a456-426614174000";
 const actorId = "community-root-import-actor";
 const expiresAt = "2099-01-01T00:00:00.000Z";
+
+async function sha256(bytes: Uint8Array): Promise<string> {
+  const result = await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes).buffer);
+  return [...new Uint8Array(result)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
 
 function quoted(value: string): string {
   return `"${value.replaceAll('"', '""')}"`;
@@ -359,6 +368,42 @@ suite("community HNS root-import repositories", () => {
           ),
         ),
       ).toMatchObject({ kind: "created", value: { root_label: "dankmemes" } });
+
+      const proofMessageSha256 = "4".repeat(64);
+      const proofSignatureSha256 = "5".repeat(64);
+      const proofBytes = encodeHnsRootImportNameProofResultV1({
+        version: HNS_ROOT_IMPORT_NAME_PROOF_RESULT_VERSION,
+        root_label: "dankmemes",
+        message_sha256: proofMessageSha256,
+        signature_sha256: proofSignatureSha256,
+        safe: true,
+        verified: true,
+      });
+      const provisionBytes = new TextEncoder().encode('{"operation":"provision"}');
+      expect(
+        await Effect.runPromise(
+          Effect.scoped(
+            communityStore.beginProvisioning({
+              poll: {
+                actor_id: actorId,
+                community_id: communityId,
+                root_import_session_id: "community-import-session",
+                expected_revision: 1,
+                idempotency_key: "community-import-proof",
+                provisioning_name_signature: btoa("s".repeat(64)),
+              },
+              poll_request_sha256: "6".repeat(64),
+              proof_result_bytes: proofBytes,
+              proof_result_sha256: await sha256(proofBytes),
+              proof_message_sha256: proofMessageSha256,
+              proof_signature_sha256: proofSignatureSha256,
+              provision_job_id: "community-import-provision",
+              provision_request_bytes: provisionBytes,
+              provision_request_sha256: await sha256(provisionBytes),
+            }),
+          ),
+        ),
+      ).toMatchObject({ kind: "provisioning", session: { revision: 2, replayed: false } });
     });
   });
 });
