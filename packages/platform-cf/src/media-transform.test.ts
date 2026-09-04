@@ -38,7 +38,7 @@ describe("disabled media transform", () => {
           version: "media-transform-video-audio-input-v1",
           binding,
           source,
-          extractionPolicyVersion: "video-audio-aac-44100-stereo-v1",
+          extractionPolicyVersion: "video-audio-m4a-aac-44100-stereo-v1",
           attempt,
         }),
       ),

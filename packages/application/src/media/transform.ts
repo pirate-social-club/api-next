@@ -5,7 +5,7 @@ export const MEDIA_TRANSFORM_SAMPLE_TARGET_MS = 12_000;
 export const MEDIA_TRANSFORM_SAMPLE_MAX_MS = 15_000;
 export const MEDIA_TRANSFORM_SAMPLE_CHANNELS = 1;
 export const MEDIA_TRANSFORM_SAMPLE_RATE_HZ = 44_100;
-export const MEDIA_TRANSFORM_VIDEO_AUDIO_POLICY_V1 = "video-audio-aac-44100-stereo-v1" as const;
+export const MEDIA_TRANSFORM_VIDEO_AUDIO_POLICY_V1 = "video-audio-m4a-aac-44100-stereo-v1" as const;
 
 export type MediaTransformSampleVariant = "primary" | "alternate";
 
@@ -32,19 +32,21 @@ export type MediaTransformRuntimeFence = Readonly<{
  *
  * The caller creates and durably records the runtime fence before the first
  * provider effect. Exact logical-attempt replay must reuse that fence. The
- * The adapter adds providerJobId only after the provider accepts a durable job
+ * adapter adds providerJobId only after the provider accepts a durable job
  * identity; adapter memory is never a durability mechanism.
  */
 export type MediaTransformAttempt = Readonly<{
   readonly version: "media-transform-attempt-v1";
   readonly runtimeFence: MediaTransformRuntimeFence;
   readonly providerJobId?: string;
+  readonly providerJobPhase?: "allocated" | "started";
 }>;
 
 export type MediaTransformAcceptedAttempt = Readonly<{
   readonly version: "media-transform-attempt-v1";
   readonly runtimeFence: MediaTransformRuntimeFence;
   readonly providerJobId: string;
+  readonly providerJobPhase?: "allocated" | "started";
 }>;
 
 export type MediaTransformProbeInput = Readonly<{
@@ -118,7 +120,7 @@ type MediaTransformRetryableReason =
   | "timeout"
   | "transport";
 
-export type MediaTransformRejectedReason =
+type MediaTransformRejectedReason =
   | "duration_exceeded"
   | "inconsistent_media_facts"
   | "job_not_found"
@@ -133,7 +135,7 @@ export type MediaTransformRejectedReason =
   | "unsupported_container"
   | "video_track_present";
 
-export type MediaTransformMalformedReason =
+type MediaTransformMalformedReason =
   | "duplicate_results"
   | "malformed_json"
   | "response_too_large"
@@ -233,6 +235,7 @@ export type MediaTransformVideoFramesInput = Readonly<{
   readonly binding: MediaTransformVideoBinding;
   readonly source: MediaTransformVideoSource;
   readonly sourceDurationMs: number;
+  readonly sourceDimensions: Readonly<{ readonly width: number; readonly height: number }>;
   readonly posterTimestampMs: number;
   readonly posterPolicy: Readonly<{
     readonly version: "video-poster-policy-v1";
@@ -257,12 +260,12 @@ export type MediaTransformVideoProbe = Readonly<{
   readonly hasAudio: true;
 }>;
 
-export type MediaTransformVideoAudioArtifact = Readonly<{
+type MediaTransformVideoAudioArtifact = Readonly<{
   readonly artifactRef: string;
   readonly canonicalSha256: string;
   readonly sourceSha256: string;
   readonly videoRevision: number;
-  readonly mediaType: "audio/aac";
+  readonly mediaType: "audio/mp4";
   readonly policyRevision: string;
   readonly adapterRevision: string;
 }>;

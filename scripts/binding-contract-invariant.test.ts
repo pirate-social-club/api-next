@@ -181,6 +181,7 @@ const MEDIA_BINDING_KINDS = {
   ELEVENLABS_API_KEY: "secret",
   OPENAI_API_KEY: "secret",
   OPENROUTER_API_KEY: "secret",
+  QENCODE_API_KEY: "secret",
   DATA_REGISTRATION_ENABLED: "var",
   DATA_REGISTRATION_CHAIN_ID: "var",
 } as const satisfies BindingManifest<MediaProcessorRuntimeEnv>;

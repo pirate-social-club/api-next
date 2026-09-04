@@ -23555,8 +23555,8 @@ CREATE TABLE media_video_analysis_outbox (
     CONSTRAINT media_video_analysis_outbox_delivery_attempts_check CHECK (((delivery_attempts >= 0) AND (delivery_attempts <= 3))),
     CONSTRAINT media_video_analysis_outbox_effect_identity_check CHECK ((btrim(effect_identity) <> ''::text)),
     CONSTRAINT media_video_analysis_outbox_failure_code_check CHECK (((failure_code IS NULL) OR (failure_code = ANY (ARRAY['provider_unavailable'::text, 'provider_timeout'::text, 'provider_invalid'::text])))),
-    CONSTRAINT media_video_analysis_outbox_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'running'::text, 'delivered'::text, 'failed'::text, 'exhausted'::text]))),
-    CONSTRAINT media_video_analysis_outbox_state_shape CHECK ((((state = 'pending'::text) AND (delivery_attempts = 0) AND (claim_owner IS NULL) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NULL) AND (delivered_at IS NULL) AND (failure_code IS NULL)) OR ((state = 'running'::text) AND ((delivery_attempts >= 1) AND (delivery_attempts <= 3)) AND (claim_owner IS NOT NULL) AND (btrim(claim_owner) <> ''::text) AND (lease_expires_at IS NOT NULL) AND (next_eligible_at IS NULL) AND (delivered_at IS NULL) AND (failure_code IS NULL)) OR ((state = 'delivered'::text) AND ((delivery_attempts >= 1) AND (delivery_attempts <= 3)) AND (claim_owner IS NULL) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NULL) AND (delivered_at IS NOT NULL) AND (failure_code IS NULL)) OR ((state = 'failed'::text) AND ((delivery_attempts >= 1) AND (delivery_attempts <= 2)) AND (claim_owner IS NULL) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NOT NULL) AND (delivered_at IS NULL) AND (failure_code IS NOT NULL)) OR ((state = 'exhausted'::text) AND (delivery_attempts = 3) AND (claim_owner IS NULL) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NULL) AND (delivered_at IS NULL) AND (failure_code IS NOT NULL)))),
+    CONSTRAINT media_video_analysis_outbox_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'running'::text, 'poll_wait'::text, 'delivered'::text, 'failed'::text, 'exhausted'::text]))),
+    CONSTRAINT media_video_analysis_outbox_state_shape CHECK ((((state = 'pending'::text) AND (delivery_attempts = 0) AND (claim_owner IS NULL) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NULL) AND (delivered_at IS NULL) AND (failure_code IS NULL)) OR ((state = 'running'::text) AND ((delivery_attempts >= 1) AND (delivery_attempts <= 3)) AND (claim_owner IS NOT NULL) AND (btrim(claim_owner) <> ''::text) AND (lease_expires_at IS NOT NULL) AND (next_eligible_at IS NULL) AND (delivered_at IS NULL) AND (failure_code IS NULL)) OR ((state = 'poll_wait'::text) AND ((delivery_attempts >= 1) AND (delivery_attempts <= 3)) AND (claim_owner IS NULL) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NOT NULL) AND (delivered_at IS NULL) AND (failure_code IS NULL)) OR ((state = 'delivered'::text) AND ((delivery_attempts >= 1) AND (delivery_attempts <= 3)) AND (claim_owner IS NULL) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NULL) AND (delivered_at IS NOT NULL) AND (failure_code IS NULL)) OR ((state = 'failed'::text) AND ((delivery_attempts >= 1) AND (delivery_attempts <= 2)) AND (claim_owner IS NULL) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NOT NULL) AND (delivered_at IS NULL) AND (failure_code IS NOT NULL)) OR ((state = 'exhausted'::text) AND (delivery_attempts = 3) AND (claim_owner IS NULL) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NULL) AND (delivered_at IS NULL) AND (failure_code IS NOT NULL)))),
     CONSTRAINT media_video_analysis_outbox_video_revision_check CHECK ((video_revision > 0))
 );
 
@@ -23704,6 +23704,33 @@ CREATE TABLE media_video_stream_ingests (
     CONSTRAINT media_video_stream_ingests_operation_id_check CHECK ((btrim(operation_id) <> ''::text)),
     CONSTRAINT media_video_stream_ingests_source_sha256_check CHECK (((source_sha256 IS NULL) OR (source_sha256 ~ '^[0-9a-f]{64}$'::text))),
     CONSTRAINT media_video_stream_ingests_state_check CHECK ((state = ANY (ARRAY['not_started'::text, 'sending'::text, 'bound'::text, 'manual_review'::text])))
+);
+
+CREATE TABLE media_video_transform_attempts (
+    request_id text NOT NULL,
+    submission_id text NOT NULL,
+    operation_id text NOT NULL,
+    video_revision bigint NOT NULL,
+    analysis_revision bigint NOT NULL,
+    canonical_video_sha256 text NOT NULL,
+    capability text NOT NULL,
+    submitted_at_ms bigint NOT NULL,
+    runtime_deadline_ms bigint NOT NULL,
+    provider_job_id text,
+    provider_job_phase text,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT media_video_transform_attempt_deadline CHECK ((runtime_deadline_ms > submitted_at_ms)),
+    CONSTRAINT media_video_transform_attempt_provider_shape CHECK ((((provider_job_id IS NULL) AND (provider_job_phase IS NULL)) OR ((provider_job_id IS NOT NULL) AND (provider_job_phase IS NOT NULL)))),
+    CONSTRAINT media_video_transform_attempts_analysis_revision_check CHECK ((analysis_revision > 0)),
+    CONSTRAINT media_video_transform_attempts_canonical_video_sha256_check CHECK ((canonical_video_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT media_video_transform_attempts_capability_check CHECK ((capability = ANY (ARRAY['probe'::text, 'audio'::text, 'frames'::text]))),
+    CONSTRAINT media_video_transform_attempts_operation_id_check CHECK ((btrim(operation_id) <> ''::text)),
+    CONSTRAINT media_video_transform_attempts_provider_job_id_check CHECK (((provider_job_id IS NULL) OR (btrim(provider_job_id) <> ''::text))),
+    CONSTRAINT media_video_transform_attempts_provider_job_phase_check CHECK (((provider_job_phase IS NULL) OR (provider_job_phase = ANY (ARRAY['allocated'::text, 'started'::text])))),
+    CONSTRAINT media_video_transform_attempts_request_id_check CHECK ((btrim(request_id) <> ''::text)),
+    CONSTRAINT media_video_transform_attempts_submitted_at_ms_check CHECK ((submitted_at_ms >= 0)),
+    CONSTRAINT media_video_transform_attempts_video_revision_check CHECK ((video_revision > 0))
 );
 
 CREATE TABLE media_video_upload_parts (
@@ -27842,6 +27869,12 @@ ALTER TABLE ONLY media_video_rights
 ALTER TABLE ONLY media_video_stream_ingests
     ADD CONSTRAINT media_video_stream_ingests_pkey PRIMARY KEY (operation_id);
 
+ALTER TABLE ONLY media_video_transform_attempts
+    ADD CONSTRAINT media_video_transform_attempt_submission_id_video_revision__key UNIQUE (submission_id, video_revision, analysis_revision, capability);
+
+ALTER TABLE ONLY media_video_transform_attempts
+    ADD CONSTRAINT media_video_transform_attempts_pkey PRIMARY KEY (request_id);
+
 ALTER TABLE ONLY media_video_upload_parts
     ADD CONSTRAINT media_video_upload_parts_pkey PRIMARY KEY (reservation_id, part_number);
 
@@ -28863,7 +28896,7 @@ CREATE UNIQUE INDEX media_transcript_revision_lineage_uidx ON media_transcript_a
 
 CREATE INDEX media_upload_reservations_expiry_idx ON media_upload_reservations USING btree (state, expires_at, reservation_id) WHERE (state = ANY (ARRAY['issued'::text, 'claimed'::text]));
 
-CREATE INDEX media_video_analysis_outbox_eligible_idx ON media_video_analysis_outbox USING btree (created_at, effect_identity) WHERE ((state = ANY (ARRAY['pending'::text, 'running'::text, 'failed'::text])) AND (delivery_attempts < 3));
+CREATE INDEX media_video_analysis_outbox_eligible_idx ON media_video_analysis_outbox USING btree (created_at, effect_identity) WHERE (state = ANY (ARRAY['pending'::text, 'running'::text, 'poll_wait'::text, 'failed'::text]));
 
 CREATE INDEX megapot_drawing_observations_latest_idx ON megapot_drawing_observations USING btree (attestation_id, drawing_id, block_number DESC, observation_id);
 
@@ -31406,6 +31439,12 @@ ALTER TABLE ONLY media_video_revisions
 
 ALTER TABLE ONLY media_video_rights
     ADD CONSTRAINT media_video_rights_submission_id_fkey FOREIGN KEY (submission_id) REFERENCES media_post_submissions(submission_id);
+
+ALTER TABLE ONLY media_video_transform_attempts
+    ADD CONSTRAINT media_video_transform_attempt_submission_id_video_revision_fkey FOREIGN KEY (submission_id, video_revision) REFERENCES media_video_revisions(submission_id, video_revision);
+
+ALTER TABLE ONLY media_video_transform_attempts
+    ADD CONSTRAINT media_video_transform_attempts_submission_id_fkey FOREIGN KEY (submission_id) REFERENCES media_post_submissions(submission_id);
 
 ALTER TABLE ONLY media_video_upload_parts
     ADD CONSTRAINT media_video_upload_parts_reservation_id_fkey FOREIGN KEY (reservation_id) REFERENCES media_upload_reservations(reservation_id);

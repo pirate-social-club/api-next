@@ -139,7 +139,8 @@
           "ACRCLOUD_ACCESS_SECRET",
           "ELEVENLABS_API_KEY",
           "OPENAI_API_KEY",
-          "OPENROUTER_API_KEY"
+          "OPENROUTER_API_KEY",
+          "QENCODE_API_KEY"
         ]
       }
     },

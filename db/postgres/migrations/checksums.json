@@ -114,6 +114,6 @@
     "0111_community_creation_create_new_persona.sql": "9b4fb47d826ba7a8850c2d74221c362cf47d28949ecc6772b5c33f42c9cfcd94",
     "0112_community_membership_follow_invariant.sql": "b756fb8665016a1e093cb5f1a86c9f23ea48d56796193b7554f0154da0789941",
     "0113_account_community_membership_discovery.sql": "86e30ff9c9c4d5a6983edf61c2c7b5892ec8b2af630368c6d9f23dad81e02c92",
-    "0114_video_original_audio_publication.sql": "1cd1c35b24e82a8b49b7f9824dc520eff1908298f11e1f9251a7adffadb1fcc8"
+    "0114_video_original_audio_publication.sql": "f4d20f9dccdf2bae08d514751c4ad459c171032dff1ab4c246e403a9811e9d54"
   }
 }

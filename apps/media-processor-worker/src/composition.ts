@@ -27,6 +27,14 @@ import { makeOpenRouterClassifierAdapter } from "@pirate/platform-cf/media-provi
 import { disabledMediaTransform } from "@pirate/platform-cf/media-transform";
 import { makeOpenAiTextModerationProvider } from "@pirate/platform-cf/openai-text-moderation";
 import { makeHyperdriveControlPlaneLayer } from "@pirate/platform-cf/postgres";
+import {
+  makeQencodeMediaTransform,
+  makeQencodeTaskTransport,
+  makeR2QencodeArtifactStore,
+  type QencodeArtifactStore,
+  type QencodeSourceGrantIssuer,
+  type QencodeTaskTransport,
+} from "@pirate/platform-cf/qencode-media-transform";
 import { makeControlPlaneVideoAnalysisOutboxRepository } from "@pirate/platform-cf/video-analysis-outbox-repository";
 import { makeControlPlaneVideoPublicationStore } from "@pirate/platform-cf/video-publication-repository";
 import { Effect } from "effect";
@@ -49,6 +57,7 @@ export type MediaProcessorRuntimeEnv = MediaProcessorWorkerEnv &
     readonly ELEVENLABS_API_KEY?: string;
     readonly OPENAI_API_KEY?: string;
     readonly OPENROUTER_API_KEY?: string;
+    readonly QENCODE_API_KEY?: string;
     readonly DATA_REGISTRATION_ENABLED?: string;
     readonly DATA_REGISTRATION_CHAIN_ID?: string;
     readonly VIDEO_ANALYSIS_ENABLED?: string;
@@ -57,7 +66,12 @@ export type MediaProcessorRuntimeEnv = MediaProcessorWorkerEnv &
 export type MediaProcessorRuntimeAdapters = Readonly<{
   readonly videoAnalysis?: Readonly<{
     readonly providers: VideoAnalysisProviders;
-    readonly transform: MediaTransformVideoCapabilities;
+    readonly transform?: MediaTransformVideoCapabilities;
+    readonly qencode?: Readonly<{
+      readonly sourceGateway: QencodeSourceGrantIssuer;
+      readonly transport?: QencodeTaskTransport;
+      readonly artifacts?: QencodeArtifactStore;
+    }>;
   }>;
 }>;
 
@@ -279,6 +293,29 @@ function makeEnabledProviders(env: MediaProcessorRuntimeEnv): MediaProcessingPro
 
 const workflowIsNeverMissingByThrownError = (): boolean => false;
 
+function videoTransform(
+  env: MediaProcessorRuntimeEnv,
+  adapters: NonNullable<MediaProcessorRuntimeAdapters["videoAnalysis"]>,
+): MediaTransformVideoCapabilities {
+  if (adapters.transform !== undefined) return adapters.transform;
+  if (adapters.qencode === undefined) {
+    throw new Error("video analysis transform is required when video analysis is enabled");
+  }
+  const apiKey = requiredOperationalSecret(env.QENCODE_API_KEY, "QENCODE_API_KEY");
+  const artifacts =
+    adapters.qencode.artifacts ??
+    makeR2QencodeArtifactStore(
+      requiredBinding(env.MEDIA_DERIVED_ARTIFACTS, "MEDIA_DERIVED_ARTIFACTS"),
+    );
+  return makeQencodeMediaTransform({
+    enabled: true,
+    apiKey,
+    transport: adapters.qencode.transport ?? makeQencodeTaskTransport(),
+    sourceGateway: adapters.qencode.sourceGateway,
+    artifacts,
+  });
+}
+
 export function makeMediaProcessorComposition(
   env: MediaProcessorRuntimeEnv,
   adapters: MediaProcessorRuntimeAdapters = {},
@@ -309,19 +346,30 @@ export function makeMediaProcessorComposition(
   if (videoAnalysisEnabled && adapters.videoAnalysis === undefined) {
     throw new Error("video analysis providers are required when video analysis is enabled");
   }
+  const videoAnalysisRepository =
+    videoAnalysisEnabled && adapters.videoAnalysis !== undefined
+      ? makeControlPlaneVideoAnalysisOutboxRepository(runtime)
+      : undefined;
+  const enabledVideoTransform =
+    videoAnalysisEnabled && adapters.videoAnalysis !== undefined
+      ? videoTransform(env, adapters.videoAnalysis)
+      : undefined;
 
   return {
     queue: { store, workflow, workerId },
-    ...(videoAnalysisEnabled && adapters.videoAnalysis !== undefined
+    ...(videoAnalysisRepository !== undefined &&
+    enabledVideoTransform !== undefined &&
+    adapters.videoAnalysis !== undefined
       ? {
           videoAnalysis: {
-            outbox: makeControlPlaneVideoAnalysisOutboxRepository(runtime),
+            outbox: videoAnalysisRepository,
             runtime: {
               store: makeControlPlaneVideoPublicationStore(runtime),
               nowIso: () => new Date().toISOString(),
               randomUuid: () => crypto.randomUUID(),
               analysisProviders: adapters.videoAnalysis.providers,
-              transform: bindVideoPhysicalR2Keys(adapters.videoAnalysis.transform),
+              transform: bindVideoPhysicalR2Keys(enabledVideoTransform),
+              transformAttempts: videoAnalysisRepository,
             },
             workerId,
           },

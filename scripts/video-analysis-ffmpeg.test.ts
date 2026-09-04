@@ -159,7 +159,7 @@ describe("local pinned-FFmpeg video analysis engine", () => {
         version: "media-transform-video-audio-input-v1",
         binding: binding("audio"),
         source: transformSource(),
-        extractionPolicyVersion: "video-audio-aac-44100-stereo-v1",
+        extractionPolicyVersion: "video-audio-m4a-aac-44100-stereo-v1",
         attempt,
       }),
     );
@@ -170,6 +170,10 @@ describe("local pinned-FFmpeg video analysis engine", () => {
         binding: binding("frames"),
         source: transformSource(),
         sourceDurationMs: probeOutcome.probe.durationMs,
+        sourceDimensions: {
+          width: probeOutcome.probe.width,
+          height: probeOutcome.probe.height,
+        },
         posterTimestampMs: 1_500,
         posterPolicy: VIDEO_POSTER_POLICY_V1,
         attempt,
@@ -321,6 +325,7 @@ describe("local pinned-FFmpeg video analysis engine", () => {
         adapterRevision: "video-safety-fixture-v1",
       }),
     };
+    const transformAttempts = new Map<string, MediaTransformAttempt>();
     const runtime = {
       store: publicationStore,
       multipart: {},
@@ -334,6 +339,18 @@ describe("local pinned-FFmpeg video analysis engine", () => {
       randomUuid: () => "00000000-0000-4000-8000-000000000001",
       analysisProviders: providers,
       transform: engine,
+      transformAttempts: {
+        loadOrCreate: async ({ binding, initialAttempt }) => {
+          const existing = transformAttempts.get(binding.requestId);
+          if (existing !== undefined) return existing;
+          transformAttempts.set(binding.requestId, initialAttempt);
+          return initialAttempt;
+        },
+        advance: async ({ binding, attempt }) => {
+          transformAttempts.set(binding.requestId, attempt);
+          return attempt;
+        },
+      },
     } as unknown as VideoAnalysisRuntimeServices;
 
     let outbox: VideoAnalysisOutboxRecord = {
@@ -367,6 +384,10 @@ describe("local pinned-FFmpeg video analysis engine", () => {
           return false;
         }
         outbox = { ...outbox, state: "delivered", claimOwner: null };
+        return true;
+      },
+      defer: async () => {
+        outbox = { ...outbox, state: "poll_wait", claimOwner: null };
         return true;
       },
       fail: async () => {

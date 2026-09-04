@@ -1,4 +1,5 @@
 import { ControlPlaneDb, type ControlPlaneError } from "@pirate/application";
+import type { VideoTransformAttemptStore } from "@pirate/application/video/analysis";
 import type {
   VideoAnalysisOutboxRecord,
   VideoAnalysisOutboxStore,
@@ -27,7 +28,15 @@ const integer = (value: unknown): number | null => {
 export class VideoAnalysisOutboxRepositoryError extends Data.TaggedError(
   "VideoAnalysisOutboxRepositoryError",
 )<{
-  readonly operation: "get" | "list" | "claim" | "complete" | "fail";
+  readonly operation:
+    | "get"
+    | "list"
+    | "claim"
+    | "complete"
+    | "defer"
+    | "fail"
+    | "load-transform-attempt"
+    | "advance-transform-attempt";
   readonly reason: "invalid-input" | "invalid-row";
   readonly effectIdentity?: string;
 }> {}
@@ -36,7 +45,9 @@ export type VideoAnalysisOutboxRepositoryFailure =
   | VideoAnalysisOutboxRepositoryError
   | ControlPlaneError;
 
-export interface VideoAnalysisOutboxRepository extends VideoAnalysisOutboxStore {
+export interface VideoAnalysisOutboxRepository
+  extends VideoAnalysisOutboxStore,
+    VideoTransformAttemptStore {
   readonly listEligible: (limit: number) => Promise<readonly VideoAnalysisOutboxRecord[]>;
 }
 
@@ -77,7 +88,9 @@ function decode(
     creationRevision < 1 ||
     typeof row.canonical_video_sha256 !== "string" ||
     !sha256Pattern.test(row.canonical_video_sha256) ||
-    !["pending", "running", "delivered", "failed", "exhausted"].includes(String(state)) ||
+    !["pending", "running", "poll_wait", "delivered", "failed", "exhausted"].includes(
+      String(state),
+    ) ||
     deliveryAttempts === null ||
     deliveryAttempts < 0 ||
     deliveryAttempts > 3 ||
@@ -151,11 +164,12 @@ export function makeControlPlaneVideoAnalysisOutboxRepository(
         const result = yield* db.execute<Row>({
           label: "video-analysis-outbox.list-eligible",
           text: `SELECT * FROM media_video_analysis_outbox
-                  WHERE delivery_attempts < 3 AND (
-                    state='pending'
-                    OR (state='failed' AND next_eligible_at<=clock_timestamp())
-                    OR (state='running' AND lease_expires_at<=clock_timestamp())
-                  )
+                  WHERE (state='poll_wait' AND next_eligible_at<=clock_timestamp())
+                    OR (delivery_attempts < 3 AND (
+                      state='pending'
+                      OR (state='failed' AND next_eligible_at<=clock_timestamp())
+                      OR (state='running' AND lease_expires_at<=clock_timestamp())
+                    ))
                   ORDER BY created_at,effect_identity LIMIT $1`,
           values: [limit],
           readonly: true,
@@ -175,14 +189,18 @@ export function makeControlPlaneVideoAnalysisOutboxRepository(
         const result = yield* db.execute<Row>({
           label: "video-analysis-outbox.claim",
           text: `UPDATE media_video_analysis_outbox
-                    SET state='running',delivery_attempts=delivery_attempts+1,
+                    SET state='running',
+                        delivery_attempts=delivery_attempts+CASE WHEN state='poll_wait' THEN 0 ELSE 1 END,
                         claim_owner=$1,claim_fence=claim_fence+1,
                         lease_expires_at=clock_timestamp()+make_interval(secs=>$2),
                         next_eligible_at=NULL,failure_code=NULL,updated_at=clock_timestamp()
-                  WHERE effect_identity=$3 AND delivery_attempts < 3 AND (
-                    state='pending'
-                    OR (state='failed' AND next_eligible_at<=clock_timestamp())
-                    OR (state='running' AND lease_expires_at<=clock_timestamp())
+                  WHERE effect_identity=$3 AND (
+                    (state='poll_wait' AND next_eligible_at<=clock_timestamp())
+                    OR (delivery_attempts < 3 AND (
+                      state='pending'
+                      OR (state='failed' AND next_eligible_at<=clock_timestamp())
+                      OR (state='running' AND lease_expires_at<=clock_timestamp())
+                    ))
                   ) RETURNING *`,
           values: [workerId, leaseSeconds, effectIdentity],
           readonly: false,
@@ -219,6 +237,49 @@ export function makeControlPlaneVideoAnalysisOutboxRepository(
                     AND claim_owner=$7 AND claim_fence=$8
                     AND lease_expires_at>clock_timestamp()`,
           values: [
+            record.effectIdentity,
+            record.submissionId,
+            record.operationId,
+            record.videoRevision,
+            record.creationRevision,
+            record.canonicalVideoSha256,
+            record.claimOwner,
+            record.claimFence,
+          ],
+          readonly: false,
+        });
+        return result.rowCount === 1;
+      }),
+    );
+  };
+
+  const defer: VideoAnalysisOutboxStore["defer"] = (record, retryAfterSeconds) => {
+    if (
+      !validIdentifier(record.effectIdentity) ||
+      !validIdentifier(record.claimOwner) ||
+      record.claimFence < 1 ||
+      !Number.isSafeInteger(retryAfterSeconds) ||
+      retryAfterSeconds < 1 ||
+      retryAfterSeconds > 900
+    ) {
+      return Promise.reject(failure("defer", "invalid-input", record.effectIdentity));
+    }
+    return run(
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        const result = yield* db.execute({
+          label: "video-analysis-outbox.defer",
+          text: `UPDATE media_video_analysis_outbox
+                    SET state='poll_wait',claim_owner=NULL,lease_expires_at=NULL,
+                        next_eligible_at=clock_timestamp()+make_interval(secs=>$1),
+                        failure_code=NULL,updated_at=clock_timestamp()
+                  WHERE effect_identity=$2 AND submission_id=$3 AND operation_id=$4
+                    AND video_revision=$5 AND creation_revision=$6
+                    AND canonical_video_sha256=$7 AND state='running'
+                    AND claim_owner=$8 AND claim_fence=$9
+                    AND lease_expires_at>clock_timestamp()`,
+          values: [
+            retryAfterSeconds,
             record.effectIdentity,
             record.submissionId,
             record.operationId,
@@ -279,5 +340,160 @@ export function makeControlPlaneVideoAnalysisOutboxRepository(
     );
   };
 
-  return { get, listEligible, claim, complete, fail };
+  const loadOrCreate: VideoTransformAttemptStore["loadOrCreate"] = (input) => {
+    const fence = input.initialAttempt.runtimeFence;
+    if (
+      !validIdentifier(input.submissionId) ||
+      !validIdentifier(input.binding.requestId) ||
+      !validIdentifier(input.binding.operationId) ||
+      !sha256Pattern.test(input.binding.canonicalVideoSha256) ||
+      !Number.isSafeInteger(input.binding.videoRevision) ||
+      input.binding.videoRevision < 1 ||
+      !Number.isSafeInteger(input.binding.analysisRevision) ||
+      input.binding.analysisRevision < 1 ||
+      !["audio", "frames", "probe"].includes(input.capability) ||
+      !Number.isSafeInteger(fence.submittedAtMs) ||
+      !Number.isSafeInteger(fence.runtimeDeadlineMs) ||
+      fence.runtimeDeadlineMs <= fence.submittedAtMs ||
+      input.initialAttempt.providerJobId !== undefined ||
+      input.initialAttempt.providerJobPhase !== undefined
+    ) {
+      return Promise.reject(
+        failure("load-transform-attempt", "invalid-input", input.binding.requestId),
+      );
+    }
+    return run(
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        yield* db.execute({
+          label: "video-transform-attempt.insert",
+          text: `INSERT INTO media_video_transform_attempts
+                   (request_id,submission_id,operation_id,video_revision,analysis_revision,
+                    canonical_video_sha256,capability,submitted_at_ms,runtime_deadline_ms)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                 ON CONFLICT (request_id) DO NOTHING`,
+          values: [
+            input.binding.requestId,
+            input.submissionId,
+            input.binding.operationId,
+            input.binding.videoRevision,
+            input.binding.analysisRevision,
+            input.binding.canonicalVideoSha256,
+            input.capability,
+            fence.submittedAtMs,
+            fence.runtimeDeadlineMs,
+          ],
+          readonly: false,
+        });
+        const result = yield* db.execute<Row>({
+          label: "video-transform-attempt.load",
+          text: `SELECT submitted_at_ms,runtime_deadline_ms,provider_job_id,provider_job_phase
+                   FROM media_video_transform_attempts
+                  WHERE request_id=$1 AND submission_id=$2 AND operation_id=$3
+                    AND video_revision=$4 AND analysis_revision=$5
+                    AND canonical_video_sha256=$6 AND capability=$7`,
+          values: [
+            input.binding.requestId,
+            input.submissionId,
+            input.binding.operationId,
+            input.binding.videoRevision,
+            input.binding.analysisRevision,
+            input.binding.canonicalVideoSha256,
+            input.capability,
+          ],
+          readonly: true,
+        });
+        if (result.rows.length !== 1) {
+          return yield* Effect.fail(
+            failure("load-transform-attempt", "invalid-row", input.binding.requestId),
+          );
+        }
+        const row = result.rows[0] as Row;
+        const submittedAtMs = integer(row.submitted_at_ms);
+        const runtimeDeadlineMs = integer(row.runtime_deadline_ms);
+        if (
+          submittedAtMs === null ||
+          runtimeDeadlineMs === null ||
+          runtimeDeadlineMs <= submittedAtMs ||
+          (row.provider_job_id === null) !== (row.provider_job_phase === null) ||
+          (row.provider_job_id !== null && !validIdentifier(row.provider_job_id)) ||
+          (row.provider_job_phase !== null &&
+            row.provider_job_phase !== "allocated" &&
+            row.provider_job_phase !== "started")
+        ) {
+          return yield* Effect.fail(
+            failure("load-transform-attempt", "invalid-row", input.binding.requestId),
+          );
+        }
+        return {
+          version: "media-transform-attempt-v1" as const,
+          runtimeFence: { submittedAtMs, runtimeDeadlineMs },
+          ...(row.provider_job_id === null
+            ? {}
+            : {
+                providerJobId: row.provider_job_id as string,
+                providerJobPhase: row.provider_job_phase as "allocated" | "started",
+              }),
+        };
+      }),
+    );
+  };
+
+  const advance: VideoTransformAttemptStore["advance"] = (input) => {
+    if (
+      !validIdentifier(input.submissionId) ||
+      !validIdentifier(input.binding.requestId) ||
+      !validIdentifier(input.binding.operationId) ||
+      !validIdentifier(input.attempt.providerJobId) ||
+      (input.attempt.providerJobPhase !== "allocated" &&
+        input.attempt.providerJobPhase !== "started")
+    ) {
+      return Promise.reject(
+        failure("advance-transform-attempt", "invalid-input", input.binding.requestId),
+      );
+    }
+    return run(
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        const result = yield* db.execute<Row>({
+          label: "video-transform-attempt.advance",
+          text: `UPDATE media_video_transform_attempts
+                    SET provider_job_id=$1,provider_job_phase=$2,updated_at=clock_timestamp()
+                  WHERE request_id=$3 AND submission_id=$4 AND operation_id=$5
+                    AND video_revision=$6 AND analysis_revision=$7
+                    AND canonical_video_sha256=$8 AND capability=$9
+                    AND submitted_at_ms=$10 AND runtime_deadline_ms=$11
+                    AND (provider_job_id IS NULL OR (
+                      provider_job_id=$1 AND (
+                        provider_job_phase=$2 OR
+                        (provider_job_phase='allocated' AND $2='started')
+                      )
+                    ))
+                  RETURNING submitted_at_ms,runtime_deadline_ms,provider_job_id,provider_job_phase`,
+          values: [
+            input.attempt.providerJobId,
+            input.attempt.providerJobPhase,
+            input.binding.requestId,
+            input.submissionId,
+            input.binding.operationId,
+            input.binding.videoRevision,
+            input.binding.analysisRevision,
+            input.binding.canonicalVideoSha256,
+            input.capability,
+            input.attempt.runtimeFence.submittedAtMs,
+            input.attempt.runtimeFence.runtimeDeadlineMs,
+          ],
+          readonly: false,
+        });
+        if (result.rows.length !== 1) {
+          return yield* Effect.fail(
+            failure("advance-transform-attempt", "invalid-row", input.binding.requestId),
+          );
+        }
+        return input.attempt;
+      }),
+    );
+  };
+
+  return { get, listEligible, claim, complete, defer, fail, loadOrCreate, advance };
 }

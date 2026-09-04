@@ -376,7 +376,7 @@ CREATE TABLE media_video_analysis_outbox (
   video_revision BIGINT NOT NULL CHECK (video_revision > 0),
   creation_revision BIGINT NOT NULL CHECK (creation_revision > 0),
   canonical_video_sha256 TEXT NOT NULL CHECK (canonical_video_sha256 ~ '^[0-9a-f]{64}$'),
-  state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'running', 'delivered', 'failed', 'exhausted')),
+  state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'running', 'poll_wait', 'delivered', 'failed', 'exhausted')),
   delivery_attempts INTEGER NOT NULL DEFAULT 0 CHECK (delivery_attempts BETWEEN 0 AND 3),
   claim_owner TEXT,
   claim_fence BIGINT NOT NULL DEFAULT 0 CHECK (claim_fence >= 0),
@@ -397,6 +397,10 @@ CREATE TABLE media_video_analysis_outbox (
       AND claim_owner IS NOT NULL AND btrim(claim_owner) <> ''
       AND lease_expires_at IS NOT NULL AND next_eligible_at IS NULL
       AND delivered_at IS NULL AND failure_code IS NULL)
+    OR (state = 'poll_wait' AND delivery_attempts BETWEEN 1 AND 3
+      AND claim_owner IS NULL AND lease_expires_at IS NULL
+      AND next_eligible_at IS NOT NULL AND delivered_at IS NULL
+      AND failure_code IS NULL)
     OR (state = 'delivered' AND delivery_attempts BETWEEN 1 AND 3
       AND claim_owner IS NULL AND lease_expires_at IS NULL
       AND next_eligible_at IS NULL AND delivered_at IS NOT NULL
@@ -414,7 +418,31 @@ CREATE TABLE media_video_analysis_outbox (
 
 CREATE INDEX media_video_analysis_outbox_eligible_idx
   ON media_video_analysis_outbox (created_at, effect_identity)
-  WHERE state IN ('pending', 'running', 'failed') AND delivery_attempts < 3;
+  WHERE state IN ('pending', 'running', 'poll_wait', 'failed');
+
+CREATE TABLE media_video_transform_attempts (
+  request_id TEXT PRIMARY KEY CHECK (btrim(request_id) <> ''),
+  submission_id TEXT NOT NULL REFERENCES media_post_submissions (submission_id),
+  operation_id TEXT NOT NULL CHECK (btrim(operation_id) <> ''),
+  video_revision BIGINT NOT NULL CHECK (video_revision > 0),
+  analysis_revision BIGINT NOT NULL CHECK (analysis_revision > 0),
+  canonical_video_sha256 TEXT NOT NULL CHECK (canonical_video_sha256 ~ '^[0-9a-f]{64}$'),
+  capability TEXT NOT NULL CHECK (capability IN ('probe', 'audio', 'frames')),
+  submitted_at_ms BIGINT NOT NULL CHECK (submitted_at_ms >= 0),
+  runtime_deadline_ms BIGINT NOT NULL,
+  provider_job_id TEXT CHECK (provider_job_id IS NULL OR btrim(provider_job_id) <> ''),
+  provider_job_phase TEXT CHECK (provider_job_phase IS NULL OR provider_job_phase IN ('allocated', 'started')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  UNIQUE (submission_id, video_revision, analysis_revision, capability),
+  FOREIGN KEY (submission_id, video_revision)
+    REFERENCES media_video_revisions (submission_id, video_revision),
+  CONSTRAINT media_video_transform_attempt_deadline CHECK (runtime_deadline_ms > submitted_at_ms),
+  CONSTRAINT media_video_transform_attempt_provider_shape CHECK (
+    (provider_job_id IS NULL AND provider_job_phase IS NULL)
+    OR (provider_job_id IS NOT NULL AND provider_job_phase IS NOT NULL)
+  )
+);
 
 CREATE TABLE media_video_stream_ingests (
   operation_id TEXT PRIMARY KEY CHECK (btrim(operation_id) <> ''),

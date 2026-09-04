@@ -243,6 +243,78 @@ suite("video publication PostgreSQL", () => {
         retryBaseMs: 1,
         now: () => Date.parse("2026-09-04T00:00:00.000Z"),
       });
+      const transformBinding = {
+        operationId,
+        videoRevision: 1,
+        analysisRevision: 1,
+        canonicalVideoSha256: videoSha256,
+        requestId: `${operationId}:probe:v1:a1`,
+      } as const;
+      const initialTransformAttempt = {
+        version: "media-transform-attempt-v1",
+        runtimeFence: { submittedAtMs: 1_000, runtimeDeadlineMs: 1_801_000 },
+      } as const;
+      expect(
+        await analysisOutbox.loadOrCreate({
+          submissionId,
+          binding: transformBinding,
+          capability: "probe",
+          initialAttempt: initialTransformAttempt,
+        }),
+      ).toEqual(initialTransformAttempt);
+      const allocatedTransformAttempt = {
+        ...initialTransformAttempt,
+        providerJobId: "qencode-task-probe",
+        providerJobPhase: "allocated" as const,
+      };
+      expect(
+        await analysisOutbox.advance({
+          submissionId,
+          binding: transformBinding,
+          capability: "probe",
+          attempt: allocatedTransformAttempt,
+        }),
+      ).toEqual(allocatedTransformAttempt);
+      expect(
+        await analysisOutbox.advance({
+          submissionId,
+          binding: transformBinding,
+          capability: "probe",
+          attempt: allocatedTransformAttempt,
+        }),
+      ).toEqual(allocatedTransformAttempt);
+      const startedTransformAttempt = {
+        ...allocatedTransformAttempt,
+        providerJobPhase: "started" as const,
+      };
+      expect(
+        await analysisOutbox.advance({
+          submissionId,
+          binding: transformBinding,
+          capability: "probe",
+          attempt: startedTransformAttempt,
+        }),
+      ).toEqual(startedTransformAttempt);
+      await expect(
+        analysisOutbox.advance({
+          submissionId,
+          binding: transformBinding,
+          capability: "probe",
+          attempt: { ...startedTransformAttempt, providerJobId: "different-qencode-task" },
+        }),
+      ).rejects.toMatchObject({
+        _tag: "VideoAnalysisOutboxRepositoryError",
+        operation: "advance-transform-attempt",
+        reason: "invalid-row",
+      });
+      expect(
+        await analysisOutbox.loadOrCreate({
+          submissionId,
+          binding: transformBinding,
+          capability: "probe",
+          initialAttempt: initialTransformAttempt,
+        }),
+      ).toEqual(startedTransformAttempt);
       expect((await analysisOutbox.listEligible(10)).map((row) => row.effectIdentity)).toEqual([
         `video-analysis:${operationId}:v1:c1`,
       ]);
@@ -255,6 +327,24 @@ suite("video publication PostgreSQL", () => {
       expect(
         await analysisOutbox.claim(firstClaim.effectIdentity, "video-analysis-worker-2"),
       ).toBeNull();
+      expect(await analysisOutbox.defer(firstClaim, 1)).toBe(true);
+      await admin.query(
+        `UPDATE media_video_analysis_outbox
+            SET next_eligible_at=clock_timestamp()-interval '1 second'
+          WHERE effect_identity=$1`,
+        [firstClaim.effectIdentity],
+      );
+      const polledClaim = await analysisOutbox.claim(
+        firstClaim.effectIdentity,
+        "video-analysis-worker-2",
+      );
+      if (polledClaim === null) throw new Error("deferred video analysis was not reclaimed");
+      expect(polledClaim).toMatchObject({
+        state: "running",
+        deliveryAttempts: 1,
+        claimFence: 2,
+        claimOwner: "video-analysis-worker-2",
+      });
       await admin.query(
         `UPDATE media_video_analysis_outbox
             SET lease_expires_at=clock_timestamp()-interval '1 second'
@@ -273,7 +363,7 @@ suite("video publication PostgreSQL", () => {
       expect(recoveredClaim).toMatchObject({
         state: "running",
         deliveryAttempts: 2,
-        claimFence: 2,
+        claimFence: 3,
         claimOwner: "video-analysis-worker-2",
       });
       expect(await analysisOutbox.complete(firstClaim)).toBe(false);

@@ -13,8 +13,10 @@ import type {
 import type { PersonaRecord } from "../use-cases/personas.ts";
 import {
   runOriginalVideoAnalysis,
+  VideoAnalysisPending,
   type VideoAnalysisProviders,
   type VideoAnalysisRuntimeServices,
+  type VideoTransformAttemptStore,
 } from "./analysis.ts";
 import type { VideoPublicationStore, VideoSubmissionRecord } from "./publication.ts";
 
@@ -164,7 +166,7 @@ function transform(
           canonicalSha256: HASHES[1] as string,
           sourceSha256: input.source.sha256,
           videoRevision: input.binding.videoRevision,
-          mediaType: "audio/aac",
+          mediaType: "audio/mp4",
           policyRevision: input.extractionPolicyVersion,
           adapterRevision: "extract-audio-fixture",
         },
@@ -198,6 +200,7 @@ function transform(
 function services(input: {
   providers: VideoAnalysisProviders;
   transform?: MediaTransformVideoCapabilities;
+  transformAttempts?: VideoTransformAttemptStore;
   onDecision?: (state: VideoSubmissionState) => void;
   onFailure?: (code: string) => void;
 }): VideoAnalysisRuntimeServices {
@@ -248,10 +251,51 @@ function services(input: {
     randomUuid: () => "00000000-0000-4000-8000-000000000001",
     analysisProviders: input.providers,
     transform: input.transform ?? transform(),
+    transformAttempts: input.transformAttempts ?? {
+      loadOrCreate: async ({ initialAttempt }) => initialAttempt,
+      advance: async ({ attempt }) => attempt,
+    },
   };
 }
 
 describe("original-video trusted analysis runtime", () => {
+  test("persists provider progress and defers without recording a technical failure", async () => {
+    let advanced = 0;
+    let failures = 0;
+    const pendingTransform = transform({
+      probe: (input) =>
+        Effect.succeed({
+          status: "submitted",
+          attempt: {
+            ...input.attempt,
+            providerJobId: "b".repeat(32),
+            providerJobPhase: "allocated",
+          },
+        }),
+    });
+    const runtime = services({
+      providers: providers(),
+      transform: pendingTransform,
+      transformAttempts: {
+        loadOrCreate: async ({ initialAttempt }) => initialAttempt,
+        advance: async ({ attempt }) => {
+          advanced += 1;
+          return attempt;
+        },
+      },
+      onFailure: () => failures++,
+    });
+
+    await expect(
+      runOriginalVideoAnalysis(
+        { submissionId: "video-analysis-submission", operationId: "video-analysis-operation" },
+        runtime,
+      ),
+    ).rejects.toBeInstanceOf(VideoAnalysisPending);
+    expect(advanced).toBe(1);
+    expect(failures).toBe(0);
+  });
+
   test("uses the persisted poster timestamp and publishes one closed trusted bundle", async () => {
     const decisions: VideoSubmissionState[] = [];
     const result = await runOriginalVideoAnalysis(

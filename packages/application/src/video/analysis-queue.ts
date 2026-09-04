@@ -1,5 +1,9 @@
 import { processingQueueRetryDelaySeconds } from "../processing-queue-primitives.ts";
-import { runOriginalVideoAnalysis, type VideoAnalysisRuntimeServices } from "./analysis.ts";
+import {
+  runOriginalVideoAnalysis,
+  VideoAnalysisPending,
+  type VideoAnalysisRuntimeServices,
+} from "./analysis.ts";
 
 const identifierPattern = /^\S(?:.*\S)?$/u;
 
@@ -38,7 +42,7 @@ export type VideoAnalysisOutboxRecord = Readonly<{
   readonly videoRevision: number;
   readonly creationRevision: number;
   readonly canonicalVideoSha256: string;
-  readonly state: "pending" | "running" | "delivered" | "failed" | "exhausted";
+  readonly state: "pending" | "running" | "poll_wait" | "delivered" | "failed" | "exhausted";
   readonly deliveryAttempts: number;
   readonly claimOwner: string | null;
   readonly claimFence: number;
@@ -51,6 +55,10 @@ export interface VideoAnalysisOutboxStore {
     workerId: string,
   ) => Promise<VideoAnalysisOutboxRecord | null>;
   readonly complete: (record: VideoAnalysisOutboxRecord) => Promise<boolean>;
+  readonly defer: (
+    record: VideoAnalysisOutboxRecord,
+    retryAfterSeconds: number,
+  ) => Promise<boolean>;
   readonly fail: (
     record: VideoAnalysisOutboxRecord,
     failure: "provider_unavailable" | "provider_timeout" | "provider_invalid",
@@ -123,7 +131,10 @@ export async function consumeVideoAnalysisQueueMessage(
     observe(dependencies, "queue_ack", existing);
     return { disposition: "ack" };
   }
-  if (existing.state === "exhausted" || existing.deliveryAttempts >= 3) {
+  if (
+    existing.state === "exhausted" ||
+    (existing.deliveryAttempts >= 3 && existing.state !== "poll_wait")
+  ) {
     observe(dependencies, "queue_dlq", existing);
     return { disposition: "dlq" };
   }
@@ -162,7 +173,13 @@ export async function consumeVideoAnalysisQueueMessage(
     observe(dependencies, "analysis_completed", claimed);
     observe(dependencies, "queue_ack", claimed);
     return { disposition: "ack" };
-  } catch {
+  } catch (error) {
+    if (error instanceof VideoAnalysisPending) {
+      const deferred = await dependencies.outbox.defer(claimed, error.retryAfterSeconds);
+      if (!deferred) return { disposition: "retry", delaySeconds: retryDelay(claimed) };
+      observe(dependencies, "queue_retry", claimed);
+      return { disposition: "retry", delaySeconds: error.retryAfterSeconds };
+    }
     const failed = await dependencies.outbox.fail(claimed, "provider_unavailable");
     if (!failed || claimed.deliveryAttempts >= 3) {
       observe(dependencies, "queue_dlq", claimed);

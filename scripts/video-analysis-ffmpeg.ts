@@ -42,7 +42,7 @@ export interface LocalVideoArtifactWriter {
     input: Readonly<{
       artifactKey: string;
       bytes: Uint8Array;
-      mediaType: "audio/aac" | "image/jpeg";
+      mediaType: "audio/mp4" | "image/jpeg";
       canonicalSha256: string;
     }>,
   ) => Promise<Readonly<{ artifactRef: string }>>;
@@ -314,7 +314,7 @@ export function makeLocalPinnedFfmpegVideoAnalysisEngine(
         ? Effect.fail(new MediaTransformRequestInvalid({ reason: "invalid_video_policy" }))
         : Effect.promise(() =>
             withSource(input.source, async (inputPath, _bytes, directory) => {
-              const outputPath = join(directory, "soundtrack.aac");
+              const outputPath = join(directory, "soundtrack.m4a");
               await runTool(
                 [
                   ffmpeg,
@@ -328,9 +328,15 @@ export function makeLocalPinnedFfmpegVideoAnalysisEngine(
                   "0:a:0",
                   "-vn",
                   "-c:a",
-                  "copy",
+                  "aac",
+                  "-b:a",
+                  "192k",
+                  "-ar",
+                  "44100",
+                  "-ac",
+                  "2",
                   "-f",
-                  "adts",
+                  "ipod",
                   outputPath,
                 ],
                 timeoutMs,
@@ -338,9 +344,9 @@ export function makeLocalPinnedFfmpegVideoAnalysisEngine(
               const bytes = new Uint8Array(await readFile(outputPath));
               const canonicalSha256 = await mediaSha256Bytes(bytes);
               const stored = await options.artifactWriter.write({
-                artifactKey: `video/${input.source.sha256}/v${input.binding.videoRevision}/soundtrack.aac`,
+                artifactKey: `video/${input.source.sha256}/v${input.binding.videoRevision}/soundtrack.m4a`,
                 bytes,
-                mediaType: "audio/aac",
+                mediaType: "audio/mp4",
                 canonicalSha256,
               });
               if (!validIdentifier(stored.artifactRef))
@@ -350,7 +356,7 @@ export function makeLocalPinnedFfmpegVideoAnalysisEngine(
                 canonicalSha256,
                 sourceSha256: input.source.sha256,
                 videoRevision: input.binding.videoRevision,
-                mediaType: "audio/aac" as const,
+                mediaType: "audio/mp4" as const,
                 policyRevision: input.extractionPolicyVersion,
                 adapterRevision: LOCAL_VIDEO_FFMPEG_REVISION,
               };

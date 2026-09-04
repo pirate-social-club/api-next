@@ -27,6 +27,9 @@ const disabledEnv = (): MediaProcessorRuntimeEnv => ({
   get OPENROUTER_API_KEY(): string {
     throw new Error("disabled composition read a provider secret");
   },
+  get QENCODE_API_KEY(): string {
+    throw new Error("disabled composition read a provider secret");
+  },
 });
 
 describe("media processor composition", () => {
@@ -48,6 +51,57 @@ describe("media processor composition", () => {
         VIDEO_ANALYSIS_ENABLED: "true",
       }),
     ).toThrow("video analysis providers are required");
+  });
+
+  test("refuses the Qencode provisioning sentinel before provider work", () => {
+    const base = disabledEnv();
+    const providers = {} as VideoAnalysisProviders;
+    expect(() =>
+      makeMediaProcessorComposition(
+        {
+          MEDIA_PROCESSING_ENABLED: base.MEDIA_PROCESSING_ENABLED as string,
+          CONTROL_PLANE: base.CONTROL_PLANE as NonNullable<
+            MediaProcessorRuntimeEnv["CONTROL_PLANE"]
+          >,
+          MEDIA_PROCESSING_WORKFLOW: base.MEDIA_PROCESSING_WORKFLOW as NonNullable<
+            MediaProcessorRuntimeEnv["MEDIA_PROCESSING_WORKFLOW"]
+          >,
+          VIDEO_ANALYSIS_ENABLED: "true",
+          QENCODE_API_KEY: "PENDING",
+        },
+        {
+          videoAnalysis: {
+            providers,
+            qencode: {
+              sourceGateway: {
+                issue: async () => {
+                  throw new Error("provider gateway must not run");
+                },
+              },
+              transport: {
+                createTask: async () => {
+                  throw new Error("provider transport must not run");
+                },
+                startTask: async () => {
+                  throw new Error("provider transport must not run");
+                },
+                getStatus: async () => {
+                  throw new Error("provider transport must not run");
+                },
+              },
+              artifacts: {
+                readJson: async () => {
+                  throw new Error("provider artifacts must not run");
+                },
+                seal: async () => {
+                  throw new Error("provider artifacts must not run");
+                },
+              },
+            },
+          },
+        },
+      ),
+    ).toThrow("QENCODE_API_KEY is pending provisioning");
   });
 
   test("composes the video consumer through the same transform port and maps its sealed key", async () => {

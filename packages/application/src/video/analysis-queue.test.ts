@@ -61,6 +61,10 @@ describe("video analysis Queue ingress", () => {
         calls.push("complete");
         return true;
       },
+      defer: async () => {
+        calls.push("defer");
+        return true;
+      },
       fail: async () => {
         calls.push("fail");
         return true;
