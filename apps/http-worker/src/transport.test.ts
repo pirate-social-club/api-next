@@ -576,6 +576,32 @@ describe("contracts-generated HTTP worker", () => {
     expect(response.headers.get("cache-control")).toBe("no-store");
   });
 
+  it("keeps account community membership discovery behind user authentication", async () => {
+    let handlerCalls = 0;
+    const response = await createHttpWorker({
+      handlers: {
+        ListMyCommunityMemberships: () => {
+          handlerCalls += 1;
+          return {
+            object: "account_community_membership_page",
+            items: [],
+            next_cursor: null,
+          };
+        },
+      },
+      authenticate: ({ credentials }) => ({
+        kind: "user",
+        subject: credentials.authorization ?? "",
+      }),
+      authorize: () => undefined,
+    }).request("http://worker.test/users/me/community-memberships?limit=not-a-number");
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toMatchObject({ error: { code: "auth_error" } });
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(handlerCalls).toBe(0);
+  });
+
   it("rejects blank credentials before decoding and without invoking authentication", async () => {
     let authenticated = false;
     const app = createHttpWorker({

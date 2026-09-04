@@ -96,6 +96,12 @@ function stores(
 } {
   return {
     communityStore: {
+      listAccountMemberships: () =>
+        Effect.succeed({
+          object: "account_community_membership_page",
+          items: [],
+          next_cursor: null,
+        }),
       membershipStatus: () => Effect.succeed("missing" as const),
       getPreview: ({ communityId }) => Effect.succeed(preview(communityId)),
       getJoinEligibility: ({ communityId }) => Effect.succeed(eligibility(communityId)),
@@ -224,6 +230,7 @@ describe("HTTP product handlers", () => {
   test("maps decoded community path, query, principal, and default join body", async () => {
     const observed: {
       preview: unknown[];
+      memberships?: unknown;
       eligibility?: unknown;
       join?: unknown;
       follow?: unknown;
@@ -231,6 +238,14 @@ describe("HTTP product handlers", () => {
     } = { preview: [] };
     const services = stores({
       community: {
+        listAccountMemberships: (input) => {
+          observed.memberships = input;
+          return Effect.succeed({
+            object: "account_community_membership_page",
+            items: [],
+            next_cursor: null,
+          });
+        },
         getPreview: (input) => {
           observed.preview.push(input);
           return Effect.succeed(preview(input.communityId));
@@ -279,6 +294,9 @@ describe("HTTP product handlers", () => {
       body: {},
     });
 
+    await handlers.ListMyCommunityMemberships(
+      request({ query: { cursor: "opaque", limit: "25" }, principal }),
+    );
     await handlers.GetCommunityPreview(request({ query: { locale: "ka" }, principal }));
     await handlers.GetJoinEligibility(request({ principal }));
     await handlers.JoinCommunity(request({ principal, body: { persona: { kind: "create_new" } } }));
@@ -289,6 +307,10 @@ describe("HTTP product handlers", () => {
       communityId: "community-a",
       locale: "ka",
       viewerUserId: "admin-a",
+    });
+    expect(observed.memberships).toEqual({
+      userId: "admin-a",
+      query: { cursor: "opaque", limit: "25" },
     });
     expect(observed.preview.slice(1)).toEqual([
       { communityId: "community-a", viewerUserId: "admin-a" },
@@ -604,6 +626,7 @@ describe("HTTP product handlers", () => {
   test("rejects device and agent principals for every community operation", async () => {
     const handlers = makeProductHandlers(stores());
     const requests = [
+      handlers.ListMyCommunityMemberships,
       handlers.GetCommunityPreview,
       handlers.GetJoinEligibility,
       handlers.JoinCommunity,
@@ -625,6 +648,9 @@ describe("HTTP product handlers", () => {
     await expect(handlers.GetPost(request({ principal: null }))).rejects.toMatchObject({
       code: "auth_error",
     });
+    await expect(
+      handlers.ListMyCommunityMemberships(request({ principal: null })),
+    ).rejects.toMatchObject({ code: "auth_error" });
   });
 
   test("fails closed for null, device, and delegated-agent current-user principals", async () => {

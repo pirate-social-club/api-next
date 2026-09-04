@@ -1,4 +1,5 @@
 import {
+  type AccountCommunityMembershipPage,
   type CommunityPreviewDocument,
   CommunityRepositoryError,
   type CommunityRepositoryFailure,
@@ -13,6 +14,7 @@ import {
   type MembershipStatus,
   type UnfollowDocument,
 } from "@pirate/application";
+import { decodeCommunityCanonicalRouteV2 } from "@pirate/contracts";
 import { Effect, type Layer } from "effect";
 import {
   CommunityJoinIntentDataInvalid,
@@ -49,6 +51,22 @@ type MembershipRow = {
   readonly request_note?: unknown;
 };
 
+type AccountCommunityMembershipRow = {
+  readonly community_id: unknown;
+  readonly display_name: unknown;
+  readonly route_authority_version: unknown;
+  readonly membership_status: unknown;
+  readonly membership_created_at: unknown;
+  readonly cursor_as_of: unknown;
+  readonly cursor_created_at: unknown;
+  readonly route_family: unknown;
+  readonly route_root_label: unknown;
+  readonly route_root_label_display: unknown;
+  readonly route_path_segment: unknown;
+  readonly route_href: unknown;
+  readonly route_app_host: unknown;
+};
+
 type JoinCommunityRow = {
   readonly community_id: unknown;
   readonly membership_mode: unknown;
@@ -63,8 +81,18 @@ const validId = (value: string): boolean =>
   value.length > 0 && value === value.trim() && !value.includes("\u0000");
 
 const invalid = (
-  operation: "membership" | "preview" | "eligibility" | "join" | "follow" | "unfollow",
+  operation:
+    | "membership"
+    | "list-memberships"
+    | "preview"
+    | "eligibility"
+    | "join"
+    | "follow"
+    | "unfollow",
 ) => new CommunityRepositoryError({ operation, reason: "invalid-row" });
+
+const invalidCursor = () =>
+  new CommunityRepositoryError({ operation: "list-memberships", reason: "invalid-cursor" });
 
 const asString = (value: unknown): string | null => (typeof value === "string" ? value : null);
 
@@ -134,6 +162,162 @@ const viewerMembershipStatus = (value: unknown): "member" | "not_member" | "bann
 
 const generatedId = (kind: "membership" | "follow" | "persona"): string =>
   `${kind}_${globalThis.crypto.randomUUID()}`;
+
+const ACCOUNT_MEMBERSHIP_CURSOR_PREFIX = "acm1.";
+const POSTGRES_TIMESTAMP_PATTERN = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\.(\d{6})Z$/u;
+
+type AccountMembershipCursor = Readonly<{
+  readonly version: 1;
+  readonly accountBinding: string;
+  readonly asOf: string;
+  readonly createdAt: string;
+  readonly communityId: string;
+}>;
+
+const accountCursorBinding = (userId: string): Effect.Effect<string> =>
+  Effect.promise(async () =>
+    Array.from(
+      new Uint8Array(
+        await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`acm1\u0000${userId}`)),
+      ),
+      (byte) => byte.toString(16).padStart(2, "0"),
+    ).join(""),
+  );
+
+const exactPostgresTimestamp = (value: unknown): string | null => {
+  if (typeof value !== "string") return null;
+  const match = POSTGRES_TIMESTAMP_PATTERN.exec(value);
+  if (match === null) return null;
+  const millisecondPrefix = `${match[1]}.${match[2]?.slice(0, 3)}Z`;
+  return Number.isFinite(Date.parse(millisecondPrefix)) ? value : null;
+};
+
+const base64UrlEncode = (value: string): string => {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/gu, "-").replace(/\//gu, "_").replace(/=+$/u, "");
+};
+
+const base64UrlDecode = (value: string): string => {
+  const padding = value.length % 4 === 0 ? "" : "=".repeat(4 - (value.length % 4));
+  const binary = atob(value.replace(/-/gu, "+").replace(/_/gu, "/") + padding);
+  return new TextDecoder("utf-8", { fatal: true }).decode(
+    Uint8Array.from(binary, (character) => character.charCodeAt(0)),
+  );
+};
+
+const encodeAccountMembershipCursor = (cursor: AccountMembershipCursor): string =>
+  `${ACCOUNT_MEMBERSHIP_CURSOR_PREFIX}${base64UrlEncode(
+    JSON.stringify({
+      v: cursor.version,
+      u: cursor.accountBinding,
+      a: cursor.asOf,
+      t: cursor.createdAt,
+      c: cursor.communityId,
+    }),
+  )}`;
+
+const decodeAccountMembershipCursor = (
+  value: string | undefined,
+  expectedAccountBinding: string,
+): AccountMembershipCursor | null => {
+  if (value === undefined) return null;
+  if (value.length > 1_024 || !value.startsWith(ACCOUNT_MEMBERSHIP_CURSOR_PREFIX)) {
+    throw invalidCursor();
+  }
+  try {
+    const parsed: unknown = JSON.parse(
+      base64UrlDecode(value.slice(ACCOUNT_MEMBERSHIP_CURSOR_PREFIX.length)),
+    );
+    if (typeof parsed !== "object" || parsed === null) throw invalidCursor();
+    const record = parsed as Record<string, unknown>;
+    const asOf = exactPostgresTimestamp(record.a);
+    const createdAt = exactPostgresTimestamp(record.t);
+    if (
+      record.v !== 1 ||
+      record.u !== expectedAccountBinding ||
+      asOf === null ||
+      createdAt === null ||
+      createdAt > asOf ||
+      typeof record.c !== "string" ||
+      !validId(record.c)
+    ) {
+      throw invalidCursor();
+    }
+    return {
+      version: 1,
+      accountBinding: expectedAccountBinding,
+      asOf,
+      createdAt,
+      communityId: record.c,
+    };
+  } catch (error) {
+    if (error instanceof CommunityRepositoryError) throw error;
+    throw invalidCursor();
+  }
+};
+
+const accountMembershipsStatement = (
+  userId: string,
+  cursor: AccountMembershipCursor | null,
+  limit: number,
+) =>
+  ({
+    label: "community.memberships.list-account",
+    text: `WITH db_clock AS MATERIALIZED (
+           SELECT COALESCE($2::timestamptz, clock_timestamp()) AS now
+         )
+         SELECT community.community_id,
+                community.display_name,
+                community.route_authority_version,
+                membership.status AS membership_status,
+                membership.created_at AS membership_created_at,
+                to_char(db_clock.now AT TIME ZONE 'UTC',
+                        'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_as_of,
+                to_char(membership.created_at AT TIME ZONE 'UTC',
+                        'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_created_at,
+                route.family AS route_family,
+                route.root_label AS route_root_label,
+                route.root_label_display AS route_root_label_display,
+                route.public_path_segment AS route_path_segment,
+                route.public_href AS route_href,
+                CASE
+                  WHEN route.family = 'hns' AND health.health_status = 'healthy'
+                    THEN 'app.' || route.root_label
+                  ELSE NULL
+                END AS route_app_host
+           FROM db_clock
+           JOIN community_memberships AS membership
+             ON membership.user_id = $1
+            AND membership.status = 'member'
+            AND membership.created_at <= db_clock.now
+           JOIN communities AS community
+             ON community.community_id = membership.community_id
+            AND community.status = 'active'
+           LEFT JOIN LATERAL effective_public_community_route_v2(
+             community.community_id,
+             db_clock.now
+           ) AS route ON TRUE
+           LEFT JOIN community_route_app_host_health AS health
+             ON health.route_binding_id = route.route_binding_id
+            AND health.family = 'hns'
+            AND health.health_generation = route.binding_generation
+          WHERE ($3::timestamptz IS NULL
+            OR membership.created_at > $3::timestamptz
+            OR (membership.created_at = $3::timestamptz
+                AND community.community_id COLLATE "C" > $4::text COLLATE "C"))
+          ORDER BY membership.created_at ASC, community.community_id COLLATE "C" ASC
+          LIMIT $5`,
+    values: [
+      userId,
+      cursor?.asOf ?? null,
+      cursor?.createdAt ?? null,
+      cursor?.communityId ?? null,
+      limit + 1,
+    ],
+    readonly: true,
+  }) as const;
 
 type JoinTransactionOutcome =
   | { readonly kind: "joined"; readonly document: JoinDocument }
@@ -350,6 +534,9 @@ const communityLookup = (communityId: string, viewerUserId?: string) => ({
 
 interface CommunityRepository {
   /** Internal methods retain their database requirement until the wrapper provisions it. */
+  readonly listAccountMemberships: (
+    input: Parameters<CommunityStoreService["listAccountMemberships"]>[0],
+  ) => Effect.Effect<AccountCommunityMembershipPage, CommunityRepositoryFailure, ControlPlaneDb>;
   readonly membershipStatus: (
     input: Parameters<CommunityStoreService["membershipStatus"]>[0],
   ) => Effect.Effect<MembershipStatus, CommunityRepositoryFailure, ControlPlaneDb>;
@@ -378,6 +565,102 @@ interface CommunityRepository {
  * tenant-scoped by community_id.
  */
 export function makeControlPlaneCommunityRepository(): CommunityRepository {
+  const listAccountMemberships: CommunityRepository["listAccountMemberships"] = (input) =>
+    Effect.gen(function* () {
+      if (!validId(input.userId)) return yield* Effect.fail(invalid("list-memberships"));
+      const limit = input.query.limit === undefined ? 50 : Number(input.query.limit);
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+        return yield* Effect.fail(invalidCursor());
+      }
+      const accountBinding = yield* accountCursorBinding(input.userId);
+      let cursor: AccountMembershipCursor | null;
+      try {
+        cursor = decodeAccountMembershipCursor(input.query.cursor, accountBinding);
+      } catch (error) {
+        return yield* Effect.fail(
+          error instanceof CommunityRepositoryError ? error : invalidCursor(),
+        );
+      }
+
+      const db = yield* ControlPlaneDb;
+      const result = yield* db.execute<AccountCommunityMembershipRow>(
+        accountMembershipsStatement(input.userId, cursor, limit),
+      );
+      const pageRows = result.rows.slice(0, limit);
+      const items: AccountCommunityMembershipPage["items"][number][] = [];
+      let pageAsOf: string | null = null;
+      let lastCursor: AccountMembershipCursor | null = null;
+      for (const membership of pageRows) {
+        const communityId = asPersistedId(membership.community_id);
+        const displayName = asString(membership.display_name);
+        const routeAuthorityVersion = asString(membership.route_authority_version);
+        const createdAt = exactPostgresTimestamp(membership.cursor_created_at);
+        const asOf = exactPostgresTimestamp(membership.cursor_as_of);
+        if (
+          communityId === null ||
+          displayName === null ||
+          displayName.length === 0 ||
+          displayName.includes("\u0000") ||
+          (routeAuthorityVersion !== "legacy_slug_v1" &&
+            routeAuthorityVersion !== "route_v1" &&
+            routeAuthorityVersion !== "optional_route_v2") ||
+          membership.membership_status !== "member" ||
+          createdAt === null ||
+          asOf === null ||
+          createdAt > asOf ||
+          (pageAsOf !== null && pageAsOf !== asOf)
+        ) {
+          return yield* Effect.fail(invalid("list-memberships"));
+        }
+        pageAsOf = asOf;
+        lastCursor = { version: 1, accountBinding, asOf, createdAt, communityId };
+
+        let canonicalRoute: AccountCommunityMembershipPage["items"][number]["canonical_route"] =
+          null;
+        if (membership.route_path_segment !== null) {
+          try {
+            canonicalRoute = decodeCommunityCanonicalRouteV2({
+              family: membership.route_family,
+              root_label: membership.route_root_label,
+              root_label_display: membership.route_root_label_display,
+              path_segment: membership.route_path_segment,
+              href: membership.route_href,
+              app_host: membership.route_app_host,
+            });
+          } catch {
+            return yield* Effect.fail(invalid("list-memberships"));
+          }
+        } else if (
+          membership.route_family !== null ||
+          membership.route_root_label !== null ||
+          membership.route_root_label_display !== null ||
+          membership.route_href !== null ||
+          membership.route_app_host !== null
+        ) {
+          return yield* Effect.fail(invalid("list-memberships"));
+        }
+
+        items.push({
+          object: "account_community_membership",
+          community_id: communityId,
+          display_name: displayName,
+          resource_href: routeAuthorityVersion === "optional_route_v2" ? `/c/${communityId}` : null,
+          canonical_route: canonicalRoute,
+          membership_status: "member",
+          can_post: true,
+        });
+      }
+
+      const nextCursor =
+        result.rows.length > limit && lastCursor !== null
+          ? encodeAccountMembershipCursor(lastCursor)
+          : null;
+      if (nextCursor !== null && nextCursor.length > 1_024) {
+        return yield* Effect.fail(invalid("list-memberships"));
+      }
+      return { object: "account_community_membership_page", items, next_cursor: nextCursor };
+    });
+
   const membershipStatus: CommunityRepository["membershipStatus"] = (input) =>
     Effect.gen(function* () {
       if (!validId(input.communityId) || !validId(input.userId)) {
@@ -1147,7 +1430,15 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
       );
     });
 
-  return { membershipStatus, getPreview, getJoinEligibility, join, follow, unfollow };
+  return {
+    listAccountMemberships,
+    membershipStatus,
+    getPreview,
+    getJoinEligibility,
+    join,
+    follow,
+    unfollow,
+  };
 }
 
 /** Bind the repository's ControlPlaneDb requirement to a request-scoped Layer. */
@@ -1158,6 +1449,7 @@ export function makeControlPlaneCommunityStore(
   const provide = <A, E>(effect: Effect.Effect<A, E, ControlPlaneDb>) =>
     Effect.provide(runtime)(effect);
   return {
+    listAccountMemberships: (input) => provide(repository.listAccountMemberships(input)),
     membershipStatus: (input) => provide(repository.membershipStatus(input)),
     getPreview: (input) => provide(repository.getPreview(input)),
     getJoinEligibility: (input) => provide(repository.getJoinEligibility(input)),

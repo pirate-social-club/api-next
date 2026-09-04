@@ -17,6 +17,7 @@ import {
   ReportPost,
   UpdateCommunityModerationPolicy,
 } from "./community-moderation-runtime.ts";
+import { CommunityCanonicalRouteV2 } from "./community-routes.ts";
 import { endpoint } from "./endpoint.ts";
 import {
   AuthError,
@@ -1276,6 +1277,47 @@ export const GetPublicProfileByHandle = endpoint({
 
 // --- community discovery and membership ----------------------------------
 
+const AccountCommunityMembershipQuery = Schema.Struct({
+  cursor: Schema.optional(Schema.String),
+  limit: Schema.optional(Schema.String.check(Schema.isPattern(/^(?:[1-9]|[1-9][0-9]|100)$/u))),
+});
+
+const AccountCommunityMembership = Schema.Struct({
+  object: Schema.Literal("account_community_membership"),
+  community_id: Schema.String,
+  display_name: Schema.String,
+  resource_href: Schema.NullOr(Schema.String),
+  canonical_route: Schema.NullOr(CommunityCanonicalRouteV2),
+  membership_status: Schema.Literal("member"),
+  can_post: Schema.Literal(true),
+}).check(
+  Schema.makeFilter((membership) =>
+    membership.community_id.length > 0 &&
+    membership.community_id === membership.community_id.trim() &&
+    !membership.community_id.includes("\u0000") &&
+    membership.display_name.length > 0 &&
+    !membership.display_name.includes("\u0000") &&
+    (membership.resource_href === null ||
+      membership.resource_href === `/c/${membership.community_id}`)
+      ? undefined
+      : "Expected a server-owned active membership projection",
+  ),
+);
+
+export const ListMyCommunityMemberships = endpoint({
+  method: "GET",
+  path: "/users/me/community-memberships",
+  auth: Auth.userOrAdmin(),
+  request: { query: AccountCommunityMembershipQuery },
+  response: Schema.Struct({
+    object: Schema.Literal("account_community_membership_page"),
+    items: Schema.Array(AccountCommunityMembership),
+    next_cursor: Schema.NullOr(Schema.String),
+  }),
+  successStatus: 200,
+  errors: [AuthError, BadRequest, InternalError],
+});
+
 export const GetCommunityPreview = endpoint({
   method: "GET",
   path: "/communities/:communityId/preview",
@@ -1747,6 +1789,7 @@ export const v1Registry = {
   GetCurrentUser,
   GetMyProfile,
   GetPublicProfileByHandle,
+  ListMyCommunityMemberships,
   GetCommunityPreview,
   GetJoinEligibility,
   JoinCommunity,

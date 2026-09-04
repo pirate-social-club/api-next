@@ -72,6 +72,98 @@ async function insertJoinAccounts(admin: Client): Promise<void> {
 }
 
 suite("Postgres 17 community repository", () => {
+  test("lists only active memberships in active communities without requiring a route", async () => {
+    await withSchema(async (connection, admin) => {
+      const communityA = "community_00000000-0000-4000-8000-00000000000a";
+      const communityB = "community_00000000-0000-4000-8000-00000000000b";
+      const communityPending = "community_00000000-0000-4000-8000-00000000000c";
+      const communityHidden = "community_00000000-0000-4000-8000-00000000000d";
+      const communityLeft = "community_00000000-0000-4000-8000-00000000000e";
+      const communityBanned = "community_00000000-0000-4000-8000-00000000000f";
+      await applyPostgresTestBaselineConnection({ connectionString: connection });
+      await insertJoinAccounts(admin);
+      await admin.query({
+        text: `INSERT INTO communities
+          (community_id, display_name, status, created_by_user_id, route_authority_version,
+           created_at, updated_at)
+          VALUES ($1, 'Alpha', 'active', 'owner', 'optional_route_v2', now(), now()),
+                 ($2, 'Beta', 'active', 'owner', 'optional_route_v2', now(), now()),
+                 ($3, 'Pending', 'active', 'owner', 'optional_route_v2', now(), now()),
+                 ($4, 'Hidden', 'hidden', 'owner', 'optional_route_v2', now(), now()),
+                 ($5, 'Left', 'active', 'owner', 'optional_route_v2', now(), now()),
+                 ($6, 'Banned', 'active', 'owner', 'optional_route_v2', now(), now())`,
+        values: [
+          communityA,
+          communityB,
+          communityPending,
+          communityHidden,
+          communityLeft,
+          communityBanned,
+        ],
+      });
+      await admin.query("BEGIN");
+      await admin.query({
+        text: `INSERT INTO community_memberships
+          (community_id, membership_id, user_id, status, joined_at, created_at, updated_at)
+          VALUES ($1, 'membership-list-a-user', 'user-a', 'member',
+                  '2026-09-01T10:00:00.123001Z', '2026-09-01T10:00:00.123001Z', now()),
+                 ($2, 'membership-list-b-user', 'user-a', 'member',
+                  '2026-09-01T10:00:00.123002Z', '2026-09-01T10:00:00.123002Z', now()),
+                 ($3, 'membership-list-pending-user', 'user-a', 'pending',
+                  NULL, '2026-09-01T10:00:00.123003Z', now()),
+                 ($4, 'membership-list-hidden-user', 'user-a', 'member',
+                  '2026-09-01T10:00:00.123004Z', '2026-09-01T10:00:00.123004Z', now()),
+                 ($5, 'membership-list-left-user', 'user-a', 'left',
+                  NULL, '2026-09-01T10:00:00.123005Z', now()),
+                 ($6, 'membership-list-banned-user', 'user-a', 'banned',
+                  NULL, '2026-09-01T10:00:00.123006Z', now())`,
+        values: [
+          communityA,
+          communityB,
+          communityPending,
+          communityHidden,
+          communityLeft,
+          communityBanned,
+        ],
+      });
+      await admin.query({
+        text: `INSERT INTO community_follows
+          (community_follow_id, community_id, user_id, status, created_at, updated_at)
+          VALUES ('membership-list-a-follow', $1, 'user-a', 'active', now(), now()),
+                 ('membership-list-b-follow', $2, 'user-a', 'active', now(), now()),
+                 ('membership-list-hidden-follow', $3, 'user-a', 'active', now(), now())`,
+        values: [communityA, communityB, communityHidden],
+      });
+      await admin.query("COMMIT");
+
+      const first = await runStore(connection, (store) =>
+        store.listAccountMemberships({ userId: "user-a", query: { limit: "1" } }),
+      );
+      expect(first.items).toEqual([
+        {
+          object: "account_community_membership",
+          community_id: communityA,
+          display_name: "Alpha",
+          resource_href: `/c/${communityA}`,
+          canonical_route: null,
+          membership_status: "member",
+          can_post: true,
+        },
+      ]);
+      expect(first.next_cursor).toStartWith("acm1.");
+
+      const second = await runStore(connection, (store) =>
+        store.listAccountMemberships({
+          userId: "user-a",
+          query: { cursor: first.next_cursor ?? undefined, limit: "1" },
+        }),
+      );
+      expect(second.items.map((item) => item.community_id)).toEqual([communityB]);
+      expect(second.next_cursor).toBeNull();
+    });
+    completedTestCount += 1;
+  }, 30_000);
+
   test("keeps membership and follow state scoped to the requested community", async () => {
     await withSchema(async (connection, admin) => {
       await applyPostgresTestBaselineConnection({ connectionString: connection });
@@ -586,7 +678,7 @@ suite("Postgres 17 community repository", () => {
   }, 30_000);
 
   afterAll(async () => {
-    if (connectionString !== undefined && completedTestCount === 7) {
+    if (connectionString !== undefined && completedTestCount === 8) {
       await Bun.write(sentinelPath, sentinelContents);
     }
   });

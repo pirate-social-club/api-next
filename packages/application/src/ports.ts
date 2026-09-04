@@ -18,6 +18,7 @@ import type {
   GetPublicHomeFeed,
   GetPublicProfileByHandle,
   JoinCommunity,
+  ListMyCommunityMemberships,
   UnfollowCommunity,
   UpdateCommunityCreationIntent,
 } from "@pirate/contracts";
@@ -408,6 +409,12 @@ export type M2Actor = Readonly<{
 }>;
 
 export type MembershipStatus = "missing" | "pending" | "member" | "left" | "banned";
+export type AccountCommunityMembershipPage = Schema.Schema.Type<
+  typeof ListMyCommunityMemberships.response
+>;
+export type AccountCommunityMembershipQuery = Schema.Schema.Type<
+  (typeof ListMyCommunityMemberships.request)["query"]
+>;
 
 export type CommunityPreviewDocument = Schema.Schema.Type<typeof GetCommunityPreview.response>;
 export type CanonicalCommunityRouteDocument = Schema.Schema.Type<
@@ -648,6 +655,7 @@ export type PublicCommunityThreadsDocument = Schema.Schema.Type<
 
 export type CommunityRepositoryOperation =
   | "membership"
+  | "list-memberships"
   | "preview"
   | "eligibility"
   | "join"
@@ -670,9 +678,11 @@ export type M2RepositoryReason =
   | "constraint"
   | "invalid-row";
 
+export type CommunityRepositoryReason = M2RepositoryReason | "invalid-cursor";
+
 export class CommunityRepositoryError extends Data.TaggedError("CommunityRepositoryError")<{
   readonly operation: CommunityRepositoryOperation;
-  readonly reason: M2RepositoryReason;
+  readonly reason: CommunityRepositoryReason;
 }> {}
 
 export class ContentRepositoryError extends Data.TaggedError("ContentRepositoryError")<{
@@ -705,6 +715,11 @@ export type CommentLocation = Readonly<{
 }>;
 
 export interface CommunityStoreService {
+  readonly listAccountMemberships: (input: {
+    readonly userId: string;
+    readonly query: AccountCommunityMembershipQuery;
+  }) => Effect.Effect<AccountCommunityMembershipPage, CommunityRepositoryFailure>;
+
   readonly membershipStatus: (input: {
     readonly communityId: string;
     readonly userId: string;
