@@ -3,7 +3,9 @@ import { makeCommunityPurchaseFundingInterpreter } from "@pirate/application/mon
 import { makeCommunityPurchaseFundingObservationUseCase } from "@pirate/application/money/community-purchase-funding-observation";
 import {
   completeNamespaceOwnership,
+  completeRouteAttachmentOwnership,
   startNamespaceOwnership,
+  startRouteAttachmentOwnership,
 } from "@pirate/application/namespace-ownership";
 import {
   type TextModeration,
@@ -77,10 +79,12 @@ import { makeDanceReferenceStore } from "@pirate/platform-cf/dance-reference-aut
 import { makeControlPlaneFeedStore } from "@pirate/platform-cf/feed-repository";
 import { makeHandleRecipientTokenVault } from "@pirate/platform-cf/handle-recipient-token-vault";
 import { makeControlPlaneHandleSalesStore } from "@pirate/platform-cf/handle-sales-repository";
+import { makeControlPlaneHnsCommunityRootImportStartStore } from "@pirate/platform-cf/hns-community-root-import-repository";
 import type { HnsEdgeStatusKvNamespace } from "@pirate/platform-cf/hns-edge-status-kv";
 import type { HnsForwarderReplayStoreNamespace } from "@pirate/platform-cf/hns-forwarder-replay-store";
 import { makeControlPlaneHnsHandlePersonaHostAuthoritySource } from "@pirate/platform-cf/hns-handle-host-authority-repository";
 import { makeControlPlaneHnsCommunityAppHostAuthoritySource } from "@pirate/platform-cf/hns-host-persistence-repository";
+import { makeControlPlaneHnsRootHealthRenewalStatusStore } from "@pirate/platform-cf/hns-root-health-renewal-status";
 import { makeControlPlaneHnsRootImportStore } from "@pirate/platform-cf/hns-root-import-repository";
 import {
   makeControlPlaneCredentialCanonicalResolver,
@@ -148,6 +152,11 @@ import {
 import { makeRewardFundingCoordinator } from "@pirate/platform-cf/reward-funding-coordinator";
 import { makeControlPlaneRewardFundingStore } from "@pirate/platform-cf/reward-funding-repository";
 import { makeControlPlaneRewardProjectionStore } from "@pirate/platform-cf/reward-projection-repository";
+import { makeControlPlaneRouteAttachmentCompletionStore } from "@pirate/platform-cf/route-attachment-completion-repository";
+import {
+  makeControlPlaneRouteAttachmentOwnershipStartAuthorityResolver,
+  makeControlPlaneRouteAttachmentOwnershipStartStore,
+} from "@pirate/platform-cf/route-attachment-start-repository";
 import { makeSessionCrypto } from "@pirate/platform-cf/session-crypto";
 import { makeJwksSessionProofVerifier } from "@pirate/platform-cf/session-proof";
 import {
@@ -196,6 +205,7 @@ import { makeDanceReferenceHandlers } from "./dance-reference-handlers.ts";
 import { makeProductionDanceReferenceServices } from "./dance-reference-production-composition.ts";
 import { makeHandleSalesHandlers } from "./handle-sales-handlers.ts";
 import { makeProductionHnsCommunityAppApiComposition } from "./hns-community-app-api-production-composition.ts";
+import { makeHnsCommunityRootImportHandlers } from "./hns-community-root-import-handlers.ts";
 import { hnsEdgeAlertBearerMatches, isHnsEdgeAlertTokenConfigured } from "./hns-edge-alert-auth.ts";
 import { makeHnsEdgeStatusHandlers } from "./hns-edge-status-handlers.ts";
 import { makeProductionHnsEdgeStatusComposition } from "./hns-edge-status-production-composition.ts";
@@ -687,6 +697,7 @@ export async function createProductionHttpWorker(
   });
   const hnsEdgeStatus = makeProductionHnsEdgeStatusComposition({
     config,
+    renewal_status_store: makeControlPlaneHnsRootHealthRenewalStatusStore(controlPlane),
     ...(bindings.HNS_EDGE_STATUS === undefined ? {} : { namespace: bindings.HNS_EDGE_STATUS }),
   });
   const identityStore = makeControlPlaneIdentityStore(controlPlane);
@@ -983,6 +994,36 @@ export async function createProductionHttpWorker(
       environment: config.API_NEXT_ENV,
     }),
   });
+  const communityHnsBinding = namespaceBindings.find(
+    (binding) => binding.requirement === "namespace_ownership" && binding.family === "hns",
+  );
+  const hnsCommunityRootImportHandlers =
+    communityHnsBinding === undefined || bindings.HNS_OWNER_VERIFIER === undefined
+      ? {}
+      : makeHnsCommunityRootImportHandlers({
+          ownership: {
+            start: (input) =>
+              startRouteAttachmentOwnership(input, {
+                intents:
+                  makeControlPlaneRouteAttachmentOwnershipStartAuthorityResolver(controlPlane),
+                registry: namespaceOwnershipRegistry,
+                store: makeControlPlaneRouteAttachmentOwnershipStartStore(controlPlane),
+                environment: config.API_NEXT_ENV,
+              }),
+          },
+          nameProof: makeHnsRootImportNameProofServiceBindingVerifier(bindings.HNS_OWNER_VERIFIER),
+          completion: {
+            complete: (input) =>
+              completeRouteAttachmentOwnership(input, {
+                registry: namespaceOwnershipRegistry,
+                store: makeControlPlaneRouteAttachmentCompletionStore(controlPlane),
+              }),
+          },
+          store: makeControlPlaneHnsCommunityRootImportStartStore(controlPlane, {
+            environment: config.API_NEXT_ENV,
+            provider_binding: communityHnsBinding,
+          }),
+        });
   const sessionCrypto = await makeSessionCrypto({
     privateKeyPem: Redacted.value(config.PIRATE_APP_JWT_PRIVATE_KEY),
     publicKeyPem: Redacted.value(config.PIRATE_APP_JWT_PUBLIC_KEY),
@@ -1269,6 +1310,7 @@ export async function createProductionHttpWorker(
       ...publicPostRouteHandlers,
       ...namespaceOwnershipHandlers,
       ...hnsRootImportHandlers,
+      ...hnsCommunityRootImportHandlers,
       ...verificationHandlers,
       ...fundingHandlers,
       ...personaHandlers,

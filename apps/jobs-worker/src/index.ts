@@ -47,6 +47,7 @@ import {
   type DataRegistrationJobsBindings,
   makeDataRegistrationMaintenance,
 } from "./data-registration-runtime";
+import { makeHnsRootHealthRenewalJob } from "./hns-root-health-renewal";
 import {
   type HnsRouteRevalidationBindings,
   type HnsRouteRevalidationComposition,
@@ -71,6 +72,18 @@ import {
 import { makeStudySpokenAnswerRecoveryJob } from "./study-spoken-answer-recovery";
 
 export { ScheduledCronLockDO } from "@pirate/platform-cf";
+export {
+  HNS_ROOT_HEALTH_HEARTBEAT_FRESHNESS_SECONDS,
+  HNS_ROOT_HEALTH_RENEW_WHEN_REMAINING_SECONDS,
+  HNS_ROOT_HEALTH_RENEWAL_BATCH_LIMIT,
+  HNS_ROOT_HEALTH_RENEWAL_JOB,
+  HNS_ROOT_HEALTH_RENEWAL_LANE,
+  HNS_ROOT_HEALTH_RENEWAL_READS,
+  HNS_ROOT_HEALTH_RENEWAL_SCHEDULE,
+  HNS_ROOT_HEALTH_RENEWAL_TIMEOUT,
+  HNS_ROOT_HEALTH_RENEWAL_WRITES,
+  makeHnsRootHealthRenewalJob,
+} from "./hns-root-health-renewal";
 export {
   HNS_ROUTE_EXPIRY_BATCH_LIMIT,
   HNS_ROUTE_EXPIRY_PRINCIPAL_ID,
@@ -734,6 +747,7 @@ export function makeJobsWorkerDeclarations(
         force: hns.force,
         environment,
       }),
+      makeHnsRootHealthRenewalJob(sink),
     );
   }
   if (megapot !== null) declarations.push(makeMegapotRewardsJob(sink, megapot));

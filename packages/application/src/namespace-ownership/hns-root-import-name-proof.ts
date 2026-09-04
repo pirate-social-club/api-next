@@ -3,6 +3,8 @@ import { Option, Schema } from "effect";
 import { decodeStrictHnsJsonBytes } from "./hns-evidence.ts";
 
 export const HNS_ROOT_IMPORT_NAME_PROOF_VERSION = "pirate-hns-root-import-name-proof-v1" as const;
+export const HNS_COMMUNITY_ROOT_IMPORT_NAME_PROOF_VERSION =
+  "pirate-hns-community-root-import-name-proof-v1" as const;
 export const HNS_ROOT_IMPORT_NAME_PROOF_RESULT_VERSION =
   "pirate-hns-root-import-name-proof-result-v1" as const;
 export const HNS_ROOT_IMPORT_NAME_PROOF_NETWORK = "main" as const;
@@ -114,6 +116,47 @@ export function hnsRootImportNameProofMessage(input: HnsRootImportNameProofMessa
     encoder.encode(message).byteLength > HNS_ROOT_IMPORT_NAME_PROOF_MESSAGE_MAX_BYTES
   ) {
     throw new TypeError("HNS name-proof message exceeds its bound");
+  }
+  return message;
+}
+
+export type HnsCommunityRootImportNameProofMessageInput = Readonly<{
+  actor_id: string;
+  community_id: string;
+  attachment_intent_id: string;
+  root_import_session_id: string;
+  namespace_session_id: string;
+  root_label: string;
+  challenge_txt_value: string;
+  environment: string;
+  expires_at: string;
+}>;
+
+export function hnsCommunityRootImportNameProofMessage(
+  input: HnsCommunityRootImportNameProofMessageInput,
+): string {
+  if (!validCommunityRouteRoot("hns", input.root_label)) {
+    throw new TypeError("HNS community name-proof root is invalid");
+  }
+  const message = canonicalJson([
+    HNS_COMMUNITY_ROOT_IMPORT_NAME_PROOF_VERSION,
+    input.actor_id,
+    input.community_id,
+    input.attachment_intent_id,
+    input.root_import_session_id,
+    input.namespace_session_id,
+    input.root_label,
+    HNS_ROOT_IMPORT_NAME_PROOF_NETWORK,
+    input.environment,
+    input.expires_at,
+    input.challenge_txt_value,
+  ]);
+  if (
+    message.length === 0 ||
+    !controlFree(message) ||
+    encoder.encode(message).byteLength > HNS_ROOT_IMPORT_NAME_PROOF_MESSAGE_MAX_BYTES
+  ) {
+    throw new TypeError("HNS community name-proof message exceeds its bound");
   }
   return message;
 }

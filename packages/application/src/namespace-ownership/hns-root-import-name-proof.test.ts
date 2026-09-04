@@ -4,10 +4,12 @@ import { Option, Schema } from "effect";
 import {
   decodeHnsRootImportNameProofResultV1,
   encodeHnsRootImportNameProofResultV1,
+  HNS_COMMUNITY_ROOT_IMPORT_NAME_PROOF_VERSION,
   HNS_ROOT_IMPORT_NAME_PROOF_NETWORK,
   HNS_ROOT_IMPORT_NAME_PROOF_RESULT_VERSION,
   HNS_ROOT_IMPORT_NAME_PROOF_VERSION,
   HnsRootImportNameSignature,
+  hnsCommunityRootImportNameProofMessage,
   hnsRootImportNameProofMessage,
 } from "./hns-root-import-name-proof.ts";
 
@@ -58,6 +60,38 @@ describe("HNS root-import name proof", () => {
     expect(
       Option.isNone(Schema.decodeUnknownOption(HnsRootImportNameSignature)(nonCanonical)),
     ).toBe(true);
+  });
+
+  test("binds an existing-community signature without a creation intent", () => {
+    const input = {
+      actor_id: "actor-1",
+      community_id: "community-1",
+      attachment_intent_id: "attachment-1",
+      root_import_session_id: "root-import-1",
+      namespace_session_id: "namespace-1",
+      root_label: "dankmemes",
+      challenge_txt_value: "pirate-verification=namespace-1",
+      environment: "production",
+      expires_at: "2026-09-09T00:00:00.000Z",
+    } as const;
+    expect(hnsCommunityRootImportNameProofMessage(input)).toBe(
+      canonicalJson([
+        HNS_COMMUNITY_ROOT_IMPORT_NAME_PROOF_VERSION,
+        input.actor_id,
+        input.community_id,
+        input.attachment_intent_id,
+        input.root_import_session_id,
+        input.namespace_session_id,
+        input.root_label,
+        HNS_ROOT_IMPORT_NAME_PROOF_NETWORK,
+        input.environment,
+        input.expires_at,
+        input.challenge_txt_value,
+      ]),
+    );
+    expect(hnsCommunityRootImportNameProofMessage({ ...input, actor_id: "actor-2" })).not.toBe(
+      hnsCommunityRootImportNameProofMessage(input),
+    );
   });
 
   test("round-trips only the bounded sanitized verifier result", () => {

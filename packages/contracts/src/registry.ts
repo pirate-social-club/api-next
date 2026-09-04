@@ -41,9 +41,13 @@ import { DeliverHnsEdgeAlert } from "./hns-edge-alerts.ts";
 import { PublishHnsEdgeStatusReport } from "./hns-edge-status.ts";
 import { PollHnsOwnerRecovery, StartHnsOwnerRecovery } from "./hns-owner-recovery.ts";
 import {
+  ActivateHnsCommunityRootImport,
   ActivateHnsRootImport,
+  GetHnsCommunityRootImport,
   GetHnsRootImport,
+  PollHnsCommunityRootImport,
   PollHnsRootImport,
+  StartHnsCommunityRootImport,
   StartHnsRootImport,
 } from "./hns-root-import.ts";
 import {
@@ -120,6 +124,10 @@ export const registry = {
   GetHnsRootImport,
   PollHnsRootImport,
   ActivateHnsRootImport,
+  StartHnsCommunityRootImport,
+  GetHnsCommunityRootImport,
+  PollHnsCommunityRootImport,
+  ActivateHnsCommunityRootImport,
   ...handleSalesRegistry,
   ListMyPersonas,
   CreatePersona,

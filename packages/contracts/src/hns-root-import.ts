@@ -152,6 +152,11 @@ const HnsRootImportSessionPath = Schema.Struct({
   sessionId: OpaqueId,
 });
 
+const HnsCommunityRootImportSessionPath = Schema.Struct({
+  communityId: OpaqueId,
+  sessionId: OpaqueId,
+});
+
 const HnsRootImportSessionBaseV1 = {
   creation_intent_id: OpaqueId,
   ceremony_intent_id: OpaqueId,
@@ -254,6 +259,108 @@ export type HnsRootImportActivationResponseV1 = Schema.Schema.Type<
   typeof HnsRootImportActivationResponseV1
 >;
 
+const HnsCommunityRootImportStartRequestV1 = Schema.Struct({
+  root_label: RootLabel,
+  idempotency_key: OpaqueId,
+});
+export type HnsCommunityRootImportStartRequestV1 = Schema.Schema.Type<
+  typeof HnsCommunityRootImportStartRequestV1
+>;
+
+const HnsCommunityRootImportSessionBaseV1 = {
+  community_id: OpaqueId,
+  attachment_intent_id: OpaqueId,
+  root_import_session_id: OpaqueId,
+  root_label: RootLabel,
+  revision: PositiveSafeInteger,
+  expires_at: CanonicalIsoInstant,
+  replayed: Schema.Boolean,
+} as const;
+
+const HnsCommunityRootImportAwaitingOwnershipResponseV1 = Schema.Struct({
+  ...HnsCommunityRootImportSessionBaseV1,
+  status: Schema.Literal("awaiting_ownership"),
+  provisioning_authorization: Schema.Struct({
+    kind: Schema.Literal("hns_name_signature_v1"),
+    wallet_rpc_method: Schema.Literal("signmessagewithname"),
+    message: HnsNameProofMessage,
+    expires_at: CanonicalIsoInstant,
+  }),
+  publish_plan: Schema.Null,
+  publish_plan_sha256: Schema.Null,
+  readiness_result_sha256: Schema.Null,
+  retry_after_seconds: RetryAfterSeconds,
+});
+
+const HnsCommunityRootImportProvisioningResponseV1 = Schema.Struct({
+  ...HnsCommunityRootImportSessionBaseV1,
+  status: Schema.Literal("provisioning"),
+  publish_plan: Schema.Null,
+  publish_plan_sha256: Schema.Null,
+  readiness_result_sha256: Schema.Null,
+  retry_after_seconds: RetryAfterSeconds,
+});
+
+const HnsCommunityRootImportAwaitingOwnerResponseV1 = Schema.Struct({
+  ...HnsCommunityRootImportSessionBaseV1,
+  status: Schema.Literals(["awaiting_owner_update", "observing"]),
+  publish_plan: HnsRootImportPublishPlanV1,
+  publish_plan_sha256: Sha256Hex,
+  readiness_result_sha256: Schema.Null,
+  retry_after_seconds: RetryAfterSeconds,
+});
+
+const HnsCommunityRootImportReadyResponseV1 = Schema.Struct({
+  ...HnsCommunityRootImportSessionBaseV1,
+  status: Schema.Literal("ready"),
+  publish_plan: HnsRootImportPublishPlanV1,
+  publish_plan_sha256: Sha256Hex,
+  readiness_result_sha256: Sha256Hex,
+  retry_after_seconds: Schema.Null,
+});
+
+const HnsCommunityRootImportTerminalResponseV1 = Schema.Struct({
+  ...HnsCommunityRootImportSessionBaseV1,
+  status: Schema.Literals(["activated", "failed", "expired"]),
+  publish_plan: Schema.NullOr(HnsRootImportPublishPlanV1),
+  publish_plan_sha256: Schema.NullOr(Sha256Hex),
+  readiness_result_sha256: Schema.NullOr(Sha256Hex),
+  retry_after_seconds: Schema.Null,
+});
+
+export const HnsCommunityRootImportSessionResponseV1 = Schema.Union([
+  HnsCommunityRootImportAwaitingOwnershipResponseV1,
+  HnsCommunityRootImportProvisioningResponseV1,
+  HnsCommunityRootImportAwaitingOwnerResponseV1,
+  HnsCommunityRootImportReadyResponseV1,
+  HnsCommunityRootImportTerminalResponseV1,
+]);
+export type HnsCommunityRootImportSessionResponseV1 = Schema.Schema.Type<
+  typeof HnsCommunityRootImportSessionResponseV1
+>;
+
+const HnsCommunityRootImportActivationResponseV1 = Schema.Struct({
+  community_id: OpaqueId,
+  attachment_intent_id: OpaqueId,
+  root_import_session_id: OpaqueId,
+  root_label: RootLabel,
+  revision: PositiveSafeInteger,
+  status: Schema.Literal("activated"),
+  app_host: Schema.NonEmptyString,
+  dns_zone_activation_id: OpaqueId,
+  dns_zone_activation_generation: Schema.Literal(1),
+  app_host_activation_id: OpaqueId,
+  app_host_activation_generation: Schema.Literal(1),
+  sale_namespace_activation_id: OpaqueId,
+  sale_namespace_activation_generation: Schema.Literal(1),
+  sale_namespace_activation_sha256: Sha256Hex,
+  handle_issuance_enabled: Schema.Literal(true),
+  replayed: Schema.Boolean,
+});
+export type HnsCommunityRootImportActivationResponseV1 = Schema.Schema.Type<
+  typeof HnsCommunityRootImportActivationResponseV1
+>;
+
 const rootImportErrors = [
   AuthError,
   BadRequest,
@@ -322,6 +429,67 @@ export const ActivateHnsRootImport = endpoint({
     maxBodyBytes: 4_096,
   },
   response: HnsRootImportActivationResponseV1,
+  successStatus: [200, 201],
+  errors: rootImportErrors,
+});
+
+export const StartHnsCommunityRootImport = endpoint({
+  method: "POST",
+  path: "/communities/:communityId/hns-root-imports",
+  auth: Auth.userOrAdmin(),
+  request: {
+    path: Schema.Struct({ communityId: OpaqueId }),
+    exactRawPathParameters: ["communityId"],
+    body: HnsCommunityRootImportStartRequestV1,
+    bodyEncoding: "exact-json",
+    maxBodyBytes: 2_048,
+  },
+  response: HnsCommunityRootImportSessionResponseV1,
+  successStatus: [200, 202],
+  errors: rootImportErrors,
+});
+
+export const GetHnsCommunityRootImport = endpoint({
+  method: "GET",
+  path: "/communities/:communityId/hns-root-imports/:sessionId",
+  auth: Auth.userOrAdmin(),
+  request: {
+    path: HnsCommunityRootImportSessionPath,
+    exactRawPathParameters: ["communityId", "sessionId"],
+  },
+  response: HnsCommunityRootImportSessionResponseV1,
+  successStatus: 200,
+  errors: rootImportErrors,
+});
+
+export const PollHnsCommunityRootImport = endpoint({
+  method: "POST",
+  path: "/communities/:communityId/hns-root-imports/:sessionId/poll",
+  auth: Auth.userOrAdmin(),
+  request: {
+    path: HnsCommunityRootImportSessionPath,
+    exactRawPathParameters: ["communityId", "sessionId"],
+    body: HnsRootImportPollRequestV1,
+    bodyEncoding: "json",
+    maxBodyBytes: 2_048,
+  },
+  response: HnsCommunityRootImportSessionResponseV1,
+  successStatus: [200, 202, 422],
+  errors: rootImportErrors,
+});
+
+export const ActivateHnsCommunityRootImport = endpoint({
+  method: "POST",
+  path: "/communities/:communityId/hns-root-imports/:sessionId/activate",
+  auth: Auth.userOrAdmin(),
+  request: {
+    path: HnsCommunityRootImportSessionPath,
+    exactRawPathParameters: ["communityId", "sessionId"],
+    body: HnsRootImportActivateRequestV1,
+    bodyEncoding: "exact-json",
+    maxBodyBytes: 4_096,
+  },
+  response: HnsCommunityRootImportActivationResponseV1,
   successStatus: [200, 201],
   errors: rootImportErrors,
 });

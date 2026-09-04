@@ -5,6 +5,8 @@ import {
   NamespaceOwnershipProviderInvalidResponse,
   NamespaceOwnershipProviderRejected,
   NamespaceOwnershipProviderUnavailable,
+  type RouteAttachmentOwnershipProviderStartInput,
+  type RouteAttachmentOwnershipSession,
 } from "@pirate/application";
 import type { HnsRouteRevalidationSessionV1 } from "@pirate/application/route-revalidation";
 import type { HnsOwnerRouteRevalidationStartWireV1 } from "@pirate/application/route-revalidation/hashes";
@@ -41,6 +43,39 @@ export type HnsOwnerRouteRevalidationTransport = Readonly<{
     }>,
   ) => Effect.Effect<Uint8Array, HnsOwnerTransportFailure>;
 }>;
+
+function routeAttachmentStartDocument(input: RouteAttachmentOwnershipProviderStartInput) {
+  return {
+    operation_kind: input.operation_kind,
+    actor_id: input.actor_id,
+    community_id: input.community_id,
+    attachment_intent_id: input.attachment_intent_id,
+    ceremony_intent_id: input.ceremony_intent_id,
+    requirement_hash: input.requirement_hash,
+    generation: input.generation,
+    request_hash: input.request_hash,
+    provider_binding_hash: input.provider_binding_hash,
+    provider_configuration: {
+      kind: input.provider_configuration.kind,
+      reference: input.provider_configuration.reference,
+      version: input.provider_configuration.version,
+    },
+    protocol_version: input.protocol_version,
+    environment: input.environment,
+    route: {
+      family: input.route.family,
+      root_label: input.route.root_label,
+      root_label_display: input.route.root_label_display,
+      path_segment: input.route.path_segment,
+      href: input.route.href,
+      app_host: input.route.app_host,
+    },
+  };
+}
+
+function routeAttachmentPollDocument(session: RouteAttachmentOwnershipSession, payload: unknown) {
+  return { operation_kind: "route_attachment" as const, session, payload };
+}
 
 type Operation = "start" | "complete";
 
@@ -260,6 +295,38 @@ export function makeHnsOwnerServiceBindingTransport(
     },
     poll: ({ session, payload, context }) => {
       const body = jsonBytes({ session, payload }, POLL_REQUEST_MAX_BYTES, "complete");
+      return request(
+        binding,
+        POLL_URL,
+        body,
+        "application/octet-stream",
+        context.namespace_session_id,
+        context.observation_id,
+        HNS_OWNER_ROUTE_REVALIDATION_POLL_DEADLINE_MS,
+        "complete",
+        POLL_RESPONSE_MAX_BYTES,
+      );
+    },
+    startRouteAttachment: ({ input, context }) => {
+      const body = jsonBytes(routeAttachmentStartDocument(input), START_REQUEST_MAX_BYTES, "start");
+      return request(
+        binding,
+        START_URL,
+        body,
+        "application/json",
+        context.namespace_session_id,
+        undefined,
+        HNS_OWNER_ROUTE_REVALIDATION_START_DEADLINE_MS,
+        "start",
+        START_RESPONSE_MAX_BYTES,
+      );
+    },
+    pollRouteAttachment: ({ session, payload, context }) => {
+      const body = jsonBytes(
+        routeAttachmentPollDocument(session, payload),
+        POLL_REQUEST_MAX_BYTES,
+        "complete",
+      );
       return request(
         binding,
         POLL_URL,

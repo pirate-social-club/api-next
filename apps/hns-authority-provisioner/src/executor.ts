@@ -51,6 +51,7 @@ async function runObservation(input: {
   if (claim === null) return { outcome: "idle" };
   const base = {
     observation_job_id: claim.observation_job_id,
+    operation_kind: claim.operation_kind,
     executor_id: input.executor_id,
     lease_fence: claim.lease_fence,
     request_sha256: claim.request_sha256,
@@ -91,6 +92,7 @@ async function runObservation(input: {
       throw new HnsRootReadinessObservationError("invalid_request");
     }
     const result = await observeHnsRootReadinessV1({
+      operation_kind: claim.operation_kind,
       request,
       publish_plan_bytes: claim.publish_plan_bytes,
       provision_result_bytes: claim.provision_result_bytes,

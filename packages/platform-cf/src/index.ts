@@ -136,6 +136,11 @@ export {
   makeHnsAuthoritySuccessorPostgresReadersV1,
 } from "./hns-authority-successor-postgres.ts";
 export {
+  type HnsCommunityRootImportRepositoryOptions,
+  makeControlPlaneHnsCommunityRootImportRepository,
+  makeControlPlaneHnsCommunityRootImportStartStore,
+} from "./hns-community-root-import-repository";
+export {
   HNS_EDGE_STATUS_KV_KEY,
   type HnsEdgeStatusKvNamespace,
   makeCloudflareHnsEdgeStatusStore,
@@ -157,6 +162,7 @@ export {
   makeControlPlaneHnsOwnerRecoveryAuthorityResolver,
   makeControlPlaneHnsOwnerRecoveryStartStore,
 } from "./hns-owner-recovery-start-repository.ts";
+export { makeControlPlaneHnsRootHealthRenewalStatusStore } from "./hns-root-health-renewal-status.ts";
 export {
   type CanonicalIdentity,
   type IdentityRepository,
@@ -297,6 +303,11 @@ export * from "./reward-payout-repository.ts";
 export * from "./reward-projection-repository.ts";
 export * from "./reward-refund-coordinator.ts";
 export * from "./reward-refund-repository.ts";
+export { makeControlPlaneRouteAttachmentCompletionStore } from "./route-attachment-completion-repository.ts";
+export {
+  makeControlPlaneRouteAttachmentOwnershipStartAuthorityResolver,
+  makeControlPlaneRouteAttachmentOwnershipStartStore,
+} from "./route-attachment-start-repository";
 export {
   makeControlPlaneRouteRevalidationCompletionRepository,
   makeControlPlaneRouteRevalidationCompletionStore,

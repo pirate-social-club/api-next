@@ -8,6 +8,8 @@ export const HNS_OWNER_MANIFEST_VERSION = "1" as const;
 export const HNS_OWNER_PROTOCOL_VERSION = "hns-txt-v1" as const;
 export const HNS_OWNER_IDENTITY_PREIMAGE_VERSION = "pirate-hns-provider-identity-v1" as const;
 export const HNS_OWNER_REQUEST_PREIMAGE_VERSION = "pirate-namespace-start-v1" as const;
+export const HNS_ROUTE_ATTACHMENT_REQUEST_PREIMAGE_VERSION =
+  "pirate-route-attachment-namespace-start-v1" as const;
 export const HNS_OWNER_EVIDENCE_PREIMAGE_VERSION = "pirate-hns-ownership-evidence-v1" as const;
 export const HNS_OWNER_MAX_RESPONSE_BYTES = 1_048_576 as const;
 
@@ -185,6 +187,22 @@ const HnsProviderIdentityInputSchema = Schema.Struct({
 const HnsNamespaceStartInputSchema = Schema.Struct({
   actor_id: ActorId,
   creation_intent_id: IntentId,
+  ceremony_intent_id: CeremonyId,
+  requirement_hash: Sha256Hex,
+  generation: PositiveSafeInteger,
+  provider_id: ProviderId,
+  provider_binding_hash: Sha256Hex,
+  provider_configuration: HnsEvidenceConfiguration,
+  protocol_version: ProtocolVersion,
+  environment: Environment,
+  route: NamespaceOwnershipRoute,
+});
+
+const HnsRouteAttachmentStartInputSchema = Schema.Struct({
+  operation_kind: Schema.Literal("route_attachment"),
+  actor_id: ActorId,
+  community_id: boundedString(HNS_OWNER_INTENT_MAX_BYTES, "community_id"),
+  attachment_intent_id: boundedString(HNS_OWNER_INTENT_MAX_BYTES, "attachment_intent_id"),
   ceremony_intent_id: CeremonyId,
   requirement_hash: Sha256Hex,
   generation: PositiveSafeInteger,
@@ -512,7 +530,9 @@ export function hnsProviderIdentityDigest(
 
 export type HnsNamespaceStartInput = Schema.Schema.Type<typeof HnsNamespaceStartInputSchema>;
 
-function assertHnsStartInput(input: HnsNamespaceStartInput): void {
+function assertHnsStartInput(
+  input: Readonly<{ readonly provider_id: string; readonly route: HnsOwnerRoute }>,
+): void {
   if (
     input.provider_id !== HNS_OWNER_PROVIDER_ID ||
     input.route.family !== "hns" ||
@@ -549,6 +569,47 @@ export function hnsNamespaceStartPreimage(input: HnsNamespaceStartInput): string
 
 export function hnsNamespaceStartHash(input: HnsNamespaceStartInput): Promise<Sha256HexValue> {
   return sha256Utf8(hnsNamespaceStartPreimage(input));
+}
+
+export type HnsRouteAttachmentStartInput = Schema.Schema.Type<
+  typeof HnsRouteAttachmentStartInputSchema
+>;
+
+/** Attachment-owned request identity. It intentionally has no creation-intent field. */
+export function hnsRouteAttachmentStartPreimage(input: HnsRouteAttachmentStartInput): string {
+  const decoded = Schema.decodeUnknownSync(
+    HnsRouteAttachmentStartInputSchema,
+    exactParseOptions,
+  )(input);
+  assertHnsStartInput(decoded);
+  return JSON.stringify([
+    HNS_ROUTE_ATTACHMENT_REQUEST_PREIMAGE_VERSION,
+    decoded.operation_kind,
+    decoded.actor_id,
+    decoded.community_id,
+    decoded.attachment_intent_id,
+    decoded.ceremony_intent_id,
+    "namespace_ownership",
+    decoded.requirement_hash,
+    decoded.generation,
+    decoded.provider_id,
+    decoded.provider_binding_hash,
+    decoded.provider_configuration.kind,
+    decoded.provider_configuration.reference,
+    decoded.provider_configuration.version,
+    decoded.protocol_version,
+    decoded.environment,
+    "hns",
+    decoded.route.root_label,
+    decoded.route.root_label_display,
+    decoded.route.path_segment,
+  ]);
+}
+
+export function hnsRouteAttachmentStartHash(
+  input: HnsRouteAttachmentStartInput,
+): Promise<Sha256HexValue> {
+  return sha256Utf8(hnsRouteAttachmentStartPreimage(input));
 }
 
 export type HnsOwnershipEvidenceInput = Schema.Schema.Type<typeof HnsOwnershipEvidenceInputSchema>;

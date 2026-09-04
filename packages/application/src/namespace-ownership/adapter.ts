@@ -148,6 +148,33 @@ export const NamespaceOwnershipSession = Schema.Struct({
 });
 export type NamespaceOwnershipSession = Schema.Schema.Type<typeof NamespaceOwnershipSession>;
 
+/**
+ * Community-keyed ownership authority for attaching a route after creation.
+ * The discriminator prevents attachment sessions from entering the retained
+ * creation-intent provider path.
+ */
+export const RouteAttachmentOwnershipSession = Schema.Struct({
+  operation_kind: Schema.Literal("route_attachment"),
+  actor_id: CanonicalNonEmptyString,
+  community_id: CanonicalNonEmptyString,
+  attachment_intent_id: CanonicalNonEmptyString,
+  ceremony_intent_id: CanonicalNonEmptyString,
+  requirement_hash: Sha256Hex,
+  generation: PositiveInteger,
+  request_hash: Sha256Hex,
+  provider_id: CanonicalNonEmptyString,
+  provider_binding_hash: Sha256Hex,
+  provider_configuration: ProviderConfigurationRef,
+  protocol_version: CanonicalNonEmptyString,
+  environment: CanonicalNonEmptyString,
+  route: NamespaceOwnershipRoute,
+  upstream_session_ref: NamespaceOwnershipUpstreamSessionReference,
+  expires_at: CanonicalIsoInstant,
+});
+export type RouteAttachmentOwnershipSession = Schema.Schema.Type<
+  typeof RouteAttachmentOwnershipSession
+>;
+
 export const NamespaceOwnershipProviderStartInput = Schema.Struct({
   actor_id: CanonicalNonEmptyString,
   creation_intent_id: CanonicalNonEmptyString,
@@ -163,6 +190,25 @@ export const NamespaceOwnershipProviderStartInput = Schema.Struct({
 });
 export type NamespaceOwnershipProviderStartInput = Schema.Schema.Type<
   typeof NamespaceOwnershipProviderStartInput
+>;
+
+export const RouteAttachmentOwnershipProviderStartInput = Schema.Struct({
+  operation_kind: Schema.Literal("route_attachment"),
+  actor_id: CanonicalNonEmptyString,
+  community_id: CanonicalNonEmptyString,
+  attachment_intent_id: CanonicalNonEmptyString,
+  ceremony_intent_id: CanonicalNonEmptyString,
+  requirement_hash: Sha256Hex,
+  generation: PositiveInteger,
+  request_hash: Sha256Hex,
+  provider_binding_hash: Sha256Hex,
+  provider_configuration: ProviderConfigurationRef,
+  protocol_version: CanonicalNonEmptyString,
+  environment: CanonicalNonEmptyString,
+  route: NamespaceOwnershipRoute,
+});
+export type RouteAttachmentOwnershipProviderStartInput = Schema.Schema.Type<
+  typeof RouteAttachmentOwnershipProviderStartInput
 >;
 
 export const NamespaceOwnershipProviderStartContext = Schema.Struct({
@@ -184,6 +230,14 @@ export const NamespaceOwnershipProviderStartResult = Schema.Struct({
 });
 export type NamespaceOwnershipProviderStartResult = Schema.Schema.Type<
   typeof NamespaceOwnershipProviderStartResult
+>;
+
+export const RouteAttachmentOwnershipProviderStartResult = Schema.Struct({
+  session: RouteAttachmentOwnershipSession,
+  presentation: ProviderPresentation,
+});
+export type RouteAttachmentOwnershipProviderStartResult = Schema.Schema.Type<
+  typeof RouteAttachmentOwnershipProviderStartResult
 >;
 
 const BoundedSubmissionPayload = Schema.Json.check(
@@ -215,6 +269,14 @@ export const NamespaceOwnershipProviderCompleteInput = Schema.Struct({
 });
 export type NamespaceOwnershipProviderCompleteInput = Schema.Schema.Type<
   typeof NamespaceOwnershipProviderCompleteInput
+>;
+
+export const RouteAttachmentOwnershipProviderCompleteInput = Schema.Struct({
+  session: RouteAttachmentOwnershipSession,
+  submission: NamespaceOwnershipSubmission,
+});
+export type RouteAttachmentOwnershipProviderCompleteInput = Schema.Schema.Type<
+  typeof RouteAttachmentOwnershipProviderCompleteInput
 >;
 
 export const NamespaceOwnershipProviderCompleteContext = Schema.Struct({
@@ -358,6 +420,18 @@ export interface NamespaceOwnershipProviderAdapter {
   ) => Effect.Effect<NamespaceOwnershipProviderStartResult, NamespaceOwnershipProviderFailure>;
   readonly complete: (
     input: NamespaceOwnershipProviderCompleteInput,
+    context: NamespaceOwnershipProviderCompleteContext,
+  ) => Effect.Effect<NamespaceOwnershipProviderCompleteResult, NamespaceOwnershipProviderFailure>;
+  /** Optional successor path. Callers fail closed when a provider has not implemented it. */
+  readonly startRouteAttachment?: (
+    input: RouteAttachmentOwnershipProviderStartInput,
+    context: NamespaceOwnershipProviderStartContext,
+  ) => Effect.Effect<
+    RouteAttachmentOwnershipProviderStartResult,
+    NamespaceOwnershipProviderFailure
+  >;
+  readonly completeRouteAttachment?: (
+    input: RouteAttachmentOwnershipProviderCompleteInput,
     context: NamespaceOwnershipProviderCompleteContext,
   ) => Effect.Effect<NamespaceOwnershipProviderCompleteResult, NamespaceOwnershipProviderFailure>;
 }
