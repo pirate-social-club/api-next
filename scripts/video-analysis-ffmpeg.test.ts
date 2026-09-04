@@ -39,8 +39,10 @@ import {
 let fixtureDirectory = "";
 let fixtureBytes = new Uint8Array();
 let fixtureSha256 = "";
+const localFixtureToolsAvailable = Bun.which("ffmpeg") !== null && Bun.which("ffprobe") !== null;
 
 beforeAll(async () => {
+  if (!localFixtureToolsAvailable) return;
   fixtureDirectory = await mkdtemp(join(tmpdir(), "pirate-trusted-video-fixture-"));
   const fixturePath = join(fixtureDirectory, "trusted-original-audio.mp4");
   const process = Bun.spawn(
@@ -141,7 +143,9 @@ function makeEngineHarness() {
   return { artifacts, engine };
 }
 
-describe("local pinned-FFmpeg video analysis engine", () => {
+const localFixtureSuite = localFixtureToolsAvailable ? describe : describe.skip;
+
+localFixtureSuite("local pinned-FFmpeg video analysis engine", () => {
   test("probes, hashes, extracts AAC, and emits the three required JPEG roles", async () => {
     const { artifacts, engine } = makeEngineHarness();
     const hash = await engine.hash(source());
