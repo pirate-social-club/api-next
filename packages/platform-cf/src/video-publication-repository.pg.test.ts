@@ -12,6 +12,7 @@ import {
   publishOriginalVideo,
   type VideoTrustedAnalysis,
 } from "../../domain/src/video-submission.ts";
+import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture.ts";
 import { makePostgresDataRegistrationArtifactAuthorityReader } from "./data/registration-artifact-pipeline.ts";
 import { makeDataRegistrationStore } from "./data-registration-repository.ts";
 import { createActivePersonaFixture } from "./persona-wallet.pg-fixture.ts";
@@ -60,13 +61,11 @@ async function fixture<A>(use: (admin: Client, connection: string) => Promise<A>
          VALUES ($1,'Video publication','active',$2,clock_timestamp(),clock_timestamp())`,
         [community, actor],
       );
-      await admin.query(
-        `INSERT INTO community_memberships
-          (community_id,membership_id,user_id,status,joined_at,created_at,updated_at)
-         VALUES ($1,'video-publication-membership',$2,'member',
-                 clock_timestamp(),clock_timestamp(),clock_timestamp())`,
-        [community, actor],
-      );
+      await insertActiveCommunityMembershipFixture(admin, {
+        communityId: community,
+        membershipId: "video-publication-membership",
+        userId: actor,
+      });
       await createActivePersonaFixture(admin, {
         accountId: actor,
         personaId: persona,
