@@ -33,6 +33,20 @@ describe("media processor composition", () => {
     expect(composition.workflow.providers).toBeNull();
   });
 
+  test("requires explicit provider composition before video analysis is enabled", () => {
+    const base = disabledEnv();
+    expect(() =>
+      makeMediaProcessorComposition({
+        MEDIA_PROCESSING_ENABLED: base.MEDIA_PROCESSING_ENABLED as string,
+        CONTROL_PLANE: base.CONTROL_PLANE as NonNullable<MediaProcessorRuntimeEnv["CONTROL_PLANE"]>,
+        MEDIA_PROCESSING_WORKFLOW: base.MEDIA_PROCESSING_WORKFLOW as NonNullable<
+          MediaProcessorRuntimeEnv["MEDIA_PROCESSING_WORKFLOW"]
+        >,
+        VIDEO_ANALYSIS_ENABLED: "true",
+      }),
+    ).toThrow("video analysis providers are required");
+  });
+
   test("maps only the canonical immutable logical reference to a physical R2 key", () => {
     expect(mediaProcessingPhysicalObjectKey("media://immutable/operation-1")).toBe(
       "immutable/operation-1",

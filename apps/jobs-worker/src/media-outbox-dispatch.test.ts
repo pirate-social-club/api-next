@@ -17,7 +17,7 @@ describe("media outbox dispatcher", () => {
       },
       {
         send: async (message) => {
-          messages.push(message);
+          if (!("kind" in message)) messages.push(message);
         },
       },
       2,

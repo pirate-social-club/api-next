@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { Effect } from "effect";
 import {
   attachImmutableVideo,
   createOriginalVideoSubmission,
@@ -196,11 +195,6 @@ function services(input: {
   };
   return {
     store,
-    multipart: { create: unused, renew: unused, completeOrInspect: unused, abort: unused },
-    sealer: { inspect: unused, seal: unused },
-    personaServices: {
-      personaStore: { findOwned: () => Effect.succeed(persona) },
-    },
     nowIso: () => "2026-09-04T00:01:00.000Z",
     randomUuid: () => "00000000-0000-4000-8000-000000000001",
     analysisProviders: input.providers,

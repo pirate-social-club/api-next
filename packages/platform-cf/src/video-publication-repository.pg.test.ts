@@ -17,6 +17,7 @@ import { makePostgresDataRegistrationArtifactAuthorityReader } from "./data/regi
 import { makeDataRegistrationStore } from "./data-registration-repository.ts";
 import { createActivePersonaFixture } from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import { makeControlPlaneVideoAnalysisOutboxRepository } from "./video-analysis-outbox-repository.ts";
 import { makeControlPlaneVideoPublicationStore } from "./video-publication-repository.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -237,6 +238,64 @@ suite("video publication PostgreSQL", () => {
       const finalized = await store.getSubmissionByOperation({ submissionId, operationId });
       expect(finalized?.state.phase).toBe("analysis");
       if (finalized === null) throw new Error("finalized fixture missing");
+      const analysisOutbox = makeControlPlaneVideoAnalysisOutboxRepository(layer, {
+        leaseSeconds: 60,
+        retryBaseMs: 1,
+        now: () => Date.parse("2026-09-04T00:00:00.000Z"),
+      });
+      expect((await analysisOutbox.listEligible(10)).map((row) => row.effectIdentity)).toEqual([
+        `video-analysis:${operationId}:v1:c1`,
+      ]);
+      const firstClaim = await analysisOutbox.claim(
+        `video-analysis:${operationId}:v1:c1`,
+        "video-analysis-worker-1",
+      );
+      if (firstClaim === null) throw new Error("video analysis claim missing");
+      expect(firstClaim).toMatchObject({ state: "running", deliveryAttempts: 1, claimFence: 1 });
+      expect(
+        await analysisOutbox.claim(firstClaim.effectIdentity, "video-analysis-worker-2"),
+      ).toBeNull();
+      await admin.query(
+        `UPDATE media_video_analysis_outbox
+            SET lease_expires_at=clock_timestamp()-interval '1 second'
+          WHERE effect_identity=$1`,
+        [firstClaim.effectIdentity],
+      );
+      expect((await analysisOutbox.listEligible(10)).map((row) => row.effectIdentity)).toEqual([
+        firstClaim.effectIdentity,
+      ]);
+      const recoveredClaim = await analysisOutbox.claim(
+        firstClaim.effectIdentity,
+        "video-analysis-worker-2",
+      );
+      if (recoveredClaim === null)
+        throw new Error("expired video analysis lease was not recovered");
+      expect(recoveredClaim).toMatchObject({
+        state: "running",
+        deliveryAttempts: 2,
+        claimFence: 2,
+        claimOwner: "video-analysis-worker-2",
+      });
+      expect(await analysisOutbox.complete(firstClaim)).toBe(false);
+      expect(await analysisOutbox.fail(recoveredClaim, "provider_timeout")).toBe(true);
+      await admin.query(
+        `UPDATE media_video_analysis_outbox
+            SET next_eligible_at=clock_timestamp()-interval '1 second'
+          WHERE effect_identity=$1`,
+        [firstClaim.effectIdentity],
+      );
+      const finalClaim = await analysisOutbox.claim(
+        firstClaim.effectIdentity,
+        "video-analysis-worker-3",
+      );
+      if (finalClaim === null) throw new Error("failed video analysis was not replayed");
+      expect(finalClaim.deliveryAttempts).toBe(3);
+      expect(await analysisOutbox.fail(finalClaim, "provider_unavailable")).toBe(true);
+      expect(await analysisOutbox.get(firstClaim.effectIdentity)).toMatchObject({
+        state: "exhausted",
+        deliveryAttempts: 3,
+      });
+      expect(await analysisOutbox.listEligible(10)).toEqual([]);
       const baseAnalysis = trustedAnalysis();
       const analysis: VideoTrustedAnalysis = {
         ...baseAnalysis,

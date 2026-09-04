@@ -23541,13 +23541,22 @@ CREATE TABLE media_video_analysis_outbox (
     canonical_video_sha256 text NOT NULL,
     state text DEFAULT 'pending'::text NOT NULL,
     delivery_attempts integer DEFAULT 0 NOT NULL,
+    claim_owner text,
+    claim_fence bigint DEFAULT 0 NOT NULL,
+    lease_expires_at timestamp with time zone,
+    next_eligible_at timestamp with time zone,
+    delivered_at timestamp with time zone,
+    failure_code text,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     CONSTRAINT media_video_analysis_outbox_canonical_video_sha256_check CHECK ((canonical_video_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT media_video_analysis_outbox_claim_fence_check CHECK ((claim_fence >= 0)),
     CONSTRAINT media_video_analysis_outbox_creation_revision_check CHECK ((creation_revision > 0)),
-    CONSTRAINT media_video_analysis_outbox_delivery_attempts_check CHECK (((delivery_attempts >= 0) AND (delivery_attempts <= 5))),
+    CONSTRAINT media_video_analysis_outbox_delivery_attempts_check CHECK (((delivery_attempts >= 0) AND (delivery_attempts <= 3))),
     CONSTRAINT media_video_analysis_outbox_effect_identity_check CHECK ((btrim(effect_identity) <> ''::text)),
-    CONSTRAINT media_video_analysis_outbox_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'running'::text, 'delivered'::text, 'failed'::text]))),
+    CONSTRAINT media_video_analysis_outbox_failure_code_check CHECK (((failure_code IS NULL) OR (failure_code = ANY (ARRAY['provider_unavailable'::text, 'provider_timeout'::text, 'provider_invalid'::text])))),
+    CONSTRAINT media_video_analysis_outbox_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'running'::text, 'delivered'::text, 'failed'::text, 'exhausted'::text]))),
+    CONSTRAINT media_video_analysis_outbox_state_shape CHECK ((((state = 'pending'::text) AND (delivery_attempts = 0) AND (claim_owner IS NULL) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NULL) AND (delivered_at IS NULL) AND (failure_code IS NULL)) OR ((state = 'running'::text) AND ((delivery_attempts >= 1) AND (delivery_attempts <= 3)) AND (claim_owner IS NOT NULL) AND (btrim(claim_owner) <> ''::text) AND (lease_expires_at IS NOT NULL) AND (next_eligible_at IS NULL) AND (delivered_at IS NULL) AND (failure_code IS NULL)) OR ((state = 'delivered'::text) AND ((delivery_attempts >= 1) AND (delivery_attempts <= 3)) AND (claim_owner IS NULL) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NULL) AND (delivered_at IS NOT NULL) AND (failure_code IS NULL)) OR ((state = 'failed'::text) AND ((delivery_attempts >= 1) AND (delivery_attempts <= 2)) AND (claim_owner IS NULL) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NOT NULL) AND (delivered_at IS NULL) AND (failure_code IS NOT NULL)) OR ((state = 'exhausted'::text) AND (delivery_attempts = 3) AND (claim_owner IS NULL) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NULL) AND (delivered_at IS NULL) AND (failure_code IS NOT NULL)))),
     CONSTRAINT media_video_analysis_outbox_video_revision_check CHECK ((video_revision > 0))
 );
 
@@ -28853,6 +28862,8 @@ CREATE INDEX media_transcript_lineage_idx ON media_transcript_artifacts USING bt
 CREATE UNIQUE INDEX media_transcript_revision_lineage_uidx ON media_transcript_artifacts USING btree (submission_id, audio_revision, analysis_revision, canonical_audio_sha256);
 
 CREATE INDEX media_upload_reservations_expiry_idx ON media_upload_reservations USING btree (state, expires_at, reservation_id) WHERE (state = ANY (ARRAY['issued'::text, 'claimed'::text]));
+
+CREATE INDEX media_video_analysis_outbox_eligible_idx ON media_video_analysis_outbox USING btree (created_at, effect_identity) WHERE ((state = ANY (ARRAY['pending'::text, 'running'::text, 'failed'::text])) AND (delivery_attempts < 3));
 
 CREATE INDEX megapot_drawing_observations_latest_idx ON megapot_drawing_observations USING btree (attestation_id, drawing_id, block_number DESC, observation_id);
 

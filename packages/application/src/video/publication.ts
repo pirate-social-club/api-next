@@ -326,6 +326,12 @@ export type VideoPublicationServices = Readonly<{
   randomUuid?: () => string;
 }>;
 
+/** Internal analysis/decision/publication commits do not hold ingress capabilities. */
+export type VideoPublicationCommitServices = Pick<
+  VideoPublicationServices,
+  "store" | "nowIso" | "randomUuid"
+>;
+
 function decodeBody<S extends Schema.ConstraintDecoder<unknown>>(
   schema: S,
   input: unknown,
@@ -497,7 +503,7 @@ function capabilityUnavailable(capability: "song_reference" | "original_sound_re
   });
 }
 
-function uuid(services: VideoPublicationServices): string {
+function uuid(services: Pick<VideoPublicationServices, "randomUuid">): string {
   return services.randomUuid?.() ?? crypto.randomUUID();
 }
 
@@ -930,7 +936,7 @@ export async function getVideoSubmission(
 
 export async function acceptTrustedVideoAnalysis(
   input: Readonly<{ submissionId: string; analysis: VideoTrustedAnalysis }>,
-  services: VideoPublicationServices,
+  services: VideoPublicationCommitServices,
 ): Promise<VideoPostSubmissionV1> {
   const record = await services.store.getSubmissionByOperation({
     submissionId: input.submissionId,
@@ -984,7 +990,7 @@ export async function recordVideoProcessingFailure(
     failureCode: VideoTechnicalFailureCode | "poster_undecodable" | "poster_timestamp_out_of_range";
     evidenceRef: string;
   }>,
-  services: VideoPublicationServices,
+  services: VideoPublicationCommitServices,
 ): Promise<VideoPostSubmissionV1> {
   const record = await services.store.getSubmissionByOperation({
     submissionId: input.submissionId,
@@ -1002,7 +1008,7 @@ export async function recordVideoProcessingFailure(
 
 async function publishPreparedVideo(
   record: VideoSubmissionRecord,
-  services: VideoPublicationServices,
+  services: VideoPublicationCommitServices,
 ): Promise<VideoSubmissionRecord> {
   const analysis = record.state.analysis;
   const decision = record.state.decision;

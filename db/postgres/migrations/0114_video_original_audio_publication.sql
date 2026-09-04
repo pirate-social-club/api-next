@@ -376,14 +376,45 @@ CREATE TABLE media_video_analysis_outbox (
   video_revision BIGINT NOT NULL CHECK (video_revision > 0),
   creation_revision BIGINT NOT NULL CHECK (creation_revision > 0),
   canonical_video_sha256 TEXT NOT NULL CHECK (canonical_video_sha256 ~ '^[0-9a-f]{64}$'),
-  state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'running', 'delivered', 'failed')),
-  delivery_attempts INTEGER NOT NULL DEFAULT 0 CHECK (delivery_attempts BETWEEN 0 AND 5),
+  state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'running', 'delivered', 'failed', 'exhausted')),
+  delivery_attempts INTEGER NOT NULL DEFAULT 0 CHECK (delivery_attempts BETWEEN 0 AND 3),
+  claim_owner TEXT,
+  claim_fence BIGINT NOT NULL DEFAULT 0 CHECK (claim_fence >= 0),
+  lease_expires_at TIMESTAMPTZ,
+  next_eligible_at TIMESTAMPTZ,
+  delivered_at TIMESTAMPTZ,
+  failure_code TEXT CHECK (failure_code IS NULL OR failure_code IN ('provider_unavailable', 'provider_timeout', 'provider_invalid')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
   UNIQUE (submission_id, video_revision, creation_revision),
   FOREIGN KEY (submission_id, video_revision)
-    REFERENCES media_video_revisions (submission_id, video_revision)
+    REFERENCES media_video_revisions (submission_id, video_revision),
+  CONSTRAINT media_video_analysis_outbox_state_shape CHECK (
+    (state = 'pending' AND delivery_attempts = 0 AND claim_owner IS NULL
+      AND lease_expires_at IS NULL AND next_eligible_at IS NULL
+      AND delivered_at IS NULL AND failure_code IS NULL)
+    OR (state = 'running' AND delivery_attempts BETWEEN 1 AND 3
+      AND claim_owner IS NOT NULL AND btrim(claim_owner) <> ''
+      AND lease_expires_at IS NOT NULL AND next_eligible_at IS NULL
+      AND delivered_at IS NULL AND failure_code IS NULL)
+    OR (state = 'delivered' AND delivery_attempts BETWEEN 1 AND 3
+      AND claim_owner IS NULL AND lease_expires_at IS NULL
+      AND next_eligible_at IS NULL AND delivered_at IS NOT NULL
+      AND failure_code IS NULL)
+    OR (state = 'failed' AND delivery_attempts BETWEEN 1 AND 2
+      AND claim_owner IS NULL AND lease_expires_at IS NULL
+      AND next_eligible_at IS NOT NULL AND delivered_at IS NULL
+      AND failure_code IS NOT NULL)
+    OR (state = 'exhausted' AND delivery_attempts = 3
+      AND claim_owner IS NULL AND lease_expires_at IS NULL
+      AND next_eligible_at IS NULL AND delivered_at IS NULL
+      AND failure_code IS NOT NULL)
+  )
 );
+
+CREATE INDEX media_video_analysis_outbox_eligible_idx
+  ON media_video_analysis_outbox (created_at, effect_identity)
+  WHERE state IN ('pending', 'running', 'failed') AND delivery_attempts < 3;
 
 CREATE TABLE media_video_stream_ingests (
   operation_id TEXT PRIMARY KEY CHECK (btrim(operation_id) <> ''),

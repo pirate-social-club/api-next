@@ -79,6 +79,7 @@
     "./media-upload-store": "./src/media-upload-store.ts",
     "./video-multipart-r2": "./src/video-multipart-r2.ts",
     "./video-publication-repository": "./src/video-publication-repository.ts",
+    "./video-analysis-outbox-repository": "./src/video-analysis-outbox-repository.ts",
     "./megapot-approval-coordinator": "./src/megapot-approval-coordinator.ts",
     "./megapot-approval-repository": "./src/megapot-approval-repository.ts",
     "./megapot-allocation-coordinator": "./src/megapot-allocation-coordinator.ts",

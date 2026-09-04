@@ -1,5 +1,6 @@
 import type { MediaProcessingProviders } from "@pirate/application/media/processing-contracts";
 import type { MediaTransformService } from "@pirate/application/media/transform";
+import type { VideoAnalysisProviders } from "@pirate/application/video/analysis";
 import {
   type CloudflareMediaWorkflowBinding,
   makeCloudflareMediaProcessingWorkflowLauncher,
@@ -21,6 +22,8 @@ import { makeOpenRouterClassifierAdapter } from "@pirate/platform-cf/media-provi
 import { disabledTransloaditMediaTransform } from "@pirate/platform-cf/media-transform";
 import { makeOpenAiTextModerationProvider } from "@pirate/platform-cf/openai-text-moderation";
 import { makeHyperdriveControlPlaneLayer } from "@pirate/platform-cf/postgres";
+import { makeControlPlaneVideoAnalysisOutboxRepository } from "@pirate/platform-cf/video-analysis-outbox-repository";
+import { makeControlPlaneVideoPublicationStore } from "@pirate/platform-cf/video-publication-repository";
 import { Effect } from "effect";
 import type { MediaProcessorComposition, MediaProcessorWorkerEnv } from "./index.ts";
 import { isMediaProcessingEnabled } from "./posture.ts";
@@ -43,7 +46,12 @@ export type MediaProcessorRuntimeEnv = MediaProcessorWorkerEnv &
     readonly OPENROUTER_API_KEY?: string;
     readonly DATA_REGISTRATION_ENABLED?: string;
     readonly DATA_REGISTRATION_CHAIN_ID?: string;
+    readonly VIDEO_ANALYSIS_ENABLED?: string;
   }>;
+
+export type MediaProcessorRuntimeAdapters = Readonly<{
+  readonly videoAnalysisProviders?: VideoAnalysisProviders;
+}>;
 
 function requiredText(value: string | undefined, name: string): string {
   if (value === undefined || value.trim().length === 0) {
@@ -217,6 +225,7 @@ const workflowIsNeverMissingByThrownError = (): boolean => false;
 
 export function makeMediaProcessorComposition(
   env: MediaProcessorRuntimeEnv,
+  adapters: MediaProcessorRuntimeAdapters = {},
 ): MediaProcessorComposition {
   const controlPlane = requiredBinding(env.CONTROL_PLANE, "CONTROL_PLANE");
   const workflowBinding = requiredBinding(
@@ -240,9 +249,27 @@ export function makeMediaProcessorComposition(
   );
   const enabled = isMediaProcessingEnabled(env.MEDIA_PROCESSING_ENABLED);
   const workerId = `media-processor-${crypto.randomUUID()}`;
+  const videoAnalysisEnabled = env.VIDEO_ANALYSIS_ENABLED === "true";
+  if (videoAnalysisEnabled && adapters.videoAnalysisProviders === undefined) {
+    throw new Error("video analysis providers are required when video analysis is enabled");
+  }
 
   return {
     queue: { store, workflow, workerId },
+    ...(videoAnalysisEnabled && adapters.videoAnalysisProviders !== undefined
+      ? {
+          videoAnalysis: {
+            outbox: makeControlPlaneVideoAnalysisOutboxRepository(runtime),
+            runtime: {
+              store: makeControlPlaneVideoPublicationStore(runtime),
+              nowIso: () => new Date().toISOString(),
+              randomUuid: () => crypto.randomUUID(),
+              analysisProviders: adapters.videoAnalysisProviders,
+            },
+            workerId,
+          },
+        }
+      : {}),
     workflow: {
       store,
       providers: enabled ? makeEnabledProviders(env) : null,

@@ -12,7 +12,7 @@ import { mediaSha256Bytes } from "../media/submission-service.ts";
 import {
   acceptTrustedVideoAnalysis,
   recordVideoProcessingFailure,
-  type VideoPublicationServices,
+  type VideoPublicationCommitServices,
 } from "./publication.ts";
 
 export type VideoAnalysisSource = Readonly<{
@@ -102,7 +102,17 @@ export type VideoAnalysisProviders = Readonly<{
   revisions: Readonly<{ probe: string }>;
 }>;
 
-export type VideoAnalysisRuntimeServices = VideoPublicationServices &
+/**
+ * Provider-neutral binary analysis boundary. The engine receives only a
+ * server-resolved immutable identity; implementations own every decoder and
+ * extraction argument and never accept a client URL or command fragment.
+ */
+export type VideoAnalysisMediaEngine = Pick<
+  VideoAnalysisProviders,
+  "probe" | "hash" | "extractSoundtrack" | "extractFrames"
+>;
+
+export type VideoAnalysisRuntimeServices = VideoPublicationCommitServices &
   Readonly<{ analysisProviders: VideoAnalysisProviders }>;
 
 const encoder = new TextEncoder();
