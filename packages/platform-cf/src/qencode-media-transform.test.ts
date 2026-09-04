@@ -334,6 +334,48 @@ describe("Qencode media transform", () => {
     expect(result.attempt.providerJobPhase).toBe("started");
   });
 
+  test("does not mistake source-stream status metadata for the frozen M4A output policy", async () => {
+    const service = makeQencodeMediaTransform(
+      options(
+        fakeTransport({
+          status: {
+            state: "completed",
+            outputs: [
+              {
+                kind: "audio",
+                userTag: "pirate-audio-v1",
+                url: "https://storage.qencode.com/job/audio.m4a",
+                outputFormat: "m4a",
+                mediaFacts: {
+                  codec: "aac",
+                  sampleRateHz: 48_000,
+                  channels: 1,
+                  width: null,
+                  height: null,
+                },
+              },
+            ],
+          },
+        }),
+      ),
+    );
+
+    const result = await Effect.runPromise(
+      service.extractVideoAudio({
+        version: "media-transform-video-audio-input-v1",
+        binding,
+        source,
+        extractionPolicyVersion: MEDIA_TRANSFORM_VIDEO_AUDIO_POLICY_V1,
+        attempt: acceptedAttempt("started"),
+      }),
+    );
+
+    expect(result.status).toBe("completed");
+    if (result.status !== "completed") throw new Error("expected completion");
+    expect(result.artifact.mediaType).toBe("audio/mp4");
+    expect(result.artifact.policyRevision).toBe(MEDIA_TRANSFORM_VIDEO_AUDIO_POLICY_V1);
+  });
+
   test("requests three bounded frame outputs without upscaling the source", async () => {
     let started: Parameters<QencodeTaskTransport["startTask"]>[0] | undefined;
     const service = makeQencodeMediaTransform(
@@ -553,6 +595,12 @@ describe("Qencode media transform", () => {
     expect(stored?.customMetadata.sourceSha256).toBe(SOURCE_SHA256);
     await expect(
       store.seal({ ...input, sourceUrl: "https://attacker.example/audio.m4a" }),
+    ).rejects.toThrow("invalid qencode output url");
+    await expect(
+      store.seal({ ...input, sourceUrl: "https://storage.qencode.com:8443/audio.m4a" }),
+    ).rejects.toThrow("invalid qencode output url");
+    await expect(
+      store.seal({ ...input, sourceUrl: "https://storage.qencode.com/audio.m4a#unexpected" }),
     ).rejects.toThrow("invalid qencode output url");
   });
 });

@@ -327,6 +327,8 @@ function validProviderOutputUrl(value: string): boolean {
       url.protocol === "https:" &&
       url.username.length === 0 &&
       url.password.length === 0 &&
+      url.port.length === 0 &&
+      url.hash.length === 0 &&
       (url.hostname === "qencode.com" || url.hostname.endsWith(".qencode.com"))
     );
   } catch {
@@ -680,9 +682,12 @@ function parseProbeMetadata(value: unknown, evidenceRef: string): MediaTransform
     audio?.codec_name !== "aac" ||
     !Number.isSafeInteger(video.width) ||
     !Number.isSafeInteger(video.height) ||
+    Number(video.width) < 1 ||
+    Number(video.height) < 1 ||
     !Number.isSafeInteger(durationMs) ||
     durationMs < 1 ||
-    frameRateMillihertz === null
+    frameRateMillihertz === null ||
+    frameRateMillihertz < 1
   ) {
     throw new QencodeMalformedResponse();
   }
@@ -822,13 +827,8 @@ async function resumeJob(
     }
     if (input.version === "media-transform-video-audio-input-v1") {
       const output = oneOutput(status.outputs, "audio", "pirate-audio-v1", "m4a");
-      if (
-        output.mediaFacts.codec !== "aac" ||
-        output.mediaFacts.sampleRateHz !== 44_100 ||
-        output.mediaFacts.channels !== 2
-      ) {
-        throw new QencodeMalformedResponse();
-      }
+      // Qencode documents audios[].meta as source-stream metadata. The output
+      // policy is the fixed server-owned M4A query, not those source facts.
       const artifact = await options.artifacts.seal({
         sourceUrl: output.url,
         artifactKey: `video-analysis/${input.binding.operationId}/v${input.binding.videoRevision}/a${input.binding.analysisRevision}/soundtrack.m4a`,
