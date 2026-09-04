@@ -23544,12 +23544,14 @@ CREATE TABLE media_video_analysis_outbox (
     submission_id text NOT NULL,
     operation_id text NOT NULL,
     video_revision bigint NOT NULL,
+    creation_revision bigint NOT NULL,
     canonical_video_sha256 text NOT NULL,
     state text DEFAULT 'pending'::text NOT NULL,
     delivery_attempts integer DEFAULT 0 NOT NULL,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     CONSTRAINT media_video_analysis_outbox_canonical_video_sha256_check CHECK ((canonical_video_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT media_video_analysis_outbox_creation_revision_check CHECK ((creation_revision > 0)),
     CONSTRAINT media_video_analysis_outbox_delivery_attempts_check CHECK (((delivery_attempts >= 0) AND (delivery_attempts <= 5))),
     CONSTRAINT media_video_analysis_outbox_effect_identity_check CHECK ((btrim(effect_identity) <> ''::text)),
     CONSTRAINT media_video_analysis_outbox_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'running'::text, 'delivered'::text, 'failed'::text]))),
@@ -23560,12 +23562,14 @@ CREATE TABLE media_video_derived_artifacts (
     artifact_ref text NOT NULL,
     submission_id text NOT NULL,
     video_revision bigint NOT NULL,
+    analysis_revision bigint NOT NULL,
     artifact_kind text NOT NULL,
     canonical_sha256 text NOT NULL,
     retention_policy_revision bigint NOT NULL,
     retained_until_source_disposition boolean DEFAULT true NOT NULL,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     CONSTRAINT media_video_derived_artifact_retained_until_source_dispos_check CHECK (retained_until_source_disposition),
+    CONSTRAINT media_video_derived_artifacts_analysis_revision_check CHECK ((analysis_revision > 0)),
     CONSTRAINT media_video_derived_artifacts_artifact_kind_check CHECK ((artifact_kind = ANY (ARRAY['extracted_audio'::text, 'poster'::text, 'first'::text, 'midpoint'::text]))),
     CONSTRAINT media_video_derived_artifacts_artifact_ref_check CHECK ((btrim(artifact_ref) <> ''::text)),
     CONSTRAINT media_video_derived_artifacts_canonical_sha256_check CHECK ((canonical_sha256 ~ '^[0-9a-f]{64}$'::text)),
@@ -27798,13 +27802,13 @@ ALTER TABLE ONLY media_video_analysis_outbox
     ADD CONSTRAINT media_video_analysis_outbox_pkey PRIMARY KEY (effect_identity);
 
 ALTER TABLE ONLY media_video_analysis_outbox
-    ADD CONSTRAINT media_video_analysis_outbox_submission_id_video_revision_key UNIQUE (submission_id, video_revision);
+    ADD CONSTRAINT media_video_analysis_outbox_submission_id_video_revision_cr_key UNIQUE (submission_id, video_revision, creation_revision);
 
 ALTER TABLE ONLY media_video_derived_artifacts
     ADD CONSTRAINT media_video_derived_artifacts_pkey PRIMARY KEY (artifact_ref);
 
 ALTER TABLE ONLY media_video_derived_artifacts
-    ADD CONSTRAINT media_video_derived_artifacts_submission_id_video_revision__key UNIQUE (submission_id, video_revision, artifact_kind);
+    ADD CONSTRAINT media_video_derived_artifacts_submission_id_video_revision__key UNIQUE (submission_id, video_revision, analysis_revision, artifact_kind);
 
 ALTER TABLE ONLY media_video_enrichment_outbox
     ADD CONSTRAINT media_video_enrichment_outbox_pkey PRIMARY KEY (effect_identity);

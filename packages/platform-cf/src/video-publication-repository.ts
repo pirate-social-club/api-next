@@ -12,6 +12,7 @@ import type {
 import { Effect, type Layer } from "effect";
 import {
   attachImmutableVideo,
+  VIDEO_DERIVED_ARTIFACT_RETENTION_POLICY_V1,
   type VideoSubmissionState,
 } from "../../domain/src/video-submission.ts";
 
@@ -351,6 +352,21 @@ export function makeControlPlaneVideoPublicationStore(
                     WHERE reservation_id=$1 AND actor_user_id=$2 AND actor_persona_id=$3
                       AND media_kind='video'`,
             values: [input.reservationId, input.actorAccountId, input.authorPersonaId],
+            readonly: true,
+          });
+          return result.rows[0] === undefined ? null : reservationFromRow(result.rows[0]);
+        }),
+      ),
+
+    getReservationForAccount: (input) =>
+      run(
+        Effect.gen(function* () {
+          const db = yield* ControlPlaneDb;
+          const result = yield* db.execute<Row>({
+            label: "video-publication.reservation-account-read",
+            text: `SELECT ${RESERVATION_COLUMNS} FROM media_upload_reservations
+                    WHERE reservation_id=$1 AND actor_user_id=$2 AND media_kind='video'`,
+            values: [input.reservationId, input.actorAccountId],
             readonly: true,
           });
           return result.rows[0] === undefined ? null : reservationFromRow(result.rows[0]);
@@ -750,10 +766,11 @@ export function makeControlPlaneVideoPublicationStore(
               yield* tx.execute({
                 label: "video-publication.analysis-outbox",
                 text: `INSERT INTO media_video_analysis_outbox
-                  (effect_identity,submission_id,operation_id,video_revision,canonical_video_sha256)
-                  VALUES ($1,$2,$3,1,$4) ON CONFLICT DO NOTHING`,
+                  (effect_identity,submission_id,operation_id,video_revision,creation_revision,
+                   canonical_video_sha256)
+                  VALUES ($1,$2,$3,1,1,$4) ON CONFLICT DO NOTHING`,
                 values: [
-                  `video-analysis:${current.state.operationId}:v1`,
+                  `video-analysis:${current.state.operationId}:v1:c1`,
                   current.state.submissionId,
                   current.state.operationId,
                   input.immutable.canonicalSha256,
@@ -898,6 +915,37 @@ export function makeControlPlaneVideoPublicationStore(
                 ],
                 readonly: false,
               });
+              const soundtrack = input.analysis.audio.soundtrack;
+              for (const artifact of [
+                {
+                  artifactRef: soundtrack.extractedAudioRef,
+                  artifactKind: "extracted_audio" as const,
+                  canonicalSha256: soundtrack.extractedAudioSha256,
+                },
+                ...input.analysis.frames.extracted.map((frame) => ({
+                  artifactRef: frame.artifactRef,
+                  artifactKind: frame.role,
+                  canonicalSha256: frame.sha256,
+                })),
+              ]) {
+                yield* tx.execute({
+                  label: "video-publication.analysis-derived-insert",
+                  text: `INSERT INTO media_video_derived_artifacts
+                    (artifact_ref,submission_id,video_revision,analysis_revision,artifact_kind,
+                     canonical_sha256,retention_policy_revision)
+                    VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING`,
+                  values: [
+                    artifact.artifactRef,
+                    current.state.submissionId,
+                    input.analysis.videoRevision,
+                    input.analysis.analysisRevision,
+                    artifact.artifactKind,
+                    artifact.canonicalSha256,
+                    VIDEO_DERIVED_ARTIFACT_RETENTION_POLICY_V1.policyRevision,
+                  ],
+                  readonly: false,
+                });
+              }
               if (input.decision.outcome.kind === "review") {
                 const safety = input.decision.outcome.reasonCodes.filter((reason) =>
                   [
@@ -951,9 +999,7 @@ export function makeControlPlaneVideoPublicationStore(
         }),
       ),
 
-    publish: (input) => run(publishTransaction(input)),
-
-    retryPoster: (input) =>
+    recordProcessingFailure: (input) =>
       run(
         Effect.gen(function* () {
           const db = yield* ControlPlaneDb;
@@ -965,7 +1011,56 @@ export function makeControlPlaneVideoPublicationStore(
               });
               if (
                 current === null ||
+                current.state.status !== "processing" ||
+                !["analysis", "publish"].includes(current.state.phase ?? "")
+              ) {
+                throw new Error("video processing failure fence rejected");
+              }
+              const next: VideoSubmissionState = {
+                ...current.state,
+                status: "processing_failed",
+                phase: null,
+                failureCode: input.failureCode,
+              };
+              yield* updateSubmissionSnapshot(tx, {
+                prior: current.state,
+                next,
+                extraSql: ",failure_evidence_ref=$10",
+                extraValues: [input.evidenceRef],
+              });
+              return { ...current, state: next, updatedAt: new Date().toISOString() };
+            }),
+          );
+        }),
+      ),
+
+    publish: (input) => run(publishTransaction(input)),
+
+    retryPoster: (input) =>
+      run(
+        Effect.gen(function* () {
+          const db = yield* ControlPlaneDb;
+          return yield* db.withTransaction((tx) =>
+            Effect.gen(function* () {
+              yield* lock(
+                tx,
+                `video-poster-retry:${input.submission.operationId}:${input.idempotencyKey}`,
+              );
+              const prior = yield* commandReplay(tx, {
+                actorAccountId: input.submission.actorAccountId,
+                endpointTemplate: input.endpointTemplate,
+                idempotencyKey: input.idempotencyKey,
+                requestHash: input.requestHash,
+              });
+              if (prior.kind !== "none") return prior;
+              const current = yield* findSubmission(tx, {
+                clause: "s.submission_id=$1 AND s.operation_id=$2 FOR UPDATE",
+                values: [input.submission.submissionId, input.submission.operationId],
+              });
+              if (
+                current === null ||
                 current.state.status !== "processing_failed" ||
+                current.state.video === null ||
                 current.state.retryCount >= 3 ||
                 !["poster_undecodable", "poster_timestamp_out_of_range"].includes(
                   current.state.failureCode ?? "",
@@ -990,7 +1085,115 @@ export function makeControlPlaneVideoPublicationStore(
                   ",poster_timestamp_ms=$10,decision_revision=0,current_decision_revision=NULL",
                 extraValues: [input.posterTimestampMs],
               });
-              return { ...current, state: next, updatedAt: new Date().toISOString() };
+              yield* tx.execute({
+                label: "video-publication.poster-retry-outbox",
+                text: `INSERT INTO media_video_analysis_outbox
+                  (effect_identity,submission_id,operation_id,video_revision,creation_revision,
+                   canonical_video_sha256)
+                  VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`,
+                values: [
+                  `video-analysis:${current.state.operationId}:v${current.state.videoRevision}:c${next.creationRevision}`,
+                  current.state.submissionId,
+                  current.state.operationId,
+                  current.state.videoRevision,
+                  next.creationRevision,
+                  current.state.video.canonicalSha256,
+                ],
+                readonly: false,
+              });
+              yield* storeCommand(tx, {
+                state: current.state,
+                actorAccountId: current.state.actorAccountId,
+                endpointTemplate: input.endpointTemplate,
+                idempotencyKey: input.idempotencyKey,
+                requestHash: input.requestHash,
+                responseBytes: input.responseBytes,
+                responseSha256: input.responseSha256,
+              });
+              return { kind: "none" as const };
+            }),
+          );
+        }),
+      ),
+
+    retryTechnical: (input) =>
+      run(
+        Effect.gen(function* () {
+          const db = yield* ControlPlaneDb;
+          return yield* db.withTransaction((tx) =>
+            Effect.gen(function* () {
+              yield* lock(
+                tx,
+                `video-technical-retry:${input.submission.operationId}:${input.idempotencyKey}`,
+              );
+              const prior = yield* commandReplay(tx, {
+                actorAccountId: input.submission.actorAccountId,
+                endpointTemplate: input.endpointTemplate,
+                idempotencyKey: input.idempotencyKey,
+                requestHash: input.requestHash,
+              });
+              if (prior.kind !== "none") return prior;
+              const current = yield* findSubmission(tx, {
+                clause: "s.submission_id=$1 AND s.operation_id=$2 FOR UPDATE",
+                values: [input.submission.submissionId, input.submission.operationId],
+              });
+              if (
+                current === null ||
+                current.state.status !== "processing_failed" ||
+                current.state.retryCount >= 3 ||
+                current.state.video === null ||
+                current.state.failureCode === null ||
+                ["poster_undecodable", "poster_timestamp_out_of_range", "upload_seal_conflict"].includes(
+                  current.state.failureCode,
+                )
+              ) {
+                throw new Error("video technical retry rejected");
+              }
+              const publicationOnly = current.state.failureCode === "publication_failed";
+              const next: VideoSubmissionState = {
+                ...current.state,
+                creationRevision: current.state.creationRevision + 1,
+                retryCount: current.state.retryCount + 1,
+                status: "processing",
+                phase: publicationOnly ? "publish" : "analysis",
+                failureCode: null,
+                ...(publicationOnly
+                  ? {}
+                  : { decision: null, reviewReasons: [], approvedHolds: [] }),
+              };
+              yield* updateSubmissionSnapshot(tx, {
+                prior: current.state,
+                next,
+                extraSql: ",failure_evidence_ref=NULL",
+              });
+              if (!publicationOnly) {
+                yield* tx.execute({
+                  label: "video-publication.technical-retry-outbox",
+                  text: `INSERT INTO media_video_analysis_outbox
+                    (effect_identity,submission_id,operation_id,video_revision,creation_revision,
+                     canonical_video_sha256)
+                    VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`,
+                  values: [
+                    `video-analysis:${current.state.operationId}:v${current.state.videoRevision}:c${next.creationRevision}`,
+                    current.state.submissionId,
+                    current.state.operationId,
+                    current.state.videoRevision,
+                    next.creationRevision,
+                    current.state.video.canonicalSha256,
+                  ],
+                  readonly: false,
+                });
+              }
+              yield* storeCommand(tx, {
+                state: current.state,
+                actorAccountId: current.state.actorAccountId,
+                endpointTemplate: input.endpointTemplate,
+                idempotencyKey: input.idempotencyKey,
+                requestHash: input.requestHash,
+                responseBytes: input.responseBytes,
+                responseSha256: input.responseSha256,
+              });
+              return { kind: "none" as const };
             }),
           );
         }),
@@ -1044,6 +1247,17 @@ export function makeControlPlaneVideoPublicationStore(
           const db = yield* ControlPlaneDb;
           return yield* db.withTransaction((tx) =>
             Effect.gen(function* () {
+              yield* lock(
+                tx,
+                `video-moderation:${input.actor.userId}:${input.idempotencyKey}`,
+              );
+              const prior = yield* commandReplay(tx, {
+                actorAccountId: input.actor.userId,
+                endpointTemplate: input.endpointTemplate,
+                idempotencyKey: input.idempotencyKey,
+                requestHash: input.requestHash,
+              });
+              if (prior.kind !== "none") return prior;
               const current = yield* findSubmission(tx, {
                 clause: "s.submission_id=$1 AND s.operation_id=$2 FOR UPDATE",
                 values: [input.submission.submissionId, input.submission.operationId],
@@ -1054,6 +1268,13 @@ export function makeControlPlaneVideoPublicationStore(
                 current.state.creationRevision !== input.expectedCreationRevision
               )
                 throw new Error("video moderation fence rejected");
+              const authorized = yield* tx.execute({
+                label: "video-publication.moderator-recheck",
+                text: "SELECT 1 WHERE has_community_moderation_capability_v1($1,$2,'moderation.act')",
+                values: [input.actor.userId, current.state.communityId],
+                readonly: true,
+              });
+              if (authorized.rowCount !== 1) throw new Error("video moderator authority rejected");
               const actionId = `video-moderation:${input.actor.userId}:${input.idempotencyKey}`;
               if (input.action.kind === "block") {
                 yield* tx.execute({
@@ -1086,7 +1307,16 @@ export function makeControlPlaneVideoPublicationStore(
                         },
                 };
                 yield* updateSubmissionSnapshot(tx, { prior: current.state, next });
-                return { ...current, state: next, updatedAt: new Date().toISOString() };
+                yield* storeCommand(tx, {
+                  state: current.state,
+                  actorAccountId: input.actor.userId,
+                  endpointTemplate: input.endpointTemplate,
+                  idempotencyKey: input.idempotencyKey,
+                  requestHash: input.requestHash,
+                  responseBytes: input.responseBytes,
+                  responseSha256: input.responseSha256,
+                });
+                return { kind: "none" as const };
               }
               const updated = yield* tx.execute({
                 label: "video-publication.hold-approve",
@@ -1116,7 +1346,15 @@ export function makeControlPlaneVideoPublicationStore(
                 ...current.state,
                 approvedHolds: [...current.state.approvedHolds, input.action.hold],
                 ...(allApproved
-                  ? { status: "processing" as const, phase: "publish" as const, reviewReasons: [] }
+                  ? {
+                      status: "processing" as const,
+                      phase: "publish" as const,
+                      reviewReasons: [],
+                      decision:
+                        current.state.decision === null
+                          ? null
+                          : { ...current.state.decision, outcome: { kind: "publish" as const } },
+                    }
                   : {}),
               };
               yield* updateSubmissionSnapshot(tx, {
@@ -1126,7 +1364,16 @@ export function makeControlPlaneVideoPublicationStore(
                   ? ",review_ref=NULL,review_reason_code=NULL,held_revision=NULL"
                   : "",
               });
-              return { ...current, state: next, updatedAt: new Date().toISOString() };
+              yield* storeCommand(tx, {
+                state: current.state,
+                actorAccountId: input.actor.userId,
+                endpointTemplate: input.endpointTemplate,
+                idempotencyKey: input.idempotencyKey,
+                requestHash: input.requestHash,
+                responseBytes: input.responseBytes,
+                responseSha256: input.responseSha256,
+              });
+              return { kind: "none" as const };
             }),
           );
         }),
@@ -1198,13 +1445,14 @@ function publishTransaction(input: VideoPublishBundle) {
           yield* tx.execute({
             label: "video-publication.derived-insert",
             text: `INSERT INTO media_video_derived_artifacts
-              (artifact_ref,submission_id,video_revision,artifact_kind,canonical_sha256,
-               retention_policy_revision)
-              VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`,
+              (artifact_ref,submission_id,video_revision,analysis_revision,artifact_kind,
+               canonical_sha256,retention_policy_revision)
+              VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING`,
             values: [
               artifact.artifactRef,
               current.state.submissionId,
               current.state.videoRevision,
+              current.state.analysisRevision,
               artifact.artifactKind,
               artifact.canonicalSha256,
               input.originalSound.retentionPolicyRevision,

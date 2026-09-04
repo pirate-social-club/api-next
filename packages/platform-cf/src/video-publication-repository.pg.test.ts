@@ -238,7 +238,22 @@ suite("video publication PostgreSQL", () => {
       const finalized = await store.getSubmissionByOperation({ submissionId, operationId });
       expect(finalized?.state.phase).toBe("analysis");
       if (finalized === null) throw new Error("finalized fixture missing");
-      const analysis = trustedAnalysis();
+      const baseAnalysis = trustedAnalysis();
+      const analysis: VideoTrustedAnalysis = {
+        ...baseAnalysis,
+        mediaSafety: "review_required",
+        audio: {
+          intent: "original_audio",
+          soundtrack: {
+            extractedAudioRef: baseAnalysis.audio.soundtrack.extractedAudioRef,
+            extractedAudioSha256: baseAnalysis.audio.soundtrack.extractedAudioSha256,
+            verification: null,
+            exhaustion: "acr_exhausted",
+            evidenceRef: "acr:exhausted",
+            policyRevision: baseAnalysis.audio.soundtrack.policyRevision,
+          },
+        },
+      };
       const decision = decideOriginalAudioVideo({
         state: finalized.state,
         analysis,
@@ -246,16 +261,52 @@ suite("video publication PostgreSQL", () => {
         decidedAt: "2026-09-04T00:02:00.000Z",
       });
       const decided = attachVideoDecision(finalized.state, analysis, decision);
-      const ready = await store.commitAnalysisDecision({
+      let ready = await store.commitAnalysisDecision({
         submission: finalized.state,
         analysis,
         decision,
         nextState: decided,
       });
+      expect(ready.state.status).toBe("manual_review");
+      await store.moderate({
+        submission: ready.state,
+        actor: { kind: "user", userId: actor },
+        expectedCreationRevision: ready.state.creationRevision,
+        action: { kind: "approve", hold: "safety", evidenceRef: null },
+        endpointTemplate: "/moderation/media-post-submissions/:submissionId/actions",
+        idempotencyKey: "approve-video-safety",
+        requestHash: "8".repeat(64),
+        responseBytes,
+        responseSha256,
+      });
+      const safetyApproved = await store.getSubmissionByOperation({ submissionId, operationId });
+      if (safetyApproved === null) throw new Error("safety-approved video missing");
+      ready = safetyApproved;
+      expect(ready.state.status).toBe("manual_review");
+      await store.moderate({
+        submission: ready.state,
+        actor: { kind: "user", userId: actor },
+        expectedCreationRevision: ready.state.creationRevision,
+        action: {
+          kind: "approve",
+          hold: "soundtrack",
+          evidenceRef: "rights-evidence:fixture",
+        },
+        endpointTemplate: "/moderation/media-post-submissions/:submissionId/actions",
+        idempotencyKey: "approve-video-soundtrack",
+        requestHash: "9".repeat(64),
+        responseBytes,
+        responseSha256,
+      });
+      const soundtrackApproved = await store.getSubmissionByOperation({ submissionId, operationId });
+      if (soundtrackApproved === null) throw new Error("soundtrack-approved video missing");
+      ready = soundtrackApproved;
+      expect(ready.state).toMatchObject({ status: "processing", phase: "publish" });
       const publication = publishOriginalVideo(ready.state, "post-video-publication");
+      if (ready.state.decision === null) throw new Error("approved video decision missing");
       const bundle = {
         state: publication.state,
-        decision,
+        decision: ready.state.decision,
         originalSound: publication.originalSound,
         poster: {
           artifactRef: analysis.frames.extracted[0].artifactRef,
@@ -284,6 +335,7 @@ suite("video publication PostgreSQL", () => {
         data_operations: number;
         data_outbox: number;
         enrichments: number;
+        derived_artifacts: number;
         song_edges: number;
       }>(
         `SELECT
@@ -296,6 +348,8 @@ suite("video publication PostgreSQL", () => {
              JOIN data_registration_operations d USING (registration_operation_id)
             WHERE d.submission_id=$1) AS data_outbox,
           (SELECT count(*)::int FROM media_video_enrichment_outbox WHERE submission_id=$1) AS enrichments,
+          (SELECT count(*)::int FROM media_video_derived_artifacts WHERE submission_id=$1
+             AND retention_policy_revision=1 AND retained_until_source_disposition) AS derived_artifacts,
           (SELECT count(*)::int FROM media_reference_evidence WHERE submission_id=$1) AS song_edges`,
         [submissionId],
       );
@@ -306,6 +360,7 @@ suite("video publication PostgreSQL", () => {
         data_operations: 1,
         data_outbox: 1,
         enrichments: 2,
+        derived_artifacts: 4,
         song_edges: 0,
       });
       const rights = await admin.query(

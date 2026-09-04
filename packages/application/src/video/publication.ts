@@ -154,6 +154,11 @@ export type VideoPublishBundle = Readonly<{
   }>[];
 }>;
 
+export type VideoTechnicalFailureCode = Exclude<
+  NonNullable<VideoSubmissionState["failureCode"]>,
+  "poster_undecodable" | "poster_timestamp_out_of_range" | "upload_seal_conflict"
+>;
+
 /** PostgreSQL owns replay, revisions, membership rechecks, and atomic publication effects. */
 export interface VideoPublicationStore {
   readonly replayReservation: (input: {
@@ -173,6 +178,10 @@ export interface VideoPublicationStore {
     reservationId: string;
     actorAccountId: string;
     authorPersonaId: string;
+  }) => Promise<VideoReservationRecord | null>;
+  readonly getReservationForAccount: (input: {
+    reservationId: string;
+    actorAccountId: string;
   }) => Promise<VideoReservationRecord | null>;
   readonly renewParts: (input: {
     reservation: VideoReservationRecord;
@@ -259,6 +268,11 @@ export interface VideoPublicationStore {
     decision: VideoPublicationDecision;
     nextState: VideoSubmissionState;
   }) => Promise<VideoSubmissionRecord>;
+  readonly recordProcessingFailure: (input: {
+    submission: VideoSubmissionState;
+    failureCode: VideoTechnicalFailureCode | "poster_undecodable" | "poster_timestamp_out_of_range";
+    evidenceRef: string;
+  }) => Promise<VideoSubmissionRecord>;
   readonly publish: (input: VideoPublishBundle) => Promise<VideoSubmissionRecord>;
   readonly retryPoster: (input: {
     submission: VideoSubmissionState;
@@ -266,7 +280,17 @@ export interface VideoPublicationStore {
     endpointTemplate: string;
     idempotencyKey: string;
     requestHash: string;
-  }) => Promise<VideoSubmissionRecord>;
+    responseBytes: Uint8Array;
+    responseSha256: string;
+  }) => Promise<StoredReplay>;
+  readonly retryTechnical: (input: {
+    submission: VideoSubmissionState;
+    endpointTemplate: string;
+    idempotencyKey: string;
+    requestHash: string;
+    responseBytes: Uint8Array;
+    responseSha256: string;
+  }) => Promise<StoredReplay>;
   readonly cancel: (input: {
     submission: VideoSubmissionState;
     endpointTemplate: string;
@@ -288,7 +312,9 @@ export interface VideoPublicationStore {
     endpointTemplate: string;
     idempotencyKey: string;
     requestHash: string;
-  }) => Promise<VideoSubmissionRecord>;
+    responseBytes: Uint8Array;
+    responseSha256: string;
+  }) => Promise<StoredReplay>;
 }
 
 export type VideoPublicationServices = Readonly<{
@@ -427,7 +453,7 @@ export function projectVideoSubmission(record: VideoSubmissionRecord): VideoPost
         status: "processing_failed",
         reason_code: state.failureCode,
         retry_count: state.retryCount as 0 | 1 | 2 | 3,
-        retryable: state.retryCount < 3,
+        retryable: state.retryCount < 3 && state.failureCode !== "upload_seal_conflict",
       };
     case "abandoned":
       return { ...common, status: "abandoned", reason_code: "author_cancelled_before_finalize" };
@@ -598,26 +624,17 @@ export async function renewVideoUploadParts(
   if (body.reservation_id !== input.reservationId)
     throw new BadRequest({ message: "Reservation mismatch" });
   await requireMediaPersona(input.actor, body.persona_id, services.personaServices);
-  const reservation = await services.store.getReservationForAuthor({
+  const reservation = await services.store.getReservationForAccount({
     reservationId: input.reservationId,
     actorAccountId: input.actor.userId,
-    authorPersonaId: body.persona_id,
   });
   if (reservation === null) throw new NotFound({ message: "Video reservation not found" });
-  if (reservation.authorPersonaId !== body.persona_id)
-    ensurePersonaContinuity(
-      createOriginalVideoSubmission({
-        submissionId: "unknown",
-        operationId: "unknown",
-        communityId: reservation.communityId,
-        actorAccountId: reservation.actorAccountId,
-        authorPersonaId: reservation.authorPersonaId,
-        reservationId: reservation.reservationId,
-        caption: null,
-        authorDeclaredRating: "general",
-      }),
-      body.persona_id,
-    );
+  if (reservation.authorPersonaId !== body.persona_id) {
+    throw new Conflict({
+      message: "The reserving persona is required",
+      details: { reason_code: "reservation_persona_required" },
+    });
+  }
   if (
     reservation.state !== "issued" ||
     reservation.manifest !== null ||
@@ -695,12 +712,17 @@ export async function createVideoSubmission(
   requireMediaHumanActor(input.actor);
   const body = decodeBody(CreateVideoSubmissionV1, input.body);
   const persona = await requireMediaPersona(input.actor, body.persona_id, services.personaServices);
-  const reservation = await services.store.getReservationForAuthor({
+  const reservation = await services.store.getReservationForAccount({
     reservationId: body.video_reservation_id,
     actorAccountId: input.actor.userId,
-    authorPersonaId: body.persona_id,
   });
   if (reservation === null) throw new NotFound({ message: "Video reservation not found" });
+  if (reservation.authorPersonaId !== body.persona_id) {
+    throw new Conflict({
+      message: "The reserving persona is required",
+      details: { reason_code: "reservation_persona_required" },
+    });
+  }
   if (reservation.communityId !== input.communityId || reservation.state !== "issued") {
     throw new Conflict({ message: "Video reservation cannot be claimed" });
   }
@@ -955,6 +977,29 @@ export async function acceptTrustedVideoAnalysis(
   return projectVideoSubmission(committed);
 }
 
+export async function recordVideoProcessingFailure(
+  input: Readonly<{
+    submissionId: string;
+    operationId: string;
+    failureCode: VideoTechnicalFailureCode | "poster_undecodable" | "poster_timestamp_out_of_range";
+    evidenceRef: string;
+  }>,
+  services: VideoPublicationServices,
+): Promise<VideoPostSubmissionV1> {
+  const record = await services.store.getSubmissionByOperation({
+    submissionId: input.submissionId,
+    operationId: input.operationId,
+  });
+  if (record === null) throw new NotFound({ message: "Video submission not found" });
+  return projectVideoSubmission(
+    await services.store.recordProcessingFailure({
+      submission: record.state,
+      failureCode: input.failureCode,
+      evidenceRef: input.evidenceRef,
+    }),
+  );
+}
+
 async function publishPreparedVideo(
   record: VideoSubmissionRecord,
   services: VideoPublicationServices,
@@ -1013,22 +1058,39 @@ export async function retryVideoPoster(
       details: { reason_code: "retry_not_allowed" },
     });
   const requestHash = await mediaRequestHash({ submission_id: input.submissionId }, body);
-  return projectVideoSubmission(
-    await services.store.retryPoster({
+  const nextState: VideoSubmissionState = {
+    ...record.state,
+    creationRevision: record.state.creationRevision + 1,
+    retryCount: record.state.retryCount + 1,
+    status: "processing",
+    phase: "analysis",
+    failureCode: null,
+    decision: null,
+    reviewReasons: [],
+    approvedHolds: [],
+  };
+  const response = await snapshot(
+    projectVideoSubmission({ ...record, state: nextState, updatedAt: services.nowIso() }),
+  );
+  const outcome = await services.store.retryPoster({
       submission: record.state,
       posterTimestampMs: body.poster_timestamp_ms,
       endpointTemplate: VIDEO_PUBLICATION_ENDPOINTS.retryPoster,
       idempotencyKey: body.idempotency_key,
       requestHash,
-    }),
-  );
+      responseBytes: response.bytes,
+      responseSha256: response.sha256,
+    });
+  return replaySubmission(outcome) ?? response.document;
 }
 
 export async function retryVideoSubmission(
   input: Readonly<{ submissionId: string; actor: M2Actor; body: unknown }>,
   services: VideoPublicationServices,
 ): Promise<VideoPostSubmissionV1> {
+  requireMediaHumanActor(input.actor);
   const body = decodeBody(RetryOrCancelSongSubmissionV1, input.body);
+  await requireMediaPersona(input.actor, body.persona_id, services.personaServices);
   const record = await services.store.getSubmissionForAccount({
     submissionId: input.submissionId,
     actorAccountId: input.actor.userId,
@@ -1043,10 +1105,39 @@ export async function retryVideoSubmission(
       details: { reason_code: "poster_retry_required" },
     });
   }
-  throw new Conflict({
-    message: "Video retry is not allowed",
-    details: { reason_code: "retry_not_allowed" },
-  });
+  if (
+    record.state.status !== "processing_failed" ||
+    record.state.retryCount >= 3 ||
+    record.state.failureCode === "upload_seal_conflict"
+  ) {
+    throw new Conflict({
+      message: "Video retry is not allowed",
+      details: { reason_code: "retry_not_allowed" },
+    });
+  }
+  const requestHash = await mediaRequestHash({ submission_id: input.submissionId }, body);
+  const publicationOnly = record.state.failureCode === "publication_failed";
+  const nextState: VideoSubmissionState = {
+    ...record.state,
+    creationRevision: record.state.creationRevision + 1,
+    retryCount: record.state.retryCount + 1,
+    status: "processing",
+    phase: publicationOnly ? "publish" : "analysis",
+    failureCode: null,
+    ...(publicationOnly ? {} : { decision: null, reviewReasons: [], approvedHolds: [] }),
+  };
+  const response = await snapshot(
+    projectVideoSubmission({ ...record, state: nextState, updatedAt: services.nowIso() }),
+  );
+  const outcome = await services.store.retryTechnical({
+      submission: record.state,
+      endpointTemplate: VIDEO_PUBLICATION_ENDPOINTS.retry,
+      idempotencyKey: body.idempotency_key,
+      requestHash,
+      responseBytes: response.bytes,
+      responseSha256: response.sha256,
+    });
+  return replaySubmission(outcome) ?? response.document;
 }
 
 export async function cancelVideoSubmission(
@@ -1109,7 +1200,60 @@ export async function moderateVideoSubmission(
       : body.hold === "soundtrack"
         ? { kind: "approve" as const, hold: "soundtrack" as const, evidenceRef: body.evidence_ref }
         : { kind: "approve" as const, hold: "safety" as const, evidenceRef: null };
-  let moderated = await services.store.moderate({
+  const nextState: VideoSubmissionState = (() => {
+    if (action.kind === "block") {
+      return {
+        ...record.state,
+        status: "blocked",
+        reviewReasons: [],
+        decision:
+          record.state.decision === null
+            ? null
+            : {
+                ...record.state.decision,
+                outcome: {
+                  kind: "block",
+                  reasonCode: action.reasonCode,
+                  publicReason: action.reasonCode,
+                },
+              },
+      };
+    }
+    const required = new Set<"safety" | "soundtrack">();
+    if (
+      record.state.reviewReasons.some((reason) =>
+        ["media_review_required", "caption_review_required", "safety_adapter_unavailable"].includes(
+          reason,
+        ),
+      )
+    ) {
+      required.add("safety");
+    }
+    if (record.state.reviewReasons.some((reason) => reason.startsWith("soundtrack_"))) {
+      required.add("soundtrack");
+    }
+    const approved = [...new Set([...record.state.approvedHolds, action.hold])];
+    const allApproved = [...required].every((hold) => approved.includes(hold));
+    return {
+      ...record.state,
+      approvedHolds: approved,
+      ...(allApproved
+        ? {
+            status: "processing" as const,
+            phase: "publish" as const,
+            reviewReasons: [],
+            decision:
+              record.state.decision === null
+                ? null
+                : { ...record.state.decision, outcome: { kind: "publish" as const } },
+          }
+        : {}),
+    };
+  })();
+  const response = await snapshot(
+    projectVideoSubmission({ ...record, state: nextState, updatedAt: services.nowIso() }),
+  );
+  const outcome = await services.store.moderate({
       submission: record.state,
       actor: input.actor,
       expectedCreationRevision: body.expected_creation_revision,
@@ -1117,11 +1261,12 @@ export async function moderateVideoSubmission(
       endpointTemplate: VIDEO_PUBLICATION_ENDPOINTS.moderate,
       idempotencyKey: body.idempotency_key,
       requestHash,
+      responseBytes: response.bytes,
+      responseSha256: response.sha256,
     });
-  if (moderated.state.status === "processing" && moderated.state.phase === "publish") {
-    moderated = await publishPreparedVideo(moderated, services);
-  }
-  return projectVideoSubmission(moderated);
+  const replayed = replaySubmission(outcome);
+  if (replayed !== null) return replayed;
+  return response.document;
 }
 
 export const videoAnalysisFixtureSha256IsValid = (analysis: VideoTrustedAnalysis): boolean =>

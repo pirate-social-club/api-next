@@ -331,6 +331,7 @@ CREATE TABLE media_video_derived_artifacts (
   artifact_ref TEXT PRIMARY KEY CHECK (btrim(artifact_ref) <> ''),
   submission_id TEXT NOT NULL REFERENCES media_post_submissions (submission_id),
   video_revision BIGINT NOT NULL,
+  analysis_revision BIGINT NOT NULL CHECK (analysis_revision > 0),
   artifact_kind TEXT NOT NULL CHECK (artifact_kind IN ('extracted_audio', 'poster', 'first', 'midpoint')),
   canonical_sha256 TEXT NOT NULL CHECK (canonical_sha256 ~ '^[0-9a-f]{64}$'),
   retention_policy_revision BIGINT NOT NULL CHECK (retention_policy_revision > 0),
@@ -338,7 +339,7 @@ CREATE TABLE media_video_derived_artifacts (
   created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
   FOREIGN KEY (submission_id, video_revision)
     REFERENCES media_video_revisions (submission_id, video_revision),
-  UNIQUE (submission_id, video_revision, artifact_kind)
+  UNIQUE (submission_id, video_revision, analysis_revision, artifact_kind)
 );
 
 CREATE TABLE media_video_enrichment_outbox (
@@ -359,12 +360,13 @@ CREATE TABLE media_video_analysis_outbox (
   submission_id TEXT NOT NULL REFERENCES media_post_submissions (submission_id),
   operation_id TEXT NOT NULL,
   video_revision BIGINT NOT NULL CHECK (video_revision > 0),
+  creation_revision BIGINT NOT NULL CHECK (creation_revision > 0),
   canonical_video_sha256 TEXT NOT NULL CHECK (canonical_video_sha256 ~ '^[0-9a-f]{64}$'),
   state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'running', 'delivered', 'failed')),
   delivery_attempts INTEGER NOT NULL DEFAULT 0 CHECK (delivery_attempts BETWEEN 0 AND 5),
   created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
-  UNIQUE (submission_id, video_revision),
+  UNIQUE (submission_id, video_revision, creation_revision),
   FOREIGN KEY (submission_id, video_revision)
     REFERENCES media_video_revisions (submission_id, video_revision)
 );
