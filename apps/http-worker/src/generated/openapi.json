@@ -17005,6 +17005,5115 @@
         ]
       }
     },
+    "/communities/{communityId}/hns-root-imports": {
+      "post": {
+        "operationId": "post_communitiesCommunityIdHnsRootImports",
+        "parameters": [
+          {
+            "name": "communityId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "allOf": [
+                {
+                  "minLength": 1
+                }
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "root_label": {
+                    "type": "string",
+                    "allOf": [
+                      {
+                        "minLength": 1
+                      }
+                    ]
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "allOf": [
+                      {
+                        "minLength": 1
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "root_label",
+                  "idempotency_key"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "x-max-body-bytes": 2048
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "community_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "attachment_intent_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_import_session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_label": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "revision": {
+                          "type": "integer"
+                        },
+                        "expires_at": {
+                          "type": "string"
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "awaiting_ownership"
+                          ]
+                        },
+                        "provisioning_authorization": {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "hns_name_signature_v1"
+                              ]
+                            },
+                            "wallet_rpc_method": {
+                              "type": "string",
+                              "enum": [
+                                "signmessagewithname"
+                              ]
+                            },
+                            "message": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "expires_at": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "wallet_rpc_method",
+                            "message",
+                            "expires_at"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "publish_plan": {
+                          "type": "null"
+                        },
+                        "publish_plan_sha256": {
+                          "type": "null"
+                        },
+                        "readiness_result_sha256": {
+                          "type": "null"
+                        },
+                        "retry_after_seconds": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "community_id",
+                        "attachment_intent_id",
+                        "root_import_session_id",
+                        "root_label",
+                        "revision",
+                        "expires_at",
+                        "replayed",
+                        "status",
+                        "provisioning_authorization",
+                        "publish_plan",
+                        "publish_plan_sha256",
+                        "readiness_result_sha256",
+                        "retry_after_seconds"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "community_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "attachment_intent_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_import_session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_label": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "revision": {
+                          "type": "integer"
+                        },
+                        "expires_at": {
+                          "type": "string"
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "provisioning"
+                          ]
+                        },
+                        "publish_plan": {
+                          "type": "null"
+                        },
+                        "publish_plan_sha256": {
+                          "type": "null"
+                        },
+                        "readiness_result_sha256": {
+                          "type": "null"
+                        },
+                        "retry_after_seconds": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "community_id",
+                        "attachment_intent_id",
+                        "root_import_session_id",
+                        "root_label",
+                        "revision",
+                        "expires_at",
+                        "replayed",
+                        "status",
+                        "publish_plan",
+                        "publish_plan_sha256",
+                        "readiness_result_sha256",
+                        "retry_after_seconds"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "community_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "attachment_intent_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_import_session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_label": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "revision": {
+                          "type": "integer"
+                        },
+                        "expires_at": {
+                          "type": "string"
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "awaiting_owner_update",
+                            "observing"
+                          ]
+                        },
+                        "publish_plan": {
+                          "$ref": "#/$defs/Objects_"
+                        },
+                        "publish_plan_sha256": {
+                          "type": "string"
+                        },
+                        "readiness_result_sha256": {
+                          "type": "null"
+                        },
+                        "retry_after_seconds": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "community_id",
+                        "attachment_intent_id",
+                        "root_import_session_id",
+                        "root_label",
+                        "revision",
+                        "expires_at",
+                        "replayed",
+                        "status",
+                        "publish_plan",
+                        "publish_plan_sha256",
+                        "readiness_result_sha256",
+                        "retry_after_seconds"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "community_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "attachment_intent_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_import_session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_label": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "revision": {
+                          "type": "integer"
+                        },
+                        "expires_at": {
+                          "type": "string"
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "ready"
+                          ]
+                        },
+                        "publish_plan": {
+                          "$ref": "#/$defs/Objects_"
+                        },
+                        "publish_plan_sha256": {
+                          "type": "string"
+                        },
+                        "readiness_result_sha256": {
+                          "type": "string"
+                        },
+                        "retry_after_seconds": {
+                          "type": "null"
+                        }
+                      },
+                      "required": [
+                        "community_id",
+                        "attachment_intent_id",
+                        "root_import_session_id",
+                        "root_label",
+                        "revision",
+                        "expires_at",
+                        "replayed",
+                        "status",
+                        "publish_plan",
+                        "publish_plan_sha256",
+                        "readiness_result_sha256",
+                        "retry_after_seconds"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "community_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "attachment_intent_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_import_session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_label": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "revision": {
+                          "type": "integer"
+                        },
+                        "expires_at": {
+                          "type": "string"
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "activated",
+                            "failed",
+                            "expired"
+                          ]
+                        },
+                        "publish_plan": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/$defs/Objects_"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "publish_plan_sha256": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "readiness_result_sha256": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "retry_after_seconds": {
+                          "type": "null"
+                        }
+                      },
+                      "required": [
+                        "community_id",
+                        "attachment_intent_id",
+                        "root_import_session_id",
+                        "root_label",
+                        "revision",
+                        "expires_at",
+                        "replayed",
+                        "status",
+                        "publish_plan",
+                        "publish_plan_sha256",
+                        "readiness_result_sha256",
+                        "retry_after_seconds"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ],
+                  "$defs": {
+                    "Objects_1": {
+                      "type": "object"
+                    },
+                    "Objects_": {
+                      "type": "object",
+                      "properties": {
+                        "version": {
+                          "type": "string",
+                          "enum": [
+                            "pirate-hns-root-import-publish-plan-v1"
+                          ]
+                        },
+                        "replacement_semantics": {
+                          "type": "string",
+                          "enum": [
+                            "complete_resource"
+                          ]
+                        },
+                        "current_records": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/$defs/Objects_1"
+                          }
+                        },
+                        "preserved_records": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/$defs/Objects_1"
+                          }
+                        },
+                        "removed_conflicts": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/$defs/Objects_1"
+                          }
+                        },
+                        "added_records": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/$defs/Objects_1"
+                          }
+                        },
+                        "replacement_records": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/$defs/Objects_1"
+                          }
+                        },
+                        "preserved_unknown_record_types": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "acknowledgement_required": {
+                          "type": "boolean",
+                          "enum": [
+                            true
+                          ]
+                        }
+                      },
+                      "required": [
+                        "version",
+                        "replacement_semantics",
+                        "current_records",
+                        "preserved_records",
+                        "removed_conflicts",
+                        "added_records",
+                        "replacement_records",
+                        "preserved_unknown_record_types",
+                        "acknowledgement_required"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "community_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "attachment_intent_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_import_session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_label": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "revision": {
+                          "type": "integer"
+                        },
+                        "expires_at": {
+                          "type": "string"
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "awaiting_ownership"
+                          ]
+                        },
+                        "provisioning_authorization": {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "hns_name_signature_v1"
+                              ]
+                            },
+                            "wallet_rpc_method": {
+                              "type": "string",
+                              "enum": [
+                                "signmessagewithname"
+                              ]
+                            },
+                            "message": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "expires_at": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "wallet_rpc_method",
+                            "message",
+                            "expires_at"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "publish_plan": {
+                          "type": "null"
+                        },
+                        "publish_plan_sha256": {
+                          "type": "null"
+                        },
+                        "readiness_result_sha256": {
+                          "type": "null"
+                        },
+                        "retry_after_seconds": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "community_id",
+                        "attachment_intent_id",
+                        "root_import_session_id",
+                        "root_label",
+                        "revision",
+                        "expires_at",
+                        "replayed",
+                        "status",
+                        "provisioning_authorization",
+                        "publish_plan",
+                        "publish_plan_sha256",
+                        "readiness_result_sha256",
+                        "retry_after_seconds"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "community_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "attachment_intent_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_import_session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_label": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "revision": {
+                          "type": "integer"
+                        },
+                        "expires_at": {
+                          "type": "string"
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "provisioning"
+                          ]
+                        },
+                        "publish_plan": {
+                          "type": "null"
+                        },
+                        "publish_plan_sha256": {
+                          "type": "null"
+                        },
+                        "readiness_result_sha256": {
+                          "type": "null"
+                        },
+                        "retry_after_seconds": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "community_id",
+                        "attachment_intent_id",
+                        "root_import_session_id",
+                        "root_label",
+                        "revision",
+                        "expires_at",
+                        "replayed",
+                        "status",
+                        "publish_plan",
+                        "publish_plan_sha256",
+                        "readiness_result_sha256",
+                        "retry_after_seconds"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "community_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "attachment_intent_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_import_session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_label": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "revision": {
+                          "type": "integer"
+                        },
+                        "expires_at": {
+                          "type": "string"
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "awaiting_owner_update",
+                            "observing"
+                          ]
+                        },
+                        "publish_plan": {
+                          "$ref": "#/$defs/Objects_"
+                        },
+                        "publish_plan_sha256": {
+                          "type": "string"
+                        },
+                        "readiness_result_sha256": {
+                          "type": "null"
+                        },
+                        "retry_after_seconds": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "community_id",
+                        "attachment_intent_id",
+                        "root_import_session_id",
+                        "root_label",
+                        "revision",
+                        "expires_at",
+                        "replayed",
+                        "status",
+                        "publish_plan",
+                        "publish_plan_sha256",
+                        "readiness_result_sha256",
+                        "retry_after_seconds"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "community_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "attachment_intent_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_import_session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_label": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "revision": {
+                          "type": "integer"
+                        },
+                        "expires_at": {
+                          "type": "string"
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "ready"
+                          ]
+                        },
+                        "publish_plan": {
+                          "$ref": "#/$defs/Objects_"
+                        },
+                        "publish_plan_sha256": {
+                          "type": "string"
+                        },
+                        "readiness_result_sha256": {
+                          "type": "string"
+                        },
+                        "retry_after_seconds": {
+                          "type": "null"
+                        }
+                      },
+                      "required": [
+                        "community_id",
+                        "attachment_intent_id",
+                        "root_import_session_id",
+                        "root_label",
+                        "revision",
+                        "expires_at",
+                        "replayed",
+                        "status",
+                        "publish_plan",
+                        "publish_plan_sha256",
+                        "readiness_result_sha256",
+                        "retry_after_seconds"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "community_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "attachment_intent_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_import_session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_label": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "revision": {
+                          "type": "integer"
+                        },
+                        "expires_at": {
+                          "type": "string"
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "activated",
+                            "failed",
+                            "expired"
+                          ]
+                        },
+                        "publish_plan": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/$defs/Objects_"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "publish_plan_sha256": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "readiness_result_sha256": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "retry_after_seconds": {
+                          "type": "null"
+                        }
+                      },
+                      "required": [
+                        "community_id",
+                        "attachment_intent_id",
+                        "root_import_session_id",
+                        "root_label",
+                        "revision",
+                        "expires_at",
+                        "replayed",
+                        "status",
+                        "publish_plan",
+                        "publish_plan_sha256",
+                        "readiness_result_sha256",
+                        "retry_after_seconds"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ],
+                  "$defs": {
+                    "Objects_1": {
+                      "type": "object"
+                    },
+                    "Objects_": {
+                      "type": "object",
+                      "properties": {
+                        "version": {
+                          "type": "string",
+                          "enum": [
+                            "pirate-hns-root-import-publish-plan-v1"
+                          ]
+                        },
+                        "replacement_semantics": {
+                          "type": "string",
+                          "enum": [
+                            "complete_resource"
+                          ]
+                        },
+                        "current_records": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/$defs/Objects_1"
+                          }
+                        },
+                        "preserved_records": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/$defs/Objects_1"
+                          }
+                        },
+                        "removed_conflicts": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/$defs/Objects_1"
+                          }
+                        },
+                        "added_records": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/$defs/Objects_1"
+                          }
+                        },
+                        "replacement_records": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/$defs/Objects_1"
+                          }
+                        },
+                        "preserved_unknown_record_types": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "acknowledgement_required": {
+                          "type": "boolean",
+                          "enum": [
+                            true
+                          ]
+                        }
+                      },
+                      "required": [
+                        "version",
+                        "replacement_semantics",
+                        "current_records",
+                        "preserved_records",
+                        "removed_conflicts",
+                        "added_records",
+                        "replacement_records",
+                        "preserved_unknown_record_types",
+                        "acknowledgement_required"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "404": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "not_found"
+            ]
+          },
+          "409": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "conflict",
+              "conflict"
+            ]
+          },
+          "500": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ]
+          },
+          "502": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "provider_unavailable",
+              "provider_unavailable"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "userOrAdmin"
+          }
+        },
+        "x-errors": [
+          "AuthError",
+          "BadRequest",
+          "Conflict",
+          "RetryableConflict",
+          "NotFound",
+          "ProviderUnavailable",
+          "ProviderMisconfigured",
+          "InternalError"
+        ]
+      }
+    },
+    "/communities/{communityId}/hns-root-imports/{sessionId}": {
+      "get": {
+        "operationId": "get_communitiesCommunityIdHnsRootImportsSessionId",
+        "parameters": [
+          {
+            "name": "communityId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "allOf": [
+                {
+                  "minLength": 1
+                }
+              ]
+            }
+          },
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "allOf": [
+                {
+                  "minLength": 1
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "community_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "attachment_intent_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_import_session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_label": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "revision": {
+                          "type": "integer"
+                        },
+                        "expires_at": {
+                          "type": "string"
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "awaiting_ownership"
+                          ]
+                        },
+                        "provisioning_authorization": {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "hns_name_signature_v1"
+                              ]
+                            },
+                            "wallet_rpc_method": {
+                              "type": "string",
+                              "enum": [
+                                "signmessagewithname"
+                              ]
+                            },
+                            "message": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "expires_at": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "wallet_rpc_method",
+                            "message",
+                            "expires_at"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "publish_plan": {
+                          "type": "null"
+                        },
+                        "publish_plan_sha256": {
+                          "type": "null"
+                        },
+                        "readiness_result_sha256": {
+                          "type": "null"
+                        },
+                        "retry_after_seconds": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "community_id",
+                        "attachment_intent_id",
+                        "root_import_session_id",
+                        "root_label",
+                        "revision",
+                        "expires_at",
+                        "replayed",
+                        "status",
+                        "provisioning_authorization",
+                        "publish_plan",
+                        "publish_plan_sha256",
+                        "readiness_result_sha256",
+                        "retry_after_seconds"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "community_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "attachment_intent_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_import_session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_label": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "revision": {
+                          "type": "integer"
+                        },
+                        "expires_at": {
+                          "type": "string"
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "provisioning"
+                          ]
+                        },
+                        "publish_plan": {
+                          "type": "null"
+                        },
+                        "publish_plan_sha256": {
+                          "type": "null"
+                        },
+                        "readiness_result_sha256": {
+                          "type": "null"
+                        },
+                        "retry_after_seconds": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "community_id",
+                        "attachment_intent_id",
+                        "root_import_session_id",
+                        "root_label",
+                        "revision",
+                        "expires_at",
+                        "replayed",
+                        "status",
+                        "publish_plan",
+                        "publish_plan_sha256",
+                        "readiness_result_sha256",
+                        "retry_after_seconds"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "community_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "attachment_intent_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_import_session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_label": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "revision": {
+                          "type": "integer"
+                        },
+                        "expires_at": {
+                          "type": "string"
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "awaiting_owner_update",
+                            "observing"
+                          ]
+                        },
+                        "publish_plan": {
+                          "$ref": "#/$defs/Objects_"
+                        },
+                        "publish_plan_sha256": {
+                          "type": "string"
+                        },
+                        "readiness_result_sha256": {
+                          "type": "null"
+                        },
+                        "retry_after_seconds": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "community_id",
+                        "attachment_intent_id",
+                        "root_import_session_id",
+                        "root_label",
+                        "revision",
+                        "expires_at",
+                        "replayed",
+                        "status",
+                        "publish_plan",
+                        "publish_plan_sha256",
+                        "readiness_result_sha256",
+                        "retry_after_seconds"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "community_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "attachment_intent_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_import_session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_label": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "revision": {
+                          "type": "integer"
+                        },
+                        "expires_at": {
+                          "type": "string"
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "ready"
+                          ]
+                        },
+                        "publish_plan": {
+                          "$ref": "#/$defs/Objects_"
+                        },
+                        "publish_plan_sha256": {
+                          "type": "string"
+                        },
+                        "readiness_result_sha256": {
+                          "type": "string"
+                        },
+                        "retry_after_seconds": {
+                          "type": "null"
+                        }
+                      },
+                      "required": [
+                        "community_id",
+                        "attachment_intent_id",
+                        "root_import_session_id",
+                        "root_label",
+                        "revision",
+                        "expires_at",
+                        "replayed",
+                        "status",
+                        "publish_plan",
+                        "publish_plan_sha256",
+                        "readiness_result_sha256",
+                        "retry_after_seconds"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "community_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "attachment_intent_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_import_session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_label": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "revision": {
+                          "type": "integer"
+                        },
+                        "expires_at": {
+                          "type": "string"
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "activated",
+                            "failed",
+                            "expired"
+                          ]
+                        },
+                        "publish_plan": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/$defs/Objects_"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "publish_plan_sha256": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "readiness_result_sha256": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "retry_after_seconds": {
+                          "type": "null"
+                        }
+                      },
+                      "required": [
+                        "community_id",
+                        "attachment_intent_id",
+                        "root_import_session_id",
+                        "root_label",
+                        "revision",
+                        "expires_at",
+                        "replayed",
+                        "status",
+                        "publish_plan",
+                        "publish_plan_sha256",
+                        "readiness_result_sha256",
+                        "retry_after_seconds"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ],
+                  "$defs": {
+                    "Objects_1": {
+                      "type": "object"
+                    },
+                    "Objects_": {
+                      "type": "object",
+                      "properties": {
+                        "version": {
+                          "type": "string",
+                          "enum": [
+                            "pirate-hns-root-import-publish-plan-v1"
+                          ]
+                        },
+                        "replacement_semantics": {
+                          "type": "string",
+                          "enum": [
+                            "complete_resource"
+                          ]
+                        },
+                        "current_records": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/$defs/Objects_1"
+                          }
+                        },
+                        "preserved_records": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/$defs/Objects_1"
+                          }
+                        },
+                        "removed_conflicts": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/$defs/Objects_1"
+                          }
+                        },
+                        "added_records": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/$defs/Objects_1"
+                          }
+                        },
+                        "replacement_records": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/$defs/Objects_1"
+                          }
+                        },
+                        "preserved_unknown_record_types": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "acknowledgement_required": {
+                          "type": "boolean",
+                          "enum": [
+                            true
+                          ]
+                        }
+                      },
+                      "required": [
+                        "version",
+                        "replacement_semantics",
+                        "current_records",
+                        "preserved_records",
+                        "removed_conflicts",
+                        "added_records",
+                        "replacement_records",
+                        "preserved_unknown_record_types",
+                        "acknowledgement_required"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "404": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "not_found"
+            ]
+          },
+          "409": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "conflict",
+              "conflict"
+            ]
+          },
+          "500": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ]
+          },
+          "502": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "provider_unavailable",
+              "provider_unavailable"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "userOrAdmin"
+          }
+        },
+        "x-errors": [
+          "AuthError",
+          "BadRequest",
+          "Conflict",
+          "RetryableConflict",
+          "NotFound",
+          "ProviderUnavailable",
+          "ProviderMisconfigured",
+          "InternalError"
+        ]
+      }
+    },
+    "/communities/{communityId}/hns-root-imports/{sessionId}/poll": {
+      "post": {
+        "operationId": "post_communitiesCommunityIdHnsRootImportsSessionIdPoll",
+        "parameters": [
+          {
+            "name": "communityId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "allOf": [
+                {
+                  "minLength": 1
+                }
+              ]
+            }
+          },
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "allOf": [
+                {
+                  "minLength": 1
+                }
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "expected_revision": {
+                    "type": "integer"
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "allOf": [
+                      {
+                        "minLength": 1
+                      }
+                    ]
+                  },
+                  "provisioning_name_signature": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "allOf": [
+                          {
+                            "minLength": 1
+                          }
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "expected_revision",
+                  "idempotency_key"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "x-max-body-bytes": 2048
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "community_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "attachment_intent_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_import_session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_label": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "revision": {
+                          "type": "integer"
+                        },
+                        "expires_at": {
+                          "type": "string"
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "awaiting_ownership"
+                          ]
+                        },
+                        "provisioning_authorization": {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "hns_name_signature_v1"
+                              ]
+                            },
+                            "wallet_rpc_method": {
+                              "type": "string",
+                              "enum": [
+                                "signmessagewithname"
+                              ]
+                            },
+                            "message": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "expires_at": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "wallet_rpc_method",
+                            "message",
+                            "expires_at"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "publish_plan": {
+                          "type": "null"
+                        },
+                        "publish_plan_sha256": {
+                          "type": "null"
+                        },
+                        "readiness_result_sha256": {
+                          "type": "null"
+                        },
+                        "retry_after_seconds": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "community_id",
+                        "attachment_intent_id",
+                        "root_import_session_id",
+                        "root_label",
+                        "revision",
+                        "expires_at",
+                        "replayed",
+                        "status",
+                        "provisioning_authorization",
+                        "publish_plan",
+                        "publish_plan_sha256",
+                        "readiness_result_sha256",
+                        "retry_after_seconds"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "community_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "attachment_intent_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_import_session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_label": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "revision": {
+                          "type": "integer"
+                        },
+                        "expires_at": {
+                          "type": "string"
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "provisioning"
+                          ]
+                        },
+                        "publish_plan": {
+                          "type": "null"
+                        },
+                        "publish_plan_sha256": {
+                          "type": "null"
+                        },
+                        "readiness_result_sha256": {
+                          "type": "null"
+                        },
+                        "retry_after_seconds": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "community_id",
+                        "attachment_intent_id",
+                        "root_import_session_id",
+                        "root_label",
+                        "revision",
+                        "expires_at",
+                        "replayed",
+                        "status",
+                        "publish_plan",
+                        "publish_plan_sha256",
+                        "readiness_result_sha256",
+                        "retry_after_seconds"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "community_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "attachment_intent_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_import_session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_label": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "revision": {
+                          "type": "integer"
+                        },
+                        "expires_at": {
+                          "type": "string"
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "awaiting_owner_update",
+                            "observing"
+                          ]
+                        },
+                        "publish_plan": {
+                          "$ref": "#/$defs/Objects_"
+                        },
+                        "publish_plan_sha256": {
+                          "type": "string"
+                        },
+                        "readiness_result_sha256": {
+                          "type": "null"
+                        },
+                        "retry_after_seconds": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "community_id",
+                        "attachment_intent_id",
+                        "root_import_session_id",
+                        "root_label",
+                        "revision",
+                        "expires_at",
+                        "replayed",
+                        "status",
+                        "publish_plan",
+                        "publish_plan_sha256",
+                        "readiness_result_sha256",
+                        "retry_after_seconds"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "community_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "attachment_intent_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_import_session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_label": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "revision": {
+                          "type": "integer"
+                        },
+                        "expires_at": {
+                          "type": "string"
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "ready"
+                          ]
+                        },
+                        "publish_plan": {
+                          "$ref": "#/$defs/Objects_"
+                        },
+                        "publish_plan_sha256": {
+                          "type": "string"
+                        },
+                        "readiness_result_sha256": {
+                          "type": "string"
+                        },
+                        "retry_after_seconds": {
+                          "type": "null"
+                        }
+                      },
+                      "required": [
+                        "community_id",
+                        "attachment_intent_id",
+                        "root_import_session_id",
+                        "root_label",
+                        "revision",
+                        "expires_at",
+                        "replayed",
+                        "status",
+                        "publish_plan",
+                        "publish_plan_sha256",
+                        "readiness_result_sha256",
+                        "retry_after_seconds"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "community_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "attachment_intent_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_import_session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_label": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "revision": {
+                          "type": "integer"
+                        },
+                        "expires_at": {
+                          "type": "string"
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "activated",
+                            "failed",
+                            "expired"
+                          ]
+                        },
+                        "publish_plan": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/$defs/Objects_"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "publish_plan_sha256": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "readiness_result_sha256": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "retry_after_seconds": {
+                          "type": "null"
+                        }
+                      },
+                      "required": [
+                        "community_id",
+                        "attachment_intent_id",
+                        "root_import_session_id",
+                        "root_label",
+                        "revision",
+                        "expires_at",
+                        "replayed",
+                        "status",
+                        "publish_plan",
+                        "publish_plan_sha256",
+                        "readiness_result_sha256",
+                        "retry_after_seconds"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ],
+                  "$defs": {
+                    "Objects_1": {
+                      "type": "object"
+                    },
+                    "Objects_": {
+                      "type": "object",
+                      "properties": {
+                        "version": {
+                          "type": "string",
+                          "enum": [
+                            "pirate-hns-root-import-publish-plan-v1"
+                          ]
+                        },
+                        "replacement_semantics": {
+                          "type": "string",
+                          "enum": [
+                            "complete_resource"
+                          ]
+                        },
+                        "current_records": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/$defs/Objects_1"
+                          }
+                        },
+                        "preserved_records": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/$defs/Objects_1"
+                          }
+                        },
+                        "removed_conflicts": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/$defs/Objects_1"
+                          }
+                        },
+                        "added_records": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/$defs/Objects_1"
+                          }
+                        },
+                        "replacement_records": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/$defs/Objects_1"
+                          }
+                        },
+                        "preserved_unknown_record_types": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "acknowledgement_required": {
+                          "type": "boolean",
+                          "enum": [
+                            true
+                          ]
+                        }
+                      },
+                      "required": [
+                        "version",
+                        "replacement_semantics",
+                        "current_records",
+                        "preserved_records",
+                        "removed_conflicts",
+                        "added_records",
+                        "replacement_records",
+                        "preserved_unknown_record_types",
+                        "acknowledgement_required"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "community_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "attachment_intent_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_import_session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_label": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "revision": {
+                          "type": "integer"
+                        },
+                        "expires_at": {
+                          "type": "string"
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "awaiting_ownership"
+                          ]
+                        },
+                        "provisioning_authorization": {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "hns_name_signature_v1"
+                              ]
+                            },
+                            "wallet_rpc_method": {
+                              "type": "string",
+                              "enum": [
+                                "signmessagewithname"
+                              ]
+                            },
+                            "message": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "expires_at": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "wallet_rpc_method",
+                            "message",
+                            "expires_at"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "publish_plan": {
+                          "type": "null"
+                        },
+                        "publish_plan_sha256": {
+                          "type": "null"
+                        },
+                        "readiness_result_sha256": {
+                          "type": "null"
+                        },
+                        "retry_after_seconds": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "community_id",
+                        "attachment_intent_id",
+                        "root_import_session_id",
+                        "root_label",
+                        "revision",
+                        "expires_at",
+                        "replayed",
+                        "status",
+                        "provisioning_authorization",
+                        "publish_plan",
+                        "publish_plan_sha256",
+                        "readiness_result_sha256",
+                        "retry_after_seconds"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "community_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "attachment_intent_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_import_session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_label": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "revision": {
+                          "type": "integer"
+                        },
+                        "expires_at": {
+                          "type": "string"
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "provisioning"
+                          ]
+                        },
+                        "publish_plan": {
+                          "type": "null"
+                        },
+                        "publish_plan_sha256": {
+                          "type": "null"
+                        },
+                        "readiness_result_sha256": {
+                          "type": "null"
+                        },
+                        "retry_after_seconds": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "community_id",
+                        "attachment_intent_id",
+                        "root_import_session_id",
+                        "root_label",
+                        "revision",
+                        "expires_at",
+                        "replayed",
+                        "status",
+                        "publish_plan",
+                        "publish_plan_sha256",
+                        "readiness_result_sha256",
+                        "retry_after_seconds"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "community_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "attachment_intent_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_import_session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_label": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "revision": {
+                          "type": "integer"
+                        },
+                        "expires_at": {
+                          "type": "string"
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "awaiting_owner_update",
+                            "observing"
+                          ]
+                        },
+                        "publish_plan": {
+                          "$ref": "#/$defs/Objects_"
+                        },
+                        "publish_plan_sha256": {
+                          "type": "string"
+                        },
+                        "readiness_result_sha256": {
+                          "type": "null"
+                        },
+                        "retry_after_seconds": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "community_id",
+                        "attachment_intent_id",
+                        "root_import_session_id",
+                        "root_label",
+                        "revision",
+                        "expires_at",
+                        "replayed",
+                        "status",
+                        "publish_plan",
+                        "publish_plan_sha256",
+                        "readiness_result_sha256",
+                        "retry_after_seconds"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "community_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "attachment_intent_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_import_session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_label": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "revision": {
+                          "type": "integer"
+                        },
+                        "expires_at": {
+                          "type": "string"
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "ready"
+                          ]
+                        },
+                        "publish_plan": {
+                          "$ref": "#/$defs/Objects_"
+                        },
+                        "publish_plan_sha256": {
+                          "type": "string"
+                        },
+                        "readiness_result_sha256": {
+                          "type": "string"
+                        },
+                        "retry_after_seconds": {
+                          "type": "null"
+                        }
+                      },
+                      "required": [
+                        "community_id",
+                        "attachment_intent_id",
+                        "root_import_session_id",
+                        "root_label",
+                        "revision",
+                        "expires_at",
+                        "replayed",
+                        "status",
+                        "publish_plan",
+                        "publish_plan_sha256",
+                        "readiness_result_sha256",
+                        "retry_after_seconds"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "community_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "attachment_intent_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_import_session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_label": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "revision": {
+                          "type": "integer"
+                        },
+                        "expires_at": {
+                          "type": "string"
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "activated",
+                            "failed",
+                            "expired"
+                          ]
+                        },
+                        "publish_plan": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/$defs/Objects_"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "publish_plan_sha256": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "readiness_result_sha256": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "retry_after_seconds": {
+                          "type": "null"
+                        }
+                      },
+                      "required": [
+                        "community_id",
+                        "attachment_intent_id",
+                        "root_import_session_id",
+                        "root_label",
+                        "revision",
+                        "expires_at",
+                        "replayed",
+                        "status",
+                        "publish_plan",
+                        "publish_plan_sha256",
+                        "readiness_result_sha256",
+                        "retry_after_seconds"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ],
+                  "$defs": {
+                    "Objects_1": {
+                      "type": "object"
+                    },
+                    "Objects_": {
+                      "type": "object",
+                      "properties": {
+                        "version": {
+                          "type": "string",
+                          "enum": [
+                            "pirate-hns-root-import-publish-plan-v1"
+                          ]
+                        },
+                        "replacement_semantics": {
+                          "type": "string",
+                          "enum": [
+                            "complete_resource"
+                          ]
+                        },
+                        "current_records": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/$defs/Objects_1"
+                          }
+                        },
+                        "preserved_records": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/$defs/Objects_1"
+                          }
+                        },
+                        "removed_conflicts": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/$defs/Objects_1"
+                          }
+                        },
+                        "added_records": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/$defs/Objects_1"
+                          }
+                        },
+                        "replacement_records": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/$defs/Objects_1"
+                          }
+                        },
+                        "preserved_unknown_record_types": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "acknowledgement_required": {
+                          "type": "boolean",
+                          "enum": [
+                            true
+                          ]
+                        }
+                      },
+                      "required": [
+                        "version",
+                        "replacement_semantics",
+                        "current_records",
+                        "preserved_records",
+                        "removed_conflicts",
+                        "added_records",
+                        "replacement_records",
+                        "preserved_unknown_record_types",
+                        "acknowledgement_required"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "404": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "not_found"
+            ]
+          },
+          "409": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "conflict",
+              "conflict"
+            ]
+          },
+          "422": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "community_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "attachment_intent_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_import_session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_label": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "revision": {
+                          "type": "integer"
+                        },
+                        "expires_at": {
+                          "type": "string"
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "awaiting_ownership"
+                          ]
+                        },
+                        "provisioning_authorization": {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "hns_name_signature_v1"
+                              ]
+                            },
+                            "wallet_rpc_method": {
+                              "type": "string",
+                              "enum": [
+                                "signmessagewithname"
+                              ]
+                            },
+                            "message": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "expires_at": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "wallet_rpc_method",
+                            "message",
+                            "expires_at"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "publish_plan": {
+                          "type": "null"
+                        },
+                        "publish_plan_sha256": {
+                          "type": "null"
+                        },
+                        "readiness_result_sha256": {
+                          "type": "null"
+                        },
+                        "retry_after_seconds": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "community_id",
+                        "attachment_intent_id",
+                        "root_import_session_id",
+                        "root_label",
+                        "revision",
+                        "expires_at",
+                        "replayed",
+                        "status",
+                        "provisioning_authorization",
+                        "publish_plan",
+                        "publish_plan_sha256",
+                        "readiness_result_sha256",
+                        "retry_after_seconds"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "community_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "attachment_intent_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_import_session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_label": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "revision": {
+                          "type": "integer"
+                        },
+                        "expires_at": {
+                          "type": "string"
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "provisioning"
+                          ]
+                        },
+                        "publish_plan": {
+                          "type": "null"
+                        },
+                        "publish_plan_sha256": {
+                          "type": "null"
+                        },
+                        "readiness_result_sha256": {
+                          "type": "null"
+                        },
+                        "retry_after_seconds": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "community_id",
+                        "attachment_intent_id",
+                        "root_import_session_id",
+                        "root_label",
+                        "revision",
+                        "expires_at",
+                        "replayed",
+                        "status",
+                        "publish_plan",
+                        "publish_plan_sha256",
+                        "readiness_result_sha256",
+                        "retry_after_seconds"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "community_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "attachment_intent_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_import_session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_label": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "revision": {
+                          "type": "integer"
+                        },
+                        "expires_at": {
+                          "type": "string"
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "awaiting_owner_update",
+                            "observing"
+                          ]
+                        },
+                        "publish_plan": {
+                          "$ref": "#/$defs/Objects_"
+                        },
+                        "publish_plan_sha256": {
+                          "type": "string"
+                        },
+                        "readiness_result_sha256": {
+                          "type": "null"
+                        },
+                        "retry_after_seconds": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "community_id",
+                        "attachment_intent_id",
+                        "root_import_session_id",
+                        "root_label",
+                        "revision",
+                        "expires_at",
+                        "replayed",
+                        "status",
+                        "publish_plan",
+                        "publish_plan_sha256",
+                        "readiness_result_sha256",
+                        "retry_after_seconds"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "community_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "attachment_intent_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_import_session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_label": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "revision": {
+                          "type": "integer"
+                        },
+                        "expires_at": {
+                          "type": "string"
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "ready"
+                          ]
+                        },
+                        "publish_plan": {
+                          "$ref": "#/$defs/Objects_"
+                        },
+                        "publish_plan_sha256": {
+                          "type": "string"
+                        },
+                        "readiness_result_sha256": {
+                          "type": "string"
+                        },
+                        "retry_after_seconds": {
+                          "type": "null"
+                        }
+                      },
+                      "required": [
+                        "community_id",
+                        "attachment_intent_id",
+                        "root_import_session_id",
+                        "root_label",
+                        "revision",
+                        "expires_at",
+                        "replayed",
+                        "status",
+                        "publish_plan",
+                        "publish_plan_sha256",
+                        "readiness_result_sha256",
+                        "retry_after_seconds"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "community_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "attachment_intent_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_import_session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "root_label": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "revision": {
+                          "type": "integer"
+                        },
+                        "expires_at": {
+                          "type": "string"
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "activated",
+                            "failed",
+                            "expired"
+                          ]
+                        },
+                        "publish_plan": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/$defs/Objects_"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "publish_plan_sha256": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "readiness_result_sha256": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "retry_after_seconds": {
+                          "type": "null"
+                        }
+                      },
+                      "required": [
+                        "community_id",
+                        "attachment_intent_id",
+                        "root_import_session_id",
+                        "root_label",
+                        "revision",
+                        "expires_at",
+                        "replayed",
+                        "status",
+                        "publish_plan",
+                        "publish_plan_sha256",
+                        "readiness_result_sha256",
+                        "retry_after_seconds"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ],
+                  "$defs": {
+                    "Objects_1": {
+                      "type": "object"
+                    },
+                    "Objects_": {
+                      "type": "object",
+                      "properties": {
+                        "version": {
+                          "type": "string",
+                          "enum": [
+                            "pirate-hns-root-import-publish-plan-v1"
+                          ]
+                        },
+                        "replacement_semantics": {
+                          "type": "string",
+                          "enum": [
+                            "complete_resource"
+                          ]
+                        },
+                        "current_records": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/$defs/Objects_1"
+                          }
+                        },
+                        "preserved_records": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/$defs/Objects_1"
+                          }
+                        },
+                        "removed_conflicts": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/$defs/Objects_1"
+                          }
+                        },
+                        "added_records": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/$defs/Objects_1"
+                          }
+                        },
+                        "replacement_records": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/$defs/Objects_1"
+                          }
+                        },
+                        "preserved_unknown_record_types": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "acknowledgement_required": {
+                          "type": "boolean",
+                          "enum": [
+                            true
+                          ]
+                        }
+                      },
+                      "required": [
+                        "version",
+                        "replacement_semantics",
+                        "current_records",
+                        "preserved_records",
+                        "removed_conflicts",
+                        "added_records",
+                        "replacement_records",
+                        "preserved_unknown_record_types",
+                        "acknowledgement_required"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ]
+          },
+          "502": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "provider_unavailable",
+              "provider_unavailable"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "userOrAdmin"
+          }
+        },
+        "x-errors": [
+          "AuthError",
+          "BadRequest",
+          "Conflict",
+          "RetryableConflict",
+          "NotFound",
+          "ProviderUnavailable",
+          "ProviderMisconfigured",
+          "InternalError"
+        ]
+      }
+    },
+    "/communities/{communityId}/hns-root-imports/{sessionId}/activate": {
+      "post": {
+        "operationId": "post_communitiesCommunityIdHnsRootImportsSessionIdActivate",
+        "parameters": [
+          {
+            "name": "communityId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "allOf": [
+                {
+                  "minLength": 1
+                }
+              ]
+            }
+          },
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "allOf": [
+                {
+                  "minLength": 1
+                }
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "expected_revision": {
+                    "type": "integer"
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "allOf": [
+                      {
+                        "minLength": 1
+                      }
+                    ]
+                  },
+                  "publish_plan_sha256": {
+                    "type": "string"
+                  },
+                  "readiness_result_sha256": {
+                    "type": "string"
+                  },
+                  "acknowledged_complete_resource_replacement": {
+                    "type": "boolean",
+                    "enum": [
+                      true
+                    ]
+                  }
+                },
+                "required": [
+                  "expected_revision",
+                  "idempotency_key",
+                  "publish_plan_sha256",
+                  "readiness_result_sha256",
+                  "acknowledged_complete_resource_replacement"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "x-max-body-bytes": 4096
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "community_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        }
+                      ]
+                    },
+                    "attachment_intent_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        }
+                      ]
+                    },
+                    "root_import_session_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        }
+                      ]
+                    },
+                    "root_label": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        }
+                      ]
+                    },
+                    "revision": {
+                      "type": "integer"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "activated"
+                      ]
+                    },
+                    "app_host": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        }
+                      ]
+                    },
+                    "dns_zone_activation_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        }
+                      ]
+                    },
+                    "dns_zone_activation_generation": {
+                      "type": "number",
+                      "enum": [
+                        1
+                      ]
+                    },
+                    "app_host_activation_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        }
+                      ]
+                    },
+                    "app_host_activation_generation": {
+                      "type": "number",
+                      "enum": [
+                        1
+                      ]
+                    },
+                    "sale_namespace_activation_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        }
+                      ]
+                    },
+                    "sale_namespace_activation_generation": {
+                      "type": "number",
+                      "enum": [
+                        1
+                      ]
+                    },
+                    "sale_namespace_activation_sha256": {
+                      "type": "string"
+                    },
+                    "handle_issuance_enabled": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "replayed": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "community_id",
+                    "attachment_intent_id",
+                    "root_import_session_id",
+                    "root_label",
+                    "revision",
+                    "status",
+                    "app_host",
+                    "dns_zone_activation_id",
+                    "dns_zone_activation_generation",
+                    "app_host_activation_id",
+                    "app_host_activation_generation",
+                    "sale_namespace_activation_id",
+                    "sale_namespace_activation_generation",
+                    "sale_namespace_activation_sha256",
+                    "handle_issuance_enabled",
+                    "replayed"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "community_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        }
+                      ]
+                    },
+                    "attachment_intent_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        }
+                      ]
+                    },
+                    "root_import_session_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        }
+                      ]
+                    },
+                    "root_label": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        }
+                      ]
+                    },
+                    "revision": {
+                      "type": "integer"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "activated"
+                      ]
+                    },
+                    "app_host": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        }
+                      ]
+                    },
+                    "dns_zone_activation_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        }
+                      ]
+                    },
+                    "dns_zone_activation_generation": {
+                      "type": "number",
+                      "enum": [
+                        1
+                      ]
+                    },
+                    "app_host_activation_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        }
+                      ]
+                    },
+                    "app_host_activation_generation": {
+                      "type": "number",
+                      "enum": [
+                        1
+                      ]
+                    },
+                    "sale_namespace_activation_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        }
+                      ]
+                    },
+                    "sale_namespace_activation_generation": {
+                      "type": "number",
+                      "enum": [
+                        1
+                      ]
+                    },
+                    "sale_namespace_activation_sha256": {
+                      "type": "string"
+                    },
+                    "handle_issuance_enabled": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "replayed": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "community_id",
+                    "attachment_intent_id",
+                    "root_import_session_id",
+                    "root_label",
+                    "revision",
+                    "status",
+                    "app_host",
+                    "dns_zone_activation_id",
+                    "dns_zone_activation_generation",
+                    "app_host_activation_id",
+                    "app_host_activation_generation",
+                    "sale_namespace_activation_id",
+                    "sale_namespace_activation_generation",
+                    "sale_namespace_activation_sha256",
+                    "handle_issuance_enabled",
+                    "replayed"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "404": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "not_found"
+            ]
+          },
+          "409": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "conflict",
+              "conflict"
+            ]
+          },
+          "500": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ]
+          },
+          "502": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "provider_unavailable",
+              "provider_unavailable"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "userOrAdmin"
+          }
+        },
+        "x-errors": [
+          "AuthError",
+          "BadRequest",
+          "Conflict",
+          "RetryableConflict",
+          "NotFound",
+          "ProviderUnavailable",
+          "ProviderMisconfigured",
+          "InternalError"
+        ]
+      }
+    },
     "/communities/{communityId}/handle-sale-namespaces": {
       "post": {
         "operationId": "post_communitiesCommunityIdHandleSaleNamespaces",
