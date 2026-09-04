@@ -23,7 +23,10 @@ The configured SPG NFT contract is
 reviewed Aeneid workflow contracts:
 
 - license workflow: `0xcC2E862bCee5B6036Db0de6E06Ae87e524a79fd8`;
-- royalty workflow: `0xa38f42B8d33809917f23997B8423054aAB97322C`.
+- royalty workflow: `0xa38f42B8d33809917f23997B8423054aAB97322C`;
+- registration workflow: `0xbe39E1C756e921BD25DF86e7AAa31106d1eb0424`
+  (`mintAndRegisterIp` only, for original-video register_ip actions that carry
+  no license terms).
 
 The production signer address is
 `0x91016D653FDa20E7C8eb2a1E6710a6504C5d1E7d`. The same checksummed address is

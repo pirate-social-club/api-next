@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { type DataRegistrationRuntimeEnv, makeDataRegistrationComposition } from "./composition";
+import {
+  DATA_REGISTRATION_AENEID_SELECTORS,
+  DATA_REGISTRATION_AENEID_TARGETS,
+} from "@pirate/platform-cf/data/registration-aeneid-chain";
+import {
+  type DataRegistrationRuntimeEnv,
+  makeDataRegistrationComposition,
+  resolveDataRegistrationOperationKind,
+} from "./composition";
 
 const base = {
   CONTROL_PLANE: { connectionString: "postgres://postgres:postgres@127.0.0.1:5432/postgres" },
@@ -27,6 +35,27 @@ const enabled = (environment: "staging" | "production"): DataRegistrationRuntime
 });
 
 describe("DATA registration composition", () => {
+  test("accepts the original workflow only when both target and selector match", () => {
+    expect(
+      resolveDataRegistrationOperationKind({
+        targetAddress: DATA_REGISTRATION_AENEID_TARGETS.original,
+        methodSelector: DATA_REGISTRATION_AENEID_SELECTORS.original,
+      }),
+    ).toBe("original");
+    expect(
+      resolveDataRegistrationOperationKind({
+        targetAddress: DATA_REGISTRATION_AENEID_TARGETS.original,
+        methodSelector: DATA_REGISTRATION_AENEID_SELECTORS.license,
+      }),
+    ).toBeNull();
+    expect(
+      resolveDataRegistrationOperationKind({
+        targetAddress: DATA_REGISTRATION_AENEID_TARGETS.license,
+        methodSelector: DATA_REGISTRATION_AENEID_SELECTORS.original,
+      }),
+    ).toBeNull();
+  });
+
   test("does not require or read provider credentials while disabled", () => {
     const env = {
       ...base,

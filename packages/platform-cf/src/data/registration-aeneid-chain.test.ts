@@ -4,13 +4,16 @@ import type {
   DataRegistrationPinVerification,
   DataRegistrationSigningAttempt,
 } from "@pirate/application/data/registration-persistence";
-import { encodeAbiParameters, encodeEventTopics } from "viem";
+import { bytesToHex, decodeFunctionData, encodeAbiParameters, encodeEventTopics } from "viem";
 import {
   DATA_REGISTRATION_AENEID_SELECTORS,
   DATA_REGISTRATION_AENEID_TARGETS,
   type DataRegistrationAeneidChainOptions,
+  LICENSE_WORKFLOW_ABI,
   makeDataRegistrationAeneidChain,
   makeJsonRpcTransport,
+  REGISTRATION_WORKFLOW_ABI,
+  ROYALTY_WORKFLOW_ABI,
 } from "./registration-aeneid-chain";
 import type {
   DataRegistrationArtifactAuthority,
@@ -58,6 +61,8 @@ const baseAuthority: DataRegistrationArtifactAuthority = {
   lyrics: null,
   lyricsExplicitness: "not_applicable",
   primaryLanguageBcp47: null,
+  mediaKind: "song",
+  rightsBasis: "original",
   licensePreset: "non-commercial",
   commercialRemixShareBps: 1_000,
   royaltyAllocations: [
@@ -70,6 +75,13 @@ const baseAuthority: DataRegistrationArtifactAuthority = {
   acrDecision: "allow",
   acrPolicyRevision: "acr-v1",
   creatorAddress: "0x1111111111111111111111111111111111111111",
+};
+
+const originalVideoAuthority: DataRegistrationArtifactAuthority = {
+  ...baseAuthority,
+  mediaKind: "video",
+  rightsBasis: "original",
+  licensePreset: null,
 };
 
 const pin = (
@@ -179,6 +191,155 @@ describe("Aeneid DATA registration chain", () => {
       DATA_REGISTRATION_AENEID_TARGETS.royalty.toLowerCase(),
     );
     expect(plan.reservation.methodSelector).toBe(DATA_REGISTRATION_AENEID_SELECTORS.royalty);
+  });
+
+  test("plans an original-video register_ip with no license attachment", async () => {
+    const plan = await chain(originalVideoAuthority).plan(operation, 1);
+    expect(plan.reservation).toMatchObject({
+      chainId: 1315n,
+      signerNamespace: "data_registration",
+      targetAddress: DATA_REGISTRATION_AENEID_TARGETS.original.toLowerCase(),
+      methodSelector: DATA_REGISTRATION_AENEID_SELECTORS.original,
+      valueWei: 0n,
+    });
+    const calldata = bytesToHex(plan.calldata);
+    const decoded = decodeFunctionData({ abi: REGISTRATION_WORKFLOW_ABI, data: calldata });
+    expect(decoded.functionName).toBe("mintAndRegisterIp");
+    expect(decoded.args).toEqual([
+      "0x3333333333333333333333333333333333333333",
+      "0x1111111111111111111111111111111111111111",
+      {
+        ipMetadataURI: "ipfs://bafyip_metadata",
+        ipMetadataHash: `0x${"b".repeat(64)}`,
+        nftMetadataURI: "ipfs://bafynft_metadata",
+        nftMetadataHash: `0x${"c".repeat(64)}`,
+      },
+      false,
+    ]);
+    // The calldata is structurally not a license-attachment invocation: it
+    // does not decode as either attaching workflow.
+    expect(() => decodeFunctionData({ abi: LICENSE_WORKFLOW_ABI, data: calldata })).toThrow();
+    expect(() => decodeFunctionData({ abi: ROYALTY_WORKFLOW_ABI, data: calldata })).toThrow();
+  });
+
+  test("rejects intent and offered-license combinations outside the closed matrix", async () => {
+    const invalid = [
+      { ...baseAuthority, licensePreset: null },
+      { ...baseAuthority, rightsBasis: "derivative" },
+      { ...baseAuthority, mediaKind: "video", rightsBasis: "original" },
+      {
+        ...originalVideoAuthority,
+        rightsBasis: "derivative",
+      },
+      {
+        ...originalVideoAuthority,
+        mediaKind: "song",
+      },
+    ] as unknown as readonly DataRegistrationArtifactAuthority[];
+    for (const authority of invalid) {
+      await expect(chain(authority).plan(operation, 1)).rejects.toThrow(
+        "unsupported DATA registration intent",
+      );
+    }
+  });
+
+  test("confirms an original-video registration from its IPRegistered log", async () => {
+    const originalAttempt = {
+      ...attempt,
+      targetAddress: DATA_REGISTRATION_AENEID_TARGETS.original,
+      methodSelector: DATA_REGISTRATION_AENEID_SELECTORS.original,
+    };
+    const tokenContract = "0x3333333333333333333333333333333333333333";
+    let head = "0xa";
+    const rpc = async (method: string): Promise<unknown> => {
+      if (method === "eth_blockNumber") return head;
+      if (method === "eth_getTransactionReceipt") {
+        return {
+          transactionHash,
+          blockNumber: "0xa",
+          blockHash: `0x${"f".repeat(64)}`,
+          status: "0x1",
+          logs: [
+            {
+              address: "0x77319B4031e6eF1250907aa00018B8B1c67a244b",
+              logIndex: "0x2",
+              topics: encodeEventTopics({
+                abi: [ipRegisteredEvent],
+                eventName: "IPRegistered",
+                args: { chainId: 1315n, tokenContract, tokenId: 1n },
+              }),
+              data: encodeAbiParameters(
+                [{ type: "address" }, { type: "string" }, { type: "string" }, { type: "uint256" }],
+                [
+                  "0x4444444444444444444444444444444444444444",
+                  "Original video",
+                  "ipfs://metadata",
+                  1n,
+                ],
+              ),
+            },
+          ],
+        };
+      }
+      throw new Error("unexpected RPC method");
+    };
+    const result = await chain(originalVideoAuthority, rpc).observeReceipt(
+      operation,
+      originalAttempt,
+    );
+    expect(result).toMatchObject({ status: "mined" });
+    head = "0xc";
+    const confirmed = await chain(originalVideoAuthority, rpc).observeReceipt(
+      operation,
+      originalAttempt,
+    );
+    expect(confirmed).toMatchObject({
+      status: "confirmed",
+      observation: {
+        outcome: "confirmed",
+        registeredIpId: "0x4444444444444444444444444444444444444444",
+        ipMetadataHash: `0x${"b".repeat(64)}`,
+        nftMetadataHash: `0x${"c".repeat(64)}`,
+      },
+    });
+  });
+
+  test("recovers an original-video attempt from its persisted mined receipt", async () => {
+    const originalAttempt = {
+      ...attempt,
+      targetAddress: DATA_REGISTRATION_AENEID_TARGETS.original,
+      methodSelector: DATA_REGISTRATION_AENEID_SELECTORS.original,
+      state: "mined" as const,
+    };
+    const result = await chain(originalVideoAuthority, async () => null, {
+      getLatestMinedReceipt: async () => ({
+        receiptObservationId: `${originalAttempt.submissionAttemptId}:receipt:1`,
+        registrationOperationId: operation.registrationOperationId,
+        submissionAttemptId: originalAttempt.submissionAttemptId,
+        observationSequence: 1n,
+        transactionHash,
+        outcome: "mined",
+        blockNumber: 10n,
+        blockHash: `0x${"f".repeat(64)}`,
+        logIndex: null,
+        confirmations: 1,
+        registeredIpId: null,
+        ipMetadataUri: null,
+        ipMetadataHash: null,
+        nftMetadataUri: null,
+        nftMetadataHash: null,
+        evidenceRef: "evidence://mined",
+        observedAt: "2026-08-27T00:00:00.000Z",
+      }),
+    }).observeReceipt(operation, originalAttempt);
+    expect(result).toMatchObject({
+      status: "orphaned",
+      observation: {
+        outcome: "orphaned",
+        blockNumber: 10n,
+        blockHash: `0x${"f".repeat(64)}`,
+      },
+    });
   });
 
   test("rejects non-HTTPS RPC configuration before any request", () => {
