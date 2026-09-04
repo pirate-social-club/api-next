@@ -28,6 +28,12 @@ jobs:
           bun-version: 1.4.0
       - run: bun install --frozen-lockfile
       - run: bun run check
+      - name: Install pinned FFmpeg fixture tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ffmpeg
+          ffmpeg -version | grep -m1 '^ffmpeg version 6\.1\.1'
+          ffprobe -version | grep -m1 '^ffprobe version 6\.1\.1'
       - run: bun run test
       - run: bun run check:fresh
       - name: Resolve OpenAPI baseline
