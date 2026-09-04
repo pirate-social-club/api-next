@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.59.0",
+  "releaseType": "hns-community-route-attachment",
+  "wireContract": "community-keyed HNS root-import start, status, poll, and explicit activation",
+  "sourceCommit": "pending-review",
+  "supersedes": "0.58.0; adds the authenticated community moderation contract for attaching an HNS root through one name signature, one complete wallet replacement, observed readiness, and explicit activation.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.59.0.tgz",
+    "sha256": "33c9b03c4b9095bb9aaa7c82b33f20fa1d25f2d04b0642c226c2f4ac2151dd2c",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@bc5dfad1b3fe1c40af6dfa240b0277a4f986c4878e5abc086947d9b0726a6866",
+    "openapiSha256": "bc5dfad1b3fe1c40af6dfa240b0277a4f986c4878e5abc086947d9b0726a6866",
+    "clientSha256": "04b44647a5342b2a947782d22790939190e02e0598b77ed1aaa1c8fb87312111"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": "pending; run before publication",
+    "focusedSuites": "pending; see the lane record",
+    "fullUnitSuite": "pending; see the lane record",
+    "packageVerifier": "pending until this ledger entry lands",
+    "repositoryCheck": "pending; see the lane record"
+  }
+}
