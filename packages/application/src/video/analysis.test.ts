@@ -14,8 +14,8 @@ import type { PersonaRecord } from "../use-cases/personas.ts";
 import {
   runOriginalVideoAnalysis,
   VideoAnalysisPending,
-  VideoAnalysisRetryable,
   type VideoAnalysisProviders,
+  VideoAnalysisRetryable,
   type VideoAnalysisRuntimeServices,
   type VideoTransformAttemptStore,
 } from "./analysis.ts";
