@@ -87,6 +87,7 @@ const PathPublicCommunity = Schema.Struct({ communityRef: Schema.String });
 const PathPost = Schema.Struct({ postId: Schema.String });
 const PathComment = Schema.Struct({ commentId: Schema.String });
 const PathMediaSubmission = Schema.Struct({ submissionId: Schema.String });
+const PathMediaReservation = Schema.Struct({ reservationId: Schema.String });
 
 export const LocaleQuery = Schema.Struct({
   locale: Schema.optional(Schema.String),
@@ -798,6 +799,88 @@ export const SongAudioReservationV1 = Schema.Struct({
 });
 export type SongAudioReservationV1 = Schema.Schema.Type<typeof SongAudioReservationV1>;
 
+export const VIDEO_INGEST_MAX_SIZE_BYTES = 500 * 1024 * 1024;
+export const VIDEO_INGEST_MAX_DURATION_MS = 180_000;
+
+const VideoUploadCommonV1 = {
+  persona_id: PersonaIdV1,
+  idempotency_key: SongAuthorString,
+  track: Schema.Literal("video"),
+  slot: Schema.Literal("primary_video"),
+  expected_content_type: Schema.Literals(["video/mp4", "video/quicktime"]),
+  expected_size_bytes: PositiveSafeInteger.check(
+    Schema.isLessThanOrEqualTo(VIDEO_INGEST_MAX_SIZE_BYTES),
+  ),
+  expected_sha256: Schema.optional(Sha256Hex),
+};
+
+export const ReserveVideoUploadV1 = Schema.Union([
+  Schema.Struct({ ...VideoUploadCommonV1, intent: Schema.Literal("original_audio") }),
+  Schema.Struct({
+    ...VideoUploadCommonV1,
+    intent: Schema.Literal("song_reference"),
+    song_post_id: SongAuthorString,
+    selected_from: Schema.Union([
+      Schema.Struct({ kind: Schema.Literal("library") }),
+      Schema.Struct({ kind: Schema.Literal("feed"), origin_post_id: SongAuthorString }),
+    ]),
+  }),
+]);
+export type ReserveVideoUploadV1 = Schema.Schema.Type<typeof ReserveVideoUploadV1>;
+
+const VideoMultipartPartV1 = Schema.Struct({
+  part_number: PositiveSafeInteger,
+  url: SongAuthorString,
+  expires_at: SongAuthorString,
+});
+
+const VideoUploadReservationCommonV1 = {
+  reservation_id: SongAuthorString,
+  track: Schema.Literal("video"),
+  slot: Schema.Literal("primary_video"),
+  status: Schema.Literal("awaiting_upload"),
+  author_persona_id: PersonaIdV1,
+  ingest_policy_revision: PositiveRevision,
+  upload: Schema.Struct({
+    method: Schema.Literal("MULTIPART"),
+    upload_id: SongAuthorString,
+    part_size_bytes: PositiveSafeInteger,
+    part_count: PositiveSafeInteger,
+    parts: Schema.Array(VideoMultipartPartV1).check(Schema.isMinLength(1)),
+    expires_at: SongAuthorString,
+  }),
+};
+
+export const VideoUploadReservationV1 = Schema.Union([
+  Schema.Struct({ ...VideoUploadReservationCommonV1, intent: Schema.Literal("original_audio") }),
+  Schema.Struct({
+    ...VideoUploadReservationCommonV1,
+    intent: Schema.Literal("song_reference"),
+    song_reference: Schema.Struct({
+      song_post_id: SongAuthorString,
+      audio_revision: PositiveRevision,
+      song_asset_id: SongAuthorString,
+    }),
+    reservation_policy_snapshot: Schema.Struct({
+      observed_at_transition: Schema.Literal("media_reservation_issued"),
+      owner_policy_revision: PositiveRevision,
+      owner_policy_hash: Sha256Hex,
+      derivative_video: Schema.Literals(["allowed", "owner_only", "blocked"]),
+      observed_at: SongAuthorString,
+    }),
+  }),
+]);
+export type VideoUploadReservationV1 = Schema.Schema.Type<typeof VideoUploadReservationV1>;
+
+export const MediaUploadReservationRequestV1 = Schema.Union([
+  ReserveSongAudioV1,
+  ReserveVideoUploadV1,
+]);
+export const MediaUploadReservationV1 = Schema.Union([
+  SongAudioReservationV1,
+  VideoUploadReservationV1,
+]);
+
 export const CreateSongSubmissionV1 = Schema.Struct({
   persona_id: PersonaIdV1,
   version: Schema.Literal("song-start-input-v1"),
@@ -808,6 +891,21 @@ export const CreateSongSubmissionV1 = Schema.Struct({
   author_declared_rating: Schema.optional(ContentRatingV1),
 });
 export type CreateSongSubmissionV1 = Schema.Schema.Type<typeof CreateSongSubmissionV1>;
+
+export const CreateVideoSubmissionV1 = Schema.Struct({
+  persona_id: PersonaIdV1,
+  version: Schema.Literal("video-start-input-v1"),
+  video_reservation_id: SongAuthorString,
+  caption: Schema.optional(Schema.String.check(Schema.isMaxLength(5_000))),
+  author_declared_rating: Schema.optional(ContentRatingV1),
+  idempotency_key: SongAuthorString,
+});
+export type CreateVideoSubmissionV1 = Schema.Schema.Type<typeof CreateVideoSubmissionV1>;
+
+export const CreateMediaSubmissionRequestV1 = Schema.Union([
+  CreateSongSubmissionV1,
+  CreateVideoSubmissionV1,
+]);
 
 export const BindSongTermsV1 = Schema.Union([
   Schema.Struct({
@@ -847,6 +945,29 @@ export const FinalizeSongUploadV1 = Schema.Struct({
 });
 export type FinalizeSongUploadV1 = Schema.Schema.Type<typeof FinalizeSongUploadV1>;
 
+const VideoPartEtagV1 = Schema.NonEmptyString.check(Schema.isMaxLength(256));
+export const FinalizeVideoUploadV1 = Schema.Struct({
+  persona_id: PersonaIdV1,
+  idempotency_key: SongAuthorString,
+  expected_creation_revision: PositiveRevision,
+  reservation_id: SongAuthorString,
+  parts: Schema.Array(
+    Schema.Struct({ part_number: PositiveSafeInteger, etag: VideoPartEtagV1 }),
+  ).check(Schema.isMinLength(1)),
+  poster_timestamp_ms: Schema.optional(
+    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: VIDEO_INGEST_MAX_DURATION_MS - 1 })),
+  ),
+});
+export type FinalizeVideoUploadV1 = Schema.Schema.Type<typeof FinalizeVideoUploadV1>;
+
+export const RenewVideoUploadPartsV1 = Schema.Struct({
+  persona_id: PersonaIdV1,
+  idempotency_key: SongAuthorString,
+  reservation_id: SongAuthorString,
+  part_numbers: Schema.Array(PositiveSafeInteger).check(Schema.isMinLength(1)),
+});
+export type RenewVideoUploadPartsV1 = Schema.Schema.Type<typeof RenewVideoUploadPartsV1>;
+
 export const BindSongReferenceV1 = Schema.Struct({
   persona_id: PersonaIdV1,
   idempotency_key: SongAuthorString,
@@ -864,6 +985,16 @@ export const RetryOrCancelSongSubmissionV1 = Schema.Struct({
 export type RetryOrCancelSongSubmissionV1 = Schema.Schema.Type<
   typeof RetryOrCancelSongSubmissionV1
 >;
+
+export const RetryVideoPosterV1 = Schema.Struct({
+  persona_id: PersonaIdV1,
+  idempotency_key: SongAuthorString,
+  expected_creation_revision: PositiveRevision,
+  poster_timestamp_ms: Schema.Int.check(
+    Schema.isBetween({ minimum: 0, maximum: VIDEO_INGEST_MAX_DURATION_MS - 1 }),
+  ),
+});
+export type RetryVideoPosterV1 = Schema.Schema.Type<typeof RetryVideoPosterV1>;
 
 export const ModerateSongSubmissionV1 = Schema.Union([
   Schema.Struct({
@@ -890,6 +1021,38 @@ export const ModerateSongSubmissionV1 = Schema.Union([
 ]);
 export type ModerateSongSubmissionV1 = Schema.Schema.Type<typeof ModerateSongSubmissionV1>;
 
+export const ModerateVideoSubmissionV1 = Schema.Union([
+  Schema.Struct({
+    idempotency_key: SongAuthorString,
+    expected_creation_revision: PositiveRevision,
+    action: Schema.Literal("approve"),
+    approval_kind: Schema.Literal("standard"),
+    hold: Schema.Literal("safety"),
+  }),
+  Schema.Struct({
+    idempotency_key: SongAuthorString,
+    expected_creation_revision: PositiveRevision,
+    action: Schema.Literal("approve"),
+    approval_kind: Schema.Literal("soundtrack_override"),
+    hold: Schema.Literal("soundtrack"),
+    evidence_ref: EvidenceRef,
+    reason_code: Schema.Literals([
+      "soundtrack_mismatch",
+      "soundtrack_known_recording",
+      "soundtrack_exhausted",
+      "soundtrack_skipped",
+    ]),
+  }),
+  Schema.Struct({
+    idempotency_key: SongAuthorString,
+    expected_creation_revision: PositiveRevision,
+    action: Schema.Literal("block"),
+    evidence_ref: EvidenceRef,
+    reason_code: Schema.Literals(["policy_violation", "rights_violation"]),
+  }),
+]);
+export type ModerateVideoSubmissionV1 = Schema.Schema.Type<typeof ModerateVideoSubmissionV1>;
+
 export const PostProcessingPhase = Schema.Literals([
   "reserve",
   "awaiting_upload",
@@ -899,7 +1062,7 @@ export const PostProcessingPhase = Schema.Literals([
   "publish",
 ]);
 
-const MediaSubmissionCommon = {
+const SongMediaSubmissionCommon = {
   submission_id: SongAuthorString,
   author_persona: PublicPersonaV1,
   href: SongAuthorString,
@@ -920,14 +1083,14 @@ const MediaSubmissionCommon = {
   }),
   updated_at: SongAuthorString,
 };
-export const MediaPostSubmissionV1 = Schema.Union([
+export const SongMediaPostSubmissionV1 = Schema.Union([
   Schema.Struct({
-    ...MediaSubmissionCommon,
+    ...SongMediaSubmissionCommon,
     status: Schema.Literal("processing"),
     phase: PostProcessingPhase,
   }),
   Schema.Struct({
-    ...MediaSubmissionCommon,
+    ...SongMediaSubmissionCommon,
     status: Schema.Literal("action_required"),
     action: Schema.Struct({
       kind: Schema.Literal("reference_required"),
@@ -936,23 +1099,23 @@ export const MediaPostSubmissionV1 = Schema.Union([
     }),
   }),
   Schema.Struct({
-    ...MediaSubmissionCommon,
+    ...SongMediaSubmissionCommon,
     status: Schema.Literal("manual_review"),
     reason_code: Schema.Literals(["review_required", "moderation_unavailable"]),
     review_ref: SongAuthorString,
   }),
   Schema.Struct({
-    ...MediaSubmissionCommon,
+    ...SongMediaSubmissionCommon,
     status: Schema.Literal("published"),
     published_resource: Schema.Struct({ post_id: SongAuthorString, href: SongAuthorString }),
   }),
   Schema.Struct({
-    ...MediaSubmissionCommon,
+    ...SongMediaSubmissionCommon,
     status: Schema.Literal("blocked"),
     reason_code: Schema.Literal("policy_violation"),
   }),
   Schema.Struct({
-    ...MediaSubmissionCommon,
+    ...SongMediaSubmissionCommon,
     status: Schema.Literal("processing_failed"),
     reason_code: Schema.Literals([
       "invalid_media",
@@ -967,7 +1130,7 @@ export const MediaPostSubmissionV1 = Schema.Union([
     retryable: Schema.Boolean,
   }),
   Schema.Struct({
-    ...MediaSubmissionCommon,
+    ...SongMediaSubmissionCommon,
     status: Schema.Literal("abandoned"),
     reason_code: Schema.Literals([
       "upload_reservation_expired",
@@ -977,6 +1140,89 @@ export const MediaPostSubmissionV1 = Schema.Union([
       "author_cancelled_before_finalize",
     ]),
   }),
+]);
+
+const VideoMediaSubmissionCommon = {
+  submission_id: SongAuthorString,
+  author_persona: PublicPersonaV1,
+  href: SongAuthorString,
+  track: Schema.Literal("video"),
+  intent: Schema.Literal("original_audio"),
+  creation_revision: PositiveRevision,
+  video_revision: NonNegativeRevision,
+  caption: Schema.NullOr(Schema.String.check(Schema.isMaxLength(5_000))),
+  updated_at: SongAuthorString,
+};
+
+export const VideoPostSubmissionV1 = Schema.Union([
+  Schema.Struct({
+    ...VideoMediaSubmissionCommon,
+    status: Schema.Literal("processing"),
+    phase: PostProcessingPhase,
+  }),
+  Schema.Struct({
+    ...VideoMediaSubmissionCommon,
+    status: Schema.Literal("manual_review"),
+    reason_codes: Schema.Array(
+      Schema.Literals([
+        "media_review_required",
+        "caption_review_required",
+        "safety_adapter_unavailable",
+        "soundtrack_known_recording",
+        "soundtrack_exhausted",
+        "soundtrack_skipped",
+      ]),
+    ).check(Schema.isMinLength(1)),
+    review_ref: SongAuthorString,
+  }),
+  Schema.Struct({
+    ...VideoMediaSubmissionCommon,
+    status: Schema.Literal("published"),
+    published_resource: Schema.Struct({ post_id: SongAuthorString, href: SongAuthorString }),
+  }),
+  Schema.Struct({
+    ...VideoMediaSubmissionCommon,
+    status: Schema.Literal("blocked"),
+    reason_code: Schema.Literals([
+      "known_recording_requires_song_reference",
+      "policy_violation",
+      "rights_violation",
+    ]),
+    song_post_id: Schema.optional(SongAuthorString),
+  }),
+  Schema.Struct({
+    ...VideoMediaSubmissionCommon,
+    status: Schema.Literal("processing_failed"),
+    reason_code: Schema.Literals([
+      "invalid_media",
+      "unsupported_media",
+      "probe_failed",
+      "hash_failed",
+      "transform_failed",
+      "publication_failed",
+      "upload_seal_conflict",
+      "poster_undecodable",
+      "poster_timestamp_out_of_range",
+    ]),
+    retry_count: Schema.Literals([0, 1, 2, 3]),
+    retryable: Schema.Boolean,
+  }),
+  Schema.Struct({
+    ...VideoMediaSubmissionCommon,
+    status: Schema.Literal("abandoned"),
+    reason_code: Schema.Literals([
+      "upload_reservation_expired",
+      "upload_expectation_mismatch",
+      "upload_source_changed_before_finalize",
+      "author_cancelled_before_finalize",
+    ]),
+  }),
+]);
+export type VideoPostSubmissionV1 = Schema.Schema.Type<typeof VideoPostSubmissionV1>;
+
+export const MediaPostSubmissionV1 = Schema.Union([
+  SongMediaPostSubmissionV1,
+  VideoPostSubmissionV1,
 ]);
 export type MediaPostSubmissionV1 = Schema.Schema.Type<typeof MediaPostSubmissionV1>;
 
@@ -1512,8 +1758,8 @@ export const CreateMediaUploadReservation = endpoint({
   method: "POST",
   path: "/communities/:communityId/media-upload-reservations",
   auth: Auth.userOrAdmin(),
-  request: { path: PathCommunity, body: ReserveSongAudioV1 },
-  response: SongAudioReservationV1,
+  request: { path: PathCommunity, body: MediaUploadReservationRequestV1 },
+  response: MediaUploadReservationV1,
   successStatus: 201,
   errors: [
     AuthError,
@@ -1530,7 +1776,7 @@ export const CreateMediaPostSubmission = endpoint({
   method: "POST",
   path: "/communities/:communityId/media-post-submissions",
   auth: Auth.userOrAdmin(),
-  request: { path: PathCommunity, body: CreateSongSubmissionV1 },
+  request: { path: PathCommunity, body: CreateMediaSubmissionRequestV1 },
   response: MediaPostSubmissionV1,
   successStatus: 201,
   errors: [
@@ -1566,7 +1812,10 @@ export const FinalizeMediaPostSubmission = endpoint({
   method: "POST",
   path: "/media-post-submissions/:submissionId/finalize",
   auth: Auth.userOrAdmin(),
-  request: { path: PathMediaSubmission, body: FinalizeSongUploadV1 },
+  request: {
+    path: PathMediaSubmission,
+    body: Schema.Union([FinalizeSongUploadV1, FinalizeVideoUploadV1]),
+  },
   response: MediaPostSubmissionV1,
   errors: [
     AuthError,
@@ -1577,6 +1826,15 @@ export const FinalizeMediaPostSubmission = endpoint({
     NotFound,
     RateLimited,
   ],
+});
+
+export const RenewVideoUploadParts = endpoint({
+  method: "POST",
+  path: "/media-upload-reservations/:reservationId/parts/renew",
+  auth: Auth.userOrAdmin(),
+  request: { path: PathMediaReservation, body: RenewVideoUploadPartsV1 },
+  response: VideoUploadReservationV1,
+  errors: [AuthError, BadRequest, Conflict, IdempotencyConflict, NotFound, RateLimited],
 });
 
 export const GetMediaPostSubmission = endpoint({
@@ -1606,6 +1864,15 @@ export const RetryMediaPostSubmission = endpoint({
   errors: [AuthError, BadRequest, Conflict, IdempotencyConflict, NotFound, RateLimited],
 });
 
+export const RetryVideoPostSubmissionPoster = endpoint({
+  method: "POST",
+  path: "/media-post-submissions/:submissionId/poster-retry",
+  auth: Auth.userOrAdmin(),
+  request: { path: PathMediaSubmission, body: RetryVideoPosterV1 },
+  response: VideoPostSubmissionV1,
+  errors: [AuthError, BadRequest, Conflict, IdempotencyConflict, NotFound, RateLimited],
+});
+
 export const CancelMediaPostSubmission = endpoint({
   method: "POST",
   path: "/media-post-submissions/:submissionId/cancel",
@@ -1619,7 +1886,10 @@ export const ModerateMediaPostSubmission = endpoint({
   method: "POST",
   path: "/moderation/media-post-submissions/:submissionId/actions",
   auth: Auth.userOrAdmin(),
-  request: { path: PathMediaSubmission, body: ModerateSongSubmissionV1 },
+  request: {
+    path: PathMediaSubmission,
+    body: Schema.Union([ModerateSongSubmissionV1, ModerateVideoSubmissionV1]),
+  },
   response: MediaPostSubmissionV1,
   errors: [AuthError, BadRequest, Conflict, IdempotencyConflict, NotFound, RateLimited],
 });
@@ -1801,9 +2071,11 @@ export const v1Registry = {
   BindMediaPostSubmissionTerms,
   BindMediaPostSubmissionLyrics,
   FinalizeMediaPostSubmission,
+  RenewVideoUploadParts,
   GetMediaPostSubmission,
   BindMediaPostSubmissionReference,
   RetryMediaPostSubmission,
+  RetryVideoPostSubmissionPoster,
   CancelMediaPostSubmission,
   ModerateMediaPostSubmission,
   GetTextContentSubmission,
