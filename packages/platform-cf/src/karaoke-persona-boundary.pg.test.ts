@@ -374,10 +374,10 @@ suite("Karaoke persona boundary", () => {
              scoring_diagnostics, transport_facts
            ) VALUES
              ('board-attempt-performer','board-session-performer','completed',5,'elevenlabs',
-               'scribe_v2_realtime',9500,1,1,'{}'::jsonb,clock_timestamp(),clock_timestamp(),
+               'scribe_v2_realtime',9500,1,1,'{}'::jsonb,clock_timestamp(),clock_timestamp() - interval '1 second',
                9500,9500,'on_time',0,0,0,'{}'::jsonb,'{}'::jsonb),
              ('board-attempt-plain','board-session-plain','completed',5,'elevenlabs',
-               'scribe_v2_realtime',8000,1,1,'{}'::jsonb,clock_timestamp(),clock_timestamp(),
+               'scribe_v2_realtime',8000,1,1,'{}'::jsonb,clock_timestamp(),clock_timestamp() - interval '1 second',
                8000,8000,'on_time',0,0,0,'{}'::jsonb,'{}'::jsonb)`,
         );
         await admin.query(
