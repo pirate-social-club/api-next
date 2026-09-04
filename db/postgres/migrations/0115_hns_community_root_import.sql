@@ -223,6 +223,15 @@ ALTER TABLE hns_root_import_sessions
   ADD CONSTRAINT hns_root_import_sessions_community_session_unique
     UNIQUE (actor_id, community_id, root_import_session_id);
 
+ALTER TABLE namespace_ownership_sessions
+  ADD CONSTRAINT namespace_ownership_sessions_root_import_fk_identity_unique
+    UNIQUE (namespace_session_id, actor_id, creation_intent_id);
+
+ALTER TABLE hns_root_import_sessions
+  ADD CONSTRAINT hns_root_import_sessions_creation_namespace_actor_fk
+    FOREIGN KEY (namespace_session_id, actor_id, creation_intent_id)
+    REFERENCES namespace_ownership_sessions(namespace_session_id, actor_id, creation_intent_id);
+
 CREATE OR REPLACE FUNCTION guard_hns_root_import_session_insert()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -346,3 +355,30 @@ ALTER TABLE hns_root_import_activation_operations
     AND is_handle_sales_identifier_v1(sale_namespace_activation_id, 128)
     AND sale_namespace_activation_sha256 ~ '^[0-9a-f]{64}$'
   );
+
+-- CREATE OR REPLACE clears the function-level search_path pin established by
+-- migration 0099. Reapply it to both replaced guards and pin the new
+-- append-only guard in the schema where this migration was installed.
+DO $$
+DECLARE
+  installed_schema TEXT := current_schema();
+  function_signature TEXT;
+BEGIN
+  IF installed_schema IS NULL THEN
+    RAISE EXCEPTION 'HNS community root-import migration requires a current schema';
+  END IF;
+  FOREACH function_signature IN ARRAY ARRAY[
+    'guard_hns_root_import_session_change()',
+    'guard_hns_root_import_session_insert()',
+    'reject_hns_community_root_import_preparation_change()'
+  ]
+  LOOP
+    EXECUTE format(
+      'ALTER FUNCTION %I.%s SET search_path TO %I, pg_temp',
+      installed_schema,
+      function_signature,
+      installed_schema
+    );
+  END LOOP;
+END;
+$$;

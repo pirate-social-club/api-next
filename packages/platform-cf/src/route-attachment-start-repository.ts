@@ -408,9 +408,9 @@ export function makeControlPlaneRouteAttachmentOwnershipStartStore(
                 const reacquired = yield* tx.execute<Row>({
                   label: "route-attachment.start.reacquire",
                   text: `UPDATE community_route_attachment_start_reservations SET state='acquired',fence_token=fence_token+1,
-            namespace_session_id=$1,lease_expires_at=clock_timestamp()+($2::bigint*interval '1 millisecond'),updated_at=clock_timestamp()
-            WHERE reservation_id=$3 AND state IN ('released','acquired') RETURNING *`,
-                  values: [input.namespace_session_id, input.ttl_ms, row.reservation_id],
+            lease_expires_at=clock_timestamp()+($1::bigint*interval '1 millisecond'),updated_at=clock_timestamp()
+            WHERE reservation_id=$2 AND state IN ('released','acquired') RETURNING *`,
+                  values: [input.ttl_ms, row.reservation_id],
                   readonly: false,
                 });
                 const value = one(reacquired);

@@ -115,6 +115,6 @@
     "0112_community_membership_follow_invariant.sql": "b756fb8665016a1e093cb5f1a86c9f23ea48d56796193b7554f0154da0789941",
     "0113_account_community_membership_discovery.sql": "86e30ff9c9c4d5a6983edf61c2c7b5892ec8b2af630368c6d9f23dad81e02c92",
     "0114_video_original_audio_publication.sql": "f4d20f9dccdf2bae08d514751c4ad459c171032dff1ab4c246e403a9811e9d54",
-    "0115_hns_community_root_import.sql": "e21e55cfe9c51860d9d67c527b18920a560ffb9197bc0e9a0b08585c3aba038b"
+    "0115_hns_community_root_import.sql": "2a76acb6c4f31cef41fa5a268032bd5a16dd74e4e3ba46e95955c0cb7cf6ebbd"
   }
 }

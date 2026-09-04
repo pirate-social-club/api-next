@@ -233,6 +233,20 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
         const db = yield* ControlPlaneDb;
         return yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
+            yield* transaction.execute({
+              label: "hns.community-root-import.lock-root",
+              text: "SELECT pg_advisory_xact_lock(hashtext($1))",
+              values: [input.request.root_label],
+              readonly: false,
+            });
+            yield* transaction.execute({
+              label: "hns.community-root-import.lock-idempotency",
+              text: "SELECT pg_advisory_xact_lock(hashtext($1))",
+              values: [
+                `${new TextEncoder().encode(input.request.actor_id).byteLength}:${input.request.actor_id}${input.request.idempotency_key}`,
+              ],
+              readonly: false,
+            });
             const replay = yield* loadPreparation(
               transaction,
               input.request.actor_id,
@@ -245,6 +259,17 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
                 ? ({ kind: "replay", value } as const)
                 : ({ kind: "conflict" } as const);
             }
+            const reusedKey = yield* transaction.execute<Row>({
+              label: "hns.community-root-import.check-idempotency",
+              text: `SELECT attachment_intent_id
+                       FROM community_route_attachment_intents
+                      WHERE actor_id=$1 AND create_idempotency_key=$2`,
+              values: [input.request.actor_id, input.request.idempotency_key],
+              readonly: false,
+            });
+            const reusedKeyRow = oneRow(reusedKey);
+            if (reusedKeyRow === undefined) return yield* Effect.fail(storageFailure());
+            if (reusedKeyRow !== null) return { kind: "conflict" } as const;
             const authority = yield* transaction.execute<Row>({
               label: "hns.community-root-import.lock-authority",
               text: `SELECT route_grant.grant_id
@@ -274,10 +299,9 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
                        OR EXISTS (SELECT 1 FROM community_handle_sale_namespace_activation_current
                                    WHERE family='hns' AND canonical_root=$1)
                        OR EXISTS (SELECT 1 FROM hns_root_import_sessions
-                                   WHERE root_label=$1 AND status NOT IN ('failed','expired'))
-                       OR EXISTS (SELECT 1 FROM community_route_attachment_intents
-                                   WHERE (community_id=$2 OR (family='hns' AND root_label=$1))
-                                     AND status IN ('verification_required','commit_ready'))
+                                   WHERE root_label=$1
+                                     AND status IN ('provisioning','awaiting_owner_update','observing','ready','activated')
+                                     AND (status='activated' OR expires_at>clock_timestamp()))
                        OR EXISTS (
                          SELECT 1 FROM operator_managed_root_registry_current AS registry
                           WHERE operator_managed_registry_has_active_root(
@@ -286,7 +310,7 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
                           )
                        )
                      ) AS unavailable`,
-              values: [input.request.root_label, input.request.community_id],
+              values: [input.request.root_label],
               readonly: false,
             });
             const unavailableRow = oneRow(unavailable);
@@ -464,6 +488,31 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
             ) {
               return { kind: "conflict" } as const;
             }
+            const authority = yield* transaction.execute<Row>({
+              label: "hns.community-root-import.recheck-authority",
+              text: `SELECT attachment.attachment_intent_id
+                       FROM community_route_attachment_intents AS attachment
+                       JOIN communities AS target_community
+                         ON target_community.community_id=attachment.community_id
+                      WHERE attachment.actor_id=$1 AND attachment.community_id=$2
+                        AND attachment.attachment_intent_id=$3
+                        AND attachment.status='verification_required'
+                        AND attachment.expires_at>clock_timestamp()
+                        AND target_community.status='active'
+                        AND target_community.route_authority_version='optional_route_v2'
+                        AND target_community.canonical_route_binding_id IS NULL
+                        AND has_community_route_authority($2,$1)
+                      FOR UPDATE OF attachment,target_community`,
+              values: [
+                input.preparation.actor_id,
+                input.preparation.community_id,
+                input.preparation.attachment_intent_id,
+              ],
+              readonly: false,
+            });
+            const authorityRow = oneRow(authority);
+            if (authorityRow === undefined) return yield* Effect.fail(storageFailure());
+            if (authorityRow === null) return { kind: "not_found" } as const;
             const ownership = yield* transaction.execute<Row>({
               label: "hns.community-root-import.lock-ownership-session",
               text: `SELECT * FROM community_route_attachment_namespace_sessions

@@ -57,6 +57,30 @@ const binding = {
 suite("community HNS root-import repositories", () => {
   test("persists preparation, provider session, root-import session, and exact replay", async () => {
     await withSchema(async (connection, admin) => {
+      expect(
+        (
+          await admin.query<{ proname: string; proconfig: string[] }>(
+            `SELECT proname,proconfig FROM pg_proc
+              WHERE proname IN ('guard_hns_root_import_session_change',
+                'guard_hns_root_import_session_insert',
+                'reject_hns_community_root_import_preparation_change')
+              ORDER BY proname`,
+          )
+        ).rows,
+      ).toEqual([
+        {
+          proname: "guard_hns_root_import_session_change",
+          proconfig: [expect.stringContaining("search_path=")],
+        },
+        {
+          proname: "guard_hns_root_import_session_insert",
+          proconfig: [expect.stringContaining("search_path=")],
+        },
+        {
+          proname: "reject_hns_community_root_import_preparation_change",
+          proconfig: [expect.stringContaining("search_path=")],
+        },
+      ]);
       await admin.query(
         "INSERT INTO users (user_id,status,account) VALUES ($1,'active','{}'::jsonb)",
         [actorId],
@@ -160,6 +184,28 @@ suite("community HNS root-import repositories", () => {
       );
       expect(reserved.kind).toBe("acquired");
       if (reserved.kind !== "acquired") throw new Error("expected reservation");
+      await Effect.runPromise(Effect.scoped(ownershipStore.release(reserved.reservation)));
+      const reacquired = await Effect.runPromise(
+        Effect.scoped(
+          ownershipStore.reserve({
+            start,
+            provider_id: "hns.owner.v1",
+            expected_revision: 1,
+            client_idempotency_key: "ownership-start",
+            reservation_id: "ignored-reacquire-reservation",
+            namespace_session_id: "ignored-reacquire-namespace",
+            ttl_ms: 60_000,
+          }),
+        ),
+      );
+      expect(reacquired).toMatchObject({
+        kind: "acquired",
+        reservation: {
+          namespace_session_id: "community-import-namespace",
+          fence_token: 2,
+        },
+      });
+      if (reacquired.kind !== "acquired") throw new Error("expected reacquired reservation");
       const providerResult = {
         session: {
           ...start,
@@ -182,7 +228,7 @@ suite("community HNS root-import repositories", () => {
       };
       expect(
         await Effect.runPromise(
-          Effect.scoped(ownershipStore.finalize(reserved.reservation, providerResult)),
+          Effect.scoped(ownershipStore.finalize(reacquired.reservation, providerResult)),
         ),
       ).toMatchObject({ kind: "created", namespace_session_id: "community-import-namespace" });
       const ownership = {
@@ -241,6 +287,52 @@ suite("community HNS root-import repositories", () => {
           )
         ).rows[0],
       ).toEqual({ origin_kind: "community_attachment" });
+
+      const secondCommunityId = "community_123e4567-e89b-42d3-a456-426614174001";
+      await admin.query(
+        `INSERT INTO communities (community_id,display_name,status,created_by_user_id,
+           canonical_route_binding_id,route_authority_version,route_slug,created_at,updated_at)
+         VALUES ($1,'Second root import','active',$2,NULL,'optional_route_v2',NULL,
+           clock_timestamp(),clock_timestamp())`,
+        [secondCommunityId, actorId],
+      );
+      await admin.query(
+        `INSERT INTO community_route_authority_grants (grant_id,community_id,
+           principal_user_id,authority,source_kind,source_policy_ref,status,granted_at,
+           granted_by_user_id) VALUES ('community-root-import-grant-2',$1,$2,
+           'manage_routes','creator_owner',NULL,'active',clock_timestamp(),$2)`,
+        [secondCommunityId, actorId],
+      );
+      expect(
+        await Effect.runPromise(
+          Effect.scoped(
+            communityStore.prepare({
+              ...prepareInput,
+              request: { ...prepareInput.request, community_id: secondCommunityId },
+              attachment_intent_id: "cross-community-key",
+            }),
+          ),
+        ),
+      ).toEqual({ kind: "conflict" });
+      expect(
+        await Effect.runPromise(
+          Effect.scoped(
+            communityStore.prepare({
+              ...prepareInput,
+              request: {
+                ...prepareInput.request,
+                community_id: secondCommunityId,
+                idempotency_key: "community-import-start-2",
+              },
+              attachment_intent_id: "community-import-attachment-2",
+              ceremony_intent_id: "community-import-ceremony-2",
+              root_import_session_id: "community-import-session-2",
+              provision_job_id: "community-import-provision-2",
+              request_sha256: "3".repeat(64),
+            }),
+          ),
+        ),
+      ).toMatchObject({ kind: "created", value: { root_label: "dankmemes" } });
     });
   });
 });

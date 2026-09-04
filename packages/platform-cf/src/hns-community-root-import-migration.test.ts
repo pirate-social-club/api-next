@@ -27,4 +27,12 @@ describe("community HNS root-import migration", () => {
     expect(migration).toContain("OLD.status = 'ready' AND NEW.status IN ('activated', 'expired')");
     expect(migration).not.toContain("OLD.status = 'ready' AND NEW.status = 'committed'");
   });
+
+  test("re-pins replaced guards and retains the creation namespace foreign key", () => {
+    expect(migration).toContain("'guard_hns_root_import_session_change()'");
+    expect(migration).toContain("'guard_hns_root_import_session_insert()'");
+    expect(migration).toContain("'reject_hns_community_root_import_preparation_change()'");
+    expect(migration).toContain("SET search_path TO %I, pg_temp");
+    expect(migration).toContain("hns_root_import_sessions_creation_namespace_actor_fk");
+  });
 });

@@ -6656,6 +6656,7 @@ $$;
 
 CREATE FUNCTION guard_hns_root_import_session_change() RETURNS trigger
     LANGUAGE plpgsql
+    SET search_path FROM CURRENT
     AS $$
 BEGIN
   IF TG_OP = 'DELETE' THEN
@@ -6702,6 +6703,7 @@ $$;
 
 CREATE FUNCTION guard_hns_root_import_session_insert() RETURNS trigger
     LANGUAGE plpgsql
+    SET search_path FROM CURRENT
     AS $$
 DECLARE
   creation_ownership namespace_ownership_sessions%ROWTYPE;
@@ -12435,6 +12437,7 @@ $$;
 
 CREATE FUNCTION reject_hns_community_root_import_preparation_change() RETURNS trigger
     LANGUAGE plpgsql
+    SET search_path FROM CURRENT
     AS $$
 BEGIN
   RAISE EXCEPTION 'HNS community root-import preparations are append-only';
@@ -28225,6 +28228,9 @@ ALTER TABLE ONLY namespace_ownership_sessions
 ALTER TABLE ONLY namespace_ownership_sessions
     ADD CONSTRAINT namespace_ownership_sessions_pkey PRIMARY KEY (namespace_session_id);
 
+ALTER TABLE ONLY namespace_ownership_sessions
+    ADD CONSTRAINT namespace_ownership_sessions_root_import_fk_identity_unique UNIQUE (namespace_session_id, actor_id, creation_intent_id);
+
 ALTER TABLE ONLY namespace_ownership_start_reservations
     ADD CONSTRAINT namespace_ownership_start_reservations_actor_ceremony_unique UNIQUE (actor_id, ceremony_intent_id);
 
@@ -31268,6 +31274,9 @@ ALTER TABLE ONLY hns_root_import_sessions
 
 ALTER TABLE ONLY hns_root_import_sessions
     ADD CONSTRAINT hns_root_import_sessions_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY hns_root_import_sessions
+    ADD CONSTRAINT hns_root_import_sessions_creation_namespace_actor_fk FOREIGN KEY (namespace_session_id, actor_id, creation_intent_id) REFERENCES namespace_ownership_sessions(namespace_session_id, actor_id, creation_intent_id);
 
 ALTER TABLE ONLY hns_root_import_teardown_jobs
     ADD CONSTRAINT hns_root_import_teardown_jobs_session_fk FOREIGN KEY (root_import_session_id) REFERENCES hns_root_import_sessions(root_import_session_id);
