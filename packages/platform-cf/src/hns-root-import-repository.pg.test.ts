@@ -1210,10 +1210,7 @@ suite("Postgres 17 HNS root-import repository", () => {
         operation_kind: string;
         request_sha256: string;
         lease_fence: string;
-      }>("SELECT * FROM claim_hns_root_health_renewal_job_v1($1,$2)", [
-        "authority-executor",
-        60,
-      ]);
+      }>("SELECT * FROM claim_hns_root_health_renewal_job_v1($1,$2)", ["authority-executor", 60]);
       expect(renewalClaim.rows).toMatchObject([{ operation_kind: "renew_health_v1" }]);
       const renewalReadiness = await makeReadinessArtifact({
         ownershipResultHash,
@@ -1262,10 +1259,7 @@ suite("Postgres 17 HNS root-import repository", () => {
           observation_job_id: string;
           request_sha256: string;
           lease_fence: string;
-        }>("SELECT * FROM claim_hns_root_health_renewal_job_v1($1,$2)", [
-          "authority-executor",
-          60,
-        ]);
+        }>("SELECT * FROM claim_hns_root_health_renewal_job_v1($1,$2)", ["authority-executor", 60]);
         const bounded = await admin.query<{ outcome: string }>(
           "SELECT * FROM finalize_hns_root_health_renewal_job_v1($1,$2,$3,$4,'retry',NULL,NULL,'authority_unavailable')",
           [
