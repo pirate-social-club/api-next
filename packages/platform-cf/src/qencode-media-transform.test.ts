@@ -195,6 +195,38 @@ describe("Qencode media transform", () => {
     expect({ creates, grants, starts }).toEqual({ creates: 1, grants: 0, starts: 0 });
   });
 
+  test("bounds a provider request by the durable runtime deadline", async () => {
+    const transport: QencodeTaskTransport = {
+      createTask: async (_apiKey, signal) =>
+        new Promise((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+        }),
+      startTask: async () => "accepted",
+      getStatus: async () => ({ state: "not_started" }),
+    };
+    const service = makeQencodeMediaTransform(options(transport));
+    const result = await Effect.runPromise(
+      service.probe({
+        version: "media-transform-video-probe-input-v1",
+        binding,
+        source,
+        attempt: {
+          version: "media-transform-attempt-v1",
+          runtimeFence: { submittedAtMs: 1_000, runtimeDeadlineMs: 2_001 },
+        },
+      }),
+    );
+
+    expect(result).toEqual({
+      status: "retryable_failure",
+      reason: "timeout",
+      attempt: {
+        version: "media-transform-attempt-v1",
+        runtimeFence: { submittedAtMs: 1_000, runtimeDeadlineMs: 2_001 },
+      },
+    });
+  });
+
   test("starts an allocated task through the exact-object grant and freezes the query", async () => {
     let issued: Parameters<QencodeSourceGrantIssuer["issue"]>[0] | undefined;
     let started: Parameters<QencodeTaskTransport["startTask"]>[0] | undefined;

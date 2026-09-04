@@ -28,6 +28,7 @@ export const QENCODE_ADAPTER_REVISION = "qencode-video-analysis-v1";
 const QENCODE_METADATA_VERSION = "4.1.5";
 const QENCODE_MAX_RESPONSE_BYTES = 2_097_152;
 const QENCODE_MAX_AUDIO_BYTES = 8_000_000;
+const QENCODE_REQUEST_TIMEOUT_MS = 30_000;
 const QENCODE_JOB_ID = /^[a-f0-9]{32}$/u;
 const SHA256 = /^[a-f0-9]{64}$/u;
 const SAFE_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,511}$/u;
@@ -709,7 +710,7 @@ function failureAttempt(input: { readonly attempt: MediaTransformAttempt }) {
 
 function retryable(
   input: { readonly attempt: MediaTransformAttempt },
-  reason: "cancelled" | "transport",
+  reason: "cancelled" | "timeout" | "transport",
 ) {
   return { status: "retryable_failure" as const, reason, attempt: failureAttempt(input) };
 }
@@ -745,16 +746,21 @@ async function resumeJob(
   if (now >= input.attempt.runtimeFence.runtimeDeadlineMs) {
     return { status: "rejected", reason: "runtime_exceeded", attempt: input.attempt };
   }
+  const timeoutSignal = AbortSignal.timeout(
+    Math.min(QENCODE_REQUEST_TIMEOUT_MS, input.attempt.runtimeFence.runtimeDeadlineMs - now),
+  );
+  const signal =
+    input.signal === undefined ? timeoutSignal : AbortSignal.any([input.signal, timeoutSignal]);
   let providerJobId = input.attempt.providerJobId;
   try {
     if (providerJobId === undefined) {
-      providerJobId = await options.transport.createTask(options.apiKey, input.signal);
+      providerJobId = await options.transport.createTask(options.apiKey, signal);
       return {
         status: "submitted",
         attempt: acceptedAttempt(input.attempt, providerJobId, "allocated"),
       };
     }
-    let status = await options.transport.getStatus(providerJobId, input.signal);
+    let status = await options.transport.getStatus(providerJobId, signal);
     if (
       input.attempt.providerJobPhase === "started" &&
       (status.state === "not_started" || status.state === "not_found")
@@ -790,7 +796,7 @@ async function resumeJob(
         taskToken: providerJobId,
         query: { source: grant.url, format: formatsFor(input) },
         payload: payload(input.binding, capability),
-        ...(input.signal === undefined ? {} : { signal: input.signal }),
+        signal,
       });
       if (started === "accepted") {
         return {
@@ -798,7 +804,7 @@ async function resumeJob(
           attempt: acceptedAttempt(input.attempt, providerJobId, "started"),
         };
       }
-      status = await options.transport.getStatus(providerJobId, input.signal);
+      status = await options.transport.getStatus(providerJobId, signal);
       if (status.state === "not_found" || status.state === "not_started") {
         return { status: "rejected", reason: "provider_rejected", attempt: input.attempt };
       }
@@ -820,7 +826,7 @@ async function resumeJob(
     if (input.version === "media-transform-video-probe-input-v1") {
       const output = oneOutput(status.outputs, "metadata", "pirate-probe-v1", "metadata");
       const probe = parseProbeMetadata(
-        await options.artifacts.readJson(output.url, QENCODE_MAX_RESPONSE_BYTES, input.signal),
+        await options.artifacts.readJson(output.url, QENCODE_MAX_RESPONSE_BYTES, signal),
         `qencode:metadata:${providerJobId}`,
       );
       return { status: "completed", attempt, context: transformContext, probe };
@@ -837,7 +843,7 @@ async function resumeJob(
         maximumBytes: QENCODE_MAX_AUDIO_BYTES,
         sourceSha256: input.source.sha256,
         policyRevision: input.extractionPolicyVersion,
-        ...(input.signal === undefined ? {} : { signal: input.signal }),
+        signal,
       });
       return {
         status: "completed",
@@ -881,7 +887,7 @@ async function resumeJob(
         maximumBytes: input.posterPolicy.maxBytesPerFrame,
         sourceSha256: input.source.sha256,
         policyRevision: String(input.posterPolicy.policyRevision),
-        ...(input.signal === undefined ? {} : { signal: input.signal }),
+        signal,
       });
       frames.push({
         role,
@@ -912,10 +918,13 @@ async function resumeJob(
     if (error instanceof QencodeMalformedResponse) {
       return { status: "malformed_response", reason: "unsupported_shape", attempt: input.attempt };
     }
-    return retryable(
-      input,
-      error instanceof DOMException && error.name === "AbortError" ? "cancelled" : "transport",
-    );
+    const reason =
+      error instanceof DOMException && error.name === "AbortError"
+        ? "cancelled"
+        : error instanceof DOMException && error.name === "TimeoutError"
+          ? "timeout"
+          : "transport";
+    return retryable(input, reason);
   }
 }
 
