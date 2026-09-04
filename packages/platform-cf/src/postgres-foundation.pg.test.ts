@@ -1626,6 +1626,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "community_purchase_settlement_snapshot_append_only",
         "community_purchase_verification_snapshot_append_only",
         "community_route_attachment_attempt_append_only",
+        "community_route_attachment_completion_observation_append_only",
         "community_route_attachment_result_append_only",
         "community_route_attachment_revision_append_only",
         "community_route_lifecycle_transition_append_only",
