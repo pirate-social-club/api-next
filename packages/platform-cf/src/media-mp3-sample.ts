@@ -750,7 +750,7 @@ export function makeR2Mp3SampleMediaTransform(
     alignVideoSoundtrackToSong: input.providerTransform.alignVideoSoundtrackToSong,
     extractVideoAudio: input.providerTransform.extractVideoAudio,
     extractVideoFrames: input.providerTransform.extractVideoFrames,
-    cancelAssembly: input.providerTransform.cancelAssembly,
+    cancelJob: input.providerTransform.cancelJob,
   };
 }
 

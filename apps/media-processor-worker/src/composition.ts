@@ -24,7 +24,7 @@ import { makeMediaProcessingStore } from "@pirate/platform-cf/media-processing-s
 import { makeAcrCloudAdapter } from "@pirate/platform-cf/media-providers/acrcloud";
 import { ElevenLabsAlignmentAdapter } from "@pirate/platform-cf/media-providers/elevenlabs-alignment";
 import { makeOpenRouterClassifierAdapter } from "@pirate/platform-cf/media-providers/openrouter";
-import { disabledTransloaditMediaTransform } from "@pirate/platform-cf/media-transform";
+import { disabledMediaTransform } from "@pirate/platform-cf/media-transform";
 import { makeOpenAiTextModerationProvider } from "@pirate/platform-cf/openai-text-moderation";
 import { makeHyperdriveControlPlaneLayer } from "@pirate/platform-cf/postgres";
 import { makeControlPlaneVideoAnalysisOutboxRepository } from "@pirate/platform-cf/video-analysis-outbox-repository";
@@ -167,7 +167,7 @@ function bindPhysicalR2Keys(transform: MediaTransformService): MediaTransformSer
           },
         }),
       ),
-    cancelAssembly: (input) => transform.cancelAssembly(input),
+    cancelJob: (input) => transform.cancelJob(input),
   };
 }
 
@@ -228,7 +228,7 @@ function makeEnabledProviders(env: MediaProcessorRuntimeEnv): MediaProcessingPro
   });
 
   const transform = makeR2Mp3SampleMediaTransform({
-    providerTransform: disabledTransloaditMediaTransform,
+    providerTransform: disabledMediaTransform,
     immutableOriginals,
     derivedArtifacts,
     maximumSampleBytes: 4_000_000,

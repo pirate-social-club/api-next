@@ -5,7 +5,7 @@ export const MEDIA_TRANSFORM_SAMPLE_TARGET_MS = 12_000;
 export const MEDIA_TRANSFORM_SAMPLE_MAX_MS = 15_000;
 export const MEDIA_TRANSFORM_SAMPLE_CHANNELS = 1;
 export const MEDIA_TRANSFORM_SAMPLE_RATE_HZ = 44_100;
-export const MEDIA_TRANSFORM_VIDEO_AUDIO_POLICY_V1 = "video-audio-adts-copy-v1" as const;
+export const MEDIA_TRANSFORM_VIDEO_AUDIO_POLICY_V1 = "video-audio-aac-44100-stereo-v1" as const;
 
 export type MediaTransformSampleVariant = "primary" | "alternate";
 
@@ -32,8 +32,8 @@ export type MediaTransformRuntimeFence = Readonly<{
  *
  * The caller creates and durably records the runtime fence before the first
  * provider effect. Exact logical-attempt replay must reuse that fence. The
- * adapter adds providerJobId only after Transloadit returns an assembly id;
- * adapter memory is never a durability mechanism.
+ * The adapter adds providerJobId only after the provider accepts a durable job
+ * identity; adapter memory is never a durability mechanism.
  */
 export type MediaTransformAttempt = Readonly<{
   readonly version: "media-transform-attempt-v1";
@@ -813,7 +813,7 @@ export interface MediaTransformService extends MediaTransformDanceReferenceServi
   readonly extractVideoAudio: MediaTransformVideoCapabilities["extractVideoAudio"];
   readonly extractVideoFrames: MediaTransformVideoCapabilities["extractVideoFrames"];
   /** Cancels provider execution only; it does not prove provider or retained-object erasure. */
-  readonly cancelAssembly: (
+  readonly cancelJob: (
     input: MediaTransformCancelInput,
   ) => Effect.Effect<MediaTransformCancelOutcome, MediaTransformRequestInvalid>;
 }

@@ -504,7 +504,7 @@ function providers(
         Effect.succeed({ status: "unavailable", reason: "disabled", attempt: input.attempt }),
       extractVideoFrames: (input) =>
         Effect.succeed({ status: "unavailable", reason: "disabled", attempt: input.attempt }),
-      cancelAssembly: () => Effect.succeed({ status: "unavailable", reason: "disabled" }),
+      cancelJob: () => Effect.succeed({ status: "unavailable", reason: "disabled" }),
     },
     artifactReader: {
       readAudioSample: async (objectKey) => {
@@ -747,7 +747,7 @@ const workflowPayload = (store: FakeStore) => ({
 });
 
 describe("media processing workflow", () => {
-  test("persists and resumes a submitted Transloadit assembly before downstream effects", async () => {
+  test("persists and resumes a submitted provider job before downstream effects", async () => {
     const store = new FakeStore(authority({ lyrics: null }));
     const providerEvents: string[] = [];
     const base = providers(providerEvents);
@@ -764,11 +764,11 @@ describe("media processing workflow", () => {
               attempt: {
                 version: "media-transform-attempt-v1",
                 runtimeFence: input.attempt.runtimeFence,
-                providerJobId: "durable-probe-assembly",
+                providerJobId: "durable-probe-job",
               },
             });
           }
-          expect(input.attempt.providerJobId).toBe("durable-probe-assembly");
+          expect(input.attempt.providerJobId).toBe("durable-probe-job");
           return base.transform.probe(input);
         }) as MediaTransformService["probe"],
       },

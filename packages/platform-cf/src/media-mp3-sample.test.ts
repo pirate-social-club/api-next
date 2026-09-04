@@ -154,7 +154,7 @@ function providerTransform(): MediaTransformService {
       Effect.die(new Error("Dance soundtrack alignment must not run")),
     extractVideoAudio: () => Effect.die(new Error("video audio extraction must not run")),
     extractVideoFrames: () => Effect.die(new Error("video frame extraction must not run")),
-    cancelAssembly: () => Effect.succeed({ status: "unavailable", reason: "disabled" }),
+    cancelJob: () => Effect.succeed({ status: "unavailable", reason: "disabled" }),
   };
 }
 

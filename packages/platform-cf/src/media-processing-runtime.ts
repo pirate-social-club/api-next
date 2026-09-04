@@ -29,13 +29,6 @@ import {
   type OpenRouterTransportRequest,
   type OpenRouterTransportResponse,
 } from "./media-providers/openrouter.ts";
-import {
-  TRANSLOADIT_ASSEMBLIES_PATH,
-  TRANSLOADIT_ORIGIN,
-  type TransloaditTransport,
-  type TransloaditTransportRequest,
-  type TransloaditTransportResponse,
-} from "./media-transform-protocol.ts";
 
 export {
   MEDIA_MP3_SAMPLE_ADAPTER_REVISION,
@@ -45,10 +38,6 @@ export {
 
 const IMMUTABLE_REF_PREFIX = "media://immutable/";
 const SHA256 = /^[0-9a-f]{64}$/u;
-const TRANSLOADIT_JOB_URL = new RegExp(
-  `^${TRANSLOADIT_ORIGIN.replaceAll(".", "\\.")}${TRANSLOADIT_ASSEMBLIES_PATH}/[a-f0-9]{32}$`,
-  "u",
-);
 const ID3_HEADER_BYTES = 10;
 const ID3_MAX_TAG_BYTES = 1_048_576;
 const COVER_MAX_OUTPUT_BYTES = 700_000;
@@ -165,32 +154,6 @@ async function fetchResponse(
     console.error("media_processing_transport_failure", diagnostic);
     throw new MediaProcessingTransportFailure("network");
   }
-}
-
-/** Fixed Transloadit transport. Adapter-owned signed bodies never enter errors or observations. */
-export function makeTransloaditFetchTransport(
-  fetcher: MediaProcessingFetch = fetch,
-): TransloaditTransport {
-  return {
-    request: async (
-      request: TransloaditTransportRequest,
-    ): Promise<TransloaditTransportResponse> => {
-      const create = validFetchRequest(
-        request,
-        "POST",
-        `${TRANSLOADIT_ORIGIN}${TRANSLOADIT_ASSEMBLIES_PATH}`,
-      );
-      const job =
-        (request.method === "GET" || request.method === "DELETE") &&
-        validFetchRequest(request, request.method, TRANSLOADIT_JOB_URL);
-      if (!create && !job) throw new MediaProcessingTransportFailure("invalid_request");
-      const response = await fetchResponse(fetcher, {
-        ...request,
-        ...(request.body === undefined ? {} : { body: request.body }),
-      });
-      return { status: response.status, headers: response.headers, body: responseStream(response) };
-    },
-  };
 }
 
 /** The ACR host is frozen by composition and every request is exact-path, POST, no-redirect. */
@@ -410,7 +373,7 @@ async function readBoundedStream(
   return bytes;
 }
 
-/** HEAD + conditional GET binds Transloadit's retained R2 object before ACR sees bytes. */
+/** HEAD + conditional GET binds the retained R2 object before ACR sees bytes. */
 export function makeR2MediaProcessingArtifactReader(
   retainedArtifacts: R2Bucket,
 ): MediaProcessingArtifactReader {

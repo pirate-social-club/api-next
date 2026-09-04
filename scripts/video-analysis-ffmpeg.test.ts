@@ -159,7 +159,7 @@ describe("local pinned-FFmpeg video analysis engine", () => {
         version: "media-transform-video-audio-input-v1",
         binding: binding("audio"),
         source: transformSource(),
-        extractionPolicyVersion: "video-audio-adts-copy-v1",
+        extractionPolicyVersion: "video-audio-aac-44100-stereo-v1",
         attempt,
       }),
     );

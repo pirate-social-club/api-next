@@ -362,8 +362,7 @@ adapters remain disabled and runtime composition is absent.
 
 | Name | Credential role |
 | --- | --- |
-| `TRANSLOADIT_AUTH_KEY` | Transloadit assembly authentication key |
-| `TRANSLOADIT_AUTH_SECRET` | Transloadit assembly signing secret |
+| `QENCODE_API_KEY` | Qencode project API key for managed video analysis jobs |
 | `ACRCLOUD_ACCESS_KEY` | ACRCloud identification access key |
 | `ACRCLOUD_ACCESS_SECRET` | ACRCloud identification signing secret |
 | `ELEVENLABS_API_KEY` | Platform-funded forced alignment, Karaoke realtime STT, and Study batch STT key |
@@ -386,7 +385,7 @@ adapter is independently reviewed. It must correspond to the checked staging
 `data_registration` namespace, and may sign only the persisted zero-value
 transaction envelope. Production custody remains separately gated.
 
-Checked-in name declarations assign Transloadit and ACRCloud only to the
+Checked-in name declarations assign Qencode and ACRCloud only to the
 disabled media-processor Worker, and assign Filebase plus the staging DATA
 signer only to the disabled DATA-registration Worker. They do not install or
 read values. ElevenLabs is an allowed name for the media-processor alignment
