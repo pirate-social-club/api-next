@@ -7,6 +7,8 @@ import {
   NamespaceOwnershipProviderPlanInput,
   NamespaceOwnershipProviderStartInput,
   NamespaceOwnershipSession,
+  RouteAttachmentOwnershipProviderStartInput,
+  RouteAttachmentOwnershipSession,
 } from "./adapter.ts";
 
 const route = {
@@ -56,6 +58,48 @@ describe("namespace ownership provider boundary", () => {
         route: { ...route, app_host: route.path_segment },
       }),
     ).toThrow();
+  });
+
+  test("keeps community route attachment authority creation-free and discriminated", () => {
+    const attachment = {
+      operation_kind: "route_attachment" as const,
+      actor_id: "user-1",
+      community_id: "community-1",
+      attachment_intent_id: "attachment-1",
+      ceremony_intent_id: "ceremony-1",
+      requirement_hash: "a".repeat(64),
+      generation: 1,
+      request_hash: "b".repeat(64),
+      provider_binding_hash: "e".repeat(64),
+      provider_configuration: {
+        kind: "managed" as const,
+        reference: "hns-verifier",
+        version: "1",
+      },
+      protocol_version: "hns-txt-v1",
+      environment: "staging",
+      route,
+    };
+
+    expect(
+      Schema.decodeUnknownSync(RouteAttachmentOwnershipProviderStartInput)(attachment),
+    ).toEqual(attachment);
+    expect(() =>
+      Schema.decodeUnknownSync(RouteAttachmentOwnershipProviderStartInput, {
+        onExcessProperty: "error",
+      })({
+        ...attachment,
+        creation_intent_id: "creation-1",
+      }),
+    ).toThrow();
+    expect(
+      Schema.is(RouteAttachmentOwnershipSession)({
+        ...attachment,
+        provider_id: "hns.owner.v1",
+        upstream_session_ref: "upstream-1",
+        expires_at: "2026-08-20T13:00:00.000Z",
+      }),
+    ).toBeTrue();
   });
 
   test("bounds the upstream session reference by UTF-8 bytes", () => {

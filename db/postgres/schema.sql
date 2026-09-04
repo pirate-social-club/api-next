@@ -507,7 +507,9 @@ CREATE FUNCTION begin_hns_root_import_observation_v1(input_actor_id text, input_
     AS $_$
 DECLARE
   session hns_root_import_sessions%ROWTYPE;
-  ownership_result community_creation_ceremony_results%ROWTYPE;
+  ownership_ceremony_intent_id TEXT;
+  ownership_outcome_status TEXT;
+  ownership_result_hash TEXT;
   proof hns_root_import_name_proof_observations%ROWTYPE;
   provision hns_authority_provision_jobs%ROWTYPE;
   database_now TIMESTAMPTZ := clock_timestamp();
@@ -515,7 +517,10 @@ BEGIN
   SELECT * INTO session
     FROM hns_root_import_sessions
    WHERE actor_id = input_actor_id
-     AND creation_intent_id = input_creation_intent_id
+     AND (
+       (origin_kind = 'creation_intent' AND creation_intent_id = input_creation_intent_id)
+       OR (origin_kind = 'community_attachment' AND community_id = input_creation_intent_id)
+     )
      AND hns_root_import_sessions.root_import_session_id = input_root_import_session_id
    FOR UPDATE;
   IF NOT FOUND THEN
@@ -552,11 +557,29 @@ BEGIN
     RETURN QUERY SELECT 'conflict'::TEXT, session.root_import_session_id, session.revision;
     RETURN;
   END IF;
-  SELECT * INTO ownership_result
-    FROM community_creation_ceremony_results
-   WHERE ceremony_intent_id = session.ceremony_intent_id
-     AND namespace_session_id = session.namespace_session_id
-   FOR SHARE;
+  SELECT result.ceremony_intent_id, result.outcome_status, result.result_hash
+    INTO ownership_ceremony_intent_id, ownership_outcome_status, ownership_result_hash
+    FROM (
+      SELECT creation_result.ceremony_intent_id,
+             creation_result.outcome_status,
+             creation_result.result_hash
+        FROM community_creation_ceremony_results AS creation_result
+       WHERE session.origin_kind = 'creation_intent'
+         AND creation_result.ceremony_intent_id = session.ceremony_intent_id
+         AND creation_result.namespace_session_id = session.namespace_session_id
+      UNION ALL
+      SELECT attachment_result.ceremony_intent_id,
+             attachment_result.outcome_status,
+             attachment_result.result_hash
+        FROM community_route_attachment_namespace_sessions AS ownership_session
+        JOIN community_route_attachment_ceremony_results AS attachment_result
+          ON attachment_result.ceremony_intent_id = ownership_session.ceremony_intent_id
+       WHERE session.origin_kind = 'community_attachment'
+         AND ownership_session.namespace_session_id = session.namespace_session_id
+         AND ownership_session.actor_id = session.actor_id
+         AND ownership_session.community_id = session.community_id
+         AND ownership_session.attachment_intent_id = session.attachment_intent_id
+    ) AS result;
   SELECT * INTO provision
     FROM hns_authority_provision_jobs
    WHERE provision_job_id = session.provision_job_id
@@ -566,10 +589,10 @@ BEGIN
    WHERE hns_root_import_name_proof_observations.root_import_session_id =
          session.root_import_session_id
    FOR SHARE;
-  IF ownership_result.ceremony_intent_id IS NULL
+  IF ownership_ceremony_intent_id IS NULL
     OR provision.provision_job_id IS NULL
-    OR ownership_result.outcome_status <> 'satisfied'
-    OR ownership_result.result_hash <> input_ownership_result_sha256
+    OR ownership_outcome_status <> 'satisfied'
+    OR ownership_result_hash <> input_ownership_result_sha256
     OR provision.state <> 'completed'
     OR provision.publish_plan_sha256 <> session.publish_plan_sha256
     OR (
@@ -793,7 +816,10 @@ BEGIN
   SELECT * INTO session
     FROM hns_root_import_sessions
    WHERE actor_id = input_actor_id
-     AND creation_intent_id = input_creation_intent_id
+     AND (
+       (origin_kind = 'creation_intent' AND creation_intent_id = input_creation_intent_id)
+       OR (origin_kind = 'community_attachment' AND community_id = input_creation_intent_id)
+     )
      AND hns_root_import_sessions.root_import_session_id = input_root_import_session_id
    FOR UPDATE;
   IF NOT FOUND THEN
@@ -881,12 +907,24 @@ BEGIN
            <> input_authorization_sha256
       OR input_name_proof_message_sha256 !~ '^[0-9a-f]{64}$'
       OR input_name_proof_signature_sha256 !~ '^[0-9a-f]{64}$'
-      OR NOT EXISTS (
-        SELECT 1 FROM namespace_ownership_sessions AS ownership_session
-         WHERE ownership_session.namespace_session_id = session.namespace_session_id
-           AND ownership_session.actor_id = session.actor_id
-           AND ownership_session.status = 'pending'
-           AND ownership_session.expires_at > database_now
+      OR NOT (
+        (session.origin_kind = 'creation_intent' AND EXISTS (
+          SELECT 1 FROM namespace_ownership_sessions AS ownership_session
+           WHERE ownership_session.namespace_session_id = session.namespace_session_id
+             AND ownership_session.actor_id = session.actor_id
+             AND ownership_session.creation_intent_id = session.creation_intent_id
+             AND ownership_session.status = 'pending'
+             AND ownership_session.expires_at > database_now
+        ))
+        OR (session.origin_kind = 'community_attachment' AND EXISTS (
+          SELECT 1 FROM community_route_attachment_namespace_sessions AS ownership_session
+           WHERE ownership_session.namespace_session_id = session.namespace_session_id
+             AND ownership_session.actor_id = session.actor_id
+             AND ownership_session.community_id = session.community_id
+             AND ownership_session.attachment_intent_id = session.attachment_intent_id
+             AND ownership_session.status = 'pending'
+             AND ownership_session.expires_at > database_now
+        ))
       )
     THEN
       RETURN QUERY SELECT 'conflict'::TEXT, session.root_import_session_id, session.revision;
@@ -1329,6 +1367,70 @@ BEGIN
        INTO provision_job_id, root_import_session_id, operation_kind,
             request_bytes, request_sha256, lease_fence, lease_expires_at;
   RETURN NEXT;
+END;
+$$;
+
+CREATE FUNCTION claim_hns_root_health_renewal_job_v1(input_executor_id text, input_lease_seconds integer) RETURNS TABLE(observation_job_id text, root_import_session_id text, operation_kind text, request_bytes bytea, request_sha256 text, publish_plan_bytes bytea, publish_plan_sha256 text, provision_result_bytes bytea, provision_result_sha256 text, lease_fence bigint, lease_expires_at timestamp with time zone)
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  candidate hns_root_health_renewal_jobs%ROWTYPE;
+  session hns_root_import_sessions%ROWTYPE;
+  provision hns_authority_provision_jobs%ROWTYPE;
+  observation hns_root_import_observation_jobs%ROWTYPE;
+  database_now TIMESTAMPTZ := clock_timestamp();
+BEGIN
+  IF NOT is_hns_host_persistence_identity(input_executor_id, 256)
+    OR input_lease_seconds NOT BETWEEN 4 AND 60
+  THEN RAISE EXCEPTION 'invalid HNS root health renewal claim'; END IF;
+
+  SELECT job.* INTO candidate
+  FROM hns_root_health_renewal_jobs AS job
+  JOIN hns_root_import_sessions AS selected_session
+    ON selected_session.root_import_session_id = job.root_import_session_id
+  WHERE job.attempt_count < 3
+    AND (job.state = 'queued' OR (job.state = 'leased' AND job.lease_expires_at <= database_now))
+    AND selected_session.status = 'activated'
+  ORDER BY job.created_at, job.renewal_job_id
+  FOR UPDATE OF job SKIP LOCKED LIMIT 1;
+  IF NOT FOUND THEN
+    UPDATE hns_root_health_renewal_jobs AS exhausted
+      SET state = 'failed', leased_by = NULL, lease_expires_at = NULL,
+          failure_code = 'renewal_attempts_exhausted', completed_at = database_now,
+          updated_at = database_now
+    WHERE exhausted.renewal_job_id = (
+      SELECT job.renewal_job_id FROM hns_root_health_renewal_jobs AS job
+      WHERE job.attempt_count >= 3
+        AND (job.state = 'queued' OR (job.state = 'leased' AND job.lease_expires_at <= database_now))
+      ORDER BY job.created_at, job.renewal_job_id
+      FOR UPDATE SKIP LOCKED LIMIT 1
+    );
+    RETURN;
+  END IF;
+
+  SELECT * INTO session FROM hns_root_import_sessions
+    WHERE hns_root_import_sessions.root_import_session_id = candidate.root_import_session_id;
+  SELECT * INTO provision FROM hns_authority_provision_jobs
+    WHERE hns_authority_provision_jobs.root_import_session_id = candidate.root_import_session_id;
+  SELECT * INTO observation FROM hns_root_import_observation_jobs
+    WHERE hns_root_import_observation_jobs.root_import_session_id = candidate.root_import_session_id;
+  IF provision.state <> 'completed' OR observation.state <> 'completed' THEN
+    RAISE EXCEPTION 'HNS root health renewal evidence is unavailable';
+  END IF;
+
+  UPDATE hns_root_health_renewal_jobs AS job
+    SET state = 'leased', attempt_count = candidate.attempt_count + 1,
+        lease_fence = candidate.lease_fence + 1, leased_by = input_executor_id,
+        lease_expires_at = database_now + input_lease_seconds * interval '1 second',
+        failure_code = NULL, updated_at = database_now
+  WHERE job.renewal_job_id = candidate.renewal_job_id;
+
+  RETURN QUERY SELECT candidate.renewal_job_id, candidate.root_import_session_id,
+    'renew_health_v1'::text, observation.request_bytes, observation.request_sha256,
+    provision.publish_plan_bytes, provision.publish_plan_sha256,
+    provision.result_bytes, provision.result_sha256, candidate.lease_fence + 1,
+    database_now + input_lease_seconds * interval '1 second';
 END;
 $$;
 
@@ -2594,6 +2696,124 @@ BEGIN
   RETURN QUERY SELECT 'activated'::TEXT, input_dns_zone_activation_id, new_generation;
 END;
 $$;
+
+CREATE FUNCTION finalize_hns_root_health_renewal_job_v1(input_renewal_job_id text, input_executor_id text, input_lease_fence bigint, input_request_sha256 text, input_outcome text, input_result_bytes bytea, input_result_sha256 text, input_failure_code text) RETURNS TABLE(outcome text, root_import_session_id text, session_revision bigint)
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+DECLARE
+  job hns_root_health_renewal_jobs%ROWTYPE;
+  session hns_root_import_sessions%ROWTYPE;
+  observation hns_root_import_observation_jobs%ROWTYPE;
+  result JSONB;
+  remaining_seconds INTEGER;
+  latest_health_generation BIGINT;
+  health_outcome TEXT;
+  database_now TIMESTAMPTZ := clock_timestamp();
+BEGIN
+  IF input_outcome NOT IN ('ready', 'retry', 'failed') THEN
+    RAISE EXCEPTION 'invalid HNS root health renewal finalization';
+  END IF;
+  SELECT * INTO job FROM hns_root_health_renewal_jobs
+    WHERE renewal_job_id = input_renewal_job_id FOR UPDATE;
+  IF NOT FOUND THEN RETURN QUERY SELECT 'not_found'::text, NULL::text, NULL::bigint; RETURN; END IF;
+  SELECT * INTO session FROM hns_root_import_sessions
+    WHERE hns_root_import_sessions.root_import_session_id = job.root_import_session_id FOR SHARE;
+  SELECT * INTO observation FROM hns_root_import_observation_jobs
+    WHERE hns_root_import_observation_jobs.root_import_session_id = job.root_import_session_id;
+
+  IF job.state IN ('completed', 'failed') THEN
+    IF job.state = 'completed' AND input_outcome = 'ready'
+      AND observation.request_sha256 = input_request_sha256
+      AND job.result_bytes = input_result_bytes AND job.result_sha256 = input_result_sha256
+      AND input_failure_code IS NULL
+    THEN RETURN QUERY SELECT 'replayed'::text, session.root_import_session_id, session.revision;
+    ELSE RETURN QUERY SELECT 'conflict'::text, session.root_import_session_id, session.revision;
+    END IF;
+    RETURN;
+  END IF;
+  IF job.state <> 'leased' OR job.leased_by <> input_executor_id
+    OR job.lease_fence <> input_lease_fence OR job.lease_expires_at <= database_now
+    OR observation.request_sha256 <> input_request_sha256 OR session.status <> 'activated'
+  THEN RETURN QUERY SELECT 'lost'::text, session.root_import_session_id, session.revision; RETURN; END IF;
+
+  IF input_outcome = 'ready' THEN
+    IF input_result_bytes IS NULL OR input_result_sha256 !~ '^[0-9a-f]{64}$'
+      OR encode(sha256(input_result_bytes), 'hex') <> input_result_sha256
+      OR input_failure_code IS NOT NULL
+    THEN RAISE EXCEPTION 'invalid ready HNS root health renewal result'; END IF;
+    BEGIN result := convert_from(input_result_bytes, 'UTF8')::jsonb;
+    EXCEPTION WHEN OTHERS THEN RAISE EXCEPTION 'invalid HNS root health renewal result bytes'; END;
+    IF result->>'version' <> 'pirate-hns-root-import-readiness-result-v1'
+      OR result->>'root_import_session_id' <> job.root_import_session_id
+      OR result->>'namespace_session_id' <> session.namespace_session_id
+      OR result->>'root_label' <> session.root_label
+      OR result->>'ownership_result_sha256' <> session.ownership_result_sha256
+      OR result->>'publish_plan_sha256' <> session.publish_plan_sha256
+      OR result->>'provision_result_sha256' IS DISTINCT FROM (
+        SELECT provision.result_sha256 FROM hns_authority_provision_jobs AS provision
+        WHERE provision.root_import_session_id = job.root_import_session_id
+          AND provision.state = 'completed'
+      )
+      OR result->>'delegation_matches' <> 'true'
+      OR result->>'ds_authenticates_zone' <> 'true'
+      OR result->>'retained_zone_digest_matches' <> 'true'
+      OR result->>'gateway_healthy' <> 'true'
+    THEN RAISE EXCEPTION 'HNS root health renewal evidence mismatch'; END IF;
+    remaining_seconds := floor(extract(epoch FROM ((result->>'valid_until')::timestamptz - database_now)))::integer;
+    IF (result->>'observed_at')::timestamptz > database_now + interval '60 seconds'
+      OR remaining_seconds NOT BETWEEN 1 AND 604800
+    THEN RAISE EXCEPTION 'HNS root health renewal evidence is stale'; END IF;
+    SELECT COALESCE(max(health.health_generation), 0) INTO latest_health_generation
+      FROM hns_dns_zone_health_observations AS health
+      WHERE health.dns_zone_activation_id = job.dns_zone_activation_id
+        AND health.activation_generation = job.activation_generation;
+    IF latest_health_generation <> job.expected_health_generation THEN
+      RETURN QUERY SELECT 'lost'::text, session.root_import_session_id, session.revision; RETURN;
+    END IF;
+    SELECT recorded.outcome INTO health_outcome FROM record_hns_dns_zone_health_v1(
+      'hns-health-renewal-record:' || job.renewal_job_id,
+      'hns-health-renewal-record:' || job.renewal_job_id,
+      input_result_sha256, job.dns_zone_activation_id, job.activation_generation,
+      job.expected_health_generation,
+      'hns-root-chain:' || (result->>'chain_resource_sha256'), input_result_sha256,
+      result->>'observed_zone_bytes_sha256', result->>'dnssec_keyset_reference',
+      result->>'dnssec_keyset_version', result->>'gateway_deployment_reference',
+      result->>'gateway_certificate_spki_sha256',
+      (result->>'delegation_matches')::boolean,
+      (result->>'ds_authenticates_zone')::boolean,
+      (result->>'retained_zone_digest_matches')::boolean,
+      (result->>'gateway_healthy')::boolean,
+      remaining_seconds
+    ) AS recorded;
+    IF health_outcome NOT IN ('recorded', 'replayed') THEN
+      RAISE EXCEPTION 'HNS root health renewal write failed';
+    END IF;
+    UPDATE hns_root_health_renewal_jobs SET state = 'completed', leased_by = NULL,
+      lease_expires_at = NULL, result_bytes = input_result_bytes,
+      result_sha256 = input_result_sha256, failure_code = NULL,
+      completed_at = database_now, updated_at = database_now
+    WHERE renewal_job_id = input_renewal_job_id;
+    RETURN QUERY SELECT 'ready'::text, session.root_import_session_id, session.revision; RETURN;
+  END IF;
+
+  IF input_result_bytes IS NOT NULL OR input_result_sha256 IS NOT NULL
+    OR NOT is_hns_host_persistence_identity(input_failure_code, 128)
+  THEN RAISE EXCEPTION 'invalid failed HNS root health renewal result'; END IF;
+  IF input_outcome = 'retry' AND job.attempt_count < 3 THEN
+    UPDATE hns_root_health_renewal_jobs SET state = 'queued', leased_by = NULL,
+      lease_expires_at = NULL, failure_code = input_failure_code, updated_at = database_now
+    WHERE renewal_job_id = input_renewal_job_id;
+    RETURN QUERY SELECT 'retry'::text, session.root_import_session_id, session.revision; RETURN;
+  END IF;
+  UPDATE hns_root_health_renewal_jobs SET state = 'failed', leased_by = NULL,
+    lease_expires_at = NULL,
+    failure_code = CASE WHEN job.attempt_count >= 3 THEN 'renewal_attempts_exhausted' ELSE input_failure_code END,
+    completed_at = database_now, updated_at = database_now
+  WHERE renewal_job_id = input_renewal_job_id;
+  RETURN QUERY SELECT 'failed'::text, session.root_import_session_id, session.revision;
+END;
+$_$;
 
 CREATE FUNCTION finalize_hns_root_import_observation_job_v1(input_observation_job_id text, input_executor_id text, input_lease_fence bigint, input_request_sha256 text, input_outcome text, input_result_bytes bytea, input_result_sha256 text, input_failure_code text) RETURNS TABLE(outcome text, root_import_session_id text, session_revision bigint)
     LANGUAGE plpgsql SECURITY DEFINER
@@ -6662,70 +6882,37 @@ BEGIN
   IF TG_OP = 'DELETE' THEN
     RAISE EXCEPTION 'HNS root-import sessions are retained';
   END IF;
-  IF NEW.root_import_session_id <> OLD.root_import_session_id
-    OR NEW.actor_id <> OLD.actor_id
-    OR NEW.creation_intent_id <> OLD.creation_intent_id
-    OR NEW.ceremony_intent_id <> OLD.ceremony_intent_id
-    OR NEW.namespace_session_id <> OLD.namespace_session_id
-    OR NEW.ownership_generation <> OLD.ownership_generation
-    OR NEW.ownership_expected_revision <> OLD.ownership_expected_revision
-    OR NEW.root_label <> OLD.root_label
-    OR NEW.challenge_txt_value <> OLD.challenge_txt_value
-    OR NEW.start_idempotency_key <> OLD.start_idempotency_key
-    OR NEW.start_request_sha256 <> OLD.start_request_sha256
-    OR NEW.provision_job_id <> OLD.provision_job_id
-    OR NEW.expires_at <> OLD.expires_at
-    OR NEW.created_at <> OLD.created_at
-    OR NEW.revision <> OLD.revision + 1
-    OR NEW.updated_at < OLD.updated_at
-  THEN
+  IF ROW(
+    NEW.root_import_session_id, NEW.actor_id, NEW.origin_kind,
+    NEW.creation_intent_id, NEW.ceremony_intent_id, NEW.namespace_session_id,
+    NEW.community_id, NEW.attachment_intent_id, NEW.ownership_generation,
+    NEW.ownership_expected_revision, NEW.root_label, NEW.challenge_txt_value,
+    NEW.start_idempotency_key, NEW.start_request_sha256, NEW.provision_job_id,
+    NEW.expires_at, NEW.created_at
+  ) IS DISTINCT FROM ROW(
+    OLD.root_import_session_id, OLD.actor_id, OLD.origin_kind,
+    OLD.creation_intent_id, OLD.ceremony_intent_id, OLD.namespace_session_id,
+    OLD.community_id, OLD.attachment_intent_id, OLD.ownership_generation,
+    OLD.ownership_expected_revision, OLD.root_label, OLD.challenge_txt_value,
+    OLD.start_idempotency_key, OLD.start_request_sha256, OLD.provision_job_id,
+    OLD.expires_at, OLD.created_at
+  ) OR NEW.revision <> OLD.revision + 1 OR NEW.updated_at < OLD.updated_at THEN
     RAISE EXCEPTION 'HNS root-import session identity or revision changed';
   END IF;
-  IF (
-      OLD.ownership_result_sha256 IS NOT NULL
-      AND NEW.ownership_result_sha256 IS DISTINCT FROM OLD.ownership_result_sha256
-    )
-    OR (
-      OLD.provision_idempotency_key IS NOT NULL
-      AND NEW.provision_idempotency_key IS DISTINCT FROM OLD.provision_idempotency_key
-    )
-    OR (
-      OLD.provision_poll_request_sha256 IS NOT NULL
-      AND NEW.provision_poll_request_sha256 IS DISTINCT FROM OLD.provision_poll_request_sha256
-    )
-    OR (
-      OLD.observation_job_id IS NOT NULL
-      AND NEW.observation_job_id IS DISTINCT FROM OLD.observation_job_id
-    )
-    OR (
-      OLD.observation_idempotency_key IS NOT NULL
-      AND NEW.observation_idempotency_key IS DISTINCT FROM OLD.observation_idempotency_key
-    )
-    OR (
-      OLD.observation_request_sha256 IS NOT NULL
-      AND NEW.observation_request_sha256 IS DISTINCT FROM OLD.observation_request_sha256
-    )
-    OR (
-      OLD.readiness_result_bytes IS NOT NULL
-      AND NEW.readiness_result_bytes IS DISTINCT FROM OLD.readiness_result_bytes
-    )
-    OR (
-      OLD.readiness_result_sha256 IS NOT NULL
-      AND NEW.readiness_result_sha256 IS DISTINCT FROM OLD.readiness_result_sha256
-    )
-  THEN
+  IF (OLD.ownership_result_sha256 IS NOT NULL AND NEW.ownership_result_sha256 IS DISTINCT FROM OLD.ownership_result_sha256)
+    OR (OLD.provision_idempotency_key IS NOT NULL AND NEW.provision_idempotency_key IS DISTINCT FROM OLD.provision_idempotency_key)
+    OR (OLD.provision_poll_request_sha256 IS NOT NULL AND NEW.provision_poll_request_sha256 IS DISTINCT FROM OLD.provision_poll_request_sha256)
+    OR (OLD.observation_job_id IS NOT NULL AND NEW.observation_job_id IS DISTINCT FROM OLD.observation_job_id)
+    OR (OLD.observation_idempotency_key IS NOT NULL AND NEW.observation_idempotency_key IS DISTINCT FROM OLD.observation_idempotency_key)
+    OR (OLD.observation_request_sha256 IS NOT NULL AND NEW.observation_request_sha256 IS DISTINCT FROM OLD.observation_request_sha256)
+    OR (OLD.readiness_result_bytes IS NOT NULL AND NEW.readiness_result_bytes IS DISTINCT FROM OLD.readiness_result_bytes)
+    OR (OLD.readiness_result_sha256 IS NOT NULL AND NEW.readiness_result_sha256 IS DISTINCT FROM OLD.readiness_result_sha256) THEN
     RAISE EXCEPTION 'HNS root-import retained evidence changed';
   END IF;
   IF NOT (
-    (
-      OLD.status = 'awaiting_ownership'
-      AND NEW.status IN ('provisioning', 'failed', 'expired')
-    )
+    (OLD.status = 'awaiting_ownership' AND NEW.status IN ('provisioning', 'failed', 'expired'))
     OR (OLD.status = 'provisioning' AND NEW.status IN ('awaiting_owner_update', 'failed', 'expired'))
-    OR (
-      OLD.status IN ('awaiting_owner_update', 'observing')
-      AND NEW.status IN ('observing', 'ready', 'failed', 'expired')
-    )
+    OR (OLD.status IN ('awaiting_owner_update', 'observing') AND NEW.status IN ('observing', 'ready', 'failed', 'expired'))
     OR (OLD.status = 'ready' AND NEW.status IN ('activated', 'expired'))
   ) THEN
     RAISE EXCEPTION 'HNS root-import session transition is invalid';
@@ -6739,27 +6926,48 @@ CREATE FUNCTION guard_hns_root_import_session_insert() RETURNS trigger
     SET search_path FROM CURRENT
     AS $$
 DECLARE
-  ownership namespace_ownership_sessions%ROWTYPE;
+  creation_ownership namespace_ownership_sessions%ROWTYPE;
+  attachment_ownership community_route_attachment_namespace_sessions%ROWTYPE;
 BEGIN
-  SELECT * INTO ownership
-    FROM namespace_ownership_sessions
-   WHERE namespace_session_id = NEW.namespace_session_id
-   FOR SHARE;
-  IF NOT FOUND
-    OR ownership.actor_id <> NEW.actor_id
-    OR ownership.creation_intent_id <> NEW.creation_intent_id
-    OR ownership.ceremony_intent_id <> NEW.ceremony_intent_id
-    OR ownership.requirement_kind <> 'namespace_ownership'
-    OR ownership.generation <> NEW.ownership_generation
-    OR ownership.expected_revision <> NEW.ownership_expected_revision
-    OR ownership.route_family <> 'hns'
-    OR ownership.route_root_label <> NEW.root_label
-    OR ownership.status <> 'pending'
-    OR ownership.expires_at <> NEW.expires_at
-    OR NEW.status <> 'awaiting_ownership'
-    OR NEW.revision <> 1
-  THEN
-    RAISE EXCEPTION 'HNS root-import session does not match ownership authority';
+  IF NEW.origin_kind = 'creation_intent' THEN
+    SELECT * INTO creation_ownership
+      FROM namespace_ownership_sessions
+     WHERE namespace_session_id = NEW.namespace_session_id
+     FOR SHARE;
+    IF NOT FOUND
+      OR creation_ownership.actor_id <> NEW.actor_id
+      OR creation_ownership.creation_intent_id <> NEW.creation_intent_id
+      OR creation_ownership.ceremony_intent_id <> NEW.ceremony_intent_id
+      OR creation_ownership.requirement_kind <> 'namespace_ownership'
+      OR creation_ownership.generation <> NEW.ownership_generation
+      OR creation_ownership.expected_revision <> NEW.ownership_expected_revision
+      OR creation_ownership.route_family <> 'hns'
+      OR creation_ownership.route_root_label <> NEW.root_label
+      OR creation_ownership.status <> 'pending'
+      OR creation_ownership.expires_at <> NEW.expires_at THEN
+      RAISE EXCEPTION 'HNS root-import session does not match creation ownership authority';
+    END IF;
+  ELSIF NEW.origin_kind = 'community_attachment' THEN
+    SELECT * INTO attachment_ownership
+      FROM community_route_attachment_namespace_sessions
+     WHERE namespace_session_id = NEW.namespace_session_id
+     FOR SHARE;
+    IF NOT FOUND
+      OR attachment_ownership.actor_id <> NEW.actor_id
+      OR attachment_ownership.community_id <> NEW.community_id
+      OR attachment_ownership.attachment_intent_id <> NEW.attachment_intent_id
+      OR attachment_ownership.generation <> NEW.ownership_generation
+      OR attachment_ownership.expected_revision <> NEW.ownership_expected_revision
+      OR attachment_ownership.route_root_label <> NEW.root_label
+      OR attachment_ownership.status <> 'pending'
+      OR attachment_ownership.expires_at <> NEW.expires_at THEN
+      RAISE EXCEPTION 'HNS root-import session does not match attachment ownership authority';
+    END IF;
+  ELSE
+    RAISE EXCEPTION 'HNS root-import session origin is invalid';
+  END IF;
+  IF NEW.status <> 'awaiting_ownership' OR NEW.revision <> 1 THEN
+    RAISE EXCEPTION 'HNS root-import session must start awaiting ownership';
   END IF;
   RETURN NEW;
 END;
@@ -12447,6 +12655,15 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION reject_hns_community_root_import_preparation_change() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'HNS community root-import preparations are append-only';
+END;
+$$;
+
 CREATE FUNCTION reject_hns_control_observer_append_only_change() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -13118,6 +13335,92 @@ BEGIN
   END IF;
   RETURN false;
 END
+$$;
+
+CREATE FUNCTION schedule_hns_root_health_renewals_v1(input_limit integer, input_renew_when_remaining_seconds integer, input_heartbeat_freshness_seconds integer) RETURNS TABLE(eligible_roots integer, enqueued_roots integer, successful_tick_at timestamp with time zone)
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  database_now TIMESTAMPTZ := clock_timestamp();
+  eligible_count INTEGER := 0;
+  inserted_count INTEGER := 0;
+BEGIN
+  IF input_limit NOT BETWEEN 1 AND 100
+    OR input_renew_when_remaining_seconds NOT BETWEEN 3600 AND 604799
+    OR input_heartbeat_freshness_seconds NOT BETWEEN 60 AND 86400
+  THEN
+    RAISE EXCEPTION 'invalid HNS root health renewal schedule';
+  END IF;
+
+  WITH latest_health AS (
+    SELECT DISTINCT ON (health.dns_zone_activation_id, health.activation_generation)
+      health.dns_zone_activation_id, health.activation_generation,
+      health.health_generation, health.valid_until
+    FROM hns_dns_zone_health_observations AS health
+    ORDER BY health.dns_zone_activation_id, health.activation_generation,
+      health.health_generation DESC
+  ), eligible AS (
+    SELECT activation.root_import_session_id, activation.dns_zone_activation_id,
+      activation_row.current_generation AS activation_generation,
+      health.health_generation
+    FROM hns_root_import_activation_operations AS activation
+    JOIN hns_root_import_sessions AS session
+      ON session.root_import_session_id = activation.root_import_session_id
+     AND session.status = 'activated'
+    JOIN hns_dns_zone_activation_current AS activation_row
+      ON activation_row.dns_zone_activation_id = activation.dns_zone_activation_id
+    JOIN latest_health AS health
+      ON health.dns_zone_activation_id = activation_row.dns_zone_activation_id
+     AND health.activation_generation = activation_row.current_generation
+    WHERE health.valid_until <= database_now
+      + input_renew_when_remaining_seconds * interval '1 second'
+      AND NOT EXISTS (
+        SELECT 1 FROM hns_root_health_renewal_jobs AS existing
+        WHERE existing.dns_zone_activation_id = activation_row.dns_zone_activation_id
+          AND existing.activation_generation = activation_row.current_generation
+          AND existing.expected_health_generation = health.health_generation
+      )
+    ORDER BY health.valid_until, activation.root_import_session_id
+    LIMIT input_limit
+    FOR UPDATE OF session SKIP LOCKED
+  ), inserted AS (
+    INSERT INTO hns_root_health_renewal_jobs (
+      renewal_job_id, root_import_session_id, dns_zone_activation_id,
+      activation_generation, expected_health_generation
+    )
+    SELECT
+      'hns-health-renewal:' || encode(sha256(convert_to(
+        eligible.dns_zone_activation_id || ':' || eligible.activation_generation::text
+          || ':' || eligible.health_generation::text, 'UTF8'
+      )), 'hex'),
+      eligible.root_import_session_id, eligible.dns_zone_activation_id,
+      eligible.activation_generation, eligible.health_generation
+    FROM eligible
+    ON CONFLICT DO NOTHING
+    RETURNING 1
+  )
+  SELECT
+    (SELECT count(*)::integer FROM eligible),
+    (SELECT count(*)::integer FROM inserted)
+  INTO eligible_count, inserted_count;
+
+  INSERT INTO hns_root_health_renewal_scheduler_heartbeat (
+    scheduler_id, last_successful_tick_at, freshness_threshold_seconds,
+    eligible_roots, enqueued_roots, updated_at
+  ) VALUES (
+    'hns-root-health-renewal-v1', database_now, input_heartbeat_freshness_seconds,
+    eligible_count, inserted_count, database_now
+  )
+  ON CONFLICT (scheduler_id) DO UPDATE SET
+    last_successful_tick_at = EXCLUDED.last_successful_tick_at,
+    freshness_threshold_seconds = EXCLUDED.freshness_threshold_seconds,
+    eligible_roots = EXCLUDED.eligible_roots,
+    enqueued_roots = EXCLUDED.enqueued_roots,
+    updated_at = EXCLUDED.updated_at;
+
+  RETURN QUERY SELECT eligible_count, inserted_count, database_now;
+END;
 $$;
 
 CREATE FUNCTION track_handle_authored_content_footprint_v1() RETURNS trigger
@@ -20212,6 +20515,60 @@ CREATE TABLE community_route_attachment_ceremony_results (
     CONSTRAINT community_route_attachment_ceremony_results_result_hash_check CHECK ((result_hash ~ '^[0-9a-f]{64}$'::text))
 );
 
+CREATE TABLE community_route_attachment_completion_attempts (
+    completion_attempt_id text NOT NULL,
+    namespace_session_id text NOT NULL,
+    actor_id text NOT NULL,
+    community_id text NOT NULL,
+    attachment_intent_id text NOT NULL,
+    ceremony_intent_id text NOT NULL,
+    expected_revision bigint NOT NULL,
+    attempt_number integer NOT NULL,
+    idempotency_key text NOT NULL,
+    completion_request_sha256 text NOT NULL,
+    evidence_ref text NOT NULL,
+    state text NOT NULL,
+    fence_token bigint NOT NULL,
+    lease_expires_at timestamp with time zone NOT NULL,
+    terminal_status text,
+    result_hash text,
+    terminal_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT community_route_attachment_comp_completion_request_sha256_check CHECK ((completion_request_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_attachment_completion_a_expected_revision_check CHECK ((expected_revision > 0)),
+    CONSTRAINT community_route_attachment_completion_att_terminal_status_check CHECK ((terminal_status = ANY (ARRAY['verified'::text, 'rejected'::text, 'expired'::text]))),
+    CONSTRAINT community_route_attachment_completion_atte_attempt_number_check CHECK (((attempt_number >= 1) AND (attempt_number <= 3))),
+    CONSTRAINT community_route_attachment_completion_attempt_fence_token_check CHECK ((fence_token > 0)),
+    CONSTRAINT community_route_attachment_completion_attempt_result_hash_check CHECK (((result_hash IS NULL) OR (result_hash ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT community_route_attachment_completion_attempts_state_check CHECK ((state = ANY (ARRAY['leased'::text, 'released'::text, 'consumed'::text]))),
+    CONSTRAINT community_route_attachment_completion_shape CHECK ((is_hns_host_persistence_identity(completion_attempt_id, 256) AND is_hns_host_persistence_identity(idempotency_key, 256) AND is_hns_host_persistence_identity(evidence_ref, 256) AND (updated_at >= created_at) AND (((state = ANY (ARRAY['leased'::text, 'released'::text])) AND (terminal_status IS NULL) AND (result_hash IS NULL) AND (terminal_at IS NULL)) OR ((state = 'consumed'::text) AND (terminal_status IS NOT NULL) AND (result_hash IS NOT NULL) AND (terminal_at IS NOT NULL)))))
+);
+
+CREATE TABLE community_route_attachment_completion_observations (
+    result_hash text NOT NULL,
+    completion_attempt_id text NOT NULL,
+    namespace_session_id text NOT NULL,
+    actor_id text NOT NULL,
+    community_id text NOT NULL,
+    attachment_intent_id text NOT NULL,
+    ceremony_intent_id text NOT NULL,
+    status text NOT NULL,
+    provider_response_sha256 text,
+    evidence_digest text,
+    provider_identity_digest text,
+    raw_response_bytes bytea,
+    observed_at timestamp with time zone,
+    expires_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT community_route_attachment_compl_provider_identity_digest_check CHECK (((provider_identity_digest IS NULL) OR (provider_identity_digest ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT community_route_attachment_compl_provider_response_sha256_check CHECK (((provider_response_sha256 IS NULL) OR (provider_response_sha256 ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT community_route_attachment_completion_obs_evidence_digest_check CHECK (((evidence_digest IS NULL) OR (evidence_digest ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT community_route_attachment_completion_observa_result_hash_check CHECK ((result_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_attachment_completion_observation_shape CHECK ((((status = 'verified'::text) AND (provider_response_sha256 IS NOT NULL) AND (evidence_digest IS NOT NULL) AND (provider_identity_digest IS NOT NULL) AND (raw_response_bytes IS NOT NULL) AND (observed_at IS NOT NULL) AND ((expires_at IS NULL) OR (expires_at > observed_at))) OR ((status = ANY (ARRAY['rejected'::text, 'expired'::text])) AND (evidence_digest IS NULL) AND (provider_identity_digest IS NULL)))),
+    CONSTRAINT community_route_attachment_completion_observations_status_check CHECK ((status = ANY (ARRAY['verified'::text, 'rejected'::text, 'expired'::text])))
+);
+
 CREATE TABLE community_route_attachment_intent_revisions (
     attachment_intent_id text NOT NULL,
     revision bigint NOT NULL,
@@ -20277,6 +20634,50 @@ END)) STORED,
     CONSTRAINT community_route_attachment_intents_time_order CHECK (((updated_at >= created_at) AND (expires_at > created_at)))
 );
 
+CREATE TABLE community_route_attachment_namespace_sessions (
+    namespace_session_id text NOT NULL,
+    actor_id text NOT NULL,
+    community_id text NOT NULL,
+    attachment_intent_id text NOT NULL,
+    ceremony_intent_id text NOT NULL,
+    start_reservation_id text NOT NULL,
+    start_fence_token bigint NOT NULL,
+    expected_revision bigint NOT NULL,
+    generation bigint NOT NULL,
+    requirement_hash text NOT NULL,
+    request_hash text NOT NULL,
+    provider_id text NOT NULL,
+    provider_binding_hash text NOT NULL,
+    provider_configuration_kind text NOT NULL,
+    provider_configuration_ref text NOT NULL,
+    provider_configuration_version text NOT NULL,
+    protocol_version text NOT NULL,
+    environment text NOT NULL,
+    route_root_label text NOT NULL,
+    upstream_session_ref text NOT NULL,
+    presentation_kind text NOT NULL,
+    presentation_payload jsonb NOT NULL,
+    status text NOT NULL,
+    started_at timestamp with time zone NOT NULL,
+    completed_at timestamp with time zone,
+    terminal_at timestamp with time zone,
+    expires_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT community_route_attachment_na_provider_configuration_kind_check CHECK ((provider_configuration_kind = ANY (ARRAY['managed'::text, 'dynamic'::text]))),
+    CONSTRAINT community_route_attachment_namespac_provider_binding_hash_check CHECK ((provider_binding_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_attachment_namespace_presentation_payload_check CHECK ((jsonb_typeof(presentation_payload) = 'object'::text)),
+    CONSTRAINT community_route_attachment_namespace_se_expected_revision_check CHECK ((expected_revision > 0)),
+    CONSTRAINT community_route_attachment_namespace_se_presentation_kind_check CHECK ((presentation_kind = 'embedded_sdk'::text)),
+    CONSTRAINT community_route_attachment_namespace_se_start_fence_token_check CHECK ((start_fence_token > 0)),
+    CONSTRAINT community_route_attachment_namespace_ses_requirement_hash_check CHECK ((requirement_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_attachment_namespace_session_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_attachment_namespace_sessions_generation_check CHECK ((generation > 0)),
+    CONSTRAINT community_route_attachment_namespace_sessions_identity_check CHECK ((is_hns_host_persistence_identity(namespace_session_id, 256) AND is_hns_host_persistence_identity(community_id, 256) AND is_hns_host_persistence_identity(provider_id, 256) AND is_hns_host_persistence_identity(provider_configuration_ref, 256) AND is_hns_host_persistence_identity(provider_configuration_version, 256) AND is_hns_host_persistence_identity(protocol_version, 256) AND is_hns_host_persistence_identity(environment, 256) AND (is_community_route_root_label('hns'::text, route_root_label) IS TRUE) AND (octet_length(upstream_session_ref) BETWEEN 1 AND 16384) AND (btrim(upstream_session_ref) = upstream_session_ref) AND (upstream_session_ref !~ '[[:cntrl:]]'::text) AND (expires_at > started_at) AND (updated_at >= created_at))),
+    CONSTRAINT community_route_attachment_namespace_sessions_state_shape CHECK ((((status = 'pending'::text) AND (completed_at IS NULL) AND (terminal_at IS NULL)) OR ((status = 'completed'::text) AND (completed_at IS NOT NULL) AND (terminal_at = completed_at)) OR ((status = ANY (ARRAY['failed'::text, 'expired'::text])) AND (completed_at IS NULL) AND (terminal_at IS NOT NULL)))),
+    CONSTRAINT community_route_attachment_namespace_sessions_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'completed'::text, 'failed'::text, 'expired'::text])))
+);
+
 CREATE TABLE community_route_attachment_requirement_states (
     attachment_intent_id text NOT NULL,
     actor_id text NOT NULL,
@@ -20311,6 +20712,40 @@ CASE family
     ELSE NULL::text
 END))),
     CONSTRAINT community_route_attachment_requirement_states_status_check CHECK ((status = ANY (ARRAY['unmet'::text, 'pending'::text, 'satisfied'::text, 'failed'::text, 'expired'::text])))
+);
+
+CREATE TABLE community_route_attachment_start_reservations (
+    reservation_id text NOT NULL,
+    namespace_session_id text NOT NULL,
+    actor_id text NOT NULL,
+    community_id text NOT NULL,
+    attachment_intent_id text NOT NULL,
+    ceremony_intent_id text NOT NULL,
+    generation bigint NOT NULL,
+    expected_revision bigint NOT NULL,
+    client_idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    provider_id text NOT NULL,
+    provider_binding_hash text NOT NULL,
+    provider_configuration_kind text NOT NULL,
+    provider_configuration_ref text NOT NULL,
+    provider_configuration_version text NOT NULL,
+    protocol_version text NOT NULL,
+    environment text NOT NULL,
+    route_root_label text NOT NULL,
+    state text NOT NULL,
+    fence_token bigint NOT NULL,
+    lease_expires_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT community_route_attachment_st_provider_configuration_kind_check CHECK ((provider_configuration_kind = ANY (ARRAY['managed'::text, 'dynamic'::text]))),
+    CONSTRAINT community_route_attachment_start_re_provider_binding_hash_check CHECK ((provider_binding_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_attachment_start_reserv_expected_revision_check CHECK ((expected_revision > 0)),
+    CONSTRAINT community_route_attachment_start_reservation_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_attachment_start_reservations_fence_token_check CHECK ((fence_token > 0)),
+    CONSTRAINT community_route_attachment_start_reservations_generation_check CHECK ((generation > 0)),
+    CONSTRAINT community_route_attachment_start_reservations_identity_check CHECK ((is_hns_host_persistence_identity(reservation_id, 256) AND is_hns_host_persistence_identity(namespace_session_id, 256) AND is_hns_host_persistence_identity(community_id, 256) AND is_hns_host_persistence_identity(client_idempotency_key, 256) AND is_hns_host_persistence_identity(provider_id, 256) AND is_hns_host_persistence_identity(provider_configuration_ref, 256) AND is_hns_host_persistence_identity(provider_configuration_version, 256) AND is_hns_host_persistence_identity(protocol_version, 256) AND is_hns_host_persistence_identity(environment, 256) AND (is_community_route_root_label('hns'::text, route_root_label) IS TRUE) AND (updated_at >= created_at))),
+    CONSTRAINT community_route_attachment_start_reservations_state_check CHECK ((state = ANY (ARRAY['acquired'::text, 'released'::text, 'finalized'::text])))
 );
 
 CREATE TABLE community_route_authority_grants (
@@ -22075,6 +22510,22 @@ CREATE TABLE hns_community_app_host_operations (
     CONSTRAINT hns_community_app_host_operations_identity_check CHECK ((is_hns_host_persistence_identity(operation_id, 256) AND (operation_kind = ANY (ARRAY['activate'::text, 'transition'::text])) AND is_hns_host_persistence_identity(idempotency_key, 512) AND (request_hash ~ '^[0-9a-f]{64}$'::text) AND is_hns_host_persistence_identity(app_host_activation_id, 256) AND ((expected_activation_generation >= 0) AND (expected_activation_generation <= '9007199254740990'::bigint)) AND (target_status = ANY (ARRAY['active'::text, 'suspended'::text, 'revoked'::text])) AND (result_activation_generation = (expected_activation_generation + 1)) AND (((operation_kind = 'activate'::text) AND (expected_activation_generation = 0) AND (target_status = 'active'::text)) OR (operation_kind = 'transition'::text))))
 );
 
+CREATE TABLE hns_community_root_import_preparations (
+    attachment_intent_id text NOT NULL,
+    actor_id text NOT NULL,
+    community_id text NOT NULL,
+    ceremony_intent_id text NOT NULL,
+    root_label text NOT NULL,
+    root_import_session_id text NOT NULL,
+    provision_job_id text NOT NULL,
+    start_idempotency_key text NOT NULL,
+    start_request_sha256 text NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT hns_community_root_import_preparatio_start_request_sha256_check CHECK ((start_request_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT hns_community_root_import_preparations_identity_check CHECK ((is_hns_host_persistence_identity(root_import_session_id, 256) AND is_hns_host_persistence_identity(provision_job_id, 256) AND is_hns_host_persistence_identity(start_idempotency_key, 256) AND (is_community_route_root_label('hns'::text, root_label) IS TRUE) AND (expires_at > created_at)))
+);
+
 CREATE TABLE hns_control_observer_configurations (
     provider_configuration_reference text NOT NULL,
     provider_configuration_version text NOT NULL,
@@ -22310,11 +22761,44 @@ CREATE TABLE hns_operator_control_promotion_receipts (
     CONSTRAINT hns_operator_control_promotion_receipts_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text))
 );
 
+CREATE TABLE hns_root_health_renewal_jobs (
+    renewal_job_id text NOT NULL,
+    root_import_session_id text NOT NULL,
+    dns_zone_activation_id text NOT NULL,
+    activation_generation bigint NOT NULL,
+    expected_health_generation bigint NOT NULL,
+    state text DEFAULT 'queued'::text NOT NULL,
+    attempt_count integer DEFAULT 0 NOT NULL,
+    lease_fence bigint DEFAULT 0 NOT NULL,
+    leased_by text,
+    lease_expires_at timestamp with time zone,
+    result_bytes bytea,
+    result_sha256 text,
+    failure_code text,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    completed_at timestamp with time zone,
+    CONSTRAINT hns_root_health_renewal_jobs_identity_check CHECK ((is_hns_host_persistence_identity(renewal_job_id, 256) AND ((activation_generation >= 1) AND (activation_generation <= '9007199254740991'::bigint)) AND ((expected_health_generation >= 1) AND (expected_health_generation <= '9007199254740990'::bigint)) AND ((attempt_count >= 0) AND (attempt_count <= 3)) AND ((lease_fence >= 0) AND (lease_fence <= '9007199254740991'::bigint)))),
+    CONSTRAINT hns_root_health_renewal_jobs_state_check CHECK ((state = ANY (ARRAY['queued'::text, 'leased'::text, 'completed'::text, 'failed'::text]))),
+    CONSTRAINT hns_root_health_renewal_jobs_state_shape CHECK ((((state = 'queued'::text) AND (leased_by IS NULL) AND (lease_expires_at IS NULL) AND (result_bytes IS NULL) AND (result_sha256 IS NULL) AND (completed_at IS NULL)) OR ((state = 'leased'::text) AND is_hns_host_persistence_identity(leased_by, 256) AND (lease_expires_at IS NOT NULL) AND (result_bytes IS NULL) AND (result_sha256 IS NULL) AND (failure_code IS NULL) AND (completed_at IS NULL)) OR ((state = 'completed'::text) AND (leased_by IS NULL) AND (lease_expires_at IS NULL) AND ((octet_length(result_bytes) >= 1) AND (octet_length(result_bytes) <= 1048576)) AND (result_sha256 ~ '^[0-9a-f]{64}$'::text) AND (encode(sha256(result_bytes), 'hex'::text) = result_sha256) AND (failure_code IS NULL) AND (completed_at IS NOT NULL)) OR ((state = 'failed'::text) AND (leased_by IS NULL) AND (lease_expires_at IS NULL) AND (result_bytes IS NULL) AND (result_sha256 IS NULL) AND is_hns_host_persistence_identity(failure_code, 128) AND (completed_at IS NOT NULL)))),
+    CONSTRAINT hns_root_health_renewal_jobs_time_check CHECK (((updated_at >= created_at) AND ((completed_at IS NULL) OR (completed_at >= created_at))))
+);
+
+CREATE TABLE hns_root_health_renewal_scheduler_heartbeat (
+    scheduler_id text NOT NULL,
+    last_successful_tick_at timestamp with time zone NOT NULL,
+    freshness_threshold_seconds integer NOT NULL,
+    eligible_roots integer NOT NULL,
+    enqueued_roots integer NOT NULL,
+    updated_at timestamp with time zone NOT NULL,
+    CONSTRAINT hns_root_health_renewal_scheduler_heartbeat_identity_check CHECK (((scheduler_id = 'hns-root-health-renewal-v1'::text) AND ((freshness_threshold_seconds >= 60) AND (freshness_threshold_seconds <= 86400)) AND (eligible_roots >= 0) AND (enqueued_roots >= 0)))
+);
+
 CREATE TABLE hns_root_import_activation_operations (
     operation_id text NOT NULL,
     root_import_session_id text NOT NULL,
     actor_id text NOT NULL,
-    creation_intent_id text NOT NULL,
+    creation_intent_id text,
     idempotency_key text NOT NULL,
     request_sha256 text NOT NULL,
     expected_session_revision bigint NOT NULL,
@@ -22325,8 +22809,11 @@ CREATE TABLE hns_root_import_activation_operations (
     sale_namespace_activation_sha256 text NOT NULL,
     result_session_revision bigint NOT NULL,
     committed_at timestamp with time zone NOT NULL,
+    origin_kind text DEFAULT 'creation_intent'::text NOT NULL,
+    attachment_intent_id text,
     CONSTRAINT hns_root_import_activation_operations_generation_check CHECK (((expected_session_revision >= 1) AND (expected_session_revision <= '9007199254740990'::bigint) AND (result_session_revision = (expected_session_revision + 1)))),
-    CONSTRAINT hns_root_import_activation_operations_identity_check CHECK ((is_hns_host_persistence_identity(operation_id, 256) AND is_hns_host_persistence_identity(root_import_session_id, 256) AND is_hns_host_persistence_identity(actor_id, 256) AND is_hns_host_persistence_identity(creation_intent_id, 256) AND is_hns_host_persistence_identity(idempotency_key, 256) AND (request_sha256 ~ '^[0-9a-f]{64}$'::text) AND is_hns_host_persistence_identity(dns_zone_activation_id, 256) AND is_hns_host_persistence_identity(app_host_activation_id, 256) AND is_handle_sales_identifier_v1(sale_namespace_activation_id, 128) AND (sale_namespace_activation_sha256 ~ '^[0-9a-f]{64}$'::text)))
+    CONSTRAINT hns_root_import_activation_operations_identity_check CHECK ((is_hns_host_persistence_identity(operation_id, 256) AND is_hns_host_persistence_identity(root_import_session_id, 256) AND is_hns_host_persistence_identity(actor_id, 256) AND ((creation_intent_id IS NULL) OR is_hns_host_persistence_identity(creation_intent_id, 256)) AND ((attachment_intent_id IS NULL) OR is_hns_host_persistence_identity(attachment_intent_id, 256)) AND is_hns_host_persistence_identity(idempotency_key, 256) AND (request_sha256 ~ '^[0-9a-f]{64}$'::text) AND is_hns_host_persistence_identity(dns_zone_activation_id, 256) AND is_hns_host_persistence_identity(app_host_activation_id, 256) AND is_handle_sales_identifier_v1(sale_namespace_activation_id, 128) AND (sale_namespace_activation_sha256 ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT hns_root_import_activation_operations_origin_check CHECK ((((origin_kind = 'creation_intent'::text) AND (creation_intent_id IS NOT NULL) AND (attachment_intent_id IS NULL)) OR ((origin_kind = 'community_attachment'::text) AND (creation_intent_id IS NULL) AND (attachment_intent_id IS NOT NULL))))
 );
 
 CREATE TABLE hns_root_import_name_proof_observations (
@@ -22369,11 +22856,11 @@ CREATE TABLE hns_root_import_observation_jobs (
 CREATE TABLE hns_root_import_sessions (
     root_import_session_id text NOT NULL,
     actor_id text NOT NULL,
-    creation_intent_id text NOT NULL,
-    ceremony_intent_id text NOT NULL,
-    namespace_session_id text NOT NULL,
-    ownership_generation bigint NOT NULL,
-    ownership_expected_revision bigint NOT NULL,
+    creation_intent_id text,
+    ceremony_intent_id text,
+    namespace_session_id text,
+    ownership_generation bigint,
+    ownership_expected_revision bigint,
     root_label text NOT NULL,
     challenge_txt_value text NOT NULL,
     status text NOT NULL,
@@ -22397,9 +22884,13 @@ CREATE TABLE hns_root_import_sessions (
     updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     provision_authorization_kind text,
     provision_authorization_sha256 text,
+    origin_kind text DEFAULT 'creation_intent'::text NOT NULL,
+    community_id text,
+    attachment_intent_id text,
     CONSTRAINT hns_root_import_sessions_generation_check CHECK (((ownership_generation >= 1) AND (ownership_generation <= '9007199254740991'::bigint) AND ((ownership_expected_revision >= 1) AND (ownership_expected_revision <= '9007199254740991'::bigint)) AND ((revision >= 1) AND (revision <= '9007199254740991'::bigint)))),
     CONSTRAINT hns_root_import_sessions_hash_check CHECK (((start_request_sha256 ~ '^[0-9a-f]{64}$'::text) AND ((provision_poll_request_sha256 IS NULL) OR (provision_poll_request_sha256 ~ '^[0-9a-f]{64}$'::text)) AND ((ownership_result_sha256 IS NULL) OR (ownership_result_sha256 ~ '^[0-9a-f]{64}$'::text)) AND ((observation_request_sha256 IS NULL) OR (observation_request_sha256 ~ '^[0-9a-f]{64}$'::text)) AND ((publish_plan_sha256 IS NULL) OR (publish_plan_sha256 ~ '^[0-9a-f]{64}$'::text)) AND ((readiness_result_sha256 IS NULL) OR (readiness_result_sha256 ~ '^[0-9a-f]{64}$'::text)) AND ((publish_plan_bytes IS NULL) OR ((octet_length(publish_plan_bytes) >= 1) AND (octet_length(publish_plan_bytes) <= 1048576) AND (encode(sha256(publish_plan_bytes), 'hex'::text) = publish_plan_sha256))) AND ((readiness_result_bytes IS NULL) OR ((octet_length(readiness_result_bytes) >= 1) AND (octet_length(readiness_result_bytes) <= 1048576) AND (encode(sha256(readiness_result_bytes), 'hex'::text) = readiness_result_sha256))))),
-    CONSTRAINT hns_root_import_sessions_identity_check CHECK (((btrim(root_import_session_id) = root_import_session_id) AND ((octet_length(root_import_session_id) >= 1) AND (octet_length(root_import_session_id) <= 256)) AND (root_import_session_id !~ '[[:cntrl:]]'::text) AND (btrim(actor_id) = actor_id) AND ((octet_length(actor_id) >= 1) AND (octet_length(actor_id) <= 256)) AND (btrim(creation_intent_id) = creation_intent_id) AND ((octet_length(creation_intent_id) >= 1) AND (octet_length(creation_intent_id) <= 256)) AND (btrim(ceremony_intent_id) = ceremony_intent_id) AND ((octet_length(ceremony_intent_id) >= 1) AND (octet_length(ceremony_intent_id) <= 256)) AND (btrim(namespace_session_id) = namespace_session_id) AND ((octet_length(namespace_session_id) >= 1) AND (octet_length(namespace_session_id) <= 256)) AND (is_community_route_root_label('hns'::text, root_label) IS TRUE) AND (challenge_txt_value ~~ 'pirate-verification=%'::text) AND ((octet_length(challenge_txt_value) >= 21) AND (octet_length(challenge_txt_value) <= 16448)) AND (challenge_txt_value !~ '[[:cntrl:]]'::text) AND (btrim(start_idempotency_key) = start_idempotency_key) AND ((octet_length(start_idempotency_key) >= 1) AND (octet_length(start_idempotency_key) <= 256)) AND (btrim(provision_job_id) = provision_job_id) AND ((octet_length(provision_job_id) >= 1) AND (octet_length(provision_job_id) <= 256)) AND ((provision_idempotency_key IS NULL) OR ((btrim(provision_idempotency_key) = provision_idempotency_key) AND ((octet_length(provision_idempotency_key) >= 1) AND (octet_length(provision_idempotency_key) <= 256)))) AND ((observation_job_id IS NULL) OR ((btrim(observation_job_id) = observation_job_id) AND ((octet_length(observation_job_id) >= 1) AND (octet_length(observation_job_id) <= 256)))) AND ((observation_idempotency_key IS NULL) OR ((btrim(observation_idempotency_key) = observation_idempotency_key) AND ((octet_length(observation_idempotency_key) >= 1) AND (octet_length(observation_idempotency_key) <= 256)))))),
+    CONSTRAINT hns_root_import_sessions_identity_check CHECK ((is_hns_host_persistence_identity(root_import_session_id, 256) AND is_hns_host_persistence_identity(actor_id, 256) AND ((creation_intent_id IS NULL) OR is_hns_host_persistence_identity(creation_intent_id, 256)) AND ((ceremony_intent_id IS NULL) OR is_hns_host_persistence_identity(ceremony_intent_id, 256)) AND is_hns_host_persistence_identity(namespace_session_id, 256) AND (is_community_route_root_label('hns'::text, root_label) IS TRUE) AND (challenge_txt_value ~~ 'pirate-verification=%'::text) AND ((octet_length(challenge_txt_value) >= 21) AND (octet_length(challenge_txt_value) <= 16448)) AND (challenge_txt_value !~ '[[:cntrl:]]'::text) AND is_hns_host_persistence_identity(start_idempotency_key, 256) AND is_hns_host_persistence_identity(provision_job_id, 256) AND ((provision_idempotency_key IS NULL) OR is_hns_host_persistence_identity(provision_idempotency_key, 256)) AND ((observation_job_id IS NULL) OR is_hns_host_persistence_identity(observation_job_id, 256)) AND ((observation_idempotency_key IS NULL) OR is_hns_host_persistence_identity(observation_idempotency_key, 256)))),
+    CONSTRAINT hns_root_import_sessions_origin_check CHECK ((((origin_kind = 'creation_intent'::text) AND (creation_intent_id IS NOT NULL) AND (ceremony_intent_id IS NOT NULL) AND (namespace_session_id IS NOT NULL) AND (ownership_generation IS NOT NULL) AND (ownership_expected_revision IS NOT NULL) AND (community_id IS NULL) AND (attachment_intent_id IS NULL)) OR ((origin_kind = 'community_attachment'::text) AND (creation_intent_id IS NULL) AND (ceremony_intent_id IS NULL) AND (namespace_session_id IS NOT NULL) AND (ownership_generation IS NOT NULL) AND (ownership_expected_revision IS NOT NULL) AND (community_id IS NOT NULL) AND (attachment_intent_id IS NOT NULL)))),
     CONSTRAINT hns_root_import_sessions_provision_authorization_check CHECK ((((provision_authorization_kind IS NULL) AND (provision_authorization_sha256 IS NULL)) OR ((provision_authorization_kind = ANY (ARRAY['namespace_ownership'::text, 'hns_name_signature'::text])) AND (provision_authorization_sha256 ~ '^[0-9a-f]{64}$'::text)))),
     CONSTRAINT hns_root_import_sessions_state_shape CHECK ((((status = 'awaiting_ownership'::text) AND (publish_plan_bytes IS NULL) AND (publish_plan_sha256 IS NULL) AND (readiness_result_bytes IS NULL) AND (readiness_result_sha256 IS NULL) AND (ownership_result_sha256 IS NULL) AND (provision_authorization_kind IS NULL) AND (provision_authorization_sha256 IS NULL) AND (provision_idempotency_key IS NULL) AND (provision_poll_request_sha256 IS NULL) AND (observation_job_id IS NULL) AND (observation_idempotency_key IS NULL) AND (observation_request_sha256 IS NULL) AND (activated_community_id IS NULL)) OR ((status = ANY (ARRAY['provisioning'::text, 'awaiting_owner_update'::text])) AND (((provision_authorization_kind = 'namespace_ownership'::text) AND (provision_authorization_sha256 = ownership_result_sha256)) OR ((provision_authorization_kind = 'hns_name_signature'::text) AND (ownership_result_sha256 IS NULL))) AND (provision_idempotency_key IS NOT NULL) AND (provision_poll_request_sha256 IS NOT NULL) AND (((status = 'provisioning'::text) AND (publish_plan_bytes IS NULL) AND (publish_plan_sha256 IS NULL)) OR ((status = 'awaiting_owner_update'::text) AND (publish_plan_bytes IS NOT NULL) AND (publish_plan_sha256 IS NOT NULL))) AND (readiness_result_bytes IS NULL) AND (readiness_result_sha256 IS NULL) AND (observation_job_id IS NULL) AND (observation_idempotency_key IS NULL) AND (observation_request_sha256 IS NULL) AND (activated_community_id IS NULL)) OR ((status = ANY (ARRAY['observing'::text, 'ready'::text, 'activated'::text])) AND (provision_authorization_kind IS NOT NULL) AND (provision_authorization_sha256 IS NOT NULL) AND (ownership_result_sha256 IS NOT NULL) AND (publish_plan_bytes IS NOT NULL) AND (publish_plan_sha256 IS NOT NULL) AND (provision_idempotency_key IS NOT NULL) AND (provision_poll_request_sha256 IS NOT NULL) AND (observation_job_id IS NOT NULL) AND (observation_idempotency_key IS NOT NULL) AND (observation_request_sha256 IS NOT NULL) AND (((status = 'observing'::text) AND (readiness_result_bytes IS NULL) AND (readiness_result_sha256 IS NULL) AND (activated_community_id IS NULL)) OR ((status = 'ready'::text) AND (readiness_result_bytes IS NOT NULL) AND (readiness_result_sha256 IS NOT NULL) AND (activated_community_id IS NULL)) OR ((status = 'activated'::text) AND (readiness_result_bytes IS NOT NULL) AND (readiness_result_sha256 IS NOT NULL) AND (activated_community_id IS NOT NULL)))) OR ((status = ANY (ARRAY['failed'::text, 'expired'::text])) AND (activated_community_id IS NULL)))),
     CONSTRAINT hns_root_import_sessions_status_check CHECK ((status = ANY (ARRAY['awaiting_ownership'::text, 'provisioning'::text, 'awaiting_owner_update'::text, 'observing'::text, 'ready'::text, 'activated'::text, 'failed'::text, 'expired'::text]))),
@@ -26999,6 +27490,27 @@ ALTER TABLE ONLY community_route_attachment_ceremony_results
 ALTER TABLE ONLY community_route_attachment_ceremony_results
     ADD CONSTRAINT community_route_attachment_ceremony_results_pkey PRIMARY KEY (ceremony_intent_id);
 
+ALTER TABLE ONLY community_route_attachment_completion_attempts
+    ADD CONSTRAINT community_route_attachment_co_actor_id_namespace_session_id_key UNIQUE (actor_id, namespace_session_id, idempotency_key, attempt_number);
+
+ALTER TABLE ONLY community_route_attachment_completion_attempts
+    ADD CONSTRAINT community_route_attachment_co_completion_attempt_id_fence_t_key UNIQUE (completion_attempt_id, fence_token);
+
+ALTER TABLE ONLY community_route_attachment_completion_attempts
+    ADD CONSTRAINT community_route_attachment_co_completion_attempt_id_namespa_key UNIQUE (completion_attempt_id, namespace_session_id, actor_id, community_id, attachment_intent_id, ceremony_intent_id);
+
+ALTER TABLE ONLY community_route_attachment_completion_attempts
+    ADD CONSTRAINT community_route_attachment_completion_attempts_evidence_ref_key UNIQUE (evidence_ref);
+
+ALTER TABLE ONLY community_route_attachment_completion_attempts
+    ADD CONSTRAINT community_route_attachment_completion_attempts_pkey PRIMARY KEY (completion_attempt_id);
+
+ALTER TABLE ONLY community_route_attachment_completion_observations
+    ADD CONSTRAINT community_route_attachment_completion_completion_attempt_id_key UNIQUE (completion_attempt_id);
+
+ALTER TABLE ONLY community_route_attachment_completion_observations
+    ADD CONSTRAINT community_route_attachment_completion_observations_pkey PRIMARY KEY (result_hash);
+
 ALTER TABLE ONLY community_route_attachment_intent_revisions
     ADD CONSTRAINT community_route_attachment_intent_revisions_pkey PRIMARY KEY (attachment_intent_id, revision);
 
@@ -27011,8 +27523,32 @@ ALTER TABLE ONLY community_route_attachment_intents
 ALTER TABLE ONLY community_route_attachment_intents
     ADD CONSTRAINT community_route_attachment_intents_pkey PRIMARY KEY (attachment_intent_id);
 
+ALTER TABLE ONLY community_route_attachment_namespace_sessions
+    ADD CONSTRAINT community_route_attachment_na_actor_id_attachment_intent_id_key UNIQUE (actor_id, attachment_intent_id, generation);
+
+ALTER TABLE ONLY community_route_attachment_namespace_sessions
+    ADD CONSTRAINT community_route_attachment_na_namespace_session_id_actor_id_key UNIQUE (namespace_session_id, actor_id);
+
+ALTER TABLE ONLY community_route_attachment_namespace_sessions
+    ADD CONSTRAINT community_route_attachment_name_actor_id_ceremony_intent_id_key UNIQUE (actor_id, ceremony_intent_id);
+
+ALTER TABLE ONLY community_route_attachment_namespace_sessions
+    ADD CONSTRAINT community_route_attachment_namespace_sessions_pkey PRIMARY KEY (namespace_session_id);
+
 ALTER TABLE ONLY community_route_attachment_requirement_states
     ADD CONSTRAINT community_route_attachment_requirement_states_pkey PRIMARY KEY (attachment_intent_id, requirement_kind);
+
+ALTER TABLE ONLY community_route_attachment_start_reservations
+    ADD CONSTRAINT community_route_attachment_st_actor_id_attachment_intent_id_key UNIQUE (actor_id, attachment_intent_id, client_idempotency_key);
+
+ALTER TABLE ONLY community_route_attachment_start_reservations
+    ADD CONSTRAINT community_route_attachment_st_namespace_session_id_actor_id_key UNIQUE (namespace_session_id, actor_id);
+
+ALTER TABLE ONLY community_route_attachment_start_reservations
+    ADD CONSTRAINT community_route_attachment_start_reservation_id_fence_token_key UNIQUE (reservation_id, fence_token);
+
+ALTER TABLE ONLY community_route_attachment_start_reservations
+    ADD CONSTRAINT community_route_attachment_start_reservations_pkey PRIMARY KEY (reservation_id);
 
 ALTER TABLE ONLY community_route_authority_grants
     ADD CONSTRAINT community_route_authority_grants_pkey PRIMARY KEY (grant_id);
@@ -27464,6 +28000,21 @@ ALTER TABLE ONLY hns_community_app_host_operations
 ALTER TABLE ONLY hns_community_app_host_operations
     ADD CONSTRAINT hns_community_app_host_operations_pkey PRIMARY KEY (operation_id);
 
+ALTER TABLE ONLY hns_community_root_import_preparations
+    ADD CONSTRAINT hns_community_root_import_pre_actor_id_community_id_start_i_key UNIQUE (actor_id, community_id, start_idempotency_key);
+
+ALTER TABLE ONLY hns_community_root_import_preparations
+    ADD CONSTRAINT hns_community_root_import_preparatio_root_import_session_id_key UNIQUE (root_import_session_id);
+
+ALTER TABLE ONLY hns_community_root_import_preparations
+    ADD CONSTRAINT hns_community_root_import_preparations_ceremony_intent_id_key UNIQUE (ceremony_intent_id);
+
+ALTER TABLE ONLY hns_community_root_import_preparations
+    ADD CONSTRAINT hns_community_root_import_preparations_pkey PRIMARY KEY (attachment_intent_id);
+
+ALTER TABLE ONLY hns_community_root_import_preparations
+    ADD CONSTRAINT hns_community_root_import_preparations_provision_job_id_key UNIQUE (provision_job_id);
+
 ALTER TABLE ONLY hns_control_observer_configurations
     ADD CONSTRAINT hns_control_observer_configurations_digest_unique UNIQUE (provider_configuration_reference, provider_configuration_version, provider_configuration_digest);
 
@@ -27536,6 +28087,15 @@ ALTER TABLE ONLY hns_operator_control_promotion_receipts
 ALTER TABLE ONLY hns_operator_control_promotion_receipts
     ADD CONSTRAINT hns_operator_control_promotion_receipts_pkey PRIMARY KEY (receipt_id);
 
+ALTER TABLE ONLY hns_root_health_renewal_jobs
+    ADD CONSTRAINT hns_root_health_renewal_jobs_dns_zone_activation_id_activat_key UNIQUE (dns_zone_activation_id, activation_generation, expected_health_generation);
+
+ALTER TABLE ONLY hns_root_health_renewal_jobs
+    ADD CONSTRAINT hns_root_health_renewal_jobs_pkey PRIMARY KEY (renewal_job_id);
+
+ALTER TABLE ONLY hns_root_health_renewal_scheduler_heartbeat
+    ADD CONSTRAINT hns_root_health_renewal_scheduler_heartbeat_pkey PRIMARY KEY (scheduler_id);
+
 ALTER TABLE ONLY hns_root_import_activation_operations
     ADD CONSTRAINT hns_root_import_activation_op_actor_id_root_import_session__key UNIQUE (actor_id, root_import_session_id, idempotency_key);
 
@@ -27562,6 +28122,12 @@ ALTER TABLE ONLY hns_root_import_sessions
 
 ALTER TABLE ONLY hns_root_import_sessions
     ADD CONSTRAINT hns_root_import_sessions_actor_id_creation_intent_id_start__key UNIQUE (actor_id, creation_intent_id, start_idempotency_key);
+
+ALTER TABLE ONLY hns_root_import_sessions
+    ADD CONSTRAINT hns_root_import_sessions_community_idempotency_unique UNIQUE (actor_id, community_id, start_idempotency_key);
+
+ALTER TABLE ONLY hns_root_import_sessions
+    ADD CONSTRAINT hns_root_import_sessions_community_session_unique UNIQUE (actor_id, community_id, root_import_session_id);
 
 ALTER TABLE ONLY hns_root_import_sessions
     ADD CONSTRAINT hns_root_import_sessions_namespace_session_id_key UNIQUE (namespace_session_id);
@@ -28084,6 +28650,9 @@ ALTER TABLE ONLY namespace_ownership_sessions
 
 ALTER TABLE ONLY namespace_ownership_sessions
     ADD CONSTRAINT namespace_ownership_sessions_pkey PRIMARY KEY (namespace_session_id);
+
+ALTER TABLE ONLY namespace_ownership_sessions
+    ADD CONSTRAINT namespace_ownership_sessions_root_import_fk_identity_unique UNIQUE (namespace_session_id, actor_id, creation_intent_id);
 
 ALTER TABLE ONLY namespace_ownership_start_reservations
     ADD CONSTRAINT namespace_ownership_start_reservations_actor_ceremony_unique UNIQUE (actor_id, ceremony_intent_id);
@@ -28750,9 +29319,13 @@ CREATE UNIQUE INDEX community_role_assignments_one_active_owner_uidx ON communit
 
 CREATE INDEX community_route_active_lease_renewal_attempts_lease_idx ON community_route_active_lease_renewal_attempts USING btree (state, lease_expires_at);
 
+CREATE INDEX community_route_attachment_completion_lease_idx ON community_route_attachment_completion_attempts USING btree (state, lease_expires_at);
+
 CREATE UNIQUE INDEX community_route_attachment_intent_replay_uidx ON community_route_attachment_intent_revisions USING btree (actor_id, operation_kind, idempotency_key) WHERE (idempotency_key IS NOT NULL);
 
 CREATE UNIQUE INDEX community_route_attachment_intents_one_open_per_community_uidx ON community_route_attachment_intents USING btree (community_id) WHERE (status = ANY (ARRAY['verification_required'::text, 'commit_ready'::text]));
+
+CREATE INDEX community_route_attachment_start_reservations_lease_idx ON community_route_attachment_start_reservations USING btree (state, lease_expires_at);
 
 CREATE UNIQUE INDEX community_route_authority_grants_active_uidx ON community_route_authority_grants USING btree (community_id, principal_user_id, authority) WHERE (status = 'active'::text);
 
@@ -28853,6 +29426,10 @@ CREATE INDEX hns_authority_provision_jobs_claim_idx ON hns_authority_provision_j
 CREATE INDEX hns_control_observer_reservations_live_lease_idx ON hns_control_observer_reservations USING btree (lease_expires_at, observation_id) WHERE (state = 'reserved'::text);
 
 CREATE INDEX hns_dns_zone_activation_operations_live_idx ON hns_dns_zone_activation_operations USING btree (lease_expires_at, operation_id) WHERE (state = 'reserved'::text);
+
+CREATE INDEX hns_root_health_renewal_jobs_claim_idx ON hns_root_health_renewal_jobs USING btree (state, created_at, renewal_job_id);
+
+CREATE INDEX hns_root_import_activation_operations_attachment_idx ON hns_root_import_activation_operations USING btree (actor_id, community_id, attachment_intent_id) WHERE (origin_kind = 'community_attachment'::text);
 
 CREATE INDEX hns_root_import_observation_jobs_claim_idx ON hns_root_import_observation_jobs USING btree (state, created_at, observation_job_id);
 
@@ -29236,6 +29813,8 @@ CREATE TRIGGER community_route_attachment_attempt_insert_guard BEFORE INSERT ON 
 
 CREATE TRIGGER community_route_attachment_binding_insert_guard BEFORE INSERT ON community_canonical_route_bindings FOR EACH ROW EXECUTE FUNCTION validate_community_route_attachment_binding_insert();
 
+CREATE TRIGGER community_route_attachment_completion_observation_append_only BEFORE DELETE OR UPDATE ON community_route_attachment_completion_observations FOR EACH ROW EXECUTE FUNCTION reject_community_route_attachment_immutable_change();
+
 CREATE TRIGGER community_route_attachment_evidence_insert_guard BEFORE INSERT ON community_route_ownership_evidence FOR EACH ROW WHEN ((new.origin = 'route_attachment'::text)) EXECUTE FUNCTION validate_community_route_attachment_evidence_insert();
 
 CREATE TRIGGER community_route_attachment_intent_guard BEFORE INSERT OR UPDATE ON community_route_attachment_intents FOR EACH ROW EXECUTE FUNCTION guard_community_route_attachment_intent();
@@ -29474,6 +30053,8 @@ CREATE TRIGGER hns_community_app_host_current_change_guard BEFORE DELETE OR UPDA
 
 CREATE TRIGGER hns_community_app_host_operations_append_only BEFORE DELETE OR UPDATE ON hns_community_app_host_operations FOR EACH ROW EXECUTE FUNCTION reject_hns_host_persistence_append_only_change();
 
+CREATE TRIGGER hns_community_root_import_preparations_change_guard BEFORE DELETE OR UPDATE ON hns_community_root_import_preparations FOR EACH ROW EXECUTE FUNCTION reject_hns_community_root_import_preparation_change();
+
 CREATE TRIGGER hns_control_observer_configurations_append_only BEFORE DELETE OR UPDATE ON hns_control_observer_configurations FOR EACH ROW EXECUTE FUNCTION reject_hns_control_observer_append_only_change();
 
 CREATE TRIGGER hns_control_observer_operation_prepare BEFORE INSERT ON hns_control_observer_operations FOR EACH ROW EXECUTE FUNCTION prepare_hns_control_observer_operation_insert();
@@ -29505,6 +30086,8 @@ CREATE TRIGGER hns_dns_zone_health_operations_append_only BEFORE DELETE OR UPDAT
 CREATE TRIGGER hns_dns_zone_lifecycle_operations_append_only BEFORE DELETE OR UPDATE ON hns_dns_zone_lifecycle_operations FOR EACH ROW EXECUTE FUNCTION reject_hns_host_persistence_append_only_change();
 
 CREATE TRIGGER hns_operator_control_promotion_receipts_change_guard BEFORE DELETE OR UPDATE ON hns_operator_control_promotion_receipts FOR EACH ROW EXECUTE FUNCTION reject_hns_operator_control_promotion_receipt_change();
+
+CREATE TRIGGER hns_root_health_renewal_jobs_retain BEFORE DELETE ON hns_root_health_renewal_jobs FOR EACH ROW EXECUTE FUNCTION reject_hns_authority_provision_job_delete();
 
 CREATE TRIGGER hns_root_import_activation_operations_retain BEFORE DELETE OR UPDATE ON hns_root_import_activation_operations FOR EACH ROW EXECUTE FUNCTION reject_hns_authority_provision_job_delete();
 
@@ -30564,6 +31147,30 @@ ALTER TABLE ONLY community_route_attachment_ceremony_results
 ALTER TABLE ONLY community_route_attachment_ceremony_results
     ADD CONSTRAINT community_route_attachment_ceremony_results_evidence_fk FOREIGN KEY (evidence_ref) REFERENCES community_route_ownership_evidence(evidence_ref) DEFERRABLE INITIALLY DEFERRED;
 
+ALTER TABLE ONLY community_route_attachment_completion_observations
+    ADD CONSTRAINT community_route_attachment_completio_completion_attempt_id_fkey FOREIGN KEY (completion_attempt_id) REFERENCES community_route_attachment_completion_attempts(completion_attempt_id);
+
+ALTER TABLE ONLY community_route_attachment_completion_attempts
+    ADD CONSTRAINT community_route_attachment_completion_attempt_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY community_route_attachment_completion_attempts
+    ADD CONSTRAINT community_route_attachment_completion_attempts_actor_id_fkey FOREIGN KEY (actor_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY community_route_attachment_completion_attempts
+    ADD CONSTRAINT community_route_attachment_completion_ceremony_fk FOREIGN KEY (ceremony_intent_id) REFERENCES community_route_attachment_ceremony_attempts(ceremony_intent_id);
+
+ALTER TABLE ONLY community_route_attachment_completion_attempts
+    ADD CONSTRAINT community_route_attachment_completion_intent_fk FOREIGN KEY (actor_id, attachment_intent_id) REFERENCES community_route_attachment_intents(actor_id, attachment_intent_id);
+
+ALTER TABLE ONLY community_route_attachment_completion_observations
+    ADD CONSTRAINT community_route_attachment_completion_observation_attempt_fk FOREIGN KEY (completion_attempt_id, namespace_session_id, actor_id, community_id, attachment_intent_id, ceremony_intent_id) REFERENCES community_route_attachment_completion_attempts(completion_attempt_id, namespace_session_id, actor_id, community_id, attachment_intent_id, ceremony_intent_id);
+
+ALTER TABLE ONLY community_route_attachment_completion_observations
+    ADD CONSTRAINT community_route_attachment_completion_observation_session_fk FOREIGN KEY (namespace_session_id, actor_id) REFERENCES community_route_attachment_namespace_sessions(namespace_session_id, actor_id);
+
+ALTER TABLE ONLY community_route_attachment_completion_attempts
+    ADD CONSTRAINT community_route_attachment_completion_session_fk FOREIGN KEY (namespace_session_id, actor_id) REFERENCES community_route_attachment_namespace_sessions(namespace_session_id, actor_id);
+
 ALTER TABLE ONLY community_route_attachment_intent_revisions
     ADD CONSTRAINT community_route_attachment_intent_rev_attachment_intent_id_fkey FOREIGN KEY (attachment_intent_id) REFERENCES community_route_attachment_intents(attachment_intent_id);
 
@@ -30576,11 +31183,38 @@ ALTER TABLE ONLY community_route_attachment_intents
 ALTER TABLE ONLY community_route_attachment_intents
     ADD CONSTRAINT community_route_attachment_intents_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
 
+ALTER TABLE ONLY community_route_attachment_namespace_sessions
+    ADD CONSTRAINT community_route_attachment_namespace_sessions_actor_id_fkey FOREIGN KEY (actor_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY community_route_attachment_namespace_sessions
+    ADD CONSTRAINT community_route_attachment_namespace_sessions_ceremony_fk FOREIGN KEY (ceremony_intent_id) REFERENCES community_route_attachment_ceremony_attempts(ceremony_intent_id);
+
+ALTER TABLE ONLY community_route_attachment_namespace_sessions
+    ADD CONSTRAINT community_route_attachment_namespace_sessions_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY community_route_attachment_namespace_sessions
+    ADD CONSTRAINT community_route_attachment_namespace_sessions_intent_fk FOREIGN KEY (actor_id, attachment_intent_id) REFERENCES community_route_attachment_intents(actor_id, attachment_intent_id);
+
+ALTER TABLE ONLY community_route_attachment_namespace_sessions
+    ADD CONSTRAINT community_route_attachment_namespace_sessions_reservation_fk FOREIGN KEY (start_reservation_id, start_fence_token) REFERENCES community_route_attachment_start_reservations(reservation_id, fence_token);
+
 ALTER TABLE ONLY community_route_attachment_requirement_states
     ADD CONSTRAINT community_route_attachment_requirement_current_ceremony_fk FOREIGN KEY (current_ceremony_intent_id) REFERENCES community_route_attachment_ceremony_attempts(ceremony_intent_id) DEFERRABLE INITIALLY DEFERRED;
 
 ALTER TABLE ONLY community_route_attachment_requirement_states
     ADD CONSTRAINT community_route_attachment_requirement_states_intent_fk FOREIGN KEY (actor_id, attachment_intent_id) REFERENCES community_route_attachment_intents(actor_id, attachment_intent_id) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY community_route_attachment_start_reservations
+    ADD CONSTRAINT community_route_attachment_start_reservations_actor_id_fkey FOREIGN KEY (actor_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY community_route_attachment_start_reservations
+    ADD CONSTRAINT community_route_attachment_start_reservations_ceremony_fk FOREIGN KEY (ceremony_intent_id) REFERENCES community_route_attachment_ceremony_attempts(ceremony_intent_id);
+
+ALTER TABLE ONLY community_route_attachment_start_reservations
+    ADD CONSTRAINT community_route_attachment_start_reservations_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY community_route_attachment_start_reservations
+    ADD CONSTRAINT community_route_attachment_start_reservations_intent_fk FOREIGN KEY (actor_id, attachment_intent_id) REFERENCES community_route_attachment_intents(actor_id, attachment_intent_id);
 
 ALTER TABLE ONLY community_route_authority_grants
     ADD CONSTRAINT community_route_authority_grants_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
@@ -31008,6 +31642,21 @@ ALTER TABLE ONLY hns_community_app_host_activation_revisions
 ALTER TABLE ONLY hns_community_app_host_activation_revisions
     ADD CONSTRAINT hns_community_app_host_activation_revisions_route_fk FOREIGN KEY (community_id, route_binding_id) REFERENCES community_canonical_route_bindings(community_id, route_binding_id);
 
+ALTER TABLE ONLY hns_community_root_import_preparations
+    ADD CONSTRAINT hns_community_root_import_preparation_attachment_intent_id_fkey FOREIGN KEY (attachment_intent_id) REFERENCES community_route_attachment_intents(attachment_intent_id);
+
+ALTER TABLE ONLY hns_community_root_import_preparations
+    ADD CONSTRAINT hns_community_root_import_preparations_actor_id_fkey FOREIGN KEY (actor_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY hns_community_root_import_preparations
+    ADD CONSTRAINT hns_community_root_import_preparations_ceremony_intent_id_fkey FOREIGN KEY (ceremony_intent_id) REFERENCES community_route_attachment_ceremony_attempts(ceremony_intent_id);
+
+ALTER TABLE ONLY hns_community_root_import_preparations
+    ADD CONSTRAINT hns_community_root_import_preparations_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY hns_community_root_import_preparations
+    ADD CONSTRAINT hns_community_root_import_preparations_intent_actor_fk FOREIGN KEY (actor_id, attachment_intent_id) REFERENCES community_route_attachment_intents(actor_id, attachment_intent_id);
+
 ALTER TABLE ONLY hns_control_observer_operations
     ADD CONSTRAINT hns_control_observer_operations_configuration_fk FOREIGN KEY (provider_configuration_reference, provider_configuration_version, provider_configuration_digest) REFERENCES hns_control_observer_configurations(provider_configuration_reference, provider_configuration_version, provider_configuration_digest);
 
@@ -31041,8 +31690,17 @@ ALTER TABLE ONLY hns_operator_control_promotion_receipts
 ALTER TABLE ONLY hns_operator_control_promotion_receipts
     ADD CONSTRAINT hns_operator_control_promotion_receipts_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
 
+ALTER TABLE ONLY hns_root_health_renewal_jobs
+    ADD CONSTRAINT hns_root_health_renewal_jobs_activation_fk FOREIGN KEY (dns_zone_activation_id, activation_generation) REFERENCES hns_dns_zone_activation_revisions(dns_zone_activation_id, dns_zone_activation_generation);
+
+ALTER TABLE ONLY hns_root_health_renewal_jobs
+    ADD CONSTRAINT hns_root_health_renewal_jobs_session_fk FOREIGN KEY (root_import_session_id) REFERENCES hns_root_import_sessions(root_import_session_id);
+
 ALTER TABLE ONLY hns_root_import_activation_operations
     ADD CONSTRAINT hns_root_import_activation_operations_app_fk FOREIGN KEY (app_host_activation_id) REFERENCES hns_community_app_host_activation_current(app_host_activation_id);
+
+ALTER TABLE ONLY hns_root_import_activation_operations
+    ADD CONSTRAINT hns_root_import_activation_operations_attachment_intent_id_fkey FOREIGN KEY (attachment_intent_id) REFERENCES community_route_attachment_intents(attachment_intent_id);
 
 ALTER TABLE ONLY hns_root_import_activation_operations
     ADD CONSTRAINT hns_root_import_activation_operations_community_fk FOREIGN KEY (community_id) REFERENCES communities(community_id);
@@ -31072,7 +31730,16 @@ ALTER TABLE ONLY hns_root_import_sessions
     ADD CONSTRAINT hns_root_import_sessions_actor_intent_fk FOREIGN KEY (actor_id, creation_intent_id) REFERENCES community_creation_intents(actor_id, intent_id);
 
 ALTER TABLE ONLY hns_root_import_sessions
-    ADD CONSTRAINT hns_root_import_sessions_namespace_actor_fk FOREIGN KEY (namespace_session_id, actor_id) REFERENCES namespace_ownership_sessions(namespace_session_id, actor_id);
+    ADD CONSTRAINT hns_root_import_sessions_attachment_intent_id_fkey FOREIGN KEY (attachment_intent_id) REFERENCES community_route_attachment_intents(attachment_intent_id);
+
+ALTER TABLE ONLY hns_root_import_sessions
+    ADD CONSTRAINT hns_root_import_sessions_community_actor_fk FOREIGN KEY (actor_id, attachment_intent_id) REFERENCES community_route_attachment_intents(actor_id, attachment_intent_id);
+
+ALTER TABLE ONLY hns_root_import_sessions
+    ADD CONSTRAINT hns_root_import_sessions_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY hns_root_import_sessions
+    ADD CONSTRAINT hns_root_import_sessions_creation_namespace_actor_fk FOREIGN KEY (namespace_session_id, actor_id, creation_intent_id) REFERENCES namespace_ownership_sessions(namespace_session_id, actor_id, creation_intent_id);
 
 ALTER TABLE ONLY hns_root_import_teardown_jobs
     ADD CONSTRAINT hns_root_import_teardown_jobs_session_fk FOREIGN KEY (root_import_session_id) REFERENCES hns_root_import_sessions(root_import_session_id);

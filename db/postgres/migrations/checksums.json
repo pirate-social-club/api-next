@@ -114,6 +114,11 @@
     "0111_community_creation_create_new_persona.sql": "9b4fb47d826ba7a8850c2d74221c362cf47d28949ecc6772b5c33f42c9cfcd94",
     "0112_community_membership_follow_invariant.sql": "b756fb8665016a1e093cb5f1a86c9f23ea48d56796193b7554f0154da0789941",
     "0113_account_community_membership_discovery.sql": "86e30ff9c9c4d5a6983edf61c2c7b5892ec8b2af630368c6d9f23dad81e02c92",
-    "0114_video_original_audio_publication.sql": "f4d20f9dccdf2bae08d514751c4ad459c171032dff1ab4c246e403a9811e9d54"
+    "0114_video_original_audio_publication.sql": "f4d20f9dccdf2bae08d514751c4ad459c171032dff1ab4c246e403a9811e9d54",
+    "0115_hns_community_root_import.sql": "06fdb46edb803867a074b40af3e4d1506bd43c0cb67268f2d1dc91a7834ac899",
+    "0116_hns_community_root_import_transitions.sql": "d33231aa5084f885e5529b392d3534f7439336e6f12b402cdbe385d2527cb3f1",
+    "0117_hns_route_attachment_completion.sql": "fac26341f2a5717157a9db77702f0fd5abab220858c181a4c23198c4c5ba8ba3",
+    "0118_hns_community_root_activation.sql": "f49062df910eb1fe89c44a1ac0bcad08857ab3d7978fcbd7480a084dc90838f2",
+    "0119_hns_root_health_renewal.sql": "1870db49b6e76c6cd748889e8bdb2a64a2283e2af0515b14c65f1f89d45cc73a"
   }
 }

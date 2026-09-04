@@ -8,6 +8,7 @@ import {
   HnsOwnerResponseDecodeError,
   type HnsOwnershipEvidenceInput,
   type HnsOwnershipEvidencePreimageInput,
+  type HnsRouteAttachmentStartInput,
   hnsNamespaceStartHash,
   hnsNamespaceStartPreimage,
   hnsOwnerChallengeValue,
@@ -15,6 +16,8 @@ import {
   hnsOwnershipEvidencePreimage,
   hnsProviderIdentityDigest,
   hnsProviderIdentityPreimage,
+  hnsRouteAttachmentStartHash,
+  hnsRouteAttachmentStartPreimage,
   sha256Utf8,
 } from "./hns-evidence.ts";
 
@@ -35,6 +38,26 @@ const start: HnsNamespaceStartInput = {
   generation: 1,
   provider_id: HNS_OWNER_PROVIDER_ID,
   provider_binding_hash: "3".repeat(64),
+  provider_configuration: {
+    kind: "managed",
+    reference: "hns-owner-staging",
+    version: "hns-owner-config-v1",
+  },
+  protocol_version: "hns-txt-v1",
+  environment: "staging",
+  route,
+};
+
+const attachmentStart: HnsRouteAttachmentStartInput = {
+  operation_kind: "route_attachment",
+  actor_id: "user-1",
+  community_id: "community-1",
+  attachment_intent_id: "attachment-1",
+  ceremony_intent_id: "attachment-ceremony-1",
+  requirement_hash: "7".repeat(64),
+  generation: 1,
+  provider_id: HNS_OWNER_PROVIDER_ID,
+  provider_binding_hash: "8".repeat(64),
   provider_configuration: {
     kind: "managed",
     reference: "hns-owner-staging",
@@ -143,6 +166,22 @@ describe("HNS ownership evidence ABI", () => {
     await expect(sha256Utf8(evidencePreimage)).resolves.toBe(
       "faa2d10678673c9550eac18a5551a127bb84aba093d80bb784754d9a9840cd5a",
     );
+  });
+
+  test("uses a distinct community-keyed start identity for route attachment", async () => {
+    expect(hnsRouteAttachmentStartPreimage(attachmentStart)).toBe(
+      '["pirate-route-attachment-namespace-start-v1","route_attachment","user-1","community-1","attachment-1","attachment-ceremony-1","namespace_ownership","7777777777777777777777777777777777777777777777777777777777777777",1,"hns.owner.v1","8888888888888888888888888888888888888888888888888888888888888888","managed","hns-owner-staging","hns-owner-config-v1","hns-txt-v1","staging","hns","xn--pokmon-dva","pokémon","app.xn--pokmon-dva"]',
+    );
+    await expect(hnsRouteAttachmentStartHash(attachmentStart)).resolves.toBe(
+      "1e754ada558d520fa7506212a2c1abd79b0a385a690e928215cfe4f383d74508",
+    );
+    expect(hnsRouteAttachmentStartPreimage(attachmentStart)).not.toContain("cc_intent");
+    expect(() =>
+      hnsRouteAttachmentStartPreimage({
+        ...attachmentStart,
+        creation_intent_id: "cc_intent-1",
+      } as HnsRouteAttachmentStartInput),
+    ).toThrow();
   });
 
   test("strict-decodes the same bytes and preserves them exactly", () => {

@@ -312,6 +312,7 @@ export function decodeHnsAuthorityProvisionResultV1(
 }
 
 export async function observeHnsRootReadinessV1(input: {
+  readonly operation_kind: "observe_root_v1" | "renew_health_v1";
   readonly request: HnsRootReadinessObservationRequestV1;
   readonly publish_plan_bytes: Uint8Array;
   readonly provision_result_bytes: Uint8Array;
@@ -325,7 +326,7 @@ export async function observeHnsRootReadinessV1(input: {
     input.config.valid_for_seconds < 60 ||
     input.config.valid_for_seconds > 7 * 86_400 ||
     !Number.isFinite(now) ||
-    now >= Date.parse(input.request.expires_at) ||
+    (input.operation_kind === "observe_root_v1" && now >= Date.parse(input.request.expires_at)) ||
     (await sha256(input.publish_plan_bytes)) !== input.request.publish_plan_sha256 ||
     (await sha256(input.provision_result_bytes)) !== input.request.provision_result_sha256
   ) {

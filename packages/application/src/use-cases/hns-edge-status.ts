@@ -33,6 +33,18 @@ export interface HnsEdgeStatusClock {
   readonly nowUnixSeconds: () => number;
 }
 
+export type HnsRootHealthRenewalStatusV1 = Readonly<{
+  readonly last_successful_tick_unix_seconds: number | null;
+  readonly freshness_threshold_seconds: number | null;
+  readonly active_root_count: number;
+  readonly healthy_root_count: number;
+  readonly earliest_health_valid_until_unix_seconds: number | null;
+}>;
+
+export interface HnsRootHealthRenewalStatusStore {
+  readonly load: () => Effect.Effect<HnsRootHealthRenewalStatusV1, HnsEdgeStatusFailed>;
+}
+
 export interface HnsEdgeStatusProjectionV1 {
   readonly state: "healthy" | "attention" | "missing";
   readonly observed_at_unix_seconds: number | null;

@@ -37,6 +37,21 @@ const startInput = {
   environment: "staging",
   route,
 };
+const attachmentStartInput = {
+  operation_kind: "route_attachment" as const,
+  actor_id: "user-1",
+  community_id: "community-1",
+  attachment_intent_id: "attachment-1",
+  ceremony_intent_id: "attachment-ceremony-1",
+  requirement_hash: "9".repeat(64),
+  generation: 1,
+  request_hash: "a".repeat(64),
+  provider_binding_hash: "b".repeat(64),
+  provider_configuration,
+  protocol_version: "hns-txt-v1",
+  environment: "staging",
+  route,
+};
 const startContext = { namespace_session_id: "namespace-session-1" } as const;
 const completeContext = {
   namespace_session_id: "namespace-session-1",
@@ -264,6 +279,106 @@ function adapter(bytes?: Uint8Array) {
 }
 
 describe("injected HNS owner adapter", () => {
+  test("starts and completes a community-keyed route attachment without creation authority", async () => {
+    let startedInput: unknown;
+    let completedSession: unknown;
+    const provider = makeHnsOwnerAdapter({
+      transport: {
+        ...transport(),
+        startRouteAttachment: ({ input }) => {
+          startedInput = input;
+          return Effect.succeed(
+            startResponseBytes("owner_authoritative_dns_txt", "_pirate.xn--pokmon-dva"),
+          );
+        },
+        pollRouteAttachment: ({ session }) => {
+          completedSession = session;
+          return Effect.succeed(response());
+        },
+      },
+      provider_configuration,
+      environments: ["staging"],
+      now: () => now,
+    });
+
+    if (
+      provider.startRouteAttachment === undefined ||
+      provider.completeRouteAttachment === undefined
+    ) {
+      throw new Error("route attachment provider unavailable");
+    }
+    const started = await Effect.runPromise(
+      provider.startRouteAttachment(attachmentStartInput, startContext),
+    );
+    expect(startedInput).toEqual(attachmentStartInput);
+    expect(started.session).toMatchObject({
+      operation_kind: "route_attachment",
+      community_id: "community-1",
+      attachment_intent_id: "attachment-1",
+      provider_id: "hns.owner.v1",
+    });
+    expect(started.session).not.toHaveProperty("creation_intent_id");
+
+    await expect(
+      Effect.runPromise(
+        provider.completeRouteAttachment(
+          {
+            session: started.session,
+            submission: { channel: "poll_result", payload: {} },
+          },
+          completeContext,
+        ),
+      ),
+    ).resolves.toMatchObject({ status: "verified" });
+    expect(completedSession).toEqual(started.session);
+  });
+
+  test("fails route attachment closed when the transport has no successor methods", async () => {
+    const provider = adapter();
+    if (
+      provider.startRouteAttachment === undefined ||
+      provider.completeRouteAttachment === undefined
+    ) {
+      throw new Error("route attachment provider unavailable");
+    }
+    await expect(
+      Effect.runPromise(provider.startRouteAttachment(attachmentStartInput, startContext)),
+    ).rejects.toBeDefined();
+
+    const capableProvider = makeHnsOwnerAdapter({
+      transport: {
+        ...transport(),
+        startRouteAttachment: () =>
+          Effect.succeed(
+            startResponseBytes("owner_authoritative_dns_txt", "_pirate.xn--pokmon-dva"),
+          ),
+      },
+      provider_configuration,
+      environments: ["staging"],
+      now: () => now,
+    });
+    if (
+      capableProvider.startRouteAttachment === undefined ||
+      capableProvider.completeRouteAttachment === undefined
+    ) {
+      throw new Error("route attachment provider unavailable");
+    }
+    const started = await Effect.runPromise(
+      capableProvider.startRouteAttachment(attachmentStartInput, startContext),
+    );
+    await expect(
+      Effect.runPromise(
+        capableProvider.completeRouteAttachment(
+          {
+            session: started.session,
+            submission: { channel: "poll_result", payload: {} },
+          },
+          completeContext,
+        ),
+      ),
+    ).rejects.toBeDefined();
+  });
+
   test("supports only HNS/poll_result and returns exact raw bytes without authority digests", async () => {
     const bytes = response();
     const registry = await Effect.runPromise(

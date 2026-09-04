@@ -616,6 +616,14 @@ export function makeControlPlaneHnsRootImportRepository(
         const db = yield* ControlPlaneDb;
         return yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
+            const communityOrigin = (
+              input as HnsRootImportActivationRecord & {
+                readonly community_origin?: Readonly<{
+                  readonly attachment_intent_id: string;
+                  readonly route_binding_id: string;
+                }>;
+              }
+            ).community_origin;
             const replayResult = yield* transaction.execute<Row>({
               label: "hns.root-import.activate.find-replay",
               text: `SELECT *
@@ -635,7 +643,10 @@ export function makeControlPlaneHnsRootImportRepository(
             if (replay !== null) {
               if (
                 replay.request_sha256 !== input.request_sha256 ||
-                replay.creation_intent_id !== input.input.creation_intent_id ||
+                (communityOrigin === undefined
+                  ? replay.creation_intent_id !== input.input.creation_intent_id
+                  : replay.origin_kind !== "community_attachment" ||
+                    replay.attachment_intent_id !== communityOrigin.attachment_intent_id) ||
                 replay.community_id !== input.community_id ||
                 positiveInteger(replay.expected_session_revision) !== input.input.expected_revision
               ) {
@@ -647,7 +658,34 @@ export function makeControlPlaneHnsRootImportRepository(
               const replayAppActivationId = stringValue(replay, "app_host_activation_id");
               const replaySaleActivationId = stringValue(replay, "sale_namespace_activation_id");
               const replaySaleHash = stringValue(replay, "sale_namespace_activation_sha256");
-              const root = yield* loadSession(transaction, input.input, false, options);
+              const replaySession =
+                communityOrigin === undefined
+                  ? null
+                  : oneRow(
+                      yield* transaction.execute<Row>({
+                        label: "hns.root-import.activate.load-community-replay",
+                        text: `SELECT status,revision,root_label FROM hns_root_import_sessions
+                            WHERE actor_id=$1 AND community_id=$2 AND attachment_intent_id=$3
+                              AND root_import_session_id=$4`,
+                        values: [
+                          input.input.actor_id,
+                          input.community_id,
+                          communityOrigin.attachment_intent_id,
+                          input.input.root_import_session_id,
+                        ],
+                        readonly: false,
+                      }),
+                    );
+              const root =
+                communityOrigin === undefined
+                  ? yield* loadSession(transaction, input.input, false, options)
+                  : replaySession === null || replaySession === undefined
+                    ? null
+                    : {
+                        status: replaySession.status,
+                        revision: positiveInteger(replaySession.revision),
+                        root_label: stringValue(replaySession, "root_label"),
+                      };
               if (
                 revision === null ||
                 replayCommunityId === null ||
@@ -658,7 +696,8 @@ export function makeControlPlaneHnsRootImportRepository(
                 !/^[0-9a-f]{64}$/u.test(replaySaleHash) ||
                 root === null ||
                 root.status !== "activated" ||
-                root.revision !== revision
+                root.revision !== revision ||
+                root.root_label === null
               ) {
                 return yield* Effect.fail(storageFailure());
               }
@@ -691,13 +730,18 @@ export function makeControlPlaneHnsRootImportRepository(
                        FROM hns_root_import_sessions AS session
                        LEFT JOIN hns_root_import_observation_jobs AS observation
                          ON observation.observation_job_id = session.observation_job_id
-                      WHERE session.actor_id=$1 AND session.creation_intent_id=$2
-                        AND session.root_import_session_id=$3
+                      WHERE session.actor_id=$1 AND session.root_import_session_id=$3
+                        AND ${
+                          communityOrigin === undefined
+                            ? "session.origin_kind='creation_intent' AND session.creation_intent_id=$2"
+                            : "session.origin_kind='community_attachment' AND session.community_id=$2 AND session.attachment_intent_id=$4"
+                        }
                       FOR UPDATE OF session`,
               values: [
                 input.input.actor_id,
-                input.input.creation_intent_id,
+                communityOrigin === undefined ? input.input.creation_intent_id : input.community_id,
                 input.input.root_import_session_id,
+                ...(communityOrigin === undefined ? [] : [communityOrigin.attachment_intent_id]),
               ],
               readonly: false,
             });
@@ -730,22 +774,126 @@ export function makeControlPlaneHnsRootImportRepository(
             ) {
               return { kind: "conflict" } as const;
             }
-            const intentResult = yield* transaction.execute<Row>({
-              label: "hns.root-import.activate.lock-committed-intent",
-              text: `SELECT intent_id
+            if (communityOrigin === undefined) {
+              const intentResult = yield* transaction.execute<Row>({
+                label: "hns.root-import.activate.lock-committed-intent",
+                text: `SELECT intent_id
                        FROM community_creation_intents
                       WHERE intent_id=$1 AND actor_id=$2 AND status='committed'
                         AND committed_community_id=$3
                       FOR SHARE`,
-              values: [input.input.creation_intent_id, input.input.actor_id, input.community_id],
-              readonly: false,
-            });
-            const committedIntent = oneRow(intentResult);
-            if (
-              committedIntent === undefined ||
-              committedIntent?.intent_id !== input.input.creation_intent_id
-            ) {
-              return { kind: "conflict" } as const;
+                values: [input.input.creation_intent_id, input.input.actor_id, input.community_id],
+                readonly: false,
+              });
+              const committedIntent = oneRow(intentResult);
+              if (
+                committedIntent === undefined ||
+                committedIntent?.intent_id !== input.input.creation_intent_id
+              ) {
+                return { kind: "conflict" } as const;
+              }
+            } else {
+              const attachmentResult = yield* transaction.execute<Row>({
+                label: "hns.root-import.activate.lock-route-attachment",
+                text: `SELECT intent.revision,intent.status,state.generation,
+                              result.evidence_ref
+                         FROM community_route_attachment_intents AS intent
+                         JOIN community_route_attachment_requirement_states AS state
+                           ON state.attachment_intent_id=intent.attachment_intent_id
+                          AND state.requirement_kind='namespace_ownership'
+                         JOIN community_route_attachment_ceremony_results AS result
+                           ON result.ceremony_intent_id=state.current_ceremony_intent_id
+                        WHERE intent.actor_id=$1 AND intent.community_id=$2
+                          AND intent.attachment_intent_id=$3
+                          AND has_community_route_authority(intent.community_id,intent.actor_id)
+                        FOR UPDATE OF intent,state`,
+                values: [
+                  input.input.actor_id,
+                  input.community_id,
+                  communityOrigin.attachment_intent_id,
+                ],
+                readonly: false,
+              });
+              const attachment = oneRow(attachmentResult);
+              const attachmentRevision =
+                attachment === null || attachment === undefined
+                  ? null
+                  : positiveInteger(attachment.revision);
+              const attachmentGeneration =
+                attachment === null || attachment === undefined
+                  ? null
+                  : positiveInteger(attachment.generation);
+              const attachmentEvidence =
+                attachment === null || attachment === undefined
+                  ? null
+                  : stringValue(attachment, "evidence_ref");
+              if (
+                attachmentRevision === null ||
+                attachmentGeneration === null ||
+                attachmentEvidence === null ||
+                attachment?.status !== "commit_ready"
+              ) {
+                return { kind: "conflict" } as const;
+              }
+              const routeBinding = yield* transaction.execute({
+                label: "hns.root-import.activate.insert-route-binding",
+                text: `INSERT INTO community_canonical_route_bindings (
+                  route_binding_id,community_id,family,root_label,root_label_display,
+                  ownership_status,route_lifecycle_status,binding_generation,
+                  verified_evidence_ref,route_authority_kind
+                ) VALUES ($1,$2,'hns',$3,$3,'verified','active',$4::bigint,$5,
+                  'verified_namespace_v1')`,
+                values: [
+                  communityOrigin.route_binding_id,
+                  input.community_id,
+                  readiness.result.root_label,
+                  attachmentGeneration,
+                  attachmentEvidence,
+                ],
+                readonly: false,
+              });
+              if (routeBinding.rowCount !== 1) return yield* Effect.fail(storageFailure());
+              const communityBinding = yield* transaction.execute({
+                label: "hns.root-import.activate.bind-community-route",
+                text: `UPDATE communities SET canonical_route_binding_id=$1,updated_at=clock_timestamp()
+                        WHERE community_id=$2 AND canonical_route_binding_id IS NULL
+                          AND status='active' AND route_authority_version='optional_route_v2'`,
+                values: [communityOrigin.route_binding_id, input.community_id],
+                readonly: false,
+              });
+              if (communityBinding.rowCount !== 1) return yield* Effect.fail(storageFailure());
+              const committedResource = JSON.stringify({
+                authority_version: "optional_route_v2",
+                community_id: input.community_id,
+                href: `/c/${input.community_id}`,
+                canonical_route: {
+                  family: "hns",
+                  root_label: readiness.result.root_label,
+                  root_label_display: readiness.result.root_label,
+                  path_segment: `app.${readiness.result.root_label}`,
+                  href: `/c/app.${readiness.result.root_label}`,
+                  app_host: null,
+                },
+              });
+              const attachmentCommit = yield* transaction.execute({
+                label: "hns.root-import.activate.commit-route-attachment",
+                text: `UPDATE community_route_attachment_intents
+                          SET status='committed',revision=revision+1,
+                              committed_route_binding_id=$1,committed_resource=$2::jsonb,
+                              updated_at=clock_timestamp()
+                        WHERE actor_id=$3 AND community_id=$4 AND attachment_intent_id=$5
+                          AND status='commit_ready' AND revision=$6::bigint`,
+                values: [
+                  communityOrigin.route_binding_id,
+                  committedResource,
+                  input.input.actor_id,
+                  input.community_id,
+                  communityOrigin.attachment_intent_id,
+                  attachmentRevision,
+                ],
+                readonly: false,
+              });
+              if (attachmentCommit.rowCount !== 1) return yield* Effect.fail(storageFailure());
             }
             const routeResult = yield* transaction.execute<Row>({
               label: "hns.root-import.activate.lock-route",
@@ -756,7 +904,11 @@ export function makeControlPlaneHnsRootImportRepository(
                        JOIN community_canonical_route_bindings AS binding
                          ON binding.route_binding_id = community.canonical_route_binding_id
                       WHERE community.community_id=$1
-                        AND community.created_by_user_id=$2
+                        AND ${
+                          communityOrigin === undefined
+                            ? "community.created_by_user_id=$2"
+                            : "has_community_route_authority(community.community_id,$2)"
+                        }
                         AND community.status='active'
                         AND binding.family='hns' AND binding.root_label=$3
                         AND binding.ownership_status='verified'
@@ -1153,17 +1305,20 @@ export function makeControlPlaneHnsRootImportRepository(
               label: "hns.root-import.activate.insert-operation",
               text: `INSERT INTO hns_root_import_activation_operations (
                        operation_id,root_import_session_id,actor_id,creation_intent_id,
+                       origin_kind,attachment_intent_id,
                        idempotency_key,request_sha256,expected_session_revision,community_id,
                        dns_zone_activation_id,app_host_activation_id,
                        sale_namespace_activation_id,sale_namespace_activation_sha256,
                        result_session_revision,committed_at
-                     ) VALUES ($1,$2,$3,$4,$5,$6,$7::bigint,$8,$9,$10,$11,$12,
-                       $7::bigint+1,$13::timestamptz)`,
+                     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::bigint,$10,$11,$12,$13,$14,
+                       $9::bigint+1,$15::timestamptz)`,
               values: [
                 input.operation_id,
                 input.input.root_import_session_id,
                 input.input.actor_id,
-                input.input.creation_intent_id,
+                communityOrigin === undefined ? input.input.creation_intent_id : null,
+                communityOrigin === undefined ? "creation_intent" : "community_attachment",
+                communityOrigin?.attachment_intent_id ?? null,
                 input.input.idempotency_key,
                 input.request_sha256,
                 input.input.expected_revision,

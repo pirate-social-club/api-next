@@ -65,6 +65,27 @@ const session = {
   upstream_session_ref: "upstream-1",
   expires_at: "2026-08-22T00:00:00.000Z",
 };
+const attachmentInput = {
+  operation_kind: "route_attachment" as const,
+  actor_id: "user-1",
+  community_id: "community-1",
+  attachment_intent_id: "attachment-1",
+  ceremony_intent_id: "attachment-ceremony-1",
+  requirement_hash: "7".repeat(64),
+  generation: 2,
+  request_hash: "8".repeat(64),
+  provider_binding_hash: "9".repeat(64),
+  provider_configuration: input.provider_configuration,
+  protocol_version: "hns-txt-v1",
+  environment: "staging",
+  route: input.route,
+};
+const attachmentSession = {
+  ...attachmentInput,
+  provider_id: "hns.owner.v1",
+  upstream_session_ref: "upstream-1",
+  expires_at: "2026-08-22T00:00:00.000Z",
+};
 
 const routeWire: HnsOwnerRouteRevalidationStartWireV1 = {
   operation_kind: "route_revalidation",
@@ -251,6 +272,55 @@ describe("HNS owner service-binding transport", () => {
     expect(new TextDecoder().decode(calls[0]?.init?.body as Uint8Array)).toBe(
       JSON.stringify({ session, payload: {} }),
     );
+  });
+
+  test("sends community-keyed attachment bytes without a creation identifier", async () => {
+    const calls: Array<{ input: string | URL; init: RequestInit | undefined }> = [];
+    const startBytes = new TextEncoder().encode(JSON.stringify(startDocument));
+    const pollBytes = new Uint8Array([4, 3, 2, 1]);
+    let call = 0;
+    const transport = makeHnsOwnerServiceBindingTransport({
+      fetch: async (request, init) => {
+        calls.push({ input: request, init });
+        call += 1;
+        return call === 1
+          ? response(startBytes)
+          : response(pollBytes, 200, "application/octet-stream");
+      },
+    });
+
+    if (
+      transport.startRouteAttachment === undefined ||
+      transport.pollRouteAttachment === undefined
+    ) {
+      throw new Error("route attachment transport unavailable");
+    }
+    await Effect.runPromise(transport.startRouteAttachment({ input: attachmentInput, context }));
+    await Effect.runPromise(
+      transport.pollRouteAttachment({ session: attachmentSession, payload: {}, context }),
+    );
+
+    const startBody = new TextDecoder().decode(calls[0]?.init?.body as Uint8Array);
+    expect(startBody).toBe(JSON.stringify(attachmentInput));
+    expect(startBody).not.toContain("creation_intent_id");
+    expect(calls[0]?.init?.headers).toEqual([
+      ["Content-Type", "application/json"],
+      ["Accept", "application/json"],
+      ["Pirate-Namespace-Session-Id", "namespace-session-1"],
+    ]);
+    expect(new TextDecoder().decode(calls[1]?.init?.body as Uint8Array)).toBe(
+      JSON.stringify({
+        operation_kind: "route_attachment",
+        session: attachmentSession,
+        payload: {},
+      }),
+    );
+    expect(calls[1]?.init?.headers).toEqual([
+      ["Content-Type", "application/json"],
+      ["Accept", "application/octet-stream"],
+      ["Pirate-Namespace-Session-Id", "namespace-session-1"],
+      ["Pirate-HNS-Observation-Id", "completion-attempt-1"],
+    ]);
   });
 
   test("maps retryable, bound-rejection, and malformed responses without fallback", async () => {

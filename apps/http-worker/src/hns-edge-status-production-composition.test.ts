@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { Effect } from "effect";
 import { makeProductionHnsEdgeStatusComposition } from "./hns-edge-status-production-composition.ts";
 
 const config = (enabled: boolean) => ({
@@ -27,6 +28,16 @@ describe("HNS edge status production composition", () => {
       namespace: {
         get: async () => null,
         put: async () => undefined,
+      },
+      renewal_status_store: {
+        load: () =>
+          Effect.succeed({
+            last_successful_tick_unix_seconds: null,
+            freshness_threshold_seconds: null,
+            active_root_count: 0,
+            healthy_root_count: 0,
+            earliest_health_valid_until_unix_seconds: null,
+          }),
       },
       clock: { nowUnixSeconds: () => 1_800_000_000 },
     });

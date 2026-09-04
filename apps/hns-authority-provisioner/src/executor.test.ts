@@ -190,6 +190,7 @@ describe("HNS authority provision executor", () => {
     expect(removed).toEqual(["newroot"]);
     expect(finalized).toMatchObject({
       outcome: "failed",
+      operation_kind: "teardown_root_v1",
       failure_code: "session_expired",
       lease_fence: 2,
     });

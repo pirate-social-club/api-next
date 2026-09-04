@@ -19,6 +19,10 @@ import {
   NamespaceOwnershipProviderStartResult,
   NamespaceOwnershipProviderUnavailable,
   NamespaceOwnershipProviderUnboundRejected,
+  RouteAttachmentOwnershipProviderCompleteInput,
+  RouteAttachmentOwnershipProviderStartInput,
+  RouteAttachmentOwnershipProviderStartResult,
+  type RouteAttachmentOwnershipSession,
 } from "./adapter.ts";
 
 type Manifest = Schema.Schema.Type<typeof NamespaceOwnershipProviderManifest>;
@@ -128,7 +132,9 @@ function inputSupported(
 
 function compatibleSession(
   manifest: Manifest,
-  session: Schema.Schema.Type<typeof NamespaceOwnershipProviderStartResult>["session"],
+  session:
+    | Schema.Schema.Type<typeof NamespaceOwnershipProviderStartResult>["session"]
+    | RouteAttachmentOwnershipSession,
   now: number,
 ): boolean {
   return (
@@ -137,6 +143,124 @@ function compatibleSession(
     manifest.protocol_versions.includes(session.protocol_version) &&
     Date.parse(session.expires_at) > now
   );
+}
+
+type RouteAttachmentStart = NonNullable<NamespaceOwnershipProviderAdapter["startRouteAttachment"]>;
+type RouteAttachmentComplete = NonNullable<
+  NamespaceOwnershipProviderAdapter["completeRouteAttachment"]
+>;
+
+function guardRouteAttachmentStart(
+  start: RouteAttachmentStart,
+  manifest: Manifest,
+  now: () => number,
+): RouteAttachmentStart {
+  return (untrustedInput, untrustedContext) => {
+    const input = Schema.decodeUnknownOption(
+      RouteAttachmentOwnershipProviderStartInput,
+      exactParseOptions,
+    )(untrustedInput);
+    const context = Schema.decodeUnknownOption(
+      NamespaceOwnershipProviderStartContext,
+      exactParseOptions,
+    )(untrustedContext);
+    if (
+      Option.isNone(input) ||
+      Option.isNone(context) ||
+      !inputSupported(manifest, input.value) ||
+      !manifest.protocol_versions.includes(input.value.protocol_version)
+    ) {
+      return Effect.fail(unboundRejected(manifest.provider_id, "start"));
+    }
+    return Effect.suspend(() => start(input.value, context.value)).pipe(
+      Effect.timeout(manifest.operation_deadlines.start_ms),
+      Effect.catchTag("TimeoutError", () =>
+        Effect.fail(unavailable(manifest.provider_id, "start")),
+      ),
+      Effect.mapError((error) => safeFailure(manifest.provider_id, "start", error)),
+      Effect.catchDefect(() => Effect.fail(invalidResponse(manifest.provider_id, "start"))),
+      Effect.flatMap((result) => {
+        const decoded = Schema.decodeUnknownOption(
+          RouteAttachmentOwnershipProviderStartResult,
+          exactParseOptions,
+        )(result);
+        if (Option.isNone(decoded)) {
+          return Effect.fail(invalidResponse(manifest.provider_id, "start"));
+        }
+        const session = decoded.value.session;
+        if (
+          session.operation_kind !== input.value.operation_kind ||
+          session.actor_id !== input.value.actor_id ||
+          session.community_id !== input.value.community_id ||
+          session.attachment_intent_id !== input.value.attachment_intent_id ||
+          session.ceremony_intent_id !== input.value.ceremony_intent_id ||
+          session.requirement_hash !== input.value.requirement_hash ||
+          session.generation !== input.value.generation ||
+          session.request_hash !== input.value.request_hash ||
+          session.provider_binding_hash !== input.value.provider_binding_hash ||
+          session.protocol_version !== input.value.protocol_version ||
+          session.environment !== input.value.environment ||
+          !sameConfiguration(session.provider_configuration, input.value.provider_configuration) ||
+          !sameRoute(session.route, input.value.route) ||
+          !compatibleSession(manifest, session, now()) ||
+          decoded.value.presentation.session_id !== session.upstream_session_ref
+        ) {
+          return Effect.fail(invalidResponse(manifest.provider_id, "start"));
+        }
+        return Effect.succeed(decoded.value);
+      }),
+    );
+  };
+}
+
+function guardRouteAttachmentComplete(
+  complete: RouteAttachmentComplete,
+  manifest: Manifest,
+  now: () => number,
+): RouteAttachmentComplete {
+  return (untrustedInput, untrustedContext) => {
+    const input = Schema.decodeUnknownOption(
+      RouteAttachmentOwnershipProviderCompleteInput,
+      exactParseOptions,
+    )(untrustedInput);
+    const context = Schema.decodeUnknownOption(
+      NamespaceOwnershipProviderCompleteContext,
+      exactParseOptions,
+    )(untrustedContext);
+    if (
+      Option.isNone(input) ||
+      Option.isNone(context) ||
+      !compatibleSession(manifest, input.value.session, now()) ||
+      !manifest.submission_channels.includes(input.value.submission.channel)
+    ) {
+      return Effect.fail(unboundRejected(manifest.provider_id, "complete"));
+    }
+    return Effect.suspend(() => complete(input.value, context.value)).pipe(
+      Effect.timeout(manifest.operation_deadlines.complete_ms),
+      Effect.catchTag("TimeoutError", () =>
+        Effect.fail(unavailable(manifest.provider_id, "complete")),
+      ),
+      Effect.mapError((error) => safeFailure(manifest.provider_id, "complete", error)),
+      Effect.catchDefect(() => Effect.fail(invalidResponse(manifest.provider_id, "complete"))),
+      Effect.flatMap((result) => {
+        const currentTime = now();
+        const decoded = Schema.decodeUnknownOption(
+          NamespaceOwnershipProviderCompleteResult,
+          exactParseOptions,
+        )(result);
+        if (
+          Option.isNone(decoded) ||
+          (decoded.value.status === "verified" &&
+            (Date.parse(decoded.value.observed_at) > currentTime ||
+              (decoded.value.expires_at !== null &&
+                Date.parse(decoded.value.expires_at) <= currentTime)))
+        ) {
+          return Effect.fail(invalidResponse(manifest.provider_id, "complete"));
+        }
+        return Effect.succeed(decoded.value);
+      }),
+    );
+  };
 }
 
 function immutableManifest(manifest: Manifest): Manifest {
@@ -298,6 +422,24 @@ function guardAdapter(
         }),
       );
     },
+    ...(adapter.startRouteAttachment === undefined
+      ? {}
+      : {
+          startRouteAttachment: guardRouteAttachmentStart(
+            adapter.startRouteAttachment,
+            manifest,
+            now,
+          ),
+        }),
+    ...(adapter.completeRouteAttachment === undefined
+      ? {}
+      : {
+          completeRouteAttachment: guardRouteAttachmentComplete(
+            adapter.completeRouteAttachment,
+            manifest,
+            now,
+          ),
+        }),
   };
 }
 

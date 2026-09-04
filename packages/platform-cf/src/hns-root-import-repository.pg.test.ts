@@ -1199,6 +1199,78 @@ suite("Postgres 17 HNS root-import repository", () => {
         dns_operation_state: "finalized",
       });
       expect(state.rows[0]?.health_seconds_remaining).toBeGreaterThan(3_590);
+
+      const scheduled = await admin.query<{
+        eligible_roots: number;
+        enqueued_roots: number;
+      }>("SELECT * FROM schedule_hns_root_health_renewals_v1(25,259200,7200)");
+      expect(scheduled.rows).toMatchObject([{ eligible_roots: 1, enqueued_roots: 1 }]);
+      const renewalClaim = await admin.query<{
+        observation_job_id: string;
+        operation_kind: string;
+        request_sha256: string;
+        lease_fence: string;
+      }>("SELECT * FROM claim_hns_root_health_renewal_job_v1($1,$2)", ["authority-executor", 60]);
+      expect(renewalClaim.rows).toMatchObject([{ operation_kind: "renew_health_v1" }]);
+      const renewalReadiness = await makeReadinessArtifact({
+        ownershipResultHash,
+        publishPlanSha256: sha256(provisioned.planBytes),
+        provisionResultSha256: sha256(provisioned.resultBytes),
+      });
+      const renewed = await admin.query<{
+        outcome: string;
+        root_import_session_id: string;
+        session_revision: string;
+      }>("SELECT * FROM finalize_hns_root_health_renewal_job_v1($1,$2,$3,$4,$5,$6,$7,$8)", [
+        renewalClaim.rows[0]?.observation_job_id,
+        "authority-executor",
+        Number(renewalClaim.rows[0]?.lease_fence),
+        renewalClaim.rows[0]?.request_sha256,
+        "ready",
+        Buffer.from(renewalReadiness.result_bytes),
+        renewalReadiness.result_sha256,
+        null,
+      ]);
+      expect(renewed.rows).toEqual([
+        { outcome: "ready", root_import_session_id: "root-import-session", session_revision: "6" },
+      ]);
+      expect(
+        (
+          await admin.query<{ health_generation: string }>(
+            `SELECT max(health_generation) AS health_generation
+               FROM hns_dns_zone_health_observations
+              WHERE dns_zone_activation_id='dns-root-import'`,
+          )
+        ).rows[0]?.health_generation,
+      ).toBe("2");
+      const heartbeat = await admin.query<{
+        fresh: boolean;
+        freshness_threshold_seconds: number;
+      }>(
+        `SELECT last_successful_tick_at > clock_timestamp()-freshness_threshold_seconds*interval '1 second' AS fresh,
+                freshness_threshold_seconds
+           FROM hns_root_health_renewal_scheduler_heartbeat`,
+      );
+      expect(heartbeat.rows).toEqual([{ fresh: true, freshness_threshold_seconds: 7200 }]);
+
+      await admin.query("SELECT * FROM schedule_hns_root_health_renewals_v1(25,259200,7200)");
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        const boundedClaim = await admin.query<{
+          observation_job_id: string;
+          request_sha256: string;
+          lease_fence: string;
+        }>("SELECT * FROM claim_hns_root_health_renewal_job_v1($1,$2)", ["authority-executor", 60]);
+        const bounded = await admin.query<{ outcome: string }>(
+          "SELECT * FROM finalize_hns_root_health_renewal_job_v1($1,$2,$3,$4,'retry',NULL,NULL,'authority_unavailable')",
+          [
+            boundedClaim.rows[0]?.observation_job_id,
+            "authority-executor",
+            Number(boundedClaim.rows[0]?.lease_fence),
+            boundedClaim.rows[0]?.request_sha256,
+          ],
+        );
+        expect(bounded.rows[0]?.outcome).toBe(attempt < 3 ? "retry" : "failed");
+      }
       expect(await Effect.runPromise(Effect.scoped(store.activate(activation)))).toMatchObject({
         kind: "replayed",
         response: { replayed: true, revision: 6 },
@@ -1229,4 +1301,224 @@ suite("Postgres 17 HNS root-import repository", () => {
       ).toEqual({ kind: "not_found" });
     });
   }, 20_000);
+
+  test("atomically commits a community attachment before activating its HNS services", async () => {
+    await withSchema(async (connection, admin) => {
+      const store = makeControlPlaneHnsRootImportStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      const provisioned = await provisionRootImport(store, admin);
+      await admin.query("BEGIN");
+      try {
+        await admin.query("SET CONSTRAINTS ALL DEFERRED");
+        await admin.query("SET LOCAL session_replication_role = replica");
+        await admin.query(
+          `INSERT INTO communities (community_id,display_name,status,created_by_user_id,
+             canonical_route_binding_id,route_authority_version,route_slug,created_at,updated_at)
+           VALUES ('community_123e4567-e89b-42d3-a456-426614174099','Attachment import','active','actor-root-import',
+             NULL,'optional_route_v2',NULL,clock_timestamp(),clock_timestamp())`,
+        );
+        await admin.query(
+          `INSERT INTO community_route_authority_grants (grant_id,community_id,
+             principal_user_id,authority,source_kind,status,granted_at,granted_by_user_id)
+           VALUES ('attachment-import-grant','community_123e4567-e89b-42d3-a456-426614174099','actor-root-import',
+             'manage_routes','creator_owner','active',clock_timestamp(),'actor-root-import')`,
+        );
+        await admin.query(
+          `INSERT INTO community_route_attachment_intents (
+             attachment_intent_id,community_id,actor_id,authority_grant_id,
+             create_idempotency_key,create_request_hash,revision,status,family,root_label,
+             root_label_display,requirement_hash,provider_id,provider_binding_hash,
+             provider_configuration_kind,provider_configuration_ref,
+             provider_configuration_version,protocol_version,expires_at)
+           VALUES ('attachment-import','community_123e4567-e89b-42d3-a456-426614174099','actor-root-import',
+             'attachment-import-grant','attachment-create',$1,2,'commit_ready','hns','newroot',
+             'newroot',$2,'namespace-provider',$3,'managed','test-provider','v1','hns-txt-v1',$4)`,
+          [SHA_A, SHA_B, SHA_C, expiresAt],
+        );
+        await admin.query(
+          `INSERT INTO community_route_attachment_requirement_states (
+             attachment_intent_id,actor_id,requirement_kind,status,requirement_hash,
+             provider_id,provider_binding_hash,provider_configuration_kind,
+             provider_configuration_ref,provider_configuration_version,family,root_label,
+             root_label_display,path_segment,generation,current_ceremony_intent_id,satisfied_at)
+           VALUES ('attachment-import','actor-root-import','namespace_ownership','satisfied',$1,
+             'namespace-provider',$2,'managed','test-provider','v1','hns','newroot','newroot',
+             'app.newroot',1,'attachment-ceremony',clock_timestamp()-interval '1 minute')`,
+          [SHA_B, SHA_C],
+        );
+        await admin.query(
+          `INSERT INTO community_route_attachment_ceremony_attempts (
+             ceremony_intent_id,attachment_intent_id,actor_id,requirement_kind,generation,
+             requirement_hash,provider_id,provider_binding_hash,provider_configuration_kind,
+             provider_configuration_ref,provider_configuration_version,family,root_label,
+             root_label_display,path_segment,reservation_request_hash,reservation_request,expires_at)
+           VALUES ('attachment-ceremony','attachment-import','actor-root-import',
+             'namespace_ownership',1,$1,'namespace-provider',$2,'managed','test-provider','v1',
+             'hns','newroot','newroot','app.newroot',$3,'{}'::jsonb,$4)`,
+          [SHA_B, SHA_C, SHA_A, expiresAt],
+        );
+        await admin.query(
+          `INSERT INTO community_route_attachment_start_reservations (
+             reservation_id,namespace_session_id,actor_id,community_id,attachment_intent_id,
+             ceremony_intent_id,generation,expected_revision,client_idempotency_key,
+             request_hash,provider_id,provider_binding_hash,provider_configuration_kind,
+             provider_configuration_ref,provider_configuration_version,protocol_version,
+             environment,route_root_label,state,fence_token,lease_expires_at)
+           VALUES ('attachment-reservation','namespace-root-import','actor-root-import',
+             'community_123e4567-e89b-42d3-a456-426614174099','attachment-import',
+             'attachment-ceremony',1,1,'attachment-start',$1,'namespace-provider',$2,
+             'managed','test-provider','v1','hns-txt-v1','test','newroot','finalized',1,$3)`,
+          [SHA_A, SHA_C, expiresAt],
+        );
+        await admin.query(
+          `INSERT INTO community_route_attachment_namespace_sessions (
+             namespace_session_id,actor_id,community_id,attachment_intent_id,
+             ceremony_intent_id,start_reservation_id,start_fence_token,expected_revision,
+             generation,requirement_hash,request_hash,provider_id,provider_binding_hash,
+             provider_configuration_kind,provider_configuration_ref,
+             provider_configuration_version,protocol_version,environment,route_root_label,
+             upstream_session_ref,presentation_kind,presentation_payload,status,started_at,
+             completed_at,terminal_at,expires_at)
+           VALUES ('namespace-root-import','actor-root-import',
+             'community_123e4567-e89b-42d3-a456-426614174099','attachment-import',
+             'attachment-ceremony','attachment-reservation',1,1,1,$1,$2,
+             'namespace-provider',$3,'managed','test-provider','v1','hns-txt-v1','test',
+             'newroot','attachment-upstream','embedded_sdk','{}'::jsonb,'completed',
+             transaction_timestamp()-interval '2 minutes',
+             transaction_timestamp()-interval '1 minute',
+             transaction_timestamp()-interval '1 minute',$4)`,
+          [SHA_B, SHA_A, SHA_C, expiresAt],
+        );
+        await admin.query(
+          `INSERT INTO community_route_attachment_ceremony_results (
+             ceremony_intent_id,actor_id,attachment_intent_id,requirement_kind,generation,
+             callback_idempotency_key,callback_request_hash,outcome_status,result_hash,
+             evidence_ref,evidence_digest,provider_identity_digest,terminal_at,satisfied_at)
+           VALUES ('attachment-ceremony','actor-root-import','attachment-import',
+             'namespace_ownership',1,'attachment-result',$1,'satisfied',$2,
+             'attachment-evidence',$3,$3,transaction_timestamp()-interval '1 minute',
+             transaction_timestamp()-interval '1 minute')`,
+          [SHA_A, provisioned.ownershipResultHash, SHA_C],
+        );
+        await admin.query(
+          `INSERT INTO community_route_ownership_evidence (
+             evidence_ref,creation_ceremony_intent_id,verified_by_actor_id,family,root_label,
+             root_label_display,path_segment,requirement_hash,provider_id,provider_binding_hash,
+             provider_configuration_version,provider_identity_digest,evidence_digest,
+             binding_generation,verified_at,expires_at,origin,route_attachment_ceremony_intent_id)
+           VALUES ('attachment-evidence',NULL,'actor-root-import','hns','newroot','newroot',
+             'app.newroot',$1,'namespace-provider',$2,'v1',$3,$3,1,
+             clock_timestamp()-interval '1 minute',$4,'route_attachment','attachment-ceremony')`,
+          [SHA_B, SHA_C, SHA_C, expiresAt],
+        );
+        await admin.query(
+          `UPDATE hns_root_import_sessions SET origin_kind='community_attachment',
+             creation_intent_id=NULL,ceremony_intent_id=NULL,
+             community_id='community_123e4567-e89b-42d3-a456-426614174099',attachment_intent_id='attachment-import'
+           WHERE root_import_session_id='root-import-session'`,
+        );
+        await admin.query("COMMIT");
+      } catch (error) {
+        await admin.query("ROLLBACK");
+        throw error;
+      }
+      const observationBytes = new TextEncoder().encode('{"observe":"community"}');
+      const observation = await admin.query<{ outcome: string }>(
+        `SELECT * FROM begin_hns_root_import_observation_v1(
+          $1,$2,$3,$4,$5,$6,$7,$8,$9::bytea,$10)`,
+        [
+          "actor-root-import",
+          "community_123e4567-e89b-42d3-a456-426614174099",
+          "root-import-session",
+          3,
+          "community-observe",
+          SHA_A,
+          provisioned.ownershipResultHash,
+          "community-observation",
+          Buffer.from(observationBytes),
+          sha256(observationBytes),
+        ],
+      );
+      expect(observation.rows[0]?.outcome).toBe("observing");
+      const claim = await admin.query<{ lease_fence: string; request_sha256: string }>(
+        "SELECT * FROM claim_hns_root_import_observation_job_v1($1,$2)",
+        ["authority-executor", 60],
+      );
+      const readiness = await makeReadinessArtifact({
+        ownershipResultHash: provisioned.ownershipResultHash,
+        publishPlanSha256: sha256(provisioned.planBytes),
+        provisionResultSha256: sha256(provisioned.resultBytes),
+      });
+      await admin.query(
+        "SELECT * FROM finalize_hns_root_import_observation_job_v1($1,$2,$3,$4,$5,$6,$7,$8)",
+        [
+          "community-observation",
+          "authority-executor",
+          Number(claim.rows[0]?.lease_fence),
+          claim.rows[0]?.request_sha256,
+          "ready",
+          Buffer.from(readiness.result_bytes),
+          readiness.result_sha256,
+          null,
+        ],
+      );
+      const activationRecord = {
+        input: {
+          actor_id: "actor-root-import",
+          actor_kind: "user",
+          creation_intent_id: "attachment-import",
+          root_import_session_id: "root-import-session",
+          expected_revision: 5,
+          idempotency_key: "activate-community-import",
+          publish_plan_sha256: sha256(provisioned.planBytes),
+          readiness_result_sha256: readiness.result_sha256,
+          acknowledged_complete_resource_replacement: true,
+        },
+        request_sha256: SHA_B,
+        community_id: "community_123e4567-e89b-42d3-a456-426614174099",
+        dns_zone_activation_id: "dns-community-import",
+        app_host_activation_id: "app-community-import",
+        sale_namespace_activation_id: "sale-community-import",
+        operation_id: "community-import-activation",
+        community_origin: {
+          attachment_intent_id: "attachment-import",
+          route_binding_id: "route-community-import",
+        },
+      } as Parameters<typeof store.activate>[0] & {
+        community_origin: {
+          attachment_intent_id: string;
+          route_binding_id: string;
+        };
+      };
+      const activated = await Effect.runPromise(Effect.scoped(store.activate(activationRecord)));
+      expect(activated).toMatchObject({
+        kind: "activated",
+        response: { status: "activated", revision: 6 },
+      });
+      expect(
+        await Effect.runPromise(Effect.scoped(store.activate(activationRecord))),
+      ).toMatchObject({
+        kind: "replayed",
+        response: { status: "activated", revision: 6, replayed: true },
+      });
+      const state = await admin.query(
+        `SELECT community.canonical_route_binding_id,intent.status AS attachment_status,
+                session.status AS import_status,app.normalized_host,sale.canonical_root
+           FROM communities AS community
+           JOIN community_route_attachment_intents AS intent ON intent.community_id=community.community_id
+           JOIN hns_root_import_sessions AS session ON session.attachment_intent_id=intent.attachment_intent_id
+           JOIN hns_community_app_host_activation_current AS app ON app.community_id=community.community_id
+           JOIN community_handle_sale_namespace_activation_current AS sale ON sale.community_id=community.community_id
+          WHERE community.community_id='community_123e4567-e89b-42d3-a456-426614174099'`,
+      );
+      expect(state.rows[0]).toMatchObject({
+        canonical_route_binding_id: "route-community-import",
+        attachment_status: "committed",
+        import_status: "activated",
+        normalized_host: "app.newroot",
+        canonical_root: "newroot",
+      });
+    });
+  }, 30_000);
 });

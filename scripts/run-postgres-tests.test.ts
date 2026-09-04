@@ -94,7 +94,7 @@ describe("PostgreSQL test discovery", () => {
       .filter((file) => file.length > 0);
     const partition = partitionPostgresTestFiles(files);
 
-    expect(files).toHaveLength(52);
+    expect(files).toHaveLength(53);
     expect(partition.isolated).toEqual([
       "packages/platform-cf/src/namespace-ownership-persistence.pg.test.ts",
     ]);
@@ -102,6 +102,9 @@ describe("PostgreSQL test discovery", () => {
     expect(partition.general).not.toContain(partition.isolated[0]);
     expect(partition.general).toContain(
       "packages/platform-cf/src/hns-root-import-repository.pg.test.ts",
+    );
+    expect(partition.general).toContain(
+      "packages/platform-cf/src/hns-community-root-import-repository.pg.test.ts",
     );
   });
 });
