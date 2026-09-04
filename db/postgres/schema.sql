@@ -1876,14 +1876,6 @@ CREATE FUNCTION data_registration_pins_are_ready(operation_id text) RETURNS bool
       AND NOT EXISTS (
         SELECT 1
         FROM data_registration_pin_verifications primary_pin
-        JOIN data_registration_pin_verifications redundant_pin
-          ON redundant_pin.registration_operation_id=primary_pin.registration_operation_id
-         AND redundant_pin.artifact_id=primary_pin.artifact_id
-         AND redundant_pin.role='redundant' AND redundant_pin.outcome='verified'
-         AND redundant_pin.cid=primary_pin.cid
-         AND redundant_pin.canonical_sha256=primary_pin.canonical_sha256
-         AND redundant_pin.byte_length=primary_pin.byte_length
-         AND redundant_pin.provider_id<>primary_pin.provider_id
         JOIN data_registration_pin_verifications gateway
           ON gateway.registration_operation_id=primary_pin.registration_operation_id
          AND gateway.artifact_id=primary_pin.artifact_id
@@ -1891,10 +1883,11 @@ CREATE FUNCTION data_registration_pins_are_ready(operation_id text) RETURNS bool
          AND gateway.cid=primary_pin.cid
          AND gateway.canonical_sha256=primary_pin.canonical_sha256
          AND gateway.byte_length=primary_pin.byte_length
-         AND gateway.provider_id NOT IN (primary_pin.provider_id,redundant_pin.provider_id)
+         AND gateway.provider_id<>primary_pin.provider_id
         WHERE primary_pin.registration_operation_id=operation_id
           AND primary_pin.artifact_id=artifact.artifact_id
-          AND primary_pin.role='primary' AND primary_pin.outcome='verified'
+          AND primary_pin.role='primary' AND primary_pin.provider_id='filebase'
+          AND primary_pin.outcome='verified'
           AND primary_pin.canonical_sha256=artifact.canonical_sha256
           AND primary_pin.byte_length=artifact.byte_length
       )
@@ -29633,13 +29626,13 @@ CREATE TRIGGER media_song_lyrics_insert_guard BEFORE INSERT ON media_song_lyrics
 
 CREATE TRIGGER media_song_reservation_update_guard BEFORE UPDATE ON media_upload_reservations FOR EACH ROW WHEN ((old.media_kind = 'song'::text)) EXECUTE FUNCTION guard_media_reservation_update();
 
-CREATE TRIGGER media_song_submission_update_guard BEFORE UPDATE ON media_post_submissions FOR EACH ROW WHEN ((old.media_kind = 'song'::text)) EXECUTE FUNCTION guard_media_submission_update();
+CREATE TRIGGER media_song_submission_update_guard BEFORE UPDATE ON media_post_submissions FOR EACH ROW WHEN (((old.media_kind = 'song'::text) AND (NOT (new.current_lyrics_revision IS DISTINCT FROM old.current_lyrics_revision)) AND (NOT (new.workflow_replacement_sequence IS DISTINCT FROM old.workflow_replacement_sequence)) AND (NOT (((old.status = 'processing'::text) AND (old.phase = 'awaiting_upload'::text) AND (new.status = 'processing'::text) AND (new.phase = 'finalize'::text)) OR ((old.status = 'processing'::text) AND (old.phase = 'finalize'::text) AND (new.status = 'processing'::text) AND (new.phase = 'analysis'::text) AND (new.audio_revision = (old.audio_revision + 1))))))) EXECUTE FUNCTION guard_media_submission_update();
 
 CREATE TRIGGER media_submission_command_replays_active_persona BEFORE INSERT ON media_submission_command_replays FOR EACH ROW EXECUTE FUNCTION require_active_replay_persona();
 
 CREATE TRIGGER media_submission_command_replays_append_only BEFORE DELETE OR UPDATE ON media_submission_command_replays FOR EACH ROW EXECUTE FUNCTION reject_media_append_only_change();
 
-CREATE CONSTRAINT TRIGGER media_submission_event_pair AFTER UPDATE ON media_post_submissions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN ((new.media_kind = 'song'::text)) EXECUTE FUNCTION validate_media_submission_event_pair();
+CREATE CONSTRAINT TRIGGER media_submission_event_pair AFTER UPDATE ON media_post_submissions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (((new.media_kind = 'song'::text) AND (NOT (new.current_lyrics_revision IS DISTINCT FROM old.current_lyrics_revision)) AND (NOT (new.workflow_replacement_sequence IS DISTINCT FROM old.workflow_replacement_sequence)) AND (NOT ((old.status = 'processing'::text) AND (old.phase = 'publish'::text) AND (new.status = 'published'::text))) AND (NOT (((old.status = 'processing'::text) AND (old.phase = 'awaiting_upload'::text) AND (new.status = 'processing'::text) AND (new.phase = 'finalize'::text)) OR ((old.status = 'processing'::text) AND (old.phase = 'finalize'::text) AND (new.status = 'processing'::text) AND (new.phase = 'analysis'::text) AND (new.audio_revision = (old.audio_revision + 1))))))) EXECUTE FUNCTION validate_media_submission_event_pair();
 
 CREATE TRIGGER media_submission_events_append_only BEFORE DELETE OR UPDATE ON media_submission_events FOR EACH ROW EXECUTE FUNCTION reject_media_append_only_change();
 
