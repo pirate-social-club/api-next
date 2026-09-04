@@ -20247,6 +20247,60 @@ CREATE TABLE community_route_attachment_ceremony_results (
     CONSTRAINT community_route_attachment_ceremony_results_result_hash_check CHECK ((result_hash ~ '^[0-9a-f]{64}$'::text))
 );
 
+CREATE TABLE community_route_attachment_completion_attempts (
+    completion_attempt_id text NOT NULL,
+    namespace_session_id text NOT NULL,
+    actor_id text NOT NULL,
+    community_id text NOT NULL,
+    attachment_intent_id text NOT NULL,
+    ceremony_intent_id text NOT NULL,
+    expected_revision bigint NOT NULL,
+    attempt_number integer NOT NULL,
+    idempotency_key text NOT NULL,
+    completion_request_sha256 text NOT NULL,
+    evidence_ref text NOT NULL,
+    state text NOT NULL,
+    fence_token bigint NOT NULL,
+    lease_expires_at timestamp with time zone NOT NULL,
+    terminal_status text,
+    result_hash text,
+    terminal_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT community_route_attachment_comp_completion_request_sha256_check CHECK ((completion_request_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_attachment_completion_a_expected_revision_check CHECK ((expected_revision > 0)),
+    CONSTRAINT community_route_attachment_completion_att_terminal_status_check CHECK ((terminal_status = ANY (ARRAY['verified'::text, 'rejected'::text, 'expired'::text]))),
+    CONSTRAINT community_route_attachment_completion_atte_attempt_number_check CHECK (((attempt_number >= 1) AND (attempt_number <= 3))),
+    CONSTRAINT community_route_attachment_completion_attempt_fence_token_check CHECK ((fence_token > 0)),
+    CONSTRAINT community_route_attachment_completion_attempt_result_hash_check CHECK (((result_hash IS NULL) OR (result_hash ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT community_route_attachment_completion_attempts_state_check CHECK ((state = ANY (ARRAY['leased'::text, 'released'::text, 'consumed'::text]))),
+    CONSTRAINT community_route_attachment_completion_shape CHECK ((is_hns_host_persistence_identity(completion_attempt_id, 256) AND is_hns_host_persistence_identity(idempotency_key, 256) AND is_hns_host_persistence_identity(evidence_ref, 256) AND (updated_at >= created_at) AND (((state = ANY (ARRAY['leased'::text, 'released'::text])) AND (terminal_status IS NULL) AND (result_hash IS NULL) AND (terminal_at IS NULL)) OR ((state = 'consumed'::text) AND (terminal_status IS NOT NULL) AND (result_hash IS NOT NULL) AND (terminal_at IS NOT NULL)))))
+);
+
+CREATE TABLE community_route_attachment_completion_observations (
+    result_hash text NOT NULL,
+    completion_attempt_id text NOT NULL,
+    namespace_session_id text NOT NULL,
+    actor_id text NOT NULL,
+    community_id text NOT NULL,
+    attachment_intent_id text NOT NULL,
+    ceremony_intent_id text NOT NULL,
+    status text NOT NULL,
+    provider_response_sha256 text,
+    evidence_digest text,
+    provider_identity_digest text,
+    raw_response_bytes bytea,
+    observed_at timestamp with time zone,
+    expires_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT community_route_attachment_compl_provider_identity_digest_check CHECK (((provider_identity_digest IS NULL) OR (provider_identity_digest ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT community_route_attachment_compl_provider_response_sha256_check CHECK (((provider_response_sha256 IS NULL) OR (provider_response_sha256 ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT community_route_attachment_completion_obs_evidence_digest_check CHECK (((evidence_digest IS NULL) OR (evidence_digest ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT community_route_attachment_completion_observa_result_hash_check CHECK ((result_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_attachment_completion_observation_shape CHECK ((((status = 'verified'::text) AND (provider_response_sha256 IS NOT NULL) AND (evidence_digest IS NOT NULL) AND (provider_identity_digest IS NOT NULL) AND (raw_response_bytes IS NOT NULL) AND (observed_at IS NOT NULL) AND ((expires_at IS NULL) OR (expires_at > observed_at))) OR ((status = ANY (ARRAY['rejected'::text, 'expired'::text])) AND (evidence_digest IS NULL) AND (provider_identity_digest IS NULL)))),
+    CONSTRAINT community_route_attachment_completion_observations_status_check CHECK ((status = ANY (ARRAY['verified'::text, 'rejected'::text, 'expired'::text])))
+);
+
 CREATE TABLE community_route_attachment_intent_revisions (
     attachment_intent_id text NOT NULL,
     revision bigint NOT NULL,
@@ -27135,6 +27189,27 @@ ALTER TABLE ONLY community_route_attachment_ceremony_results
 ALTER TABLE ONLY community_route_attachment_ceremony_results
     ADD CONSTRAINT community_route_attachment_ceremony_results_pkey PRIMARY KEY (ceremony_intent_id);
 
+ALTER TABLE ONLY community_route_attachment_completion_attempts
+    ADD CONSTRAINT community_route_attachment_co_actor_id_namespace_session_id_key UNIQUE (actor_id, namespace_session_id, idempotency_key, attempt_number);
+
+ALTER TABLE ONLY community_route_attachment_completion_attempts
+    ADD CONSTRAINT community_route_attachment_co_completion_attempt_id_fence_t_key UNIQUE (completion_attempt_id, fence_token);
+
+ALTER TABLE ONLY community_route_attachment_completion_attempts
+    ADD CONSTRAINT community_route_attachment_co_completion_attempt_id_namespa_key UNIQUE (completion_attempt_id, namespace_session_id, actor_id, community_id, attachment_intent_id, ceremony_intent_id);
+
+ALTER TABLE ONLY community_route_attachment_completion_attempts
+    ADD CONSTRAINT community_route_attachment_completion_attempts_evidence_ref_key UNIQUE (evidence_ref);
+
+ALTER TABLE ONLY community_route_attachment_completion_attempts
+    ADD CONSTRAINT community_route_attachment_completion_attempts_pkey PRIMARY KEY (completion_attempt_id);
+
+ALTER TABLE ONLY community_route_attachment_completion_observations
+    ADD CONSTRAINT community_route_attachment_completion_completion_attempt_id_key UNIQUE (completion_attempt_id);
+
+ALTER TABLE ONLY community_route_attachment_completion_observations
+    ADD CONSTRAINT community_route_attachment_completion_observations_pkey PRIMARY KEY (result_hash);
+
 ALTER TABLE ONLY community_route_attachment_intent_revisions
     ADD CONSTRAINT community_route_attachment_intent_revisions_pkey PRIMARY KEY (attachment_intent_id, revision);
 
@@ -28934,6 +29009,8 @@ CREATE UNIQUE INDEX community_role_assignments_one_active_owner_uidx ON communit
 
 CREATE INDEX community_route_active_lease_renewal_attempts_lease_idx ON community_route_active_lease_renewal_attempts USING btree (state, lease_expires_at);
 
+CREATE INDEX community_route_attachment_completion_lease_idx ON community_route_attachment_completion_attempts USING btree (state, lease_expires_at);
+
 CREATE UNIQUE INDEX community_route_attachment_intent_replay_uidx ON community_route_attachment_intent_revisions USING btree (actor_id, operation_kind, idempotency_key) WHERE (idempotency_key IS NOT NULL);
 
 CREATE UNIQUE INDEX community_route_attachment_intents_one_open_per_community_uidx ON community_route_attachment_intents USING btree (community_id) WHERE (status = ANY (ARRAY['verification_required'::text, 'commit_ready'::text]));
@@ -29421,6 +29498,8 @@ CREATE TRIGGER community_route_attachment_attempt_append_only BEFORE DELETE OR U
 CREATE TRIGGER community_route_attachment_attempt_insert_guard BEFORE INSERT ON community_route_attachment_ceremony_attempts FOR EACH ROW EXECUTE FUNCTION validate_community_route_attachment_attempt_insert();
 
 CREATE TRIGGER community_route_attachment_binding_insert_guard BEFORE INSERT ON community_canonical_route_bindings FOR EACH ROW EXECUTE FUNCTION validate_community_route_attachment_binding_insert();
+
+CREATE TRIGGER community_route_attachment_completion_observation_append_only BEFORE DELETE OR UPDATE ON community_route_attachment_completion_observations FOR EACH ROW EXECUTE FUNCTION reject_community_route_attachment_immutable_change();
 
 CREATE TRIGGER community_route_attachment_evidence_insert_guard BEFORE INSERT ON community_route_ownership_evidence FOR EACH ROW WHEN ((new.origin = 'route_attachment'::text)) EXECUTE FUNCTION validate_community_route_attachment_evidence_insert();
 
@@ -30751,6 +30830,30 @@ ALTER TABLE ONLY community_route_attachment_ceremony_results
 
 ALTER TABLE ONLY community_route_attachment_ceremony_results
     ADD CONSTRAINT community_route_attachment_ceremony_results_evidence_fk FOREIGN KEY (evidence_ref) REFERENCES community_route_ownership_evidence(evidence_ref) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY community_route_attachment_completion_observations
+    ADD CONSTRAINT community_route_attachment_completio_completion_attempt_id_fkey FOREIGN KEY (completion_attempt_id) REFERENCES community_route_attachment_completion_attempts(completion_attempt_id);
+
+ALTER TABLE ONLY community_route_attachment_completion_attempts
+    ADD CONSTRAINT community_route_attachment_completion_attempt_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY community_route_attachment_completion_attempts
+    ADD CONSTRAINT community_route_attachment_completion_attempts_actor_id_fkey FOREIGN KEY (actor_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY community_route_attachment_completion_attempts
+    ADD CONSTRAINT community_route_attachment_completion_ceremony_fk FOREIGN KEY (ceremony_intent_id) REFERENCES community_route_attachment_ceremony_attempts(ceremony_intent_id);
+
+ALTER TABLE ONLY community_route_attachment_completion_attempts
+    ADD CONSTRAINT community_route_attachment_completion_intent_fk FOREIGN KEY (actor_id, attachment_intent_id) REFERENCES community_route_attachment_intents(actor_id, attachment_intent_id);
+
+ALTER TABLE ONLY community_route_attachment_completion_observations
+    ADD CONSTRAINT community_route_attachment_completion_observation_attempt_fk FOREIGN KEY (completion_attempt_id, namespace_session_id, actor_id, community_id, attachment_intent_id, ceremony_intent_id) REFERENCES community_route_attachment_completion_attempts(completion_attempt_id, namespace_session_id, actor_id, community_id, attachment_intent_id, ceremony_intent_id);
+
+ALTER TABLE ONLY community_route_attachment_completion_observations
+    ADD CONSTRAINT community_route_attachment_completion_observation_session_fk FOREIGN KEY (namespace_session_id, actor_id) REFERENCES community_route_attachment_namespace_sessions(namespace_session_id, actor_id);
+
+ALTER TABLE ONLY community_route_attachment_completion_attempts
+    ADD CONSTRAINT community_route_attachment_completion_session_fk FOREIGN KEY (namespace_session_id, actor_id) REFERENCES community_route_attachment_namespace_sessions(namespace_session_id, actor_id);
 
 ALTER TABLE ONLY community_route_attachment_intent_revisions
     ADD CONSTRAINT community_route_attachment_intent_rev_attachment_intent_id_fkey FOREIGN KEY (attachment_intent_id) REFERENCES community_route_attachment_intents(attachment_intent_id);

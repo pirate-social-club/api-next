@@ -1,7 +1,9 @@
 import {
   getHnsCommunityRootImport,
+  type HnsCommunityRootImportPollServices,
   type HnsCommunityRootImportReadStore,
   type HnsCommunityRootImportStartServices,
+  pollHnsCommunityRootImport,
   startHnsCommunityRootImport,
 } from "@pirate/application/namespace-ownership";
 import {
@@ -32,6 +34,7 @@ function wireFailure(error: unknown): Error {
 
 export function makeHnsCommunityRootImportHandlers(
   services: HnsCommunityRootImportStartServices &
+    HnsCommunityRootImportPollServices &
     Readonly<{
       readonly store: HnsCommunityRootImportStartServices["store"] &
         HnsCommunityRootImportReadStore;
@@ -39,6 +42,7 @@ export function makeHnsCommunityRootImportHandlers(
 ): Readonly<{
   StartHnsCommunityRootImport: EndpointHandler;
   GetHnsCommunityRootImport: EndpointHandler;
+  PollHnsCommunityRootImport: EndpointHandler;
 }> {
   return {
     StartHnsCommunityRootImport: (request) => {
@@ -83,6 +87,49 @@ export function makeHnsCommunityRootImportHandlers(
           services,
         ).pipe(
           Effect.map((result) => withEndpointResult(result, 200)),
+          Effect.mapError(wireFailure),
+        ),
+      );
+    },
+    PollHnsCommunityRootImport: (request) => {
+      if (
+        request.principal === null ||
+        (request.principal.kind !== "user" && request.principal.kind !== "admin")
+      ) {
+        throw new AuthError({ message: "Authentication required" });
+      }
+      const params = request.params as Readonly<{ communityId: string; sessionId: string }>;
+      const body = request.body as Readonly<{
+        expected_revision: number;
+        idempotency_key: string;
+        provisioning_name_signature?: string;
+      }>;
+      return Effect.runPromise(
+        pollHnsCommunityRootImport(
+          {
+            actor_id: request.principal.subject,
+            community_id: params.communityId,
+            root_import_session_id: params.sessionId,
+            expected_revision: body.expected_revision,
+            idempotency_key: body.idempotency_key,
+            ...(body.provisioning_name_signature === undefined
+              ? {}
+              : { provisioning_name_signature: body.provisioning_name_signature }),
+          },
+          services,
+        ).pipe(
+          Effect.map((result) =>
+            withEndpointResult(
+              result,
+              ["awaiting_ownership", "provisioning", "awaiting_owner_update", "observing"].includes(
+                result.status,
+              )
+                ? 202
+                : result.status === "failed" || result.status === "expired"
+                  ? 422
+                  : 200,
+            ),
+          ),
           Effect.mapError(wireFailure),
         ),
       );

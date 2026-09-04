@@ -12,6 +12,7 @@ import {
   makeControlPlaneHnsCommunityRootImportStartStore,
 } from "./hns-community-root-import-repository.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import { makeControlPlaneRouteAttachmentCompletionStore } from "./route-attachment-completion-repository.ts";
 import {
   makeControlPlaneRouteAttachmentOwnershipStartAuthorityResolver,
   makeControlPlaneRouteAttachmentOwnershipStartStore,
@@ -404,6 +405,78 @@ suite("community HNS root-import repositories", () => {
           ),
         ),
       ).toMatchObject({ kind: "provisioning", session: { revision: 2, replayed: false } });
+
+      const completion = makeControlPlaneRouteAttachmentCompletionStore(layer);
+      const completionRequest = {
+        actor_id: actorId,
+        community_id: communityId,
+        attachment_intent_id: "community-import-attachment",
+        ceremony_intent_id: "community-import-ceremony",
+        session_id: "community-import-namespace",
+        expected_revision: 1,
+        idempotency_key: "community-import-owner-update",
+        channel: "poll_result" as const,
+      };
+      const completionReservation = await Effect.runPromise(
+        Effect.scoped(
+          completion.reserve({
+            request: completionRequest,
+            completion_request_sha256: "7".repeat(64),
+            completion_attempt_id: "community-import-completion",
+            evidence_ref: "community-import-route-evidence",
+            lease_ms: 60_000,
+            max_attempts: 3,
+          }),
+        ),
+      );
+      expect(completionReservation.kind).toBe("acquired");
+      if (completionReservation.kind !== "acquired") throw new Error("expected completion lease");
+      expect(
+        await Effect.runPromise(
+          Effect.scoped(
+            completion.finalize({
+              request: completionRequest,
+              completion_request_sha256: "7".repeat(64),
+              reservation: completionReservation.reservation,
+              status: "verified",
+              result_hash: "8".repeat(64),
+              provider_result: {
+                status: "verified",
+                evidence_kind: "raw_provider_response_v1",
+                provider_evidence_ref: "provider-community-import-evidence",
+                raw_response_bytes: new TextEncoder().encode('{"secure":true}'),
+                observation: { secure: true },
+                observed_at: "2098-01-01T00:00:00.000Z",
+                expires_at: expiresAt,
+              },
+              provider_response_sha256: "9".repeat(64),
+              evidence_digest: "a".repeat(64),
+              provider_identity_digest: "b".repeat(64),
+            }),
+          ),
+        ),
+      ).toEqual({ kind: "committed", status: "verified", result_hash: "8".repeat(64) });
+      expect(
+        (
+          await admin.query(
+            `SELECT intent.status,intent.revision,requirement.status AS requirement_status,
+                    session.status AS ownership_status,community.canonical_route_binding_id
+               FROM community_route_attachment_intents AS intent
+               JOIN community_route_attachment_requirement_states AS requirement
+                 ON requirement.attachment_intent_id=intent.attachment_intent_id
+               JOIN community_route_attachment_namespace_sessions AS session
+                 ON session.attachment_intent_id=intent.attachment_intent_id
+               JOIN communities AS community ON community.community_id=intent.community_id
+              WHERE intent.attachment_intent_id='community-import-attachment'`,
+          )
+        ).rows[0],
+      ).toEqual({
+        status: "commit_ready",
+        revision: "2",
+        requirement_status: "satisfied",
+        ownership_status: "completed",
+        canonical_route_binding_id: null,
+      });
     });
   });
 });

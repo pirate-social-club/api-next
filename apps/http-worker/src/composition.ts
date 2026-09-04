@@ -3,6 +3,7 @@ import { makeCommunityPurchaseFundingInterpreter } from "@pirate/application/mon
 import { makeCommunityPurchaseFundingObservationUseCase } from "@pirate/application/money/community-purchase-funding-observation";
 import {
   completeNamespaceOwnership,
+  completeRouteAttachmentOwnership,
   startNamespaceOwnership,
   startRouteAttachmentOwnership,
 } from "@pirate/application/namespace-ownership";
@@ -150,6 +151,7 @@ import {
 import { makeRewardFundingCoordinator } from "@pirate/platform-cf/reward-funding-coordinator";
 import { makeControlPlaneRewardFundingStore } from "@pirate/platform-cf/reward-funding-repository";
 import { makeControlPlaneRewardProjectionStore } from "@pirate/platform-cf/reward-projection-repository";
+import { makeControlPlaneRouteAttachmentCompletionStore } from "@pirate/platform-cf/route-attachment-completion-repository";
 import {
   makeControlPlaneRouteAttachmentOwnershipStartAuthorityResolver,
   makeControlPlaneRouteAttachmentOwnershipStartStore,
@@ -994,7 +996,7 @@ export async function createProductionHttpWorker(
     (binding) => binding.requirement === "namespace_ownership" && binding.family === "hns",
   );
   const hnsCommunityRootImportHandlers =
-    communityHnsBinding === undefined
+    communityHnsBinding === undefined || bindings.HNS_OWNER_VERIFIER === undefined
       ? {}
       : makeHnsCommunityRootImportHandlers({
           ownership: {
@@ -1005,6 +1007,14 @@ export async function createProductionHttpWorker(
                 registry: namespaceOwnershipRegistry,
                 store: makeControlPlaneRouteAttachmentOwnershipStartStore(controlPlane),
                 environment: config.API_NEXT_ENV,
+              }),
+          },
+          nameProof: makeHnsRootImportNameProofServiceBindingVerifier(bindings.HNS_OWNER_VERIFIER),
+          completion: {
+            complete: (input) =>
+              completeRouteAttachmentOwnership(input, {
+                registry: namespaceOwnershipRegistry,
+                store: makeControlPlaneRouteAttachmentCompletionStore(controlPlane),
               }),
           },
           store: makeControlPlaneHnsCommunityRootImportStartStore(controlPlane, {

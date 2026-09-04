@@ -91,6 +91,8 @@ TRUNCATE TABLE
   "community_route_app_host_health",
   "community_route_attachment_ceremony_attempts",
   "community_route_attachment_ceremony_results",
+  "community_route_attachment_completion_attempts",
+  "community_route_attachment_completion_observations",
   "community_route_attachment_intent_revisions",
   "community_route_attachment_intents",
   "community_route_attachment_namespace_sessions",
