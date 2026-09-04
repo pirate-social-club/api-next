@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 const migration = await Bun.file(
-  new URL("../../../db/postgres/migrations/0114_hns_community_root_import.sql", import.meta.url),
+  new URL("../../../db/postgres/migrations/0115_hns_community_root_import.sql", import.meta.url),
 ).text();
 
 describe("community HNS root-import migration", () => {
