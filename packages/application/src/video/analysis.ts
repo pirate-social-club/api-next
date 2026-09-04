@@ -117,6 +117,15 @@ export class VideoAnalysisPending extends Error {
   readonly retryAfterSeconds = 2;
 }
 
+export class VideoAnalysisRetryable extends Error {
+  constructor(
+    readonly failureCode: "probe_failed" | "transform_failed",
+    readonly evidenceRef: string,
+  ) {
+    super(failureCode);
+  }
+}
+
 export type VideoAnalysisRuntimeServices = VideoPublicationCommitServices &
   Readonly<{
     analysisProviders: VideoAnalysisProviders;
@@ -192,8 +201,10 @@ async function runTransform<T extends Readonly<{ status: string; attempt: MediaT
   return outcome;
 }
 
-function rethrowPending(error: unknown): void {
-  if (error instanceof VideoAnalysisPending) throw error;
+function rethrowDeferred(error: unknown): void {
+  if (error instanceof VideoAnalysisPending || error instanceof VideoAnalysisRetryable) {
+    throw error;
+  }
 }
 
 export async function canonicalVideoCaptionSha256(caption: string | null): Promise<string | null> {
@@ -293,6 +304,9 @@ export async function runOriginalVideoAnalysis(
       },
       services,
     );
+    if (outcome.status === "retryable_failure") {
+      throw new VideoAnalysisRetryable("probe_failed", "video-probe:provider-retryable");
+    }
     if (outcome.status !== "completed") throw new Error("video probe did not complete");
     probe = {
       ...outcome.probe,
@@ -300,7 +314,7 @@ export async function runOriginalVideoAnalysis(
     };
     probeAdapterRevision = outcome.context.adapterRevision;
   } catch (error) {
-    rethrowPending(error);
+    rethrowDeferred(error);
     return fail(
       { ...input, failureCode: "probe_failed", evidenceRef: "video-probe:failed" },
       services,
@@ -349,6 +363,9 @@ export async function runOriginalVideoAnalysis(
       },
       services,
     );
+    if (outcome.status === "retryable_failure") {
+      throw new VideoAnalysisRetryable("transform_failed", "video-soundtrack:provider-retryable");
+    }
     if (
       outcome.status !== "completed" ||
       outcome.artifact.sourceSha256 !== source.canonicalSha256 ||
@@ -358,7 +375,7 @@ export async function runOriginalVideoAnalysis(
     }
     soundtrack = outcome.artifact;
   } catch (error) {
-    rethrowPending(error);
+    rethrowDeferred(error);
     return fail(
       { ...input, failureCode: "transform_failed", evidenceRef: "video-soundtrack:failed" },
       services,
@@ -407,6 +424,9 @@ export async function runOriginalVideoAnalysis(
       },
       services,
     );
+    if (outcome.status === "retryable_failure") {
+      throw new VideoAnalysisRetryable("transform_failed", "video-frames:provider-retryable");
+    }
     extracted =
       outcome.status === "completed" &&
       outcome.extraction.sourceSha256 === source.canonicalSha256 &&
@@ -432,7 +452,7 @@ export async function runOriginalVideoAnalysis(
               evidenceRef: `video-frames:${source.canonicalSha256}:failed`,
             };
   } catch (error) {
-    rethrowPending(error);
+    rethrowDeferred(error);
     return fail(
       { ...input, failureCode: "transform_failed", evidenceRef: "video-frames:failed" },
       services,

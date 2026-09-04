@@ -14,6 +14,7 @@ import type { PersonaRecord } from "../use-cases/personas.ts";
 import {
   runOriginalVideoAnalysis,
   VideoAnalysisPending,
+  VideoAnalysisRetryable,
   type VideoAnalysisProviders,
   type VideoAnalysisRuntimeServices,
   type VideoTransformAttemptStore,
@@ -293,6 +294,30 @@ describe("original-video trusted analysis runtime", () => {
       ),
     ).rejects.toBeInstanceOf(VideoAnalysisPending);
     expect(advanced).toBe(1);
+    expect(failures).toBe(0);
+  });
+
+  test("leaves a retryable provider failure to the bounded outbox retry policy", async () => {
+    let failures = 0;
+    const retryableTransform = transform({
+      probe: (input) =>
+        Effect.succeed({
+          status: "retryable_failure",
+          reason: "transport",
+          attempt: input.attempt,
+        }),
+    });
+
+    await expect(
+      runOriginalVideoAnalysis(
+        { submissionId: "video-analysis-submission", operationId: "video-analysis-operation" },
+        services({
+          providers: providers(),
+          transform: retryableTransform,
+          onFailure: () => failures++,
+        }),
+      ),
+    ).rejects.toBeInstanceOf(VideoAnalysisRetryable);
     expect(failures).toBe(0);
   });
 

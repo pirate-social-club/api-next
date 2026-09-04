@@ -2,8 +2,10 @@ import { processingQueueRetryDelaySeconds } from "../processing-queue-primitives
 import {
   runOriginalVideoAnalysis,
   VideoAnalysisPending,
+  VideoAnalysisRetryable,
   type VideoAnalysisRuntimeServices,
 } from "./analysis.ts";
+import { recordVideoProcessingFailure } from "./publication.ts";
 
 const identifierPattern = /^\S(?:.*\S)?$/u;
 
@@ -179,6 +181,17 @@ export async function consumeVideoAnalysisQueueMessage(
       if (!deferred) return { disposition: "retry", delaySeconds: retryDelay(claimed) };
       observe(dependencies, "queue_retry", claimed);
       return { disposition: "retry", delaySeconds: error.retryAfterSeconds };
+    }
+    if (error instanceof VideoAnalysisRetryable && claimed.deliveryAttempts >= 3) {
+      await recordVideoProcessingFailure(
+        {
+          submissionId: claimed.submissionId,
+          operationId: claimed.operationId,
+          failureCode: error.failureCode,
+          evidenceRef: error.evidenceRef,
+        },
+        dependencies.runtime,
+      );
     }
     const failed = await dependencies.outbox.fail(claimed, "provider_unavailable");
     if (!failed || claimed.deliveryAttempts >= 3) {
