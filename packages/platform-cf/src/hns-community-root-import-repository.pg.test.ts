@@ -74,6 +74,7 @@ suite("community HNS root-import repositories", () => {
               WHERE proname IN ('guard_hns_root_import_session_change',
                 'guard_hns_root_import_session_insert',
                 'reject_hns_community_root_import_preparation_change')
+                AND pronamespace = current_schema()::regnamespace
               ORDER BY proname`,
           )
         ).rows,
