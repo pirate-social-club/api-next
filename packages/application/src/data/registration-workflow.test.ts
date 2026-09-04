@@ -43,6 +43,8 @@ const operation = (): DataRegistrationOperation => ({
   publicationAnalysisRevision: 1n,
   publicationDecisionRevision: 1n,
   canonicalAudioSha256: "a".repeat(64),
+  mediaKind: "song",
+  rightsBasis: "original",
   state: "pending",
   workflowRevision: 1n,
   workflowInstanceId: WORKFLOW_ID,

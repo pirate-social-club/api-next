@@ -1850,46 +1850,57 @@ $$;
 CREATE FUNCTION data_registration_pins_are_ready(operation_id text) RETURNS boolean
     LANGUAGE sql STABLE
     AS $$
-  SELECT EXISTS (
-    SELECT 1 FROM data_registration_artifacts artifact
-    WHERE artifact.registration_operation_id = operation_id
-      AND artifact.artifact_kind = 'canonical_audio'
-  )
-  AND EXISTS (
-    SELECT 1 FROM data_registration_artifacts artifact
-    WHERE artifact.registration_operation_id = operation_id
-      AND artifact.artifact_kind = 'ip_metadata'
-  )
-  AND EXISTS (
-    SELECT 1 FROM data_registration_artifacts artifact
-    WHERE artifact.registration_operation_id = operation_id
-      AND artifact.artifact_kind = 'nft_metadata'
-  )
+  SELECT CASE operation.media_kind
+    WHEN 'song' THEN
+      EXISTS (SELECT 1 FROM data_registration_artifacts artifact
+        WHERE artifact.registration_operation_id=operation_id
+          AND artifact.artifact_kind='canonical_audio')
+    WHEN 'video' THEN
+      EXISTS (SELECT 1 FROM data_registration_artifacts artifact
+        WHERE artifact.registration_operation_id=operation_id
+          AND artifact.artifact_kind='canonical_video')
+      AND EXISTS (SELECT 1 FROM data_registration_artifacts artifact
+        WHERE artifact.registration_operation_id=operation_id
+          AND artifact.artifact_kind='poster')
+    ELSE FALSE
+  END
+  AND EXISTS (SELECT 1 FROM data_registration_artifacts artifact
+    WHERE artifact.registration_operation_id=operation_id
+      AND artifact.artifact_kind='ip_metadata')
+  AND EXISTS (SELECT 1 FROM data_registration_artifacts artifact
+    WHERE artifact.registration_operation_id=operation_id
+      AND artifact.artifact_kind='nft_metadata')
   AND NOT EXISTS (
-    SELECT 1
-    FROM data_registration_artifacts artifact
-    WHERE artifact.registration_operation_id = operation_id
+    SELECT 1 FROM data_registration_artifacts artifact
+    WHERE artifact.registration_operation_id=operation_id
       AND NOT EXISTS (
         SELECT 1
         FROM data_registration_pin_verifications primary_pin
+        JOIN data_registration_pin_verifications redundant_pin
+          ON redundant_pin.registration_operation_id=primary_pin.registration_operation_id
+         AND redundant_pin.artifact_id=primary_pin.artifact_id
+         AND redundant_pin.role='redundant' AND redundant_pin.outcome='verified'
+         AND redundant_pin.cid=primary_pin.cid
+         AND redundant_pin.canonical_sha256=primary_pin.canonical_sha256
+         AND redundant_pin.byte_length=primary_pin.byte_length
+         AND redundant_pin.provider_id<>primary_pin.provider_id
         JOIN data_registration_pin_verifications gateway
-          ON gateway.registration_operation_id = primary_pin.registration_operation_id
-         AND gateway.artifact_id = primary_pin.artifact_id
-         AND gateway.role = 'independent_gateway'
-         AND gateway.outcome = 'verified'
-         AND gateway.cid = primary_pin.cid
-         AND gateway.canonical_sha256 = primary_pin.canonical_sha256
-         AND gateway.byte_length = primary_pin.byte_length
-         AND gateway.provider_id <> primary_pin.provider_id
-        WHERE primary_pin.registration_operation_id = operation_id
-          AND primary_pin.artifact_id = artifact.artifact_id
-          AND primary_pin.role = 'primary'
-          AND primary_pin.provider_id = 'filebase'
-          AND primary_pin.outcome = 'verified'
-          AND primary_pin.canonical_sha256 = artifact.canonical_sha256
-          AND primary_pin.byte_length = artifact.byte_length
+          ON gateway.registration_operation_id=primary_pin.registration_operation_id
+         AND gateway.artifact_id=primary_pin.artifact_id
+         AND gateway.role='independent_gateway' AND gateway.outcome='verified'
+         AND gateway.cid=primary_pin.cid
+         AND gateway.canonical_sha256=primary_pin.canonical_sha256
+         AND gateway.byte_length=primary_pin.byte_length
+         AND gateway.provider_id NOT IN (primary_pin.provider_id,redundant_pin.provider_id)
+        WHERE primary_pin.registration_operation_id=operation_id
+          AND primary_pin.artifact_id=artifact.artifact_id
+          AND primary_pin.role='primary' AND primary_pin.outcome='verified'
+          AND primary_pin.canonical_sha256=artifact.canonical_sha256
+          AND primary_pin.byte_length=artifact.byte_length
       )
-  );
+  )
+  FROM data_registration_operations operation
+  WHERE operation.registration_operation_id=operation_id;
 $$;
 
 CREATE FUNCTION decrement_handle_account_offering_grant_counter_v1() RETURNS trigger
@@ -21304,10 +21315,10 @@ CREATE TABLE data_registration_artifacts (
     canonical_sha256 text NOT NULL,
     canonicalization_revision text,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-    CONSTRAINT data_registration_artifact_canonicalization_shape CHECK ((((artifact_kind = ANY (ARRAY['ip_metadata'::text, 'nft_metadata'::text])) AND (media_type = 'application/json'::text) AND (canonicalization_revision = 'rfc8785-jcs-v1'::text)) OR ((artifact_kind = ANY (ARRAY['canonical_audio'::text, 'normalized_artwork'::text])) AND (canonicalization_revision IS NULL)))),
+    CONSTRAINT data_registration_artifact_canonicalization_shape CHECK ((((artifact_kind = ANY (ARRAY['ip_metadata'::text, 'nft_metadata'::text])) AND (media_type = 'application/json'::text) AND (canonicalization_revision = 'rfc8785-jcs-v1'::text)) OR ((artifact_kind = ANY (ARRAY['canonical_audio'::text, 'canonical_video'::text, 'normalized_artwork'::text, 'poster'::text])) AND (canonicalization_revision IS NULL)))),
     CONSTRAINT data_registration_artifact_identity CHECK ((artifact_id = ((registration_operation_id || ':artifact:'::text) || artifact_kind))),
     CONSTRAINT data_registration_artifacts_artifact_id_check CHECK (((btrim(artifact_id) <> ''::text) AND (artifact_id = btrim(artifact_id)) AND (octet_length(artifact_id) <= 512))),
-    CONSTRAINT data_registration_artifacts_artifact_kind_check CHECK ((artifact_kind = ANY (ARRAY['canonical_audio'::text, 'normalized_artwork'::text, 'ip_metadata'::text, 'nft_metadata'::text]))),
+    CONSTRAINT data_registration_artifacts_artifact_kind_check CHECK ((artifact_kind = ANY (ARRAY['canonical_audio'::text, 'canonical_video'::text, 'normalized_artwork'::text, 'poster'::text, 'ip_metadata'::text, 'nft_metadata'::text]))),
     CONSTRAINT data_registration_artifacts_byte_length_check CHECK ((byte_length > 0)),
     CONSTRAINT data_registration_artifacts_canonical_sha256_check CHECK ((canonical_sha256 ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT data_registration_artifacts_canonicalization_revision_check CHECK (((canonicalization_revision IS NULL) OR ((btrim(canonicalization_revision) <> ''::text) AND (canonicalization_revision = btrim(canonicalization_revision))))),

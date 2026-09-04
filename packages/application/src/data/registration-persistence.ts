@@ -23,7 +23,9 @@ export type DataRegistrationAttemptState =
 
 export type DataRegistrationArtifactKind =
   | "canonical_audio"
+  | "canonical_video"
   | "normalized_artwork"
+  | "poster"
   | "ip_metadata"
   | "nft_metadata";
 
@@ -59,6 +61,8 @@ export type DataRegistrationOperation = Readonly<{
   publicationAnalysisRevision: bigint;
   publicationDecisionRevision: bigint;
   canonicalAudioSha256: string;
+  mediaKind: "song" | "video";
+  rightsBasis: "original" | "derivative";
   state: DataRegistrationOperationState;
   workflowRevision: bigint;
   workflowInstanceId: string;

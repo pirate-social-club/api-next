@@ -438,6 +438,76 @@ ALTER TABLE data_registration_operations ADD CONSTRAINT data_registration_operat
   OR (media_kind = 'video' AND rights_basis = 'original')
 );
 
+ALTER TABLE data_registration_artifacts
+  DROP CONSTRAINT data_registration_artifacts_artifact_kind_check,
+  ADD CONSTRAINT data_registration_artifacts_artifact_kind_check CHECK (artifact_kind IN (
+    'canonical_audio', 'canonical_video', 'normalized_artwork', 'poster',
+    'ip_metadata', 'nft_metadata'
+  )),
+  DROP CONSTRAINT data_registration_artifact_canonicalization_shape,
+  ADD CONSTRAINT data_registration_artifact_canonicalization_shape CHECK (
+    (artifact_kind IN ('ip_metadata', 'nft_metadata')
+      AND media_type = 'application/json'
+      AND canonicalization_revision = 'rfc8785-jcs-v1')
+    OR (artifact_kind IN ('canonical_audio', 'canonical_video', 'normalized_artwork', 'poster')
+      AND canonicalization_revision IS NULL)
+  );
+
+CREATE OR REPLACE FUNCTION data_registration_pins_are_ready(operation_id TEXT) RETURNS BOOLEAN
+LANGUAGE sql STABLE AS $$
+  SELECT CASE operation.media_kind
+    WHEN 'song' THEN
+      EXISTS (SELECT 1 FROM data_registration_artifacts artifact
+        WHERE artifact.registration_operation_id=operation_id
+          AND artifact.artifact_kind='canonical_audio')
+    WHEN 'video' THEN
+      EXISTS (SELECT 1 FROM data_registration_artifacts artifact
+        WHERE artifact.registration_operation_id=operation_id
+          AND artifact.artifact_kind='canonical_video')
+      AND EXISTS (SELECT 1 FROM data_registration_artifacts artifact
+        WHERE artifact.registration_operation_id=operation_id
+          AND artifact.artifact_kind='poster')
+    ELSE FALSE
+  END
+  AND EXISTS (SELECT 1 FROM data_registration_artifacts artifact
+    WHERE artifact.registration_operation_id=operation_id
+      AND artifact.artifact_kind='ip_metadata')
+  AND EXISTS (SELECT 1 FROM data_registration_artifacts artifact
+    WHERE artifact.registration_operation_id=operation_id
+      AND artifact.artifact_kind='nft_metadata')
+  AND NOT EXISTS (
+    SELECT 1 FROM data_registration_artifacts artifact
+    WHERE artifact.registration_operation_id=operation_id
+      AND NOT EXISTS (
+        SELECT 1
+        FROM data_registration_pin_verifications primary_pin
+        JOIN data_registration_pin_verifications redundant_pin
+          ON redundant_pin.registration_operation_id=primary_pin.registration_operation_id
+         AND redundant_pin.artifact_id=primary_pin.artifact_id
+         AND redundant_pin.role='redundant' AND redundant_pin.outcome='verified'
+         AND redundant_pin.cid=primary_pin.cid
+         AND redundant_pin.canonical_sha256=primary_pin.canonical_sha256
+         AND redundant_pin.byte_length=primary_pin.byte_length
+         AND redundant_pin.provider_id<>primary_pin.provider_id
+        JOIN data_registration_pin_verifications gateway
+          ON gateway.registration_operation_id=primary_pin.registration_operation_id
+         AND gateway.artifact_id=primary_pin.artifact_id
+         AND gateway.role='independent_gateway' AND gateway.outcome='verified'
+         AND gateway.cid=primary_pin.cid
+         AND gateway.canonical_sha256=primary_pin.canonical_sha256
+         AND gateway.byte_length=primary_pin.byte_length
+         AND gateway.provider_id NOT IN (primary_pin.provider_id,redundant_pin.provider_id)
+        WHERE primary_pin.registration_operation_id=operation_id
+          AND primary_pin.artifact_id=artifact.artifact_id
+          AND primary_pin.role='primary' AND primary_pin.outcome='verified'
+          AND primary_pin.canonical_sha256=artifact.canonical_sha256
+          AND primary_pin.byte_length=artifact.byte_length
+      )
+  )
+  FROM data_registration_operations operation
+  WHERE operation.registration_operation_id=operation_id;
+$$;
+
 DROP TRIGGER media_submission_update_guard ON media_post_submissions;
 CREATE TRIGGER media_song_submission_update_guard
   BEFORE UPDATE ON media_post_submissions

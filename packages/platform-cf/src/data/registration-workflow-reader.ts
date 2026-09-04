@@ -50,7 +50,14 @@ const pinFromRow = (row: Row): DataRegistrationPinVerification => {
   const role = id(row.role);
   const outcome = id(row.outcome);
   if (
-    !["canonical_audio", "normalized_artwork", "ip_metadata", "nft_metadata"].includes(
+    ![
+      "canonical_audio",
+      "canonical_video",
+      "normalized_artwork",
+      "poster",
+      "ip_metadata",
+      "nft_metadata",
+    ].includes(
       artifactKind,
     ) ||
     !["primary", "independent_gateway"].includes(role) ||

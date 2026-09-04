@@ -13,6 +13,8 @@ import {
   type VideoTrustedAnalysis,
 } from "../../domain/src/video-submission.ts";
 import { createActivePersonaFixture } from "./persona-wallet.pg-fixture.ts";
+import { makeDataRegistrationStore } from "./data-registration-repository.ts";
+import { makePostgresDataRegistrationArtifactAuthorityReader } from "./data/registration-artifact-pipeline.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { makeControlPlaneVideoPublicationStore } from "./video-publication-repository.ts";
 
@@ -151,9 +153,8 @@ function trustedAnalysis(): VideoTrustedAnalysis {
 suite("video publication PostgreSQL", () => {
   test("commits original-video publication effects atomically and replay creates no duplicate", async () => {
     await fixture(async (admin, connection) => {
-      const store = makeControlPlaneVideoPublicationStore(
-        makeDirectPostgresControlPlaneLayer(connection),
-      );
+      const layer = makeDirectPostgresControlPlaneLayer(connection);
+      const store = makeControlPlaneVideoPublicationStore(layer);
       const reservationResponse = new TextEncoder().encode('{"reservation_id":"fixture"}');
       const reservationResponseSha = sha256(reservationResponse);
       await store.createReservation({
@@ -316,6 +317,25 @@ suite("video publication PostgreSQL", () => {
       expect(rights.rows[0]?.royalty_allocations).toEqual([
         { recipient_id: persona, share_bps: 10_000 },
       ]);
+      const registrationOperationId = "data-registration:1315:post-video-publication:1";
+      const operation = await makeDataRegistrationStore(layer).getOperation(
+        registrationOperationId,
+      );
+      if (operation === null) throw new Error("video DATA operation fixture missing");
+      expect(operation).toMatchObject({ mediaKind: "video", rightsBasis: "original" });
+      const authority = await makePostgresDataRegistrationArtifactAuthorityReader(layer).read(
+        operation,
+      );
+      expect(authority).toMatchObject({
+        mediaKind: "video",
+        rightsBasis: "original",
+        licensePreset: null,
+        videoAssetRef: analysis.finalizedVideoRef,
+        canonicalVideoSha256: videoSha256,
+        posterArtifactRef: analysis.frames.extracted[0].artifactRef,
+        posterSha256: analysis.frames.extracted[0].sha256,
+        originalSoundId: publication.originalSound.originalSoundId,
+      });
     });
   });
 });

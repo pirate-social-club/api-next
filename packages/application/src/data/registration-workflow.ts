@@ -22,11 +22,7 @@ import type {
 
 const HASH = /^[0-9a-f]{64}$/u;
 const TRANSACTION_HASH = /^0x[0-9a-f]{64}$/u;
-const REQUIRED_ARTIFACTS = new Set<DataRegistrationArtifactKind>([
-  "canonical_audio",
-  "ip_metadata",
-  "nft_metadata",
-]);
+const metadataArtifacts = ["ip_metadata", "nft_metadata"] as const;
 
 export type DataRegistrationWorkflowPayload = Readonly<{
   outboxId: string;
@@ -158,13 +154,20 @@ const validPayload = (payload: DataRegistrationWorkflowPayload): boolean =>
   payload.workflowRevision > 0n;
 
 const artifactsAreValidStage = (
+  operation: DataRegistrationOperation,
   artifacts: readonly DataRegistrationPreparedArtifact[],
 ): boolean => {
   const kinds = new Set(artifacts.map(({ artifact }) => artifact.artifactKind));
+  const mediaArtifacts: readonly DataRegistrationArtifactKind[] =
+    operation.mediaKind === "video" ? ["canonical_video", "poster"] : ["canonical_audio"];
+  const expected = new Set<DataRegistrationArtifactKind>([
+    ...mediaArtifacts,
+    ...metadataArtifacts,
+  ]);
   return (
     artifacts.length === kinds.size &&
-    kinds.has("canonical_audio") &&
-    ([...REQUIRED_ARTIFACTS].every((kind) => kinds.has(kind)) || kinds.size === 1) &&
+    mediaArtifacts.every((kind) => kinds.has(kind)) &&
+    ([...expected].every((kind) => kinds.has(kind)) || kinds.size === mediaArtifacts.length) &&
     artifacts.every(
       ({ artifact }) =>
         artifact.byteLength > 0n &&
@@ -341,7 +344,7 @@ export async function advanceDataRegistrationWorkflow(
     const persistedPins = await dependencies.pinReader.listPinVerifications(
       operation.registrationOperationId,
     );
-    if (!artifactsAreValidStage(artifacts)) {
+    if (!artifactsAreValidStage(operation, artifacts)) {
       return failOperation(
         dependencies,
         operation,
@@ -427,10 +430,16 @@ export async function advanceDataRegistrationWorkflow(
     if (await dependencies.store.pinsReady(operation.registrationOperationId)) {
       return { outcome: "progress" };
     }
-    // The first durable pass intentionally contains only canonical audio. Its
-    // verified CID is an input to both canonical metadata documents, which are
-    // prepared and pinned by the next Workflow step.
-    if (artifacts.length === 1 && artifacts[0]?.artifact.artifactKind === "canonical_audio") {
+    // The first durable pass intentionally contains only the sealed media and
+    // any required image. Their verified CIDs are inputs to both canonical
+    // metadata documents, which are prepared and pinned by the next step.
+    const firstStageComplete =
+      operation.mediaKind === "video"
+        ? artifacts.length === 2 &&
+          artifacts.some(({ artifact }) => artifact.artifactKind === "canonical_video") &&
+          artifacts.some(({ artifact }) => artifact.artifactKind === "poster")
+        : artifacts.length === 1 && artifacts[0]?.artifact.artifactKind === "canonical_audio";
+    if (firstStageComplete) {
       return { outcome: "progress" };
     }
     return failOperation(

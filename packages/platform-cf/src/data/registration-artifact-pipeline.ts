@@ -27,10 +27,19 @@ export type DataRegistrationRoyaltyAllocation = Readonly<{
   shareBps: number;
 }>;
 
-type DataRegistrationArtifactAuthorityBase = Readonly<{
+type DataRegistrationArtifactAuthorityCommon = Readonly<{
   postId: string;
-  title: string;
   projectedAt: string;
+  contentRating: "general" | "adult_18";
+  royaltyAllocations: readonly DataRegistrationRoyaltyAllocation[];
+  acrDecision: string;
+  acrPolicyRevision: string;
+  creatorAddress: string;
+}>;
+
+type DataRegistrationSongArtifactAuthority = DataRegistrationArtifactAuthorityCommon &
+  Readonly<{
+  title: string;
   audioAssetRef: string;
   audioMediaType: string;
   audioByteLength: bigint;
@@ -40,24 +49,28 @@ type DataRegistrationArtifactAuthorityBase = Readonly<{
   lyricsExplicitness: "not_applicable" | "not_explicit" | "explicit" | "uncertain";
   primaryLanguageBcp47: string | null;
   commercialRemixShareBps: number;
-  royaltyAllocations: readonly DataRegistrationRoyaltyAllocation[];
-  acrDecision: string;
-  acrPolicyRevision: string;
-  creatorAddress: string;
 }>;
 
 export type DataRegistrationArtifactAuthority =
-  | (DataRegistrationArtifactAuthorityBase &
+  | (DataRegistrationSongArtifactAuthority &
       Readonly<{
         mediaKind: "song";
         rightsBasis: "original" | "derivative";
         licensePreset: "non-commercial" | "commercial-use" | "commercial-remix";
       }>)
-  | (DataRegistrationArtifactAuthorityBase &
+  | (DataRegistrationArtifactAuthorityCommon &
       Readonly<{
         mediaKind: "video";
         rightsBasis: "original";
         licensePreset: null;
+        caption: string | null;
+        videoAssetRef: string;
+        videoMediaType: "video/mp4" | "video/quicktime";
+        videoByteLength: bigint;
+        canonicalVideoSha256: string;
+        posterArtifactRef: string;
+        posterSha256: string;
+        originalSoundId: string;
       }>);
 
 export interface DataRegistrationArtifactAuthorityReader {
@@ -123,6 +136,25 @@ const parseAllocations = (
   return allocations;
 };
 
+const parseVideoAllocations = (
+  value: unknown,
+): readonly Readonly<{ recipientId: string; shareBps: number }>[] => {
+  if (!Array.isArray(value) || value.length !== 1) throw new Error("invalid royalty allocations");
+  const entry = value[0];
+  if (!Predicate.isObject(entry)) throw new Error("invalid royalty allocations");
+  const allocation = {
+    recipientId: text(entry, "recipient_id"),
+    shareBps: integer(entry.share_bps, 1, 10_000),
+  };
+  if (allocation.shareBps !== 10_000) throw new Error("invalid royalty allocations");
+  return [allocation];
+};
+
+const object = (value: unknown): Readonly<Record<string, unknown>> => {
+  if (!Predicate.isObject(value)) throw new Error("invalid DATA artifact authority");
+  return value;
+};
+
 export function makePostgresDataRegistrationArtifactAuthorityReader(
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
 ): DataRegistrationArtifactAuthorityReader {
@@ -133,13 +165,105 @@ export function makePostgresDataRegistrationArtifactAuthorityReader(
       run(
         Effect.gen(function* () {
           const db = yield* ControlPlaneDb;
+          if (operation.mediaKind === "video") {
+            const publication = yield* db.execute<Row>({
+              label: "data-registration.artifacts.video-authority",
+              text: `SELECT p.post_id,p.projected_at,p.caption,p.video_asset_ref,
+                            p.canonical_video_sha256,p.poster_artifact_ref,p.original_sound_id,
+                            v.content_type,v.size_bytes,poster.canonical_sha256 AS poster_sha256,
+                            rights.rights_basis,rights.royalty_allocations,
+                            analysis.analysis_snapshot,post.content_rating,
+                            wallet.address AS creator_address
+                       FROM media_publication_projections p
+                       JOIN media_video_revisions v
+                         ON v.submission_id=p.submission_id
+                        AND v.video_revision=p.video_revision
+                       JOIN media_video_derived_artifacts poster
+                         ON poster.submission_id=p.submission_id
+                        AND poster.video_revision=p.video_revision
+                        AND poster.artifact_kind='poster'
+                        AND poster.artifact_ref=p.poster_artifact_ref
+                       JOIN media_video_rights rights ON rights.submission_id=p.submission_id
+                       JOIN media_video_analyses analysis
+                         ON analysis.submission_id=p.submission_id
+                        AND analysis.analysis_revision=p.analysis_revision
+                       JOIN posts post
+                         ON post.community_id=p.community_id AND post.post_id=p.post_id
+                       JOIN persona_wallet_assignments wallet
+                         ON wallet.persona_id=p.author_persona_id
+                        AND wallet.chain_account_kind='evm' AND wallet.status='active'
+                      WHERE p.community_id=$1 AND p.actor_user_id=$2 AND p.submission_id=$3
+                        AND p.operation_id=$4 AND p.post_id=$5 AND p.media_kind='video'`,
+              values: [
+                operation.communityId,
+                operation.actorUserId,
+                operation.submissionId,
+                operation.mediaOperationId,
+                operation.postId,
+              ],
+              readonly: true,
+            });
+            if (publication.rows.length !== 1 || publication.rows[0] === undefined) {
+              throw new Error("DATA publication authority missing");
+            }
+            const row = publication.rows[0];
+            const creatorAddress = text(row, "creator_address").toLowerCase();
+            const videoSha256 = text(row, "canonical_video_sha256");
+            const posterSha256 = text(row, "poster_sha256");
+            const mediaType = text(row, "content_type");
+            const contentRating = text(row, "content_rating");
+            const analysis = object(row.analysis_snapshot);
+            const audio = object(analysis.audio);
+            const soundtrack = object(audio.soundtrack);
+            const verification = soundtrack.verification;
+            const acrDecision =
+              verification === null || verification === undefined
+                ? text(soundtrack, "exhaustion")
+                : text(object(verification), "status");
+            const royaltyAllocations = parseVideoAllocations(row.royalty_allocations).map(
+              (allocation) => ({ ...allocation, address: creatorAddress }),
+            );
+            if (
+              operation.rightsBasis !== "original" ||
+              text(row, "rights_basis") !== "original" ||
+              !ADDRESS.test(creatorAddress) ||
+              !SHA256.test(videoSha256) ||
+              !SHA256.test(posterSha256) ||
+              !["video/mp4", "video/quicktime"].includes(mediaType) ||
+              !["general", "adult_18"].includes(contentRating) ||
+              text(audio, "intent") !== "original_audio"
+            ) {
+              throw new Error("invalid DATA artifact authority");
+            }
+            return {
+              postId: text(row, "post_id"),
+              projectedAt: instant(row, "projected_at"),
+              contentRating: contentRating as "general" | "adult_18",
+              mediaKind: "video" as const,
+              rightsBasis: "original" as const,
+              licensePreset: null,
+              caption: nullableText(row, "caption"),
+              videoAssetRef: text(row, "video_asset_ref"),
+              videoMediaType: mediaType as "video/mp4" | "video/quicktime",
+              videoByteLength: positiveBigint(row.size_bytes),
+              canonicalVideoSha256: videoSha256,
+              posterArtifactRef: text(row, "poster_artifact_ref"),
+              posterSha256,
+              originalSoundId: text(row, "original_sound_id"),
+              royaltyAllocations,
+              acrDecision,
+              acrPolicyRevision: text(soundtrack, "policyRevision"),
+              creatorAddress,
+            };
+          }
           const publication = yield* db.execute<Row>({
             label: "data-registration.artifacts.authority",
             text: `SELECT p.post_id,p.title,p.projected_at,p.audio_asset_ref,p.canonical_audio_sha256,
                           p.cover_artifact_ref,p.lyrics_text,p.lyrics_explicitness,
                           p.primary_language_bcp47,a.content_type,a.size_bytes,
                           s.song_type,t.license_preset,t.commercial_remix_share_bps,t.royalty_allocations,
-                          e.acr_decision,e.acr_policy_revision,w.address AS creator_address
+                          e.acr_decision,e.acr_policy_revision,w.address AS creator_address,
+                          post.content_rating
                      FROM media_publication_projections p
                      JOIN media_post_submissions s
                        ON s.community_id=p.community_id AND s.actor_user_id=p.actor_user_id
@@ -159,6 +283,8 @@ export function makePostgresDataRegistrationArtifactAuthorityReader(
                      JOIN persona_wallet_assignments w
                        ON w.persona_id=p.author_persona_id AND w.chain_account_kind='evm'
                       AND w.status='active'
+                     JOIN posts post
+                       ON post.community_id=p.community_id AND post.post_id=p.post_id
                     WHERE p.community_id=$1 AND p.actor_user_id=$2 AND p.submission_id=$3
                       AND p.operation_id=$4 AND p.post_id=$5`,
             values: [
@@ -215,12 +341,14 @@ export function makePostgresDataRegistrationArtifactAuthorityReader(
           const explicitness = text(row, "lyrics_explicitness");
           const songType = text(row, "song_type");
           const licensePreset = text(row, "license_preset");
+          const contentRating = text(row, "content_rating");
           if (
             !ADDRESS.test(creatorAddress) ||
             !SHA256.test(audioSha256) ||
             !["not_applicable", "not_explicit", "explicit", "uncertain"].includes(explicitness) ||
             !["original", "remix"].includes(songType) ||
-            !["non-commercial", "commercial-use", "commercial-remix"].includes(licensePreset)
+            !["non-commercial", "commercial-use", "commercial-remix"].includes(licensePreset) ||
+            !["general", "adult_18"].includes(contentRating)
           ) {
             throw new Error("invalid DATA artifact authority");
           }
@@ -228,6 +356,7 @@ export function makePostgresDataRegistrationArtifactAuthorityReader(
             postId: text(row, "post_id"),
             title: text(row, "title"),
             projectedAt: instant(row, "projected_at"),
+            contentRating: contentRating as "general" | "adult_18",
             audioAssetRef: text(row, "audio_asset_ref"),
             audioMediaType: text(row, "content_type"),
             audioByteLength: positiveBigint(row.size_bytes),
@@ -320,9 +449,14 @@ const memoryArtifact = async (
   };
 };
 
-function immutableKey(reference: string): string {
-  if (!reference.startsWith(IMMUTABLE_REF_PREFIX)) throw new Error("invalid immutable reference");
-  const suffix = reference.slice(IMMUTABLE_REF_PREFIX.length);
+function objectKey(reference: string): string {
+  const prefix = reference.startsWith(IMMUTABLE_REF_PREFIX)
+    ? IMMUTABLE_REF_PREFIX
+    : reference.startsWith("media://derived/")
+      ? "media://derived/"
+      : null;
+  if (prefix === null) throw new Error("invalid media artifact reference");
+  const suffix = reference.slice(prefix.length);
   if (
     suffix.length === 0 ||
     suffix.length > 768 ||
@@ -330,17 +464,17 @@ function immutableKey(reference: string): string {
     suffix.includes("\\") ||
     suffix.split("/").includes("..")
   ) {
-    throw new Error("invalid immutable reference");
+    throw new Error("invalid media artifact reference");
   }
-  return `immutable/${suffix}`;
+  return `${prefix === IMMUTABLE_REF_PREFIX ? "immutable" : "derived"}/${suffix}`;
 }
 
 const audioArtifact = (
   operation: DataRegistrationOperation,
-  authority: DataRegistrationArtifactAuthority,
+  authority: Extract<DataRegistrationArtifactAuthority, { mediaKind: "song" }>,
   bucket: R2Bucket,
 ): DataRegistrationPreparedArtifact => {
-  const key = immutableKey(authority.audioAssetRef);
+  const key = objectKey(authority.audioAssetRef);
   const artifact: DataRegistrationArtifact = {
     artifactId: deterministicDataRegistrationArtifactId(
       operation.registrationOperationId,
@@ -383,6 +517,61 @@ const audioArtifact = (
   };
 };
 
+const bucketArtifact = (
+  operation: DataRegistrationOperation,
+  input: Readonly<{
+    kind: "canonical_video" | "poster";
+    sourceRef: string;
+    mediaType: string;
+    byteLength: bigint;
+    canonicalSha256: string;
+    filename: string;
+  }>,
+  bucket: R2Bucket,
+): DataRegistrationPreparedArtifact => {
+  const key = objectKey(input.sourceRef);
+  const artifact: DataRegistrationArtifact = {
+    artifactId: deterministicDataRegistrationArtifactId(
+      operation.registrationOperationId,
+      input.kind,
+    ),
+    registrationOperationId: operation.registrationOperationId,
+    artifactKind: input.kind,
+    sourceRef: input.sourceRef,
+    mediaType: input.mediaType,
+    byteLength: input.byteLength,
+    canonicalSha256: input.canonicalSha256,
+    canonicalizationRevision: null,
+  };
+  return {
+    artifact,
+    filename: input.filename,
+    contentType: input.mediaType,
+    open: async function* (signal) {
+      const selected = await bucket.get(key);
+      if (
+        selected === null ||
+        selected.size !== Number(input.byteLength) ||
+        selected.httpMetadata?.contentType !== input.mediaType ||
+        selected.body === undefined
+      ) {
+        throw new Error(`${input.kind} object mismatch`);
+      }
+      const reader = selected.body.getReader();
+      try {
+        while (true) {
+          if (signal.aborted) throw new DOMException("cancelled", "AbortError");
+          const part = await reader.read();
+          if (part.done) return;
+          yield part.value;
+        }
+      } finally {
+        reader.releaseLock();
+      }
+    },
+  };
+};
+
 export type DataRegistrationArtifactPipelineOptions = Readonly<{
   authority: DataRegistrationArtifactAuthorityReader;
   immutableOriginals: R2Bucket;
@@ -399,7 +588,123 @@ export function makeDataRegistrationArtifactPipeline(
   return {
     prepare: async (operation) => {
       const authority = await options.authority.read(operation);
+      if (authority.mediaKind === "video") {
+        if (
+          operation.mediaKind !== "video" ||
+          operation.rightsBasis !== "original" ||
+          authority.rightsBasis !== "original" ||
+          authority.licensePreset !== null ||
+          authority.postId !== operation.postId ||
+          authority.canonicalVideoSha256 !== operation.canonicalAudioSha256
+        ) {
+          throw new Error("video DATA publication authority mismatch");
+        }
+        const posterHead = await options.immutableOriginals.head(
+          objectKey(authority.posterArtifactRef),
+        );
+        if (
+          posterHead === null ||
+          posterHead.size <= 0 ||
+          posterHead.httpMetadata?.contentType !== "image/jpeg"
+        ) {
+          throw new Error("poster object mismatch");
+        }
+        const video = bucketArtifact(
+          operation,
+          {
+            kind: "canonical_video",
+            sourceRef: authority.videoAssetRef,
+            mediaType: authority.videoMediaType,
+            byteLength: authority.videoByteLength,
+            canonicalSha256: authority.canonicalVideoSha256,
+            filename: "canonical-video",
+          },
+          options.immutableOriginals,
+        );
+        const poster = bucketArtifact(
+          operation,
+          {
+            kind: "poster",
+            sourceRef: authority.posterArtifactRef,
+            mediaType: "image/jpeg",
+            byteLength: BigInt(posterHead.size),
+            canonicalSha256: authority.posterSha256,
+            filename: "poster.jpg",
+          },
+          options.immutableOriginals,
+        );
+        const pins = await options.authority.listPins(operation.registrationOperationId);
+        const verifiedCid = (artifact: DataRegistrationArtifact): string | null =>
+          pins.find(
+            (pin) =>
+              pin.artifactId === artifact.artifactId &&
+              pin.role === "primary" &&
+              pin.providerId === "filebase" &&
+              pin.outcome === "verified" &&
+              pin.cid !== null &&
+              pin.canonicalSha256 === artifact.canonicalSha256 &&
+              pin.byteLength === artifact.byteLength,
+          )?.cid ?? null;
+        const videoCid = verifiedCid(video.artifact);
+        const posterCid = verifiedCid(poster.artifact);
+        if (videoCid === null || posterCid === null) return [video, poster];
+        const creators = authority.royaltyAllocations.map((allocation) => ({
+          name: allocation.recipientId,
+          address: allocation.address,
+          contributionPercent: allocation.shareBps / 100,
+        }));
+        const mediaUrl = `ipfs://${videoCid}`;
+        const image = `ipfs://${posterCid}`;
+        const common = {
+          schema_version: "pirate-data-metadata-v1",
+          title: "Pirate video",
+          createdAt: authority.projectedAt,
+          creators,
+          external_url: new URL(
+            `/posts/${encodeURIComponent(authority.postId)}`,
+            options.publicOrigin,
+          ).toString(),
+        } as const;
+        const ipMetadata = await memoryArtifact(operation, "ip_metadata", {
+          ...common,
+          description: authority.caption ?? "Public video published on Pirate.",
+          mediaUrl,
+          mediaHash: `0x${authority.canonicalVideoSha256}`,
+          mediaType: authority.videoMediaType,
+          image,
+          imageHash: `0x${authority.posterSha256}`,
+          content_rating: authority.contentRating,
+          rights: {
+            basis: "original",
+            offered_license: null,
+            beneficiaries: authority.royaltyAllocations.map(({ recipientId, shareBps }) => ({
+              recipient_id: recipientId,
+              share_bps: shareBps,
+            })),
+          },
+          provenance: {
+            acr_decision: authority.acrDecision,
+            acr_policy_revision: authority.acrPolicyRevision,
+          },
+          post: { original_sound_id: authority.originalSoundId },
+        });
+        const nftMetadata = await memoryArtifact(operation, "nft_metadata", {
+          ...common,
+          name: "Pirate video",
+          description: authority.caption ?? "Pirate public video IP Asset.",
+          animation_url: mediaUrl,
+          image,
+          attributes: [
+            { trait_type: "Media kind", value: "video" },
+            { trait_type: "Rights basis", value: "original" },
+            { trait_type: "Content rating", value: authority.contentRating },
+          ],
+        });
+        return [video, poster, ipMetadata, nftMetadata];
+      }
       if (
+        operation.mediaKind !== "song" ||
+        operation.rightsBasis !== authority.rightsBasis ||
         authority.mediaKind !== "song" ||
         authority.rightsBasis !== "original" ||
         authority.licensePreset === null
