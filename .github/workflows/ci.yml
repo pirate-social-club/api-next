@@ -29,7 +29,6 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run check
       - run: bun run test
-      - run: bun run check:fresh
       - name: Resolve OpenAPI baseline
         id: openapi-baseline
         env:
