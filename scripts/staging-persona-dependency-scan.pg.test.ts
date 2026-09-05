@@ -4,6 +4,7 @@ import { runPostgresMigrations } from "./postgres-migrations";
 import { observeResetDependencyClosure } from "./staging-persona-dependency-scan";
 import { inspectStagingRemovalPlan } from "./staging-persona-removal-plan";
 import { removeStagingObjectsInTransaction } from "./staging-persona-remove-objects";
+import { prepareStagingReplayContext } from "./staging-persona-replay-context";
 import {
   loadStagingResetArtifacts,
   validateStagingResetArtifacts,
@@ -78,6 +79,22 @@ suite("reset dependency closure", () => {
             ).toEqual(before);
             expect((await admin.query("SELECT id FROM reset_outside.sentinel")).rows).toEqual([
               { id: 11 },
+            ]);
+            await prepareStagingReplayContext(admin, {
+              transactionId: result.transaction_id,
+              schemaOid: before[0].oid,
+              statementTimeoutMs: 120_000,
+            });
+            await admin.query("CREATE TABLE replay_path_probe (id int)");
+            expect(
+              (
+                await admin.query(
+                  "SELECT to_regclass('api_next.replay_path_probe') IS NOT NULL AS correct",
+                )
+              ).rows,
+            ).toEqual([{ correct: true }]);
+            expect((await admin.query("SHOW statement_timeout")).rows).toEqual([
+              { statement_timeout: "2min" },
             ]);
             throw new Error("injected_after_removal");
           } finally {
