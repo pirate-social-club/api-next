@@ -1,5 +1,6 @@
 import type {
   HnsCommunityRootImportActivationResponseV1,
+  HnsCommunityRootImportCurrentResponseV1,
   HnsCommunityRootImportSessionResponseV1,
   HnsPollResultCompletionResponseV1,
 } from "@pirate/contracts";
@@ -43,9 +44,16 @@ export type StartHnsCommunityRootImportInput = Schema.Schema.Type<
   typeof StartHnsCommunityRootImportInput
 >;
 
-export const GetHnsCommunityRootImportInput = Schema.Struct({
+export const GetCurrentHnsCommunityRootImportInput = Schema.Struct({
   actor_id: CanonicalIdentifier,
   community_id: CanonicalIdentifier,
+});
+export type GetCurrentHnsCommunityRootImportInput = Schema.Schema.Type<
+  typeof GetCurrentHnsCommunityRootImportInput
+>;
+
+export const GetHnsCommunityRootImportInput = Schema.Struct({
+  ...GetCurrentHnsCommunityRootImportInput.fields,
   root_import_session_id: CanonicalIdentifier,
 });
 export type GetHnsCommunityRootImportInput = Schema.Schema.Type<
@@ -145,6 +153,15 @@ export interface HnsCommunityRootImportReadStore {
     input: GetHnsCommunityRootImportInput,
   ) => Effect.Effect<
     HnsCommunityRootImportSessionResponseV1 | null,
+    HnsCommunityRootImportStorageFailed
+  >;
+}
+
+export interface HnsCommunityRootImportDiscoveryStore {
+  readonly getCurrent: (
+    input: GetCurrentHnsCommunityRootImportInput,
+  ) => Effect.Effect<
+    HnsCommunityRootImportCurrentResponseV1 | null,
     HnsCommunityRootImportStorageFailed
   >;
 }
@@ -395,6 +412,28 @@ export const startHnsCommunityRootImport = Effect.fn("startHnsCommunityRootImpor
   return outcome.session;
 });
 
+export const getCurrentHnsCommunityRootImport = Effect.fn("getCurrentHnsCommunityRootImport")(
+  function* (
+    untrustedInput: unknown,
+    services: Readonly<{ readonly store: HnsCommunityRootImportDiscoveryStore }>,
+  ): Effect.fn.Return<
+    HnsCommunityRootImportCurrentResponseV1,
+    HnsCommunityRootImportRejected | HnsCommunityRootImportStorageFailed
+  > {
+    const decoded = Schema.decodeUnknownOption(
+      GetCurrentHnsCommunityRootImportInput,
+      exactParseOptions,
+    )(untrustedInput);
+    if (Option.isNone(decoded)) {
+      return yield* new HnsCommunityRootImportRejected({ reason: "invalid" });
+    }
+    const current = yield* services.store.getCurrent(decoded.value);
+    return current === null
+      ? yield* new HnsCommunityRootImportRejected({ reason: "not_found" })
+      : current;
+  },
+);
+
 export const getHnsCommunityRootImport = Effect.fn("getHnsCommunityRootImport")(function* (
   untrustedInput: unknown,
   services: Readonly<{ readonly store: HnsCommunityRootImportReadStore }>,
@@ -520,13 +559,20 @@ export const pollHnsCommunityRootImport = Effect.fn("pollHnsCommunityRootImport"
       channel: "poll_result",
     })
     .pipe(Effect.mapError(() => pollFailure("ownership_unavailable")));
-  if (ownership.status === "pending" || ownership.status === "unavailable") return current;
+  if (ownership.status === "pending" || ownership.status === "unavailable") {
+    return {
+      ...current,
+      publication_check_pending: true,
+      retry_after_seconds: ownership.retry_after_seconds ?? current.retry_after_seconds,
+    };
+  }
+  if (ownership.status === "rejected" || ownership.status === "expired") {
+    const terminal = yield* services.store.get(input);
+    if (terminal?.status === "failed" || terminal?.status === "expired") return terminal;
+    return yield* pollFailure("conflict");
+  }
   if (ownership.status !== "verified" || ownership.result_hash === null) {
-    return yield* pollFailure(
-      ownership.status === "rejected" || ownership.status === "expired"
-        ? "conflict"
-        : "ownership_unavailable",
-    );
+    return yield* pollFailure("ownership_unavailable");
   }
   if (authority.provision_result_sha256 === null || current.publish_plan_sha256 === null) {
     return yield* pollFailure("conflict");

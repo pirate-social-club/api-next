@@ -4,6 +4,7 @@ import {
   type ControlPlaneResult,
   type ControlPlaneTransaction,
   type HnsCommunityRootImportActivationStore,
+  type HnsCommunityRootImportDiscoveryStore,
   type HnsCommunityRootImportPollStore,
   type HnsCommunityRootImportPreparation,
   type HnsCommunityRootImportStartRecord,
@@ -91,6 +92,26 @@ const preparationColumns = `
   preparation.root_import_session_id, preparation.provision_job_id,
   attachment.revision AS attachment_revision, preparation.start_request_sha256,
   preparation.expires_at`;
+
+// A retained verification attempt supports resuming checks, not a claim that
+// the wallet broadcast or that an on-chain resource was observed.
+const sessionReadColumns = `session.*,
+  CASE WHEN session.status NOT IN ('activated','failed','expired')
+         AND (session.expires_at <= clock_timestamp() OR ownership.status='expired')
+       THEN 'expired'
+       WHEN session.status NOT IN ('activated','failed','expired') AND ownership.status='failed'
+       THEN 'failed' ELSE session.status END AS status,
+  EXISTS (SELECT 1 FROM community_route_attachment_completion_attempts AS attempt
+           WHERE attempt.namespace_session_id=session.namespace_session_id
+             AND attempt.actor_id=session.actor_id AND attempt.community_id=session.community_id
+             AND attempt.attachment_intent_id=session.attachment_intent_id
+             AND attempt.expected_revision=session.ownership_expected_revision
+  ) AS publication_check_pending`;
+
+const ownershipReadJoin = `LEFT JOIN community_route_attachment_namespace_sessions AS ownership
+  ON ownership.namespace_session_id=session.namespace_session_id
+ AND ownership.actor_id=session.actor_id AND ownership.community_id=session.community_id
+ AND ownership.attachment_intent_id=session.attachment_intent_id`;
 
 function decodePreparation(row: Row): HnsCommunityRootImportPreparation | null {
   const actor_id = text(row, "actor_id");
@@ -210,6 +231,8 @@ function sessionResponse(
           ? {
               ...base,
               status,
+              publication_check_pending:
+                status === "observing" || row.publication_check_pending === true,
               publish_plan: plan,
               publish_plan_sha256: planHash,
               readiness_result_sha256: null,
@@ -651,14 +674,58 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
           }),
         );
       }),
+    getCurrent: (input: Parameters<HnsCommunityRootImportDiscoveryStore["getCurrent"]>[0]) =>
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        const result = yield* db.execute<Row>({
+          label: "hns.community-root-import.get-current",
+          text: `SELECT ${sessionReadColumns}
+                   FROM communities AS target
+                   LEFT JOIN LATERAL (
+                     SELECT candidate.* FROM hns_root_import_sessions AS candidate
+                      WHERE candidate.actor_id=$1 AND candidate.community_id=target.community_id
+                        AND candidate.origin_kind='community_attachment'
+                      ORDER BY CASE
+                        WHEN candidate.status='activated' AND EXISTS (
+                          SELECT 1 FROM community_canonical_route_bindings AS binding
+                           WHERE binding.route_binding_id=target.canonical_route_binding_id
+                             AND binding.family='hns' AND binding.root_label=candidate.root_label
+                             AND binding.route_lifecycle_status='active'
+                        ) THEN 0 ELSE 1 END,
+                        candidate.created_at DESC, candidate.root_import_session_id COLLATE "C" DESC
+                      LIMIT 1
+                   ) AS session ON true
+                   ${ownershipReadJoin}
+                  WHERE target.community_id=$2 AND target.status='active'
+                    AND target.route_authority_version='optional_route_v2'
+                    AND EXISTS (SELECT 1 FROM community_route_authority_grants AS route_grant
+                      WHERE route_grant.community_id=target.community_id
+                        AND route_grant.principal_user_id=$1
+                        AND route_grant.authority='manage_routes' AND route_grant.status='active')`,
+          values: [input.actor_id, input.community_id],
+          readonly: true,
+        });
+        const row = oneRow(result);
+        if (row === undefined) return yield* Effect.fail(storageFailure());
+        if (row === null) return null;
+        const session =
+          row.root_import_session_id === null
+            ? null
+            : sessionResponse(row, options.environment, false);
+        if (row.root_import_session_id !== null && session === null) {
+          return yield* Effect.fail(storageFailure());
+        }
+        return { community_id: input.community_id, session };
+      }),
     get: (input: Parameters<HnsCommunityRootImportPollStore["get"]>[0]) =>
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
         const result = yield* db.execute<Row>({
           label: "hns.community-root-import.get",
-          text: `SELECT * FROM hns_root_import_sessions
-                  WHERE actor_id=$1 AND community_id=$2
-                    AND root_import_session_id=$3 AND origin_kind='community_attachment'`,
+          text: `SELECT ${sessionReadColumns} FROM hns_root_import_sessions AS session
+                  ${ownershipReadJoin}
+                  WHERE session.actor_id=$1 AND session.community_id=$2
+                    AND session.root_import_session_id=$3 AND session.origin_kind='community_attachment'`,
           values: [input.actor_id, input.community_id, input.root_import_session_id],
           readonly: true,
         });
@@ -673,7 +740,7 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
         const db = yield* ControlPlaneDb;
         const result = yield* db.execute<Row>({
           label: "hns.community-root-import.load-poll-authority",
-          text: `SELECT session.*, ownership.ceremony_intent_id,
+          text: `SELECT ${sessionReadColumns}, ownership.ceremony_intent_id,
                         provision.result_sha256 AS provision_result_sha256
                    FROM hns_root_import_sessions AS session
                    JOIN community_route_attachment_namespace_sessions AS ownership
@@ -850,6 +917,7 @@ export function makeControlPlaneHnsCommunityRootImportStartStore(
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
   options: HnsCommunityRootImportRepositoryOptions,
 ): HnsCommunityRootImportStartStore &
+  HnsCommunityRootImportDiscoveryStore &
   HnsCommunityRootImportPollStore &
   HnsCommunityRootImportActivationStore {
   const repository = makeControlPlaneHnsCommunityRootImportRepository(options);
@@ -862,6 +930,7 @@ export function makeControlPlaneHnsCommunityRootImportStartStore(
     prepare: (input) => provide(repository.prepare(input)),
     start: (input) => provide(repository.start(input)),
     get: (input) => provide(repository.get(input)),
+    getCurrent: (input) => provide(repository.getCurrent(input)),
     loadPollAuthority: (input) => provide(repository.loadPollAuthority(input)),
     beginProvisioning: (input) => provide(repository.beginProvisioning(input)),
     beginObservation: (input) => provide(repository.beginObservation(input)),

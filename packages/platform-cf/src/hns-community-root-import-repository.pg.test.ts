@@ -111,6 +111,11 @@ suite("community HNS root-import repositories", () => {
         environment: "test",
         provider_binding: binding,
       });
+      const current = (actor = actorId, community = communityId) =>
+        Effect.runPromise(communityStore.getCurrent({ actor_id: actor, community_id: community }));
+      expect(await current()).toEqual({ community_id: communityId, session: null });
+      expect(await current("another-actor")).toBeNull();
+      expect(await current(actorId, "missing-community")).toBeNull();
       const prepareInput = {
         request: {
           actor_id: actorId,
@@ -314,6 +319,13 @@ suite("community HNS root-import repositories", () => {
         ).rows[0],
       ).toEqual({ origin_kind: "community_attachment" });
 
+      expect(await current()).toMatchObject({
+        community_id: communityId,
+        session: {
+          root_import_session_id: "community-import-session",
+          status: "awaiting_ownership",
+        },
+      });
       const secondCommunityId = "community_123e4567-e89b-42d3-a456-426614174001";
       await admin.query(
         `INSERT INTO communities (community_id,display_name,status,created_by_user_id,
@@ -371,6 +383,10 @@ suite("community HNS root-import repositories", () => {
         ),
       ).toMatchObject({ kind: "created", value: { root_label: "dankmemes" } });
 
+      expect(await current(actorId, secondCommunityId)).toEqual({
+        community_id: secondCommunityId,
+        session: null,
+      });
       const proofMessageSha256 = "4".repeat(64);
       const proofSignatureSha256 = "5".repeat(64);
       const proofBytes = encodeHnsRootImportNameProofResultV1({
@@ -478,6 +494,11 @@ suite("community HNS root-import repositories", () => {
         ownership_status: "completed",
         canonical_route_binding_id: null,
       });
+
+      await admin.query(
+        "UPDATE community_route_authority_grants SET status='revoked',revoked_at=clock_timestamp(),revoked_by_user_id=principal_user_id WHERE grant_id='community-root-import-grant'",
+      );
+      expect(await current()).toBeNull();
     });
   });
 });

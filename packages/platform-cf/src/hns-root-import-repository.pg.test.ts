@@ -17,6 +17,7 @@ import { canonicalJson } from "@pirate/domain";
 import { Effect } from "effect";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
+import { makeControlPlaneHnsCommunityRootImportRepository } from "./hns-community-root-import-repository.ts";
 import { verifyHnsRenewalRecovery } from "./hns-root-health-renewal.pg-cases.ts";
 import { makeControlPlaneHnsRootImportStore } from "./hns-root-import-repository.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
@@ -1414,6 +1415,74 @@ suite("Postgres 17 HNS root-import repository", () => {
         await admin.query("ROLLBACK");
         throw error;
       }
+      const discovery = makeControlPlaneHnsCommunityRootImportRepository({
+        environment: "test",
+        provider_binding: {
+          requirement: "namespace_ownership",
+          family: "hns",
+          provider_id: "namespace-provider",
+          protocol_version: "hns-txt-v1",
+          provider_configuration: { kind: "managed", reference: "test-provider", version: "v1" },
+        },
+      });
+      const discover = () =>
+        Effect.runPromise(
+          discovery
+            .getCurrent({
+              actor_id: "actor-root-import",
+              community_id: "community_123e4567-e89b-42d3-a456-426614174099",
+            })
+            .pipe(Effect.provide(makeDirectPostgresControlPlaneLayer(connection))),
+        );
+      expect(await discover()).toMatchObject({
+        session: {
+          status: "awaiting_owner_update",
+          publication_check_pending: false,
+        },
+      });
+      await admin.query(
+        `INSERT INTO community_route_attachment_completion_attempts (
+        completion_attempt_id,namespace_session_id,actor_id,community_id,attachment_intent_id,
+        ceremony_intent_id,expected_revision,attempt_number,idempotency_key,completion_request_sha256,
+        evidence_ref,state,fence_token,lease_expires_at)
+        VALUES ('panel-read-attempt','namespace-root-import','actor-root-import',
+          'community_123e4567-e89b-42d3-a456-426614174099','attachment-import',
+          'attachment-ceremony',1,1,'panel-read',$1,'panel-read-evidence',
+          'released',1,clock_timestamp())`,
+        [SHA_A],
+      );
+      expect(await discover()).toMatchObject({
+        session: {
+          status: "awaiting_owner_update",
+          publication_check_pending: true,
+          retry_after_seconds: 5,
+        },
+      });
+      const retainedOwnership = (
+        await admin.query(`SELECT completed_at,terminal_at
+        FROM community_route_attachment_namespace_sessions
+        WHERE namespace_session_id='namespace-root-import'`)
+      ).rows[0];
+      for (const status of ["failed", "expired"]) {
+        try {
+          await admin.query(
+            `UPDATE community_route_attachment_namespace_sessions
+            SET status=$1,completed_at=NULL,terminal_at=clock_timestamp(),updated_at=clock_timestamp()
+            WHERE namespace_session_id='namespace-root-import'`,
+            [status],
+          );
+          expect(await discover()).toMatchObject({
+            session: { status, retry_after_seconds: null },
+          });
+        } finally {
+          await admin.query(
+            `UPDATE community_route_attachment_namespace_sessions
+            SET status='completed',completed_at=$1,terminal_at=$2,updated_at=clock_timestamp()
+            WHERE namespace_session_id='namespace-root-import'`,
+            [retainedOwnership?.completed_at, retainedOwnership?.terminal_at],
+          );
+        }
+      }
       const observationBytes = new TextEncoder().encode('{"observe":"community"}');
       const observation = await admin.query<{ outcome: string }>(
         `SELECT * FROM begin_hns_root_import_observation_v1(
@@ -1492,6 +1561,13 @@ suite("Postgres 17 HNS root-import repository", () => {
       ).toMatchObject({
         kind: "replayed",
         response: { status: "activated", revision: 6, replayed: true },
+      });
+      expect(await discover()).toMatchObject({
+        session: {
+          root_import_session_id: "root-import-session",
+          status: "activated",
+          retry_after_seconds: null,
+        },
       });
       const state = await admin.query(
         `SELECT community.canonical_route_binding_id,intent.status AS attachment_status,
