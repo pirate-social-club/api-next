@@ -18,6 +18,7 @@ import { Effect } from "effect";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { makeControlPlaneHnsCommunityRootImportRepository } from "./hns-community-root-import-repository.ts";
+import { verifyHnsImportedInventoryRenewal } from "./hns-imported-inventory-renewal.pg-cases.ts";
 import { verifyHnsRenewalRecovery } from "./hns-root-health-renewal.pg-cases.ts";
 import { makeControlPlaneHnsRootImportStore } from "./hns-root-import-repository.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
@@ -367,12 +368,15 @@ async function seedSatisfiedOwnership(admin: Client): Promise<string> {
 }
 
 async function makeReadinessArtifact(input: {
+  readonly inventoryVersion?: string;
+  readonly validForSeconds?: number;
+  readonly environment?: "test" | "production";
   readonly ownershipResultHash: string;
   readonly publishPlanSha256: string;
   readonly provisionResultSha256: string;
 }) {
   const observedAt = new Date(Date.now() - 1_000).toISOString();
-  const validUntil = new Date(Date.now() + 3_600_000).toISOString();
+  const validUntil = new Date(Date.now() + (input.validForSeconds ?? 3600) * 1000).toISOString();
   const capabilities = [
     {
       capability_reference: "pdns-zone:newroot",
@@ -396,15 +400,16 @@ async function makeReadinessArtifact(input: {
     },
   ];
   const capabilityDigest = await hnsAuthorityCapabilitySetDigest({
-    environment: "test",
+    environment: input.environment ?? "test",
     authoritative_nameserver_glue: nameserverGlue,
     dns_write_capabilities: capabilities,
   });
   const inventoryBytes = await encodeHnsAuthorityInventory({
     version: HNS_AUTHORITY_INVENTORY_VERSION,
     authority_inventory_reference: "hns-authority:newroot",
-    authority_inventory_version: `readiness-${input.provisionResultSha256.slice(0, 16)}`,
-    environment: "test",
+    authority_inventory_version:
+      input.inventoryVersion ?? `readiness-${input.provisionResultSha256.slice(0, 16)}`,
+    environment: input.environment ?? "test",
     completeness: "complete",
     runtime_capability_set_digest: capabilityDigest,
     published_at: observedAt,
@@ -987,187 +992,190 @@ suite("Postgres 17 HNS root-import repository", () => {
     });
   }, 20_000);
 
-  test("observes readiness and atomically activates serving plus handle issuance", async () => {
-    await withSchema(async (connection, admin) => {
-      const store = makeControlPlaneHnsRootImportStore(
-        makeDirectPostgresControlPlaneLayer(connection),
-      );
-      const provisioned = await provisionRootImport(store, admin);
-      const ownershipResultHash = provisioned.ownershipResultHash;
-      await seedCommittedCommunityRoute(admin);
-      expect(
-        await Effect.runPromise(
+  test.each([false, true])(
+    "observes readiness and atomically activates serving plus handle issuance (inventory renewal %s)",
+    async (inventoryRenewal) => {
+      await withSchema(async (connection, admin) => {
+        const store = makeControlPlaneHnsRootImportStore(
+          makeDirectPostgresControlPlaneLayer(connection),
+        );
+        const provisioned = await provisionRootImport(store, admin);
+        const ownershipResultHash = provisioned.ownershipResultHash;
+        await seedCommittedCommunityRoute(admin);
+        expect(
+          await Effect.runPromise(
+            Effect.scoped(
+              store.activate({
+                input: {
+                  actor_id: provisioned.record.actor_id,
+                  actor_kind: "user",
+                  creation_intent_id: provisioned.record.creation_intent_id,
+                  root_import_session_id: provisioned.record.root_import_session_id,
+                  expected_revision: 3,
+                  idempotency_key: "activate-before-ready",
+                  publish_plan_sha256: sha256(provisioned.planBytes),
+                  readiness_result_sha256: SHA_A,
+                  acknowledged_complete_resource_replacement: true,
+                },
+                request_sha256: SHA_B,
+                community_id: "community-root-import",
+                dns_zone_activation_id: "dns-before-ready",
+                app_host_activation_id: "app-before-ready",
+                sale_namespace_activation_id: "sale-before-ready",
+                operation_id: "root-import-before-ready",
+              }),
+            ),
+          ),
+        ).toEqual({ kind: "conflict" });
+        const observationRequestBytes = new TextEncoder().encode(
+          canonicalJson({
+            version: "pirate-hns-root-readiness-observation-request-v1",
+            root_import_session_id: provisioned.record.root_import_session_id,
+            namespace_session_id: provisioned.record.namespace_session_id,
+            root_label: provisioned.record.root_label,
+          }),
+        );
+        const observation = await Effect.runPromise(
           Effect.scoped(
-            store.activate({
-              input: {
+            store.beginObservation({
+              poll: {
                 actor_id: provisioned.record.actor_id,
-                actor_kind: "user",
                 creation_intent_id: provisioned.record.creation_intent_id,
                 root_import_session_id: provisioned.record.root_import_session_id,
                 expected_revision: 3,
-                idempotency_key: "activate-before-ready",
-                publish_plan_sha256: sha256(provisioned.planBytes),
-                readiness_result_sha256: SHA_A,
-                acknowledged_complete_resource_replacement: true,
+                idempotency_key: "observe-root-import",
               },
-              request_sha256: SHA_B,
-              community_id: "community-root-import",
-              dns_zone_activation_id: "dns-before-ready",
-              app_host_activation_id: "app-before-ready",
-              sale_namespace_activation_id: "sale-before-ready",
-              operation_id: "root-import-before-ready",
+              poll_request_sha256: SHA_A,
+              ownership_result_sha256: ownershipResultHash,
+              observation_job_id: "observation-root-import",
+              observation_request_bytes: observationRequestBytes,
+              observation_request_sha256: sha256(observationRequestBytes),
             }),
           ),
-        ),
-      ).toEqual({ kind: "conflict" });
-      const observationRequestBytes = new TextEncoder().encode(
-        canonicalJson({
-          version: "pirate-hns-root-readiness-observation-request-v1",
+        );
+        expect(observation).toMatchObject({
+          kind: "observing",
+          session: { status: "observing", revision: 4 },
+        });
+
+        const firstClaim = await admin.query<{
+          lease_fence: string;
+          request_sha256: string;
+        }>("SELECT * FROM claim_hns_root_import_observation_job_v1($1,$2)", [
+          "authority-executor",
+          60,
+        ]);
+        const pending = await admin.query<{
+          outcome: string;
+          root_import_session_id: string;
+          session_revision: string;
+        }>("SELECT * FROM finalize_hns_root_import_observation_job_v1($1,$2,$3,$4,$5,$6,$7,$8)", [
+          "observation-root-import",
+          "authority-executor",
+          Number(firstClaim.rows[0]?.lease_fence),
+          firstClaim.rows[0]?.request_sha256,
+          "retry",
+          null,
+          null,
+          "owner_update_pending",
+        ]);
+        expect(pending.rows).toEqual([
+          {
+            outcome: "retry",
+            root_import_session_id: "root-import-session",
+            session_revision: "4",
+          },
+        ]);
+        await admin.query(
+          "UPDATE hns_root_import_observation_jobs SET attempt_count=19 WHERE observation_job_id=$1",
+          ["observation-root-import"],
+        );
+        const claim = await admin.query<{
+          lease_fence: string;
+          request_sha256: string;
+        }>("SELECT * FROM claim_hns_root_import_observation_job_v1($1,$2)", [
+          "authority-executor",
+          60,
+        ]);
+        expect(claim.rows).toHaveLength(1);
+        expect(
+          (
+            await admin.query<{ attempt_count: number }>(
+              "SELECT attempt_count FROM hns_root_import_observation_jobs WHERE observation_job_id=$1",
+              ["observation-root-import"],
+            )
+          ).rows[0]?.attempt_count,
+        ).toBe(20);
+        const readiness = await makeReadinessArtifact({
+          validForSeconds: inventoryRenewal ? 5 : 3600,
+          ownershipResultHash,
+          publishPlanSha256: sha256(provisioned.planBytes),
+          provisionResultSha256: sha256(provisioned.resultBytes),
+        });
+        const finalized = await admin.query<{
+          outcome: string;
+          session_revision: string;
+        }>("SELECT * FROM finalize_hns_root_import_observation_job_v1($1,$2,$3,$4,$5,$6,$7,$8)", [
+          "observation-root-import",
+          "authority-executor",
+          Number(claim.rows[0]?.lease_fence),
+          claim.rows[0]?.request_sha256,
+          "ready",
+          Buffer.from(readiness.result_bytes),
+          readiness.result_sha256,
+          null,
+        ]);
+        expect(finalized.rows).toMatchObject([{ outcome: "ready", session_revision: "5" }]);
+
+        const activationInput = {
+          actor_id: provisioned.record.actor_id,
+          actor_kind: "user" as const,
+          creation_intent_id: provisioned.record.creation_intent_id,
           root_import_session_id: provisioned.record.root_import_session_id,
-          namespace_session_id: provisioned.record.namespace_session_id,
-          root_label: provisioned.record.root_label,
-        }),
-      );
-      const observation = await Effect.runPromise(
-        Effect.scoped(
-          store.beginObservation({
-            poll: {
-              actor_id: provisioned.record.actor_id,
-              creation_intent_id: provisioned.record.creation_intent_id,
-              root_import_session_id: provisioned.record.root_import_session_id,
-              expected_revision: 3,
-              idempotency_key: "observe-root-import",
-            },
-            poll_request_sha256: SHA_A,
-            ownership_result_sha256: ownershipResultHash,
-            observation_job_id: "observation-root-import",
-            observation_request_bytes: observationRequestBytes,
-            observation_request_sha256: sha256(observationRequestBytes),
-          }),
-        ),
-      );
-      expect(observation).toMatchObject({
-        kind: "observing",
-        session: { status: "observing", revision: 4 },
-      });
-
-      const firstClaim = await admin.query<{
-        lease_fence: string;
-        request_sha256: string;
-      }>("SELECT * FROM claim_hns_root_import_observation_job_v1($1,$2)", [
-        "authority-executor",
-        60,
-      ]);
-      const pending = await admin.query<{
-        outcome: string;
-        root_import_session_id: string;
-        session_revision: string;
-      }>("SELECT * FROM finalize_hns_root_import_observation_job_v1($1,$2,$3,$4,$5,$6,$7,$8)", [
-        "observation-root-import",
-        "authority-executor",
-        Number(firstClaim.rows[0]?.lease_fence),
-        firstClaim.rows[0]?.request_sha256,
-        "retry",
-        null,
-        null,
-        "owner_update_pending",
-      ]);
-      expect(pending.rows).toEqual([
-        {
-          outcome: "retry",
-          root_import_session_id: "root-import-session",
-          session_revision: "4",
-        },
-      ]);
-      await admin.query(
-        "UPDATE hns_root_import_observation_jobs SET attempt_count=19 WHERE observation_job_id=$1",
-        ["observation-root-import"],
-      );
-      const claim = await admin.query<{
-        lease_fence: string;
-        request_sha256: string;
-      }>("SELECT * FROM claim_hns_root_import_observation_job_v1($1,$2)", [
-        "authority-executor",
-        60,
-      ]);
-      expect(claim.rows).toHaveLength(1);
-      expect(
-        (
-          await admin.query<{ attempt_count: number }>(
-            "SELECT attempt_count FROM hns_root_import_observation_jobs WHERE observation_job_id=$1",
-            ["observation-root-import"],
-          )
-        ).rows[0]?.attempt_count,
-      ).toBe(20);
-      const readiness = await makeReadinessArtifact({
-        ownershipResultHash,
-        publishPlanSha256: sha256(provisioned.planBytes),
-        provisionResultSha256: sha256(provisioned.resultBytes),
-      });
-      const finalized = await admin.query<{
-        outcome: string;
-        session_revision: string;
-      }>("SELECT * FROM finalize_hns_root_import_observation_job_v1($1,$2,$3,$4,$5,$6,$7,$8)", [
-        "observation-root-import",
-        "authority-executor",
-        Number(claim.rows[0]?.lease_fence),
-        claim.rows[0]?.request_sha256,
-        "ready",
-        Buffer.from(readiness.result_bytes),
-        readiness.result_sha256,
-        null,
-      ]);
-      expect(finalized.rows).toMatchObject([{ outcome: "ready", session_revision: "5" }]);
-
-      const activationInput = {
-        actor_id: provisioned.record.actor_id,
-        actor_kind: "user" as const,
-        creation_intent_id: provisioned.record.creation_intent_id,
-        root_import_session_id: provisioned.record.root_import_session_id,
-        expected_revision: 5,
-        idempotency_key: "activate-root-import",
-        publish_plan_sha256: sha256(provisioned.planBytes),
-        readiness_result_sha256: readiness.result_sha256,
-        acknowledged_complete_resource_replacement: true as const,
-      };
-      const activation: HnsRootImportActivationRecord = {
-        input: activationInput,
-        request_sha256: sha256(
-          new TextEncoder().encode(
-            canonicalJson({ version: "root-activation-v1", activationInput }),
+          expected_revision: 5,
+          idempotency_key: "activate-root-import",
+          publish_plan_sha256: sha256(provisioned.planBytes),
+          readiness_result_sha256: readiness.result_sha256,
+          acknowledged_complete_resource_replacement: true as const,
+        };
+        const activation: HnsRootImportActivationRecord = {
+          input: activationInput,
+          request_sha256: sha256(
+            new TextEncoder().encode(
+              canonicalJson({ version: "root-activation-v1", activationInput }),
+            ),
           ),
-        ),
-        community_id: "community-root-import",
-        dns_zone_activation_id: "dns-root-import",
-        app_host_activation_id: "app-root-import",
-        sale_namespace_activation_id: "sale-root-import",
-        operation_id: "root-import-activation-operation",
-      };
-      const activated = await Effect.runPromise(Effect.scoped(store.activate(activation)));
-      expect(activated).toMatchObject({
-        kind: "activated",
-        response: {
-          status: "activated",
-          revision: 6,
-          app_host: "app.newroot",
-          handle_issuance_enabled: true,
-          replayed: false,
-        },
-      });
-      const state = await admin.query<{
-        root_status: string;
-        dns_root: string;
-        app_host: string;
-        sale_root: string;
-        health_valid: boolean;
-        delegation_matches: boolean;
-        ds_authenticates_zone: boolean;
-        retained_zone_digest_matches: boolean;
-        gateway_healthy: boolean;
-        dns_operation_state: string;
-        health_seconds_remaining: number;
-      }>(
-        `SELECT session.status AS root_status,dns.canonical_root AS dns_root,
+          community_id: "community-root-import",
+          dns_zone_activation_id: "dns-root-import",
+          app_host_activation_id: "app-root-import",
+          sale_namespace_activation_id: "sale-root-import",
+          operation_id: "root-import-activation-operation",
+        };
+        const activated = await Effect.runPromise(Effect.scoped(store.activate(activation)));
+        expect(activated).toMatchObject({
+          kind: "activated",
+          response: {
+            status: "activated",
+            revision: 6,
+            app_host: "app.newroot",
+            handle_issuance_enabled: true,
+            replayed: false,
+          },
+        });
+        const state = await admin.query<{
+          root_status: string;
+          dns_root: string;
+          app_host: string;
+          sale_root: string;
+          health_valid: boolean;
+          delegation_matches: boolean;
+          ds_authenticates_zone: boolean;
+          retained_zone_digest_matches: boolean;
+          gateway_healthy: boolean;
+          dns_operation_state: string;
+          health_seconds_remaining: number;
+        }>(
+          `SELECT session.status AS root_status,dns.canonical_root AS dns_root,
                 app.normalized_host AS app_host,sale.canonical_root AS sale_root,
                 health.valid_until > clock_timestamp() AS health_valid,
                 health.delegation_matches,health.ds_authenticates_zone,
@@ -1187,112 +1195,137 @@ suite("Postgres 17 HNS root-import repository", () => {
            JOIN hns_dns_zone_activation_operations AS operation
              ON operation.dns_zone_activation_id=dns.dns_zone_activation_id
           WHERE session.root_import_session_id='root-import-session'`,
-      );
-      expect(state.rows).toHaveLength(1);
-      expect(state.rows[0]).toMatchObject({
-        root_status: "activated",
-        dns_root: "newroot",
-        app_host: "app.newroot",
-        sale_root: "newroot",
-        health_valid: true,
-        delegation_matches: true,
-        ds_authenticates_zone: true,
-        retained_zone_digest_matches: true,
-        gateway_healthy: true,
-        dns_operation_state: "finalized",
-      });
-      expect(state.rows[0]?.health_seconds_remaining).toBeGreaterThan(3_590);
+        );
+        expect(state.rows).toHaveLength(1);
+        expect(state.rows[0]).toMatchObject({
+          root_status: "activated",
+          dns_root: "newroot",
+          app_host: "app.newroot",
+          sale_root: "newroot",
+          health_valid: true,
+          delegation_matches: true,
+          ds_authenticates_zone: true,
+          retained_zone_digest_matches: true,
+          gateway_healthy: true,
+          dns_operation_state: "finalized",
+        });
+        expect(state.rows[0]?.health_seconds_remaining).toBeGreaterThan(
+          inventoryRenewal ? 0 : 3_590,
+        );
 
-      const scheduled = await admin.query<{
-        eligible_roots: number;
-        enqueued_roots: number;
-      }>("SELECT * FROM schedule_hns_root_health_renewals_v1(25,259200,7200)");
-      expect(scheduled.rows).toMatchObject([{ eligible_roots: 1, enqueued_roots: 1 }]);
-      const renewalClaim = await admin.query<{
-        observation_job_id: string;
-        operation_kind: string;
-        request_sha256: string;
-        lease_fence: string;
-      }>("SELECT * FROM claim_hns_root_health_renewal_job_v1($1,$2)", ["authority-executor", 60]);
-      expect(renewalClaim.rows).toMatchObject([{ operation_kind: "renew_health_v1" }]);
-      const renewalReadiness = await makeReadinessArtifact({
-        ownershipResultHash,
-        publishPlanSha256: sha256(provisioned.planBytes),
-        provisionResultSha256: sha256(provisioned.resultBytes),
-      });
-      const renewed = await admin.query<{
-        outcome: string;
-        root_import_session_id: string;
-        session_revision: string;
-      }>("SELECT * FROM finalize_hns_root_health_renewal_job_v1($1,$2,$3,$4,$5,$6,$7,$8)", [
-        renewalClaim.rows[0]?.observation_job_id,
-        "authority-executor",
-        Number(renewalClaim.rows[0]?.lease_fence),
-        renewalClaim.rows[0]?.request_sha256,
-        "ready",
-        Buffer.from(renewalReadiness.result_bytes),
-        renewalReadiness.result_sha256,
-        null,
-      ]);
-      expect(renewed.rows).toEqual([
-        { outcome: "ready", root_import_session_id: "root-import-session", session_revision: "6" },
-      ]);
-      expect(
-        (
-          await admin.query<{ health_generation: string }>(
-            `SELECT max(health_generation) AS health_generation
-               FROM hns_dns_zone_health_observations
-              WHERE dns_zone_activation_id='dns-root-import'`,
-          )
-        ).rows[0]?.health_generation,
-      ).toBe("2");
-      const heartbeat = await admin.query<{
-        fresh: boolean;
-        freshness_threshold_seconds: number;
-      }>(
-        `SELECT last_successful_tick_at > clock_timestamp()-freshness_threshold_seconds*interval '1 second' AS fresh,
-                freshness_threshold_seconds
-           FROM hns_root_health_renewal_scheduler_heartbeat`,
-      );
-      expect(heartbeat.rows).toEqual([{ fresh: true, freshness_threshold_seconds: 7200 }]);
+        if (inventoryRenewal) {
+          await verifyHnsImportedInventoryRenewal(
+            admin,
+            connection,
+            (environment, validForSeconds) =>
+              makeReadinessArtifact({
+                ownershipResultHash,
+                publishPlanSha256: sha256(provisioned.planBytes),
+                provisionResultSha256: sha256(provisioned.resultBytes),
+                inventoryVersion: `renewal-${randomUUID()}`,
+                ...(environment === undefined ? {} : { environment }),
+                ...(validForSeconds === undefined ? {} : { validForSeconds }),
+              }),
+          );
+          return;
+        }
 
-      await verifyHnsRenewalRecovery(admin, connection, () =>
-        makeReadinessArtifact({
+        const scheduled = await admin.query<{
+          eligible_roots: number;
+          enqueued_roots: number;
+        }>("SELECT * FROM schedule_hns_root_health_renewals_v1(25,259200,7200)");
+        expect(scheduled.rows).toMatchObject([{ eligible_roots: 1, enqueued_roots: 1 }]);
+        const renewalClaim = await admin.query<{
+          observation_job_id: string;
+          operation_kind: string;
+          request_sha256: string;
+          lease_fence: string;
+        }>("SELECT * FROM claim_hns_root_health_renewal_job_v1($1,$2)", ["authority-executor", 60]);
+        expect(renewalClaim.rows).toMatchObject([{ operation_kind: "renew_health_v1" }]);
+        const renewalReadiness = await makeReadinessArtifact({
           ownershipResultHash,
           publishPlanSha256: sha256(provisioned.planBytes),
           provisionResultSha256: sha256(provisioned.resultBytes),
-        }),
-      );
-      expect(await Effect.runPromise(Effect.scoped(store.activate(activation)))).toMatchObject({
-        kind: "replayed",
-        response: { replayed: true, revision: 6 },
+        });
+        const renewed = await admin.query<{
+          outcome: string;
+          root_import_session_id: string;
+          session_revision: string;
+        }>("SELECT * FROM finalize_hns_root_health_renewal_job_v1($1,$2,$3,$4,$5,$6,$7,$8)", [
+          renewalClaim.rows[0]?.observation_job_id,
+          "authority-executor",
+          Number(renewalClaim.rows[0]?.lease_fence),
+          renewalClaim.rows[0]?.request_sha256,
+          "ready",
+          Buffer.from(renewalReadiness.result_bytes),
+          renewalReadiness.result_sha256,
+          null,
+        ]);
+        expect(renewed.rows).toEqual([
+          {
+            outcome: "ready",
+            root_import_session_id: "root-import-session",
+            session_revision: "6",
+          },
+        ]);
+        expect(
+          (
+            await admin.query<{ health_generation: string }>(
+              `SELECT max(health_generation) AS health_generation
+               FROM hns_dns_zone_health_observations
+              WHERE dns_zone_activation_id='dns-root-import'`,
+            )
+          ).rows[0]?.health_generation,
+        ).toBe("2");
+        const heartbeat = await admin.query<{
+          fresh: boolean;
+          freshness_threshold_seconds: number;
+        }>(
+          `SELECT last_successful_tick_at > clock_timestamp()-freshness_threshold_seconds*interval '1 second' AS fresh,
+                freshness_threshold_seconds
+           FROM hns_root_health_renewal_scheduler_heartbeat`,
+        );
+        expect(heartbeat.rows).toEqual([{ fresh: true, freshness_threshold_seconds: 7200 }]);
+
+        await verifyHnsRenewalRecovery(admin, connection, () =>
+          makeReadinessArtifact({
+            ownershipResultHash,
+            publishPlanSha256: sha256(provisioned.planBytes),
+            provisionResultSha256: sha256(provisioned.resultBytes),
+          }),
+        );
+        expect(await Effect.runPromise(Effect.scoped(store.activate(activation)))).toMatchObject({
+          kind: "replayed",
+          response: { replayed: true, revision: 6 },
+        });
+        expect(
+          await Effect.runPromise(
+            Effect.scoped(
+              store.activate({
+                ...activation,
+                input: { ...activation.input, idempotency_key: "activate-root-import-again" },
+                request_sha256: SHA_B,
+                operation_id: "root-import-activation-operation-again",
+              }),
+            ),
+          ),
+        ).toEqual({ kind: "conflict" });
+        expect(
+          await Effect.runPromise(
+            Effect.scoped(
+              store.activate({
+                ...activation,
+                input: { ...activation.input, actor_id: "another-actor" },
+                request_sha256: SHA_C,
+                operation_id: "root-import-activation-wrong-principal",
+              }),
+            ),
+          ),
+        ).toEqual({ kind: "not_found" });
       });
-      expect(
-        await Effect.runPromise(
-          Effect.scoped(
-            store.activate({
-              ...activation,
-              input: { ...activation.input, idempotency_key: "activate-root-import-again" },
-              request_sha256: SHA_B,
-              operation_id: "root-import-activation-operation-again",
-            }),
-          ),
-        ),
-      ).toEqual({ kind: "conflict" });
-      expect(
-        await Effect.runPromise(
-          Effect.scoped(
-            store.activate({
-              ...activation,
-              input: { ...activation.input, actor_id: "another-actor" },
-              request_sha256: SHA_C,
-              operation_id: "root-import-activation-wrong-principal",
-            }),
-          ),
-        ),
-      ).toEqual({ kind: "not_found" });
-    });
-  }, 20_000);
+    },
+    20_000,
+  );
 
   test("atomically commits a community attachment before activating its HNS services", async () => {
     await withSchema(async (connection, admin) => {

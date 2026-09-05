@@ -30,8 +30,27 @@ provisioner together. The private driver release is independent. Verify the
 live scheduler tick, delayed and terminal counts, remaining serving validity,
 and a real completed renewal after release.
 
-This queue renews health for imported activations. It does not adopt retained
-operator roots or promote authority-inventory successors. Fresh inventory bytes
-in a readiness result are not a persisted inventory promotion. Those gaps must
-be resolved before claiming unattended continuity or retiring operator
-checkpoints. The continuity command remains the recovery procedure.
+Migration 0121 and the matching provisioner promote imported-root inventory
+successors as well as health. Scheduling uses the earlier serving expiry.
+Each observation attempt has a distinct inventory identity. Completion locks
+the job, session, DNS, app-host and sale-namespace predecessors, then inserts
+the immutable inventory and advances every serving dependency in one
+serializable transaction. It shares the maintained continuity command's
+promotion body. Existing username grants keep serving through the current
+sale namespace after the generation advances.
+
+An expired predecessor does not prevent recovery when ownership remains
+current and fresh authenticated evidence validates. The successor must retain
+the deployment environment and structural authority identity. Document 012's
+September 5 erratum caps evidence at 604,800 seconds; shorter leases remain
+valid and no waiting period is required. Changed app or sale generations
+require a new observation attempt. A lost commit acknowledgement is reconciled
+from exact retained completion bytes through a new database connection; it
+must never be converted into an observation failure or a second mutation.
+
+Apply 0121 before deploying this provisioner. Older provisioners continue to
+write health only, so migration alone does not enable inventory continuity.
+Read back an early successor and both app and existing username serving paths
+before claiming production acceptance. Retained operator roots remain outside
+this queue until adoption; their manual checkpoints and certificate renewal
+remain required.

@@ -1,4 +1,5 @@
 import type {
+  HnsRootObservationFinalizeInput,
   HnsRootObservationFinalizeResult,
   HnsRootObservationQueue,
 } from "./observation-queue.ts";
@@ -56,6 +57,7 @@ async function runObservation(input: {
     lease_fence: claim.lease_fence,
     request_sha256: claim.request_sha256,
   } as const;
+  let completion: HnsRootObservationFinalizeInput;
   try {
     if (
       (await sha256(claim.request_bytes)) !== claim.request_sha256 ||
@@ -72,44 +74,32 @@ async function runObservation(input: {
       if (provision.zone_created) {
         await input.teardown_zone({ root_label: provision.root_label });
       }
-      const finalized = await input.queue.finalize({
-        ...base,
-        outcome: "failed",
-        failure_code: "session_expired",
+      completion = { ...base, outcome: "failed", failure_code: "session_expired" };
+    } else {
+      const request = decodeHnsRootReadinessObservationRequestV1(claim.request_bytes);
+      if (
+        request.root_import_session_id !== claim.root_import_session_id ||
+        request.publish_plan_sha256 !== claim.publish_plan_sha256 ||
+        request.provision_result_sha256 !== claim.provision_result_sha256
+      ) {
+        throw new HnsRootReadinessObservationError("invalid_request");
+      }
+      const result = await observeHnsRootReadinessV1({
+        operation_kind: claim.operation_kind,
+        observation_attempt: { job_id: claim.observation_job_id, lease_fence: claim.lease_fence },
+        request,
+        publish_plan_bytes: claim.publish_plan_bytes,
+        provision_result_bytes: claim.provision_result_bytes,
+        ports: input.observe,
+        config: input.observation_config,
       });
-      return {
-        outcome: finalized.outcome,
-        observation_job_id: claim.observation_job_id,
-        root_import_session_id: claim.root_import_session_id,
+      completion = {
+        ...base,
+        outcome: "ready",
+        result_bytes: result.result_bytes,
+        result_sha256: result.result_sha256,
       };
     }
-    const request = decodeHnsRootReadinessObservationRequestV1(claim.request_bytes);
-    if (
-      request.root_import_session_id !== claim.root_import_session_id ||
-      request.publish_plan_sha256 !== claim.publish_plan_sha256 ||
-      request.provision_result_sha256 !== claim.provision_result_sha256
-    ) {
-      throw new HnsRootReadinessObservationError("invalid_request");
-    }
-    const result = await observeHnsRootReadinessV1({
-      operation_kind: claim.operation_kind,
-      request,
-      publish_plan_bytes: claim.publish_plan_bytes,
-      provision_result_bytes: claim.provision_result_bytes,
-      ports: input.observe,
-      config: input.observation_config,
-    });
-    const finalized = await input.queue.finalize({
-      ...base,
-      outcome: "ready",
-      result_bytes: result.result_bytes,
-      result_sha256: result.result_sha256,
-    });
-    return {
-      outcome: finalized.outcome,
-      observation_job_id: claim.observation_job_id,
-      root_import_session_id: claim.root_import_session_id,
-    };
   } catch (error) {
     const code =
       error instanceof HnsRootReadinessObservationError
@@ -120,17 +110,14 @@ async function runObservation(input: {
     // Only proven invalid evidence is terminal. Unknown transport and runtime
     // failures must not permanently disable a live renewal generation.
     const retry = code !== "invalid_request" && code !== "authority_mismatch";
-    const finalized = await input.queue.finalize({
-      ...base,
-      outcome: retry ? "retry" : "failed",
-      failure_code: code,
-    });
-    return {
-      outcome: finalized.outcome,
-      observation_job_id: claim.observation_job_id,
-      root_import_session_id: claim.root_import_session_id,
-    };
+    completion = { ...base, outcome: retry ? "retry" : "failed", failure_code: code };
   }
+  const finalized = await input.queue.finalize(completion);
+  return {
+    outcome: finalized.outcome,
+    observation_job_id: claim.observation_job_id,
+    root_import_session_id: claim.root_import_session_id,
+  };
 }
 
 export async function runHnsAuthorityProvisionExecutorOnce(input: {
