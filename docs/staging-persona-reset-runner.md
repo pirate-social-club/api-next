@@ -150,3 +150,30 @@ choose an object-level rebuild automatically. PlanetScale documents a separate
 [administrative role](https://planetscale.com/docs/postgres/connecting/roles);
 that provider capability is not evidence that such a credential is available
 to this lane. Do not rotate the default credential as a workaround.
+
+The dependency observer traverses PostgreSQL's recorded reference-to-dependent
+graph and internal/extension owner promotion. Column nodes are conservatively
+promoted to their whole object. It maps schema-less implementation objects
+through their owning relation and TOAST objects through the original table;
+unknown classes or dependency flavors, external objects and extension removal
+all refuse the observation. Five PostgreSQL tests cover the full pinned schema,
+outside views and foreign keys, extension removal refusal and preservation of
+an external extension used by a target table.
+
+The pinned graph exceeds 10,000 objects, so the bounded scan admits up to 50,000
+objects with a ten-second statement timeout and refuses overflow. The digest
+includes object OIDs and incident dependency edges. It is specific to one
+catalog snapshot, not a portable fingerprint for comparing logical restores.
+Only counts and the digest are returned; no database row data is read. This
+models catalog-recorded DROP dependencies, not references inside dynamic SQL
+or application configuration. It neither drops objects nor locks out future
+DDL. Provider/producer fencing, identity checks and an immediate repeated scan
+remain mandatory before destructive execution.
+
+At 2026-09-05 17:28 UTC a read-only invocation through the configured staging
+operator credential verified the exact 0109 ledger, then classified 14,277
+objects with closure digest
+9419f84af0256fdb14288644f997299ef8cdf1a522101a16a650d9fd74679373.
+It returned execution_authorized=false and exited zero. Provider identity,
+continuous fencing and recovery were not established by that observation;
+the missing schema-CREATE privilege remains a separate execution blocker.
