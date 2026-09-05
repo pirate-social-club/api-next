@@ -3,8 +3,39 @@
 This records the supplied checkpoint review and the resulting implementation
 order for `api-video-execution-completion`. The control-plane amendment landed
 in `82da717` after the other writer checkpointed. That record reserves
-`0120_video_workflow_execution.sql` for execution. No migration has yet been
-written or applied, no wire contract changed, and no provider enabled.
+`0120_video_workflow_execution.sql` for execution. The migration is now written
+and locally tested as described below; no wire contract changed or provider
+was enabled.
+
+## Ownership, rebase and migration checkpoint — 2026-09-05
+
+Control-plane commit `8fb4707f` records the shared ownership in both lanes,
+including execution's transactional publication wakeups and delivery's rule
+to allocate its migration only after 0120 merges. The historical ownership
+patch needed its delivery context refreshed because that record had gained
+the projection checkpoint; existing evidence was preserved.
+
+Execution rebased without conflicts onto main
+`ba0fd44529d834f491879126cdb8c67c4ec9fcdc`, producing pre-migration tip
+`4f8a2bbf2d5dfb42a176c95a9063f2087ae051f7`. At that exact tip, the ordinary
+migration inventory contained 119 SQL files, ending in
+`0119_hns_root_health_renewal.sql`; no 0120 file existed. Delivery was at
+`223df3a9` and HNS deployment at `7d3c8aae`. No helper worktree was opened.
+
+Migration 0120 locks the two affected tables before its refusal checks. It
+rejects all historical attempts, old poll_wait/running leases, and historical
+outbox outcomes whose launch meaning cannot be inferred. Only untouched
+pending intents convert. The request-ID primary index survives unchanged;
+creation-bound uniqueness and submitting are admitted. Launch metadata and
+launch-attempt accounting replace the old delivery schema. This schema is a
+prerequisite for the following repository commits, not an independently
+deployable runtime checkpoint.
+
+The normal baseline generator completed successfully. The focused PostgreSQL
+17 migration suite passed five tests covering atomic refusal, expired old
+leases, primary-index preservation, creation uniqueness, submitting and an
+untouched pending intent. These tests use a private schema and roll back each
+case; they do not establish staging preflight counts or Workflow reachability.
 
 The historical [execution-record amendment](evidence/video-execution-2026-09-05/execution-record-amendment.patch)
 passed its applicability check and was applied before the final reservation,

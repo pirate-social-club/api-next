@@ -9,6 +9,12 @@ FROM media_video_transform_attempts
 GROUP BY provider_job_phase
 ORDER BY provider_job_phase NULLS FIRST;
 
+SELECT state, count(*) AS outbox_count,
+       count(*) FILTER (WHERE lease_expires_at IS NOT NULL) AS leased_count
+FROM media_video_analysis_outbox
+GROUP BY state
+ORDER BY state;
+
 SELECT indexrelid::regclass AS primary_index,
        indisvalid,
        indisready,
@@ -24,6 +30,21 @@ BEGIN
     WHERE provider_job_phase = 'allocated' AND provider_job_id IS NOT NULL
   ) THEN
     RAISE EXCEPTION 'video preflight: allocated attempts with stored jobs require explicit reconciliation before submitting semantics change';
+  END IF;
+
+  IF EXISTS (SELECT 1 FROM media_video_transform_attempts) THEN
+    RAISE EXCEPTION 'video preflight: nonempty attempts require reconciliation; creation revision cannot be inferred';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM media_video_analysis_outbox
+    WHERE state = 'poll_wait' OR (state = 'running' AND lease_expires_at IS NOT NULL)
+  ) THEN
+    RAISE EXCEPTION 'video preflight: old provider waits or running leases require reconciliation';
+  END IF;
+
+  IF EXISTS (SELECT 1 FROM media_video_analysis_outbox WHERE state <> 'pending') THEN
+    RAISE EXCEPTION 'video preflight: historical outbox outcomes require reconciliation';
   END IF;
 
   IF NOT EXISTS (

@@ -49,6 +49,7 @@ export const freshSchemaPostgresTestSuites = [
 ] as const;
 
 export const noBaselinePostgresTestSuites = [
+  "packages/platform-cf/src/video-workflow-migration.pg.test.ts",
   "packages/platform-cf/src/community-moderation-foundation.pg.test.ts",
   "packages/platform-cf/src/community-membership-follow-invariant.pg.test.ts",
   "packages/platform-cf/src/community-route-migration.pg.test.ts",
