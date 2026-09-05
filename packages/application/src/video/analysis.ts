@@ -139,7 +139,7 @@ export type VideoAnalysisRuntimeServices = VideoPublicationCommitServices &
 const encoder = new TextEncoder();
 const VIDEO_TRANSFORM_RUNTIME_MS = 30 * 60 * 1_000;
 
-async function videoTransformBinding(
+export async function videoTransformBinding(
   source: VideoAnalysisSource,
   analysisRevision: number,
   creationRevision: number,

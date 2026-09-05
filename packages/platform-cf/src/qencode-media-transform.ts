@@ -94,7 +94,17 @@ type QencodeSealedArtifact = Readonly<{
   byteLength: number;
 }>;
 
+type QencodeArtifactIdentity = Readonly<{
+  artifactKey: string;
+  artifactRef: string;
+  mediaType: "audio/mp4" | "image/jpeg";
+  maximumBytes: number;
+  sourceSha256: string;
+  policyRevision: string;
+}>;
+
 export type QencodeArtifactStore = Readonly<{
+  recover?: (input: QencodeArtifactIdentity) => Promise<QencodeSealedArtifact | null>;
   readJson: (url: string, maximumBytes: number, signal?: AbortSignal) => Promise<unknown>;
   seal: (
     input: Readonly<{
@@ -416,7 +426,25 @@ export function makeR2QencodeArtifactStore(
   bucket: QencodeArtifactBucket,
   fetcher: QencodeFetch = fetch,
 ): QencodeArtifactStore {
+  const recover = async (input: QencodeArtifactIdentity): Promise<QencodeSealedArtifact | null> => {
+    const existing = await bucket.head(input.artifactKey);
+    if (existing === null) return null;
+    const digest = existing.customMetadata?.sha256;
+    if (
+      digest === undefined ||
+      !SHA256.test(digest) ||
+      existing.httpMetadata?.contentType !== input.mediaType ||
+      existing.customMetadata?.sourceSha256 !== input.sourceSha256 ||
+      existing.customMetadata?.policyRevision !== input.policyRevision ||
+      !Number.isSafeInteger(existing.size) ||
+      existing.size < 1 ||
+      existing.size > input.maximumBytes
+    )
+      throw new Error("sealed artifact identity conflict");
+    return { artifactRef: input.artifactRef, canonicalSha256: digest, byteLength: existing.size };
+  };
   return {
+    recover,
     readJson: async (url, maximumBytes, signal) => {
       if (!validProviderOutputUrl(url)) throw new Error("invalid qencode output url");
       return readBoundedResponse(
@@ -430,24 +458,8 @@ export function makeR2QencodeArtifactStore(
     },
     seal: async (input) => {
       if (!validProviderOutputUrl(input.sourceUrl)) throw new Error("invalid qencode output url");
-      const existing = await bucket.head(input.artifactKey);
-      if (existing !== null) {
-        const digest = existing.customMetadata?.sha256;
-        if (
-          digest === undefined ||
-          !SHA256.test(digest) ||
-          existing.httpMetadata?.contentType !== input.mediaType ||
-          existing.customMetadata?.sourceSha256 !== input.sourceSha256 ||
-          existing.customMetadata?.policyRevision !== input.policyRevision
-        ) {
-          throw new Error("sealed artifact identity conflict");
-        }
-        return {
-          artifactRef: input.artifactRef,
-          canonicalSha256: digest,
-          byteLength: existing.size,
-        };
-      }
+      const existing = await recover(input);
+      if (existing !== null) return existing;
       const bytes = await readBoundedBytes(
         await fetcher(input.sourceUrl, {
           method: "GET",
@@ -802,6 +814,87 @@ async function allocateOrSubmitJob(
   }
 }
 
+function artifactIdentity(
+  input: MediaTransformVideoAudioInput | MediaTransformVideoFramesInput,
+  role: "soundtrack" | "poster" | "first" | "midpoint",
+): QencodeArtifactIdentity {
+  const audio = input.version === "media-transform-video-audio-input-v1";
+  const key = `video-analysis/${input.binding.operationId}/v${input.binding.videoRevision}/c${input.binding.creationRevision}/a${input.binding.analysisRevision}/${role}.${audio ? "m4a" : "jpg"}`;
+  return {
+    artifactKey: key,
+    artifactRef: `media://derived/${key}`,
+    mediaType: audio ? "audio/mp4" : "image/jpeg",
+    maximumBytes: audio ? QENCODE_MAX_AUDIO_BYTES : input.posterPolicy.maxBytesPerFrame,
+    sourceSha256: input.source.sha256,
+    policyRevision: audio
+      ? input.extractionPolicyVersion
+      : String(input.posterPolicy.policyRevision),
+  };
+}
+
+async function recoverSealedTransform(
+  input: MediaTransformVideoJobInput,
+  artifacts: QencodeArtifactStore,
+  adapterRevision: string,
+): Promise<MediaTransformVideoAudioOutcome | MediaTransformVideoFramesOutcome | null> {
+  if (
+    input.version === "media-transform-video-probe-input-v1" ||
+    artifacts.recover === undefined ||
+    input.attempt.providerJobId === undefined
+  )
+    return null;
+  const attempt = acceptedAttempt(input.attempt, input.attempt.providerJobId, "started");
+  const transformContext = context(input.binding, adapterRevision);
+  if (input.version === "media-transform-video-audio-input-v1") {
+    const sealed = await artifacts.recover(artifactIdentity(input, "soundtrack"));
+    return sealed === null
+      ? null
+      : {
+          status: "completed",
+          attempt,
+          context: transformContext,
+          artifact: {
+            artifactRef: sealed.artifactRef,
+            canonicalSha256: sealed.canonicalSha256,
+            sourceSha256: input.source.sha256,
+            videoRevision: input.binding.videoRevision,
+            mediaType: "audio/mp4",
+            policyRevision: input.extractionPolicyVersion,
+            adapterRevision,
+          },
+        };
+  }
+  const frames = [];
+  for (const [role, timestampMs] of [
+    ["poster", input.posterTimestampMs],
+    ["first", 0],
+    ["midpoint", Math.floor(input.sourceDurationMs / 2)],
+  ] as const) {
+    const sealed = await artifacts.recover(artifactIdentity(input, role));
+    if (sealed === null) return null;
+    frames.push({
+      role,
+      requestedTimestampMs: role === "poster" ? timestampMs : null,
+      timestampMs,
+      sha256: sealed.canonicalSha256,
+      artifactRef: sealed.artifactRef,
+    });
+  }
+  return {
+    status: "completed",
+    attempt,
+    context: transformContext,
+    extraction: {
+      evidenceRef: `qencode:frames:${input.attempt.providerJobId}`,
+      adapterRevision,
+      sourceSha256: input.source.sha256,
+      videoRevision: input.binding.videoRevision,
+      posterPolicyRevision: input.posterPolicy.policyRevision,
+      frames: frames as [(typeof frames)[number], (typeof frames)[number], (typeof frames)[number]],
+    },
+  };
+}
+
 function observeJob(
   input: MediaTransformVideoProbeInput,
   options: Extract<QencodeMediaTransformOptions, { enabled: true }>,
@@ -829,15 +922,6 @@ async function observeJob(
   | MediaTransformVideoAudioOutcome
   | MediaTransformVideoFramesOutcome
 > {
-  const now = (options.clock ?? Date.now)();
-  if (now >= input.attempt.runtimeFence.runtimeDeadlineMs) {
-    return { status: "rejected", reason: "runtime_exceeded", attempt: input.attempt };
-  }
-  const timeoutSignal = AbortSignal.timeout(
-    Math.min(QENCODE_REQUEST_TIMEOUT_MS, input.attempt.runtimeFence.runtimeDeadlineMs - now),
-  );
-  const signal =
-    input.signal === undefined ? timeoutSignal : AbortSignal.any([input.signal, timeoutSignal]);
   const providerJobId = input.attempt.providerJobId;
   if (
     providerJobId === undefined ||
@@ -845,6 +929,25 @@ async function observeJob(
   ) {
     throw new MediaTransformRequestInvalid({ reason: "invalid_job_phase" });
   }
+  // A prior observation may have sealed the outputs before its PostgreSQL fact write failed.
+  // Recover only a complete set of immutable, identity-checked artifacts; no temporary URL is needed.
+  const recovered = await recoverSealedTransform(input, options.artifacts, adapterRevision);
+  if (recovered !== null) return recovered;
+  const now = (options.clock ?? Date.now)();
+  // Observation may reconcile an already submitted job for one additional runtime window.
+  // This never extends the grant or permits another submission.
+  const fence = input.attempt.runtimeFence;
+  const observationDeadlineMs =
+    fence.runtimeDeadlineMs + (fence.runtimeDeadlineMs - fence.submittedAtMs);
+  if (now >= observationDeadlineMs) {
+    return { status: "rejected", reason: "runtime_exceeded", attempt: input.attempt };
+  }
+  const timeoutSignal = AbortSignal.timeout(
+    Math.min(QENCODE_REQUEST_TIMEOUT_MS, observationDeadlineMs - now),
+  );
+  const signal =
+    input.signal === undefined ? timeoutSignal : AbortSignal.any([input.signal, timeoutSignal]);
+
   try {
     const status = await options.transport.getStatus(providerJobId, signal);
     if (status.state === "not_started" || status.state === "not_found") {
@@ -878,12 +981,7 @@ async function observeJob(
       // policy is the fixed server-owned M4A query, not those source facts.
       const artifact = await options.artifacts.seal({
         sourceUrl: output.url,
-        artifactKey: `video-analysis/${input.binding.operationId}/v${input.binding.videoRevision}/c${input.binding.creationRevision}/a${input.binding.analysisRevision}/soundtrack.m4a`,
-        artifactRef: `media://derived/video-analysis/${input.binding.operationId}/v${input.binding.videoRevision}/c${input.binding.creationRevision}/a${input.binding.analysisRevision}/soundtrack.m4a`,
-        mediaType: "audio/mp4",
-        maximumBytes: QENCODE_MAX_AUDIO_BYTES,
-        sourceSha256: input.source.sha256,
-        policyRevision: input.extractionPolicyVersion,
+        ...artifactIdentity(input, "soundtrack"),
         signal,
       });
       return {
@@ -922,12 +1020,7 @@ async function observeJob(
       }
       const artifact = await options.artifacts.seal({
         sourceUrl: output.url,
-        artifactKey: `video-analysis/${input.binding.operationId}/v${input.binding.videoRevision}/c${input.binding.creationRevision}/a${input.binding.analysisRevision}/${role}.jpg`,
-        artifactRef: `media://derived/video-analysis/${input.binding.operationId}/v${input.binding.videoRevision}/c${input.binding.creationRevision}/a${input.binding.analysisRevision}/${role}.jpg`,
-        mediaType: "image/jpeg",
-        maximumBytes: input.posterPolicy.maxBytesPerFrame,
-        sourceSha256: input.source.sha256,
-        policyRevision: String(input.posterPolicy.policyRevision),
+        ...artifactIdentity(input, role),
         signal,
       });
       frames.push({

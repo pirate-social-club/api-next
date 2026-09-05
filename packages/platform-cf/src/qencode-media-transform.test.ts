@@ -713,3 +713,89 @@ describe("Qencode media transform", () => {
     ).rejects.toThrow("invalid qencode output url");
   });
 });
+
+test("observes an accepted job through one bounded reconciliation window without extending submission", async () => {
+  let now = 60_001;
+  let observations = 0;
+  let starts = 0;
+  const adapter = makeQencodeMediaTransform({
+    ...options(
+      fakeTransport({
+        status: { state: "processing" },
+        onStatus: () => observations++,
+        onStart: () => starts++,
+      }),
+    ),
+    clock: () => now,
+  });
+  const input = {
+    version: "media-transform-video-probe-input-v1" as const,
+    binding,
+    source,
+    attempt: acceptedAttempt("started"),
+  };
+  expect((await Effect.runPromise(adapter.observe(input))).status).toBe("processing");
+  now = 119_000;
+  expect(await Effect.runPromise(adapter.observe(input))).toMatchObject({
+    status: "rejected",
+    reason: "runtime_exceeded",
+  });
+  expect(observations).toBe(1);
+  expect(starts).toBe(0);
+});
+
+test("recovers sealed audio and frames after temporary outputs and the runtime window expire", async () => {
+  let providerCalls = 0;
+  const artifacts = makeR2QencodeArtifactStore(
+    {
+      head: async (key) => ({
+        key,
+        size: 100,
+        httpMetadata: { contentType: key.endsWith("m4a") ? "audio/mp4" : "image/jpeg" },
+        customMetadata: {
+          sha256: "c".repeat(64),
+          sourceSha256: SOURCE_SHA256,
+          policyRevision: key.endsWith("m4a")
+            ? MEDIA_TRANSFORM_VIDEO_AUDIO_POLICY_V1
+            : String(VIDEO_POSTER_POLICY_V1.policyRevision),
+        },
+      }),
+      put: async () => {
+        throw new Error("unexpected seal");
+      },
+    },
+    async () => {
+      throw new Error("temporary output expired");
+    },
+  );
+  const adapter = makeQencodeMediaTransform({
+    ...options(fakeTransport({ status: { state: "not_found" }, onStatus: () => providerCalls++ }), {
+      artifacts,
+    }),
+    clock: () => 999_000,
+  });
+  const audio = await Effect.runPromise(
+    adapter.observe({
+      version: "media-transform-video-audio-input-v1",
+      binding,
+      source,
+      extractionPolicyVersion: MEDIA_TRANSFORM_VIDEO_AUDIO_POLICY_V1,
+      attempt: acceptedAttempt("started"),
+    }),
+  );
+  expect(audio.status).toBe("completed");
+  const frames = await Effect.runPromise(
+    adapter.observe({
+      version: "media-transform-video-frames-input-v1",
+      binding,
+      source,
+      sourceDurationMs: 10_000,
+      sourceDimensions: { width: 1080, height: 1920 },
+      posterTimestampMs: 1500,
+      posterPolicy: VIDEO_POSTER_POLICY_V1,
+      attempt: acceptedAttempt("started"),
+    }),
+  );
+  expect(frames.status).toBe("completed");
+  expect(providerCalls).toBe(0);
+});

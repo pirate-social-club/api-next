@@ -724,3 +724,13 @@ can still return 500; treat it as ambiguous and re-read submission/reservation
 state before retrying. Do not discard receipts or assume the upload failed.
 This is an integration note for the active writer, not a claim of direct
 notification or authorization to edit the Solid worktree.
+
+## Durable executor checkpoint
+
+The pure video executor now uses independently named authority, source verification, capability allocation, submission, observation, recognition, safety, and decision/publication steps. Durable step results contain identifiers, timestamps, booleans, or bounded dispositions. Every effect callback reloads PostgreSQL authority. Per-capability deadlines originate in a durable timestamp step and loadOrCreate preserves the first fence. Existing stage facts skip provider work; retained analysis skips the capability pipeline.
+
+Polling is every 30 seconds, with at most 60 observation steps in the 30-minute normal window and 60 in the equally bounded reconciliation window per capability. This bounds one instance to 360 logical observations across three capabilities. With the existing two step retries, the conservative transport-call bound is 1,080 per instance before accounting for absolute deadlines; two continuation instances make the conservative creation-revision ceiling 3,240. Deadlines remain unchanged across continuation. Sleeps and deadlines normally make actual counts substantially lower. No observation or timeout resubmits an unconfirmed token.
+
+The Qencode observer allows the second bounded observation window without extending submission grants. It can recover complete sealed audio or frame outputs using their deterministic R2 identities even after provider URLs expire; HEAD verifies source digest, policy, content type, digest shape and size. A partial sealed frame set with expired remaining outputs still requires reconciliation. Probe metadata requires its accepted PostgreSQL fact or an available provider result.
+
+Validation: the focused executor, existing analysis and Qencode suites exited 0 with 29 tests and 398 assertions. The executor fixture replays every durable effect boundary and exercises lost accepted start responses, allocated/started/accepted continuations, bounded uncertainty, and a database failure after accepted start. bun run check exited 0. These are unit interpreter tests with in-memory stores, not the composed PostgreSQL and real-entrypoint drills; those remain owed. The Workflow class, bindings, publication wakeup delivery and concrete composition are not established by this checkpoint.
