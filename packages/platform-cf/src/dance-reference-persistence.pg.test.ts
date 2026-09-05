@@ -2,6 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import {
   type DanceReferenceOutcome,
   type DanceReferenceProcessingBinding,
+  type DanceReferenceProcessingClaim,
   type FrozenDanceReferenceInput,
   type PreparedDanceReferenceOperation,
   runDanceReferenceProcessing,
@@ -10,7 +11,7 @@ import {
   type DanceReferenceAuthoringAuthority,
   DanceReferenceStoreError,
 } from "@pirate/application/use-cases/dance/reference-services";
-import { Effect } from "effect";
+import { Cause, Effect, Exit } from "effect";
 import { Client } from "pg";
 import {
   applyPostgresTestBaselineConnection,
@@ -30,7 +31,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_DANCE_REFERENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-dance-reference-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-dance-reference-suite-complete\n";
-const testCount = 10;
+const testCount = 11;
 let completedTestCount = 0;
 
 const HASH_A = "11".repeat(32);
@@ -748,6 +749,137 @@ suite("Dance reference shadow persistence", () => {
         },
       ]);
     });
+    completedTestCount += 1;
+  });
+
+  test("interruption retains the lease and expiry recovery rejects the old fence", async () => {
+    for (const phase of ["prepare", "observe"] as const) {
+      await withSchema(`interrupted_${phase}`, async (admin, schema) => {
+        await insertProcessingGraph(admin, true);
+        const repository = makeDanceReferenceProcessingStore(
+          makeDirectPostgresControlPlaneLayer(
+            connectionForSchema(connectionString as string, schema),
+          ),
+        );
+        let oldClaim: DanceReferenceProcessingClaim | undefined;
+        const store = {
+          ...repository,
+          claim: async (input: Parameters<typeof repository.claim>[0]) => {
+            const result = await repository.claim(input);
+            if (result.kind === "claimed") oldClaim = result.claim;
+            return result;
+          },
+        };
+        let enter!: () => void;
+        let release!: () => void;
+        const entered = new Promise<void>((resolve) => {
+          enter = resolve;
+        });
+        const held = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        let finalized = 0;
+        const wait = <A>(value: A) =>
+          Effect.gen(function* () {
+            enter();
+            yield* Effect.promise(() => held);
+            return value;
+          }).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                finalized += 1;
+              }),
+            ),
+          );
+        const input = {
+          choreographyId: "choreography-1",
+          choreographyRevision: 1,
+          workerId: "interrupted-worker",
+          leaseSeconds: 60,
+          adapterId: "fake-reference",
+          adapterRevision: "fake-v1",
+        };
+        const controller = new AbortController();
+        // Baseline adapter only; production still returns an uncancellable Promise.
+        const native = runDanceReferenceProcessing(
+          { ...input, frozenInput: frozenReferenceInput() },
+          {
+            store,
+            processor: {
+              prepareReference: (_input, binding) =>
+                phase === "prepare"
+                  ? wait(preparedReference(binding))
+                  : Effect.succeed(preparedReference(binding)),
+              observeReference: (operation) =>
+                phase === "observe"
+                  ? wait(readyReference(operation.binding))
+                  : Effect.succeed(readyReference(operation.binding)),
+            },
+          },
+        );
+        const running = Effect.runPromiseExit(
+          Effect.tryPromise({ try: () => native, catch: (error) => error }),
+          { signal: controller.signal },
+        );
+        try {
+          await entered;
+          controller.abort();
+          const exit = await running;
+          expect(Exit.isFailure(exit) && Cause.hasInterrupts(exit.cause)).toBe(true);
+          expect(finalized).toBe(1);
+          const lease = await admin.query(
+            `SELECT lease_owner, lease_fence::text, state, lease_expires_at > clock_timestamp() AS active, prepared_operation IS NOT NULL AS prepared FROM dance_reference_processing_attempts`,
+          );
+          expect(lease.rows).toEqual([
+            {
+              lease_owner: "interrupted-worker",
+              lease_fence: "1",
+              state: "leased",
+              active: true,
+              prepared: phase === "observe",
+            },
+          ]);
+          const recoveryInput = { ...input, workerId: "recovery-worker" };
+          let prepares = 0;
+          const processor = {
+            prepareReference: (
+              _input: FrozenDanceReferenceInput,
+              binding: DanceReferenceProcessingBinding,
+            ) => {
+              prepares += 1;
+              return Effect.succeed(preparedReference(binding));
+            },
+            observeReference: (operation: PreparedDanceReferenceOperation) =>
+              Effect.succeed(readyReference(operation.binding)),
+          };
+          expect(
+            await runDanceReferenceProcessing(recoveryInput, { store: repository, processor }),
+          ).toEqual({ kind: "busy" });
+          expect(prepares).toBe(0);
+          // Advance durable lease time explicitly, without a wall-clock race sleep.
+          await admin.query(
+            "UPDATE dance_reference_processing_attempts SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE state='leased'",
+          );
+          await admin.query(
+            "UPDATE dance_reference_outbox SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE state='running'",
+          );
+          expect(
+            await runDanceReferenceProcessing(recoveryInput, { store: repository, processor }),
+          ).toEqual({ kind: "committed", status: "ready" });
+          expect(prepares).toBe(phase === "prepare" ? 1 : 0);
+          if (oldClaim === undefined) throw new Error("missing original claim");
+          expect(
+            await repository.recordPrepared(oldClaim, preparedReference(oldClaim.binding)),
+          ).toBe(false);
+          expect(await repository.complete(oldClaim, readyReference(oldClaim.binding))).toBe(
+            "stale",
+          );
+        } finally {
+          release();
+          await Promise.allSettled([native]);
+        }
+      });
+    }
     completedTestCount += 1;
   });
 
