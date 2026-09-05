@@ -43,7 +43,7 @@ const freshAttempt: MediaTransformAttempt = {
   runtimeFence: { submittedAtMs: 1_000, runtimeDeadlineMs: 60_000 },
 };
 
-function acceptedAttempt(phase: "allocated" | "started"): MediaTransformAttempt {
+function acceptedAttempt(phase: "allocated" | "submitting" | "started"): MediaTransformAttempt {
   return { ...freshAttempt, providerJobId: JOB_ID, providerJobPhase: phase };
 }
 
@@ -181,7 +181,7 @@ describe("Qencode media transform", () => {
     );
 
     const result = await Effect.runPromise(
-      service.probe({
+      service.allocate({
         version: "media-transform-video-probe-input-v1",
         binding,
         source,
@@ -207,7 +207,7 @@ describe("Qencode media transform", () => {
     };
     const service = makeQencodeMediaTransform(options(transport));
     const result = await Effect.runPromise(
-      service.probe({
+      service.allocate({
         version: "media-transform-video-probe-input-v1",
         binding,
         source,
@@ -228,7 +228,7 @@ describe("Qencode media transform", () => {
     });
   });
 
-  test("starts an allocated task through the exact-object grant and freezes the query", async () => {
+  test("starts a persisted submitting task through the exact-object grant and freezes the query", async () => {
     let issued: Parameters<QencodeSourceGrantIssuer["issue"]>[0] | undefined;
     let started: Parameters<QencodeTaskTransport["startTask"]>[0] | undefined;
     const service = makeQencodeMediaTransform(
@@ -248,12 +248,12 @@ describe("Qencode media transform", () => {
     );
 
     const result = await Effect.runPromise(
-      service.extractVideoAudio({
+      service.submit({
         version: "media-transform-video-audio-input-v1",
         binding,
         source,
         extractionPolicyVersion: MEDIA_TRANSFORM_VIDEO_AUDIO_POLICY_V1,
-        attempt: acceptedAttempt("allocated"),
+        attempt: acceptedAttempt("submitting"),
       }),
     );
 
@@ -278,6 +278,83 @@ describe("Qencode media transform", () => {
     expect(started?.query.source).toStartWith("https://video-source.example.invalid/");
   });
 
+  test("refuses submit from allocated before grants or any transport call", async () => {
+    let calls = 0;
+    const service = makeQencodeMediaTransform(
+      options(
+        fakeTransport({
+          status: { state: "not_started" },
+          onCreate: () => calls++,
+          onStart: () => calls++,
+          onStatus: () => calls++,
+        }),
+        { sourceGateway: fakeGateway(() => calls++) },
+      ),
+    );
+    await expect(
+      Effect.runPromise(
+        service.submit({
+          version: "media-transform-video-probe-input-v1",
+          binding,
+          source,
+          attempt: acceptedAttempt("allocated"),
+        }),
+      ),
+    ).rejects.toMatchObject({ reason: "invalid_job_phase" });
+    expect(calls).toBe(0);
+  });
+
+  test("observing ambiguous submitting returns absence without resubmission", async () => {
+    let starts = 0;
+    const service = makeQencodeMediaTransform(
+      options(
+        fakeTransport({
+          status: { state: "not_started" },
+          onStart: () => starts++,
+        }),
+      ),
+    );
+    expect(
+      await Effect.runPromise(
+        service.observe({
+          version: "media-transform-video-probe-input-v1",
+          binding,
+          source,
+          attempt: acceptedAttempt("submitting"),
+        }),
+      ),
+    ).toEqual({ status: "not_found", attempt: acceptedAttempt("submitting") });
+    expect(starts).toBe(0);
+  });
+
+  test("grant database failure escapes rather than becoming a media outcome", async () => {
+    const failure = new Error("grant database unavailable");
+    const service = makeQencodeMediaTransform(
+      options(
+        fakeTransport({
+          status: { state: "not_started" },
+        }),
+        {
+          sourceGateway: {
+            issue: async () => {
+              throw failure;
+            },
+          },
+        },
+      ),
+    );
+    await expect(
+      Effect.runPromise(
+        service.submit({
+          version: "media-transform-video-probe-input-v1",
+          binding,
+          source,
+          attempt: acceptedAttempt("submitting"),
+        }),
+      ),
+    ).rejects.toThrow("grant database unavailable");
+  });
+
   test("never starts a second job after the persisted started phase", async () => {
     let grants = 0;
     let starts = 0;
@@ -292,7 +369,7 @@ describe("Qencode media transform", () => {
     );
 
     const result = await Effect.runPromise(
-      service.probe({
+      service.observe({
         version: "media-transform-video-probe-input-v1",
         binding,
         source,
@@ -301,8 +378,7 @@ describe("Qencode media transform", () => {
     );
 
     expect(result).toEqual({
-      status: "retryable_failure",
-      reason: "provider",
+      status: "not_found",
       attempt: acceptedAttempt("started"),
     });
     expect({ grants, starts }).toEqual({ grants: 0, starts: 0 });
@@ -344,7 +420,7 @@ describe("Qencode media transform", () => {
     );
 
     const result = await Effect.runPromise(
-      service.probe({
+      service.observe({
         version: "media-transform-video-probe-input-v1",
         binding,
         source,
@@ -394,7 +470,7 @@ describe("Qencode media transform", () => {
     );
 
     const result = await Effect.runPromise(
-      service.extractVideoAudio({
+      service.observe({
         version: "media-transform-video-audio-input-v1",
         binding,
         source,
@@ -423,7 +499,7 @@ describe("Qencode media transform", () => {
     );
 
     await Effect.runPromise(
-      service.extractVideoFrames({
+      service.submit({
         version: "media-transform-video-frames-input-v1",
         binding,
         source,
@@ -431,7 +507,7 @@ describe("Qencode media transform", () => {
         sourceDimensions: { width: 320, height: 240 },
         posterTimestampMs: 1_250,
         posterPolicy: VIDEO_POSTER_POLICY_V1,
-        attempt: acceptedAttempt("allocated"),
+        attempt: acceptedAttempt("submitting"),
       }),
     );
 

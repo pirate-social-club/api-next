@@ -201,6 +201,12 @@ function bindVideoPhysicalR2Keys(
     },
   });
   return {
+    allocate: (input) => Effect.suspend(() => transform.allocate(source(input))),
+    submit: (input) => Effect.suspend(() => transform.submit(source(input))),
+    observe: ((input) =>
+      Effect.suspend(() =>
+        transform.observe(source(input)),
+      )) as MediaTransformVideoCapabilities["observe"],
     probe: (input) => Effect.suspend(() => transform.probe(source(input))),
     extractVideoAudio: (input) => Effect.suspend(() => transform.extractVideoAudio(source(input))),
     extractVideoFrames: (input) =>

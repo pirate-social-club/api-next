@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import type { MediaTransformAttempt } from "@pirate/application/media/transform";
+import { Effect } from "effect";
 import { Client } from "pg";
 import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import { makeQencodeMediaTransform } from "./qencode-media-transform.ts";
 import { makeControlPlaneVideoAnalysisOutboxRepository } from "./video-analysis-outbox-repository.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -12,6 +14,109 @@ if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && !connectionStrin
 const suite = connectionString ? describe : describe.skip;
 
 suite("video transform attempt PostgreSQL fences", () => {
+  test("drill 1 submit boundary: accepted start with lost response recovers from persisted submitting", async () => {
+    const schema = `video_submit_${crypto.randomUUID().replaceAll("-", "")}`;
+    const admin = new Client({ connectionString });
+    await admin.connect();
+    await admin.query(`CREATE SCHEMA "${schema}"`);
+    const scoped = new URL(connectionString ?? "");
+    scoped.searchParams.set("options", `-c search_path=${schema}`);
+    try {
+      await runPostgresMigrations({ connectionString: scoped.toString() });
+      // As in the binding-fence case below, only parent FK triggers are disabled.
+      scoped.searchParams.set(
+        "options",
+        `-c search_path=${schema} -c session_replication_role=replica`,
+      );
+      const store = makeControlPlaneVideoAnalysisOutboxRepository(
+        makeDirectPostgresControlPlaneLayer(scoped.toString()),
+      );
+      const binding = {
+        operationId: "operation",
+        videoRevision: 1,
+        analysisRevision: 1,
+        creationRevision: 1,
+        canonicalVideoSha256: "a".repeat(64),
+        requestId: "probe-request",
+      };
+      const initialAttempt: MediaTransformAttempt = {
+        version: "media-transform-attempt-v1",
+        runtimeFence: { submittedAtMs: 1000, runtimeDeadlineMs: 10000 },
+      };
+      const ledger = {
+        submissionId: "submission",
+        binding,
+        capability: "probe" as const,
+        initialAttempt,
+      };
+      const request = (attempt: MediaTransformAttempt) => ({
+        version: "media-transform-video-probe-input-v1" as const,
+        binding,
+        attempt,
+        source: {
+          objectKey: "sealed/video.mp4",
+          sha256: binding.canonicalVideoSha256,
+          byteLength: 1024,
+          mediaType: "video/mp4" as const,
+        },
+      });
+      let starts = 0;
+      const adapter = makeQencodeMediaTransform({
+        enabled: true,
+        apiKey: "fixture-api-key",
+        clock: () => 2000,
+        transport: {
+          createTask: async () => "b".repeat(32),
+          startTask: async () => {
+            starts++;
+            throw new Error("accepted response lost");
+          },
+          getStatus: async () => ({ state: "processing" }),
+        },
+        sourceGateway: {
+          issue: async (input) => ({
+            url: "https://source.example.invalid/grant",
+            expiresAtMs: input.expiresAtMs,
+          }),
+        },
+        artifacts: {
+          readJson: async () => {
+            throw new Error("unexpected output");
+          },
+          seal: async () => {
+            throw new Error("unexpected seal");
+          },
+        },
+      });
+      const allocated = await Effect.runPromise(
+        adapter.allocate(request(await store.loadOrCreate(ledger))),
+      );
+      expect(allocated.status).toBe("submitted");
+      await store.advance({ ...ledger, attempt: allocated.attempt });
+      await expect(
+        Effect.runPromise(adapter.submit(request(allocated.attempt))),
+      ).rejects.toMatchObject({ reason: "invalid_job_phase" });
+      expect(starts).toBe(0);
+      const submitting = await store.advance({
+        ...ledger,
+        attempt: { ...allocated.attempt, providerJobPhase: "submitting" },
+      });
+      expect((await Effect.runPromise(adapter.submit(request(submitting)))).status).toBe(
+        "retryable_failure",
+      );
+      const restored = await store.loadOrCreate(ledger);
+      expect(restored.providerJobPhase).toBe("submitting");
+      const observed = await Effect.runPromise(adapter.observe(request(restored)));
+      expect(observed.status).toBe("processing");
+      await store.advance({ ...ledger, attempt: observed.attempt });
+      expect((await store.loadOrCreate(ledger)).providerJobPhase).toBe("started");
+      expect(starts).toBe(1);
+    } finally {
+      await admin.query(`DROP SCHEMA "${schema}" CASCADE`);
+      await admin.end();
+    }
+  }, 120_000);
+
   test("drill 7 store boundary: fresh creation preserves replay and forbids skipped or reversed submit phases", async () => {
     const schema = `video_attempt_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const admin = new Client({ connectionString });

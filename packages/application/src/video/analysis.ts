@@ -12,8 +12,11 @@ import {
 import { mediaSha256Bytes } from "../media/submission-service.ts";
 import type {
   MediaTransformAttempt,
+  MediaTransformRequestInvalid,
   MediaTransformVideoBinding,
   MediaTransformVideoCapabilities,
+  MediaTransformVideoJobInput,
+  MediaTransformVideoProgress,
 } from "../media/transform.ts";
 import { MEDIA_TRANSFORM_VIDEO_AUDIO_POLICY_V1 } from "../media/transform.ts";
 import {
@@ -178,36 +181,53 @@ function videoTransformAttempt(updatedAt: string): MediaTransformAttempt {
   };
 }
 
-async function runTransform<T extends Readonly<{ status: string; attempt: MediaTransformAttempt }>>(
+/** Local interpreter only; the Workflow uses the port boundaries as distinct steps. */
+async function interpretVideoTransform<
+  I extends MediaTransformVideoJobInput,
+  T extends Readonly<{ status: string; attempt: MediaTransformAttempt }>,
+>(
   input: Readonly<{
     submissionId: string;
     binding: MediaTransformVideoBinding;
     capability: VideoTransformCapability;
     initialAttempt: MediaTransformAttempt;
-    execute: (attempt: MediaTransformAttempt) => Promise<T>;
+    request: (attempt: MediaTransformAttempt) => I;
+    observe: (request: I) => Effect.Effect<T, MediaTransformRequestInvalid>;
   }>,
   services: VideoAnalysisRuntimeServices,
-): Promise<T> {
-  const attempt = await services.transformAttempts.loadOrCreate(input);
-  const outcome = await input.execute(attempt);
-  if (outcome.attempt.providerJobId !== undefined) {
-    await services.transformAttempts.advance({
-      submissionId: input.submissionId,
-      binding: input.binding,
-      capability: input.capability,
-      attempt: outcome.attempt,
-    });
+): Promise<T | MediaTransformVideoProgress> {
+  let attempt = await services.transformAttempts.loadOrCreate(input);
+  const advance = async (next: MediaTransformAttempt) =>
+    services.transformAttempts.advance({ ...input, attempt: next });
+  if (attempt.providerJobId === undefined) {
+    const allocated = await Effect.runPromise(services.transform.allocate(input.request(attempt)));
+    if (allocated.status !== "submitted") return allocated;
+    attempt = await advance(allocated.attempt);
   }
-  if (outcome.status === "submitted" || outcome.status === "processing") {
+  if (attempt.providerJobPhase === "allocated") {
+    attempt = await advance({ ...attempt, providerJobPhase: "submitting" });
+    const submitted = await Effect.runPromise(services.transform.submit(input.request(attempt)));
+    if (submitted.status !== "processing") return submitted;
+    attempt = await advance(submitted.attempt);
+  }
+  const outcome = await Effect.runPromise(input.observe(input.request(attempt)));
+  if (outcome.attempt.providerJobId !== undefined) await advance(outcome.attempt);
+  if (
+    outcome.status === "submitted" ||
+    outcome.status === "processing" ||
+    outcome.status === "not_found"
+  )
     throw new VideoAnalysisPending();
-  }
   return outcome;
 }
+
+class VideoAnalysisTerminal extends Error {}
 
 function rethrowDeferred(error: unknown): void {
   if (error instanceof VideoAnalysisPending || error instanceof VideoAnalysisRetryable) {
     throw error;
   }
+  if (!(error instanceof VideoAnalysisTerminal)) throw error;
 }
 
 export async function canonicalVideoCaptionSha256(caption: string | null): Promise<string | null> {
@@ -270,7 +290,6 @@ export async function runOriginalVideoAnalysis(
     mediaType: source.mediaType,
   } as const;
   const analysisRevision = state.analysisRevision + 1;
-  const transformAttempt = videoTransformAttempt(record.updatedAt);
 
   let hash: Awaited<ReturnType<VideoAnalysisProviders["hash"]>>;
   try {
@@ -294,28 +313,28 @@ export async function runOriginalVideoAnalysis(
       state.creationRevision,
       "probe",
     );
-    const outcome = await runTransform(
+    const outcome = await interpretVideoTransform(
       {
         submissionId: state.submissionId,
         binding: transformBinding,
         capability: "probe",
-        initialAttempt: transformAttempt,
-        execute: (attempt) =>
-          Effect.runPromise(
-            services.transform.probe({
-              version: "media-transform-video-probe-input-v1",
-              binding: transformBinding,
-              source: transformSource,
-              attempt,
-            }),
-          ),
+        initialAttempt: videoTransformAttempt(services.nowIso()),
+        request: (attempt) =>
+          ({
+            version: "media-transform-video-probe-input-v1",
+            binding: transformBinding,
+            source: transformSource,
+            attempt,
+          }) as const,
+        observe: services.transform.probe,
       },
       services,
     );
     if (outcome.status === "retryable_failure") {
       throw new VideoAnalysisRetryable("probe_failed", "video-probe:provider-retryable");
     }
-    if (outcome.status !== "completed") throw new Error("video probe did not complete");
+    if (outcome.status !== "completed")
+      throw new VideoAnalysisTerminal("video probe did not complete");
     probe = {
       ...outcome.probe,
       ingestPolicyRevision: VIDEO_INGEST_POLICY_V1.policyRevision,
@@ -357,22 +376,21 @@ export async function runOriginalVideoAnalysis(
       state.creationRevision,
       "audio",
     );
-    const outcome = await runTransform(
+    const outcome = await interpretVideoTransform(
       {
         submissionId: state.submissionId,
         binding: transformBinding,
         capability: "audio",
-        initialAttempt: transformAttempt,
-        execute: (attempt) =>
-          Effect.runPromise(
-            services.transform.extractVideoAudio({
-              version: "media-transform-video-audio-input-v1",
-              binding: transformBinding,
-              source: transformSource,
-              extractionPolicyVersion: MEDIA_TRANSFORM_VIDEO_AUDIO_POLICY_V1,
-              attempt,
-            }),
-          ),
+        initialAttempt: videoTransformAttempt(services.nowIso()),
+        request: (attempt) =>
+          ({
+            version: "media-transform-video-audio-input-v1",
+            binding: transformBinding,
+            source: transformSource,
+            extractionPolicyVersion: MEDIA_TRANSFORM_VIDEO_AUDIO_POLICY_V1,
+            attempt,
+          }) as const,
+        observe: services.transform.extractVideoAudio,
       },
       services,
     );
@@ -384,7 +402,7 @@ export async function runOriginalVideoAnalysis(
       outcome.artifact.sourceSha256 !== source.canonicalSha256 ||
       outcome.artifact.videoRevision !== source.videoRevision
     ) {
-      throw new Error("video audio extraction did not complete");
+      throw new VideoAnalysisTerminal("video audio extraction did not complete");
     }
     soundtrack = outcome.artifact;
   } catch (error) {
@@ -420,25 +438,24 @@ export async function runOriginalVideoAnalysis(
       state.creationRevision,
       "frames",
     );
-    const outcome = await runTransform(
+    const outcome = await interpretVideoTransform(
       {
         submissionId: state.submissionId,
         binding: transformBinding,
         capability: "frames",
-        initialAttempt: transformAttempt,
-        execute: (attempt) =>
-          Effect.runPromise(
-            services.transform.extractVideoFrames({
-              version: "media-transform-video-frames-input-v1",
-              binding: transformBinding,
-              source: transformSource,
-              sourceDurationMs: probe.durationMs,
-              sourceDimensions: { width: probe.width, height: probe.height },
-              posterTimestampMs,
-              posterPolicy: VIDEO_POSTER_POLICY_V1,
-              attempt,
-            }),
-          ),
+        initialAttempt: videoTransformAttempt(services.nowIso()),
+        request: (attempt) =>
+          ({
+            version: "media-transform-video-frames-input-v1",
+            binding: transformBinding,
+            source: transformSource,
+            sourceDurationMs: probe.durationMs,
+            sourceDimensions: { width: probe.width, height: probe.height },
+            posterTimestampMs,
+            posterPolicy: VIDEO_POSTER_POLICY_V1,
+            attempt,
+          }) as const,
+        observe: services.transform.extractVideoFrames,
       },
       services,
     );

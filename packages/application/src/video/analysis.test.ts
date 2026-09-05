@@ -141,7 +141,31 @@ function transformContext(
 function transform(
   overrides: Partial<MediaTransformVideoCapabilities> = {},
 ): MediaTransformVideoCapabilities {
-  return {
+  const capabilities: MediaTransformVideoCapabilities = {
+    allocate: (input) =>
+      Effect.succeed({
+        status: "submitted",
+        attempt: {
+          ...input.attempt,
+          providerJobId: input.binding.requestId,
+          providerJobPhase: "allocated",
+        },
+      }),
+    submit: (input) =>
+      Effect.succeed({
+        status: "processing",
+        attempt: {
+          ...input.attempt,
+          providerJobId: input.binding.requestId,
+          providerJobPhase: "started",
+        },
+      }),
+    observe: ((input) =>
+      input.version === "media-transform-video-probe-input-v1"
+        ? capabilities.probe(input)
+        : input.version === "media-transform-video-audio-input-v1"
+          ? capabilities.extractVideoAudio(input)
+          : capabilities.extractVideoFrames(input)) as MediaTransformVideoCapabilities["observe"],
     probe: (input) =>
       Effect.succeed({
         status: "completed",
@@ -197,8 +221,8 @@ function transform(
       }),
     ...overrides,
   };
+  return capabilities;
 }
-
 function services(input: {
   providers: VideoAnalysisProviders;
   transform?: MediaTransformVideoCapabilities;
@@ -262,17 +286,43 @@ function services(input: {
 }
 
 describe("original-video trusted analysis runtime", () => {
+  test("attempt-store failure escapes without consuming an author retry", async () => {
+    let failures = 0;
+    const runtime = services({
+      providers: providers(),
+      onFailure: () => failures++,
+      transformAttempts: {
+        loadOrCreate: async () => {
+          throw new Error("database unavailable");
+        },
+        advance: async () => {
+          throw new Error("unexpected advance");
+        },
+      },
+    });
+    await expect(
+      runOriginalVideoAnalysis(
+        {
+          submissionId: "video-analysis-submission",
+          operationId: "video-analysis-operation",
+        },
+        runtime,
+      ),
+    ).rejects.toThrow("database unavailable");
+    expect(failures).toBe(0);
+  });
+
   test("persists provider progress and defers without recording a technical failure", async () => {
-    let advanced = 0;
+    const advanced: Array<string | undefined> = [];
     let failures = 0;
     const pendingTransform = transform({
       probe: (input) =>
         Effect.succeed({
-          status: "submitted",
+          status: "processing",
           attempt: {
             ...input.attempt,
-            providerJobId: "b".repeat(32),
-            providerJobPhase: "allocated",
+            providerJobId: input.binding.requestId,
+            providerJobPhase: "started",
           },
         }),
     });
@@ -282,7 +332,7 @@ describe("original-video trusted analysis runtime", () => {
       transformAttempts: {
         loadOrCreate: async ({ initialAttempt }) => initialAttempt,
         advance: async ({ attempt }) => {
-          advanced += 1;
+          advanced.push(attempt.providerJobPhase);
           return attempt;
         },
       },
@@ -295,11 +345,11 @@ describe("original-video trusted analysis runtime", () => {
         runtime,
       ),
     ).rejects.toBeInstanceOf(VideoAnalysisPending);
-    expect(advanced).toBe(1);
+    expect(advanced).toEqual(["allocated", "submitting", "started", "started"]);
     expect(failures).toBe(0);
   });
 
-  test("leaves a retryable provider failure to the bounded outbox retry policy", async () => {
+  test("leaves a retryable provider failure to the durable execution retry policy", async () => {
     let failures = 0;
     const retryableTransform = transform({
       probe: (input) =>

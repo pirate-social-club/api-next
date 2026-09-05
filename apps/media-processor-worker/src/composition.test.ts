@@ -111,6 +111,12 @@ describe("media processor composition", () => {
   test("composes the video consumer through the same transform port and maps its sealed key", async () => {
     let observedObjectKey = "";
     const transform: MediaTransformVideoCapabilities = {
+      allocate: (input) =>
+        Effect.succeed({ status: "unavailable", reason: "disabled", attempt: input.attempt }),
+      submit: (input) =>
+        Effect.succeed({ status: "unavailable", reason: "disabled", attempt: input.attempt }),
+      observe: (input) =>
+        Effect.succeed({ status: "unavailable", reason: "disabled", attempt: input.attempt }),
       probe: (input) => {
         observedObjectKey = input.source.objectKey;
         return Effect.succeed({

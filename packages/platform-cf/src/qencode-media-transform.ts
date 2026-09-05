@@ -12,9 +12,12 @@ import {
   type MediaTransformVideoBinding,
   type MediaTransformVideoFramesInput,
   type MediaTransformVideoFramesOutcome,
+  type MediaTransformVideoJobInput,
+  type MediaTransformVideoJobs,
   type MediaTransformVideoProbe,
   type MediaTransformVideoProbeInput,
   type MediaTransformVideoProbeOutcome,
+  type MediaTransformVideoProgress,
 } from "@pirate/application/media/transform";
 import { VIDEO_INGEST_POLICY_V1, VIDEO_POSTER_POLICY_V1 } from "@pirate/domain";
 import { Effect, Predicate } from "effect";
@@ -715,22 +718,106 @@ function retryable(
   return { status: "retryable_failure" as const, reason, attempt: failureAttempt(input) };
 }
 
-function resumeJob(
+function providerFailure(
+  input: { attempt: MediaTransformAttempt },
+  error: unknown,
+): MediaTransformVideoProgress {
+  if (error instanceof QencodeMalformedResponse)
+    return { status: "malformed_response", reason: "unsupported_shape", attempt: input.attempt };
+  return retryable(
+    input,
+    error instanceof DOMException && error.name === "TimeoutError"
+      ? "timeout"
+      : error instanceof DOMException && error.name === "AbortError"
+        ? "cancelled"
+        : "transport",
+  );
+}
+
+async function allocateOrSubmitJob(
+  operation: "allocate" | "submit",
+  input: MediaTransformVideoJobInput,
+  options: Extract<QencodeMediaTransformOptions, { enabled: true }>,
+): Promise<MediaTransformVideoProgress> {
+  const now = (options.clock ?? Date.now)();
+  if (now >= input.attempt.runtimeFence.runtimeDeadlineMs)
+    return { status: "rejected", reason: "runtime_exceeded", attempt: input.attempt };
+  const timeout = AbortSignal.timeout(
+    Math.min(QENCODE_REQUEST_TIMEOUT_MS, input.attempt.runtimeFence.runtimeDeadlineMs - now),
+  );
+  const signal = input.signal === undefined ? timeout : AbortSignal.any([input.signal, timeout]);
+  if (operation === "allocate") {
+    try {
+      const id = await options.transport.createTask(options.apiKey, signal);
+      return { status: "submitted", attempt: acceptedAttempt(input.attempt, id, "allocated") };
+    } catch (error) {
+      return providerFailure(input, error);
+    }
+  }
+  const providerJobId = input.attempt.providerJobId;
+  if (providerJobId === undefined)
+    throw new MediaTransformRequestInvalid({ reason: "invalid_job_id" });
+  // Grant persistence is not a provider outcome. Database failures escape for
+  // durable-step retry instead of becoming terminal media rejections.
+  const grant = await options.sourceGateway.issue({
+    ...input.source,
+    expiresAtMs: input.attempt.runtimeFence.runtimeDeadlineMs,
+    requestId: input.binding.requestId,
+  });
+  const sourceUrl = new URL(grant.url);
+  if (
+    sourceUrl.protocol !== "https:" ||
+    sourceUrl.username.length > 0 ||
+    sourceUrl.password.length > 0 ||
+    sourceUrl.port.length > 0 ||
+    sourceUrl.search.length > 0 ||
+    sourceUrl.hash.length > 0 ||
+    grant.expiresAtMs <= now ||
+    grant.expiresAtMs > input.attempt.runtimeFence.runtimeDeadlineMs
+  ) {
+    throw new QencodeMalformedResponse();
+  }
+  const capability =
+    input.version === "media-transform-video-probe-input-v1"
+      ? "probe"
+      : input.version === "media-transform-video-audio-input-v1"
+        ? "audio"
+        : "frames";
+  try {
+    const started = await options.transport.startTask({
+      taskToken: providerJobId,
+      query: { source: grant.url, format: formatsFor(input) },
+      payload: payload(input.binding, capability),
+      signal,
+    });
+    if (started === "accepted") {
+      return {
+        status: "processing",
+        attempt: acceptedAttempt(input.attempt, providerJobId, "started"),
+      };
+    }
+    return { status: "rejected", reason: "provider_rejected", attempt: input.attempt };
+  } catch (error) {
+    return providerFailure(input, error);
+  }
+}
+
+function observeJob(
   input: MediaTransformVideoProbeInput,
   options: Extract<QencodeMediaTransformOptions, { enabled: true }>,
   adapterRevision: string,
 ): Promise<MediaTransformVideoProbeOutcome>;
-function resumeJob(
+function observeJob(
   input: MediaTransformVideoAudioInput,
   options: Extract<QencodeMediaTransformOptions, { enabled: true }>,
   adapterRevision: string,
 ): Promise<MediaTransformVideoAudioOutcome>;
-function resumeJob(
+function observeJob(
   input: MediaTransformVideoFramesInput,
   options: Extract<QencodeMediaTransformOptions, { enabled: true }>,
   adapterRevision: string,
 ): Promise<MediaTransformVideoFramesOutcome>;
-async function resumeJob(
+async function observeJob(
   input:
     | MediaTransformVideoProbeInput
     | MediaTransformVideoAudioInput
@@ -751,63 +838,17 @@ async function resumeJob(
   );
   const signal =
     input.signal === undefined ? timeoutSignal : AbortSignal.any([input.signal, timeoutSignal]);
-  let providerJobId = input.attempt.providerJobId;
+  const providerJobId = input.attempt.providerJobId;
+  if (
+    providerJobId === undefined ||
+    !["submitting", "started"].includes(input.attempt.providerJobPhase ?? "")
+  ) {
+    throw new MediaTransformRequestInvalid({ reason: "invalid_job_phase" });
+  }
   try {
-    if (providerJobId === undefined) {
-      providerJobId = await options.transport.createTask(options.apiKey, signal);
-      return {
-        status: "submitted",
-        attempt: acceptedAttempt(input.attempt, providerJobId, "allocated"),
-      };
-    }
-    let status = await options.transport.getStatus(providerJobId, signal);
-    if (
-      input.attempt.providerJobPhase === "started" &&
-      (status.state === "not_started" || status.state === "not_found")
-    ) {
-      return { status: "retryable_failure", reason: "provider", attempt: input.attempt };
-    }
+    const status = await options.transport.getStatus(providerJobId, signal);
     if (status.state === "not_started" || status.state === "not_found") {
-      const grant = await options.sourceGateway.issue({
-        ...input.source,
-        expiresAtMs: input.attempt.runtimeFence.runtimeDeadlineMs,
-        requestId: input.binding.requestId,
-      });
-      const sourceUrl = new URL(grant.url);
-      if (
-        sourceUrl.protocol !== "https:" ||
-        sourceUrl.username.length > 0 ||
-        sourceUrl.password.length > 0 ||
-        sourceUrl.port.length > 0 ||
-        sourceUrl.search.length > 0 ||
-        sourceUrl.hash.length > 0 ||
-        grant.expiresAtMs <= now ||
-        grant.expiresAtMs > input.attempt.runtimeFence.runtimeDeadlineMs
-      ) {
-        throw new QencodeMalformedResponse();
-      }
-      const capability =
-        input.version === "media-transform-video-probe-input-v1"
-          ? "probe"
-          : input.version === "media-transform-video-audio-input-v1"
-            ? "audio"
-            : "frames";
-      const started = await options.transport.startTask({
-        taskToken: providerJobId,
-        query: { source: grant.url, format: formatsFor(input) },
-        payload: payload(input.binding, capability),
-        signal,
-      });
-      if (started === "accepted") {
-        return {
-          status: "processing",
-          attempt: acceptedAttempt(input.attempt, providerJobId, "started"),
-        };
-      }
-      status = await options.transport.getStatus(providerJobId, signal);
-      if (status.state === "not_found" || status.state === "not_started") {
-        return { status: "rejected", reason: "provider_rejected", attempt: input.attempt };
-      }
+      return { status: "not_found", attempt: input.attempt };
     }
     if (status.state === "processing") {
       return {
@@ -837,8 +878,8 @@ async function resumeJob(
       // policy is the fixed server-owned M4A query, not those source facts.
       const artifact = await options.artifacts.seal({
         sourceUrl: output.url,
-        artifactKey: `video-analysis/${input.binding.operationId}/v${input.binding.videoRevision}/a${input.binding.analysisRevision}/soundtrack.m4a`,
-        artifactRef: `media://derived/video-analysis/${input.binding.operationId}/v${input.binding.videoRevision}/a${input.binding.analysisRevision}/soundtrack.m4a`,
+        artifactKey: `video-analysis/${input.binding.operationId}/v${input.binding.videoRevision}/c${input.binding.creationRevision}/a${input.binding.analysisRevision}/soundtrack.m4a`,
+        artifactRef: `media://derived/video-analysis/${input.binding.operationId}/v${input.binding.videoRevision}/c${input.binding.creationRevision}/a${input.binding.analysisRevision}/soundtrack.m4a`,
         mediaType: "audio/mp4",
         maximumBytes: QENCODE_MAX_AUDIO_BYTES,
         sourceSha256: input.source.sha256,
@@ -881,8 +922,8 @@ async function resumeJob(
       }
       const artifact = await options.artifacts.seal({
         sourceUrl: output.url,
-        artifactKey: `video-analysis/${input.binding.operationId}/v${input.binding.videoRevision}/a${input.binding.analysisRevision}/${role}.jpg`,
-        artifactRef: `media://derived/video-analysis/${input.binding.operationId}/v${input.binding.videoRevision}/a${input.binding.analysisRevision}/${role}.jpg`,
+        artifactKey: `video-analysis/${input.binding.operationId}/v${input.binding.videoRevision}/c${input.binding.creationRevision}/a${input.binding.analysisRevision}/${role}.jpg`,
+        artifactRef: `media://derived/video-analysis/${input.binding.operationId}/v${input.binding.videoRevision}/c${input.binding.creationRevision}/a${input.binding.analysisRevision}/${role}.jpg`,
         mediaType: "image/jpeg",
         maximumBytes: input.posterPolicy.maxBytesPerFrame,
         sourceSha256: input.source.sha256,
@@ -940,7 +981,7 @@ function cancelJob(
 
 export function makeQencodeMediaTransform(
   options: QencodeMediaTransformOptions = {},
-): MediaTransformService {
+): MediaTransformService & MediaTransformVideoJobs {
   if (options.enabled !== true) {
     const unavailable = (input: { readonly attempt: MediaTransformAttempt }) =>
       Effect.succeed({
@@ -949,6 +990,9 @@ export function makeQencodeMediaTransform(
         attempt: input.attempt,
       });
     return {
+      allocate: unavailable,
+      submit: unavailable,
+      observe: unavailable as MediaTransformVideoJobs["observe"],
       probe: unavailable as MediaTransformService["probe"],
       extractAudioSample: unavailable,
       extractVideoAudio: unavailable,
@@ -976,25 +1020,45 @@ export function makeQencodeMediaTransform(
   if (!SAFE_IDENTIFIER.test(adapterRevision)) {
     throw new MediaTransformRequestInvalid({ reason: "invalid_adapter_revision" });
   }
+  const boundary = (operation: "allocate" | "submit", input: MediaTransformVideoJobInput) => {
+    const invalid = invalidVideoInput(input);
+    if (invalid !== null) return Effect.fail(invalid);
+    if (
+      operation === "allocate"
+        ? input.attempt.providerJobId !== undefined
+        : input.attempt.providerJobPhase !== "submitting" ||
+          input.attempt.providerJobId === undefined
+    )
+      return Effect.fail(new MediaTransformRequestInvalid({ reason: "invalid_job_phase" }));
+    return Effect.promise(() => allocateOrSubmitJob(operation, input, options));
+  };
   const probeVideo = (input: MediaTransformVideoProbeInput) => {
     const invalid = invalidVideoInput(input);
     return invalid === null
-      ? Effect.promise(() => resumeJob(input, options, adapterRevision))
+      ? Effect.promise(() => observeJob(input, options, adapterRevision))
       : Effect.fail(invalid);
   };
   const audioVideo = (input: MediaTransformVideoAudioInput) => {
     const invalid = invalidVideoInput(input);
     return invalid === null
-      ? Effect.promise(() => resumeJob(input, options, adapterRevision))
+      ? Effect.promise(() => observeJob(input, options, adapterRevision))
       : Effect.fail(invalid);
   };
   const framesVideo = (input: MediaTransformVideoFramesInput) => {
     const invalid = invalidVideoInput(input);
     return invalid === null
-      ? Effect.promise(() => resumeJob(input, options, adapterRevision))
+      ? Effect.promise(() => observeJob(input, options, adapterRevision))
       : Effect.fail(invalid);
   };
   return {
+    allocate: (input) => boundary("allocate", input),
+    submit: (input) => boundary("submit", input),
+    observe: ((input: MediaTransformVideoJobInput) =>
+      input.version === "media-transform-video-probe-input-v1"
+        ? probeVideo(input)
+        : input.version === "media-transform-video-audio-input-v1"
+          ? audioVideo(input)
+          : framesVideo(input)) as MediaTransformVideoJobs["observe"],
     probe: ((input: MediaTransformProbeInput | MediaTransformVideoProbeInput) =>
       input.version === "media-transform-video-probe-input-v1"
         ? probeVideo(input)

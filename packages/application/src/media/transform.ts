@@ -292,7 +292,10 @@ type MediaTransformVideoFrames = Readonly<{
   ];
 }>;
 
-type MediaTransformVideoProgress = MediaTransformProgress &
+export type MediaTransformVideoProgress = (
+  | MediaTransformProgress
+  | Readonly<{ status: "not_found"; attempt: MediaTransformAttempt }>
+) &
   Readonly<{ readonly context?: MediaTransformVideoAttemptContext }>;
 
 export type MediaTransformVideoProbeOutcome =
@@ -322,6 +325,40 @@ export type MediaTransformVideoFramesOutcome =
     }>
   | MediaTransformVideoProgress;
 
+export type MediaTransformVideoJobInput =
+  | MediaTransformVideoProbeInput
+  | MediaTransformVideoAudioInput
+  | MediaTransformVideoFramesInput;
+
+/** Each method is one provider boundary; callers persist phases between effects. */
+export interface MediaTransformVideoJobs {
+  readonly allocate: (
+    input: MediaTransformVideoJobInput,
+  ) => Effect.Effect<MediaTransformVideoProgress, MediaTransformRequestInvalid>;
+  readonly submit: (
+    input: MediaTransformVideoJobInput,
+  ) => Effect.Effect<MediaTransformVideoProgress, MediaTransformRequestInvalid>;
+  readonly observe: {
+    (
+      input: MediaTransformVideoProbeInput,
+    ): Effect.Effect<MediaTransformVideoProbeOutcome, MediaTransformRequestInvalid>;
+    (
+      input: MediaTransformVideoAudioInput,
+    ): Effect.Effect<MediaTransformVideoAudioOutcome, MediaTransformRequestInvalid>;
+    (
+      input: MediaTransformVideoFramesInput,
+    ): Effect.Effect<MediaTransformVideoFramesOutcome, MediaTransformRequestInvalid>;
+    (
+      input: MediaTransformVideoJobInput,
+    ): Effect.Effect<
+      | MediaTransformVideoProbeOutcome
+      | MediaTransformVideoAudioOutcome
+      | MediaTransformVideoFramesOutcome,
+      MediaTransformRequestInvalid
+    >;
+  };
+}
+
 export type MediaTransformCancelOutcome =
   | Readonly<{ readonly status: "cancellation_accepted"; readonly providerJobId: string }>
   | Readonly<{ readonly status: "unavailable"; readonly reason: "disabled" }>
@@ -344,6 +381,7 @@ export type MediaTransformInvalidReason =
   | "invalid_credentials"
   | "invalid_input_version"
   | "invalid_job_id"
+  | "invalid_job_phase"
   | "invalid_limits"
   | "invalid_request_id"
   | "invalid_runtime_fence"
@@ -788,7 +826,7 @@ export interface MediaTransformDanceReferenceService {
 }
 
 /** Narrow view of MediaTransform for the video consumer; this is not a second port. */
-export interface MediaTransformVideoCapabilities {
+export interface MediaTransformVideoCapabilities extends MediaTransformVideoJobs {
   readonly probe: (
     input: MediaTransformVideoProbeInput,
   ) => Effect.Effect<MediaTransformVideoProbeOutcome, MediaTransformRequestInvalid>;

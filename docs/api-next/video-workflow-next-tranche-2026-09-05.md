@@ -1,5 +1,32 @@
 # Video Workflow next tranche
 
+## Adapter boundary checkpoint — 2026-09-05
+
+Qencode now exposes allocate, submit and observe on the application-owned
+video transform port. Allocate returns a task without issuing a grant; submit
+requires persisted submitting and refuses allocated before any effect;
+observe never starts a task and reports not_found for an unstarted or absent
+job. Existing capability-specific entrypoints delegate to observation only.
+Grant-store errors escape as infrastructure failures. Output validation and
+immutable sealing remain shared, with creation revision added to artifact
+paths so a poster retry cannot reuse the previous creation's sealed output.
+
+The old runTransform helper is removed. The local interpreter persists each
+phase before its corresponding effect and no longer converts unknown
+attempt-store failures into author-visible media failures. Its initial runtime
+fence is created separately when each capability begins; loadOrCreate retains
+that capability's original fence on replay. This local interpreter is not a
+durable Workflow runner and is not called by Queue consumption.
+
+Thirty focused adapter/interpreter/composition/FFmpeg tests passed. Both
+PostgreSQL attempt tests passed 23 assertions, including drill 1 with a real
+store: accepted start response lost, persisted submitting restored, status
+observed and promoted to started with one start call. Full check and test
+commands passed. Script-check reported no findings. No full PostgreSQL gate,
+live Qencode job, deployment or rebase ran for this checkpoint. Granular
+Workflow steps, bounded reconciliation, publication wakeups and authenticated
+Workflow absence recovery remain to be composed and tested.
+
 ## Recovery review follow-up — 2026-09-05
 
 Preserved as `66f6bc7bcdd091a999e62c66984fbce905cdaaed`. The
