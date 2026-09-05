@@ -5,7 +5,7 @@
   "version": "0.60.0",
   "releaseType": "video-post-public-projection",
   "wireContract": "guarded original-audio video Post projection with typed playback, thumbnail, DATA registration, caption, sound, origin Post, and origin persona state",
-  "sourceCommit": "pending-review",
+  "sourceCommit": "74c694ebc272897c4891db9bbab5eef3ecb03f38",
   "supersedes": "0.59.0; adds the phase-one public original-audio video projection while retaining song_reference as an unbuilt exhaustive union member.",
   "artifact": {
     "path": "artifacts/api-client/pirate-api-client-0.60.0.tgz",
@@ -24,10 +24,13 @@
   },
   "verification": {
     "checkFresh": "passed",
-    "checkBreaking": "pending; run before publication",
-    "focusedSuites": "passed; see the lane record",
-    "fullUnitSuite": "pending; see the lane record",
-    "packageVerifier": "pending until this ledger entry lands",
-    "repositoryCheck": "pending; see the lane record"
+    "checkBreaking": "passed against origin/main d5c39f7e489b5d9d5b75bb74af239ff406f1fedd",
+    "focusedSuites": "passed: 66 contract, mapper, guarded content and feed tests; covers all private evidence families, enrichment states and malformed playback references",
+    "fullUnitSuite": "passed: 2942 unit tests, 20 Node tests and 131 Workerd tests",
+    "postgres17": "passed on PostgreSQL 17.11: 35 isolated and 325 general tests, including the durable video publication privacy proof; 31 completion markers verified",
+    "packageVerifier": "passed: immutable artifact, provenance, package contents and clean consumer",
+    "repositoryCheck": "passed",
+    "secretBoundaryLocal": "passed: 17 changed files, zero violations; required remote check remains a PR gate",
+    "scriptCheck": "passed: one changed script, zero findings"
   }
 }
