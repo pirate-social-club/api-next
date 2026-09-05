@@ -79,6 +79,10 @@ requiring pre-reset zero conflicts. Only post-replay verification requires
 empty identity state and zero binding violations.
 
 No destructive adapter, live evidence collector, runtime fence, grant-restoring
-path or Postgres reset test is implemented in this checkpoint. Independent
+path is implemented in this checkpoint. The PostgreSQL 17 replay suite proves
+the pinned full chain installs once and an injected mid-chain failure rolls
+back prior migration effects, preserving a separate schema in both cases.
+This is not a destructive reset, runtime-role isolation or captured-data
+recovery rehearsal test; those proofs remain outstanding. Independent
 review and the required Postgres 17 and secret-boundary gates remain mandatory
 before the parent release coordinator may use a completed runner.
