@@ -798,7 +798,11 @@ async function catalogForSchema(admin: Client, schema: string): Promise<SchemaCa
     [schema],
   );
   const columns = await admin.query(
-    `SELECT table_name, column_name, ordinal_position, data_type, is_nullable, column_default
+    // Dropped columns retain physical attribute slots in a migrated database.
+    // Compare visible order, which the normalized baseline can reproduce.
+    `SELECT table_name, column_name,
+       row_number() OVER (PARTITION BY table_name ORDER BY ordinal_position)::integer AS ordinal_position,
+       data_type, is_nullable, column_default
      FROM information_schema.columns
      WHERE table_schema = $1
      ORDER BY table_name, ordinal_position`,

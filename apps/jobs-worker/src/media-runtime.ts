@@ -1,9 +1,16 @@
 import type { ControlPlaneDb, ControlPlaneError } from "@pirate/application";
+import { recoverVideoWorkflowLaunches } from "@pirate/application/video/workflow-recovery";
 import {
   type CloudflareMediaWorkflowBinding,
   makeCloudflareMediaProcessingWorkflowLauncher,
 } from "@pirate/platform-cf/media-processing-cloudflare";
 import { makeMediaProcessingStore } from "@pirate/platform-cf/media-processing-store";
+import { makeControlPlaneVideoAnalysisOutboxRepository } from "@pirate/platform-cf/video-analysis-outbox-repository";
+import {
+  makeCloudflareVideoAnalysisWorkflowLauncher,
+  type VideoAnalysisWorkflowBinding,
+} from "@pirate/platform-cf/video-analysis-workflow-cloudflare";
+import { makeControlPlaneVideoPublicationStore } from "@pirate/platform-cf/video-publication-repository";
 import type { Layer } from "effect";
 import {
   dispatchEligibleMediaOutbox,
@@ -23,6 +30,7 @@ import {
 export type MediaJobsBindings = Readonly<{
   readonly MEDIA_PROCESSING_ENABLED?: string;
   readonly VIDEO_ANALYSIS_ENABLED?: string;
+  readonly VIDEO_ANALYSIS_WORKFLOW?: VideoAnalysisWorkflowBinding;
   readonly MEDIA_PROCESSING_QUEUE?: MediaOutboxDispatchQueue;
   readonly MEDIA_PROCESSING_WORKFLOW?: CloudflareMediaWorkflowBinding;
 }>;
@@ -57,6 +65,20 @@ export function makeMediaMaintenance(
     throw new Error("media Queue and Workflow bindings are required when processing is enabled");
   }
   const queue = env.MEDIA_PROCESSING_QUEUE;
+  if (env.VIDEO_ANALYSIS_ENABLED === "true" && env.VIDEO_ANALYSIS_WORKFLOW === undefined) {
+    throw new Error("video Workflow binding is required when video analysis is enabled");
+  }
+  const videoRecovery =
+    env.VIDEO_ANALYSIS_ENABLED === "true" && env.VIDEO_ANALYSIS_WORKFLOW !== undefined
+      ? {
+          outbox: makeControlPlaneVideoAnalysisOutboxRepository(runtime),
+          store: makeControlPlaneVideoPublicationStore(runtime),
+          launcher: makeCloudflareVideoAnalysisWorkflowLauncher(
+            env.VIDEO_ANALYSIS_WORKFLOW,
+            workflowIsNeverMissingByThrownError,
+          ),
+        }
+      : null;
   const source = makeMediaOutboxDispatchSource(runtime);
   const videoSource =
     env.VIDEO_ANALYSIS_ENABLED === "true" ? makeVideoAnalysisOutboxDispatchSource(runtime) : null;
@@ -68,6 +90,7 @@ export function makeMediaMaintenance(
   return () =>
     runMediaMaintenance({
       dispatch: async () => {
+        if (videoRecovery !== null) await recoverVideoWorkflowLaunches(videoRecovery);
         const [song, video] = await Promise.all([
           dispatchEligibleMediaOutbox(source, queue),
           videoSource === null

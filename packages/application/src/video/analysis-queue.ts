@@ -1,11 +1,5 @@
 import { processingQueueRetryDelaySeconds } from "../processing-queue-primitives.ts";
-import {
-  runOriginalVideoAnalysis,
-  VideoAnalysisPending,
-  VideoAnalysisRetryable,
-  type VideoAnalysisRuntimeServices,
-} from "./analysis.ts";
-import { recordVideoProcessingFailure } from "./publication.ts";
+import type { VideoAnalysisRuntimeServices } from "./analysis.ts";
 
 const identifierPattern = /^\S(?:.*\S)?$/u;
 
@@ -44,8 +38,10 @@ export type VideoAnalysisOutboxRecord = Readonly<{
   readonly videoRevision: number;
   readonly creationRevision: number;
   readonly canonicalVideoSha256: string;
-  readonly state: "pending" | "running" | "poll_wait" | "delivered" | "failed" | "exhausted";
-  readonly deliveryAttempts: number;
+  readonly state: "pending" | "launching" | "launched" | "retry_wait" | "exhausted";
+  readonly launchAttempts: number;
+  readonly workflowInstanceId: string | null;
+  readonly instanceMissing: boolean;
   readonly claimOwner: string | null;
   readonly claimFence: number;
 }>;
@@ -56,15 +52,16 @@ export interface VideoAnalysisOutboxStore {
     effectIdentity: string,
     workerId: string,
   ) => Promise<VideoAnalysisOutboxRecord | null>;
-  readonly complete: (record: VideoAnalysisOutboxRecord) => Promise<boolean>;
-  readonly defer: (
+  readonly markLaunched: (
     record: VideoAnalysisOutboxRecord,
-    retryAfterSeconds: number,
+    instanceId: string,
   ) => Promise<boolean>;
-  readonly fail: (
+  readonly markRetryWait: (
     record: VideoAnalysisOutboxRecord,
     failure: "provider_unavailable" | "provider_timeout" | "provider_invalid",
   ) => Promise<boolean>;
+  readonly markExhausted: (record: VideoAnalysisOutboxRecord) => Promise<boolean>;
+  readonly markInstanceMissing: (record: VideoAnalysisOutboxRecord) => Promise<boolean>;
 }
 
 export type VideoAnalysisQueueDisposition =
@@ -73,7 +70,7 @@ export type VideoAnalysisQueueDisposition =
   | Readonly<{ readonly disposition: "dlq" }>;
 
 export type VideoAnalysisQueueObservation = Readonly<{
-  readonly event: "queue_ack" | "queue_retry" | "queue_dlq" | "analysis_completed";
+  readonly event: "queue_ack" | "queue_retry" | "queue_dlq" | "workflow_launched";
   readonly outboxId?: string;
   readonly submissionId?: string;
   readonly operationId?: string;
@@ -82,6 +79,11 @@ export type VideoAnalysisQueueObservation = Readonly<{
 export type VideoAnalysisQueueDependencies = Readonly<{
   readonly outbox: VideoAnalysisOutboxStore;
   readonly runtime: VideoAnalysisRuntimeServices;
+  readonly launcher: {
+    readonly instanceId: (effectIdentity: string) => Promise<string>;
+    readonly create: (effectIdentity: string) => Promise<"created" | "already_exists">;
+    readonly get: (effectIdentity: string) => Promise<"present" | "missing" | "terminal">;
+  };
   readonly workerId: string;
   readonly observe?: (observation: VideoAnalysisQueueObservation) => void;
 }>;
@@ -104,14 +106,10 @@ function observe(
 }
 
 function retryDelay(record: VideoAnalysisOutboxRecord | null): number {
-  return processingQueueRetryDelaySeconds(Math.max(1, record?.deliveryAttempts ?? 1));
+  return processingQueueRetryDelaySeconds(Math.max(1, record?.launchAttempts ?? 1));
 }
 
-/**
- * Claims and executes one durable analysis intent. A crash after publication
- * but before completion re-enters the idempotent publication fence, while an
- * expired running claim can be recovered by another worker.
- */
+/** Launch delivery only. Provider execution and waiting belong to the Workflow. */
 export async function consumeVideoAnalysisQueueMessage(
   body: unknown,
   dependencies: VideoAnalysisQueueDependencies,
@@ -123,82 +121,88 @@ export async function consumeVideoAnalysisQueueMessage(
     observe(dependencies, "queue_dlq");
     return { disposition: "dlq" };
   }
-
   const existing = await dependencies.outbox.get(message.outbox_id);
-  if (existing === null) {
-    observe(dependencies, "queue_dlq");
-    return { disposition: "dlq" };
-  }
-  if (existing.state === "delivered") {
+  if (existing === null) return { disposition: "dlq" };
+  if (
+    existing.state === "exhausted" ||
+    (existing.state === "launched" && !existing.instanceMissing)
+  ) {
     observe(dependencies, "queue_ack", existing);
     return { disposition: "ack" };
   }
+  const prior = await dependencies.runtime.store.getSubmissionByOperation(existing);
   if (
-    existing.state === "exhausted" ||
-    (existing.deliveryAttempts >= 3 && existing.state !== "poll_wait")
+    prior?.state.creationRevision === existing.creationRevision &&
+    prior.state.videoRevision === existing.videoRevision &&
+    prior.state.status === "processing_failed" &&
+    existing.state === "launching" &&
+    existing.launchAttempts === 3
   ) {
-    observe(dependencies, "queue_dlq", existing);
-    return { disposition: "dlq" };
+    return (await dependencies.outbox.markExhausted(existing))
+      ? { disposition: "ack" }
+      : { disposition: "retry", delaySeconds: retryDelay(existing) };
   }
-
+  if (
+    prior === null ||
+    prior.state.creationRevision !== existing.creationRevision ||
+    prior.state.videoRevision !== existing.videoRevision ||
+    prior.state.status !== "processing" ||
+    prior.state.decision !== null
+  )
+    return { disposition: "ack" };
   const claimed = await dependencies.outbox.claim(existing.effectIdentity, dependencies.workerId);
-  if (claimed === null) {
-    const refreshed = await dependencies.outbox.get(existing.effectIdentity);
-    if (refreshed?.state === "delivered") return { disposition: "ack" };
-    return { disposition: "retry", delaySeconds: retryDelay(refreshed) };
-  }
-
+  if (claimed === null) return { disposition: "retry", delaySeconds: retryDelay(existing) };
   const authority = await dependencies.runtime.store.getSubmissionByOperation({
     submissionId: claimed.submissionId,
     operationId: claimed.operationId,
   });
   if (
     authority === null ||
-    authority.state.submissionId !== claimed.submissionId ||
-    authority.state.operationId !== claimed.operationId ||
     authority.state.videoRevision !== claimed.videoRevision ||
     authority.state.creationRevision !== claimed.creationRevision ||
     authority.state.video?.canonicalSha256 !== claimed.canonicalVideoSha256
   ) {
-    await dependencies.outbox.fail(claimed, "provider_invalid");
-    observe(dependencies, "queue_dlq", claimed);
-    return { disposition: "dlq" };
-  }
-
-  try {
-    await runOriginalVideoAnalysis(
-      { submissionId: claimed.submissionId, operationId: claimed.operationId },
-      dependencies.runtime,
-    );
-    const completed = await dependencies.outbox.complete(claimed);
-    if (!completed) throw new Error("video analysis outbox completion fence was lost");
-    observe(dependencies, "analysis_completed", claimed);
-    observe(dependencies, "queue_ack", claimed);
+    // Superseded intents cannot launch. The sweep also checks current authority.
     return { disposition: "ack" };
-  } catch (error) {
-    if (error instanceof VideoAnalysisPending) {
-      const deferred = await dependencies.outbox.defer(claimed, error.retryAfterSeconds);
-      if (!deferred) return { disposition: "retry", delaySeconds: retryDelay(claimed) };
-      observe(dependencies, "queue_retry", claimed);
-      return { disposition: "retry", delaySeconds: error.retryAfterSeconds };
+  }
+  if (authority.state.decision !== null || authority.state.status !== "processing") {
+    // PostgreSQL outcomes outlive the provider's instance-retention period.
+    return { disposition: "ack" };
+  }
+  const instanceId = await dependencies.launcher.instanceId(claimed.effectIdentity);
+  // No database operation belongs in this catch: only a failed provider create
+  // consumes the launch-failure path. A lost acknowledgement reuses the same ID.
+  try {
+    await dependencies.launcher.create(claimed.effectIdentity);
+  } catch {
+    if (claimed.launchAttempts >= 3) {
+      // Three lost responses still do not prove three rejected launches.
+      // Resolve the deterministic instance before permitting an author retry.
+      const status = await dependencies.launcher.get(claimed.effectIdentity);
+      if (status === "present") {
+        return (await dependencies.outbox.markLaunched(claimed, instanceId))
+          ? { disposition: "ack" }
+          : { disposition: "retry", delaySeconds: retryDelay(claimed) };
+      }
+      if (authority.state.status === "processing" && authority.state.decision === null) {
+        await dependencies.runtime.store.recordProcessingFailure({
+          submission: authority.state,
+          failureCode: "transform_failed",
+          evidenceRef: `video-workflow-launch-exhausted:${instanceId}`,
+        });
+      }
+      if (!(await dependencies.outbox.markExhausted(claimed))) {
+        return { disposition: "retry", delaySeconds: retryDelay(claimed) };
+      }
+      return { disposition: "ack" };
     }
-    if (error instanceof VideoAnalysisRetryable && claimed.deliveryAttempts >= 3) {
-      await recordVideoProcessingFailure(
-        {
-          submissionId: claimed.submissionId,
-          operationId: claimed.operationId,
-          failureCode: error.failureCode,
-          evidenceRef: error.evidenceRef,
-        },
-        dependencies.runtime,
-      );
-    }
-    const failed = await dependencies.outbox.fail(claimed, "provider_unavailable");
-    if (!failed || claimed.deliveryAttempts >= 3) {
-      observe(dependencies, "queue_dlq", claimed);
-      return { disposition: "dlq" };
-    }
+    await dependencies.outbox.markRetryWait(claimed, "provider_unavailable");
     observe(dependencies, "queue_retry", claimed);
     return { disposition: "retry", delaySeconds: retryDelay(claimed) };
   }
+  if (!(await dependencies.outbox.markLaunched(claimed, instanceId))) {
+    return { disposition: "retry", delaySeconds: retryDelay(claimed) };
+  }
+  observe(dependencies, "workflow_launched", claimed);
+  return { disposition: "ack" };
 }

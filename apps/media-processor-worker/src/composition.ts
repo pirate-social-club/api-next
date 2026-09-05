@@ -36,6 +36,10 @@ import {
   type QencodeTaskTransport,
 } from "@pirate/platform-cf/qencode-media-transform";
 import { makeControlPlaneVideoAnalysisOutboxRepository } from "@pirate/platform-cf/video-analysis-outbox-repository";
+import {
+  makeCloudflareVideoAnalysisWorkflowLauncher,
+  type VideoAnalysisWorkflowBinding,
+} from "@pirate/platform-cf/video-analysis-workflow-cloudflare";
 import { makeControlPlaneVideoPublicationStore } from "@pirate/platform-cf/video-publication-repository";
 import { Effect } from "effect";
 import type { MediaProcessorComposition, MediaProcessorWorkerEnv } from "./index.ts";
@@ -61,6 +65,7 @@ export type MediaProcessorRuntimeEnv = MediaProcessorWorkerEnv &
     readonly DATA_REGISTRATION_ENABLED?: string;
     readonly DATA_REGISTRATION_CHAIN_ID?: string;
     readonly VIDEO_ANALYSIS_ENABLED?: string;
+    readonly VIDEO_ANALYSIS_WORKFLOW?: VideoAnalysisWorkflowBinding;
   }>;
 
 export type MediaProcessorRuntimeAdapters = Readonly<{
@@ -355,13 +360,22 @@ export function makeMediaProcessorComposition(
       ? videoTransform(env, adapters.videoAnalysis)
       : undefined;
 
+  if (videoAnalysisEnabled && env.VIDEO_ANALYSIS_WORKFLOW === undefined) {
+    throw new Error("VIDEO_ANALYSIS_WORKFLOW is required when video analysis is enabled");
+  }
+
   return {
     queue: { store, workflow, workerId },
     ...(videoAnalysisRepository !== undefined &&
     enabledVideoTransform !== undefined &&
-    adapters.videoAnalysis !== undefined
+    adapters.videoAnalysis !== undefined &&
+    env.VIDEO_ANALYSIS_WORKFLOW !== undefined
       ? {
           videoAnalysis: {
+            launcher: makeCloudflareVideoAnalysisWorkflowLauncher(
+              env.VIDEO_ANALYSIS_WORKFLOW,
+              workflowIsNeverMissingByThrownError,
+            ),
             outbox: videoAnalysisRepository,
             runtime: {
               store: makeControlPlaneVideoPublicationStore(runtime),

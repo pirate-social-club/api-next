@@ -1,0 +1,169 @@
+{
+  "scope": "Local launch-only checkpoint; no remote gate or provider activation",
+  "check_exit": 0,
+  "unit_tests": 2959,
+  "node_tests": 20,
+  "workerd_tests": 131,
+  "full_postgres": {
+    "postgres_exit": 1,
+    "sentinel_exit": null
+  },
+  "continuation": {
+    "foundation_exit": 0,
+    "sentinel_exit": 0
+  },
+  "full_postgres_failure": "Normalized catalog compared physical column ordinal gaps left by DROP COLUMN; corrected to visible column order",
+  "foundation_retry_tests": 14,
+  "secret_boundary": {
+    "changed_files": 40,
+    "violations": 0
+  },
+  "sentinels": {
+    "CONTROL_PLANE_POSTGRES_CANONICAL_ROUTE_MIGRATION_TEST_SENTINEL": {
+      "original_path": "/tmp/video-launch-postgres-1i4k9u2a/control_plane_postgres_canonical_route_migration_test_sentinel",
+      "contents": "api-next-control-plane-postgres-canonical-route-migration-suite-complete\n"
+    },
+    "CONTROL_PLANE_POSTGRES_CANONICAL_ROUTE_TEST_SENTINEL": {
+      "original_path": "/tmp/video-launch-postgres-1i4k9u2a/control_plane_postgres_canonical_route_test_sentinel",
+      "contents": "api-next-control-plane-postgres-canonical-route-suite-complete\n"
+    },
+    "CONTROL_PLANE_POSTGRES_COMMUNITY_CREATION_TEST_SENTINEL": {
+      "original_path": "/tmp/video-launch-postgres-1i4k9u2a/control_plane_postgres_community_creation_test_sentinel",
+      "contents": "api-next-control-plane-postgres-community-creation-suite-complete\n"
+    },
+    "CONTROL_PLANE_POSTGRES_COMMUNITY_MODERATION_TEST_SENTINEL": {
+      "original_path": "/tmp/video-launch-postgres-1i4k9u2a/control_plane_postgres_community_moderation_test_sentinel",
+      "contents": "api-next-control-plane-postgres-community-moderation-suite-complete\n"
+    },
+    "CONTROL_PLANE_POSTGRES_COMMUNITY_PURCHASE_FUNDING_TEST_SENTINEL": {
+      "original_path": "/tmp/video-launch-postgres-1i4k9u2a/control_plane_postgres_community_purchase_funding_test_sentinel",
+      "contents": "api-next-control-plane-postgres-community-purchase-funding-suite-complete\n"
+    },
+    "CONTROL_PLANE_POSTGRES_COMMUNITY_TEST_SENTINEL": {
+      "original_path": "/tmp/video-launch-postgres-1i4k9u2a/control_plane_postgres_community_test_sentinel",
+      "contents": "api-next-control-plane-postgres-community-suite-complete\n"
+    },
+    "CONTROL_PLANE_POSTGRES_CONTENT_TEST_SENTINEL": {
+      "original_path": "/tmp/video-launch-postgres-1i4k9u2a/control_plane_postgres_content_test_sentinel",
+      "contents": "api-next-control-plane-postgres-content-suite-complete\n"
+    },
+    "CONTROL_PLANE_POSTGRES_DANCE_REFERENCE_TEST_SENTINEL": {
+      "original_path": "/tmp/video-launch-postgres-1i4k9u2a/control_plane_postgres_dance_reference_test_sentinel",
+      "contents": "api-next-control-plane-postgres-dance-reference-suite-complete\n"
+    },
+    "CONTROL_PLANE_POSTGRES_FEED_TEST_SENTINEL": {
+      "original_path": "/tmp/video-launch-postgres-1i4k9u2a/control_plane_postgres_feed_test_sentinel",
+      "contents": "api-next-control-plane-postgres-feed-suite-complete\n"
+    },
+    "CONTROL_PLANE_POSTGRES_FOUNDATION_TEST_SENTINEL": {
+      "original_path": "/tmp/video-launch-postgres-1i4k9u2a/control_plane_postgres_foundation_test_sentinel",
+      "contents": "api-next-control-plane-postgres-foundation-suite-complete\n"
+    },
+    "CONTROL_PLANE_POSTGRES_GATES_V2_COMMUNITY_TEST_SENTINEL": {
+      "original_path": "/tmp/video-launch-postgres-1i4k9u2a/control_plane_postgres_gates_v2_community_test_sentinel",
+      "contents": "api-next-control-plane-postgres-gates-v2-community-suite-complete\n"
+    },
+    "CONTROL_PLANE_POSTGRES_HANDLE_SALES_TEST_SENTINEL": {
+      "original_path": "/tmp/video-launch-postgres-1i4k9u2a/control_plane_postgres_handle_sales_test_sentinel",
+      "contents": "api-next-control-plane-postgres-handle-sales-suite-complete\n"
+    },
+    "CONTROL_PLANE_POSTGRES_HNS_HOST_PERSISTENCE_TEST_SENTINEL": {
+      "original_path": "/tmp/video-launch-postgres-1i4k9u2a/control_plane_postgres_hns_host_persistence_test_sentinel",
+      "contents": "api-next-control-plane-postgres-hns-host-persistence-suite-complete\n"
+    },
+    "CONTROL_PLANE_POSTGRES_HNS_OBSERVER_TEST_SENTINEL": {
+      "original_path": "/tmp/video-launch-postgres-1i4k9u2a/control_plane_postgres_hns_observer_test_sentinel",
+      "contents": "api-next-control-plane-postgres-hns-observer-suite-complete\n"
+    },
+    "CONTROL_PLANE_POSTGRES_IDENTITY_TEST_SENTINEL": {
+      "original_path": "/tmp/video-launch-postgres-1i4k9u2a/control_plane_postgres_identity_test_sentinel",
+      "contents": "api-next-control-plane-postgres-identity-suite-complete\n"
+    },
+    "CONTROL_PLANE_POSTGRES_MEDIA_MIGRATIONS_TEST_SENTINEL": {
+      "original_path": "/tmp/video-launch-postgres-1i4k9u2a/control_plane_postgres_media_migrations_test_sentinel",
+      "contents": "api-next-control-plane-postgres-media-migrations-suite-complete\n"
+    },
+    "CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL": {
+      "original_path": "/tmp/video-launch-postgres-1i4k9u2a/control_plane_postgres_media_persistence_test_sentinel",
+      "contents": "api-next-control-plane-postgres-media-persistence-suite-complete\n"
+    },
+    "CONTROL_PLANE_POSTGRES_MIGRATION_TEST_SENTINEL": {
+      "original_path": "/tmp/video-launch-postgres-1i4k9u2a/control_plane_postgres_migration_test_sentinel",
+      "contents": "api-next-control-plane-postgres-migration-suite-complete\n"
+    },
+    "CONTROL_PLANE_POSTGRES_NAMESPACE_OWNERSHIP_TEST_SENTINEL": {
+      "original_path": "/tmp/video-launch-postgres-1i4k9u2a/control_plane_postgres_namespace_ownership_test_sentinel",
+      "contents": "api-next-control-plane-postgres-namespace-ownership-suite-complete\n"
+    },
+    "CONTROL_PLANE_POSTGRES_OPTIONAL_ROUTE_V2_TEST_SENTINEL": {
+      "original_path": "/tmp/video-launch-postgres-1i4k9u2a/control_plane_postgres_optional_route_v2_test_sentinel",
+      "contents": "api-next-control-plane-postgres-optional-route-v2-suite-complete\n"
+    },
+    "CONTROL_PLANE_POSTGRES_PERSONA_TEST_SENTINEL": {
+      "original_path": "/tmp/video-launch-postgres-1i4k9u2a/control_plane_postgres_persona_test_sentinel",
+      "contents": "api-next-control-plane-postgres-persona-suite-complete\n"
+    },
+    "CONTROL_PLANE_POSTGRES_PLATFORM_PIRATE_RENAME_TEST_SENTINEL": {
+      "original_path": "/tmp/video-launch-postgres-1i4k9u2a/control_plane_postgres_platform_pirate_rename_test_sentinel",
+      "contents": "api-next-control-plane-postgres-platform-pirate-rename-suite-complete\n"
+    },
+    "CONTROL_PLANE_POSTGRES_PUBLIC_COMMUNITY_THREADS_TEST_SENTINEL": {
+      "original_path": "/tmp/video-launch-postgres-1i4k9u2a/control_plane_postgres_public_community_threads_test_sentinel",
+      "contents": "api-next-control-plane-postgres-public-community-threads-suite-complete\n"
+    },
+    "CONTROL_PLANE_POSTGRES_PUBLIC_POST_SLUG_TEST_SENTINEL": {
+      "original_path": "/tmp/video-launch-postgres-1i4k9u2a/control_plane_postgres_public_post_slug_test_sentinel",
+      "contents": "api-next-control-plane-postgres-public-post-slug-suite-complete\n"
+    },
+    "CONTROL_PLANE_POSTGRES_PUBLIC_PROFILE_TEST_SENTINEL": {
+      "original_path": "/tmp/video-launch-postgres-1i4k9u2a/control_plane_postgres_public_profile_test_sentinel",
+      "contents": "api-next-control-plane-postgres-public-profile-suite-complete\n"
+    },
+    "CONTROL_PLANE_POSTGRES_REWARDS_QUALIFICATION_TEST_SENTINEL": {
+      "original_path": "/tmp/video-launch-postgres-1i4k9u2a/control_plane_postgres_rewards_qualification_test_sentinel",
+      "contents": "api-next-control-plane-postgres-rewards-qualification-suite-complete\n"
+    },
+    "CONTROL_PLANE_POSTGRES_REWARDS_SONG_OFFERS_TEST_SENTINEL": {
+      "original_path": "/tmp/video-launch-postgres-1i4k9u2a/control_plane_postgres_rewards_song_offers_test_sentinel",
+      "contents": "api-next-control-plane-postgres-rewards-song-offers-suite-complete\n"
+    },
+    "CONTROL_PLANE_POSTGRES_TEST_SENTINEL": {
+      "original_path": "/tmp/video-launch-postgres-1i4k9u2a/control_plane_postgres_test_sentinel",
+      "contents": "api-next-control-plane-postgres-adapter-suite-complete\n"
+    },
+    "CONTROL_PLANE_POSTGRES_TEXT_SUBMISSION_TEST_SENTINEL": {
+      "original_path": "/tmp/video-launch-postgres-1i4k9u2a/control_plane_postgres_text_submission_test_sentinel",
+      "contents": "api-next-control-plane-postgres-text-submission-suite-complete\n"
+    },
+    "CONTROL_PLANE_POSTGRES_VERIFICATION_START_TEST_SENTINEL": {
+      "original_path": "/tmp/video-launch-postgres-1i4k9u2a/control_plane_postgres_verification_start_test_sentinel",
+      "contents": "api-next-control-plane-postgres-verification-start-suite-complete\n"
+    },
+    "CONTROL_PLANE_POSTGRES_VERIFICATION_TEST_SENTINEL": {
+      "original_path": "/tmp/video-launch-postgres-1i4k9u2a/control_plane_postgres_verification_test_sentinel",
+      "contents": "api-next-control-plane-postgres-verification-suite-complete\n"
+    }
+  },
+  "logs": {
+    "/tmp/video-launch-postgres-1i4k9u2a/postgres.log": {
+      "sha256": "ab5f7dd5a311d9f59d08777a16ea1b550ac5a69bf0b321a14e64df245fc01a9d",
+      "bytes": 57774
+    },
+    "/tmp/video-launch-postgres-1i4k9u2a/foundation-retry.log": {
+      "sha256": "76d62481b88f0cdb7b8639dfa1cd467c06c7947deac74684d4106a6a1a55e673",
+      "bytes": 2086
+    },
+    "/tmp/video-launch-postgres-1i4k9u2a/sentinel-verification.log": {
+      "sha256": "6fedbc72cacc72c03698ab91c834d45de2f2d842878bf8b191b2bb4326c72006",
+      "bytes": 47
+    },
+    "/tmp/video-launch-only-test-verified.log": {
+      "sha256": "657980e41e0de6ddeaad7650f2634184e918d455eccc9182204450f8f7ee1883",
+      "bytes": 365101
+    },
+    "/tmp/video-launch-only-check-final.log": {
+      "sha256": "7130255928fc7549f3b177e579c8e6c5c085330e124f461fe3ece81eb4443592",
+      "bytes": 18380
+    }
+  }
+}

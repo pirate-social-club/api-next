@@ -1034,6 +1034,9 @@ export function makeControlPlaneVideoPublicationStore(
               if (
                 current === null ||
                 current.state.status !== "processing" ||
+                current.state.creationRevision !== input.submission.creationRevision ||
+                current.state.videoRevision !== input.submission.videoRevision ||
+                current.state.analysisRevision !== input.submission.analysisRevision ||
                 !["analysis", "publish"].includes(current.state.phase ?? "")
               ) {
                 throw new Error("video processing failure fence rejected");
@@ -1047,8 +1050,14 @@ export function makeControlPlaneVideoPublicationStore(
               yield* updateSubmissionSnapshot(tx, {
                 prior: current.state,
                 next,
-                extraSql: ",failure_evidence_ref=$10",
-                extraValues: [input.evidenceRef],
+                extraSql:
+                  ",failure_evidence_ref=$10,failure_retry_count=$11,retryable=$12,last_safe_phase=$13",
+                extraValues: [
+                  input.evidenceRef,
+                  current.state.retryCount,
+                  current.state.retryCount < 3,
+                  current.state.phase,
+                ],
               });
               return { ...current, state: next, updatedAt: new Date().toISOString() };
             }),
@@ -1189,7 +1198,8 @@ export function makeControlPlaneVideoPublicationStore(
               yield* updateSubmissionSnapshot(tx, {
                 prior: current.state,
                 next,
-                extraSql: ",failure_evidence_ref=NULL",
+                extraSql:
+                  ",failure_evidence_ref=NULL,failure_retry_count=NULL,retryable=NULL,last_safe_phase=NULL",
               });
               if (!publicationOnly) {
                 yield* tx.execute({

@@ -22,6 +22,12 @@ BEGIN
 END
 $preflight$;
 
+-- The video failure writer already persists this private evidence reference;
+-- 0114 omitted its storage column. It is never projected into the wire shape.
+ALTER TABLE media_post_submissions
+  ADD COLUMN failure_evidence_ref TEXT
+    CHECK (failure_evidence_ref IS NULL OR btrim(failure_evidence_ref) <> '');
+
 ALTER TABLE media_video_transform_attempts
   ADD COLUMN creation_revision BIGINT NOT NULL CHECK (creation_revision > 0),
   DROP CONSTRAINT media_video_transform_attempt_submission_id_video_revision__key,

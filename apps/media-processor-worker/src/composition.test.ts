@@ -49,6 +49,10 @@ describe("media processor composition", () => {
           MediaProcessorRuntimeEnv["MEDIA_PROCESSING_WORKFLOW"]
         >,
         VIDEO_ANALYSIS_ENABLED: "true",
+        VIDEO_ANALYSIS_WORKFLOW: {
+          createBatch: async () => [],
+          get: async () => ({ status: async () => ({ status: "running" }) }),
+        },
       }),
     ).toThrow("video analysis providers are required");
   });
@@ -130,6 +134,10 @@ describe("media processor composition", () => {
           MediaProcessorRuntimeEnv["MEDIA_PROCESSING_WORKFLOW"]
         >,
         VIDEO_ANALYSIS_ENABLED: "true",
+        VIDEO_ANALYSIS_WORKFLOW: {
+          createBatch: async () => [],
+          get: async () => ({ status: async () => ({ status: "running" }) }),
+        },
       },
       { videoAnalysis: { providers, transform } },
     );

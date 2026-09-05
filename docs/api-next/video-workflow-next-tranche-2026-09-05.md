@@ -1,5 +1,99 @@
 # Video Workflow next tranche
 
+## Launch checkpoint validation — 2026-09-05
+
+The final `bun run check` passed. `bun run test` passed 2,959 unit, 20 Node
+and 131 workerd tests. Earlier runs exposed an obsolete FFmpeg test that still
+expected Queue delivery to execute analysis, and missing package exports and
+workerd source aliases. Those were corrected before the successful full run.
+The local secret-boundary audit found no violations across 40 changed files;
+script-check reported no findings and one existing size advisory.
+
+The full `bun run test:postgres` command exited 1: the isolated partition
+passed, and the general partition reported 336 passes and one failure. The
+catalog comparison used physical column ordinals, which retain a gap after
+0120 drops the old column; a normalized baseline cannot retain that gap.
+The comparison now checks visible column order while retaining all schema
+attributes. The entire foundation suite then passed 14 tests, and verification
+of all isolated run-specific sentinels passed. This continuation does not
+change the failed full command's exit code; remote PostgreSQL CI remains owed.
+
+The [validation inventory](evidence/video-execution-2026-09-05/launch-validation.json)
+preserves sentinel contents, command outcomes and log digests. Raw logs remain
+under the recorded temporary paths and are not archived. The
+[record amendment](evidence/video-execution-2026-09-05/launch-only-record-amendment.patch)
+already landed as control-plane commit 05e6e820 and must not be reapplied.
+No rebase, push, provider call or deployment occurred.
+
+## Launch-only conversion — 2026-09-05
+
+The Queue consumer now launches a deterministic Workflow and never calls the
+old analysis interpreter. The outbox uses a short launch lease and separate
+launch attempts, markLaunched, retry-wait, exhaustion and missing-instance
+facts; defer and completion are removed. A create response lost after
+acceptance converges through createBatch on redelivery. Database errors after
+create remain database failures rather than consuming the failed-create path.
+Before exhausting three failed create calls, inspect the existing instance:
+three lost responses do not prove three rejected launches. Unknown lookup
+errors leave reconciliation pending rather than permitting an unsafe retry.
+
+Recovery reloads PostgreSQL authority first, then checks instance status.
+Confirmed missing instances become eligible for Queue dispatch; terminal
+instances without an outcome record transform_failed with the exact observed
+Workflow status in private evidence. An expired launch claim is reconciled
+under its old fence after inspection, without incrementing the counter or
+creating an instance. The bounded scan rotates observed rows so the first page
+of long-running instances cannot starve later work. A failed final outcome
+write or lost exhaustion fence remains recoverable. The jobs tick invokes
+this recovery before dispatch; full class/Binding registration remains part
+of the runner composition tranche.
+
+The PostgreSQL terminal drill reproduced two existing failure-writer defects:
+SQLSTATE 42703 for the missing failure_evidence_ref column, then SQLSTATE 23514
+for media_post_submissions_shape because required failure metadata was absent.
+The unmerged 0120 now includes the private evidence column; its checksum and
+baseline were regenerated. Failure writes now include retry metadata and the
+last safe phase. They also fence creation, video and analysis revision, so an
+old launch cannot fail a newer attempt. This necessary publication-store fix
+precedes, and does not implement, the later transactional publication wakeups.
+
+Ten focused PostgreSQL cases passed after these repairs, including missing
+and terminal recovery, the expired launch completion fence, and the migration
+guards. A composed makeMediaProcessorQueueWorker test uses the real launcher
+adapter with a fake binding that accepts create and loses its response. This
+is the launch half of drill 3, not publication/encode acceptance.
+
+Production absence classification remains an explicit proof gap. The
+[Workers API](https://developers.cloudflare.com/workflows/build/workers-api/#get)
+documents a missing-instance exception without a distinct stable error shape.
+The inspected [local SDK binding](https://github.com/cloudflare/workers-sdk/blob/main/packages/workflows-shared/src/binding.ts)
+maps any status exception to instance.not_found, so that emulator message alone
+does not distinguish transport failure from absence. Keep the production
+classifier fail-closed until authenticated absence evidence is verified. Fake
+missing/terminal tests establish repository behavior, not that live exception
+contract. No provider, deployment or staging operation ran for this tranche.
+
+## Latent adapter/store mismatch at 6bd80bf9 — 2026-09-05
+
+Tip 6bd80bf9 is intentionally inconsistent at the submit boundary. The real
+attempt store rejects allocated directly to started. Qencode resumeJob still
+issues the grant and starts the provider from allocated, then returns started;
+the analysis caller tries to persist that forbidden transition after the
+external effect. Its broad capability catch converts the repository error
+into probe_failed or transform_failed. Neither the analysis fake store nor
+adapter-only tests exercise this composition. Keep it disabled; green unit
+tests do not prove safe submission at this tip.
+
+The first runner commit must split the adapter into allocate, submit and
+observe operations. The runner durably persists submitting before submit.
+Recovery from submitting observes status without blindly submitting again.
+Separate provider/media outcomes from repository failures: a transient
+database error must retry the durable operation, not become an author-visible
+terminal media failure. Prove the boundary with the real attempt store and a
+fake provider before enabling composition. The launch-only conversion is
+independent and must not execute this old analysis path. Rebase again only
+at PR preparation, with a fresh migration inventory.
+
 This records the supplied checkpoint review and the resulting implementation
 order for `api-video-execution-completion`. The control-plane amendment landed
 in `82da717` after the other writer checkpointed. That record reserves

@@ -13,6 +13,7 @@ import {
   VIDEO_MULTIPART_PART_SIZE_BYTES,
   type VideoPublicationServices,
 } from "../../application/src/video/publication.ts";
+import { recoverVideoWorkflowLaunches } from "../../application/src/video/workflow-recovery.ts";
 import {
   attachVideoDecision,
   createOriginalVideoSubmission,
@@ -94,6 +95,95 @@ async function fixture<A>(use: (admin: Client, connection: string) => Promise<A>
   });
 }
 
+async function finalizedFixture(connection: string) {
+  const layer = makeDirectPostgresControlPlaneLayer(connection);
+  const store = makeControlPlaneVideoPublicationStore(layer);
+  const reservationResponse = new TextEncoder().encode('{"reservation_id":"fixture"}');
+  const reservationResponseSha = sha256(reservationResponse);
+  await store.createReservation({
+    record: {
+      reservationId,
+      communityId: community,
+      actorAccountId: actor,
+      authorPersonaId: persona,
+      requestHash: "c".repeat(64),
+      expectedContentType: "video/mp4",
+      expectedSizeBytes: 1_024,
+      expectedSha256: videoSha256,
+      ingestPolicyRevision: 1,
+      uploadId: "multipart-upload-fixture",
+      partSizeBytes: 10 * 1024 * 1024,
+      partCount: 1,
+      expiresAt: "2099-09-04T01:00:00.000Z",
+      state: "issued",
+      submissionId: null,
+      operationId: null,
+      manifest: null,
+      responseBytes: reservationResponse,
+      updatedAt: "2026-09-04T00:00:00.000Z",
+    },
+    idempotencyKey: "reserve-fixture",
+    responseSha256: reservationResponseSha,
+    parts: [
+      {
+        partNumber: 1,
+        url: "https://upload.invalid/part-one",
+        expiresAt: "2099-09-04T01:00:00.000Z",
+      },
+    ],
+  });
+  const initial = createOriginalVideoSubmission({
+    submissionId,
+    operationId,
+    communityId: community,
+    actorAccountId: actor,
+    authorPersonaId: persona,
+    reservationId,
+    caption: null,
+    authorDeclaredRating: "general",
+  });
+  await store.createSubmission({
+    state: initial,
+    idempotencyKey: "create-fixture",
+    requestHash: "d".repeat(64),
+    startInput: { version: "video-start-input-v1", video_reservation_id: reservationId },
+    responseBytes,
+    responseSha256,
+  });
+  await store.beginFinalize({
+    submission: initial,
+    expectedCreationRevision: 1,
+    posterTimestampMs: 1_000,
+    manifest: [{ partNumber: 1, etag: "etag-one" }],
+  });
+  await store.recordMultipartCompleted({
+    submission: initial,
+    manifest: [{ partNumber: 1, etag: "etag-one" }],
+  });
+  await store.finalizeSealed({
+    submission: initial,
+    expectedCreationRevision: 1,
+    immutable: {
+      immutableRef: `media://immutable/${operationId}/video/1`,
+      destinationRef: `r2://immutable/${operationId}/video/1`,
+      etag: "immutable-etag",
+      objectVersion: "immutable-version",
+      sizeBytes: 1_024,
+      contentType: "video/mp4",
+      canonicalSha256: videoSha256,
+    },
+    responseBytes,
+    responseSha256,
+    endpointTemplate: "/media-post-submissions/:submissionId/finalize",
+    idempotencyKey: "finalize-fixture",
+    requestHash: "e".repeat(64),
+  });
+  const finalized = await store.getSubmissionByOperation({ submissionId, operationId });
+  expect(finalized?.state.phase).toBe("analysis");
+  if (finalized === null) throw new Error("finalized fixture missing");
+  return { layer, store, finalized };
+}
+
 function trustedAnalysis(): VideoTrustedAnalysis {
   const frames = ["poster", "first", "midpoint"].map((role, index) => ({
     role: role as "poster" | "first" | "midpoint",
@@ -162,6 +252,96 @@ function trustedAnalysis(): VideoTrustedAnalysis {
 }
 
 suite("video publication PostgreSQL", () => {
+  test("drill 3 launch fence: sweep converges an accepted instance after the launch lease expires", async () => {
+    await fixture(async (admin, connection) => {
+      const { layer, store } = await finalizedFixture(connection);
+      const outbox = makeControlPlaneVideoAnalysisOutboxRepository(layer);
+      const [pending] = await outbox.listEligible(10);
+      if (!pending) throw new Error("missing intent");
+      const claimed = await outbox.claim(pending.effectIdentity, "lost-worker");
+      if (!claimed) throw new Error("missing claim");
+      await admin.query(
+        `UPDATE media_video_analysis_outbox SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE effect_identity=$1`,
+        [pending.effectIdentity],
+      );
+      expect(await outbox.claim(pending.effectIdentity, "queue-redelivery")).toBeNull();
+      const instanceId = `vaw-${"a".repeat(64)}`;
+      expect(
+        await recoverVideoWorkflowLaunches({
+          outbox,
+          store,
+          launcher: {
+            inspect: async () => ({ state: "present", status: "running" }),
+            instanceId: async () => instanceId,
+          },
+        }),
+      ).toMatchObject({ recovered: 1, failed: 0 });
+      expect(await outbox.get(pending.effectIdentity)).toMatchObject({
+        state: "launched",
+        launchAttempts: 1,
+        claimFence: 2,
+      });
+      expect(await outbox.markLaunched(claimed, instanceId)).toBe(false);
+    });
+  });
+
+  test("drill 3 recovery: missing Workflow marks the launch for Queue redispatch without spending an attempt", async () => {
+    await fixture(async (_admin, connection) => {
+      const { layer, store } = await finalizedFixture(connection);
+      const outbox = makeControlPlaneVideoAnalysisOutboxRepository(layer);
+      const [pending] = await outbox.listEligible(10);
+      if (!pending) throw new Error("missing intent");
+      const claimed = await outbox.claim(pending.effectIdentity, "launch-worker");
+      if (!claimed) throw new Error("missing claim");
+      const instanceId = `vaw-${"a".repeat(64)}`;
+      await outbox.markLaunched(claimed, instanceId);
+      const result = await recoverVideoWorkflowLaunches({
+        outbox,
+        store,
+        launcher: {
+          inspect: async () => ({ state: "missing", status: null }),
+          instanceId: async () => instanceId,
+        },
+      });
+      expect(result).toMatchObject({ missing: 1, failed: 0 });
+      expect(await outbox.get(pending.effectIdentity)).toMatchObject({
+        state: "launched",
+        instanceMissing: true,
+        launchAttempts: 1,
+      });
+      expect((await outbox.listEligible(10)).map((row) => row.effectIdentity)).toEqual([
+        pending.effectIdentity,
+      ]);
+    });
+  });
+
+  test("drill 3 recovery: terminal Workflow without a PostgreSQL outcome records a typed failure", async () => {
+    await fixture(async (_admin, connection) => {
+      const { layer, store } = await finalizedFixture(connection);
+      const outbox = makeControlPlaneVideoAnalysisOutboxRepository(layer);
+      const [pending] = await outbox.listEligible(10);
+      if (!pending) throw new Error("missing intent");
+      const claimed = await outbox.claim(pending.effectIdentity, "launch-worker");
+      if (!claimed) throw new Error("missing claim");
+      const instanceId = `vaw-${"a".repeat(64)}`;
+      await outbox.markLaunched(claimed, instanceId);
+      expect(
+        await recoverVideoWorkflowLaunches({
+          outbox,
+          store,
+          launcher: {
+            inspect: async () => ({ state: "terminal", status: "errored" }),
+            instanceId: async () => instanceId,
+          },
+        }),
+      ).toMatchObject({ terminal: 1, failed: 0 });
+      expect(
+        (await store.getSubmissionByOperation({ submissionId, operationId }))?.state,
+      ).toMatchObject({ status: "processing_failed", failureCode: "transform_failed" });
+      expect(await outbox.listForReconciliation(10)).toEqual([]);
+    });
+  });
+
   test("renews one expired part after claim without changing other parts or the reservation deadline", async () => {
     await fixture(async (admin, connection) => {
       const layer = makeDirectPostgresControlPlaneLayer(connection);
@@ -318,91 +498,14 @@ suite("video publication PostgreSQL", () => {
 
   test("commits original-video publication effects atomically and replay creates no duplicate", async () => {
     await fixture(async (admin, connection) => {
-      const layer = makeDirectPostgresControlPlaneLayer(connection);
-      const store = makeControlPlaneVideoPublicationStore(layer);
-      const reservationResponse = new TextEncoder().encode('{"reservation_id":"fixture"}');
-      const reservationResponseSha = sha256(reservationResponse);
-      await store.createReservation({
-        record: {
-          reservationId,
-          communityId: community,
-          actorAccountId: actor,
-          authorPersonaId: persona,
-          requestHash: "c".repeat(64),
-          expectedContentType: "video/mp4",
-          expectedSizeBytes: 1_024,
-          expectedSha256: videoSha256,
-          ingestPolicyRevision: 1,
-          uploadId: "multipart-upload-fixture",
-          partSizeBytes: 10 * 1024 * 1024,
-          partCount: 1,
-          expiresAt: "2099-09-04T01:00:00.000Z",
-          state: "issued",
-          submissionId: null,
-          operationId: null,
-          manifest: null,
-          responseBytes: reservationResponse,
-          updatedAt: "2026-09-04T00:00:00.000Z",
-        },
-        idempotencyKey: "reserve-fixture",
-        responseSha256: reservationResponseSha,
-        parts: [
-          {
-            partNumber: 1,
-            url: "https://upload.invalid/part-one",
-            expiresAt: "2099-09-04T01:00:00.000Z",
-          },
-        ],
-      });
-      const initial = createOriginalVideoSubmission({
-        submissionId,
-        operationId,
-        communityId: community,
-        actorAccountId: actor,
-        authorPersonaId: persona,
-        reservationId,
-        caption: null,
-        authorDeclaredRating: "general",
-      });
-      await store.createSubmission({
-        state: initial,
-        idempotencyKey: "create-fixture",
-        requestHash: "d".repeat(64),
-        startInput: { version: "video-start-input-v1", video_reservation_id: reservationId },
-        responseBytes,
-        responseSha256,
-      });
-      await store.beginFinalize({
-        submission: initial,
-        expectedCreationRevision: 1,
-        posterTimestampMs: 1_000,
-        manifest: [{ partNumber: 1, etag: "etag-one" }],
-      });
-      await store.recordMultipartCompleted({
-        submission: initial,
-        manifest: [{ partNumber: 1, etag: "etag-one" }],
-      });
-      await store.finalizeSealed({
-        submission: initial,
-        expectedCreationRevision: 1,
-        immutable: {
-          immutableRef: `media://immutable/${operationId}/video/1`,
-          destinationRef: `r2://immutable/${operationId}/video/1`,
-          etag: "immutable-etag",
-          objectVersion: "immutable-version",
-          sizeBytes: 1_024,
-          contentType: "video/mp4",
-          canonicalSha256: videoSha256,
-        },
-        responseBytes,
-        responseSha256,
-        endpointTemplate: "/media-post-submissions/:submissionId/finalize",
-        idempotencyKey: "finalize-fixture",
-        requestHash: "e".repeat(64),
-      });
-      const finalized = await store.getSubmissionByOperation({ submissionId, operationId });
-      expect(finalized?.state.phase).toBe("analysis");
-      if (finalized === null) throw new Error("finalized fixture missing");
+      const { layer, store, finalized } = await finalizedFixture(connection);
+      await expect(
+        store.recordProcessingFailure({
+          submission: { ...finalized.state, creationRevision: 0 },
+          failureCode: "transform_failed",
+          evidenceRef: "workflow:stale-creation",
+        }),
+      ).rejects.toThrow("video processing failure fence rejected");
       const analysisOutbox = makeControlPlaneVideoAnalysisOutboxRepository(layer, {
         leaseSeconds: 60,
         retryBaseMs: 1,
@@ -503,67 +606,28 @@ suite("video publication PostgreSQL", () => {
         "video-analysis-worker-1",
       );
       if (firstClaim === null) throw new Error("video analysis claim missing");
-      expect(firstClaim).toMatchObject({ state: "running", deliveryAttempts: 1, claimFence: 1 });
-      expect(
-        await analysisOutbox.claim(firstClaim.effectIdentity, "video-analysis-worker-2"),
-      ).toBeNull();
-      expect(await analysisOutbox.defer(firstClaim, 1)).toBe(true);
-      await admin.query(
-        `UPDATE media_video_analysis_outbox
-            SET next_eligible_at=clock_timestamp()-interval '1 second'
-          WHERE effect_identity=$1`,
-        [firstClaim.effectIdentity],
-      );
-      const polledClaim = await analysisOutbox.claim(
-        firstClaim.effectIdentity,
-        "video-analysis-worker-2",
-      );
-      if (polledClaim === null) throw new Error("deferred video analysis was not reclaimed");
-      expect(polledClaim).toMatchObject({
-        state: "running",
-        deliveryAttempts: 1,
-        claimFence: 2,
-        claimOwner: "video-analysis-worker-2",
-      });
-      await admin.query(
-        `UPDATE media_video_analysis_outbox
-            SET lease_expires_at=clock_timestamp()-interval '1 second'
-          WHERE effect_identity=$1`,
-        [firstClaim.effectIdentity],
-      );
-      expect((await analysisOutbox.listEligible(10)).map((row) => row.effectIdentity)).toEqual([
-        firstClaim.effectIdentity,
-      ]);
-      const recoveredClaim = await analysisOutbox.claim(
-        firstClaim.effectIdentity,
-        "video-analysis-worker-2",
-      );
-      if (recoveredClaim === null)
-        throw new Error("expired video analysis lease was not recovered");
-      expect(recoveredClaim).toMatchObject({
-        state: "running",
-        deliveryAttempts: 2,
-        claimFence: 3,
-        claimOwner: "video-analysis-worker-2",
-      });
-      expect(await analysisOutbox.complete(firstClaim)).toBe(false);
-      expect(await analysisOutbox.fail(recoveredClaim, "provider_timeout")).toBe(true);
-      await admin.query(
-        `UPDATE media_video_analysis_outbox
-            SET next_eligible_at=clock_timestamp()-interval '1 second'
-          WHERE effect_identity=$1`,
-        [firstClaim.effectIdentity],
-      );
-      const finalClaim = await analysisOutbox.claim(
-        firstClaim.effectIdentity,
-        "video-analysis-worker-3",
-      );
-      if (finalClaim === null) throw new Error("failed video analysis was not replayed");
-      expect(finalClaim.deliveryAttempts).toBe(3);
-      expect(await analysisOutbox.fail(finalClaim, "provider_unavailable")).toBe(true);
+      expect(firstClaim).toMatchObject({ state: "launching", launchAttempts: 1, claimFence: 1 });
+      expect(await analysisOutbox.claim(firstClaim.effectIdentity, "other-worker")).toBeNull();
+      const instanceId = `vaw-${"a".repeat(64)}`;
+      expect(await analysisOutbox.markLaunched(firstClaim, instanceId)).toBe(true);
+      expect(await analysisOutbox.markLaunched(firstClaim, instanceId)).toBe(false);
+      expect(await analysisOutbox.listEligible(10)).toEqual([]);
+      const launched = await analysisOutbox.get(firstClaim.effectIdentity);
+      if (launched === null) throw new Error("launch record missing");
+      expect(await analysisOutbox.markInstanceMissing(launched)).toBe(true);
+      expect((await analysisOutbox.get(firstClaim.effectIdentity))?.launchAttempts).toBe(1);
+      const recovered = await analysisOutbox.claim(firstClaim.effectIdentity, "recovery-worker");
+      if (recovered === null) throw new Error("missing instance not eligible");
+      expect(recovered.launchAttempts).toBe(2);
+      expect(await analysisOutbox.markRetryWait(recovered, "provider_timeout")).toBe(true);
+      const finalClaim = await analysisOutbox.claim(firstClaim.effectIdentity, "final-worker");
+      if (finalClaim === null) throw new Error("retry not eligible");
+      expect(finalClaim.launchAttempts).toBe(3);
+      expect(await analysisOutbox.markRetryWait(finalClaim, "provider_unavailable")).toBe(false);
+      expect(await analysisOutbox.markExhausted(finalClaim)).toBe(true);
       expect(await analysisOutbox.get(firstClaim.effectIdentity)).toMatchObject({
         state: "exhausted",
-        deliveryAttempts: 3,
+        launchAttempts: 3,
       });
       expect(await analysisOutbox.listEligible(10)).toEqual([]);
       const baseAnalysis = trustedAnalysis();

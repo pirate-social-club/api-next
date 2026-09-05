@@ -85,6 +85,7 @@
     "./video-multipart-r2": "./src/video-multipart-r2.ts",
     "./video-publication-repository": "./src/video-publication-repository.ts",
     "./video-analysis-outbox-repository": "./src/video-analysis-outbox-repository.ts",
+    "./video-analysis-workflow-cloudflare": "./src/video-analysis-workflow-cloudflare.ts",
     "./megapot-approval-coordinator": "./src/megapot-approval-coordinator.ts",
     "./megapot-approval-repository": "./src/megapot-approval-repository.ts",
     "./megapot-allocation-coordinator": "./src/megapot-allocation-coordinator.ts",

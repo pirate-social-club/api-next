@@ -14,11 +14,7 @@ import type {
   VideoAnalysisRuntimeServices,
   VideoAnalysisSource,
 } from "@pirate/application/video/analysis";
-import {
-  consumeVideoAnalysisQueueMessage,
-  type VideoAnalysisOutboxRecord,
-  type VideoAnalysisOutboxStore,
-} from "@pirate/application/video/analysis-queue";
+import { runOriginalVideoAnalysis } from "@pirate/application/video/analysis";
 import type {
   VideoPublicationStore,
   VideoSubmissionRecord,
@@ -30,7 +26,6 @@ import {
   type VideoSubmissionState,
 } from "@pirate/domain";
 import { Effect } from "effect";
-import { dispatchEligibleVideoAnalysisOutbox } from "../apps/jobs-worker/src/video-analysis-outbox-dispatch.ts";
 import {
   LOCAL_VIDEO_FFMPEG_REVISION,
   makeLocalPinnedFfmpegVideoAnalysisEngine,
@@ -123,6 +118,7 @@ function binding(capability: "probe" | "audio" | "frames"): MediaTransformVideoB
     operationId: source().operationId,
     videoRevision: 1,
     analysisRevision: 1,
+    creationRevision: 1,
     canonicalVideoSha256: fixtureSha256,
     requestId: `trusted-video-${capability}`,
   };
@@ -252,7 +248,7 @@ localFixtureSuite("local pinned-FFmpeg video analysis engine", () => {
     expect(reads).toBe(0);
   });
 
-  test("recovers a lost completion lease without duplicating publication effects", async () => {
+  test("replays completed local analysis without duplicating publication effects", async () => {
     const { engine } = makeEngineHarness();
     let state: VideoSubmissionState = {
       ...attachImmutableVideo(
@@ -357,71 +353,12 @@ localFixtureSuite("local pinned-FFmpeg video analysis engine", () => {
       },
     } as unknown as VideoAnalysisRuntimeServices;
 
-    let outbox: VideoAnalysisOutboxRecord = {
-      effectIdentity: "video-analysis:trusted-video-operation:v1:c1",
-      submissionId: "trusted-video-submission",
-      operationId: "trusted-video-operation",
-      videoRevision: 1,
-      creationRevision: 1,
-      canonicalVideoSha256: fixtureSha256,
-      state: "pending",
-      deliveryAttempts: 0,
-      claimOwner: null,
-      claimFence: 0,
-    };
-    let loseFirstCompletion = true;
-    const outboxStore: VideoAnalysisOutboxStore = {
-      get: async () => outbox,
-      claim: async (_identity, workerId) => {
-        outbox = {
-          ...outbox,
-          state: "running",
-          deliveryAttempts: outbox.deliveryAttempts + 1,
-          claimOwner: workerId,
-          claimFence: outbox.claimFence + 1,
-        };
-        return outbox;
-      },
-      complete: async () => {
-        if (loseFirstCompletion) {
-          loseFirstCompletion = false;
-          return false;
-        }
-        outbox = { ...outbox, state: "delivered", claimOwner: null };
-        return true;
-      },
-      defer: async () => {
-        outbox = { ...outbox, state: "poll_wait", claimOwner: null };
-        return true;
-      },
-      fail: async () => {
-        outbox = { ...outbox, state: "failed", claimOwner: null };
-        return true;
-      },
-    };
-    const dependencies = { outbox: outboxStore, runtime, workerId: "video-worker-1" };
-    const queued: unknown[] = [];
-    expect(
-      await dispatchEligibleVideoAnalysisOutbox(
-        { listEligible: async () => [{ effectIdentity: outbox.effectIdentity }] },
-        {
-          send: async (message) => {
-            queued.push(message);
-          },
-        },
-      ),
-    ).toEqual({ selected: 1, sent: 1, failed: 0 });
-    const message = queued[0];
-
-    expect(await consumeVideoAnalysisQueueMessage(message, dependencies)).toEqual({
-      disposition: "retry",
-      delaySeconds: 15,
-    });
+    // Queue launch recovery is now tested through the composed Queue Worker.
+    // This local fixture proves only interpreter/FFmpeg publication replay.
+    const identity = { submissionId: state.submissionId, operationId: state.operationId };
+    await runOriginalVideoAnalysis(identity, runtime);
     expect(state.status).toBe("published");
-    expect(await consumeVideoAnalysisQueueMessage(message, dependencies)).toEqual({
-      disposition: "ack",
-    });
-    expect(outbox.state).toBe("delivered");
+    await runOriginalVideoAnalysis(identity, runtime);
     expect(publicationWrites).toBe(1);
     expect(projectionWrites).toBe(1);
   }, 30_000);

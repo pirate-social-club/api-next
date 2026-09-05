@@ -32,9 +32,12 @@ export class VideoAnalysisOutboxRepositoryError extends Data.TaggedError(
     | "get"
     | "list"
     | "claim"
-    | "complete"
-    | "defer"
-    | "fail"
+    | "mark-launched"
+    | "mark-retry-wait"
+    | "mark-exhausted"
+    | "mark-instance-missing"
+    | "reconcile-launch"
+    | "touch-reconciliation"
     | "load-transform-attempt"
     | "advance-transform-attempt";
   readonly reason: "invalid-input" | "invalid-row";
@@ -49,6 +52,12 @@ export interface VideoAnalysisOutboxRepository
   extends VideoAnalysisOutboxStore,
     VideoTransformAttemptStore {
   readonly listEligible: (limit: number) => Promise<readonly VideoAnalysisOutboxRecord[]>;
+  readonly touchReconciliation: (record: VideoAnalysisOutboxRecord) => Promise<boolean>;
+  readonly listForReconciliation: (limit: number) => Promise<readonly VideoAnalysisOutboxRecord[]>;
+  readonly reconcileLaunch: (
+    record: VideoAnalysisOutboxRecord,
+    instanceId: string | null,
+  ) => Promise<boolean>;
 }
 
 export type VideoAnalysisOutboxRepositoryOptions = Readonly<{
@@ -75,7 +84,7 @@ function decode(
 ): VideoAnalysisOutboxRecord {
   const videoRevision = integer(row.video_revision);
   const creationRevision = integer(row.creation_revision);
-  const deliveryAttempts = integer(row.delivery_attempts);
+  const launchAttempts = integer(row.launch_attempts);
   const claimFence = integer(row.claim_fence);
   const state = row.state;
   if (
@@ -88,12 +97,10 @@ function decode(
     creationRevision < 1 ||
     typeof row.canonical_video_sha256 !== "string" ||
     !sha256Pattern.test(row.canonical_video_sha256) ||
-    !["pending", "running", "poll_wait", "delivered", "failed", "exhausted"].includes(
-      String(state),
-    ) ||
-    deliveryAttempts === null ||
-    deliveryAttempts < 0 ||
-    deliveryAttempts > 3 ||
+    !["pending", "launching", "launched", "retry_wait", "exhausted"].includes(String(state)) ||
+    launchAttempts === null ||
+    launchAttempts < 0 ||
+    launchAttempts > 3 ||
     claimFence === null ||
     claimFence < 0 ||
     (row.claim_owner !== null && !validIdentifier(row.claim_owner))
@@ -108,9 +115,11 @@ function decode(
     creationRevision,
     canonicalVideoSha256: row.canonical_video_sha256,
     state: state as VideoAnalysisOutboxRecord["state"],
-    deliveryAttempts,
+    launchAttempts,
     claimOwner: row.claim_owner as string | null,
     claimFence,
+    workflowInstanceId: row.workflow_instance_id as string | null,
+    instanceMissing: row.instance_missing_at !== null,
   });
 }
 
@@ -119,7 +128,7 @@ export function makeControlPlaneVideoAnalysisOutboxRepository(
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
   options: VideoAnalysisOutboxRepositoryOptions = {},
 ): VideoAnalysisOutboxRepository {
-  const leaseSeconds = options.leaseSeconds ?? 15 * 60;
+  const leaseSeconds = options.leaseSeconds ?? 60;
   const retryBaseMs = options.retryBaseMs ?? 30_000;
   const now = options.now ?? Date.now;
   if (!Number.isSafeInteger(leaseSeconds) || leaseSeconds < 1 || leaseSeconds > 3_600) {
@@ -154,6 +163,14 @@ export function makeControlPlaneVideoAnalysisOutboxRepository(
     );
   };
 
+  const eligible = `launch_attempts<3 AND (state='pending'
+    OR (state='retry_wait' AND next_eligible_at<=clock_timestamp())
+    OR (state='launched' AND instance_missing_at IS NOT NULL))
+    AND EXISTS (SELECT 1 FROM media_post_submissions s
+      WHERE s.submission_id=media_video_analysis_outbox.submission_id
+        AND s.creation_revision=media_video_analysis_outbox.creation_revision
+        AND s.video_revision=media_video_analysis_outbox.video_revision
+        AND s.status='processing')`;
   const listEligible: VideoAnalysisOutboxRepository["listEligible"] = (limit) => {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
       return Promise.reject(failure("list", "invalid-input"));
@@ -163,14 +180,8 @@ export function makeControlPlaneVideoAnalysisOutboxRepository(
         const db = yield* ControlPlaneDb;
         const result = yield* db.execute<Row>({
           label: "video-analysis-outbox.list-eligible",
-          text: `SELECT * FROM media_video_analysis_outbox
-                  WHERE (state='poll_wait' AND next_eligible_at<=clock_timestamp())
-                    OR (delivery_attempts < 3 AND (
-                      state='pending'
-                      OR (state='failed' AND next_eligible_at<=clock_timestamp())
-                      OR (state='running' AND lease_expires_at<=clock_timestamp())
-                    ))
-                  ORDER BY created_at,effect_identity LIMIT $1`,
+          text: `SELECT * FROM media_video_analysis_outbox WHERE ${eligible}
+          ORDER BY created_at,effect_identity LIMIT $1`,
           values: [limit],
           readonly: true,
         });
@@ -178,7 +189,6 @@ export function makeControlPlaneVideoAnalysisOutboxRepository(
       }),
     );
   };
-
   const claim: VideoAnalysisOutboxStore["claim"] = (effectIdentity, workerId) => {
     if (!validIdentifier(effectIdentity) || !validIdentifier(workerId)) {
       return Promise.reject(failure("claim", "invalid-input", effectIdentity));
@@ -188,54 +198,45 @@ export function makeControlPlaneVideoAnalysisOutboxRepository(
         const db = yield* ControlPlaneDb;
         const result = yield* db.execute<Row>({
           label: "video-analysis-outbox.claim",
-          text: `UPDATE media_video_analysis_outbox
-                    SET state='running',
-                        delivery_attempts=delivery_attempts+CASE WHEN state='poll_wait' THEN 0 ELSE 1 END,
-                        claim_owner=$1,claim_fence=claim_fence+1,
-                        lease_expires_at=clock_timestamp()+make_interval(secs=>$2),
-                        next_eligible_at=NULL,failure_code=NULL,updated_at=clock_timestamp()
-                  WHERE effect_identity=$3 AND (
-                    (state='poll_wait' AND next_eligible_at<=clock_timestamp())
-                    OR (delivery_attempts < 3 AND (
-                      state='pending'
-                      OR (state='failed' AND next_eligible_at<=clock_timestamp())
-                      OR (state='running' AND lease_expires_at<=clock_timestamp())
-                    ))
-                  ) RETURNING *`,
+          text: `UPDATE media_video_analysis_outbox SET state='launching',
+          launch_attempts=launch_attempts+1,claim_owner=$1,claim_fence=claim_fence+1,
+          lease_expires_at=clock_timestamp()+make_interval(secs=>$2),
+          next_eligible_at=NULL,failure_code=NULL,updated_at=clock_timestamp()
+          WHERE effect_identity=$3 AND ${eligible} RETURNING *`,
           values: [workerId, leaseSeconds, effectIdentity],
           readonly: false,
         });
         if (result.rows.length === 0) return null;
-        if (result.rows.length !== 1) {
-          return yield* Effect.fail(failure("claim", "invalid-row", effectIdentity));
-        }
         return decode(result.rows[0] as Row, "claim");
       }),
     );
   };
-
-  const complete: VideoAnalysisOutboxStore["complete"] = (record) => {
+  const fencedWrite = (
+    operation: VideoAnalysisOutboxRepositoryError["operation"],
+    record: VideoAnalysisOutboxRecord,
+    assignment: string,
+    extra: readonly unknown[] = [],
+    guard = "",
+  ): Promise<boolean> => {
     if (
       !validIdentifier(record.effectIdentity) ||
       !validIdentifier(record.claimOwner) ||
+      !Number.isSafeInteger(record.claimFence) ||
       record.claimFence < 1
     ) {
-      return Promise.reject(failure("complete", "invalid-input", record.effectIdentity));
+      return Promise.reject(failure(operation, "invalid-input", record.effectIdentity));
     }
     return run(
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
         const result = yield* db.execute({
-          label: "video-analysis-outbox.complete",
-          text: `UPDATE media_video_analysis_outbox
-                    SET state='delivered',claim_owner=NULL,lease_expires_at=NULL,
-                        delivered_at=clock_timestamp(),failure_code=NULL,next_eligible_at=NULL,
-                        updated_at=clock_timestamp()
-                  WHERE effect_identity=$1 AND submission_id=$2 AND operation_id=$3
-                    AND video_revision=$4 AND creation_revision=$5
-                    AND canonical_video_sha256=$6 AND state='running'
-                    AND claim_owner=$7 AND claim_fence=$8
-                    AND lease_expires_at>clock_timestamp()`,
+          label: `video-analysis-outbox.${operation}`,
+          text: `UPDATE media_video_analysis_outbox SET ${assignment},
+          claim_owner=NULL,lease_expires_at=NULL,updated_at=clock_timestamp()
+          WHERE effect_identity=$1 AND submission_id=$2 AND operation_id=$3
+          AND video_revision=$4 AND creation_revision=$5 AND canonical_video_sha256=$6
+          AND claim_owner=$7 AND claim_fence=$8 AND state='launching'
+          AND lease_expires_at>clock_timestamp() ${guard}`,
           values: [
             record.effectIdentity,
             record.submissionId,
@@ -245,7 +246,64 @@ export function makeControlPlaneVideoAnalysisOutboxRepository(
             record.canonicalVideoSha256,
             record.claimOwner,
             record.claimFence,
+            ...extra,
           ],
+          readonly: false,
+        });
+        return result.rowCount === 1;
+      }),
+    );
+  };
+  const markLaunched: VideoAnalysisOutboxStore["markLaunched"] = (record, instanceId) => {
+    if (!/^vaw-[0-9a-f]{64}$/u.test(instanceId)) {
+      return Promise.reject(failure("mark-launched", "invalid-input", record.effectIdentity));
+    }
+    return fencedWrite(
+      "mark-launched",
+      record,
+      `state='launched',workflow_instance_id=$9,launched_at=clock_timestamp(),
+       instance_missing_at=NULL,next_eligible_at=NULL,failure_code=NULL`,
+      [instanceId],
+      "AND (workflow_instance_id IS NULL OR workflow_instance_id=$9)",
+    );
+  };
+  const markRetryWait: VideoAnalysisOutboxStore["markRetryWait"] = (record, code) => {
+    if (!["provider_unavailable", "provider_timeout", "provider_invalid"].includes(code)) {
+      return Promise.reject(failure("mark-retry-wait", "invalid-input", record.effectIdentity));
+    }
+    const retryAt = new Date(now() + retryBaseMs * 2 ** Math.max(0, record.launchAttempts - 1));
+    return fencedWrite(
+      "mark-retry-wait",
+      record,
+      "state='retry_wait',next_eligible_at=$9::timestamptz,failure_code=$10",
+      [retryAt.toISOString(), code],
+      "AND launch_attempts<3",
+    );
+  };
+  const markExhausted: VideoAnalysisOutboxStore["markExhausted"] = (record) =>
+    fencedWrite(
+      "mark-exhausted",
+      record,
+      "state='exhausted',next_eligible_at=NULL,failure_code='provider_unavailable'",
+      [],
+      "AND launch_attempts=3",
+    );
+  const markInstanceMissing: VideoAnalysisOutboxStore["markInstanceMissing"] = (record) => {
+    if (!validIdentifier(record.effectIdentity) || record.workflowInstanceId === null) {
+      return Promise.reject(
+        failure("mark-instance-missing", "invalid-input", record.effectIdentity),
+      );
+    }
+    return run(
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        const result = yield* db.execute({
+          label: "video-analysis-outbox.mark-instance-missing",
+          text: `UPDATE media_video_analysis_outbox
+          SET instance_missing_at=COALESCE(instance_missing_at,clock_timestamp()),updated_at=clock_timestamp()
+          WHERE effect_identity=$1 AND state='launched' AND claim_fence=$2
+          AND workflow_instance_id=$3`,
+          values: [record.effectIdentity, record.claimFence, record.workflowInstanceId],
           readonly: false,
         });
         return result.rowCount === 1;
@@ -253,42 +311,66 @@ export function makeControlPlaneVideoAnalysisOutboxRepository(
     );
   };
 
-  const defer: VideoAnalysisOutboxStore["defer"] = (record, retryAfterSeconds) => {
+  const listForReconciliation: VideoAnalysisOutboxRepository["listForReconciliation"] = (limit) => {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      return Promise.reject(failure("list", "invalid-input"));
+    }
+    return run(
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        const result = yield* db.execute<Row>({
+          label: "video-analysis-outbox.reconciliation-list",
+          text: `SELECT * FROM media_video_analysis_outbox
+          WHERE (state='launched' OR (state='launching' AND lease_expires_at<=clock_timestamp()))
+          AND EXISTS (SELECT 1 FROM media_post_submissions s
+            WHERE s.submission_id=media_video_analysis_outbox.submission_id
+              AND s.operation_id=media_video_analysis_outbox.operation_id
+              AND s.creation_revision=media_video_analysis_outbox.creation_revision
+              AND s.video_revision=media_video_analysis_outbox.video_revision
+              AND (s.status='processing' OR (s.status='processing_failed'
+                AND media_video_analysis_outbox.state='launching' AND launch_attempts=3)))
+          AND NOT EXISTS (SELECT 1 FROM media_video_publication_decisions d
+            WHERE d.submission_id=media_video_analysis_outbox.submission_id
+              AND d.creation_revision=media_video_analysis_outbox.creation_revision)
+          ORDER BY updated_at,effect_identity LIMIT $1`,
+          values: [limit],
+          readonly: true,
+        });
+        return result.rows.map((row) => decode(row, "list"));
+      }),
+    );
+  };
+  // The sweep first observes provider status. It then fences an expired launch;
+  // it never reclaims a provider-processing lease or creates an instance itself.
+  const reconcileLaunch: VideoAnalysisOutboxRepository["reconcileLaunch"] = (
+    record,
+    instanceId,
+  ) => {
     if (
-      !validIdentifier(record.effectIdentity) ||
       !validIdentifier(record.claimOwner) ||
-      record.claimFence < 1 ||
-      !Number.isSafeInteger(retryAfterSeconds) ||
-      retryAfterSeconds < 1 ||
-      retryAfterSeconds > 900
+      (instanceId !== null && !/^vaw-[0-9a-f]{64}$/u.test(instanceId))
     ) {
-      return Promise.reject(failure("defer", "invalid-input", record.effectIdentity));
+      return Promise.reject(failure("reconcile-launch", "invalid-input", record.effectIdentity));
     }
     return run(
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
         const result = yield* db.execute({
-          label: "video-analysis-outbox.defer",
-          text: `UPDATE media_video_analysis_outbox
-                    SET state='poll_wait',claim_owner=NULL,lease_expires_at=NULL,
-                        next_eligible_at=clock_timestamp()+make_interval(secs=>$1),
-                        failure_code=NULL,updated_at=clock_timestamp()
-                  WHERE effect_identity=$2 AND submission_id=$3 AND operation_id=$4
-                    AND video_revision=$5 AND creation_revision=$6
-                    AND canonical_video_sha256=$7 AND state='running'
-                    AND claim_owner=$8 AND claim_fence=$9
-                    AND lease_expires_at>clock_timestamp()`,
-          values: [
-            retryAfterSeconds,
-            record.effectIdentity,
-            record.submissionId,
-            record.operationId,
-            record.videoRevision,
-            record.creationRevision,
-            record.canonicalVideoSha256,
-            record.claimOwner,
-            record.claimFence,
-          ],
+          label: "video-analysis-outbox.reconcile-launch",
+          text: `UPDATE media_video_analysis_outbox SET
+          state=CASE WHEN $4::text IS NOT NULL THEN 'launched'
+            WHEN launch_attempts=3 THEN 'exhausted' ELSE 'retry_wait' END,
+          workflow_instance_id=COALESCE($4,workflow_instance_id),
+          launched_at=CASE WHEN $4::text IS NOT NULL THEN clock_timestamp() ELSE launched_at END,
+          instance_missing_at=NULL,claim_owner=NULL,lease_expires_at=NULL,
+          claim_fence=claim_fence+1,
+          failure_code=CASE WHEN $4::text IS NOT NULL THEN NULL ELSE 'provider_unavailable' END,
+          next_eligible_at=CASE WHEN $4::text IS NULL AND launch_attempts<3 THEN clock_timestamp() ELSE NULL END,
+          updated_at=clock_timestamp()
+          WHERE effect_identity=$1 AND state='launching' AND claim_fence=$2
+            AND claim_owner=$3 AND lease_expires_at<=clock_timestamp()
+            AND ($4::text IS NULL OR workflow_instance_id IS NULL OR workflow_instance_id=$4)`,
+          values: [record.effectIdentity, record.claimFence, record.claimOwner, instanceId],
           readonly: false,
         });
         return result.rowCount === 1;
@@ -296,49 +378,20 @@ export function makeControlPlaneVideoAnalysisOutboxRepository(
     );
   };
 
-  const fail: VideoAnalysisOutboxStore["fail"] = (record, failureCode) => {
-    if (
-      !validIdentifier(record.effectIdentity) ||
-      !validIdentifier(record.claimOwner) ||
-      record.claimFence < 1 ||
-      !["provider_unavailable", "provider_timeout", "provider_invalid"].includes(failureCode)
-    ) {
-      return Promise.reject(failure("fail", "invalid-input", record.effectIdentity));
-    }
-    const retryAt = new Date(now() + retryBaseMs * 2 ** Math.max(0, record.deliveryAttempts - 1));
-    return run(
+  const touchReconciliation: VideoAnalysisOutboxRepository["touchReconciliation"] = (record) =>
+    run(
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
         const result = yield* db.execute({
-          label: "video-analysis-outbox.fail",
-          text: `UPDATE media_video_analysis_outbox
-                    SET state=CASE WHEN delivery_attempts>=3 THEN 'exhausted' ELSE 'failed' END,
-                        claim_owner=NULL,lease_expires_at=NULL,failure_code=$1,
-                        next_eligible_at=CASE WHEN delivery_attempts>=3 THEN NULL ELSE $2::timestamptz END,
-                        updated_at=clock_timestamp()
-                  WHERE effect_identity=$3 AND submission_id=$4 AND operation_id=$5
-                    AND video_revision=$6 AND creation_revision=$7
-                    AND canonical_video_sha256=$8 AND state='running'
-                    AND claim_owner=$9 AND claim_fence=$10
-                    AND lease_expires_at>clock_timestamp()`,
-          values: [
-            failureCode,
-            retryAt.toISOString(),
-            record.effectIdentity,
-            record.submissionId,
-            record.operationId,
-            record.videoRevision,
-            record.creationRevision,
-            record.canonicalVideoSha256,
-            record.claimOwner,
-            record.claimFence,
-          ],
+          label: "video-analysis-outbox.touch-reconciliation",
+          text: `UPDATE media_video_analysis_outbox SET updated_at=clock_timestamp()
+          WHERE effect_identity=$1 AND claim_fence=$2 AND state=$3`,
+          values: [record.effectIdentity, record.claimFence, record.state],
           readonly: false,
         });
         return result.rowCount === 1;
       }),
     );
-  };
 
   const loadOrCreate: VideoTransformAttemptStore["loadOrCreate"] = (input) => {
     const fence = input.initialAttempt.runtimeFence;
@@ -506,5 +559,18 @@ export function makeControlPlaneVideoAnalysisOutboxRepository(
     );
   };
 
-  return { get, listEligible, claim, complete, defer, fail, loadOrCreate, advance };
+  return {
+    get,
+    listEligible,
+    claim,
+    markLaunched,
+    markRetryWait,
+    markExhausted,
+    markInstanceMissing,
+    listForReconciliation,
+    reconcileLaunch,
+    touchReconciliation,
+    loadOrCreate,
+    advance,
+  };
 }
