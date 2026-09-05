@@ -10,6 +10,7 @@ import { VIDEO_POSTER_POLICY_V1 } from "@pirate/domain";
 import { Effect } from "effect";
 import {
   makeQencodeMediaTransform,
+  makeQencodeReconciliationObserver,
   makeQencodeTaskTransport,
   makeR2QencodeArtifactStore,
   type QencodeArtifactStore,
@@ -829,4 +830,42 @@ test("Qencode status preserves bounded source-fetch evidence without bearer or o
   expect(evidence.length).toBeLessThanOrEqual(433);
   for (const secret of [capability, source.objectKey, SOURCE_SHA256])
     expect(decodeURIComponent(evidence)).not.toContain(secret);
+});
+
+test("operator observation reads expired token without allocate, grant or start", async () => {
+  let calls = 0;
+  const observer = makeQencodeReconciliationObserver({
+    artifacts: fakeArtifacts(),
+    transport: {
+      getStatus: async (_token, signal) => {
+        calls += 1;
+        expect(signal).toBeDefined();
+        return { state: "processing" };
+      },
+    },
+  });
+  const attempt = acceptedAttempt("submitting");
+  const result = await Effect.runPromise(
+    observer.observe({
+      version: "media-transform-video-probe-input-v1",
+      binding,
+      source,
+      attempt,
+    }),
+  );
+  expect(calls).toBe(1);
+  expect(result.status).toBe("processing");
+  expect(result.attempt.runtimeFence).toEqual(attempt.runtimeFence);
+  expect(Object.keys(observer)).toEqual(["observe"]);
+  await expect(
+    Effect.runPromise(
+      observer.observe({
+        version: "media-transform-video-probe-input-v1",
+        binding,
+        source,
+        attempt: acceptedAttempt("allocated"),
+      }),
+    ),
+  ).rejects.toThrow();
+  expect(calls).toBe(1);
 });
