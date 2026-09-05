@@ -1,3 +1,40 @@
+## Terminal sweep checkpoint, 2026-09-05
+
+Final validation passed with exit zero: 19 focused PostgreSQL tests (180
+assertions), `bun run check`, and the full ordinary test suite (2981 Bun,
+20 Node and 133 Workerd tests). Script-check reported zero findings across
+three changed configuration files. Named tests, command exit statuses and
+log digests are retained in `evidence/video-execution-2026-09-05/resolution-stage-facts-sweep-validation.json`;
+raw logs remain temporary. The full PostgreSQL gate is deferred to PR preparation.
+
+Terminal reconciliation now executes under the submission row lock and observed
+event sequence. Unaccepted submitting or started attempts enter required with
+workflow_terminal evidence and an atomic retry prohibition. With no attempt,
+the submission receives the ordinary technical failure. All five accepted
+stage facts leave the submission unchanged for the decision fence.
+
+Initial attempt creation takes the same submission lock and rejects a failed,
+superseded or source-mismatched parent. Existing attempt reads remain available
+for reconciliation. This serializes the no-attempt failure against allocation;
+a PostgreSQL test proves that allocation after that failure is rejected.
+The focused suite also covers unaccepted started work, all five accepted facts,
+and an event-sequence change during Workflow inspection.
+
+One terminal category needs disposition before runner dispatch is complete:
+allocated-only work, or partially accepted facts with no unconfirmed encode.
+The sweep returns deferred and leaves the submission untouched. It does not
+label such work as provider failure. A terminal Workflow ID cannot be reused;
+the proposed recovery is a distinct durable analysis continuation retaining the
+same creation revision, attempt identities and accepted facts. The alternative
+is explicit operator recovery. Neither policy is activated by this checkpoint.
+The owner was asked to choose while independent validation continued.
+
+The first focused run exposed SQL parameter inference ambiguity; explicit casts
+fixed it. The first full ordinary suite exposed the new stage-facts import
+missing from Workerd's explicit aliases; those aliases are now included in the
+three affected harness configurations. No contract, schema, Workflow binding,
+provider credential or enablement change is included.
+
 ## Stage-fact checkpoint, 2026-09-05
 
 The application now validates closed snapshots for probe, audio, frames,

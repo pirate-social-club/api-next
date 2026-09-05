@@ -1,5 +1,5 @@
 import type { VideoAnalysisOutboxRecord } from "./analysis-queue.ts";
-import type { VideoPublicationStore } from "./publication.ts";
+import type { VideoAttemptReconciliationStore, VideoPublicationStore } from "./publication.ts";
 
 export interface VideoWorkflowRecoveryServices {
   readonly outbox: {
@@ -13,10 +13,8 @@ export interface VideoWorkflowRecoveryServices {
       instanceId: string | null,
     ) => Promise<boolean>;
   };
-  readonly store: Pick<
-    VideoPublicationStore,
-    "getSubmissionByOperation" | "recordProcessingFailure"
-  >;
+  readonly store: Pick<VideoPublicationStore, "getSubmissionByOperation"> &
+    Pick<VideoAttemptReconciliationStore, "reconcileTerminalWorkflow">;
   readonly launcher: {
     readonly inspect: (
       identity: string,
@@ -31,7 +29,14 @@ export async function recoverVideoWorkflowLaunches(
   limit = 25,
 ) {
   const records = await services.outbox.listForReconciliation(limit);
-  const result = { inspected: records.length, missing: 0, terminal: 0, recovered: 0, failed: 0 };
+  const result = {
+    inspected: records.length,
+    missing: 0,
+    terminal: 0,
+    recovered: 0,
+    failed: 0,
+    deferred: 0,
+  };
   for (const record of records) {
     try {
       // Rotate bounded scans even when provider lookup fails, avoiding starvation.
@@ -60,13 +65,14 @@ export async function recoverVideoWorkflowLaunches(
       const status = observation.state;
       const instanceId = await services.launcher.instanceId(record.effectIdentity);
       if (status === "terminal" || (status === "missing" && record.launchAttempts >= 3)) {
-        await services.store.recordProcessingFailure({
+        const disposition = await services.store.reconcileTerminalWorkflow({
           submission: authority.state,
           observedEventSequence: authority.eventSequence,
-          failureCode: "transform_failed",
           evidenceRef: `video-workflow:${instanceId}:${observation.status ?? status}`,
         });
-        result.terminal += 1;
+        if (disposition === "allocated") result.deferred += 1;
+        if (disposition === "failed" || disposition === "reconciliation_required")
+          result.terminal += 1;
         if (record.state === "launching" && status === "missing") {
           await services.outbox.reconcileLaunch(record, null);
         }

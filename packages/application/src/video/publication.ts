@@ -169,6 +169,14 @@ export type VideoReconciliationStageFact = Extract<
 >;
 
 export interface VideoAttemptReconciliationStore {
+  readonly reconcileTerminalWorkflow: (
+    input: Readonly<{
+      submission: VideoSubmissionState;
+      observedEventSequence: number;
+      evidenceRef: string;
+    }>,
+  ) => Promise<"failed" | "reconciliation_required" | "accepted" | "allocated">;
+
   readonly resolveAttemptReconciliation: (
     input: Readonly<{
       submission: VideoSubmissionState;

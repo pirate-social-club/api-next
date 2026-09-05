@@ -420,79 +420,97 @@ export function makeControlPlaneVideoAnalysisOutboxRepository(
     return run(
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
-        yield* db.execute({
-          label: "video-transform-attempt.insert",
-          text: `INSERT INTO media_video_transform_attempts
+        return yield* db.withTransaction((tx) =>
+          Effect.gen(function* () {
+            yield* tx.execute({
+              label: "video-transform-attempt.authority-lock",
+              readonly: true,
+              text: "SELECT submission_id FROM media_post_submissions WHERE submission_id=$1 FOR UPDATE",
+              values: [input.submissionId],
+            });
+            yield* tx.execute({
+              label: "video-transform-attempt.insert",
+              text: `INSERT INTO media_video_transform_attempts
                    (request_id,submission_id,operation_id,video_revision,analysis_revision,
                     canonical_video_sha256,capability,submitted_at_ms,runtime_deadline_ms,creation_revision)
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+                 SELECT $1::text,$2::text,$3::text,$4::bigint,$5::bigint,$6::text,$7::text,$8::bigint,$9::bigint,$10::bigint
+                 WHERE NOT EXISTS (SELECT 1 FROM media_post_submissions WHERE submission_id=$2
+                   AND (operation_id IS DISTINCT FROM $3::text
+                     OR video_state_snapshot->'video'->>'canonicalSha256' IS DISTINCT FROM $6::text
+                     OR status <> 'processing' OR phase IS DISTINCT FROM 'analysis'
+                     OR creation_revision <> $10::bigint OR video_revision <> $4::bigint OR analysis_revision <> $5::bigint-1))
                  ON CONFLICT (request_id) DO NOTHING`,
-          values: [
-            input.binding.requestId,
-            input.submissionId,
-            input.binding.operationId,
-            input.binding.videoRevision,
-            input.binding.analysisRevision,
-            input.binding.canonicalVideoSha256,
-            input.capability,
-            fence.submittedAtMs,
-            fence.runtimeDeadlineMs,
-            input.binding.creationRevision,
-          ],
-          readonly: false,
-        });
-        const result = yield* db.execute<Row>({
-          label: "video-transform-attempt.load",
-          text: `SELECT submitted_at_ms,runtime_deadline_ms,provider_job_id,provider_job_phase
+              values: [
+                input.binding.requestId,
+                input.submissionId,
+                input.binding.operationId,
+                input.binding.videoRevision,
+                input.binding.analysisRevision,
+                input.binding.canonicalVideoSha256,
+                input.capability,
+                fence.submittedAtMs,
+                fence.runtimeDeadlineMs,
+                input.binding.creationRevision,
+              ],
+              readonly: false,
+            });
+            const result = yield* tx.execute<Row>({
+              label: "video-transform-attempt.load",
+              text: `SELECT submitted_at_ms,runtime_deadline_ms,provider_job_id,provider_job_phase
                    FROM media_video_transform_attempts
                   WHERE request_id=$1 AND submission_id=$2 AND operation_id=$3
                     AND video_revision=$4 AND analysis_revision=$5
                     AND canonical_video_sha256=$6 AND capability=$7 AND creation_revision=$8`,
-          values: [
-            input.binding.requestId,
-            input.submissionId,
-            input.binding.operationId,
-            input.binding.videoRevision,
-            input.binding.analysisRevision,
-            input.binding.canonicalVideoSha256,
-            input.capability,
-            input.binding.creationRevision,
-          ],
-          readonly: true,
-        });
-        if (result.rows.length !== 1) {
-          return yield* Effect.fail(
-            failure("load-transform-attempt", "invalid-row", input.binding.requestId),
-          );
-        }
-        const row = result.rows[0] as Row;
-        const submittedAtMs = integer(row.submitted_at_ms);
-        const runtimeDeadlineMs = integer(row.runtime_deadline_ms);
-        if (
-          submittedAtMs === null ||
-          runtimeDeadlineMs === null ||
-          runtimeDeadlineMs <= submittedAtMs ||
-          (row.provider_job_id === null) !== (row.provider_job_phase === null) ||
-          (row.provider_job_id !== null && !validIdentifier(row.provider_job_id)) ||
-          (row.provider_job_phase !== null &&
-            row.provider_job_phase !== "allocated" &&
-            row.provider_job_phase !== "submitting" &&
-            row.provider_job_phase !== "started")
-        ) {
-          return yield* Effect.fail(
-            failure("load-transform-attempt", "invalid-row", input.binding.requestId),
-          );
-        }
-        return {
-          version: "media-transform-attempt-v1" as const,
-          runtimeFence: { submittedAtMs, runtimeDeadlineMs },
-          ...(row.provider_job_id === null
-            ? {}
-            : {
-                providerJobId: row.provider_job_id as string,
-                providerJobPhase: row.provider_job_phase as "allocated" | "submitting" | "started",
-              }),
-        };
+              values: [
+                input.binding.requestId,
+                input.submissionId,
+                input.binding.operationId,
+                input.binding.videoRevision,
+                input.binding.analysisRevision,
+                input.binding.canonicalVideoSha256,
+                input.capability,
+                input.binding.creationRevision,
+              ],
+              readonly: true,
+            });
+            if (result.rows.length !== 1) {
+              return yield* Effect.fail(
+                failure("load-transform-attempt", "invalid-row", input.binding.requestId),
+              );
+            }
+            const row = result.rows[0] as Row;
+            const submittedAtMs = integer(row.submitted_at_ms);
+            const runtimeDeadlineMs = integer(row.runtime_deadline_ms);
+            if (
+              submittedAtMs === null ||
+              runtimeDeadlineMs === null ||
+              runtimeDeadlineMs <= submittedAtMs ||
+              (row.provider_job_id === null) !== (row.provider_job_phase === null) ||
+              (row.provider_job_id !== null && !validIdentifier(row.provider_job_id)) ||
+              (row.provider_job_phase !== null &&
+                row.provider_job_phase !== "allocated" &&
+                row.provider_job_phase !== "submitting" &&
+                row.provider_job_phase !== "started")
+            ) {
+              return yield* Effect.fail(
+                failure("load-transform-attempt", "invalid-row", input.binding.requestId),
+              );
+            }
+            return {
+              version: "media-transform-attempt-v1" as const,
+              runtimeFence: { submittedAtMs, runtimeDeadlineMs },
+              ...(row.provider_job_id === null
+                ? {}
+                : {
+                    providerJobId: row.provider_job_id as string,
+                    providerJobPhase: row.provider_job_phase as
+                      | "allocated"
+                      | "submitting"
+                      | "started",
+                  }),
+            };
+          }),
+        );
       }),
     );
   };

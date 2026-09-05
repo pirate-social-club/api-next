@@ -1134,6 +1134,104 @@ export function makeControlPlaneVideoPublicationStore(
         }),
       ),
 
+    reconcileTerminalWorkflow: (input) =>
+      run(
+        Effect.gen(function* () {
+          const db = yield* ControlPlaneDb;
+          return yield* db.withTransaction((tx) =>
+            Effect.gen(function* () {
+              const current = yield* findSubmission(tx, {
+                clause: "s.submission_id=$1 AND s.operation_id=$2 FOR UPDATE",
+                values: [input.submission.submissionId, input.submission.operationId],
+              });
+              if (
+                current === null ||
+                current.eventSequence !== input.observedEventSequence ||
+                current.state.creationRevision !== input.submission.creationRevision ||
+                current.state.videoRevision !== input.submission.videoRevision ||
+                current.state.analysisRevision !== input.submission.analysisRevision ||
+                current.state.status !== "processing" ||
+                current.state.phase !== "analysis" ||
+                current.state.decision !== null
+              )
+                throw new Error("video terminal reconciliation fence rejected");
+              const attempts = yield* tx.execute<Row>({
+                label: "video-publication.terminal-attempts",
+                readonly: true,
+                text: `SELECT attempt.request_id,attempt.capability,attempt.provider_job_phase,
+            attempt.reconciliation_state,fact.stage AS accepted_stage
+            FROM media_video_transform_attempts attempt LEFT JOIN media_video_stage_facts fact
+              ON fact.submission_id=attempt.submission_id AND fact.video_revision=attempt.video_revision
+                AND fact.creation_revision=attempt.creation_revision AND fact.stage=attempt.capability
+            WHERE attempt.submission_id=$1 AND attempt.video_revision=$2 AND attempt.creation_revision=$3`,
+                values: [
+                  current.state.submissionId,
+                  current.state.videoRevision,
+                  current.state.creationRevision,
+                ],
+              });
+              const uncertain = attempts.rows.filter(
+                (row) =>
+                  row.accepted_stage === null &&
+                  row.reconciliation_state !== "resolved" &&
+                  ["submitting", "started"].includes(String(row.provider_job_phase)),
+              );
+              if (attempts.rows.length > 0 && uncertain.length === 0) {
+                const facts = yield* tx.execute({
+                  label: "video-publication.terminal-facts",
+                  readonly: true,
+                  text: "SELECT stage FROM media_video_stage_facts WHERE submission_id=$1 AND video_revision=$2 AND creation_revision=$3",
+                  values: [
+                    current.state.submissionId,
+                    current.state.videoRevision,
+                    current.state.creationRevision,
+                  ],
+                });
+                return facts.rows.length === 5 ? ("accepted" as const) : ("allocated" as const);
+              }
+              for (const attempt of uncertain) {
+                yield* tx.execute({
+                  label: "video-publication.terminal-reconciliation",
+                  readonly: false,
+                  text: `UPDATE media_video_transform_attempts SET reconciliation_state='required',
+              first_uncertainty_at=COALESCE(first_uncertainty_at,clock_timestamp()),
+              last_observation=jsonb_build_object('status','workflow_terminal','observedAt',clock_timestamp()),
+              reconciliation_evidence_ref=$2,updated_at=clock_timestamp() WHERE request_id=$1`,
+                  values: [attempt.request_id, input.evidenceRef],
+                });
+              }
+              const next: VideoSubmissionState = {
+                ...current.state,
+                status: "processing_failed",
+                phase: null,
+                reconciliationRequired: uncertain.length > 0,
+                failureCode:
+                  uncertain.length === 1 && uncertain[0]?.capability === "probe"
+                    ? "probe_failed"
+                    : "transform_failed",
+              };
+              const updated = yield* updateSubmissionSnapshot(tx, {
+                prior: current.state,
+                next,
+                observedEventSequence: input.observedEventSequence,
+                extraSql:
+                  ",failure_evidence_ref=$10,failure_retry_count=$11,retryable=$12,last_safe_phase='analysis'",
+                extraValues: [
+                  input.evidenceRef,
+                  current.state.retryCount,
+                  !next.reconciliationRequired && current.state.retryCount < 3,
+                ],
+              });
+              if (updated.rows.length !== 1)
+                throw new Error("video terminal reconciliation fence rejected");
+              return uncertain.length > 0
+                ? ("reconciliation_required" as const)
+                : ("failed" as const);
+            }),
+          );
+        }),
+      ),
+
     resolveAttemptReconciliation: (input) =>
       run(
         Effect.gen(function* () {

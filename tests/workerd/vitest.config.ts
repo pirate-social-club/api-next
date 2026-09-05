@@ -5,6 +5,10 @@ import { unstable_readConfig } from "wrangler";
 // Workspace packages resolve to source so the workerd pool bundles one
 // program for both the worker main and the test modules.
 const alias = {
+  "@pirate/application/video/stage-facts": new URL(
+    "../../packages/application/src/video/stage-facts.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/application/video/workflow-recovery": new URL(
     "../../packages/application/src/video/workflow-recovery.ts",
     import.meta.url,

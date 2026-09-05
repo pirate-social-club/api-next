@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
+import type { VideoStageFact } from "@pirate/application/video/stage-facts";
 import { Effect } from "effect";
 import type { Client } from "pg";
 import {
@@ -340,9 +341,166 @@ suite("video publication PostgreSQL", () => {
       expect(
         (await store.getSubmissionByOperation({ submissionId, operationId }))?.state,
       ).toMatchObject({ status: "processing_failed", failureCode: "transform_failed" });
+      await expect(
+        outbox.loadOrCreate({
+          submissionId,
+          capability: "probe",
+          binding: {
+            requestId: "too-late",
+            operationId,
+            creationRevision: 1,
+            videoRevision: 1,
+            analysisRevision: 1,
+            canonicalVideoSha256: videoSha256,
+          },
+          initialAttempt: {
+            version: "media-transform-attempt-v1",
+            runtimeFence: { submittedAtMs: 0, runtimeDeadlineMs: 10000 },
+          },
+        }),
+      ).rejects.toMatchObject({ reason: "invalid-row" });
       expect(await outbox.listForReconciliation(10)).toEqual([]);
     });
   });
+
+  for (const { accepted, phase } of [
+    { accepted: false, phase: "started" },
+    { accepted: true, phase: "started" },
+    { accepted: false, phase: "allocated" },
+  ]) {
+    test(`terminal sweep ${phase}: ${accepted ? "preserves accepted facts for the decision fence" : "requires reconciliation for unaccepted provider work"}`, async () => {
+      await fixture(async (admin, connection) => {
+        const { layer, store, finalized } = await finalizedFixture(connection);
+        const outbox = makeControlPlaneVideoAnalysisOutboxRepository(layer);
+        const [pending] = await outbox.listEligible(10);
+        if (!pending) throw new Error("missing intent");
+        const claimed = await outbox.claim(pending.effectIdentity, "sweep-fixture");
+        if (!claimed) throw new Error("missing claim");
+        const instanceId = `vaw-${"a".repeat(64)}`;
+        await outbox.markLaunched(claimed, instanceId);
+        await admin.query(
+          `INSERT INTO media_video_transform_attempts
+          (request_id,submission_id,operation_id,video_revision,creation_revision,analysis_revision,
+           canonical_video_sha256,capability,submitted_at_ms,runtime_deadline_ms,provider_job_id,provider_job_phase)
+          VALUES ('sweep-task',$1,$2,1,1,1,$3,'probe',0,10000,'provider-task',$4)`,
+          [submissionId, operationId, videoSha256, phase],
+        );
+        if (accepted) {
+          const analysis = trustedAnalysis();
+          const soundtrack = analysis.audio.soundtrack;
+          if (soundtrack.verification === null) throw new Error("fixture requires recognition");
+          const facts: VideoStageFact[] = [
+            {
+              stage: "probe",
+              adapterRevision: "qencode-v1",
+              snapshot: analysis.probe,
+              artifacts: [],
+            },
+            {
+              stage: "audio",
+              adapterRevision: "qencode-v1",
+              snapshot: {
+                artifactRef: soundtrack.extractedAudioRef,
+                canonicalSha256: soundtrack.extractedAudioSha256,
+                sourceSha256: videoSha256,
+                videoRevision: 1,
+                mediaType: "audio/mp4",
+                policyRevision: soundtrack.policyRevision,
+                adapterRevision: "qencode-v1",
+              },
+              artifacts: [
+                {
+                  artifactRef: soundtrack.extractedAudioRef,
+                  canonicalSha256: soundtrack.extractedAudioSha256,
+                  sizeBytes: 42,
+                  contentType: "audio/mp4",
+                },
+              ],
+            },
+            {
+              stage: "frames",
+              adapterRevision: "frames-v1",
+              snapshot: {
+                evidenceRef: analysis.frames.evidenceRef,
+                adapterRevision: "frames-v1",
+                sourceSha256: videoSha256,
+                videoRevision: 1,
+                posterPolicyRevision: 1,
+                frames: analysis.frames.extracted,
+              },
+              artifacts: analysis.frames.extracted.map((frame) => ({
+                artifactRef: frame.artifactRef,
+                canonicalSha256: frame.sha256,
+                sizeBytes: 42,
+                contentType: "image/jpeg",
+              })),
+            },
+            {
+              stage: "recognition",
+              adapterRevision: "acr-v1",
+              snapshot: {
+                verification: soundtrack.verification,
+                evidenceRef: "acr:fixture",
+                adapterRevision: "acr-v1",
+              },
+              artifacts: [],
+            },
+            {
+              stage: "safety",
+              adapterRevision: "safety-v1",
+              snapshot: {
+                requestId: analysis.safetyRequest.requestId,
+                evidenceRef: analysis.safetyRequest.evidenceRef,
+                minorSafetyEvidenceRef: analysis.safetyRequest.minorSafetyEvidenceRef,
+                mediaSafety: analysis.mediaSafety,
+                captionSafety: analysis.captionSafety,
+                automatedRating: analysis.automatedRating,
+                policyRevision: analysis.safetyPolicyRevision,
+                adapterRevision: "safety-v1",
+              },
+              artifacts: [],
+            },
+          ];
+          const factStore = makeControlPlaneVideoStageFactStore(layer);
+          for (const fact of facts)
+            await factStore.write({
+              submission: finalized.state,
+              observedEventSequence: finalized.eventSequence,
+              fact,
+            });
+          expect(
+            await factStore.read({ submissionId, videoRevision: 1, creationRevision: 1 }),
+          ).toHaveLength(5);
+        }
+
+        const result = await recoverVideoWorkflowLaunches({
+          outbox,
+          store,
+          launcher: {
+            inspect: async () => ({ state: "terminal", status: "errored" }),
+            instanceId: async () => instanceId,
+          },
+        });
+        const required = !accepted && phase === "started";
+        expect(result).toMatchObject({
+          terminal: required ? 1 : 0,
+          failed: 0,
+          deferred: phase === "allocated" ? 1 : 0,
+        });
+        const current = await store.getSubmissionByOperation({ submissionId, operationId });
+        expect(current?.state.status).toBe(required ? "processing_failed" : "processing");
+        expect(current?.state.reconciliationRequired).toBe(required);
+        if (!required) expect(current?.eventSequence).toBe(finalized.eventSequence);
+        else if (current)
+          expect(projectVideoSubmission(current)).toMatchObject({ retryable: false });
+        const attempt = await admin.query(
+          "SELECT reconciliation_state,last_observation FROM media_video_transform_attempts WHERE request_id='sweep-task'",
+        );
+        expect(attempt.rows[0]?.reconciliation_state).toBe(required ? "required" : "none");
+        if (required) expect(attempt.rows[0]?.last_observation.status).toBe("workflow_terminal");
+      });
+    });
+  }
 
   test("drill 3 recovery: a transition during status inspection fences the stale terminal failure", async () => {
     await fixture(async (admin, connection) => {
