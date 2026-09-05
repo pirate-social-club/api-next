@@ -1,3 +1,47 @@
+## Reconciliation review disposition, 2026-09-05
+
+Validation for this pending-state correction: the publication PostgreSQL suite
+passed eight tests and 92 assertions. `bun run check` and `bun run test` passed
+on rerun. The initial check found a formatting error, corrected before rerun;
+the initial unit suite failed the existing Megapot request-pacing timing test.
+No timing assertion was changed. The full PostgreSQL suite was not rerun for
+this branch-only correction; its preceding persistence checkpoint has separate
+full-suite evidence. No migration, public contract or enablement changed.
+The control plane had unrelated writer changes during this checkpoint, so this
+note is retained here pending serialized task-record integration.
+
+Pending reconciliation is an attempt-only observation. It preserves the submission
+snapshot and event sequence, leaving an analysis submission processing. Escalation
+to required atomically fails the submission and prohibits retry. A subsequent
+pending observation cannot downgrade required or clear that prohibition. The
+publication PostgreSQL test now exercises both pending and that no-downgrade rule.
+
+Required reconciliation remains an activation blocker until the public contract
+can truthfully distinguish an unconfirmed provider submission from confirmed
+provider failure. The proposed reason is `provider_submission_unconfirmed`, with
+`retryable: false`; client copy should say that processing needs verification,
+not that encoding failed. This is a proposed contract disposition, not a ratified
+waiver or a released client change. The reviewed transition must carry exact
+operation-scoped breaking-change exceptions against its pull-request base under
+`docs/api-next/openapi-breaking-change-waivers.md`, coordinated with delivery's
+client release. Generic probe/transform failure copy is not accepted for staging.
+
+Resolution is still unimplemented. Its transaction must lock and fence the same
+submission and attempt, retain uncertainty evidence, and accept only authenticated
+confirmed completion or failure. Completing one attempt must not clear another
+attempt's unresolved prohibition. Once all uncertainty is resolved, confirmed
+completion resumes analysis without spending an author retry; confirmed failure
+restores the ordinary failure and retry policy. A validated, creation-bound stage
+fact must be recoverable before the runner proceeds. The acceptance test must
+exercise required reconciliation through resolution and accepted stage fact,
+including a rollback and a stale event-sequence write. Neither an enum value nor
+a database constraint supplies this behavior by itself.
+
+The real-fetch Workerd status API regression test is already present in
+`tests/workerd-http/video-workflow-status-runtime.test.ts` from `914ef07b`.
+Workflow class/bindings, resolution, durable runner and composed fault-injection
+acceptance remain open; the video path stays disabled.
+
 # Video Workflow next tranche
 
 ## Attempt reconciliation and stage storage — 2026-09-05

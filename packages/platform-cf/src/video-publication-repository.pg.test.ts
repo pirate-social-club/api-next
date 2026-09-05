@@ -898,6 +898,21 @@ suite("video publication PostgreSQL", () => {
         VALUES ('uncertain-task',$1,$2,1,1,1,$3,'frames',0,10000,'provider-task','submitting')`,
         [submissionId, operationId, videoSha256],
       );
+      const pending = await store.enterAttemptReconciliation({
+        submission: finalized.state,
+        observedEventSequence: finalized.eventSequence,
+        requestId: "uncertain-task",
+        state: "pending",
+        observation: { status: "not_found", observedAt: "2026-09-05T00:00:00Z" },
+      });
+      expect(pending).toEqual(finalized);
+      expect(await store.getSubmissionByOperation({ submissionId, operationId })).toEqual(
+        finalized,
+      );
+      const pendingAttempt = await admin.query(
+        "SELECT reconciliation_state FROM media_video_transform_attempts WHERE request_id='uncertain-task'",
+      );
+      expect(pendingAttempt.rows[0]?.reconciliation_state).toBe("pending");
       const reconciled = await store.enterAttemptReconciliation({
         submission: finalized.state,
         observedEventSequence: finalized.eventSequence,
@@ -916,6 +931,19 @@ suite("video publication PostgreSQL", () => {
         reconciliation_state: "required",
         reconciliation_evidence_ref: "video-submission-unconfirmed:uncertain-task",
       });
+      const stillRequired = await store.enterAttemptReconciliation({
+        submission: reconciled.state,
+        observedEventSequence: reconciled.eventSequence,
+        requestId: "uncertain-task",
+        state: "pending",
+        observation: { status: "processing", observedAt: "2026-09-05T00:01:00Z" },
+      });
+      expect(stillRequired.state).toEqual(reconciled.state);
+      expect(stillRequired.eventSequence).toBe(reconciled.eventSequence);
+      const requiredAttempt = await admin.query(
+        "SELECT reconciliation_state FROM media_video_transform_attempts WHERE request_id='uncertain-task'",
+      );
+      expect(requiredAttempt.rows[0]?.reconciliation_state).toBe("required");
       const command = {
         submission: reconciled.state,
         endpointTemplate: "/media-post-submissions/:submissionId/retry",

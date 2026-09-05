@@ -1099,6 +1099,9 @@ export function makeControlPlaneVideoPublicationStore(
               });
               if (attempt.rows.length !== 1)
                 throw new Error("video reconciliation attempt rejected");
+              // Polling uncertainty is attempt-local. Never downgrade an existing
+              // required reconciliation or rewrite its submission failure.
+              if (input.state === "pending") return current;
               const next: VideoSubmissionState = {
                 ...current.state,
                 status: "processing_failed",
