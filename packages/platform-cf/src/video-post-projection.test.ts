@@ -17,6 +17,18 @@ const projectionRow = (overrides: Readonly<Record<string, unknown>> = {}) => ({
 });
 
 describe("video Post projection row mapping", () => {
+  test("a published video without an ingest row remains visible and pending", () => {
+    expect(
+      videoPostProjectionFromRow(
+        projectionRow({ video_stream_state: null, video_playback_ref: null }),
+      )?.playback,
+    ).toEqual({ status: "pending" });
+  });
+
+  test("digest binding alone does not establish encoding or delivery readiness", () => {
+    expect(videoPostProjectionFromRow(projectionRow())?.playback).toEqual({ status: "pending" });
+  });
+
   test("maps only the public original-audio facts", () => {
     const projection = videoPostProjectionFromRow(
       projectionRow({
@@ -42,7 +54,7 @@ describe("video Post projection row mapping", () => {
         origin_video_post_id: "post-video-1",
         origin_author_persona_id: "persona-video-1",
       },
-      playback: { status: "ready", provider: "stream", playback_ref: "stream-video-1" },
+      playback: { status: "pending" },
       thumbnail: { status: "ready", artifact_ref: "media://thumbnail/video-1" },
       data_registration: "registered",
       capabilities: { can_post_with_song: false },
@@ -99,10 +111,10 @@ describe("video Post projection row mapping", () => {
     ).toEqual({ status: "pending" });
   });
 
-  test("preserves failed DATA registration independently of ready playback", () => {
+  test("preserves failed DATA registration independently of bound playback", () => {
     expect(
       videoPostProjectionFromRow(projectionRow({ video_data_registration_state: "failed" })),
-    ).toMatchObject({ data_registration: "failed", playback: { status: "ready" } });
+    ).toMatchObject({ data_registration: "failed", playback: { status: "pending" } });
   });
 
   test.each(["", " ", " stream-video-1 "])("rejects malformed bound playback ref %j", (ref) => {
@@ -110,6 +122,12 @@ describe("video Post projection row mapping", () => {
   });
 
   test("rejects unsupported and internally inconsistent durable facts", () => {
+    expect(videoPostProjectionFromRow(projectionRow({ video_stream_state: null }))).toBeNull();
+    expect(
+      videoPostProjectionFromRow(
+        projectionRow({ video_stream_state: undefined, video_playback_ref: null }),
+      ),
+    ).toBeNull();
     expect(
       videoPostProjectionFromRow(projectionRow({ video_intent: "song_reference" })),
     ).toBeNull();
