@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { NotFound, toErrorBody } from "@pirate/contracts";
 import { Effect } from "effect";
 import type { LocalizedPostDocument } from "../ports.ts";
 import type { PublicPostLiveRecord } from "../use-cases/content/public-post-routes.ts";
@@ -7,6 +8,7 @@ import {
   VIDEO_PLAYBACK_ACCESS_POLICY,
   type VideoPlaybackAccessServices,
 } from "./playback-access.ts";
+import { getVideoPosterAccess } from "./poster-access.ts";
 
 function fixture() {
   let live: PublicPostLiveRecord | null = {
@@ -54,7 +56,7 @@ function fixture() {
         origin_author_persona_id: "persona-1",
       },
       playback: { status: "ready", provider: "stream", playback_ref: "opaque-playback-1" },
-      thumbnail: { status: "pending" },
+      thumbnail: { status: "ready", artifact_ref: "poster-1" },
       data_registration: "registration_pending",
       capabilities: { can_post_with_song: false },
     },
@@ -76,6 +78,7 @@ function fixture() {
   const limits: unknown[] = [];
   const viewers: (string | undefined)[] = [];
   const services: VideoPlaybackAccessServices = {
+    authorizePublication: () => Effect.succeed(true),
     customerHost: "customer-fixture.cloudflarestream.com",
     nowMs: Effect.sync(() => now),
     contentStore: {
@@ -120,6 +123,7 @@ function fixture() {
       ),
     );
   return {
+    services,
     run,
     signed,
     limits,
@@ -147,6 +151,73 @@ function fixture() {
 }
 
 describe("video playback access policy with fixture-only ready media", () => {
+  test("eligible matching ETag yields 304 only after fresh approval", async () => {
+    const f = fixture();
+    const calls: string[] = [];
+    const result = await Effect.runPromise(
+      getVideoPosterAccess(
+        { postId: "post-1", ifNoneMatch: 'W/"same"' },
+        {
+          ...f.services,
+          authorizePublication: () =>
+            Effect.sync(() => {
+              calls.push("authorize");
+              return true;
+            }),
+          resolvePoster: () =>
+            Effect.sync(() => {
+              calls.push("resolve");
+              return { artifactRef: "poster-1", etag: '"same"' };
+            }),
+        },
+      ),
+    );
+    expect(calls).toEqual(["authorize", "resolve"]);
+    expect(result.status).toBe(304);
+    expect(result.cacheControl).toBe("private, no-cache");
+  });
+  test.each(["missing", "age", "moderation", "membership", "visibility"])(
+    "poster matching ETag and playback have identical %s denial",
+    async (reason) => {
+      const f = fixture();
+      if (reason === "missing") f.setLive(null);
+      if (reason === "age")
+        f.setLive({
+          ...f.live,
+          post: { ...f.live.post, contentRating: "adult_18" },
+          viewer: { ...f.live.viewer, ratingViewAllowed: false },
+        });
+      if (reason === "membership")
+        f.setLive({ ...f.live, post: { ...f.live.post, visibility: "members_only" } });
+      if (reason === "visibility")
+        f.setLive({ ...f.live, viewer: { ...f.live.viewer, canRead: false } });
+      const authorizePublication = () => Effect.succeed(reason !== "moderation");
+      let posterReads = 0;
+      const poster = Effect.runPromise(
+        getVideoPosterAccess(
+          { postId: "post-1", ifNoneMatch: '"same"' },
+          {
+            ...f.services,
+            authorizePublication,
+            resolvePoster: () => {
+              posterReads++;
+              return Effect.succeed({ artifactRef: "poster-1", etag: '"same"' });
+            },
+          },
+        ),
+      );
+      const failures = await Promise.all([
+        f.run({ authorizePublication }).catch((error: unknown) => toErrorBody(error)),
+        poster.catch((error: unknown) => toErrorBody(error)),
+      ]);
+      expect(failures).toEqual([
+        toErrorBody(new NotFound({ message: "Video not found" })),
+        toErrorBody(new NotFound({ message: "Video not found" })),
+      ]);
+      expect(posterReads).toBe(0);
+      expect(f.signed).toHaveLength(0);
+    },
+  );
   test("anonymous public viewing gets bounded access without a download claim", async () => {
     const f = fixture();
     expect(await f.run()).toEqual({

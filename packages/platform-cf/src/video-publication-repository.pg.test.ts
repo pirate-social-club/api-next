@@ -28,6 +28,7 @@ import { makeDataRegistrationStore } from "./data-registration-repository.ts";
 import { makeControlPlaneFeedStore } from "./feed-repository.ts";
 import { makeControlPlanePersonaStore } from "./persona-repository.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import { makeVideoPublicationAuthorization } from "./video-access-authorization.ts";
 import { makeControlPlaneVideoAnalysisOutboxRepository } from "./video-analysis-outbox-repository.ts";
 import {
   actor,
@@ -811,6 +812,53 @@ suite("video publication PostgreSQL", () => {
       };
       await store.publish(bundle);
       await store.publish(bundle);
+      const authorize = makeVideoPublicationAuthorization(layer);
+      const access = () =>
+        Effect.runPromise(authorize({ postId: "post-video-publication", communityId: community }));
+      expect(await access()).toBe(true);
+      expect(
+        await Effect.runPromise(authorize({ postId: "absent-video", communityId: community })),
+      ).toBe(false);
+      await admin.query("UPDATE posts SET visibility='members_only' WHERE post_id=$1", [
+        "post-video-publication",
+      ]);
+      expect(await access()).toBe(false);
+      expect(
+        await Effect.runPromise(
+          authorize({
+            postId: "post-video-publication",
+            communityId: community,
+            viewerUserId: actor,
+          }),
+        ),
+      ).toBe(true);
+      await admin.query(
+        "UPDATE posts SET visibility='public',content_rating='adult_18' WHERE post_id=$1",
+        ["post-video-publication"],
+      );
+      expect(await access()).toBe(false);
+      await admin.query(
+        "UPDATE posts SET content_rating='general',status='hidden' WHERE post_id=$1",
+        ["post-video-publication"],
+      );
+      expect(await access()).toBe(false);
+      await admin.query("UPDATE posts SET status='published' WHERE post_id=$1", [
+        "post-video-publication",
+      ]);
+      const approvedHold = await admin.query(
+        "SELECT action_id,evidence_ref FROM media_video_review_holds WHERE submission_id=$1 AND creation_revision=1 AND hold_kind='safety'",
+        [submissionId],
+      );
+      await admin.query(
+        "UPDATE media_video_review_holds SET status='open',action_id=NULL,evidence_ref=NULL WHERE submission_id=$1 AND creation_revision=1 AND hold_kind='safety'",
+        [submissionId],
+      );
+      expect(await access()).toBe(false);
+      await admin.query(
+        "UPDATE media_video_review_holds SET status='approved',action_id=$2,evidence_ref=$3 WHERE submission_id=$1 AND creation_revision=1 AND hold_kind='safety'",
+        [submissionId, approvedHold.rows[0].action_id, approvedHold.rows[0].evidence_ref],
+      );
+      expect(await access()).toBe(true);
 
       await admin.query(
         `INSERT INTO home_feed_projection
