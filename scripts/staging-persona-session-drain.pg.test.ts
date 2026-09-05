@@ -31,6 +31,32 @@ async function fixture(use: (admin: Client, scoped: string, role: string) => Pro
 }
 
 suite("staging reset session-drain observation", () => {
+  test("a ledger lock can succeed while a different table remains write-locked", async () => {
+    await fixture(async (admin, scoped) => {
+      await admin.query("CREATE TABLE schema_migrations (version text PRIMARY KEY)");
+      await admin.query("CREATE TABLE member_fixture (id int PRIMARY KEY)");
+      const peer = new Client({ connectionString: scoped });
+      await peer.connect();
+      try {
+        await peer.query("BEGIN");
+        await peer.query("INSERT INTO member_fixture VALUES (1)");
+        await admin.query("BEGIN");
+        await admin.query("SET LOCAL lock_timeout = '100ms'");
+        await admin.query("LOCK TABLE schema_migrations IN ACCESS EXCLUSIVE MODE");
+        await expect(
+          admin.query("LOCK TABLE member_fixture IN ACCESS EXCLUSIVE MODE"),
+        ).rejects.toMatchObject({ code: "55P03" });
+        await admin.query("ROLLBACK");
+        await peer.query("COMMIT");
+        expect((await admin.query("SELECT id FROM member_fixture")).rows).toEqual([{ id: 1 }]);
+      } finally {
+        await admin.query("ROLLBACK");
+        await peer.query("ROLLBACK");
+        await peer.end();
+      }
+    });
+  });
+
   test("accepts only its own connection and refuses an idle peer", async () => {
     await fixture(async (admin, scoped, role) => {
       expect(await observeSessionDrain(admin, role)).toEqual({

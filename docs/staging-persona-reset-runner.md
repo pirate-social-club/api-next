@@ -379,3 +379,72 @@ two self-verifier tests and nine HNS verifier tests across six files. The Worker
 harness emitted missing optional funding RPC secret warnings. Required full
 PostgreSQL publication and secret-boundary gates remain for the completed runner;
 the targeted replay suite is not a substitute for them.
+
+## Catalog candidate planner and fence correction
+
+The follow-up review's definition-validation diagnosis is not present in
+3681545: both the ordinary wrapper and the supplied-transaction form call
+validateDefinitions. That function validates definitions and ordering; it does
+not hash SQL against the release manifest. The pinned-artifact validator owns
+that distinct check. The new candidate planner calls it before its first
+database query. Tests prove changed SQL and manifest bytes fail without calling
+the database, so neither can reach removal through this planner entrypoint.
+
+The catalog planner reads supported relation roots, routines, standalone types
+and standalone sequences, checking effective ownership and the existing
+namespace dependency closure. Internal table row types, array types, indexes,
+owned sequences and attributed TOAST objects are parent-owned dependents, not
+separate root DROP commands. Unknown root classes, active event triggers and
+external dependencies are refused. Identifiers and routine signatures come
+from PostgreSQL catalog formatting. No DROP statement is executed by this
+module, and its result explicitly does not authorize execution.
+
+The phase list is a candidate inventory, not a reusable executable order.
+A future executor must re-scan each phase on the same fenced transaction,
+because constrained cascades can remove later roots. Cross-namespace catalog
+comparison, complete emptiness checks, lock acquisition and grant reconciliation
+are not implemented by this planner and must precede its admission for reset.
+The local PostgreSQL suite passes seven tests and 21 assertions, including the
+complete pinned 119-migration schema, quoted identifiers, standalone composite
+and enum types, a standalone sequence, unsupported collation rejection, external
+view/foreign-key refusal and extension preservation.
+
+The proposed ledger-only lock probe is not proof of quiescence. A new local
+PostgreSQL test holds an uncommitted write on a separate membership fixture,
+successfully takes an exclusive ledger lock, then observes SQLSTATE 55P03 when
+attempting the fixture lock. The session suite passes five tests and nine
+assertions; prepared transactions are disabled in this local run, so its
+existing positive prepared-transaction branch is not exercised again.
+
+Termination is not the producer fence and lack of termination authority is not
+by itself proof that a reset is impossible. Idle pooled connections need not
+hold locks. However stable counts cannot distinguish idle from active or
+idle-in-transaction connections and a ledger lock says nothing about other
+relations. A maintained Worker/queue/job fence, handling of in-flight workflows,
+bounded affected-object locking and prepared-transaction checks remain required.
+Do not weaken the existing conservative drain observer without a reviewed
+replacement. Restore reviewed grants in the same reset transaction, then verify
+fresh ledger/data evidence before commit and again before lifting the fence;
+there is no separately authorized post-commit grant-restoration gap.
+
+The three-set grant reconciler is now a pure, non-executing helper. It preserves
+replay-defined facts, identifies previous facts absent from replay and proposes
+only their exact intersection with a separately supplied reviewed manifest.
+Keys distinguish object kind, identity, grantee, privilege and grant option.
+Missing reviewed privileges are reported as unfulfilled rather than invented;
+the future executor must stop on them. Five tests pass 13 assertions, including
+unreviewed exclusion, grant-option/grantee mismatch and deterministic deduplication.
+No runtime manifest has been approved or inferred from old ACLs, no default-ACL
+decision has been made and no GRANT SQL is emitted. Catalog/role identity,
+grantor authority and actual application still need the trusted executor.
+
+Independent read-only review found no blocking unsafe acceptance in the
+candidate planner, dependency extraction or pure grant reconciliation. It
+explicitly did not approve destructive execution: snapshot/locking, closure
+coverage of all roots, complete emptiness, target identity and authority still
+belong to the executor. The full repository check passed before the two grant
+helper files were added; those files then passed TypeScript, focused Biome and
+their tests. Combined planner/artifact/grant units pass 16 tests and 38
+assertions. Script-check reports zero findings. The full unit/Worker suite was
+not rerun for this script-only checkpoint. The local PostgreSQL container was
+stopped, and no live connection, reset or deployment was made in this follow-up.

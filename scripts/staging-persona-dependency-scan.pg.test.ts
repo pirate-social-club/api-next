@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { Client } from "pg";
 import { runPostgresMigrations } from "./postgres-migrations";
 import { observeResetDependencyClosure } from "./staging-persona-dependency-scan";
+import { inspectStagingRemovalPlan } from "./staging-persona-removal-plan";
 import {
   loadStagingResetArtifacts,
   validateStagingResetArtifacts,
@@ -37,6 +38,56 @@ async function fixture(use: (admin: Client, scoped: string) => Promise<void>) {
 }
 
 suite("reset dependency closure", () => {
+  test("plans roots from the real pinned chain and keeps standalone objects distinct", async () => {
+    await fixture(async (admin, scoped) => {
+      const artifacts = loadStagingResetArtifacts();
+      const plan = validateStagingResetArtifacts(artifacts);
+      await runPostgresMigrations({ connectionString: scoped, migrations: plan.migrations });
+      await admin.query('CREATE TABLE api_next."quoted table" (value int)');
+      await admin.query('INSERT INTO api_next."quoted table" VALUES (7)');
+      await admin.query('CREATE VIEW api_next.plan_view AS SELECT * FROM api_next."quoted table"');
+      await admin.query("CREATE TYPE api_next.plan_enum AS ENUM ('one')");
+      await admin.query("CREATE TYPE api_next.plan_composite AS (value int)");
+      await admin.query("CREATE SEQUENCE api_next.plan_sequence");
+      await admin.query("BEGIN READ ONLY");
+      try {
+        const result = await inspectStagingRemovalPlan(admin, artifacts);
+        expect(result.execution_authorized).toBe(false);
+        expect(result.roots.length).toBeGreaterThan(600);
+        expect(
+          result.roots.find((root) => root.identity === 'api_next."quoted table"')?.statement,
+        ).toBe('DROP TABLE IF EXISTS api_next."quoted table" CASCADE');
+        expect(result.roots.find((root) => root.identity === "api_next.plan_enum")?.phase).toBe(3);
+        expect(
+          result.roots.find((root) => root.identity === "api_next.plan_composite")?.phase,
+        ).toBe(3);
+        expect(result.roots.find((root) => root.identity === "api_next.plan_sequence")?.phase).toBe(
+          4,
+        );
+        expect(result.roots.every((root) => !root.statement.includes("DROP SCHEMA"))).toBe(true);
+        expect((await admin.query('SELECT * FROM api_next."quoted table"')).rows).toEqual([
+          { value: 7 },
+        ]);
+      } finally {
+        await admin.query("ROLLBACK");
+      }
+    });
+  }, 60_000);
+
+  test("refuses unsupported roots even with a namespace-local closure", async () => {
+    await fixture(async (admin) => {
+      await admin.query('CREATE COLLATION api_next.plan_collation FROM "C"');
+      await admin.query("BEGIN READ ONLY");
+      try {
+        await expect(inspectStagingRemovalPlan(admin, loadStagingResetArtifacts())).rejects.toThrow(
+          "removal_plan_unsupported_objects",
+        );
+      } finally {
+        await admin.query("ROLLBACK");
+      }
+    });
+  });
+
   test("accepts the complete pinned schema including internal TOAST objects", async () => {
     await fixture(async (admin, scoped) => {
       const plan = validateStagingResetArtifacts(loadStagingResetArtifacts());

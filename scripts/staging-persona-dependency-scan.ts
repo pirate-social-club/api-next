@@ -67,6 +67,28 @@ const closureQuery = `WITH RECURSIVE
     FROM closure c CROSS JOIN LATERAL pg_catalog.pg_identify_object(c.classid,c.objid,0) identified
     ORDER BY c.classid,c.objid LIMIT 50001`;
 
+/** Caller owns the transaction and target checks. No transaction control or DDL. */
+export async function scanResetDependencyClosureInTransaction(
+  admin: Pick<Client, "query">,
+  schema = "api_next",
+) {
+  if (!/^[a-z_][a-z0-9_]{0,62}$/u.test(schema)) throw new Error("dependency_scan_input");
+  const result = await admin.query(closureQuery, [schema]);
+  if (
+    result.rows.length === 0 ||
+    result.rows.length > 50000 ||
+    result.rows.some((row) => row.owning_schema !== schema || row.unknown_edge !== false)
+  ) {
+    throw new Error("reset_dependency_closure_unproven");
+  }
+  return Object.freeze({
+    scan_version: 1,
+    object_count: result.rows.length,
+    closure_sha256: createHash("sha256").update(JSON.stringify(result.rows)).digest("hex"),
+    execution_authorized: false,
+  });
+}
+
 /** Fresh idle trusted connection only. Snapshot-specific digest, not reset authority. */
 export async function observeResetDependencyClosure(admin: Client, schema = "api_next") {
   if (!/^[a-z_][a-z0-9_]{0,62}$/u.test(schema)) throw new Error("dependency_scan_input");
@@ -74,22 +96,9 @@ export async function observeResetDependencyClosure(admin: Client, schema = "api
     await admin.query("BEGIN READ ONLY");
     await admin.query("SET LOCAL statement_timeout = '10s'");
     await admin.query("SET LOCAL search_path = pg_catalog");
-    const result = await admin.query(closureQuery, [schema]);
-    if (
-      result.rows.length === 0 ||
-      result.rows.length > 50000 ||
-      result.rows.some((row) => row.owning_schema !== schema || row.unknown_edge !== false)
-    ) {
-      throw new Error("unsafe_closure");
-    }
-    const digest = createHash("sha256").update(JSON.stringify(result.rows)).digest("hex");
+    const result = await scanResetDependencyClosureInTransaction(admin, schema);
     await admin.query("ROLLBACK");
-    return Object.freeze({
-      scan_version: 1,
-      object_count: result.rows.length,
-      closure_sha256: digest,
-      execution_authorized: false,
-    });
+    return result;
   } catch {
     await admin.query("ROLLBACK").catch(() => undefined);
     throw new Error("reset_dependency_closure_unproven");
