@@ -5,6 +5,7 @@
   },
   "include": [
     "scripts/binding-contract-invariant.test.ts",
+    "scripts/video-source-binding-contract.test.ts",
     "scripts/community-creator-activation-invariant.ts",
     "scripts/community-creator-activation-invariant.test.ts",
     "scripts/secret-drift-audit.ts",

@@ -3,9 +3,9 @@ import * as BunRuntime from "bun";
 import type { DataRegistrationRuntimeEnv } from "../apps/data-registration-worker/src/composition.ts";
 import type { HttpWorkerBindings } from "../apps/http-worker/src/composition.ts";
 import type { JobsWorkerEnv } from "../apps/jobs-worker/src/index.ts";
-import type { MediaProcessorRuntimeEnv } from "../apps/media-processor-worker/src/composition.ts";
 import type { AlertSinkBindings } from "../packages/platform-cf/src/alert-config.ts";
 import type { RegistrationRateLimiterEnvironment } from "../packages/platform-cf/src/registration-rate-limiter-do.ts";
+import { MEDIA_BINDING_KINDS } from "./media-binding-contract.ts";
 
 type BindingKind = "platform" | "secret" | "var";
 type BindingManifest<T extends object> = { [K in keyof T]-?: BindingKind };
@@ -172,30 +172,6 @@ const JOBS_BINDING_KINDS = {
   DANCE_REFERENCE_PROCESSING_ENABLED: "var",
   DANCE_REFERENCE_PROCESSING_QUEUE: "platform",
 } as const satisfies BindingManifest<JobsWorkerEnv>;
-
-const MEDIA_BINDING_KINDS = {
-  CONTROL_PLANE: "platform",
-  MEDIA_PROCESSING_ENABLED: "var",
-  VIDEO_ANALYSIS_ENABLED: "var",
-  MEDIA_PROCESSING_WORKFLOW: "platform",
-  VIDEO_ANALYSIS_WORKFLOW: "platform",
-  VIDEO_WORKFLOW_ACCOUNT_ID: "var",
-  VIDEO_WORKFLOW_NAME: "var",
-  VIDEO_WORKFLOW_SCRIPT_NAME: "var",
-  VIDEO_WORKFLOW_READ_TOKEN: "secret",
-  MEDIA_IMMUTABLE_ORIGINALS: "platform",
-  MEDIA_DERIVED_ARTIFACTS: "platform",
-  IMAGE_TRANSFORMATIONS: "platform",
-  ACRCLOUD_IDENTIFY_HOST: "var",
-  ACRCLOUD_ACCESS_KEY: "secret",
-  ACRCLOUD_ACCESS_SECRET: "secret",
-  ELEVENLABS_API_KEY: "secret",
-  OPENAI_API_KEY: "secret",
-  OPENROUTER_API_KEY: "secret",
-  QENCODE_API_KEY: "secret",
-  DATA_REGISTRATION_ENABLED: "var",
-  DATA_REGISTRATION_CHAIN_ID: "var",
-} as const satisfies BindingManifest<MediaProcessorRuntimeEnv>;
 
 const DATA_REGISTRATION_BINDING_KINDS = {
   CONTROL_PLANE: "platform",

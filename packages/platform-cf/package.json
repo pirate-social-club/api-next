@@ -140,6 +140,9 @@
     "./video-stage-artifact-head": "./src/video-stage-artifact-head.ts",
     "./video-sealed-source-verifier": "./src/video-sealed-source-verifier.ts",
     "./video-publication-wakeup-repository": "./src/video-publication-wakeup-repository.ts",
+    "./media-immutable-object-key": "./src/media-immutable-object-key.ts",
+    "./video-source-grant-issuer": "./src/video-source-grant-issuer.ts",
+    "./video-source-grant-resolver": "./src/video-source-grant-resolver.ts",
     "./worker-request-diagnostics": "./src/worker-request-diagnostics.ts",
     "./hns-authority-diagnostics": "./src/hns-authority-diagnostics.ts"
   },

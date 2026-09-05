@@ -6,6 +6,7 @@ import type {
   MediaTransformVideoProbeInput,
 } from "@pirate/application/media/transform";
 import type { VideoAnalysisProviders } from "@pirate/application/video/analysis";
+import { mediaProcessingPhysicalObjectKey } from "@pirate/platform-cf/media-immutable-object-key";
 import {
   type CloudflareMediaWorkflowBinding,
   makeCloudflareMediaProcessingWorkflowLauncher,
@@ -43,13 +44,15 @@ import {
 } from "@pirate/platform-cf/video-analysis-workflow-cloudflare";
 import { makeControlPlaneVideoPublicationStore } from "@pirate/platform-cf/video-publication-repository";
 import { makeVideoSealedSourceVerifier } from "@pirate/platform-cf/video-sealed-source-verifier";
+import { makeVideoSourceGrantIssuer } from "@pirate/platform-cf/video-source-grant-issuer";
 import { makeVideoStageArtifactHead } from "@pirate/platform-cf/video-stage-artifact-head";
 import { makeControlPlaneVideoStageFactStore } from "@pirate/platform-cf/video-stage-fact-repository";
 import { Effect } from "effect";
 import type { MediaProcessorComposition, MediaProcessorWorkerEnv } from "./index.ts";
 import { isMediaProcessingEnabled } from "./posture.ts";
 
-const IMMUTABLE_REFERENCE_PREFIX = "media://immutable/";
+export { mediaProcessingPhysicalObjectKey } from "@pirate/platform-cf/media-immutable-object-key";
+
 const MAXIMUM_AUDIO_BYTES = 64 * 1024 * 1024;
 
 export type MediaProcessorRuntimeEnv = MediaProcessorWorkerEnv &
@@ -66,6 +69,7 @@ export type MediaProcessorRuntimeEnv = MediaProcessorWorkerEnv &
     readonly OPENAI_API_KEY?: string;
     readonly OPENROUTER_API_KEY?: string;
     readonly QENCODE_API_KEY?: string;
+    readonly VIDEO_SOURCE_GATEWAY_ORIGIN?: string;
     readonly DATA_REGISTRATION_ENABLED?: string;
     readonly DATA_REGISTRATION_CHAIN_ID?: string;
     readonly VIDEO_ANALYSIS_ENABLED?: string;
@@ -82,7 +86,7 @@ export type MediaProcessorRuntimeAdapters = Readonly<{
     readonly workflowFetch?: VideoWorkflowStatusFetch;
     readonly transform?: MediaTransformVideoCapabilities;
     readonly qencode?: Readonly<{
-      readonly sourceGateway: QencodeSourceGrantIssuer;
+      readonly sourceGateway?: QencodeSourceGrantIssuer;
       readonly transport?: QencodeTaskTransport;
       readonly artifacts?: QencodeArtifactStore;
     }>;
@@ -105,24 +109,6 @@ function requiredOperationalSecret(value: string | undefined, name: string): str
 function requiredBinding<T>(value: T | undefined, name: string): T {
   if (value === undefined) throw new Error(`${name} binding is required`);
   return value;
-}
-
-/** Translate one persisted logical identity into the fixed-template R2 key. */
-export function mediaProcessingPhysicalObjectKey(reference: string): string {
-  if (!reference.startsWith(IMMUTABLE_REFERENCE_PREFIX)) {
-    throw new TypeError("invalid immutable media reference");
-  }
-  const suffix = reference.slice(IMMUTABLE_REFERENCE_PREFIX.length);
-  if (
-    suffix.length === 0 ||
-    suffix.length > 768 ||
-    suffix.startsWith("/") ||
-    suffix.includes("\\") ||
-    suffix.split("/").includes("..")
-  ) {
-    throw new TypeError("invalid immutable media reference");
-  }
-  return `immutable/${suffix}`;
 }
 
 function bindPhysicalR2Keys(transform: MediaTransformService): MediaTransformService {
@@ -315,23 +301,27 @@ const workflowIsNeverMissingByThrownError = (): boolean => false;
 
 function videoTransform(
   env: MediaProcessorRuntimeEnv,
+  runtime: ReturnType<typeof makeHyperdriveControlPlaneLayer>,
   adapters: NonNullable<MediaProcessorRuntimeAdapters["videoAnalysis"]>,
 ): MediaTransformVideoCapabilities {
   if (adapters.transform !== undefined) return adapters.transform;
-  if (adapters.qencode === undefined) {
-    throw new Error("video analysis transform is required when video analysis is enabled");
-  }
   const apiKey = requiredOperationalSecret(env.QENCODE_API_KEY, "QENCODE_API_KEY");
   const artifacts =
-    adapters.qencode.artifacts ??
+    adapters.qencode?.artifacts ??
     makeR2QencodeArtifactStore(
       requiredBinding(env.MEDIA_DERIVED_ARTIFACTS, "MEDIA_DERIVED_ARTIFACTS"),
     );
   return makeQencodeMediaTransform({
     enabled: true,
     apiKey,
-    transport: adapters.qencode.transport ?? makeQencodeTaskTransport(),
-    sourceGateway: adapters.qencode.sourceGateway,
+    transport: adapters.qencode?.transport ?? makeQencodeTaskTransport(),
+    sourceGateway:
+      adapters.qencode?.sourceGateway ??
+      makeVideoSourceGrantIssuer(
+        runtime,
+        requiredText(env.VIDEO_SOURCE_GATEWAY_ORIGIN, "VIDEO_SOURCE_GATEWAY_ORIGIN"),
+        "qencode",
+      ),
     artifacts,
   });
 }
@@ -372,7 +362,7 @@ export function makeMediaProcessorComposition(
       : undefined;
   const enabledVideoTransform =
     videoAnalysisEnabled && adapters.videoAnalysis !== undefined
-      ? videoTransform(env, adapters.videoAnalysis)
+      ? videoTransform(env, runtime, adapters.videoAnalysis)
       : undefined;
 
   if (videoAnalysisEnabled && env.VIDEO_ANALYSIS_WORKFLOW === undefined) {

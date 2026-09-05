@@ -65,6 +65,7 @@
   "vars": {
     "MEDIA_PROCESSING_ENABLED": "false",
     "VIDEO_ANALYSIS_ENABLED": "false",
+      "VIDEO_SOURCE_GATEWAY_ORIGIN": "",
     "DATA_REGISTRATION_ENABLED": "false",
     "DATA_REGISTRATION_CHAIN_ID": "1315",
     "ACRCLOUD_IDENTIFY_HOST": ""
@@ -139,6 +140,7 @@
       "vars": {
         "MEDIA_PROCESSING_ENABLED": "true",
         "VIDEO_ANALYSIS_ENABLED": "false",
+      "VIDEO_SOURCE_GATEWAY_ORIGIN": "",
         "VIDEO_WORKFLOW_ACCOUNT_ID": "08a4c22cf52e2ecae883e36f80a33f4a",
         "VIDEO_WORKFLOW_NAME": "pirate-video-analysis-staging",
         "VIDEO_WORKFLOW_SCRIPT_NAME": "pirate-media-processor-worker-staging",
@@ -221,6 +223,7 @@
       "vars": {
         "MEDIA_PROCESSING_ENABLED": "false",
         "VIDEO_ANALYSIS_ENABLED": "false",
+      "VIDEO_SOURCE_GATEWAY_ORIGIN": "",
         "DATA_REGISTRATION_ENABLED": "false",
         "DATA_REGISTRATION_CHAIN_ID": "1315",
         "ACRCLOUD_IDENTIFY_HOST": ""
