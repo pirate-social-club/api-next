@@ -502,23 +502,24 @@ suite("video publication PostgreSQL", () => {
       const projectedFeed = await Effect.runPromise(
         Effect.scoped(feedStore.listHome({ query: {}, viewerUserId: actor })),
       );
+      const publicVideo = {
+        soundtrack: {
+          kind: "original_audio",
+          origin_video_post_id: "post-video-publication",
+          origin_author_persona_id: persona,
+        },
+        playback: { status: "pending" },
+        thumbnail: { status: "pending" },
+        data_registration: "registration_pending",
+      };
       expect(projectedPost).toMatchObject({
         post: { post_type: "video", body: null },
-        video: {
-          soundtrack: {
-            kind: "original_audio",
-            origin_video_post_id: "post-video-publication",
-            origin_author_persona_id: persona,
-          },
-          playback: { status: "pending" },
-          thumbnail: { status: "pending" },
-          data_registration: "registration_pending",
-        },
+        video: publicVideo,
       });
       expect(projectedFeed.items[0]).toMatchObject({
         post: {
           post: { id: "post-video-publication", post_type: "video", body: null },
-          video: projectedPost?.video,
+          video: publicVideo,
         },
       });
       const publicProjection = JSON.stringify({ projectedPost, projectedFeed });

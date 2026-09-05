@@ -25,6 +25,9 @@ describe("video Post projection contracts", () => {
   test("round-trips original audio across every public enrichment state", () => {
     const decode = Schema.decodeUnknownSync(VideoPostProjectionV1, exact);
     expect(decode(originalAudio)).toEqual(originalAudio);
+    expect(decode({ ...originalAudio, data_registration: "failed" }).data_registration).toBe(
+      "failed",
+    );
     expect(
       decode({
         ...originalAudio,
@@ -76,6 +79,15 @@ describe("video Post projection contracts", () => {
   ])("rejects private %s evidence", (_label, evidence) => {
     expect(() =>
       Schema.decodeUnknownSync(VideoPostProjectionV1, exact)({ ...originalAudio, ...evidence }),
+    ).toThrow();
+    expect(() =>
+      Schema.decodeUnknownSync(
+        VideoPostProjectionV1,
+        exact,
+      )({
+        ...originalAudio,
+        soundtrack: { ...originalAudio.soundtrack, ...evidence },
+      }),
     ).toThrow();
   });
 });

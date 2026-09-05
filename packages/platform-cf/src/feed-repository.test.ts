@@ -126,6 +126,7 @@ describe("home feed Postgres repository", () => {
       },
     });
     const encoded = JSON.stringify(output.items[0]);
+    expect(encoded).not.toContain("retention_policy_revision");
     for (const privateValue of [
       "private-fingerprint",
       "private-review",

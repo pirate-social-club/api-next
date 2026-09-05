@@ -85,6 +85,30 @@ describe("video Post projection row mapping", () => {
     },
   );
 
+  test.each(["not_started", "sending", "manual_review"])("maps Stream %s to pending", (state) => {
+    expect(
+      videoPostProjectionFromRow(
+        projectionRow({ video_stream_state: state, video_playback_ref: null }),
+      )?.playback,
+    ).toEqual({ status: "pending" });
+  });
+
+  test.each(["pending", "running", "failed"])("maps thumbnail %s to pending", (state) => {
+    expect(
+      videoPostProjectionFromRow(projectionRow({ video_thumbnail_state: state }))?.thumbnail,
+    ).toEqual({ status: "pending" });
+  });
+
+  test("preserves failed DATA registration independently of ready playback", () => {
+    expect(
+      videoPostProjectionFromRow(projectionRow({ video_data_registration_state: "failed" })),
+    ).toMatchObject({ data_registration: "failed", playback: { status: "ready" } });
+  });
+
+  test.each(["", " ", " stream-video-1 "])("rejects malformed bound playback ref %j", (ref) => {
+    expect(videoPostProjectionFromRow(projectionRow({ video_playback_ref: ref }))).toBeNull();
+  });
+
   test("rejects unsupported and internally inconsistent durable facts", () => {
     expect(
       videoPostProjectionFromRow(projectionRow({ video_intent: "song_reference" })),

@@ -144,6 +144,7 @@ describe("M2 content repository row and lock defenses", () => {
       },
     });
     const encoded = JSON.stringify(result);
+    expect(encoded).not.toContain("retention_policy_revision");
     for (const privateValue of [
       "private-fingerprint",
       "private-review",

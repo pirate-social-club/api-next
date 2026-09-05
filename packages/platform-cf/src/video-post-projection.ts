@@ -103,7 +103,7 @@ export const videoPostProjectionFromRow = (row: Row): PublicVideoPostProjection 
 
   const playback: PublicVideoPostProjection["playback"] | null =
     streamState === "bound"
-      ? playbackRef === null
+      ? playbackRef === null || requiredText(row, "video_playback_ref") === null
         ? null
         : { status: "ready", provider: "stream", playback_ref: playbackRef }
       : ["not_started", "sending", "manual_review"].includes(streamState) && playbackRef === null

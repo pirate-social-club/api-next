@@ -72391,6 +72391,248 @@
                             }
                           ]
                         },
+                        "video": {
+                          "anyOf": [
+                            {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "track": {
+                                      "type": "string",
+                                      "enum": [
+                                        "video"
+                                      ]
+                                    },
+                                    "caption": {
+                                      "anyOf": [
+                                        {
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "caption_dir": {
+                                      "anyOf": [
+                                        {
+                                          "type": "string",
+                                          "enum": [
+                                            "ltr",
+                                            "rtl",
+                                            "auto"
+                                          ]
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "caption_lang": {
+                                      "anyOf": [
+                                        {
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "soundtrack": {
+                                      "anyOf": [
+                                        {
+                                          "type": "object",
+                                          "properties": {
+                                            "kind": {
+                                              "type": "string",
+                                              "enum": [
+                                                "original_audio"
+                                              ]
+                                            },
+                                            "original_sound_id": {
+                                              "type": "string"
+                                            },
+                                            "origin_video_post_id": {
+                                              "type": "string"
+                                            },
+                                            "origin_author_persona_id": {
+                                              "type": "string"
+                                            }
+                                          },
+                                          "required": [
+                                            "kind",
+                                            "original_sound_id",
+                                            "origin_video_post_id",
+                                            "origin_author_persona_id"
+                                          ],
+                                          "additionalProperties": false
+                                        },
+                                        {
+                                          "type": "object",
+                                          "properties": {
+                                            "kind": {
+                                              "type": "string",
+                                              "enum": [
+                                                "song_reference"
+                                              ]
+                                            },
+                                            "song_reference": {
+                                              "type": "object",
+                                              "properties": {
+                                                "song_post_id": {
+                                                  "type": "string"
+                                                },
+                                                "song_title": {
+                                                  "type": "string"
+                                                },
+                                                "song_author_persona_id": {
+                                                  "type": "string"
+                                                }
+                                              },
+                                              "required": [
+                                                "song_post_id",
+                                                "song_title",
+                                                "song_author_persona_id"
+                                              ],
+                                              "additionalProperties": false
+                                            }
+                                          },
+                                          "required": [
+                                            "kind",
+                                            "song_reference"
+                                          ],
+                                          "additionalProperties": false
+                                        }
+                                      ]
+                                    },
+                                    "playback": {
+                                      "anyOf": [
+                                        {
+                                          "type": "object",
+                                          "properties": {
+                                            "status": {
+                                              "type": "string",
+                                              "enum": [
+                                                "ready"
+                                              ]
+                                            },
+                                            "provider": {
+                                              "type": "string",
+                                              "enum": [
+                                                "stream"
+                                              ]
+                                            },
+                                            "playback_ref": {
+                                              "type": "string"
+                                            }
+                                          },
+                                          "required": [
+                                            "status",
+                                            "provider",
+                                            "playback_ref"
+                                          ],
+                                          "additionalProperties": false
+                                        },
+                                        {
+                                          "type": "object",
+                                          "properties": {
+                                            "status": {
+                                              "type": "string",
+                                              "enum": [
+                                                "pending"
+                                              ]
+                                            }
+                                          },
+                                          "required": [
+                                            "status"
+                                          ],
+                                          "additionalProperties": false
+                                        }
+                                      ]
+                                    },
+                                    "thumbnail": {
+                                      "anyOf": [
+                                        {
+                                          "type": "object",
+                                          "properties": {
+                                            "status": {
+                                              "type": "string",
+                                              "enum": [
+                                                "ready"
+                                              ]
+                                            },
+                                            "artifact_ref": {
+                                              "type": "string"
+                                            }
+                                          },
+                                          "required": [
+                                            "status",
+                                            "artifact_ref"
+                                          ],
+                                          "additionalProperties": false
+                                        },
+                                        {
+                                          "type": "object",
+                                          "properties": {
+                                            "status": {
+                                              "type": "string",
+                                              "enum": [
+                                                "pending"
+                                              ]
+                                            }
+                                          },
+                                          "required": [
+                                            "status"
+                                          ],
+                                          "additionalProperties": false
+                                        }
+                                      ]
+                                    },
+                                    "data_registration": {
+                                      "type": "string",
+                                      "enum": [
+                                        "registration_pending",
+                                        "registered",
+                                        "failed"
+                                      ]
+                                    },
+                                    "capabilities": {
+                                      "type": "object",
+                                      "properties": {
+                                        "can_post_with_song": {
+                                          "type": "boolean"
+                                        }
+                                      },
+                                      "required": [
+                                        "can_post_with_song"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  },
+                                  "required": [
+                                    "track",
+                                    "caption",
+                                    "caption_dir",
+                                    "caption_lang",
+                                    "soundtrack",
+                                    "playback",
+                                    "thumbnail",
+                                    "data_registration",
+                                    "capabilities"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "upvote_count": {
                           "$ref": "#/$defs/Union_1"
                         },
@@ -81159,6 +81401,248 @@
                                       }
                                     ]
                                   },
+                                  "video": {
+                                    "anyOf": [
+                                      {
+                                        "anyOf": [
+                                          {
+                                            "type": "object",
+                                            "properties": {
+                                              "track": {
+                                                "type": "string",
+                                                "enum": [
+                                                  "video"
+                                                ]
+                                              },
+                                              "caption": {
+                                                "anyOf": [
+                                                  {
+                                                    "type": "string"
+                                                  },
+                                                  {
+                                                    "type": "null"
+                                                  }
+                                                ]
+                                              },
+                                              "caption_dir": {
+                                                "anyOf": [
+                                                  {
+                                                    "type": "string",
+                                                    "enum": [
+                                                      "ltr",
+                                                      "rtl",
+                                                      "auto"
+                                                    ]
+                                                  },
+                                                  {
+                                                    "type": "null"
+                                                  }
+                                                ]
+                                              },
+                                              "caption_lang": {
+                                                "anyOf": [
+                                                  {
+                                                    "type": "string"
+                                                  },
+                                                  {
+                                                    "type": "null"
+                                                  }
+                                                ]
+                                              },
+                                              "soundtrack": {
+                                                "anyOf": [
+                                                  {
+                                                    "type": "object",
+                                                    "properties": {
+                                                      "kind": {
+                                                        "type": "string",
+                                                        "enum": [
+                                                          "original_audio"
+                                                        ]
+                                                      },
+                                                      "original_sound_id": {
+                                                        "type": "string"
+                                                      },
+                                                      "origin_video_post_id": {
+                                                        "type": "string"
+                                                      },
+                                                      "origin_author_persona_id": {
+                                                        "type": "string"
+                                                      }
+                                                    },
+                                                    "required": [
+                                                      "kind",
+                                                      "original_sound_id",
+                                                      "origin_video_post_id",
+                                                      "origin_author_persona_id"
+                                                    ],
+                                                    "additionalProperties": false
+                                                  },
+                                                  {
+                                                    "type": "object",
+                                                    "properties": {
+                                                      "kind": {
+                                                        "type": "string",
+                                                        "enum": [
+                                                          "song_reference"
+                                                        ]
+                                                      },
+                                                      "song_reference": {
+                                                        "type": "object",
+                                                        "properties": {
+                                                          "song_post_id": {
+                                                            "type": "string"
+                                                          },
+                                                          "song_title": {
+                                                            "type": "string"
+                                                          },
+                                                          "song_author_persona_id": {
+                                                            "type": "string"
+                                                          }
+                                                        },
+                                                        "required": [
+                                                          "song_post_id",
+                                                          "song_title",
+                                                          "song_author_persona_id"
+                                                        ],
+                                                        "additionalProperties": false
+                                                      }
+                                                    },
+                                                    "required": [
+                                                      "kind",
+                                                      "song_reference"
+                                                    ],
+                                                    "additionalProperties": false
+                                                  }
+                                                ]
+                                              },
+                                              "playback": {
+                                                "anyOf": [
+                                                  {
+                                                    "type": "object",
+                                                    "properties": {
+                                                      "status": {
+                                                        "type": "string",
+                                                        "enum": [
+                                                          "ready"
+                                                        ]
+                                                      },
+                                                      "provider": {
+                                                        "type": "string",
+                                                        "enum": [
+                                                          "stream"
+                                                        ]
+                                                      },
+                                                      "playback_ref": {
+                                                        "type": "string"
+                                                      }
+                                                    },
+                                                    "required": [
+                                                      "status",
+                                                      "provider",
+                                                      "playback_ref"
+                                                    ],
+                                                    "additionalProperties": false
+                                                  },
+                                                  {
+                                                    "type": "object",
+                                                    "properties": {
+                                                      "status": {
+                                                        "type": "string",
+                                                        "enum": [
+                                                          "pending"
+                                                        ]
+                                                      }
+                                                    },
+                                                    "required": [
+                                                      "status"
+                                                    ],
+                                                    "additionalProperties": false
+                                                  }
+                                                ]
+                                              },
+                                              "thumbnail": {
+                                                "anyOf": [
+                                                  {
+                                                    "type": "object",
+                                                    "properties": {
+                                                      "status": {
+                                                        "type": "string",
+                                                        "enum": [
+                                                          "ready"
+                                                        ]
+                                                      },
+                                                      "artifact_ref": {
+                                                        "type": "string"
+                                                      }
+                                                    },
+                                                    "required": [
+                                                      "status",
+                                                      "artifact_ref"
+                                                    ],
+                                                    "additionalProperties": false
+                                                  },
+                                                  {
+                                                    "type": "object",
+                                                    "properties": {
+                                                      "status": {
+                                                        "type": "string",
+                                                        "enum": [
+                                                          "pending"
+                                                        ]
+                                                      }
+                                                    },
+                                                    "required": [
+                                                      "status"
+                                                    ],
+                                                    "additionalProperties": false
+                                                  }
+                                                ]
+                                              },
+                                              "data_registration": {
+                                                "type": "string",
+                                                "enum": [
+                                                  "registration_pending",
+                                                  "registered",
+                                                  "failed"
+                                                ]
+                                              },
+                                              "capabilities": {
+                                                "type": "object",
+                                                "properties": {
+                                                  "can_post_with_song": {
+                                                    "type": "boolean"
+                                                  }
+                                                },
+                                                "required": [
+                                                  "can_post_with_song"
+                                                ],
+                                                "additionalProperties": false
+                                              }
+                                            },
+                                            "required": [
+                                              "track",
+                                              "caption",
+                                              "caption_dir",
+                                              "caption_lang",
+                                              "soundtrack",
+                                              "playback",
+                                              "thumbnail",
+                                              "data_registration",
+                                              "capabilities"
+                                            ],
+                                            "additionalProperties": false
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
                                   "upvote_count": {
                                     "$ref": "#/$defs/Union_1"
                                   },
@@ -83623,6 +84107,248 @@
                                         "items": {
                                           "$ref": "#/$defs/Objects_1"
                                         }
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "video": {
+                                "anyOf": [
+                                  {
+                                    "anyOf": [
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "track": {
+                                            "type": "string",
+                                            "enum": [
+                                              "video"
+                                            ]
+                                          },
+                                          "caption": {
+                                            "anyOf": [
+                                              {
+                                                "type": "string"
+                                              },
+                                              {
+                                                "type": "null"
+                                              }
+                                            ]
+                                          },
+                                          "caption_dir": {
+                                            "anyOf": [
+                                              {
+                                                "type": "string",
+                                                "enum": [
+                                                  "ltr",
+                                                  "rtl",
+                                                  "auto"
+                                                ]
+                                              },
+                                              {
+                                                "type": "null"
+                                              }
+                                            ]
+                                          },
+                                          "caption_lang": {
+                                            "anyOf": [
+                                              {
+                                                "type": "string"
+                                              },
+                                              {
+                                                "type": "null"
+                                              }
+                                            ]
+                                          },
+                                          "soundtrack": {
+                                            "anyOf": [
+                                              {
+                                                "type": "object",
+                                                "properties": {
+                                                  "kind": {
+                                                    "type": "string",
+                                                    "enum": [
+                                                      "original_audio"
+                                                    ]
+                                                  },
+                                                  "original_sound_id": {
+                                                    "type": "string"
+                                                  },
+                                                  "origin_video_post_id": {
+                                                    "type": "string"
+                                                  },
+                                                  "origin_author_persona_id": {
+                                                    "type": "string"
+                                                  }
+                                                },
+                                                "required": [
+                                                  "kind",
+                                                  "original_sound_id",
+                                                  "origin_video_post_id",
+                                                  "origin_author_persona_id"
+                                                ],
+                                                "additionalProperties": false
+                                              },
+                                              {
+                                                "type": "object",
+                                                "properties": {
+                                                  "kind": {
+                                                    "type": "string",
+                                                    "enum": [
+                                                      "song_reference"
+                                                    ]
+                                                  },
+                                                  "song_reference": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                      "song_post_id": {
+                                                        "type": "string"
+                                                      },
+                                                      "song_title": {
+                                                        "type": "string"
+                                                      },
+                                                      "song_author_persona_id": {
+                                                        "type": "string"
+                                                      }
+                                                    },
+                                                    "required": [
+                                                      "song_post_id",
+                                                      "song_title",
+                                                      "song_author_persona_id"
+                                                    ],
+                                                    "additionalProperties": false
+                                                  }
+                                                },
+                                                "required": [
+                                                  "kind",
+                                                  "song_reference"
+                                                ],
+                                                "additionalProperties": false
+                                              }
+                                            ]
+                                          },
+                                          "playback": {
+                                            "anyOf": [
+                                              {
+                                                "type": "object",
+                                                "properties": {
+                                                  "status": {
+                                                    "type": "string",
+                                                    "enum": [
+                                                      "ready"
+                                                    ]
+                                                  },
+                                                  "provider": {
+                                                    "type": "string",
+                                                    "enum": [
+                                                      "stream"
+                                                    ]
+                                                  },
+                                                  "playback_ref": {
+                                                    "type": "string"
+                                                  }
+                                                },
+                                                "required": [
+                                                  "status",
+                                                  "provider",
+                                                  "playback_ref"
+                                                ],
+                                                "additionalProperties": false
+                                              },
+                                              {
+                                                "type": "object",
+                                                "properties": {
+                                                  "status": {
+                                                    "type": "string",
+                                                    "enum": [
+                                                      "pending"
+                                                    ]
+                                                  }
+                                                },
+                                                "required": [
+                                                  "status"
+                                                ],
+                                                "additionalProperties": false
+                                              }
+                                            ]
+                                          },
+                                          "thumbnail": {
+                                            "anyOf": [
+                                              {
+                                                "type": "object",
+                                                "properties": {
+                                                  "status": {
+                                                    "type": "string",
+                                                    "enum": [
+                                                      "ready"
+                                                    ]
+                                                  },
+                                                  "artifact_ref": {
+                                                    "type": "string"
+                                                  }
+                                                },
+                                                "required": [
+                                                  "status",
+                                                  "artifact_ref"
+                                                ],
+                                                "additionalProperties": false
+                                              },
+                                              {
+                                                "type": "object",
+                                                "properties": {
+                                                  "status": {
+                                                    "type": "string",
+                                                    "enum": [
+                                                      "pending"
+                                                    ]
+                                                  }
+                                                },
+                                                "required": [
+                                                  "status"
+                                                ],
+                                                "additionalProperties": false
+                                              }
+                                            ]
+                                          },
+                                          "data_registration": {
+                                            "type": "string",
+                                            "enum": [
+                                              "registration_pending",
+                                              "registered",
+                                              "failed"
+                                            ]
+                                          },
+                                          "capabilities": {
+                                            "type": "object",
+                                            "properties": {
+                                              "can_post_with_song": {
+                                                "type": "boolean"
+                                              }
+                                            },
+                                            "required": [
+                                              "can_post_with_song"
+                                            ],
+                                            "additionalProperties": false
+                                          }
+                                        },
+                                        "required": [
+                                          "track",
+                                          "caption",
+                                          "caption_dir",
+                                          "caption_lang",
+                                          "soundtrack",
+                                          "playback",
+                                          "thumbnail",
+                                          "data_registration",
+                                          "capabilities"
+                                        ],
+                                        "additionalProperties": false
                                       },
                                       {
                                         "type": "null"
@@ -87536,6 +88262,248 @@
                                             "items": {
                                               "$ref": "#/$defs/Objects_1"
                                             }
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "video": {
+                                    "anyOf": [
+                                      {
+                                        "anyOf": [
+                                          {
+                                            "type": "object",
+                                            "properties": {
+                                              "track": {
+                                                "type": "string",
+                                                "enum": [
+                                                  "video"
+                                                ]
+                                              },
+                                              "caption": {
+                                                "anyOf": [
+                                                  {
+                                                    "type": "string"
+                                                  },
+                                                  {
+                                                    "type": "null"
+                                                  }
+                                                ]
+                                              },
+                                              "caption_dir": {
+                                                "anyOf": [
+                                                  {
+                                                    "type": "string",
+                                                    "enum": [
+                                                      "ltr",
+                                                      "rtl",
+                                                      "auto"
+                                                    ]
+                                                  },
+                                                  {
+                                                    "type": "null"
+                                                  }
+                                                ]
+                                              },
+                                              "caption_lang": {
+                                                "anyOf": [
+                                                  {
+                                                    "type": "string"
+                                                  },
+                                                  {
+                                                    "type": "null"
+                                                  }
+                                                ]
+                                              },
+                                              "soundtrack": {
+                                                "anyOf": [
+                                                  {
+                                                    "type": "object",
+                                                    "properties": {
+                                                      "kind": {
+                                                        "type": "string",
+                                                        "enum": [
+                                                          "original_audio"
+                                                        ]
+                                                      },
+                                                      "original_sound_id": {
+                                                        "type": "string"
+                                                      },
+                                                      "origin_video_post_id": {
+                                                        "type": "string"
+                                                      },
+                                                      "origin_author_persona_id": {
+                                                        "type": "string"
+                                                      }
+                                                    },
+                                                    "required": [
+                                                      "kind",
+                                                      "original_sound_id",
+                                                      "origin_video_post_id",
+                                                      "origin_author_persona_id"
+                                                    ],
+                                                    "additionalProperties": false
+                                                  },
+                                                  {
+                                                    "type": "object",
+                                                    "properties": {
+                                                      "kind": {
+                                                        "type": "string",
+                                                        "enum": [
+                                                          "song_reference"
+                                                        ]
+                                                      },
+                                                      "song_reference": {
+                                                        "type": "object",
+                                                        "properties": {
+                                                          "song_post_id": {
+                                                            "type": "string"
+                                                          },
+                                                          "song_title": {
+                                                            "type": "string"
+                                                          },
+                                                          "song_author_persona_id": {
+                                                            "type": "string"
+                                                          }
+                                                        },
+                                                        "required": [
+                                                          "song_post_id",
+                                                          "song_title",
+                                                          "song_author_persona_id"
+                                                        ],
+                                                        "additionalProperties": false
+                                                      }
+                                                    },
+                                                    "required": [
+                                                      "kind",
+                                                      "song_reference"
+                                                    ],
+                                                    "additionalProperties": false
+                                                  }
+                                                ]
+                                              },
+                                              "playback": {
+                                                "anyOf": [
+                                                  {
+                                                    "type": "object",
+                                                    "properties": {
+                                                      "status": {
+                                                        "type": "string",
+                                                        "enum": [
+                                                          "ready"
+                                                        ]
+                                                      },
+                                                      "provider": {
+                                                        "type": "string",
+                                                        "enum": [
+                                                          "stream"
+                                                        ]
+                                                      },
+                                                      "playback_ref": {
+                                                        "type": "string"
+                                                      }
+                                                    },
+                                                    "required": [
+                                                      "status",
+                                                      "provider",
+                                                      "playback_ref"
+                                                    ],
+                                                    "additionalProperties": false
+                                                  },
+                                                  {
+                                                    "type": "object",
+                                                    "properties": {
+                                                      "status": {
+                                                        "type": "string",
+                                                        "enum": [
+                                                          "pending"
+                                                        ]
+                                                      }
+                                                    },
+                                                    "required": [
+                                                      "status"
+                                                    ],
+                                                    "additionalProperties": false
+                                                  }
+                                                ]
+                                              },
+                                              "thumbnail": {
+                                                "anyOf": [
+                                                  {
+                                                    "type": "object",
+                                                    "properties": {
+                                                      "status": {
+                                                        "type": "string",
+                                                        "enum": [
+                                                          "ready"
+                                                        ]
+                                                      },
+                                                      "artifact_ref": {
+                                                        "type": "string"
+                                                      }
+                                                    },
+                                                    "required": [
+                                                      "status",
+                                                      "artifact_ref"
+                                                    ],
+                                                    "additionalProperties": false
+                                                  },
+                                                  {
+                                                    "type": "object",
+                                                    "properties": {
+                                                      "status": {
+                                                        "type": "string",
+                                                        "enum": [
+                                                          "pending"
+                                                        ]
+                                                      }
+                                                    },
+                                                    "required": [
+                                                      "status"
+                                                    ],
+                                                    "additionalProperties": false
+                                                  }
+                                                ]
+                                              },
+                                              "data_registration": {
+                                                "type": "string",
+                                                "enum": [
+                                                  "registration_pending",
+                                                  "registered",
+                                                  "failed"
+                                                ]
+                                              },
+                                              "capabilities": {
+                                                "type": "object",
+                                                "properties": {
+                                                  "can_post_with_song": {
+                                                    "type": "boolean"
+                                                  }
+                                                },
+                                                "required": [
+                                                  "can_post_with_song"
+                                                ],
+                                                "additionalProperties": false
+                                              }
+                                            },
+                                            "required": [
+                                              "track",
+                                              "caption",
+                                              "caption_dir",
+                                              "caption_lang",
+                                              "soundtrack",
+                                              "playback",
+                                              "thumbnail",
+                                              "data_registration",
+                                              "capabilities"
+                                            ],
+                                            "additionalProperties": false
                                           },
                                           {
                                             "type": "null"
@@ -130877,6 +131845,248 @@
                                 }
                               ]
                             },
+                            "video": {
+                              "anyOf": [
+                                {
+                                  "anyOf": [
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "track": {
+                                          "type": "string",
+                                          "enum": [
+                                            "video"
+                                          ]
+                                        },
+                                        "caption": {
+                                          "anyOf": [
+                                            {
+                                              "type": "string"
+                                            },
+                                            {
+                                              "type": "null"
+                                            }
+                                          ]
+                                        },
+                                        "caption_dir": {
+                                          "anyOf": [
+                                            {
+                                              "type": "string",
+                                              "enum": [
+                                                "ltr",
+                                                "rtl",
+                                                "auto"
+                                              ]
+                                            },
+                                            {
+                                              "type": "null"
+                                            }
+                                          ]
+                                        },
+                                        "caption_lang": {
+                                          "anyOf": [
+                                            {
+                                              "type": "string"
+                                            },
+                                            {
+                                              "type": "null"
+                                            }
+                                          ]
+                                        },
+                                        "soundtrack": {
+                                          "anyOf": [
+                                            {
+                                              "type": "object",
+                                              "properties": {
+                                                "kind": {
+                                                  "type": "string",
+                                                  "enum": [
+                                                    "original_audio"
+                                                  ]
+                                                },
+                                                "original_sound_id": {
+                                                  "type": "string"
+                                                },
+                                                "origin_video_post_id": {
+                                                  "type": "string"
+                                                },
+                                                "origin_author_persona_id": {
+                                                  "type": "string"
+                                                }
+                                              },
+                                              "required": [
+                                                "kind",
+                                                "original_sound_id",
+                                                "origin_video_post_id",
+                                                "origin_author_persona_id"
+                                              ],
+                                              "additionalProperties": false
+                                            },
+                                            {
+                                              "type": "object",
+                                              "properties": {
+                                                "kind": {
+                                                  "type": "string",
+                                                  "enum": [
+                                                    "song_reference"
+                                                  ]
+                                                },
+                                                "song_reference": {
+                                                  "type": "object",
+                                                  "properties": {
+                                                    "song_post_id": {
+                                                      "type": "string"
+                                                    },
+                                                    "song_title": {
+                                                      "type": "string"
+                                                    },
+                                                    "song_author_persona_id": {
+                                                      "type": "string"
+                                                    }
+                                                  },
+                                                  "required": [
+                                                    "song_post_id",
+                                                    "song_title",
+                                                    "song_author_persona_id"
+                                                  ],
+                                                  "additionalProperties": false
+                                                }
+                                              },
+                                              "required": [
+                                                "kind",
+                                                "song_reference"
+                                              ],
+                                              "additionalProperties": false
+                                            }
+                                          ]
+                                        },
+                                        "playback": {
+                                          "anyOf": [
+                                            {
+                                              "type": "object",
+                                              "properties": {
+                                                "status": {
+                                                  "type": "string",
+                                                  "enum": [
+                                                    "ready"
+                                                  ]
+                                                },
+                                                "provider": {
+                                                  "type": "string",
+                                                  "enum": [
+                                                    "stream"
+                                                  ]
+                                                },
+                                                "playback_ref": {
+                                                  "type": "string"
+                                                }
+                                              },
+                                              "required": [
+                                                "status",
+                                                "provider",
+                                                "playback_ref"
+                                              ],
+                                              "additionalProperties": false
+                                            },
+                                            {
+                                              "type": "object",
+                                              "properties": {
+                                                "status": {
+                                                  "type": "string",
+                                                  "enum": [
+                                                    "pending"
+                                                  ]
+                                                }
+                                              },
+                                              "required": [
+                                                "status"
+                                              ],
+                                              "additionalProperties": false
+                                            }
+                                          ]
+                                        },
+                                        "thumbnail": {
+                                          "anyOf": [
+                                            {
+                                              "type": "object",
+                                              "properties": {
+                                                "status": {
+                                                  "type": "string",
+                                                  "enum": [
+                                                    "ready"
+                                                  ]
+                                                },
+                                                "artifact_ref": {
+                                                  "type": "string"
+                                                }
+                                              },
+                                              "required": [
+                                                "status",
+                                                "artifact_ref"
+                                              ],
+                                              "additionalProperties": false
+                                            },
+                                            {
+                                              "type": "object",
+                                              "properties": {
+                                                "status": {
+                                                  "type": "string",
+                                                  "enum": [
+                                                    "pending"
+                                                  ]
+                                                }
+                                              },
+                                              "required": [
+                                                "status"
+                                              ],
+                                              "additionalProperties": false
+                                            }
+                                          ]
+                                        },
+                                        "data_registration": {
+                                          "type": "string",
+                                          "enum": [
+                                            "registration_pending",
+                                            "registered",
+                                            "failed"
+                                          ]
+                                        },
+                                        "capabilities": {
+                                          "type": "object",
+                                          "properties": {
+                                            "can_post_with_song": {
+                                              "type": "boolean"
+                                            }
+                                          },
+                                          "required": [
+                                            "can_post_with_song"
+                                          ],
+                                          "additionalProperties": false
+                                        }
+                                      },
+                                      "required": [
+                                        "track",
+                                        "caption",
+                                        "caption_dir",
+                                        "caption_lang",
+                                        "soundtrack",
+                                        "playback",
+                                        "thumbnail",
+                                        "data_registration",
+                                        "capabilities"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
                             "upvote_count": {
                               "$ref": "#/$defs/Union_1"
                             },
@@ -134048,6 +135258,248 @@
                                       "items": {
                                         "$ref": "#/$defs/Objects_1"
                                       }
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "video": {
+                              "anyOf": [
+                                {
+                                  "anyOf": [
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "track": {
+                                          "type": "string",
+                                          "enum": [
+                                            "video"
+                                          ]
+                                        },
+                                        "caption": {
+                                          "anyOf": [
+                                            {
+                                              "type": "string"
+                                            },
+                                            {
+                                              "type": "null"
+                                            }
+                                          ]
+                                        },
+                                        "caption_dir": {
+                                          "anyOf": [
+                                            {
+                                              "type": "string",
+                                              "enum": [
+                                                "ltr",
+                                                "rtl",
+                                                "auto"
+                                              ]
+                                            },
+                                            {
+                                              "type": "null"
+                                            }
+                                          ]
+                                        },
+                                        "caption_lang": {
+                                          "anyOf": [
+                                            {
+                                              "type": "string"
+                                            },
+                                            {
+                                              "type": "null"
+                                            }
+                                          ]
+                                        },
+                                        "soundtrack": {
+                                          "anyOf": [
+                                            {
+                                              "type": "object",
+                                              "properties": {
+                                                "kind": {
+                                                  "type": "string",
+                                                  "enum": [
+                                                    "original_audio"
+                                                  ]
+                                                },
+                                                "original_sound_id": {
+                                                  "type": "string"
+                                                },
+                                                "origin_video_post_id": {
+                                                  "type": "string"
+                                                },
+                                                "origin_author_persona_id": {
+                                                  "type": "string"
+                                                }
+                                              },
+                                              "required": [
+                                                "kind",
+                                                "original_sound_id",
+                                                "origin_video_post_id",
+                                                "origin_author_persona_id"
+                                              ],
+                                              "additionalProperties": false
+                                            },
+                                            {
+                                              "type": "object",
+                                              "properties": {
+                                                "kind": {
+                                                  "type": "string",
+                                                  "enum": [
+                                                    "song_reference"
+                                                  ]
+                                                },
+                                                "song_reference": {
+                                                  "type": "object",
+                                                  "properties": {
+                                                    "song_post_id": {
+                                                      "type": "string"
+                                                    },
+                                                    "song_title": {
+                                                      "type": "string"
+                                                    },
+                                                    "song_author_persona_id": {
+                                                      "type": "string"
+                                                    }
+                                                  },
+                                                  "required": [
+                                                    "song_post_id",
+                                                    "song_title",
+                                                    "song_author_persona_id"
+                                                  ],
+                                                  "additionalProperties": false
+                                                }
+                                              },
+                                              "required": [
+                                                "kind",
+                                                "song_reference"
+                                              ],
+                                              "additionalProperties": false
+                                            }
+                                          ]
+                                        },
+                                        "playback": {
+                                          "anyOf": [
+                                            {
+                                              "type": "object",
+                                              "properties": {
+                                                "status": {
+                                                  "type": "string",
+                                                  "enum": [
+                                                    "ready"
+                                                  ]
+                                                },
+                                                "provider": {
+                                                  "type": "string",
+                                                  "enum": [
+                                                    "stream"
+                                                  ]
+                                                },
+                                                "playback_ref": {
+                                                  "type": "string"
+                                                }
+                                              },
+                                              "required": [
+                                                "status",
+                                                "provider",
+                                                "playback_ref"
+                                              ],
+                                              "additionalProperties": false
+                                            },
+                                            {
+                                              "type": "object",
+                                              "properties": {
+                                                "status": {
+                                                  "type": "string",
+                                                  "enum": [
+                                                    "pending"
+                                                  ]
+                                                }
+                                              },
+                                              "required": [
+                                                "status"
+                                              ],
+                                              "additionalProperties": false
+                                            }
+                                          ]
+                                        },
+                                        "thumbnail": {
+                                          "anyOf": [
+                                            {
+                                              "type": "object",
+                                              "properties": {
+                                                "status": {
+                                                  "type": "string",
+                                                  "enum": [
+                                                    "ready"
+                                                  ]
+                                                },
+                                                "artifact_ref": {
+                                                  "type": "string"
+                                                }
+                                              },
+                                              "required": [
+                                                "status",
+                                                "artifact_ref"
+                                              ],
+                                              "additionalProperties": false
+                                            },
+                                            {
+                                              "type": "object",
+                                              "properties": {
+                                                "status": {
+                                                  "type": "string",
+                                                  "enum": [
+                                                    "pending"
+                                                  ]
+                                                }
+                                              },
+                                              "required": [
+                                                "status"
+                                              ],
+                                              "additionalProperties": false
+                                            }
+                                          ]
+                                        },
+                                        "data_registration": {
+                                          "type": "string",
+                                          "enum": [
+                                            "registration_pending",
+                                            "registered",
+                                            "failed"
+                                          ]
+                                        },
+                                        "capabilities": {
+                                          "type": "object",
+                                          "properties": {
+                                            "can_post_with_song": {
+                                              "type": "boolean"
+                                            }
+                                          },
+                                          "required": [
+                                            "can_post_with_song"
+                                          ],
+                                          "additionalProperties": false
+                                        }
+                                      },
+                                      "required": [
+                                        "track",
+                                        "caption",
+                                        "caption_dir",
+                                        "caption_lang",
+                                        "soundtrack",
+                                        "playback",
+                                        "thumbnail",
+                                        "data_registration",
+                                        "capabilities"
+                                      ],
+                                      "additionalProperties": false
                                     },
                                     {
                                       "type": "null"
