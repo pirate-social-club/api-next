@@ -72,6 +72,16 @@ export interface EndpointRequest {
  * creation). */
 export type SuccessStatus = number | readonly number[];
 
+/** Initial closed binary representation. Conditional evaluation belongs to the
+ * authorized handler, never a cache or middleware short circuit. Errors remain JSON.
+ */
+export interface BinaryResponseRepresentation {
+  readonly kind: "binary";
+  readonly contentType: "image/jpeg";
+  readonly cacheControl: "private, no-cache";
+  readonly conditional: "authorized-etag";
+}
+
 export interface EndpointDefinition {
   readonly method: HttpMethod;
   /** Path with `:param` placeholders; path params are schema-decoded. */
@@ -81,6 +91,11 @@ export interface EndpointDefinition {
   readonly request?: EndpointRequest;
   /** Effect Schema for the exact success response envelope. */
   readonly response: Schema.Schema<unknown>;
+  /** Omitted means the existing JSON representation. For binary responses the
+   * response schema is not used to encode bytes; status/body/headers are closed
+   * by this representation. Declare successStatus [200, 304] explicitly.
+   */
+  readonly responseRepresentation?: BinaryResponseRepresentation;
   /** HTTP status emitted for a successful handler result; defaults to 200. */
   readonly successStatus?: SuccessStatus;
   /** Closed error union, drawn from the frozen catalog. */
@@ -88,10 +103,25 @@ export interface EndpointDefinition {
 }
 
 /**
- * Identity at runtime; the type-level contract is the value itself. Lane A
+ * Validates the closed binary representation; the returned value retains its type. Lane A
  * may extend the returned type with derived metadata (OpenAPI annotations,
  * route-table keys) — the input shape stays frozen.
  */
 export function endpoint<const E extends EndpointDefinition>(def: E): E {
+  if (def.responseRepresentation !== undefined) {
+    const representation = def.responseRepresentation;
+    const statuses = Array.isArray(def.successStatus) ? def.successStatus : [];
+    if (
+      def.method !== "GET" ||
+      representation.kind !== "binary" ||
+      representation.contentType !== "image/jpeg" ||
+      representation.cacheControl !== "private, no-cache" ||
+      representation.conditional !== "authorized-etag" ||
+      statuses.length !== 2 ||
+      !statuses.includes(200) ||
+      !statuses.includes(304)
+    )
+      throw new Error("Invalid binary response contract");
+  }
   return def;
 }
