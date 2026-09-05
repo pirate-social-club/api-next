@@ -3,6 +3,7 @@ import { Client } from "pg";
 import { runPostgresMigrations } from "./postgres-migrations";
 import { observeResetDependencyClosure } from "./staging-persona-dependency-scan";
 import { inspectStagingRemovalPlan } from "./staging-persona-removal-plan";
+import { removeStagingObjectsInTransaction } from "./staging-persona-remove-objects";
 import {
   loadStagingResetArtifacts,
   validateStagingResetArtifacts,
@@ -38,6 +39,165 @@ async function fixture(use: (admin: Client, scoped: string) => Promise<void>) {
 }
 
 suite("reset dependency closure", () => {
+  test("removes the real chain by re-scanned phases and rolls populated state and ACLs back", async () => {
+    await fixture(async (admin, scoped) => {
+      const artifacts = loadStagingResetArtifacts();
+      const plan = validateStagingResetArtifacts(artifacts);
+      await runPostgresMigrations({ connectionString: scoped, migrations: plan.migrations });
+      await admin.query("CREATE TABLE api_next.reset_payload (id int PRIMARY KEY)");
+      await admin.query("INSERT INTO api_next.reset_payload VALUES (7)");
+      await admin.query("GRANT SELECT ON api_next.reset_payload TO PUBLIC");
+      await admin.query("CREATE TABLE reset_outside.sentinel (id int PRIMARY KEY)");
+      await admin.query("INSERT INTO reset_outside.sentinel VALUES (11)");
+      const before = (
+        await admin.query("SELECT oid,nspowner,nspacl FROM pg_namespace WHERE nspname='api_next'")
+      ).rows;
+      const acl = (
+        await admin.query(
+          "SELECT relacl FROM pg_class WHERE oid='api_next.reset_payload'::regclass",
+        )
+      ).rows;
+      await expect(
+        (async () => {
+          await admin.query("BEGIN");
+          try {
+            const result = await removeStagingObjectsInTransaction(admin, artifacts);
+            expect(result.phases).toEqual([1, 2, 3, 4]);
+            expect(result.drops).toBeGreaterThan(300);
+            expect(result.committed).toBe(false);
+            expect(
+              (await admin.query("SELECT to_regclass('api_next.schema_migrations') AS ledger"))
+                .rows,
+            ).toEqual([{ ledger: null }]);
+            expect(
+              (
+                await admin.query(
+                  "SELECT oid,nspowner,nspacl FROM pg_namespace WHERE nspname='api_next'",
+                )
+              ).rows,
+            ).toEqual(before);
+            expect((await admin.query("SELECT id FROM reset_outside.sentinel")).rows).toEqual([
+              { id: 11 },
+            ]);
+            throw new Error("injected_after_removal");
+          } finally {
+            await admin.query("ROLLBACK");
+          }
+        })(),
+      ).rejects.toThrow("injected_after_removal");
+      expect((await admin.query("SELECT id FROM api_next.reset_payload")).rows).toEqual([
+        { id: 7 },
+      ]);
+      expect(
+        (
+          await admin.query(
+            "SELECT relacl FROM pg_class WHERE oid='api_next.reset_payload'::regclass",
+          )
+        ).rows,
+      ).toEqual(acl);
+      expect(
+        (await admin.query("SELECT count(*)::int AS count FROM api_next.schema_migrations")).rows,
+      ).toEqual([{ count: 119 }]);
+    });
+  }, 60_000);
+
+  test("rejects outside views and foreign keys against the complete chain before removal", async () => {
+    await fixture(async (admin, scoped) => {
+      const artifacts = loadStagingResetArtifacts();
+      const plan = validateStagingResetArtifacts(artifacts);
+      await runPostgresMigrations({ connectionString: scoped, migrations: plan.migrations });
+      await admin.query(
+        "CREATE VIEW reset_outside.consumer AS SELECT * FROM api_next.schema_migrations",
+      );
+      await admin.query("BEGIN");
+      try {
+        await expect(removeStagingObjectsInTransaction(admin, artifacts)).rejects.toThrow(
+          "reset_dependency_closure_unproven",
+        );
+      } finally {
+        await admin.query("ROLLBACK");
+      }
+      expect(
+        (await admin.query("SELECT count(*)::int AS count FROM reset_outside.consumer")).rows,
+      ).toEqual([{ count: 119 }]);
+      await admin.query("DROP VIEW reset_outside.consumer");
+      await admin.query(
+        "CREATE TABLE reset_outside.consumer (version text REFERENCES api_next.schema_migrations(version))",
+      );
+      await admin.query("BEGIN");
+      try {
+        await expect(removeStagingObjectsInTransaction(admin, artifacts)).rejects.toThrow(
+          "reset_dependency_closure_unproven",
+        );
+      } finally {
+        await admin.query("ROLLBACK");
+      }
+      expect(
+        (await admin.query("SELECT count(*)::int AS count FROM api_next.schema_migrations")).rows,
+      ).toEqual([{ count: 119 }]);
+    });
+  }, 60_000);
+
+  test("a concurrent table writer times out all-root locking before any DROP", async () => {
+    await fixture(async (admin, scoped) => {
+      const artifacts = loadStagingResetArtifacts();
+      const plan = validateStagingResetArtifacts(artifacts);
+      await runPostgresMigrations({ connectionString: scoped, migrations: plan.migrations });
+      await admin.query("CREATE TABLE api_next.lock_payload (id int PRIMARY KEY)");
+      const peer = new Client({ connectionString: scoped });
+      await peer.connect();
+      try {
+        await peer.query("BEGIN");
+        await peer.query("INSERT INTO api_next.lock_payload VALUES (1)");
+        await admin.query("BEGIN");
+        await expect(removeStagingObjectsInTransaction(admin, artifacts)).rejects.toMatchObject({
+          code: "55P03",
+        });
+        await admin.query("ROLLBACK");
+        await peer.query("COMMIT");
+        expect((await admin.query("SELECT id FROM api_next.lock_payload")).rows).toEqual([
+          { id: 1 },
+        ]);
+        expect(
+          (await admin.query("SELECT count(*)::int AS count FROM api_next.schema_migrations")).rows,
+        ).toEqual([{ count: 119 }]);
+      } finally {
+        await admin.query("ROLLBACK");
+        await peer.query("ROLLBACK");
+        await peer.end();
+      }
+    });
+  }, 60_000);
+
+  test("refuses autocommit before destructive statements", async () => {
+    await fixture(async (admin) => {
+      await admin.query("CREATE TABLE api_next.retained (id int)");
+      await expect(
+        removeStagingObjectsInTransaction(admin, loadStagingResetArtifacts()),
+      ).rejects.toThrow("reset_explicit_transaction_required");
+      expect(
+        (await admin.query("SELECT to_regclass('api_next.retained')::text AS name")).rows,
+      ).toEqual([{ name: "retained" }]);
+    });
+  });
+
+  test("refuses a stale-snapshot isolation mode before removal", async () => {
+    await fixture(async (admin) => {
+      await admin.query("CREATE TABLE api_next.retained (id int)");
+      await admin.query("BEGIN ISOLATION LEVEL REPEATABLE READ");
+      try {
+        await expect(
+          removeStagingObjectsInTransaction(admin, loadStagingResetArtifacts()),
+        ).rejects.toThrow("reset_read_committed_required");
+      } finally {
+        await admin.query("ROLLBACK");
+      }
+      expect(
+        (await admin.query("SELECT to_regclass('api_next.retained')::text AS name")).rows,
+      ).toEqual([{ name: "retained" }]);
+    });
+  });
+
   test("plans roots from the real pinned chain and keeps standalone objects distinct", async () => {
     await fixture(async (admin, scoped) => {
       const artifacts = loadStagingResetArtifacts();

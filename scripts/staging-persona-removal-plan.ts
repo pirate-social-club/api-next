@@ -73,6 +73,16 @@ type RemovalRoot = Readonly<{
   statement: string;
 }>;
 
+/** Re-query after cascades; never consume a saved list as execution authority. */
+export async function listResetRemovalRoots(admin: Pick<Client, "query">, schema: string) {
+  if (!/^[a-z_][a-z0-9_]{0,62}$/u.test(schema)) throw new Error("removal_plan_schema");
+  const roots = await admin.query<RemovalRoot>(rootsQuery, [schema]);
+  if (roots.rows.length > 50000 || roots.rows.some((root) => root.owned !== true)) {
+    throw new Error("removal_plan_ownership_unproven");
+  }
+  return roots.rows;
+}
+
 /**
  * Read-only candidate plan inside a caller-owned transaction; no DROP is issued.
  * Pinned bytes are validated before the first query. This is NOT an execution
@@ -91,15 +101,12 @@ export async function inspectStagingRemovalPlan(
   if (Number(unsupported.rows[0]?.unsupported) !== 0) {
     throw new Error("removal_plan_unsupported_objects");
   }
-  const roots = await admin.query<RemovalRoot>(rootsQuery, [schema]);
-  if (roots.rows.length > 50000 || roots.rows.some((root) => root.owned !== true)) {
-    throw new Error("removal_plan_ownership_unproven");
-  }
+  const roots = await listResetRemovalRoots(admin, schema);
   return Object.freeze({
     source_sha: release.sourceSha,
     closure,
-    roots: Object.freeze(roots.rows.map((root) => Object.freeze(root))),
-    roots_sha256: createHash("sha256").update(JSON.stringify(roots.rows)).digest("hex"),
+    roots: Object.freeze(roots.map((root) => Object.freeze(root))),
+    roots_sha256: createHash("sha256").update(JSON.stringify(roots)).digest("hex"),
     execution_authorized: false,
   });
 }

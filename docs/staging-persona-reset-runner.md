@@ -448,3 +448,61 @@ their tests. Combined planner/artifact/grant units pass 16 tests and 38
 assertions. Script-check reports zero findings. The full unit/Worker suite was
 not rerun for this script-only checkpoint. The local PostgreSQL container was
 stopped, and no live connection, reset or deployment was made in this follow-up.
+
+## Local destructive primitive, not live admission
+
+The internal removal primitive now validates pinned artifacts before any query,
+refuses autocommit by checking transaction identity across separate statements,
+sets a two-second lock timeout and checks for prepared transactions. It locks
+all phase-one relation roots before the first DROP. Unsupported relation-lock
+kinds fail closed rather than being skipped. It rechecks dependency closure
+before each phase and re-reads root candidates after every DROP, avoiding stale
+routine signatures as well as cross-phase cascades. It checks final root and
+relation/routine/type emptiness and transaction identity. It never commits and
+has no command-line entrypoint.
+
+The PostgreSQL 17 suite now passes 12 tests and 42 assertions. Its new tests
+replay the complete 119-migration chain, add populated and outside-schema
+sentinels, remove the in-scope objects and inject failure before rollback.
+The populated fixture, ACL and 119-row ledger return; the schema identity/ACL
+and outside sentinel remain intact during removal. A separate full-chain test
+refuses an outside view and foreign key before removal. Another holds an uncommitted table
+write on a second connection, proves SQLSTATE 55P03 occurs before any DROP,
+then verifies the writer can commit and the original ledger remains. Autocommit
+is refused without removing the fixture. Combined artifact/planner/grant units
+pass 17 tests and 40 assertions, now including tampered SQL rejected before the
+destructive primitive's first query.
+
+These tests do not yet constitute a complete reset. The primitive deliberately
+relies on caller-owned target validation, the maintained producer fence and
+rollback on any error. Outside-catalog comparison, full ACL/default-ACL policy,
+grant application from the operator identity, migration replay and final data
+evidence must still be composed into the same transaction before commit can be
+admitted. The existing replay test and these removal tests prove separate
+components, not an end-to-end provider rehearsal. Table locks do not prevent
+every schema change or independently fence sequence activity and new producers.
+
+The runtime grant manifest and both default-ACL dispositions remain decisions
+for the rollout review. Queue purge is an additional destructive disposition,
+not implied by queue pause: retained messages refer to discarded rows. The
+runbook must enumerate and deal with in-flight Workflow instances, capture
+pause/purge and termination receipts, and verify Hyperdrive caching behavior.
+None of those provider operations has been performed by this primitive or its
+local tests. Production remains excluded.
+
+Independent review found no quoting or transaction-ownership defect but withheld
+live admission because the full wrapper is still absent. One review finding
+was addressed in the primitive: it now requires READ COMMITTED before taking
+locks, refusing REPEATABLE READ so the post-lock closure scan cannot rely on a
+snapshot older than lock acquisition. A new PostgreSQL test proves refusal
+before removal. This does not replace the external producer/DDL fence or protect
+against an operator changing the schema concurrently. Complete outside-catalog
+verification and namespace identity protection are still outstanding.
+
+The repository check passed with the existing 41 Biome warnings before the
+final isolation test was added. Focused PostgreSQL, unit, TypeScript and Biome
+checks cover the final addition. Script-check has zero findings. The full
+unit/Worker and publication gate sets were not rerun for this script-only
+checkpoint. No live database connection, queue purge, workflow termination,
+grant change or deployment was performed. The local test container is stopped
+after verification.
