@@ -65,6 +65,27 @@ test clocks here are synthetic, not production deadline selections. No new
 public port, provider driver, SQL schema or Worker composition is introduced.
 # Playback policy implementation boundary — 2026-09-05
 
+The limiter now has a SQLite-backed Durable Object implementation and an
+HMAC-pseudonymizing adapter. It sequentially charges source, source/post and
+post budgets with no rollback after a later refusal. The counter retains one
+window row per object, rejects changing bucket kinds and fails closed on
+backward window movement. Workerd tests exercise concurrent admission and
+window rollover. Test-only bindings do not establish production composition.
+
+The security loader requires the configured customer host, signing-key ID,
+base64 private JWK, base64 32-byte HMAC secret and limiter namespace before
+returning dependencies. It imports nonextractable keys and redacts malformed
+secret errors. Local test keys are not Cloudflare acceptance evidence. Production
+binding declarations, secret classification and awaiting this loader at the
+actual composition boundary remain outstanding; no provider secrets were read.
+
+Before staging, measure poster serving alongside mixed-feed join cost at
+1, 10 and 20 video items, including fresh bytes and matching-ETag revalidation.
+Record authorization/database round trips, R2 reads, bytes served and latency
+distribution for public and eligibility-gated viewers. Every request must still
+authorize; do not add a batch/cache bypass to reduce the measured cost. This
+is an explicit measurement obligation, not a measurement result.
+
 Playback and conditional-poster use cases now call authorizeVideoAccess.
 The shared PostgreSQL publication-approval adapter performs one current-policy
 query and returns only a boolean, including revision/rights and hold checks.
