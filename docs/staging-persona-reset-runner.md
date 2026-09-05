@@ -78,7 +78,7 @@ aggregate counts and their versioned digest without guessing a binding or
 requiring pre-reset zero conflicts. Only post-replay verification requires
 empty identity state and zero binding violations.
 
-No destructive adapter, live evidence collector, runtime fence, grant-restoring
+No destructive adapter, complete live evidence collector, runtime fence, grant-restoring
 path is implemented in this checkpoint. The PostgreSQL 17 replay suite proves
 the pinned full chain installs once and an injected mid-chain failure rolls
 back prior migration effects, preserving a separate schema in both cases.
@@ -86,3 +86,24 @@ This is not a destructive reset, runtime-role isolation or captured-data
 recovery rehearsal test; those proofs remain outstanding. Independent
 review and the required Postgres 17 and secret-boundary gates remain mandatory
 before the parent release coordinator may use a completed runner.
+
+The runtime-denial observer now inspects a dedicated connection authenticated
+with the runtime credential. It rejects role impersonation, elevated roles,
+predefined pg_ roles (including server-file/program capabilities),
+database creation rights, object ownership, effective schema/table/column/
+sequence access through PUBLIC or memberships, and executable security-definer
+functions in accessible schemas. Membership checks conservatively include
+roles available through SET ROLE. A permission-denied SELECT with LIMIT 0
+checks the target ledger without reading data. Driver failures are redacted
+and fail closed; the observer neither changes grants nor authorizes execution.
+Its PostgreSQL tests cover a separate login, rollback, PUBLIC/inherited and
+NOINHERIT role-switch access, an external security-definer function, and a
+revoked owner's ability to restore permissions.
+
+This observation is not a maintained fence. The future coordinator still must
+verify the provider/connection identity, inspect and drain other sessions and
+prepared transactions, stop all producers, check the dependency closure and
+repeat observations immediately before destruction. The observer does not
+automatically revoke permissions to make a failed check pass. Its rejection of
+any current-database object ownership or accessible security-definer routine
+is conservative; exceptions require a separately reviewed design, not a flag.
