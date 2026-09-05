@@ -1,8 +1,10 @@
 # Staging persona reset runner
 
 This is an implementation checkpoint, not an executable reset runbook.
-Only the offline release planner and evidence-consistency validator are
-available. Neither opens a database connection or accepts an execution option.
+Available pieces are the offline release planner, evidence-consistency
+validator and read-only database observers. The observers require dedicated
+connections supplied by a future trusted collector. No reset execution option
+is available.
 The August rebuild script remains
 unchanged and must not be used for this release.
 
@@ -107,3 +109,22 @@ repeat observations immediately before destruction. The observer does not
 automatically revoke permissions to make a failed check pass. Its rejection of
 any current-database object ownership or accessible security-definer routine
 is conservative; exceptions require a separately reviewed design, not a flag.
+
+The session-drain observer requires a fresh, idle dedicated administrative
+connection with full statistics visibility and no role impersonation. Never
+pass an existing caller transaction, because cleanup rolls it back. Within its
+own transaction, the observer clears the statistics
+snapshot and refuses every other backend in that database, including idle
+connections, plus every prepared transaction. It excludes only its own backend
+and returns counts, never session identities or query text. It does not kill
+connections, resolve transactions or prevent a new connection after observation.
+Runtime credential probes must close before this observation. A future fence
+must prevent reconnects and repeat the observation immediately before reset.
+
+Its PostgreSQL tests use an isolated UUID-named database and prove refusal of
+an idle peer, an idle transaction and a prepared transaction whose client has
+disconnected; refusal does not cancel their work. The local dedicated instance
+was explicitly configured with max_prepared_transactions=10 for the last proof.
+The ordinary CI service defaults to zero, so the test also covers PostgreSQL's
+refusal to prepare there rather than claiming that branch tests a live prepared
+transaction. Both configurations have been exercised locally.
