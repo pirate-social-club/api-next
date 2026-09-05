@@ -76,6 +76,7 @@ export {
   RegistrationApplicationRateLimiterDO,
   RegistrationIpRateLimiterDO,
 } from "../../packages/platform-cf/src/registration-rate-limiter-do.ts";
+export { VideoPlaybackRateLimiterDO } from "../../packages/platform-cf/src/video-playback-rate-limiter-do.ts";
 
 function toBase64(bytes: ArrayBufferLike): string {
   let binary = "";
