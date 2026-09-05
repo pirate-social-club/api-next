@@ -2,6 +2,7 @@
   "name": "pirate-http-worker",
   "account_id": "08a4c22cf52e2ecae883e36f80a33f4a",
   "main": "src/index.ts",
+  "version_metadata": { "binding": "CF_VERSION_METADATA" },
   "compatibility_date": "2026-08-01",
   "compatibility_flags": ["nodejs_compat"],
   // HTTP invocation logs are noisy; retain application/error logs in Workers
@@ -148,6 +149,7 @@
   "env": {
     "staging": {
       "name": "pirate-http-worker-staging",
+      "version_metadata": { "binding": "CF_VERSION_METADATA" },
       "observability": {
         "enabled": true,
         "logs": {
@@ -311,6 +313,7 @@
     },
     "production": {
       "name": "pirate-http-worker-production",
+      "version_metadata": { "binding": "CF_VERSION_METADATA" },
       "observability": {
         "enabled": true,
         "logs": {

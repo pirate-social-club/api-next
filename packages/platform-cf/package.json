@@ -139,7 +139,9 @@
     "./video-stage-fact-repository": "./src/video-stage-fact-repository.ts",
     "./video-stage-artifact-head": "./src/video-stage-artifact-head.ts",
     "./video-sealed-source-verifier": "./src/video-sealed-source-verifier.ts",
-    "./video-publication-wakeup-repository": "./src/video-publication-wakeup-repository.ts"
+    "./video-publication-wakeup-repository": "./src/video-publication-wakeup-repository.ts",
+    "./worker-request-diagnostics": "./src/worker-request-diagnostics.ts",
+    "./hns-authority-diagnostics": "./src/hns-authority-diagnostics.ts"
   },
   "dependencies": {
     "@pirate/verifier-response-contract": "0.0.0",

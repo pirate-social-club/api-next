@@ -1,12 +1,18 @@
 import { AuthError, BadRequest, NamespaceUnavailable, NotFound } from "@pirate/contracts";
 import { CloudflareAccessJwtFailure } from "@pirate/platform-cf/cloudflare-access-jwt";
 import {
+  HNS_DIAGNOSTIC_ID_HEADER,
+  HnsAuthorityDiagnostic,
+  isHnsDiagnosticId,
+  makeHnsAuthorityDiagnostic,
+  withHnsAuthoritySpan,
+} from "@pirate/platform-cf/hns-authority-diagnostics";
+import {
   CF_ACCESS_ASSERTION_HEADER,
   decodeHnsSolidHostAuthorityRequestV2,
   encodeHnsSolidHostAuthorityResponseV2,
   HNS_SOLID_HOST_AUTHORITY_MAX_BYTES,
   HnsCommunityAppApiWireFailure,
-  type HnsHostAuthorityStateV1,
   isHnsCommunityAppApiPath,
   isHnsCommunityAppPrivateHeaderName,
   resolveHnsSolidHostAuthorityV2,
@@ -171,6 +177,8 @@ export async function resolveHnsSolidHostAuthorityRequest(
     throw invalidRequest();
   }
   await authenticateAccess(request, composition);
+  const diagnosticId = request.headers.get(HNS_DIAGNOSTIC_ID_HEADER);
+  if (diagnosticId !== null && !isHnsDiagnosticId(diagnosticId)) throw invalidRequest();
   const bytes = await readBoundedRequestBody(request.clone(), HNS_SOLID_HOST_AUTHORITY_MAX_BYTES);
   let decoded: ReturnType<typeof decodeHnsSolidHostAuthorityRequestV2>;
   try {
@@ -179,17 +187,31 @@ export async function resolveHnsSolidHostAuthorityRequest(
     if (error instanceof HnsCommunityAppApiWireFailure) throw invalidRequest();
     throw error;
   }
-  let state: HnsHostAuthorityStateV1 | null;
+  const lookup = Effect.suspend(() => composition.authority_source.resolve(decoded[1])).pipe(
+    Effect.mapError(() => infrastructureUnavailable()),
+    Effect.catchDefect(() => Effect.fail(infrastructureUnavailable())),
+    Effect.flatMap((state) =>
+      Effect.try({
+        try: () => {
+          if (state !== null && state.variant !== "community_app_v1") throw authorityUnavailable();
+          return encodeHnsSolidHostAuthorityResponseV2(
+            resolveHnsSolidHostAuthorityV2(decoded, state),
+          );
+        },
+        catch: (error) =>
+          error instanceof HnsCommunityAppApiWireFailure ? authorityUnavailable() : error,
+      }),
+    ),
+  );
   try {
-    state = await Effect.runPromise(composition.authority_source.resolve(decoded[1]));
-  } catch {
-    throw infrastructureUnavailable();
-  }
-  if (state !== null && state.variant !== "community_app_v1") throw authorityUnavailable();
-  try {
-    return encodeHnsSolidHostAuthorityResponseV2(resolveHnsSolidHostAuthorityV2(decoded, state));
+    return await Effect.runPromise(
+      withHnsAuthoritySpan("authority", lookup).pipe(
+        Effect.provideService(HnsAuthorityDiagnostic, makeHnsAuthorityDiagnostic(diagnosticId)),
+      ),
+      { signal: request.signal },
+    );
   } catch (error) {
-    if (error instanceof HnsCommunityAppApiWireFailure) throw authorityUnavailable();
+    if (request.signal.aborted) throw request.signal.reason ?? error;
     throw error;
   }
 }

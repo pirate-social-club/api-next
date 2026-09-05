@@ -10,10 +10,10 @@ import type { RegistrationRateLimiterEnvironment } from "../packages/platform-cf
 type BindingKind = "platform" | "secret" | "var";
 type BindingManifest<T extends object> = { [K in keyof T]-?: BindingKind };
 
-// This is deliberately explicit. `satisfies` makes a newly added source
-// binding fail typecheck until it is classified here, while the runtime audit
-// below checks that the classification agrees with both Wrangler configs.
+// `satisfies` requires every source binding to be classified. The runtime audit
+// checks that these classifications agree with both Wrangler configs.
 const HTTP_BINDING_KINDS = {
+  CF_VERSION_METADATA: "platform",
   CONTROL_PLANE: "platform",
   HNS_OWNER_VERIFIER: "platform",
   REGISTRATION_IP_LIMITER: "platform",
