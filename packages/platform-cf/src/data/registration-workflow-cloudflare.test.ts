@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import {
   applyDataRegistrationQueueDisposition,
   type CloudflareDataRegistrationWorkflowBinding,
@@ -36,6 +37,7 @@ describe("Cloudflare DATA registration adapters", () => {
     const providerId = await cloudflareDataRegistrationWorkflowId("workflow-1");
     expect(providerIds).toEqual([providerId, providerId, providerId]);
     expect(providerId).toMatch(/^drw-[0-9a-f]{64}$/u);
+    expect(providerId).toBe(`drw-${createHash("sha256").update("workflow-1").digest("hex")}`);
     expect(providerId.length).toBeLessThanOrEqual(100);
   });
 
