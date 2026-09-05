@@ -555,7 +555,10 @@ test("drill 5 fail closed: membership loss before publication cannot create a Po
     "UPDATE community_memberships SET status='left',left_at=clock_timestamp(),updated_at=clock_timestamp() WHERE community_id=$1 AND user_id=$2",
     [community, actor],
   );
-  await expect(h.run(await h.launch())).rejects.toThrow("membership rejected");
+  await expect(h.run(await h.launch())).rejects.toMatchObject({
+    name: "NonRetryableError",
+    message: "video Workflow terminal: membership_rejected",
+  });
   expect(
     (await admin.query("SELECT count(*)::int AS n FROM posts WHERE post_type='video'")).rows[0].n,
   ).toBe(0);

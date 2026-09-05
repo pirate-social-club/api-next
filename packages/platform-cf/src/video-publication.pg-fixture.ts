@@ -11,12 +11,11 @@ import { makeControlPlaneVideoPublicationStore } from "./video-publication-repos
 export const actor = "video_publication_actor";
 export const persona = "video_publication_persona";
 export const community = "video_publication_community";
-export const reservationId = "media-reservation-00000000-0000-4000-8000-000000000010";
+const reservationId = "media-reservation-00000000-0000-4000-8000-000000000010";
 export const submissionId = "media-submission-video-publication";
 export const operationId = "media-operation-video-publication";
 export const responseBytes = new TextEncoder().encode('{"track":"video"}');
-export const sha256 = (value: Uint8Array): string =>
-  createHash("sha256").update(value).digest("hex");
+const sha256 = (value: Uint8Array): string => createHash("sha256").update(value).digest("hex");
 export const responseSha256 = sha256(responseBytes);
 export const videoSha256 = "a".repeat(64);
 export const audioSha256 = "b".repeat(64);

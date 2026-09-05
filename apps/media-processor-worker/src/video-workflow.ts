@@ -3,6 +3,7 @@ import {
   type VideoWorkflowResult,
   type VideoWorkflowServices,
 } from "../../../packages/application/src/video/workflow.ts";
+import { VideoWorkflowTerminalError } from "../../../packages/application/src/video/workflow-errors.ts";
 import {
   type CloudflareWorkflowStepDo,
   PROCESSING_WORKFLOW_STEP_OPTIONS,
@@ -18,6 +19,7 @@ export interface VideoAnalysisWorkflowStep
 }
 export function makeVideoAnalysisWorkflowRunner<Env>(
   resolve: (env: Env) => { readonly videoWorkflow?: VideoWorkflowServices },
+  nonRetryableError: (message: string) => Error,
 ) {
   return async (
     env: Env,
@@ -34,7 +36,16 @@ export function makeVideoAnalysisWorkflowRunner<Env>(
     return runVideoAnalysisWorkflow(
       event.payload.effectIdentity,
       {
-        do: (name, run) => step.do(name, PROCESSING_WORKFLOW_STEP_OPTIONS, run),
+        do: (name, run) =>
+          step.do(name, PROCESSING_WORKFLOW_STEP_OPTIONS, async () => {
+            try {
+              return await run();
+            } catch (error) {
+              if (error instanceof VideoWorkflowTerminalError)
+                throw nonRetryableError(error.message);
+              throw error;
+            }
+          }),
         sleep: (name, duration) => step.sleep(name, duration),
         waitForEvent: (name, options) => step.waitForEvent(name, options),
       },

@@ -11,7 +11,7 @@ if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && !connectionStrin
 }
 const suite = connectionString ? describe : describe.skip;
 const schema = `video_workflow_migration_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-const migrationVersion = "0120_video_workflow_execution.sql";
+const migrationVersion = "0122_video_workflow_execution.sql";
 
 suite("video Workflow migration refusal and replay fences", () => {
   let client: Client;

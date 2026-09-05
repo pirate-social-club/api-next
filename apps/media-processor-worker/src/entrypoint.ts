@@ -1,7 +1,10 @@
 import type { DanceReferenceWorkflowPayload } from "@pirate/application/dance/reference-processing-wakeup";
 import type { MediaProcessingWorkflowPayload } from "@pirate/application/media/processing-contracts";
 import type { MediaProcessingWorkflowResult } from "@pirate/application/media/processing-workflow";
-import { makeCloudflareWorkflowEntrypoint } from "@pirate/platform-cf/cloudflare-workflow-entrypoint";
+import {
+  makeCloudflareWorkflowEntrypoint,
+  makeWorkflowNonRetryableError,
+} from "@pirate/platform-cf/cloudflare-workflow-entrypoint";
 import type { VideoWorkflowResult } from "../../../packages/application/src/video/workflow.ts";
 import { type MediaProcessorRuntimeEnv, makeMediaProcessorComposition } from "./composition.ts";
 import {
@@ -47,7 +50,10 @@ const CloudflareDanceReferenceProcessingWorkflow = makeCloudflareWorkflowEntrypo
 /** Dormant until a reviewed processor injection and separate binding exist. */
 export class DanceReferenceProcessingWorkflow extends CloudflareDanceReferenceProcessingWorkflow {}
 
-const videoAnalysisRunner = makeVideoAnalysisWorkflowRunner(makeMediaProcessorComposition);
+const videoAnalysisRunner = makeVideoAnalysisWorkflowRunner(
+  makeMediaProcessorComposition,
+  makeWorkflowNonRetryableError,
+);
 const CloudflareVideoAnalysisWorkflow = makeCloudflareWorkflowEntrypoint<
   MediaProcessorRuntimeEnv,
   { readonly effectIdentity: string },

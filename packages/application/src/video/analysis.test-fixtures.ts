@@ -18,8 +18,8 @@ import type {
 import type { VideoPublicationStore, VideoSubmissionRecord } from "./publication.ts";
 
 export const HASHES = ["a", "b", "c", "d", "e"].map((value) => value.repeat(64));
-export const actor = "video-analysis-account";
-export const personaId = "video-analysis-persona";
+const actor = "video-analysis-account";
+const personaId = "video-analysis-persona";
 const persona: PersonaRecord = {
   persona_id: personaId,
   object: "persona",
@@ -128,7 +128,7 @@ export function providers(overrides: Partial<VideoAnalysisProviders> = {}): Vide
   };
 }
 
-export function transformContext(
+function transformContext(
   binding: Parameters<MediaTransformVideoCapabilities["probe"]>[0]["binding"],
 ): MediaTransformVideoAttemptContext {
   return {

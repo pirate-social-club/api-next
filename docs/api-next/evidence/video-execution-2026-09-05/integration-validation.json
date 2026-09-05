@@ -1,0 +1,53 @@
+{
+  "date": "2026-09-05",
+  "origin_base": "386be35a87163bd6b93ab49c41666a7442fd17e2",
+  "reviewed_pre_rebase_tip": "1cbb7594dad4975e75f654f53845c20b1f49312e",
+  "migration": "0122_video_workflow_execution.sql",
+  "runs": [
+    {
+      "name": "baseline-generation",
+      "exit_status": 0,
+      "raw_log_sha256": "d02f5217e2606e8594fb9ee30d830808affbf7967b1b9acc74f00a2c5e1e8cf5",
+      "durable_test_summary": "baseline-generation-integration.txt"
+    },
+    {
+      "name": "check",
+      "exit_status": 0,
+      "raw_log_sha256": "9e70eebf94f2dfa34ce0425cf6b309cf9f9946ab575d8318f7a5720917b5dd12",
+      "durable_test_summary": "check-integration.txt"
+    },
+    {
+      "name": "ordinary-tests",
+      "exit_status": 0,
+      "raw_log_sha256": "52d28a3cd6975f739ea05dae3c9a7495e24d8ae3273972112a1b45997c706716",
+      "durable_test_summary": "ordinary-tests-integration.txt"
+    },
+    {
+      "name": "full-postgres",
+      "exit_status": 1,
+      "raw_log_sha256": "53bfd2d83a0cde5930cc7e50ef34c9b3e85304d75cd9239ee1a11036de08a851",
+      "durable_test_summary": "full-postgres-integration.txt"
+    },
+    {
+      "name": "postgres-correction",
+      "exit_status": 0,
+      "raw_log_sha256": "3208e1db3811ef9bcb9b28618a464aa40f4012de6f157d39d64a0c534256a295",
+      "durable_test_summary": "postgres-correction-integration.txt"
+    },
+    {
+      "name": "terminal-boundary-workerd",
+      "exit_status": 0,
+      "raw_log_sha256": "dd5b395b5a42703e704f078e2cfeb626ba4f2b23a8dae01a8bfaedd74e2c5b55",
+      "durable_test_summary": "terminal-boundary-workerd-integration.txt"
+    }
+  ],
+  "postgres_disposition": "Full command completed within its limit: isolated 35 pass; general 364 pass and 1 failure for the omitted wakeup table in the foundation inventory. After correcting that inventory and the migration refusal-label ordinal, all 22 foundation/migration tests passed. No continuation split was needed. The standard full command itself did not pass; the remote postgres17 gate remains required.",
+  "ordinary_counts": {
+    "bun": 3039,
+    "node": 20,
+    "workerd": 141
+  },
+  "composed_workerd_tests": 14,
+  "wire_changes": false,
+  "deployment_or_enablement": false
+}

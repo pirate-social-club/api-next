@@ -11,6 +11,7 @@ import type {
   VideoSubmissionRecord,
 } from "@pirate/application/video/publication";
 import { Effect, type Layer } from "effect";
+import { VideoWorkflowTerminalError } from "../../application/src/video/workflow-errors.ts";
 import {
   attachImmutableVideo,
   VIDEO_DERIVED_ARTIFACT_RETENTION_POLICY_V1,
@@ -1842,7 +1843,7 @@ function publishTransaction(input: VideoPublishBundle) {
           values: [current.state.communityId, current.state.actorAccountId],
           readonly: true,
         });
-        if (active.rowCount !== 1) throw new Error("video publication membership rejected");
+        if (active.rowCount !== 1) throw new VideoWorkflowTerminalError("membership_rejected");
         const postId = input.state.postId;
         if (postId === null) throw new Error("video publication post missing");
         yield* tx.execute({

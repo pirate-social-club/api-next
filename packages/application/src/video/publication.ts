@@ -38,6 +38,7 @@ import {
 import type { M2Actor } from "../ports.ts";
 import type { PersonaRecord } from "../use-cases/personas.ts";
 import type { VideoStageFact } from "./stage-facts.ts";
+import { VideoWorkflowTerminalError } from "./workflow-errors.ts";
 
 export const VIDEO_PUBLICATION_ENDPOINTS = {
   reserve: "/communities/:communityId/media-upload-reservations",
@@ -1025,13 +1026,20 @@ export async function acceptTrustedVideoAnalysis(
               .trim(),
           ),
         );
-  const decision = decideOriginalAudioVideo({
-    state: record.state,
-    analysis: input.analysis,
-    canonicalCaptionSha256: captionSha256,
-    decidedAt: services.nowIso(),
-  });
-  const nextState = attachVideoDecision(record.state, input.analysis, decision);
+  const { decision, nextState } = (() => {
+    try {
+      const decision = decideOriginalAudioVideo({
+        state: record.state,
+        analysis: input.analysis,
+        canonicalCaptionSha256: captionSha256,
+        decidedAt: services.nowIso(),
+      });
+      const nextState = attachVideoDecision(record.state, input.analysis, decision);
+      return { decision, nextState };
+    } catch {
+      throw new VideoWorkflowTerminalError("analysis_rejected");
+    }
+  })();
   let committed = await services.store.commitAnalysisDecision({
     submission: record.state,
     analysis: input.analysis,

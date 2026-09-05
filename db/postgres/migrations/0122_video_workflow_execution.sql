@@ -6,18 +6,18 @@ LOCK TABLE media_video_transform_attempts, media_video_analysis_outbox IN ACCESS
 DO $preflight$
 BEGIN
   IF EXISTS (SELECT 1 FROM media_video_transform_attempts) THEN
-    RAISE EXCEPTION '0120 aborted: transform attempts require explicit reconciliation; creation revision cannot be inferred';
+    RAISE EXCEPTION '0122 aborted: transform attempts require explicit reconciliation; creation revision cannot be inferred';
   END IF;
   IF EXISTS (
     SELECT 1 FROM media_video_analysis_outbox
     WHERE state = 'poll_wait' OR (state = 'running' AND lease_expires_at IS NOT NULL)
   ) THEN
-    RAISE EXCEPTION '0120 aborted: old provider waits or running leases require explicit reconciliation';
+    RAISE EXCEPTION '0122 aborted: old provider waits or running leases require explicit reconciliation';
   END IF;
   -- Only untouched intents have an unambiguous launch-only interpretation.
   -- Historical completion/failure cannot establish a Workflow launch fact.
   IF EXISTS (SELECT 1 FROM media_video_analysis_outbox WHERE state <> 'pending') THEN
-    RAISE EXCEPTION '0120 aborted: historical outbox outcomes require explicit reconciliation';
+    RAISE EXCEPTION '0122 aborted: historical outbox outcomes require explicit reconciliation';
   END IF;
 END
 $preflight$;

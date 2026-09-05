@@ -29,6 +29,7 @@ import {
   validateVideoStageFact,
   verifyVideoStageArtifacts,
 } from "./stage-facts.ts";
+import { VideoWorkflowTerminalError } from "./workflow-errors.ts";
 
 export const VIDEO_WORKFLOW_POLL_MS = 30_000;
 export const VIDEO_WORKFLOW_CAPABILITY_MS = 30 * 60_000;
@@ -50,7 +51,11 @@ export type VideoWorkflowServices = VideoAnalysisRuntimeServices &
 export type VideoWorkflowResult = Readonly<{
   status: "published" | "stopped" | "superseded" | "reconciliation_required";
 }>;
-class Superseded extends Error {}
+class Superseded extends VideoWorkflowTerminalError {
+  constructor() {
+    super("superseded");
+  }
+}
 
 /** Payloads and durable step results contain identifiers, timestamps and bounded dispositions only. */
 export async function runVideoAnalysisWorkflow(
@@ -105,7 +110,7 @@ export async function runVideoAnalysisWorkflow(
   };
   const requiredFact = async <S extends VideoStage>(record: VideoSubmissionRecord, stage: S) => {
     const result = await fact(record, stage);
-    if (result === null) throw new Error(`video stage fact missing: ${stage}`);
+    if (result === null) throw new VideoWorkflowTerminalError("invalid_stage");
     return result;
   };
   const binding = (record: VideoSubmissionRecord, capability: VideoTransformCapability) =>
@@ -344,7 +349,7 @@ export async function runVideoAnalysisWorkflow(
                 artifacts,
               });
               if (acceptedFact.stage === "recognition" || acceptedFact.stage === "safety")
-                throw new Error("invalid transform stage");
+                throw new VideoWorkflowTerminalError("invalid_stage");
               if (window === "reconciliation")
                 await services.reconciliation.resolveAttemptReconciliation({
                   submission: record.state,
