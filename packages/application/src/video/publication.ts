@@ -37,6 +37,7 @@ import {
 } from "../media/submission-service.ts";
 import type { M2Actor } from "../ports.ts";
 import type { PersonaRecord } from "../use-cases/personas.ts";
+import type { VideoStageFact } from "./stage-facts.ts";
 
 export const VIDEO_PUBLICATION_ENDPOINTS = {
   reserve: "/communities/:communityId/media-upload-reservations",
@@ -162,11 +163,10 @@ export type VideoTechnicalFailureCode = Exclude<
 
 /** PostgreSQL owns replay, revisions, membership rechecks, and atomic publication effects. */
 /** Private provider uncertainty is fenced in the same transaction as author retries. */
-export type VideoReconciliationStageFact = Readonly<{
-  stage: "probe" | "audio" | "frames";
-  adapterRevision: string;
-  snapshot: Readonly<Record<string, unknown>>;
-}>;
+export type VideoReconciliationStageFact = Extract<
+  VideoStageFact,
+  { stage: "probe" | "audio" | "frames" }
+>;
 
 export interface VideoAttemptReconciliationStore {
   readonly resolveAttemptReconciliation: (

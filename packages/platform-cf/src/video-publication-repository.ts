@@ -16,6 +16,7 @@ import {
   VIDEO_DERIVED_ARTIFACT_RETENTION_POLICY_V1,
   type VideoSubmissionState,
 } from "../../domain/src/video-submission.ts";
+import { insertVideoStageFact } from "./video-stage-fact-repository.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 type Executor = Pick<ControlPlaneTransaction, "execute">;
@@ -1200,40 +1201,7 @@ export function makeControlPlaneVideoPublicationStore(
                   fact.adapterRevision.trim() === ""
                 )
                   throw new Error("video reconciliation fact binding rejected");
-                yield* tx.execute({
-                  label: "video-publication.reconciliation-fact-insert",
-                  text: `INSERT INTO media_video_stage_facts
-                    (submission_id,video_revision,creation_revision,stage,analysis_revision,adapter_revision,fact_snapshot)
-                    VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb) ON CONFLICT DO NOTHING`,
-                  values: [
-                    current.state.submissionId,
-                    current.state.videoRevision,
-                    current.state.creationRevision,
-                    fact.stage,
-                    current.state.analysisRevision + 1,
-                    fact.adapterRevision,
-                    JSON.stringify(fact.snapshot),
-                  ],
-                  readonly: false,
-                });
-                const winner = yield* tx.execute<Row>({
-                  label: "video-publication.reconciliation-fact-winner",
-                  text: `SELECT 1 FROM media_video_stage_facts WHERE submission_id=$1 AND video_revision=$2
-                    AND creation_revision=$3 AND stage=$4 AND analysis_revision=$5 AND adapter_revision=$6
-                    AND sha256(convert_to(fact_snapshot::text,'UTF8'))=sha256(convert_to(($7::jsonb)::text,'UTF8'))`,
-                  values: [
-                    current.state.submissionId,
-                    current.state.videoRevision,
-                    current.state.creationRevision,
-                    fact.stage,
-                    current.state.analysisRevision + 1,
-                    fact.adapterRevision,
-                    JSON.stringify(fact.snapshot),
-                  ],
-                  readonly: true,
-                });
-                if (winner.rows.length !== 1)
-                  throw new Error("video stage fact invariant rejected");
+                yield* insertVideoStageFact(tx, current.state, fact);
               }
               // Submission lock serializes reconciliation across capabilities. A later
               // successful resolution must not erase a previously confirmed failure.

@@ -1,3 +1,25 @@
+## Stage-fact checkpoint, 2026-09-05
+
+The application now validates closed snapshots for probe, audio, frames,
+recognition and safety. Persisted envelopes retain the stage, adapter revision,
+snapshot and sealed artifact receipts. Audio and frame receipts carry digest,
+size and content type; their references and hashes must match the snapshot.
+The store reloads submission authority under a row lock, fences its event
+sequence and revisions, and shares its immutable insert with reconciliation.
+Identical canonical-JSON digests replay successfully; divergent winners fail.
+
+The reader validates every envelope. Derived-bucket recovery verifies its
+receipts by HEAD and rejects missing objects or mismatched digest, size or
+content type. This proves recovery of an accepted fact, not recovery from a
+seal that committed before the fact did; the runner must close that separate
+window before its acceptance claim. No schema amendment was necessary.
+
+Validation passed with exit zero: six application validator tests (17
+assertions), 21 combined publication PostgreSQL and artifact-recovery tests
+(149 assertions), and `bun run check`. The initial check exposed a formatter
+second-pass change and a test assertion type mismatch; both were fixed.
+The public contract and enablement remain unchanged.
+
 ## Resolution checkpoint, 2026-09-05
 
 `resolveAttemptReconciliation` now locks and event-sequence-fences the submission,

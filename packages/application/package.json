@@ -41,6 +41,7 @@
     "./media/submission-service": "./src/media/submission-service.ts",
     "./media/submission-sealing": "./src/media/submission-sealing.ts",
     "./video/publication": "./src/video/publication.ts",
+    "./video/stage-facts": "./src/video/stage-facts.ts",
     "./video/analysis": "./src/video/analysis.ts",
     "./video/analysis-queue": "./src/video/analysis-queue.ts",
     "./video/workflow-recovery": "./src/video/workflow-recovery.ts",

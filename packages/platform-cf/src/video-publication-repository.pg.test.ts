@@ -32,6 +32,7 @@ import { createActivePersonaFixture } from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { makeControlPlaneVideoAnalysisOutboxRepository } from "./video-analysis-outbox-repository.ts";
 import { makeControlPlaneVideoPublicationStore } from "./video-publication-repository.ts";
+import { makeControlPlaneVideoStageFactStore } from "./video-stage-fact-repository.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -1001,6 +1002,7 @@ suite("video publication PostgreSQL", () => {
                     stage: "probe" as const,
                     adapterRevision: "qencode-v1",
                     snapshot: trustedAnalysis().probe,
+                    artifacts: [],
                   },
                 }
               : {
@@ -1032,7 +1034,7 @@ suite("video publication PostgreSQL", () => {
         );
         expect(facts.rows.length).toBe(outcome === "completed" ? 1 : 0);
         if (outcome === "completed")
-          expect(facts.rows[0]?.fact_snapshot).toEqual(trustedAnalysis().probe);
+          expect(facts.rows[0]?.fact_snapshot.snapshot).toEqual(trustedAnalysis().probe);
         const attempt = await admin.query(
           "SELECT reconciliation_state FROM media_video_transform_attempts WHERE request_id='resolve-task'",
         );
@@ -1042,6 +1044,41 @@ suite("video publication PostgreSQL", () => {
       });
     });
   }
+
+  test("stage facts accept identical replay, reject divergent replay and fence stale authority", async () => {
+    await fixture(async (_admin, connection) => {
+      const { layer, finalized } = await finalizedFixture(connection);
+      const facts = makeControlPlaneVideoStageFactStore(layer);
+      const fact = {
+        stage: "probe" as const,
+        adapterRevision: "qencode-v1",
+        snapshot: trustedAnalysis().probe,
+        artifacts: [],
+      };
+      const input = {
+        submission: finalized.state,
+        observedEventSequence: finalized.eventSequence,
+        fact,
+      };
+      expect(await facts.write(input)).toEqual(fact);
+      expect(
+        await facts.write({ ...input, fact: { ...fact, snapshot: { ...fact.snapshot } } }),
+      ).toEqual(fact);
+      await expect(
+        facts.write({
+          ...input,
+          fact: { ...fact, snapshot: { ...fact.snapshot, durationMs: 9999 } },
+        }),
+      ).rejects.toThrow("video stage fact invariant rejected");
+      await expect(
+        facts.write({ ...input, observedEventSequence: finalized.eventSequence - 1 }),
+      ).rejects.toThrow("video stage fact authority rejected");
+      expect(await facts.read({ submissionId, videoRevision: 1, creationRevision: 1 })).toEqual([
+        fact,
+      ]);
+      expect(await facts.read({ submissionId, videoRevision: 1, creationRevision: 2 })).toEqual([]);
+    });
+  });
 
   test("reconciliation resolution rolls back on a divergent immutable fact", async () => {
     await fixture(async (admin, connection) => {
@@ -1078,6 +1115,7 @@ suite("video publication PostgreSQL", () => {
               stage: "probe",
               adapterRevision: "qencode-v1",
               snapshot: trustedAnalysis().probe,
+              artifacts: [],
             },
           },
         }),
@@ -1136,6 +1174,7 @@ suite("video publication PostgreSQL", () => {
             stage: "probe",
             adapterRevision: "qencode-v1",
             snapshot: trustedAnalysis().probe,
+            artifacts: [],
           },
         },
       });
