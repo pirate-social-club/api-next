@@ -45,9 +45,6 @@ export type VideoSafetyFact = Readonly<{
 
 /** Non-transform providers return only trusted server facts. Media transforms use MediaTransform. */
 export type VideoAnalysisProviders = Readonly<{
-  hash: (
-    source: VideoAnalysisSource,
-  ) => Promise<Readonly<{ canonicalSha256: string; byteLength: number; evidenceRef: string }>>;
   identifySoundtrack: (
     input: Readonly<{
       operationId: string;
@@ -58,6 +55,11 @@ export type VideoAnalysisProviders = Readonly<{
   moderate: (
     input: Readonly<{
       operationId: string;
+      submissionId: string;
+      communityId: string;
+      videoRevision: number;
+      creationRevision: number;
+      authorDeclaredRating: "general" | "adult_18";
       caption: string | null;
       captionSha256: string | null;
       frames: readonly [VideoExtractedFrame, VideoExtractedFrame, VideoExtractedFrame];

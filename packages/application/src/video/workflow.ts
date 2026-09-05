@@ -414,6 +414,11 @@ export async function runVideoAnalysisWorkflow(
         const frames = (await requiredFact(record, "frames")).snapshot.frames;
         const snapshot = await services.analysisProviders.moderate({
           operationId: record.state.operationId,
+          submissionId: record.state.submissionId,
+          communityId: record.state.communityId,
+          videoRevision: record.state.videoRevision,
+          creationRevision: record.state.creationRevision,
+          authorDeclaredRating: record.state.authorDeclaredRating,
           caption: record.state.caption,
           captionSha256: await canonicalVideoCaptionSha256(record.state.caption),
           frames,

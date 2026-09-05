@@ -26,7 +26,10 @@ import { makeAcrCloudAdapter } from "@pirate/platform-cf/media-providers/acrclou
 import { ElevenLabsAlignmentAdapter } from "@pirate/platform-cf/media-providers/elevenlabs-alignment";
 import { makeOpenRouterClassifierAdapter } from "@pirate/platform-cf/media-providers/openrouter";
 import { disabledMediaTransform } from "@pirate/platform-cf/media-transform";
-import { makeOpenAiTextModerationProvider } from "@pirate/platform-cf/openai-text-moderation";
+import {
+  makeOpenAiTextModerationProvider,
+  type OpenAiModerationTransport,
+} from "@pirate/platform-cf/openai-text-moderation";
 import { makeHyperdriveControlPlaneLayer } from "@pirate/platform-cf/postgres";
 import {
   makeQencodeMediaTransform,
@@ -43,6 +46,9 @@ import {
   type VideoWorkflowStatusFetch,
 } from "@pirate/platform-cf/video-analysis-workflow-cloudflare";
 import { makeControlPlaneVideoPublicationStore } from "@pirate/platform-cf/video-publication-repository";
+import { makeVideoSafetyEvidenceStore } from "@pirate/platform-cf/video-safety-evidence-repository";
+import { makeVideoSafetyFrameReader } from "@pirate/platform-cf/video-safety-frame-reader";
+import { makeVideoSafetyProvider } from "@pirate/platform-cf/video-safety-provider";
 import { makeVideoSealedSourceVerifier } from "@pirate/platform-cf/video-sealed-source-verifier";
 import { makeVideoSourceGrantIssuer } from "@pirate/platform-cf/video-source-grant-issuer";
 import { makeVideoStageArtifactHead } from "@pirate/platform-cf/video-stage-artifact-head";
@@ -67,6 +73,7 @@ export type MediaProcessorRuntimeEnv = MediaProcessorWorkerEnv &
     readonly ACRCLOUD_ACCESS_SECRET?: string;
     readonly ELEVENLABS_API_KEY?: string;
     readonly OPENAI_API_KEY?: string;
+    readonly OPENAI_MODERATION_ENABLED?: string;
     readonly OPENROUTER_API_KEY?: string;
     readonly QENCODE_API_KEY?: string;
     readonly VIDEO_SOURCE_GATEWAY_ORIGIN?: string;
@@ -82,7 +89,8 @@ export type MediaProcessorRuntimeEnv = MediaProcessorWorkerEnv &
 
 export type MediaProcessorRuntimeAdapters = Readonly<{
   readonly videoAnalysis?: Readonly<{
-    readonly providers: VideoAnalysisProviders;
+    readonly providers?: Partial<VideoAnalysisProviders>;
+    readonly moderationTransport?: OpenAiModerationTransport;
     readonly workflowFetch?: VideoWorkflowStatusFetch;
     readonly transform?: MediaTransformVideoCapabilities;
     readonly qencode?: Readonly<{
@@ -353,8 +361,8 @@ export function makeMediaProcessorComposition(
   const enabled = isMediaProcessingEnabled(env.MEDIA_PROCESSING_ENABLED);
   const workerId = `media-processor-${crypto.randomUUID()}`;
   const videoAnalysisEnabled = env.VIDEO_ANALYSIS_ENABLED === "true";
-  if (videoAnalysisEnabled && adapters.videoAnalysis === undefined) {
-    throw new Error("video analysis providers are required when video analysis is enabled");
+  if (videoAnalysisEnabled && adapters.videoAnalysis?.providers?.identifySoundtrack === undefined) {
+    throw new Error("video recognition provider is required when video analysis is enabled");
   }
   const videoAnalysisRepository =
     videoAnalysisEnabled && adapters.videoAnalysis !== undefined
@@ -365,6 +373,32 @@ export function makeMediaProcessorComposition(
       ? videoTransform(env, runtime, adapters.videoAnalysis)
       : undefined;
 
+  const videoModeration =
+    videoAnalysisEnabled && env.OPENAI_MODERATION_ENABLED === "true"
+      ? makeOpenAiTextModerationProvider({
+          apiKey: requiredOperationalSecret(env.OPENAI_API_KEY, "OPENAI_API_KEY"),
+          ...(adapters.videoAnalysis?.moderationTransport === undefined
+            ? {}
+            : { transport: adapters.videoAnalysis.moderationTransport }),
+        })
+      : null;
+  const videoProviders: VideoAnalysisProviders | undefined =
+    videoAnalysisEnabled && adapters.videoAnalysis?.providers?.identifySoundtrack !== undefined
+      ? {
+          identifySoundtrack: adapters.videoAnalysis.providers.identifySoundtrack,
+          moderate:
+            adapters.videoAnalysis.providers.moderate ??
+            makeVideoSafetyProvider({
+              image: videoModeration,
+              text: videoModeration,
+              readFrame: makeVideoSafetyFrameReader(
+                requiredBinding(env.MEDIA_DERIVED_ARTIFACTS, "MEDIA_DERIVED_ARTIFACTS"),
+              ),
+              readPolicy: store.readModerationPolicy,
+              evidence: makeVideoSafetyEvidenceStore(runtime),
+            }),
+        }
+      : undefined;
   if (videoAnalysisEnabled && env.VIDEO_ANALYSIS_WORKFLOW === undefined) {
     throw new Error("VIDEO_ANALYSIS_WORKFLOW is required when video analysis is enabled");
   }
@@ -374,6 +408,7 @@ export function makeMediaProcessorComposition(
     ...(videoAnalysisRepository !== undefined &&
     enabledVideoTransform !== undefined &&
     adapters.videoAnalysis !== undefined &&
+    videoProviders !== undefined &&
     env.VIDEO_ANALYSIS_WORKFLOW !== undefined
       ? {
           videoWorkflow: {
@@ -391,7 +426,7 @@ export function makeMediaProcessorComposition(
             ),
             nowIso: () => new Date().toISOString(),
             randomUuid: () => crypto.randomUUID(),
-            analysisProviders: adapters.videoAnalysis.providers,
+            analysisProviders: videoProviders,
             transform: bindVideoPhysicalR2Keys(enabledVideoTransform),
             transformAttempts: videoAnalysisRepository,
           },
@@ -411,7 +446,7 @@ export function makeMediaProcessorComposition(
               store: makeControlPlaneVideoPublicationStore(runtime),
               nowIso: () => new Date().toISOString(),
               randomUuid: () => crypto.randomUUID(),
-              analysisProviders: adapters.videoAnalysis.providers,
+              analysisProviders: videoProviders,
               transform: bindVideoPhysicalR2Keys(enabledVideoTransform),
               transformAttempts: videoAnalysisRepository,
             },

@@ -104,11 +104,6 @@ export const frames = (): readonly [
 
 export function providers(overrides: Partial<VideoAnalysisProviders> = {}): VideoAnalysisProviders {
   return {
-    hash: async (source) => ({
-      canonicalSha256: source.canonicalSha256,
-      byteLength: source.byteLength,
-      evidenceRef: "hash:fixture",
-    }),
     identifySoundtrack: async () => ({
       verification: { status: "no_match", evidenceRef: "acr:no-match", adapterRevision: "acr-v1" },
       evidenceRef: "acr:no-match",

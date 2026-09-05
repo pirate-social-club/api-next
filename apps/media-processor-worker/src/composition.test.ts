@@ -60,12 +60,16 @@ describe("media processor composition", () => {
           get: async () => ({ status: async () => ({ status: "running" }) }),
         },
       }),
-    ).toThrow("video analysis providers are required");
+    ).toThrow("video recognition provider is required");
   });
 
   test("refuses the Qencode provisioning sentinel before provider work", () => {
     const base = disabledEnv();
-    const providers = {} as VideoAnalysisProviders;
+    const providers = {
+      identifySoundtrack: async () => {
+        throw new Error("not invoked");
+      },
+    } satisfies Partial<VideoAnalysisProviders>;
     expect(() =>
       makeMediaProcessorComposition(
         {
@@ -141,7 +145,11 @@ describe("media processor composition", () => {
       extractVideoFrames: (input) =>
         Effect.succeed({ status: "unavailable", reason: "disabled", attempt: input.attempt }),
     };
-    const providers = {} as VideoAnalysisProviders;
+    const providers = {
+      identifySoundtrack: async () => {
+        throw new Error("not invoked");
+      },
+    } satisfies Partial<VideoAnalysisProviders>;
     const base = disabledEnv();
     const composition = makeMediaProcessorComposition(
       {

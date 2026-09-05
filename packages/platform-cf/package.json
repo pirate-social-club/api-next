@@ -144,7 +144,10 @@
     "./video-source-grant-issuer": "./src/video-source-grant-issuer.ts",
     "./video-source-grant-resolver": "./src/video-source-grant-resolver.ts",
     "./worker-request-diagnostics": "./src/worker-request-diagnostics.ts",
-    "./hns-authority-diagnostics": "./src/hns-authority-diagnostics.ts"
+    "./hns-authority-diagnostics": "./src/hns-authority-diagnostics.ts",
+    "./video-safety-provider": "./src/video-safety-provider.ts",
+    "./video-safety-frame-reader": "./src/video-safety-frame-reader.ts",
+    "./video-safety-evidence-repository": "./src/video-safety-evidence-repository.ts"
   },
   "dependencies": {
     "@pirate/verifier-response-contract": "0.0.0",
