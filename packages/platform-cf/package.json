@@ -135,7 +135,11 @@
     "./route-revalidation-completion-repository": "./src/route-revalidation-completion-repository.ts",
     "./route-revalidation-start-repository": "./src/route-revalidation-start-repository.ts",
     "./verification-intent-resolver": "./src/verification-intent-resolver.ts",
-    "./verification-start-repository": "./src/verification-start-repository.ts"
+    "./verification-start-repository": "./src/verification-start-repository.ts",
+    "./video-stage-fact-repository": "./src/video-stage-fact-repository.ts",
+    "./video-stage-artifact-head": "./src/video-stage-artifact-head.ts",
+    "./video-sealed-source-verifier": "./src/video-sealed-source-verifier.ts",
+    "./video-publication-wakeup-repository": "./src/video-publication-wakeup-repository.ts"
   },
   "dependencies": {
     "@pirate/verifier-response-contract": "0.0.0",

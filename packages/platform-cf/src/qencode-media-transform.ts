@@ -133,6 +133,11 @@ export type QencodeMediaTransformOptions =
     }>;
 
 class QencodeMalformedResponse extends Error {}
+class QencodeInvalidArtifact extends Error {
+  constructor(readonly mediaType: "audio/mp4" | "image/jpeg") {
+    super("invalid sealed artifact bytes");
+  }
+}
 
 function record(value: unknown): Readonly<Record<string, unknown>> {
   if (!Predicate.isObject(value) || Array.isArray(value)) throw new QencodeMalformedResponse();
@@ -468,7 +473,8 @@ export function makeR2QencodeArtifactStore(
         }),
         input.maximumBytes,
       );
-      if (!validArtifactBytes(input.mediaType, bytes)) throw new Error("invalid artifact bytes");
+      if (!validArtifactBytes(input.mediaType, bytes))
+        throw new QencodeInvalidArtifact(input.mediaType);
       const canonicalSha256 = bytesToHex(await crypto.subtle.digest("SHA-256", bytes));
       const stored = await bucket.put(input.artifactKey, bytes, {
         onlyIf: { etagDoesNotMatch: "*" },
@@ -1049,6 +1055,12 @@ async function observeJob(
       },
     };
   } catch (error) {
+    if (error instanceof QencodeInvalidArtifact)
+      return {
+        status: "rejected",
+        reason: error.mediaType === "image/jpeg" ? "poster_undecodable" : "provider_rejected",
+        attempt: input.attempt,
+      };
     if (error instanceof QencodeMalformedResponse) {
       return { status: "malformed_response", reason: "unsupported_shape", attempt: input.attempt };
     }

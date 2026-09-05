@@ -53,7 +53,8 @@
     "db:bootstrap:megapot-base-sepolia": "bun scripts/bootstrap-megapot-base-sepolia.ts",
     "staging:golden:megapot-base-sepolia": "bun scripts/megapot-base-sepolia-golden.ts",
     "deploy:worker": "bun scripts/deploy-worker-with-provenance.ts",
-    "verify:postgres-sentinels": "bun scripts/verify-postgres-test-sentinels.ts"
+    "verify:postgres-sentinels": "bun scripts/verify-postgres-test-sentinels.ts",
+    "test:video-workflow:postgres": "vitest run --config tests/workerd-video/vitest.config.ts --reporter=verbose"
   },
   "dependencies": {
     "cizgile": "0.1.1",

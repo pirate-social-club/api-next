@@ -170,11 +170,12 @@ export async function runVideoAnalysisWorkflow(
     record: VideoSubmissionRecord,
     capability: VideoTransformCapability,
     evidenceRef: string,
+    reason?: "poster_undecodable" | "poster_timestamp_out_of_range",
   ) => {
     await services.store.recordProcessingFailure({
       submission: record.state,
       observedEventSequence: record.eventSequence,
-      failureCode: capability === "probe" ? "probe_failed" : "transform_failed",
+      failureCode: reason ?? (capability === "probe" ? "probe_failed" : "transform_failed"),
       evidenceRef,
     });
   };
@@ -276,6 +277,22 @@ export async function runVideoAnalysisWorkflow(
               );
               if (outcome.attempt.providerJobPhase === "started")
                 await services.transformAttempts.advance({ ...input, attempt: outcome.attempt });
+              if (
+                outcome.status === "rejected" &&
+                (outcome.reason === "poster_undecodable" ||
+                  outcome.reason === "poster_timestamp_out_of_range")
+              ) {
+                const evidenceRef = `video-provider:${input.binding.requestId}:${outcome.reason}`;
+                if (window === "reconciliation")
+                  await services.reconciliation.resolveAttemptReconciliation({
+                    submission: record.state,
+                    observedEventSequence: record.eventSequence,
+                    requestId: input.binding.requestId,
+                    observation: { status: "failed", evidenceRef, observedAt: services.nowIso() },
+                  });
+                else await failure(record, capability, evidenceRef, outcome.reason);
+                return "failed";
+              }
               if (outcome.status === "rejected" && outcome.reason === "provider_rejected") {
                 if (window === "reconciliation")
                   await services.reconciliation.resolveAttemptReconciliation({

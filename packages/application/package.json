@@ -91,6 +91,8 @@
     "./use-cases/rewards/study-generation": "./src/use-cases/rewards/study-generation.ts",
     "./use-cases/session-authentication": "./src/use-cases/session-authentication.ts",
     "./use-cases/session-exchange": "./src/use-cases/session-exchange.ts",
-    "./use-cases/identity-registration-handler": "./src/use-cases/identity-registration-handler.ts"
+    "./use-cases/identity-registration-handler": "./src/use-cases/identity-registration-handler.ts",
+    "./video/workflow": "./src/video/workflow.ts",
+    "./video/publication-wakeup": "./src/video/publication-wakeup.ts"
   }
 }

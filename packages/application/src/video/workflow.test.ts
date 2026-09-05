@@ -384,3 +384,33 @@ for (const timing of ["before-wait", "entering-wait"] as const) {
     expect(f.calls.publications).toBe(1);
   });
 }
+
+test("confirmed invalid poster during reconciliation resolves the attempt before exposing failure", async () => {
+  const f = fixture();
+  const observe = f.runtime.transform.observe;
+  const resolve = f.runtime.reconciliation.resolveAttemptReconciliation;
+  let observations = 0;
+  let resolutions = 0;
+  Object.assign(f.runtime.transform, {
+    observe: ((input: Parameters<typeof observe>[0]) =>
+      Effect.succeed(
+        ++observations <= 60
+          ? { status: "not_found", attempt: input.attempt }
+          : { status: "rejected", reason: "poster_undecodable", attempt: input.attempt },
+      )) as typeof observe,
+  });
+  Object.assign(f.runtime.reconciliation, {
+    resolveAttemptReconciliation: async (input: Parameters<typeof resolve>[0]) => {
+      expect(input.observation.status).toBe("failed");
+      resolutions += 1;
+      return resolve(input);
+    },
+  });
+  expect(await runVideoAnalysisWorkflow(f.identity, f.step, f.runtime)).toEqual({
+    status: "stopped",
+  });
+  expect(resolutions).toBe(1);
+  expect(f.record().state.reconciliationRequired).toBe(false);
+  expect(f.record().state.status).toBe("processing_failed");
+  expect(f.calls.starts).toBe(1);
+});

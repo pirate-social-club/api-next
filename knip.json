@@ -14,7 +14,8 @@
       "entry": [
         "scripts/**/*.ts",
         "tests/**/entry.ts",
-        "infra/**/src/index.ts"
+        "infra/**/src/index.ts",
+        "tests/workerd-video/global-setup.ts"
       ],
       "project": [
         "scripts/**/*.ts",
