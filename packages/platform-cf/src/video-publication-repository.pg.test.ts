@@ -970,6 +970,181 @@ suite("video publication PostgreSQL", () => {
     });
   });
 
+  for (const outcome of ["completed", "failed", "workflow_terminal"] as const) {
+    test(`reconciliation resolution: required through ${outcome}`, async () => {
+      await fixture(async (admin, connection) => {
+        const { store, finalized } = await finalizedFixture(connection);
+        await admin.query(
+          `INSERT INTO media_video_transform_attempts
+          (request_id,submission_id,operation_id,video_revision,creation_revision,analysis_revision,
+           canonical_video_sha256,capability,submitted_at_ms,runtime_deadline_ms,provider_job_id,provider_job_phase)
+          VALUES ('resolve-task',$1,$2,1,1,1,$3,'probe',0,10000,'provider-task','submitting')`,
+          [submissionId, operationId, videoSha256],
+        );
+        const required = await store.enterAttemptReconciliation({
+          submission: finalized.state,
+          observedEventSequence: finalized.eventSequence,
+          requestId: "resolve-task",
+          state: "required",
+          observation: { status: "not_found", observedAt: "2026-09-05T00:00:00Z" },
+        });
+        const input = {
+          submission: required.state,
+          observedEventSequence: required.eventSequence,
+          requestId: "resolve-task",
+          observation:
+            outcome === "completed"
+              ? {
+                  status: "completed" as const,
+                  observedAt: "2026-09-05T00:01:00Z",
+                  fact: {
+                    stage: "probe" as const,
+                    adapterRevision: "qencode-v1",
+                    snapshot: trustedAnalysis().probe,
+                  },
+                }
+              : {
+                  status: outcome,
+                  evidenceRef: "provider:confirmed",
+                  observedAt: "2026-09-05T00:01:00Z",
+                },
+        };
+        await expect(
+          store.resolveAttemptReconciliation({
+            ...input,
+            observedEventSequence: required.eventSequence - 1,
+          }),
+        ).rejects.toThrow("video reconciliation resolution fence rejected");
+        const resolved = await store.resolveAttemptReconciliation(input);
+        expect(resolved.state.reconciliationRequired).toBe(outcome === "workflow_terminal");
+        expect(resolved.state.status).toBe(
+          outcome === "completed" ? "processing" : "processing_failed",
+        );
+        expect(resolved.state.phase).toBe(outcome === "completed" ? "analysis" : null);
+        expect(resolved.state.retryCount).toBe(0);
+        if (outcome !== "completed")
+          expect(projectVideoSubmission(resolved)).toMatchObject({
+            retryable: outcome === "failed",
+          });
+        const facts = await admin.query(
+          "SELECT fact_snapshot FROM media_video_stage_facts WHERE submission_id=$1",
+          [submissionId],
+        );
+        expect(facts.rows.length).toBe(outcome === "completed" ? 1 : 0);
+        if (outcome === "completed")
+          expect(facts.rows[0]?.fact_snapshot).toEqual(trustedAnalysis().probe);
+        const attempt = await admin.query(
+          "SELECT reconciliation_state FROM media_video_transform_attempts WHERE request_id='resolve-task'",
+        );
+        expect(attempt.rows[0]?.reconciliation_state).toBe(
+          outcome === "workflow_terminal" ? "required" : "resolved",
+        );
+      });
+    });
+  }
+
+  test("reconciliation resolution rolls back on a divergent immutable fact", async () => {
+    await fixture(async (admin, connection) => {
+      const { store, finalized } = await finalizedFixture(connection);
+      await admin.query(
+        `INSERT INTO media_video_transform_attempts
+        (request_id,submission_id,operation_id,video_revision,creation_revision,analysis_revision,
+         canonical_video_sha256,capability,submitted_at_ms,runtime_deadline_ms,provider_job_id,provider_job_phase)
+        VALUES ('conflict-task',$1,$2,1,1,1,$3,'probe',0,10000,'provider-task','started')`,
+        [submissionId, operationId, videoSha256],
+      );
+      const required = await store.enterAttemptReconciliation({
+        submission: finalized.state,
+        observedEventSequence: finalized.eventSequence,
+        requestId: "conflict-task",
+        state: "required",
+        observation: { status: "not_found", observedAt: "2026-09-05T00:00:00Z" },
+      });
+      await admin.query(
+        `INSERT INTO media_video_stage_facts
+        (submission_id,video_revision,creation_revision,stage,analysis_revision,adapter_revision,fact_snapshot)
+        VALUES ($1,1,1,'probe',1,'qencode-v1',$2::jsonb)`,
+        [submissionId, JSON.stringify({ ...trustedAnalysis().probe, durationMs: 9999 })],
+      );
+      await expect(
+        store.resolveAttemptReconciliation({
+          submission: required.state,
+          observedEventSequence: required.eventSequence,
+          requestId: "conflict-task",
+          observation: {
+            status: "completed",
+            observedAt: "2026-09-05T00:01:00Z",
+            fact: {
+              stage: "probe",
+              adapterRevision: "qencode-v1",
+              snapshot: trustedAnalysis().probe,
+            },
+          },
+        }),
+      ).rejects.toThrow("video stage fact invariant rejected");
+      expect(
+        (await store.getSubmissionByOperation({ submissionId, operationId }))?.eventSequence,
+      ).toBe(required.eventSequence);
+      const attempt = await admin.query(
+        "SELECT reconciliation_state FROM media_video_transform_attempts WHERE request_id='conflict-task'",
+      );
+      expect(attempt.rows[0]?.reconciliation_state).toBe("required");
+    });
+  });
+
+  test("reconciliation resolution preserves another attempt's prohibition and confirmed failure", async () => {
+    await fixture(async (admin, connection) => {
+      const { store, finalized } = await finalizedFixture(connection);
+      for (const capability of ["probe", "frames"] as const) {
+        await admin.query(
+          `INSERT INTO media_video_transform_attempts
+          (request_id,submission_id,operation_id,video_revision,creation_revision,analysis_revision,
+           canonical_video_sha256,capability,submitted_at_ms,runtime_deadline_ms,provider_job_id,provider_job_phase)
+          VALUES ($4,$1,$2,1,1,1,$3,$4,0,10000,'provider-task','started')`,
+          [submissionId, operationId, videoSha256, capability],
+        );
+      }
+      let current = finalized;
+      for (const requestId of ["probe", "frames"])
+        current = await store.enterAttemptReconciliation({
+          submission: current.state,
+          observedEventSequence: current.eventSequence,
+          requestId,
+          state: "required",
+          observation: { status: "not_found", observedAt: "2026-09-05T00:00:00Z" },
+        });
+      current = await store.resolveAttemptReconciliation({
+        submission: current.state,
+        observedEventSequence: current.eventSequence,
+        requestId: "frames",
+        observation: {
+          status: "failed",
+          evidenceRef: "frames:failed",
+          observedAt: "2026-09-05T00:01:00Z",
+        },
+      });
+      expect(current.state.reconciliationRequired).toBe(true);
+      expect(projectVideoSubmission(current)).toMatchObject({ retryable: false });
+      current = await store.resolveAttemptReconciliation({
+        submission: current.state,
+        observedEventSequence: current.eventSequence,
+        requestId: "probe",
+        observation: {
+          status: "completed",
+          observedAt: "2026-09-05T00:02:00Z",
+          fact: {
+            stage: "probe",
+            adapterRevision: "qencode-v1",
+            snapshot: trustedAnalysis().probe,
+          },
+        },
+      });
+      expect(current.state.reconciliationRequired).toBe(false);
+      expect(current.state.failureCode).toBe("transform_failed");
+      expect(projectVideoSubmission(current)).toMatchObject({ retryable: true });
+    });
+  });
+
   test("reconciliation rolls back the attempt if its submission snapshot write fails", async () => {
     await fixture(async (admin, connection) => {
       const { store, finalized } = await finalizedFixture(connection);

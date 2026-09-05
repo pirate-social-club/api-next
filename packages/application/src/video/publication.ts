@@ -162,7 +162,26 @@ export type VideoTechnicalFailureCode = Exclude<
 
 /** PostgreSQL owns replay, revisions, membership rechecks, and atomic publication effects. */
 /** Private provider uncertainty is fenced in the same transaction as author retries. */
+export type VideoReconciliationStageFact = Readonly<{
+  stage: "probe" | "audio" | "frames";
+  adapterRevision: string;
+  snapshot: Readonly<Record<string, unknown>>;
+}>;
+
 export interface VideoAttemptReconciliationStore {
+  readonly resolveAttemptReconciliation: (
+    input: Readonly<{
+      submission: VideoSubmissionState;
+      observedEventSequence: number;
+      requestId: string;
+      observation: (
+        | Readonly<{ status: "completed"; fact: VideoReconciliationStageFact }>
+        | Readonly<{ status: "failed"; evidenceRef: string }>
+        | Readonly<{ status: "workflow_terminal"; evidenceRef: string }>
+      ) &
+        Readonly<{ observedAt: string }>;
+    }>,
+  ) => Promise<VideoSubmissionRecord>;
   readonly enterAttemptReconciliation: (
     input: Readonly<{
       submission: VideoSubmissionState;

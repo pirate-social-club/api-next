@@ -1133,6 +1133,171 @@ export function makeControlPlaneVideoPublicationStore(
         }),
       ),
 
+    resolveAttemptReconciliation: (input) =>
+      run(
+        Effect.gen(function* () {
+          const db = yield* ControlPlaneDb;
+          return yield* db.withTransaction((tx) =>
+            Effect.gen(function* () {
+              const current = yield* findSubmission(tx, {
+                clause: "s.submission_id=$1 AND s.operation_id=$2 FOR UPDATE",
+                values: [input.submission.submissionId, input.submission.operationId],
+              });
+              if (
+                current === null ||
+                current.state.video === null ||
+                current.eventSequence !== input.observedEventSequence ||
+                current.state.creationRevision !== input.submission.creationRevision ||
+                current.state.videoRevision !== input.submission.videoRevision ||
+                current.state.analysisRevision !== input.submission.analysisRevision ||
+                !(
+                  (current.state.status === "processing" && current.state.phase === "analysis") ||
+                  (current.state.status === "processing_failed" &&
+                    current.state.reconciliationRequired)
+                )
+              )
+                throw new Error("video reconciliation resolution fence rejected");
+              const observation = input.observation;
+              const evidenceRef =
+                observation.status === "completed"
+                  ? `video-submission-confirmed:${input.requestId}`
+                  : observation.evidenceRef;
+              if (evidenceRef.trim() === "" || !Number.isFinite(Date.parse(observation.observedAt)))
+                throw new Error("invalid video reconciliation observation");
+              const attempt = yield* tx.execute<Row>({
+                label: "video-publication.reconciliation-resolve",
+                text: `UPDATE media_video_transform_attempts SET
+                  reconciliation_state=$1,last_observation=$2::jsonb,
+                  reconciliation_evidence_ref=$3,updated_at=clock_timestamp()
+                  WHERE request_id=$4 AND submission_id=$5 AND operation_id=$6
+                    AND video_revision=$7 AND creation_revision=$8 AND analysis_revision=$9
+                    AND canonical_video_sha256=$10
+                    AND reconciliation_state IN ('pending','required')
+                    AND provider_job_phase IN ('submitting','started') RETURNING capability`,
+                values: [
+                  observation.status === "workflow_terminal" ? "required" : "resolved",
+                  JSON.stringify({
+                    status: observation.status,
+                    observedAt: observation.observedAt,
+                  }),
+                  evidenceRef,
+                  input.requestId,
+                  current.state.submissionId,
+                  current.state.operationId,
+                  current.state.videoRevision,
+                  current.state.creationRevision,
+                  current.state.analysisRevision + 1,
+                  current.state.video.canonicalSha256,
+                ],
+                readonly: false,
+              });
+              if (attempt.rows.length !== 1)
+                throw new Error("video reconciliation resolution attempt rejected");
+              if (observation.status === "completed") {
+                const fact = observation.fact;
+                if (
+                  fact.stage !== attempt.rows[0]?.capability ||
+                  fact.adapterRevision.trim() === ""
+                )
+                  throw new Error("video reconciliation fact binding rejected");
+                yield* tx.execute({
+                  label: "video-publication.reconciliation-fact-insert",
+                  text: `INSERT INTO media_video_stage_facts
+                    (submission_id,video_revision,creation_revision,stage,analysis_revision,adapter_revision,fact_snapshot)
+                    VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb) ON CONFLICT DO NOTHING`,
+                  values: [
+                    current.state.submissionId,
+                    current.state.videoRevision,
+                    current.state.creationRevision,
+                    fact.stage,
+                    current.state.analysisRevision + 1,
+                    fact.adapterRevision,
+                    JSON.stringify(fact.snapshot),
+                  ],
+                  readonly: false,
+                });
+                const winner = yield* tx.execute<Row>({
+                  label: "video-publication.reconciliation-fact-winner",
+                  text: `SELECT 1 FROM media_video_stage_facts WHERE submission_id=$1 AND video_revision=$2
+                    AND creation_revision=$3 AND stage=$4 AND analysis_revision=$5 AND adapter_revision=$6
+                    AND sha256(convert_to(fact_snapshot::text,'UTF8'))=sha256(convert_to(($7::jsonb)::text,'UTF8'))`,
+                  values: [
+                    current.state.submissionId,
+                    current.state.videoRevision,
+                    current.state.creationRevision,
+                    fact.stage,
+                    current.state.analysisRevision + 1,
+                    fact.adapterRevision,
+                    JSON.stringify(fact.snapshot),
+                  ],
+                  readonly: true,
+                });
+                if (winner.rows.length !== 1)
+                  throw new Error("video stage fact invariant rejected");
+              }
+              // Submission lock serializes reconciliation across capabilities. A later
+              // successful resolution must not erase a previously confirmed failure.
+              const remaining = yield* tx.execute<Row>({
+                label: "video-publication.reconciliation-remaining",
+                text: `SELECT EXISTS (SELECT 1 FROM media_video_transform_attempts
+                    WHERE submission_id=$1 AND video_revision=$2 AND creation_revision=$3
+                      AND reconciliation_state IN ('pending','required')) AS unresolved,
+                  (SELECT capability FROM media_video_transform_attempts
+                    WHERE submission_id=$1 AND video_revision=$2 AND creation_revision=$3
+                      AND reconciliation_state='resolved' AND last_observation->>'status'='failed'
+                    ORDER BY capability LIMIT 1) AS failed_capability,
+                  (SELECT reconciliation_evidence_ref FROM media_video_transform_attempts
+                    WHERE submission_id=$1 AND video_revision=$2 AND creation_revision=$3
+                      AND reconciliation_state='resolved' AND last_observation->>'status'='failed'
+                    ORDER BY capability LIMIT 1) AS failed_evidence`,
+                values: [
+                  current.state.submissionId,
+                  current.state.videoRevision,
+                  current.state.creationRevision,
+                ],
+                readonly: true,
+              });
+              const unresolved = remaining.rows[0]?.unresolved === true;
+              const failedCapability = remaining.rows[0]?.failed_capability;
+              const failed = failedCapability !== null && failedCapability !== undefined;
+              const next: VideoSubmissionState = {
+                ...current.state,
+                status: unresolved || failed ? "processing_failed" : "processing",
+                phase: unresolved || failed ? null : "analysis",
+                reconciliationRequired: unresolved,
+                failureCode: unresolved
+                  ? (current.state.failureCode ?? "transform_failed")
+                  : failed
+                    ? failedCapability === "probe"
+                      ? "probe_failed"
+                      : "transform_failed"
+                    : null,
+              };
+              const result = yield* updateSubmissionSnapshot(tx, {
+                prior: current.state,
+                next,
+                observedEventSequence: input.observedEventSequence,
+                extraSql:
+                  ",failure_evidence_ref=$10,failure_retry_count=$11,retryable=$12,last_safe_phase='analysis'",
+                extraValues: [
+                  unresolved ? evidenceRef : failed ? remaining.rows[0]?.failed_evidence : null,
+                  current.state.retryCount,
+                  !unresolved && current.state.retryCount < 3,
+                ],
+              });
+              if (result.rows.length !== 1)
+                throw new Error("video reconciliation resolution fence rejected");
+              return {
+                ...current,
+                state: next,
+                eventSequence: current.eventSequence + 1,
+                updatedAt: new Date().toISOString(),
+              };
+            }),
+          );
+        }),
+      ),
+
     recordProcessingFailure: (input) =>
       run(
         Effect.gen(function* () {

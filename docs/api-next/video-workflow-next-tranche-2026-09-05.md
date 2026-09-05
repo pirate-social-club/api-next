@@ -1,3 +1,21 @@
+## Resolution checkpoint, 2026-09-05
+
+`resolveAttemptReconciliation` now locks and event-sequence-fences the submission,
+checks the creation-bound attempt, and resolves completion or confirmed failure.
+Completion inserts a first-winner stage fact with a canonical JSON digest match
+on replay; a divergent winner rolls the entire transaction back. Unresolved
+Workflow termination keeps the attempt required and the retry prohibition set.
+The prohibition is cleared only after no pending or required attempt remains.
+A prior confirmed failure survives another capability's later completion.
+
+The publication PostgreSQL suite covers completion with a persisted probe fact,
+confirmed failure, unresolved Workflow termination, multiple attempts, stale
+sequence rejection, and divergent-fact rollback. Application-level per-stage
+validation is the next commit; the resolution operation is not composed or
+exposed to callers yet. No schema or contract changed. `bun run check` passed;
+the focused PostgreSQL exit status is recorded at the preservation checkpoint.
+The full PostgreSQL gate remains due at pull-request preparation, as instructed.
+
 ## Reconciliation review disposition, 2026-09-05
 
 Validation for this pending-state correction: the publication PostgreSQL suite
