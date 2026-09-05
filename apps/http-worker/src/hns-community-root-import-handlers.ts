@@ -1,7 +1,9 @@
 import {
   activateHnsCommunityRootImport,
+  getCurrentHnsCommunityRootImport,
   getHnsCommunityRootImport,
   type HnsCommunityRootImportActivationServices,
+  type HnsCommunityRootImportDiscoveryStore,
   type HnsCommunityRootImportPollServices,
   type HnsCommunityRootImportReadStore,
   type HnsCommunityRootImportStartServices,
@@ -40,11 +42,13 @@ export function makeHnsCommunityRootImportHandlers(
     HnsCommunityRootImportActivationServices &
     Readonly<{
       readonly store: HnsCommunityRootImportStartServices["store"] &
+        HnsCommunityRootImportDiscoveryStore &
         HnsCommunityRootImportReadStore;
     }>,
 ): Readonly<{
   StartHnsCommunityRootImport: EndpointHandler;
   GetHnsCommunityRootImport: EndpointHandler;
+  GetCurrentHnsCommunityRootImport: EndpointHandler;
   PollHnsCommunityRootImport: EndpointHandler;
   ActivateHnsCommunityRootImport: EndpointHandler;
 }> {
@@ -69,6 +73,24 @@ export function makeHnsCommunityRootImportHandlers(
           services,
         ).pipe(
           Effect.map((result) => withEndpointResult(result, result.replayed ? 200 : 202)),
+          Effect.mapError(wireFailure),
+        ),
+      );
+    },
+    GetCurrentHnsCommunityRootImport: (request) => {
+      if (
+        request.principal === null ||
+        (request.principal.kind !== "user" && request.principal.kind !== "admin")
+      ) {
+        throw new AuthError({ message: "Authentication required" });
+      }
+      const params = request.params as Readonly<{ communityId: string }>;
+      return Effect.runPromise(
+        getCurrentHnsCommunityRootImport(
+          { actor_id: request.principal.subject, community_id: params.communityId },
+          services,
+        ).pipe(
+          Effect.map((result) => withEndpointResult(result, 200)),
           Effect.mapError(wireFailure),
         ),
       );

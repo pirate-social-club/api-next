@@ -1,6 +1,7 @@
 import { parseCanonicalRouteLabelV1 } from "@pirate/route-label-codec";
 import { Schema } from "effect";
 import { Auth } from "./auth.ts";
+import { CommunityCanonicalRouteV2, CommunityRouteLifecycleStatusV1 } from "./community-routes.ts";
 import { endpoint } from "./endpoint.ts";
 import {
   AuthError,
@@ -304,6 +305,8 @@ const HnsCommunityRootImportProvisioningResponseV1 = Schema.Struct({
 const HnsCommunityRootImportAwaitingOwnerResponseV1 = Schema.Struct({
   ...HnsCommunityRootImportSessionBaseV1,
   status: Schema.Literals(["awaiting_owner_update", "observing"]),
+  // Verification was requested and has not completed. This is not a broadcast receipt.
+  publication_check_pending: Schema.optional(Schema.Boolean),
   publish_plan: HnsRootImportPublishPlanV1,
   publish_plan_sha256: Sha256Hex,
   readiness_result_sha256: Schema.Null,
@@ -337,6 +340,20 @@ export const HnsCommunityRootImportSessionResponseV1 = Schema.Union([
 ]);
 export type HnsCommunityRootImportSessionResponseV1 = Schema.Schema.Type<
   typeof HnsCommunityRootImportSessionResponseV1
+>;
+
+export const HnsCommunityRootImportCurrentResponseV1 = Schema.Struct({
+  community_id: OpaqueId,
+  attachment: Schema.NullOr(
+    Schema.Struct({
+      canonical_route: CommunityCanonicalRouteV2,
+      status: CommunityRouteLifecycleStatusV1,
+    }),
+  ),
+  session: Schema.NullOr(HnsCommunityRootImportSessionResponseV1),
+});
+export type HnsCommunityRootImportCurrentResponseV1 = Schema.Schema.Type<
+  typeof HnsCommunityRootImportCurrentResponseV1
 >;
 
 const HnsCommunityRootImportActivationResponseV1 = Schema.Struct({
@@ -446,6 +463,19 @@ export const StartHnsCommunityRootImport = endpoint({
   },
   response: HnsCommunityRootImportSessionResponseV1,
   successStatus: [200, 202],
+  errors: rootImportErrors,
+});
+
+export const GetCurrentHnsCommunityRootImport = endpoint({
+  method: "GET",
+  path: "/communities/:communityId/hns-root-imports",
+  auth: Auth.userOrAdmin(),
+  request: {
+    path: Schema.Struct({ communityId: OpaqueId }),
+    exactRawPathParameters: ["communityId"],
+  },
+  response: HnsCommunityRootImportCurrentResponseV1,
+  successStatus: 200,
   errors: rootImportErrors,
 });
 

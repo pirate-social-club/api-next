@@ -43,6 +43,7 @@ import { PollHnsOwnerRecovery, StartHnsOwnerRecovery } from "./hns-owner-recover
 import {
   ActivateHnsCommunityRootImport,
   ActivateHnsRootImport,
+  GetCurrentHnsCommunityRootImport,
   GetHnsCommunityRootImport,
   GetHnsRootImport,
   PollHnsCommunityRootImport,
@@ -126,6 +127,7 @@ export const registry = {
   ActivateHnsRootImport,
   StartHnsCommunityRootImport,
   GetHnsCommunityRootImport,
+  GetCurrentHnsCommunityRootImport,
   PollHnsCommunityRootImport,
   ActivateHnsCommunityRootImport,
   ...handleSalesRegistry,

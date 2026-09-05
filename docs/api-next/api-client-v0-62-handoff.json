@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.62.0",
+  "releaseType": "community-hns-import-panel",
+  "sourceCommit": "683804379e67bb7b14bf4895ff199ba32119dc83",
+  "wireContract": "GET /communities/:communityId/hns-root-imports returns the current canonical attachment and actor-scoped import session independently; awaiting-owner and observing responses add optional publication_check_pending with the existing retry interval",
+  "supersedes": "0.61.0; additive discovery and pending-check signal, no database migration",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.62.0.tgz",
+    "sha256": "d1f8e794406fa397cff3e5308d76dad7d5079f72edfff98e2a687c46f887972d",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@7173495a6837148c7c704530f5b3995c286c0c1c8c7672923502985e7bfd5856",
+    "openapiSha256": "7173495a6837148c7c704530f5b3995c286c0c1c8c7672923502985e7bfd5856",
+    "clientSha256": "19a44dcd991b83040dd7998244acba96b4f62a0a2b1d7c3578b5bf20fa6a2594"
+  },
+  "verification": {
+    "focusedSuites": "17 passed, including generated HTTP route authentication and no-store",
+    "postgres17Focused": "6 passed, 157 assertions; includes canonical attachment without an actor-owned import",
+    "repositoryCheck": "passed; 41 existing warnings and one informational diagnostic",
+    "fullUnitSuite": "passed: 2961 Bun, 20 Node, 131 Workerd; one earlier unchanged Megapot pacing failure passed focused and full reruns without code or threshold changes",
+    "postgres17Full": "362 passed across the isolated and four general partitions; partitions began before final attachment-read refinement, followed by the final six-case PostgreSQL rerun",
+    "checkBreaking": "passed against e91d92a7 without waiver",
+    "packageVerifier": "passed: immutable artifact, provenance and clean consumer",
+    "secretBoundaryLocal": "passed: zero violations",
+    "scriptCheck": "passed: zero findings",
+    "remoteCI": "required before merge"
+  }
+}
