@@ -18,6 +18,13 @@ function fixture() {
       sourceSha256: "a".repeat(64),
     },
     sealedSourceRef: "media://immutable/fixture-original",
+    authority: {
+      submissionId: "submission-1",
+      postId: "post-1",
+      creationRevision: 1,
+      videoRevision: 1,
+      analysisRevision: 1,
+    },
     state: { state: "not_started" },
   };
   let time = 0;

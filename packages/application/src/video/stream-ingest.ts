@@ -14,6 +14,13 @@ export type VideoStreamClaim = Readonly<{
   revision: number;
   identity: VideoStreamIdentity;
   sealedSourceRef: string;
+  authority: Readonly<{
+    submissionId: string;
+    postId: string;
+    creationRevision: number;
+    videoRevision: number;
+    analysisRevision: number;
+  }>;
   state: VideoStreamIngestState;
 }>;
 

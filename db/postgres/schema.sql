@@ -24332,6 +24332,9 @@ CREATE TABLE media_video_enrichment_outbox (
     state text DEFAULT 'pending'::text NOT NULL,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    lease_owner text,
+    lease_expires_at timestamp with time zone,
+    CONSTRAINT media_video_enrichment_lease_shape CHECK ((((state = 'running'::text) AND (lease_owner IS NOT NULL) AND (btrim(lease_owner) <> ''::text) AND (lease_expires_at IS NOT NULL)) OR ((state <> 'running'::text) AND (lease_owner IS NULL) AND (lease_expires_at IS NULL)))),
     CONSTRAINT media_video_enrichment_outbox_effect_identity_check CHECK ((btrim(effect_identity) <> ''::text)),
     CONSTRAINT media_video_enrichment_outbox_enrichment_kind_check CHECK ((enrichment_kind = ANY (ARRAY['stream'::text, 'thumbnail'::text]))),
     CONSTRAINT media_video_enrichment_outbox_payload_check CHECK ((jsonb_typeof(payload) = 'object'::text)),
@@ -24500,11 +24503,16 @@ CREATE TABLE media_video_stream_ingests (
     provider_video_id text,
     claim_fence bigint DEFAULT 0 NOT NULL,
     updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-    CONSTRAINT media_video_stream_ingest_shape CHECK ((((state = 'not_started'::text) AND (creator_marker IS NULL) AND (source_sha256 IS NULL) AND (provider_video_id IS NULL)) OR ((state = ANY (ARRAY['sending'::text, 'manual_review'::text])) AND (creator_marker IS NOT NULL) AND (source_sha256 IS NOT NULL) AND (provider_video_id IS NULL)) OR ((state = 'bound'::text) AND (creator_marker IS NOT NULL) AND (source_sha256 IS NOT NULL) AND (provider_video_id IS NOT NULL)))),
+    ingest_revision bigint DEFAULT 0 NOT NULL,
+    acceptance_deadline_ms bigint,
+    encoding_deadline_ms bigint,
+    failure_reason text,
+    CONSTRAINT media_video_stream_ingest_shape CHECK ((((state = 'not_started'::text) AND (creator_marker IS NULL) AND (source_sha256 IS NULL) AND (provider_video_id IS NULL) AND (acceptance_deadline_ms IS NULL) AND (encoding_deadline_ms IS NULL) AND (failure_reason IS NULL)) OR ((state <> 'not_started'::text) AND (creator_marker IS NOT NULL) AND (creator_marker ~ '^[A-Za-z0-9_-]{1,64}$'::text) AND (source_sha256 IS NOT NULL) AND (acceptance_deadline_ms IS NOT NULL) AND (acceptance_deadline_ms > 0) AND (encoding_deadline_ms IS NOT NULL) AND (encoding_deadline_ms >= acceptance_deadline_ms) AND (encoding_deadline_ms <= '9007199254740991'::bigint) AND (((state = 'sending'::text) AND (provider_video_id IS NULL) AND (failure_reason IS NULL)) OR ((state = ANY (ARRAY['bound'::text, 'ready'::text])) AND (provider_video_id IS NOT NULL) AND (btrim(provider_video_id) <> ''::text) AND (failure_reason IS NULL)) OR ((state = 'failed'::text) AND (provider_video_id IS NOT NULL) AND (btrim(provider_video_id) <> ''::text) AND (failure_reason IS NOT NULL) AND (failure_reason = ANY (ARRAY['encoding_failed'::text, 'encoding_timeout'::text]))) OR ((state = 'reconciliation_required'::text) AND (provider_video_id IS NULL) AND (failure_reason IS NOT NULL) AND (failure_reason = ANY (ARRAY['acceptance_unknown'::text, 'identity_mismatch'::text, 'multiple_matches'::text, 'unsafe_delivery'::text]))))))),
     CONSTRAINT media_video_stream_ingests_claim_fence_check CHECK ((claim_fence >= 0)),
+    CONSTRAINT media_video_stream_ingests_ingest_revision_check CHECK ((ingest_revision >= 0)),
     CONSTRAINT media_video_stream_ingests_operation_id_check CHECK ((btrim(operation_id) <> ''::text)),
     CONSTRAINT media_video_stream_ingests_source_sha256_check CHECK (((source_sha256 IS NULL) OR (source_sha256 ~ '^[0-9a-f]{64}$'::text))),
-    CONSTRAINT media_video_stream_ingests_state_check CHECK ((state = ANY (ARRAY['not_started'::text, 'sending'::text, 'bound'::text, 'manual_review'::text])))
+    CONSTRAINT media_video_stream_ingests_state_check CHECK ((state = ANY (ARRAY['not_started'::text, 'sending'::text, 'bound'::text, 'ready'::text, 'failed'::text, 'reconciliation_required'::text])))
 );
 
 CREATE TABLE media_video_transform_attempts (
@@ -29806,6 +29814,8 @@ CREATE UNIQUE INDEX media_transcript_revision_lineage_uidx ON media_transcript_a
 CREATE INDEX media_upload_reservations_expiry_idx ON media_upload_reservations USING btree (state, expires_at, reservation_id) WHERE (state = ANY (ARRAY['issued'::text, 'claimed'::text]));
 
 CREATE INDEX media_video_analysis_outbox_eligible_idx ON media_video_analysis_outbox USING btree (created_at, effect_identity) WHERE ((state = ANY (ARRAY['pending'::text, 'retry_wait'::text])) OR ((state = 'launched'::text) AND (instance_missing_at IS NOT NULL)));
+
+CREATE INDEX media_video_enrichment_eligible ON media_video_enrichment_outbox USING btree (enrichment_kind, lease_expires_at, created_at, effect_identity) WHERE (state = ANY (ARRAY['pending'::text, 'running'::text]));
 
 CREATE INDEX media_video_publication_wakeups_pending_idx ON media_video_publication_wakeups USING btree (last_attempt_at NULLS FIRST, created_at, wakeup_identity) WHERE (delivered_at IS NULL);
 
