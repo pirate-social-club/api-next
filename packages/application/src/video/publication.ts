@@ -133,6 +133,7 @@ export type VideoReservationRecord = Readonly<{
 
 export type VideoSubmissionRecord = Readonly<{
   state: VideoSubmissionState;
+  eventSequence: number;
   authorPersona: VideoPostSubmissionV1["author_persona"];
   updatedAt: string;
 }>;
@@ -271,6 +272,7 @@ export interface VideoPublicationStore {
   }) => Promise<VideoSubmissionRecord>;
   readonly recordProcessingFailure: (input: {
     submission: VideoSubmissionState;
+    observedEventSequence: number;
     failureCode: VideoTechnicalFailureCode | "poster_undecodable" | "poster_timestamp_out_of_range";
     evidenceRef: string;
   }) => Promise<VideoSubmissionRecord>;
@@ -751,6 +753,7 @@ export async function createVideoSubmission(
   const response = await snapshot(
     projectVideoSubmission({
       state,
+      eventSequence: 1,
       authorPersona: publicPersona(persona),
       updatedAt: services.nowIso(),
     }),
@@ -1005,6 +1008,7 @@ export async function recordVideoProcessingFailure(
   return projectVideoSubmission(
     await services.store.recordProcessingFailure({
       submission: record.state,
+      observedEventSequence: record.eventSequence,
       failureCode: input.failureCode,
       evidenceRef: input.evidenceRef,
     }),

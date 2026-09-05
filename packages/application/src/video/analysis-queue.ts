@@ -187,6 +187,7 @@ export async function consumeVideoAnalysisQueueMessage(
       if (authority.state.status === "processing" && authority.state.decision === null) {
         await dependencies.runtime.store.recordProcessingFailure({
           submission: authority.state,
+          observedEventSequence: authority.eventSequence,
           failureCode: "transform_failed",
           evidenceRef: `video-workflow-launch-exhausted:${instanceId}`,
         });

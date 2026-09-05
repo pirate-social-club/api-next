@@ -208,6 +208,7 @@ function services(input: {
 }): VideoAnalysisRuntimeServices {
   const initial: VideoSubmissionRecord = {
     state: analysisState(),
+    eventSequence: 1,
     authorPersona: publicPersona,
     updatedAt: "2026-09-04T00:00:00.000Z",
   };

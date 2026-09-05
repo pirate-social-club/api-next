@@ -342,6 +342,55 @@ suite("video publication PostgreSQL", () => {
     });
   });
 
+  test("drill 3 recovery: a transition during status inspection fences the stale terminal failure", async () => {
+    await fixture(async (admin, connection) => {
+      const { layer, store } = await finalizedFixture(connection);
+      const outbox = makeControlPlaneVideoAnalysisOutboxRepository(layer);
+      const [pending] = await outbox.listEligible(10);
+      if (!pending) throw new Error("missing intent");
+      const claimed = await outbox.claim(pending.effectIdentity, "launch-worker");
+      if (!claimed) throw new Error("missing claim");
+      const instanceId = `vaw-${"a".repeat(64)}`;
+      await outbox.markLaunched(claimed, instanceId);
+      const before = await store.getSubmissionByOperation({ submissionId, operationId });
+      if (!before) throw new Error("missing submission");
+      const result = await recoverVideoWorkflowLaunches({
+        outbox,
+        store,
+        launcher: {
+          inspect: async () => {
+            // Same creation/video/analysis revisions: only the committed event
+            // fence distinguishes the newer publication phase from the read.
+            await admin.query(
+              `UPDATE media_post_submissions SET event_sequence=event_sequence+1,updated_at=clock_timestamp(),
+                 phase='publish',video_state_snapshot=jsonb_set(video_state_snapshot,'{phase}','"publish"')
+               WHERE submission_id=$1`,
+              [submissionId],
+            );
+            return { state: "terminal", status: "complete" };
+          },
+          instanceId: async () => instanceId,
+        },
+      });
+      expect(result).toMatchObject({ terminal: 0, failed: 1 });
+      const after = await store.getSubmissionByOperation({ submissionId, operationId });
+      expect(after?.state).toMatchObject({
+        status: "processing",
+        phase: "publish",
+        failureCode: null,
+      });
+      expect(after?.eventSequence).toBe(before.eventSequence + 1);
+      await expect(
+        store.recordProcessingFailure({
+          submission: before.state,
+          observedEventSequence: before.eventSequence,
+          failureCode: "transform_failed",
+          evidenceRef: "stale-launch-exhaustion",
+        }),
+      ).rejects.toThrow();
+    });
+  });
+
   test("renews one expired part after claim without changing other parts or the reservation deadline", async () => {
     await fixture(async (admin, connection) => {
       const layer = makeDirectPostgresControlPlaneLayer(connection);
@@ -502,6 +551,7 @@ suite("video publication PostgreSQL", () => {
       await expect(
         store.recordProcessingFailure({
           submission: { ...finalized.state, creationRevision: 0 },
+          observedEventSequence: finalized.eventSequence,
           failureCode: "transform_failed",
           evidenceRef: "workflow:stale-creation",
         }),

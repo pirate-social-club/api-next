@@ -1,5 +1,44 @@
 # Video Workflow next tranche
 
+## Recovery review follow-up — 2026-09-05
+
+Failure writes now require the observed submission event sequence, exposed by
+the PostgreSQL record loader. Both sweep recovery and Queue launch exhaustion
+pass that sequence. The store checks it under its row lock and in the update
+predicate, preventing a terminal observation from overwriting a concurrent
+decision/publication transition. A PostgreSQL test advances the event during
+status inspection without changing creation, video or analysis revision and
+proves that the stale failure is refused. All six publication repository tests
+passed after the fixture also advanced updated_at as required by the trigger.
+The full check and test commands passed. After adding an explicit affected-row
+assertion to the fenced write, TypeScript and all six PostgreSQL tests passed
+again. The full PostgreSQL gate was not rerun for this focused follow-up.
+No live provider query, deployment or rebase occurred.
+
+The suggested existing missing-instance classifier is only a type alias;
+both concrete song and video compositions pass an always-false function.
+There is no verified production classifier to import. The current official
+local binding still catches every status exception and rewrites it to
+instance.not_found. Matching that message would not prove absence. A verified
+production exception contract or an authenticated explicit-absence lookup is
+required before changing this boundary; live lost-launch recovery is not
+accepted. No speculative classifier was installed.
+
+The Workflow class and VIDEO_ANALYSIS_WORKFLOW declarations in both Wrangler
+files remain pending the runner tranche. Enabling the flag currently fails
+construction; binding-contract tests must require every environment binding
+when that class lands. The recovery scan performs up to its bounded batch of
+status lookups each tick and rotates rows; larger volume will need measured
+scheduling rather than assuming this polling cost is free. Queue redeliveries
+can reach the DLQ while an expired launch awaits the sweep. Operators must
+consult current PostgreSQL state: those transport messages can remain after
+successful recovery and do not independently prove submission failure.
+
+The adapter split and runner have not changed in this follow-up. Preserve
+per-capability deadlines on attempts and allow only decide-and-publish to call
+acceptTrustedVideoAnalysis. Allocate/submit/observe and their real-store tests
+remain the first runner change.
+
 ## Launch checkpoint validation — 2026-09-05
 
 Source checkpoint `82926a28c250e59e1832439a7b2c25873c941cf9` preserves this

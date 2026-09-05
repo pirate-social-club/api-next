@@ -62,6 +62,7 @@ export async function recoverVideoWorkflowLaunches(
       if (status === "terminal" || (status === "missing" && record.launchAttempts >= 3)) {
         await services.store.recordProcessingFailure({
           submission: authority.state,
+          observedEventSequence: authority.eventSequence,
           failureCode: "transform_failed",
           evidenceRef: `video-workflow:${instanceId}:${observation.status ?? status}`,
         });

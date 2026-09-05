@@ -102,7 +102,12 @@ function submissionFromRow(row: Row): VideoSubmissionRecord {
   const persona = json<VideoSubmissionRecord["authorPersona"]>(row.author_persona);
   if (persona.persona_id !== state.authorPersonaId || persona.object !== "persona")
     throw new Error("invalid video persona snapshot");
-  return { state, authorPersona: persona, updatedAt: instant(row, "updated_at") };
+  return {
+    state,
+    eventSequence: integer(row, "event_sequence"),
+    authorPersona: persona,
+    updatedAt: instant(row, "updated_at"),
+  };
 }
 
 const RESERVATION_COLUMNS = `reservation_id,community_id,actor_user_id,actor_persona_id,
@@ -112,7 +117,7 @@ const RESERVATION_COLUMNS = `reservation_id,community_id,actor_user_id,actor_per
   operation_id,response_snapshot_bytes,updated_at`;
 
 const SUBMISSION_SELECT = `SELECT s.submission_id,s.operation_id,s.author_persona_id,
-  s.video_state_snapshot,s.updated_at,public_persona_projection(s.author_persona_id) AS author_persona
+  s.video_state_snapshot,s.event_sequence,s.updated_at,public_persona_projection(s.author_persona_id) AS author_persona
   FROM media_post_submissions s`;
 
 function replayFromRow(row: Row | undefined, requestHash: string, entityKey: string) {
@@ -211,6 +216,7 @@ function updateSubmissionSnapshot(
     next: VideoSubmissionState;
     extraSql?: string;
     extraValues?: readonly unknown[];
+    observedEventSequence?: number;
   },
 ) {
   const extraValues = input.extraValues ?? [];
@@ -222,7 +228,8 @@ function updateSubmissionSnapshot(
       retry_count=$9,event_sequence=event_sequence+1,updated_at=clock_timestamp()
       ${input.extraSql ?? ""}
       WHERE submission_id=$${10 + extraValues.length} AND operation_id=$${11 + extraValues.length}
-        AND creation_revision=$${12 + extraValues.length} AND media_kind='video'`,
+        AND creation_revision=$${12 + extraValues.length} AND media_kind='video'
+        ${input.observedEventSequence === undefined ? "" : `AND event_sequence=$${13 + extraValues.length}`} RETURNING event_sequence`,
     values: [
       JSON.stringify(input.next),
       input.next.status,
@@ -237,6 +244,7 @@ function updateSubmissionSnapshot(
       input.prior.submissionId,
       input.prior.operationId,
       input.prior.creationRevision,
+      ...(input.observedEventSequence === undefined ? [] : [input.observedEventSequence]),
     ],
     readonly: false,
   });
@@ -1015,7 +1023,12 @@ export function makeControlPlaneVideoPublicationStore(
                     : null,
                 ],
               });
-              return { ...current, state: input.nextState, updatedAt: new Date().toISOString() };
+              return {
+                ...current,
+                eventSequence: current.eventSequence + 1,
+                state: input.nextState,
+                updatedAt: new Date().toISOString(),
+              };
             }),
           );
         }),
@@ -1034,6 +1047,7 @@ export function makeControlPlaneVideoPublicationStore(
               if (
                 current === null ||
                 current.state.status !== "processing" ||
+                current.eventSequence !== input.observedEventSequence ||
                 current.state.creationRevision !== input.submission.creationRevision ||
                 current.state.videoRevision !== input.submission.videoRevision ||
                 current.state.analysisRevision !== input.submission.analysisRevision ||
@@ -1047,9 +1061,10 @@ export function makeControlPlaneVideoPublicationStore(
                 phase: null,
                 failureCode: input.failureCode,
               };
-              yield* updateSubmissionSnapshot(tx, {
+              const updated = yield* updateSubmissionSnapshot(tx, {
                 prior: current.state,
                 next,
+                observedEventSequence: input.observedEventSequence,
                 extraSql:
                   ",failure_evidence_ref=$10,failure_retry_count=$11,retryable=$12,last_safe_phase=$13",
                 extraValues: [
@@ -1059,7 +1074,14 @@ export function makeControlPlaneVideoPublicationStore(
                   current.state.phase,
                 ],
               });
-              return { ...current, state: next, updatedAt: new Date().toISOString() };
+              if (updated.rows.length !== 1)
+                throw new Error("video processing failure fence rejected");
+              return {
+                ...current,
+                eventSequence: current.eventSequence + 1,
+                state: next,
+                updatedAt: new Date().toISOString(),
+              };
             }),
           );
         }),
@@ -1270,7 +1292,12 @@ export function makeControlPlaneVideoPublicationStore(
                 readonly: false,
               });
               yield* updateSubmissionSnapshot(tx, { prior: current.state, next });
-              return { ...current, state: next, updatedAt: new Date().toISOString() };
+              return {
+                ...current,
+                eventSequence: current.eventSequence + 1,
+                state: next,
+                updatedAt: new Date().toISOString(),
+              };
             }),
           );
         }),
@@ -1621,7 +1648,12 @@ function publishTransaction(input: VideoPublishBundle) {
           readonly: false,
         });
         yield* updateSubmissionSnapshot(tx, { prior: current.state, next: input.state });
-        return { ...current, state: input.state, updatedAt: new Date().toISOString() };
+        return {
+          ...current,
+          eventSequence: current.eventSequence + 1,
+          state: input.state,
+          updatedAt: new Date().toISOString(),
+        };
       }),
     );
   });
