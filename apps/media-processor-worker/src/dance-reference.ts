@@ -1,3 +1,4 @@
+import { Effect } from "effect";
 import type {
   DanceReferenceQueueDependencies,
   DanceReferenceWorkflowAdvance,
@@ -81,11 +82,13 @@ export function makeDanceReferenceWorkflowRunner<Env extends DanceReferenceProce
         `dance-reference-processing-${sequence}`,
         PROCESSING_WORKFLOW_STEP_OPTIONS,
         () =>
-          advanceDanceReferenceWorkflow(
-            event.payload,
-            event.instanceId,
-            composition.workflow,
-            resume,
+          Effect.runPromise(
+            advanceDanceReferenceWorkflow(
+              event.payload,
+              event.instanceId,
+              composition.workflow,
+              resume,
+            ),
           ),
       );
       if (result.outcome !== "waiting") return result;

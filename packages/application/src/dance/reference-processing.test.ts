@@ -11,6 +11,11 @@ import {
   runDanceReferenceProcessing,
 } from "./reference-processing.ts";
 
+const runProcessing = (...args: Parameters<typeof runDanceReferenceProcessing>) =>
+  Effect.runPromise(runDanceReferenceProcessing(...args));
+
+import { advanceDanceReferenceWorkflow } from "./reference-processing-wakeup.ts";
+
 const HASH_A = "11".repeat(32);
 const HASH_B = "22".repeat(32);
 const HASH_C = "33".repeat(32);
@@ -240,7 +245,7 @@ describe("Dance reference processing interpreter", () => {
   test("persists preparation and commits a strictly bound ready outcome", async () => {
     const store = new FakeStore();
     let calls = 0;
-    const disposition = await runDanceReferenceProcessing(
+    const disposition = await runProcessing(
       {
         choreographyId: "choreography-1",
         choreographyRevision: 1,
@@ -290,7 +295,7 @@ describe("Dance reference processing interpreter", () => {
     };
     store.saved = prepared(binding);
     let prepareCalls = 0;
-    const disposition = await runDanceReferenceProcessing(
+    const disposition = await runProcessing(
       {
         choreographyId: "choreography-1",
         choreographyRevision: 1,
@@ -316,7 +321,7 @@ describe("Dance reference processing interpreter", () => {
 
   test("does not commit pending observation", async () => {
     const store = new FakeStore();
-    const disposition = await runDanceReferenceProcessing(
+    const disposition = await runProcessing(
       {
         choreographyId: "choreography-1",
         choreographyRevision: 1,
@@ -342,7 +347,7 @@ describe("Dance reference processing interpreter", () => {
   test("rejects a ready result whose visibility can evade the frozen evidence binding", async () => {
     const store = new FakeStore();
     await expect(
-      runDanceReferenceProcessing(
+      runProcessing(
         {
           choreographyId: "choreography-1",
           choreographyRevision: 1,
@@ -376,7 +381,7 @@ describe("Dance reference processing interpreter", () => {
   test("recomputes coverage and rejects provider-owned quality pass flags", async () => {
     const store = new FakeStore();
     await expect(
-      runDanceReferenceProcessing(
+      runProcessing(
         {
           choreographyId: "choreography-1",
           choreographyRevision: 1,
@@ -417,18 +422,7 @@ describe("Dance reference processing interpreter", () => {
   });
 });
 
-// The baseline adapter exposes the native Promise to a parent fiber without
-// changing production. Remove it when processing itself returns an Effect.
-const baselineRuns: Promise<unknown>[] = [];
-const processingEffect = (...args: Parameters<typeof runDanceReferenceProcessing>) =>
-  Effect.tryPromise({
-    try: () => {
-      const run = runDanceReferenceProcessing(...args);
-      baselineRuns.push(run);
-      return run;
-    },
-    catch: (error) => error,
-  });
+const processingEffect = runDanceReferenceProcessing;
 const barrier = () => {
   let release!: () => void;
   const promise = new Promise<void>((resolve) => {
@@ -492,7 +486,6 @@ describe("Dance reference interruption contract", () => {
         expect(store.saved === null).toBe(stage === "prepare");
       } finally {
         finish.release();
-        await Promise.allSettled(baselineRuns.splice(0));
       }
     });
   }
@@ -558,7 +551,6 @@ describe("Dance reference interruption contract", () => {
         expect(store.committed !== null).toBe(stage === "complete");
       } finally {
         finish.release();
-        await Promise.allSettled(baselineRuns.splice(0));
       }
     });
   }
@@ -578,7 +570,6 @@ describe("Dance reference interruption contract", () => {
       processingEffect(processingInput(), { store, processor }),
       { signal: controller.signal },
     );
-    await Promise.allSettled(baselineRuns.splice(0));
     expectInterrupted(exit);
     expect(store.saved).toBeNull();
     expect(store.committed).toBeNull();
@@ -588,7 +579,67 @@ describe("Dance reference interruption contract", () => {
         return prepared(binding);
       });
     await Effect.runPromise(processingEffect(processingInput(), { store, processor }));
-    await Promise.allSettled(baselineRuns.splice(0));
     expect(preparedCalls).toBe(2);
+  });
+});
+
+describe("Dance reference lifted failure boundaries", () => {
+  for (const stage of ["claim", "recordPrepared", "complete"] as const) {
+    test(`preserves the ${stage} rejection and starts no downstream operation`, async () => {
+      const store = new FakeStore();
+      const failure = new Error(`${stage} failed`);
+      store[stage] = async () => {
+        throw failure;
+      };
+      let prepares = 0;
+      let observations = 0;
+      const processor = ordinaryProcessor();
+      processor.prepareReference = (_input, binding) =>
+        Effect.sync(() => {
+          prepares += 1;
+          return prepared(binding);
+        });
+      processor.observeReference = (operation) =>
+        Effect.sync(() => {
+          observations += 1;
+          return ready(operation.binding);
+        });
+      await expect(runProcessing(processingInput(), { store, processor })).rejects.toBe(failure);
+      expect(prepares).toBe(stage === "claim" ? 0 : 1);
+      expect(observations).toBe(stage === "complete" ? 1 : 0);
+      expect(store.committed).toBeNull();
+    });
+  }
+
+  test("propagates a wakeup read rejection without starting a claim", async () => {
+    const failure = new Error("wakeup read failed");
+    const store = Object.assign(new FakeStore(), {
+      getWakeup: async () => {
+        throw failure;
+      },
+      listEligibleWakeups: async () => [],
+    });
+    await expect(
+      Effect.runPromise(
+        advanceDanceReferenceWorkflow(
+          {
+            version: "dance-reference-workflow-v1",
+            outboxId: "outbox-1",
+            choreographyId: "choreography-1",
+            choreographyRevision: 1,
+            effectIdentity: frozenInput().effectIdentity,
+          },
+          "workflow-1",
+          {
+            store,
+            processor: ordinaryProcessor(),
+            leaseSeconds: 60,
+            adapterId: "fake-reference",
+            adapterRevision: "fake-v1",
+          },
+        ),
+      ),
+    ).rejects.toBe(failure);
+    expect(store.request).toBeUndefined();
   });
 });

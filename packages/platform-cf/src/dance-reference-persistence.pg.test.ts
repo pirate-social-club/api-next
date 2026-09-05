@@ -34,6 +34,9 @@ const sentinelContents = "api-next-control-plane-postgres-dance-reference-suite-
 const testCount = 11;
 let completedTestCount = 0;
 
+const runProcessing = (...args: Parameters<typeof runDanceReferenceProcessing>) =>
+  Effect.runPromise(runDanceReferenceProcessing(...args));
+
 const HASH_A = "11".repeat(32);
 const HASH_B = "22".repeat(32);
 const HASH_C = "33".repeat(32);
@@ -488,7 +491,7 @@ suite("Dance reference shadow persistence", () => {
           eligible: true,
         },
       ]);
-      const result = await runDanceReferenceProcessing(
+      const result = await runProcessing(
         {
           choreographyId: "choreography-1",
           choreographyRevision: 1,
@@ -550,7 +553,7 @@ suite("Dance reference shadow persistence", () => {
         ),
       );
       let prepareCalls = 0;
-      const first = await runDanceReferenceProcessing(
+      const first = await runProcessing(
         {
           choreographyId: "choreography-1",
           choreographyRevision: 1,
@@ -573,7 +576,7 @@ suite("Dance reference shadow persistence", () => {
         },
       );
       expect(first).toEqual({ kind: "pending", claimFence: 1, outboxClaimFence: 1 });
-      const renewed = await runDanceReferenceProcessing(
+      const renewed = await runProcessing(
         {
           choreographyId: "choreography-1",
           choreographyRevision: 1,
@@ -602,7 +605,7 @@ suite("Dance reference shadow persistence", () => {
       expect(renewedFences.rows).toEqual([
         { lease_fence: "1", outbox_fence: "1", delivery_attempts: 1 },
       ]);
-      const concurrent = await runDanceReferenceProcessing(
+      const concurrent = await runProcessing(
         {
           choreographyId: "choreography-1",
           choreographyRevision: 1,
@@ -621,7 +624,7 @@ suite("Dance reference shadow persistence", () => {
       );
       expect(concurrent).toEqual({ kind: "busy" });
       await admin.query("SELECT pg_sleep(1.05)");
-      const recovered = await runDanceReferenceProcessing(
+      const recovered = await runProcessing(
         {
           choreographyId: "choreography-1",
           choreographyRevision: 1,
@@ -648,7 +651,7 @@ suite("Dance reference shadow persistence", () => {
       );
       expect(fence.rows).toEqual([{ lease_fence: "2", state: "succeeded" }]);
       await expect(
-        runDanceReferenceProcessing(
+        runProcessing(
           {
             choreographyId: "choreography-1",
             choreographyRevision: 1,
@@ -687,7 +690,7 @@ suite("Dance reference shadow persistence", () => {
       const originalRelease = new Promise<void>((resolve) => {
         releaseOriginal = resolve;
       });
-      const original = runDanceReferenceProcessing(
+      const original = runProcessing(
         {
           choreographyId: "choreography-1",
           choreographyRevision: 1,
@@ -712,7 +715,7 @@ suite("Dance reference shadow persistence", () => {
       );
       await originalObserved;
       await admin.query("SELECT pg_sleep(1.05)");
-      const stolen = await runDanceReferenceProcessing(
+      const stolen = await runProcessing(
         {
           choreographyId: "choreography-1",
           choreographyRevision: 1,
@@ -795,13 +798,12 @@ suite("Dance reference shadow persistence", () => {
           choreographyId: "choreography-1",
           choreographyRevision: 1,
           workerId: "interrupted-worker",
-          leaseSeconds: 60,
+          leaseSeconds: 3,
           adapterId: "fake-reference",
           adapterRevision: "fake-v1",
         };
         const controller = new AbortController();
-        // Baseline adapter only; production still returns an uncancellable Promise.
-        const native = runDanceReferenceProcessing(
+        const program = runDanceReferenceProcessing(
           { ...input, frozenInput: frozenReferenceInput() },
           {
             store,
@@ -817,10 +819,7 @@ suite("Dance reference shadow persistence", () => {
             },
           },
         );
-        const running = Effect.runPromiseExit(
-          Effect.tryPromise({ try: () => native, catch: (error) => error }),
-          { signal: controller.signal },
-        );
+        const running = Effect.runPromiseExit(program, { signal: controller.signal });
         try {
           await entered;
           controller.abort();
@@ -852,31 +851,32 @@ suite("Dance reference shadow persistence", () => {
             observeReference: (operation: PreparedDanceReferenceOperation) =>
               Effect.succeed(readyReference(operation.binding)),
           };
-          expect(
-            await runDanceReferenceProcessing(recoveryInput, { store: repository, processor }),
-          ).toEqual({ kind: "busy" });
+          expect(await runProcessing(recoveryInput, { store: repository, processor })).toEqual({
+            kind: "busy",
+          });
           expect(prepares).toBe(0);
-          // Advance durable lease time explicitly, without a wall-clock race sleep.
-          await admin.query(
-            "UPDATE dance_reference_processing_attempts SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE state='leased'",
-          );
-          await admin.query(
-            "UPDATE dance_reference_outbox SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE state='running'",
-          );
-          expect(
-            await runDanceReferenceProcessing(recoveryInput, { store: repository, processor }),
-          ).toEqual({ kind: "committed", status: "ready" });
+          // Wait for the actual persisted deadline; never bypass guarded lease state.
+          await admin.query(`SELECT pg_sleep(GREATEST(0, EXTRACT(EPOCH FROM (
+            SELECT max(expires_at) FROM (
+              SELECT lease_expires_at AS expires_at FROM dance_reference_processing_attempts
+              UNION ALL SELECT lease_expires_at FROM dance_reference_outbox
+            ) leases
+          ) - clock_timestamp())))`);
+          expect(await runProcessing(recoveryInput, { store: repository, processor })).toEqual({
+            kind: "committed",
+            status: "ready",
+          });
           expect(prepares).toBe(phase === "prepare" ? 1 : 0);
           if (oldClaim === undefined) throw new Error("missing original claim");
           expect(
             await repository.recordPrepared(oldClaim, preparedReference(oldClaim.binding)),
           ).toBe(false);
-          expect(await repository.complete(oldClaim, readyReference(oldClaim.binding))).toBe(
-            "stale",
-          );
+          const staleOutcome = readyReference(oldClaim.binding);
+          if (staleOutcome.status === "pending") throw new Error("expected terminal fixture");
+          expect(await repository.complete(oldClaim, staleOutcome)).toBe("stale");
         } finally {
           release();
-          await Promise.allSettled([native]);
+          await running;
         }
       });
     }
@@ -892,7 +892,7 @@ suite("Dance reference shadow persistence", () => {
         ),
         { retryBaseMs: 1 },
       );
-      const first = await runDanceReferenceProcessing(
+      const first = await runProcessing(
         {
           choreographyId: "choreography-1",
           choreographyRevision: 1,
@@ -919,7 +919,7 @@ suite("Dance reference shadow persistence", () => {
       );
       expect(first).toEqual({ kind: "committed", status: "failed" });
       await admin.query("SELECT pg_sleep(1.05)");
-      const second = await runDanceReferenceProcessing(
+      const second = await runProcessing(
         {
           choreographyId: "choreography-1",
           choreographyRevision: 1,
@@ -957,7 +957,7 @@ suite("Dance reference shadow persistence", () => {
           connectionForSchema(connectionString as string, schema),
         ),
       );
-      const result = await runDanceReferenceProcessing(
+      const result = await runProcessing(
         {
           choreographyId: "choreography-1",
           choreographyRevision: 1,
