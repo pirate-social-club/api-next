@@ -44,6 +44,7 @@ import {
   trustedAnalysis,
   videoSha256,
 } from "./video-publication.pg-fixture.ts";
+import { makeVideoPosterAuthority } from "./video-poster-authority.ts";
 import { makeControlPlaneVideoPublicationStore } from "./video-publication-repository.ts";
 import { makeVideoPublicationWakeupStore } from "./video-publication-wakeup-repository.ts";
 import { makeVideoSealedSourceVerifier } from "./video-sealed-source-verifier.ts";
@@ -721,6 +722,11 @@ suite("video publication PostgreSQL", () => {
       });
       expect(await analysisOutbox.listEligible(10)).toEqual([]);
       const baseAnalysis = trustedAnalysis();
+      const posterFrames = baseAnalysis.frames.extracted.map((frame) => ({
+        ...frame,
+        artifactRef: `media://derived/video-analysis/${operationId}/v1/a1/${frame.role}.jpg`,
+      })) as unknown as VideoTrustedAnalysis["frames"]["extracted"];
+      baseAnalysis.frames = { ...baseAnalysis.frames, extracted: posterFrames };
       const analysis: VideoTrustedAnalysis = {
         ...baseAnalysis,
         mediaSafety: "review_required",
@@ -812,6 +818,32 @@ suite("video publication PostgreSQL", () => {
       };
       await store.publish(bundle);
       await store.publish(bundle);
+      const resolvePoster = makeVideoPosterAuthority(layer);
+      const posterIdentity = {
+        postId: "post-video-publication",
+        communityId: community,
+        artifactRef: analysis.frames.extracted[0].artifactRef,
+      };
+      expect(await Effect.runPromise(resolvePoster(posterIdentity))).toEqual({
+        artifactRef: posterIdentity.artifactRef,
+        key: `video-analysis/${operationId}/v1/a1/poster.jpg`,
+        sha256: analysis.frames.extracted[0].sha256,
+        sourceSha256: videoSha256,
+        policyRevision: "1",
+      });
+      for (const override of [
+        { postId: "absent-video" },
+        { communityId: "another-community" },
+        { artifactRef: analysis.frames.extracted[1].artifactRef },
+        { artifactRef: analysis.frames.extracted[2].artifactRef },
+        { artifactRef: `media://derived/video-analysis/${operationId}/v2/a1/poster.jpg` },
+        { artifactRef: `media://derived/video-analysis/${operationId}/v1/a2/poster.jpg` },
+        { artifactRef: "media://derived/private/secret" },
+      ]) {
+        expect(
+          await Effect.runPromise(resolvePoster({ ...posterIdentity, ...override })),
+        ).toBeNull();
+      }
       const authorize = makeVideoPublicationAuthorization(layer);
       const access = () =>
         Effect.runPromise(authorize({ postId: "post-video-publication", communityId: community }));
