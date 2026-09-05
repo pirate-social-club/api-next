@@ -1,5 +1,6 @@
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
+import { unstable_readConfig } from "wrangler";
 
 // Workspace packages resolve to source so the workerd pool bundles one
 // program for both the worker main and the test modules.
@@ -112,6 +113,15 @@ const alias = {
   ).pathname,
 };
 
+const productionJobsConfiguration = unstable_readConfig(
+  {
+    config: new URL("../../apps/jobs-worker/wrangler.jsonc", import.meta.url).pathname,
+    env: "production",
+  },
+  // Omitting the production learner-audio binding is intentional and tested.
+  { hideWarnings: true },
+);
+
 export default defineConfig({
   resolve: { alias },
   plugins: [
@@ -119,6 +129,7 @@ export default defineConfig({
       wrangler: { configPath: "./apps/jobs-worker/wrangler.jsonc" },
       miniflare: {
         alias,
+        bindings: { PRODUCTION_JOBS_CONFIGURATION: JSON.stringify(productionJobsConfiguration) },
         workers: [
           {
             name: "pirate-media-processor-worker",

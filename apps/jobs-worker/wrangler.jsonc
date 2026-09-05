@@ -93,6 +93,7 @@
     "DATA_REGISTRATION_SIGNER_ADDRESS": "",
     "DATA_REGISTRATION_NATIVE_BALANCE_FLOOR_WEI": "200000000000000000",
     "HNS_OWNERSHIP_ENABLED": "false",
+    "HNS_ROOT_HEALTH_RENEWAL_ENABLED": "false",
     "MEGAPOT_REWARDS_ENABLED": "false",
     "MEGAPOT_CHAIN_ID": "84532",
     "MEGAPOT_ATTESTATION_ID": "megapot-base-sepolia-v2",
@@ -204,6 +205,7 @@
         "DATA_REGISTRATION_SIGNER_ADDRESS": "0xE128f4da57540962FF788d5462aE76671499F05E",
         "DATA_REGISTRATION_NATIVE_BALANCE_FLOOR_WEI": "200000000000000000",
         "HNS_OWNERSHIP_ENABLED": "false",
+        "HNS_ROOT_HEALTH_RENEWAL_ENABLED": "false",
         "HNS_OWNERSHIP_CONFIGURATION_REFERENCE": "hns-owner-staging",
         "HNS_OWNERSHIP_CONFIGURATION_VERSION": "hns-owner-config-v1",
         "MEGAPOT_REWARDS_ENABLED": "true",
@@ -274,7 +276,7 @@
         ]
       },
       "triggers": {
-        "crons": []
+        "crons": ["*/30 * * * *"]
       },
       "hyperdrive": [
         {
@@ -335,6 +337,7 @@
         "DATA_REGISTRATION_SIGNER_ADDRESS": "0x91016D653FDa20E7C8eb2a1E6710a6504C5d1E7d",
         "DATA_REGISTRATION_NATIVE_BALANCE_FLOOR_WEI": "200000000000000000",
         "HNS_OWNERSHIP_ENABLED": "false",
+        "HNS_ROOT_HEALTH_RENEWAL_ENABLED": "true",
         "MEGAPOT_REWARDS_ENABLED": "false",
         "MEGAPOT_CHAIN_ID": "8453",
         "MEGAPOT_ATTESTATION_ID": "megapot-base-sepolia-v2",
@@ -349,12 +352,8 @@
         "MEGAPOT_SHARED_SPONSOR_DAILY_TICKET_CEILING": "50",
         "MEGAPOT_SHARED_SPONSOR_DAILY_SPEND_CEILING_ATOMIC": "500000000"
       },
-      "r2_buckets": [
-        {
-          "binding": "LEARNER_AUDIO",
-          "bucket_name": "pirate-learner-audio-production"
-        }
-      ],
+      // No learner-audio binding: the first production cron admits renewal only.
+      "r2_buckets": [],
       "secrets": {
         "required": ["COMMUNITY_PURCHASE_FUNDING_RPC_URL"]
       }
