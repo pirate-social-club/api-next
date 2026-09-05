@@ -1,0 +1,71 @@
+--- a/tasks/records/api-video-execution-completion.md
++++ b/tasks/records/api-video-execution-completion.md
+@@ -172,9 +172,12 @@
+ interpretation of Spec 013's hash stage explicitly instead of silently
+ skipping the stage. A second full read is unnecessary when this proof holds.
+
+-Write a second publication outbox kind atomically with last-hold approval
+-and publication-only retry; consume through the existing entrypoint and
+-idempotent publish fence. Classify infrastructure, invalid-media and current-
++Use the song publication-event wakeup pattern for last-hold approval and
++publication-only retry. Persist wakeup intents atomically with their state
++changes; Queue delivery converges the instance and notifies its publication
++wait. Reuse the existing idempotent publish fence, with no separate publication
++processor. This supersedes the earlier second-publication-outbox-kind proposal.
++Classify infrastructure, invalid-media and current-
+ policy failures separately. Exhaustion must reach an appropriate author state
+ and operational recovery, including when the failure-state write itself fails.
+
+@@ -294,3 +297,52 @@
+ No push, PR, deployment, provider call, or live browser acceptance occurred.
+ The task remains active, the backend is not staging-ready, and Solid's
+ existing acceptance limits remain in force.
++
++## Reviewed next tranche — 2026-09-05
++
++The owner-reviewed direction is launch-only outbox delivery, then Queue and
++sweep recovery, then identifier-only Workflow steps, publication-event waits,
++concrete provider composition, and composed fault-injection acceptance. The
++owned lane document `docs/api-next/video-workflow-next-tranche-2026-09-05.md`
++contains the concrete transition proposal, recovery boundaries and Solid note.
++It does not establish that runtime work is implemented.
++
++The next migration includes launch state/instance facts and the transform
++`submitting` phase. It must also replace the existing unique constraint on
++(submission_id, video_revision, analysis_revision, capability) with a
++creation-bound constraint and persist creation revision. A request-ID-only
++change would still collide after terminal failure. Do not guess historical
++creation revisions from the current submission; expose ambiguous backfills.
++The inspected ordinary migration inventory ends at 0119, including the clean
++HNS deployment worktree. 0120 is a candidate pending a fresh ownership check
++and actual migration registration, not reserved by this paragraph.
++
++Retained terminal Workflow IDs must not be recreated. After provider retention
++expires an ID can be reused, so PostgreSQL outcomes must also prevent repeat
++effects after instance disappearance. A terminal current instance without a
++PostgreSQL outcome requires durable failure or reconciliation evidence. An
++author retry after confirmed terminal failure advances creation revision;
++uncertain acceptance does not permit a fresh encode. The sweep redispatches
++confirmed-missing resumable work through Queue and never creates directly.
++
++Propose a reservation lifetime derived from declared size at a conservative
++throughput floor plus an interruption allowance, bounded by a hard maximum
++in hours. The owner still selects those values. Retain one-hour renewable
++part URLs capped by remaining reservation life, with no renewal extension.
++Existing expiry columns suffice; ingress/multipart cleanup must share the
++hard deadline. The branch currently still has the one-hour reservation cap.
++
++For the Solid writer: single-part renewal after claim is repaired on
++8d3aef46, not on main or staging. The one-hour ceiling remains. A renewal
++racing finalize can still return 500 and must be followed by a state re-read
++before retrying; preserve receipts and do not infer upload failure. No direct
++message was sent and no Solid source was edited.
++
++Final local PostgreSQL evidence: the standard command timed out with exit
++143 after 49 of 53 files completed. The interrupted file and three unstarted
++files passed in a required-mode continuation (38 tests); all 53 files
++completed across both runs without assertion failures. The standard command
++did not pass and the remote gate remains owed. Its four-file continuation
++inventory is preserved under the lane's
++`docs/api-next/evidence/video-execution-2026-09-05/`, with the full qualification
++in `docs/api-next/video-execution-checkpoint-2026-09-05.md`.

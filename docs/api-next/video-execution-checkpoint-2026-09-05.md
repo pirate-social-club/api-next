@@ -89,8 +89,11 @@ The full unit/workerd rerun log is
 `/tmp/api-video-execution-tests-retry-20260905.log`. PostgreSQL logs are
 `/tmp/api-video-execution-postgres-20260905.log` and
 `/tmp/api-video-execution-postgres-continuation-20260905.log`; the exact
-remaining-file inventory is
-`/tmp/api-video-execution-postgres-remaining-20260905.json`.
+remaining-file inventory is preserved in
+[postgres-continuation-files.json](evidence/video-execution-2026-09-05/postgres-continuation-files.json),
+copied byte-for-byte from `/tmp/api-video-execution-postgres-remaining-20260905.json`
+except for a final newline. The logs themselves remain temporary; this note
+does not claim that their raw output is durably archived.
 
 The local harness used a dedicated `api-video-execution-host-pg17` container
 on port 55439. Published Docker port connections reset, so the documented
