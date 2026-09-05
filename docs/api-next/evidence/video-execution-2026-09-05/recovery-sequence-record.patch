@@ -1,0 +1,32 @@
+--- a/tasks/records/api-video-execution-completion.md
++++ b/tasks/records/api-video-execution-completion.md
+@@ -454,3 +454,29 @@
+ continues to fail closed rather than equating transport failure with absence.
+ Runner/class/Wrangler composition and provider enablement remain outstanding;
+ no live migration, provider call or deployment occurred.
++
++## Recovery sequence fence — 2026-09-05
++
++Commit 66f6bc7bcdd091a999e62c66984fbce905cdaaed adds an observed event-sequence
++fence to failure writes from both sweep recovery and Queue exhaustion. The
++store reads the sequence, compares it under a row lock and in the update
++predicate, and asserts one changed row. The new PostgreSQL race test advances
++the event during status inspection without changing revision identities and
++proves that the stale failure cannot overwrite the newer state. Check and the
++full test suite passed; final TypeScript and six focused PostgreSQL cases
++passed. The full PostgreSQL gate was not rerun for this follow-up.
++
++The supposed shared missing-instance classifier is a type alias, not a
++production implementation. Both concrete compositions pass always-false.
++The current official local binding rewrites every status error to
++instance.not_found, so an error-message match is not accepted as absence
++proof. A verified production error contract or authenticated explicit-absence
++lookup is required. No speculative classifier or live provider query landed.
++
++The Workflow class and both Wrangler binding declarations remain pending the
++runner tranche; extend the binding-contract assertions when those land.
++Recovery status reads are bounded and rotated per tick but remain a scaling
++cost. A Queue message can reach the DLQ while the sweep later recovers its
++row; operators must inspect current PostgreSQL authority before interpreting
++that transport message as a submission failure. The adapter split, per-job
++deadlines and sole decide-and-publish writer remain the next runner work.

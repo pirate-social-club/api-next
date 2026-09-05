@@ -2,6 +2,10 @@
 
 ## Recovery review follow-up — 2026-09-05
 
+Preserved as `66f6bc7bcdd091a999e62c66984fbce905cdaaed`. The
+[record amendment](evidence/video-execution-2026-09-05/recovery-sequence-record.patch)
+is pending the active control-plane writers; recheck applicability before use.
+
 Failure writes now require the observed submission event sequence, exposed by
 the PostgreSQL record loader. Both sweep recovery and Queue launch exhaustion
 pass that sequence. The store checks it under its row lock and in the update
