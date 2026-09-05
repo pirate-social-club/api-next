@@ -273,3 +273,57 @@ role when the credential work is concluded. The provider role must not acquire
 object ownership during that cleanup window. The control-plane checkout had
 another active writer at this checkpoint, so this receipt is preserved on the
 owning lane pending task-record reconciliation.
+
+## Proposed in-place reconstruction, pending approach sign-off
+
+The owner-requested read-only inventory at 2026-09-05T18:09:15.139Z used the
+existing operator credential and revalidated the entire 0109 ledger. The
+operator has CREATE inside api_next and effective ownership of all 1,204
+relation objects, 362 routines and 660 types observed there. No operators,
+operator classes/families, collations, conversions, text-search configuration,
+dictionary, parser/template or extended statistics objects were found in that
+schema. This supports an in-place proposal; it is not a DROP plan or proof of
+complete dependency safety. Relation counts include indexes and other objects,
+not just tables. Ownership digest is
+01c4538ed6a4006d20c53f1418138a9e00fd63811d19054594097b68a6ab7e00.
+
+The inventory read 5,933 effective ACL entries, zero explicit column ACLs and
+two global-or-schema default-ACL records. It found PUBLIC entries for 355
+routine grants and 660 type grants, but none for relations or schema. These
+are grants, not proof that anonymous application requests can execute SQL.
+ACL digest is 763b7deba9e3711a2d589149ce14dce9c95b5ec0c25426e85766e09297654562;
+default-ACL digest is
+f0973701f1b93a794190b0a16ab24126ff6bda647a0d4476f6a00f9d75b2329d.
+The read-only command is `bun scripts/staging-persona-inplace-inventory.ts
+--read-only`, with the existing operator secret supplied through Infisical.
+It outputs summaries/digests rather than a reusable grant replay manifest.
+
+Installed extensions are btree_gist 1.8 in public, hypopg 1.4.2 in
+pscale_extensions and plpgsql 1.0 in pg_catalog. None is effectively owned by
+the operator and all remain outside the proposed destruction scope. The
+inventory rolled back; provider-to-SQL identity and a maintained fence were
+not re-established by this observation.
+
+The proposed mechanism preserves the api_next schema object, ownership and
+schema-level ACL/default-ACL state. It inventories and removes supported owned
+objects inside it, replays the exact 0001–0119 chain, and verifies the result
+within one transaction. It must reject unknown object classes and any external
+cascade before removal. Objects recreated by migrations lose their old ACLs;
+reviewed grants must be reconciled with the new migrations, not replayed blindly.
+Default privileges survive schema preservation and must be reviewed for their
+effect on every recreated object. Writer fencing remains outside this transaction
+and must survive every failure; runtime access resumes only after verification.
+
+The current migration CLI opens its own connection and transaction. Running
+object deletion in one connection and then invoking that CLI would not satisfy
+atomicity. Implementation requires a reviewed common transaction boundary for
+deletion, repository migration logic, verification and grant reconciliation.
+Tests must prove schema identity preservation, full rollback of old populated
+state on replay or verification failure, exact ledger/baseline and empty new
+identity state, extension/unrelated-schema preservation, and continued runtime
+denial. Verified provider recovery and isolated rehearsal still precede any
+live destruction. No in-place executor is implemented or authorized here.
+
+The temporary maintenance key will expire without renewal or promotion. No
+additional privilege request is part of this proposal. Production HNS rollout
+state is outside this lane and was not rechecked in this inventory.
