@@ -227,6 +227,7 @@ TRUNCATE TABLE
   "media_video_enrichment_outbox",
   "media_video_original_sounds",
   "media_video_publication_decisions",
+  "media_video_publication_wakeups",
   "media_video_reservation_command_replays",
   "media_video_review_holds",
   "media_video_revisions",

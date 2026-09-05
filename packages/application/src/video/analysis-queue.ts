@@ -154,7 +154,7 @@ export async function consumeVideoAnalysisQueueMessage(
     prior.state.creationRevision !== existing.creationRevision ||
     prior.state.videoRevision !== existing.videoRevision ||
     prior.state.status !== "processing" ||
-    prior.state.decision !== null
+    (prior.state.decision !== null && prior.state.phase !== "publish")
   )
     return { disposition: "ack" };
   const claimed = await dependencies.outbox.claim(existing.effectIdentity, dependencies.workerId);
@@ -172,7 +172,10 @@ export async function consumeVideoAnalysisQueueMessage(
     // Superseded intents cannot launch. The sweep also checks current authority.
     return { disposition: "ack" };
   }
-  if (authority.state.decision !== null || authority.state.status !== "processing") {
+  if (
+    (authority.state.decision !== null && authority.state.phase !== "publish") ||
+    authority.state.status !== "processing"
+  ) {
     // PostgreSQL outcomes outlive the provider's instance-retention period.
     return { disposition: "ack" };
   }
@@ -198,7 +201,8 @@ export async function consumeVideoAnalysisQueueMessage(
         await dependencies.runtime.store.recordProcessingFailure({
           submission: authority.state,
           observedEventSequence: authority.eventSequence,
-          failureCode: "transform_failed",
+          failureCode:
+            authority.state.phase === "publish" ? "publication_failed" : "transform_failed",
           evidenceRef: `video-workflow-launch-exhausted:${instanceId}`,
         });
       }

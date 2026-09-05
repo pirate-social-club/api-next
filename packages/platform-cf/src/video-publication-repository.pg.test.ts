@@ -15,6 +15,7 @@ import {
   VIDEO_MULTIPART_PART_SIZE_BYTES,
   type VideoPublicationServices,
 } from "../../application/src/video/publication.ts";
+import { dispatchVideoPublicationWakeups } from "../../application/src/video/publication-wakeup.ts";
 import { recoverVideoWorkflowLaunches } from "../../application/src/video/workflow-recovery.ts";
 import {
   attachVideoDecision,
@@ -33,6 +34,7 @@ import { createActivePersonaFixture } from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { makeControlPlaneVideoAnalysisOutboxRepository } from "./video-analysis-outbox-repository.ts";
 import { makeControlPlaneVideoPublicationStore } from "./video-publication-repository.ts";
+import { makeVideoPublicationWakeupStore } from "./video-publication-wakeup-repository.ts";
 import { makeVideoSealedSourceVerifier } from "./video-sealed-source-verifier.ts";
 import { makeControlPlaneVideoStageFactStore } from "./video-stage-fact-repository.ts";
 
@@ -1487,4 +1489,113 @@ suite("video source seal authority", () => {
       expect(heads).toBe(5);
     });
   });
+});
+
+suite("video publication wakeup delivery", () => {
+  for (const disposition of [
+    "present",
+    "terminal",
+    "missing",
+    "lost-response",
+    "superseded",
+  ] as const) {
+    test(`drill 4 publication wakeup: ${disposition}`, async () => {
+      await fixture(async (_admin, connection) => {
+        const { layer, store, finalized } = await finalizedFixture(connection);
+        const outbox = makeControlPlaneVideoAnalysisOutboxRepository(layer);
+        const identity = `video-analysis:${operationId}:v1:c1`;
+        const claim = await outbox.claim(identity, "wakeup-fixture");
+        if (claim === null) throw new Error("missing claim");
+        await outbox.markLaunched(claim, `vaw-${"a".repeat(64)}`);
+        const analysis = { ...trustedAnalysis(), mediaSafety: "review_required" as const };
+        const decision = decideOriginalAudioVideo({
+          state: finalized.state,
+          analysis,
+          canonicalCaptionSha256: null,
+          decidedAt: "2026-09-05T00:00:00Z",
+        });
+        const held = await store.commitAnalysisDecision({
+          submission: finalized.state,
+          analysis,
+          decision,
+          nextState: attachVideoDecision(finalized.state, analysis, decision),
+        });
+        const approval = {
+          submission: held.state,
+          actor: { kind: "user" as const, userId: actor },
+          expectedCreationRevision: 1,
+          action: { kind: "approve" as const, hold: "safety" as const, evidenceRef: null },
+          endpointTemplate: "/moderation/media-post-submissions/:submissionId/actions",
+          idempotencyKey: "wakeup-approval",
+          requestHash: "8".repeat(64),
+          responseBytes,
+          responseSha256,
+        };
+        await store.moderate(approval);
+        await store.moderate(approval);
+        const wakeups = makeVideoPublicationWakeupStore(layer);
+        expect(await wakeups.listPending(10)).toHaveLength(1);
+        if (disposition === "superseded") {
+          const current = await store.getSubmissionByOperation({ submissionId, operationId });
+          if (!current) throw new Error("missing approved submission");
+          const failed = await store.recordProcessingFailure({
+            submission: current.state,
+            observedEventSequence: current.eventSequence,
+            failureCode: "publication_failed",
+            evidenceRef: "publication:fixture",
+          });
+          await store.retryTechnical({
+            submission: failed.state,
+            endpointTemplate: "/media-post-submissions/:submissionId/retry",
+            idempotencyKey: "wakeup-retry",
+            requestHash: "9".repeat(64),
+            responseBytes,
+            responseSha256,
+          });
+          expect(await wakeups.listPending(10)).toHaveLength(2);
+        }
+        let notifications = 0;
+        let lost = disposition === "lost-response";
+        const dispatcher = {
+          wakeups,
+          outbox,
+          store,
+          launcher: {
+            inspect: async () => ({
+              state:
+                disposition === "terminal" || disposition === "missing"
+                  ? disposition
+                  : ("present" as const),
+              status: "complete",
+            }),
+            notify: async (_identity: string, _continuation: number, actionId: string) => {
+              notifications++;
+              expect(actionId).toBe(`video-moderation:${actor}:wakeup-approval`);
+              if (lost) {
+                lost = false;
+                throw new Error("lost notify response");
+              }
+            },
+          },
+        };
+        const result = await dispatchVideoPublicationWakeups(dispatcher);
+        if (disposition === "terminal" || disposition === "missing") {
+          expect(result.continued).toBe(1);
+          expect((await outbox.get(identity))?.continuation).toBe(1);
+          expect((await outbox.get(identity))?.state).toBe("pending");
+          expect(notifications).toBe(0);
+        } else if (disposition === "superseded") {
+          expect(notifications).toBe(0);
+          expect((await wakeups.listPending(10))[0]?.effectIdentity).toBe(
+            `video-analysis:${operationId}:v1:c2`,
+          );
+        } else {
+          expect(result.failed).toBe(disposition === "lost-response" ? 1 : 0);
+          await dispatchVideoPublicationWakeups(dispatcher);
+          expect(await wakeups.listPending(10)).toHaveLength(0);
+          expect(notifications).toBe(disposition === "lost-response" ? 2 : 1);
+        }
+      });
+    });
+  }
 });

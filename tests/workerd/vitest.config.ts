@@ -5,6 +5,14 @@ import { unstable_readConfig } from "wrangler";
 // Workspace packages resolve to source so the workerd pool bundles one
 // program for both the worker main and the test modules.
 const alias = {
+  "@pirate/application/video/publication-wakeup": new URL(
+    "../../packages/application/src/video/publication-wakeup.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/video-publication-wakeup-repository": new URL(
+    "../../packages/platform-cf/src/video-publication-wakeup-repository.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/application/video/stage-facts": new URL(
     "../../packages/application/src/video/stage-facts.ts",
     import.meta.url,

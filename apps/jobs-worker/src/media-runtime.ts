@@ -1,4 +1,5 @@
 import type { ControlPlaneDb, ControlPlaneError } from "@pirate/application";
+import { dispatchVideoPublicationWakeups } from "@pirate/application/video/publication-wakeup";
 import { recoverVideoWorkflowLaunches } from "@pirate/application/video/workflow-recovery";
 import {
   type CloudflareMediaWorkflowBinding,
@@ -12,6 +13,7 @@ import {
   type VideoWorkflowStatusFetch,
 } from "@pirate/platform-cf/video-analysis-workflow-cloudflare";
 import { makeControlPlaneVideoPublicationStore } from "@pirate/platform-cf/video-publication-repository";
+import { makeVideoPublicationWakeupStore } from "@pirate/platform-cf/video-publication-wakeup-repository";
 import type { Layer } from "effect";
 import {
   dispatchEligibleMediaOutbox,
@@ -102,7 +104,13 @@ export function makeMediaMaintenance(
   return () =>
     runMediaMaintenance({
       dispatch: async () => {
-        if (videoRecovery !== null) await recoverVideoWorkflowLaunches(videoRecovery);
+        if (videoRecovery !== null) {
+          await recoverVideoWorkflowLaunches(videoRecovery);
+          await dispatchVideoPublicationWakeups({
+            ...videoRecovery,
+            wakeups: makeVideoPublicationWakeupStore(runtime),
+          });
+        }
         const [song, video] = await Promise.all([
           dispatchEligibleMediaOutbox(source, queue),
           videoSource === null

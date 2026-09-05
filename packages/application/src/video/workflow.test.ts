@@ -211,6 +211,18 @@ function fixture() {
     advance: (ms: number) => {
       now += ms;
     },
+    approve: () => {
+      if (record.state.status !== "manual_review" || record.state.decision === null)
+        throw new Error("not held");
+      change({
+        ...record.state,
+        status: "processing",
+        phase: "publish",
+        reviewReasons: [],
+        approvedHolds: ["safety"],
+        decision: { ...record.state.decision, outcome: { kind: "publish" } },
+      });
+    },
   };
 }
 
@@ -332,3 +344,43 @@ test("database failure after accepted start propagates and replay observes the o
   });
   expect(f.calls.starts).toBe(3);
 });
+
+for (const timing of ["before-wait", "entering-wait"] as const) {
+  test(`drill 4 executor: approval ${timing} resumes only from PostgreSQL authority`, async () => {
+    const f = fixture();
+    const moderate = f.runtime.analysisProviders.moderate;
+    Object.assign(f.runtime.analysisProviders, {
+      moderate: async (input: Parameters<typeof moderate>[0]) => ({
+        ...(await moderate(input)),
+        mediaSafety: "review_required",
+      }),
+    });
+    let approved = false;
+    const approve = () => {
+      if (!approved) {
+        f.approve();
+        approved = true;
+      }
+    };
+    const originalDo = f.step.do.bind(f.step);
+    Object.assign(f.step, {
+      do: async <T>(name: string, run: () => Promise<T>) => {
+        const result = await originalDo(name, run);
+        if (name === "decide-and-publish" && timing === "before-wait") approve();
+        return result;
+      },
+      waitForEvent: async () => {
+        if (timing === "entering-wait") approve();
+        return { payload: { effectIdentity: f.identity, actionId: "moderation:approved" } };
+      },
+    });
+    expect(await runVideoAnalysisWorkflow(f.identity, f.step, f.runtime)).toEqual({
+      status: "published",
+    });
+    expect(await runVideoAnalysisWorkflow(f.identity, f.step, f.runtime)).toEqual({
+      status: "published",
+    });
+    expect(f.calls.starts).toBe(3);
+    expect(f.calls.publications).toBe(1);
+  });
+}

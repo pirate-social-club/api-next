@@ -154,3 +154,17 @@ CREATE INDEX media_video_analysis_outbox_eligible_idx
   ON media_video_analysis_outbox (created_at, effect_identity)
   WHERE state IN ('pending', 'retry_wait')
     OR (state = 'launched' AND instance_missing_at IS NOT NULL);
+
+-- Publication wakeups are durable events, not a second analysis outbox kind.
+CREATE TABLE media_video_publication_wakeups (
+  wakeup_identity TEXT PRIMARY KEY CHECK (btrim(wakeup_identity) <> ''),
+  effect_identity TEXT NOT NULL REFERENCES media_video_analysis_outbox(effect_identity),
+  action_id TEXT NOT NULL CHECK (btrim(action_id) <> ''),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  last_attempt_at TIMESTAMPTZ,
+  delivered_at TIMESTAMPTZ,
+  UNIQUE (effect_identity, action_id)
+);
+CREATE INDEX media_video_publication_wakeups_pending_idx
+  ON media_video_publication_wakeups (last_attempt_at NULLS FIRST, created_at, wakeup_identity)
+  WHERE delivered_at IS NULL;

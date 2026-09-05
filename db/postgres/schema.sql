@@ -24373,6 +24373,17 @@ CREATE TABLE media_video_publication_decisions (
     CONSTRAINT media_video_publication_decisions_outcome_check CHECK ((outcome = ANY (ARRAY['publish'::text, 'review'::text, 'block'::text])))
 );
 
+CREATE TABLE media_video_publication_wakeups (
+    wakeup_identity text NOT NULL,
+    effect_identity text NOT NULL,
+    action_id text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    last_attempt_at timestamp with time zone,
+    delivered_at timestamp with time zone,
+    CONSTRAINT media_video_publication_wakeups_action_id_check CHECK ((btrim(action_id) <> ''::text)),
+    CONSTRAINT media_video_publication_wakeups_wakeup_identity_check CHECK ((btrim(wakeup_identity) <> ''::text))
+);
+
 CREATE TABLE media_video_reservation_command_replays (
     actor_account_id text NOT NULL,
     actor_persona_id text NOT NULL,
@@ -28698,6 +28709,12 @@ ALTER TABLE ONLY media_video_original_sounds
 ALTER TABLE ONLY media_video_publication_decisions
     ADD CONSTRAINT media_video_publication_decisions_pkey PRIMARY KEY (submission_id, creation_revision);
 
+ALTER TABLE ONLY media_video_publication_wakeups
+    ADD CONSTRAINT media_video_publication_wakeups_effect_identity_action_id_key UNIQUE (effect_identity, action_id);
+
+ALTER TABLE ONLY media_video_publication_wakeups
+    ADD CONSTRAINT media_video_publication_wakeups_pkey PRIMARY KEY (wakeup_identity);
+
 ALTER TABLE ONLY media_video_reservation_command_replays
     ADD CONSTRAINT media_video_reservation_command_replays_pkey PRIMARY KEY (actor_account_id, actor_persona_id, endpoint_template, idempotency_key);
 
@@ -29757,6 +29774,8 @@ CREATE UNIQUE INDEX media_transcript_revision_lineage_uidx ON media_transcript_a
 CREATE INDEX media_upload_reservations_expiry_idx ON media_upload_reservations USING btree (state, expires_at, reservation_id) WHERE (state = ANY (ARRAY['issued'::text, 'claimed'::text]));
 
 CREATE INDEX media_video_analysis_outbox_eligible_idx ON media_video_analysis_outbox USING btree (created_at, effect_identity) WHERE ((state = ANY (ARRAY['pending'::text, 'retry_wait'::text])) OR ((state = 'launched'::text) AND (instance_missing_at IS NOT NULL)));
+
+CREATE INDEX media_video_publication_wakeups_pending_idx ON media_video_publication_wakeups USING btree (last_attempt_at NULLS FIRST, created_at, wakeup_identity) WHERE (delivered_at IS NULL);
 
 CREATE INDEX media_video_transform_attempt_reconciliation_idx ON media_video_transform_attempts USING btree (submission_id, video_revision, creation_revision) WHERE (reconciliation_state = ANY (ARRAY['pending'::text, 'required'::text]));
 
@@ -32378,6 +32397,9 @@ ALTER TABLE ONLY media_video_original_sounds
 
 ALTER TABLE ONLY media_video_publication_decisions
     ADD CONSTRAINT media_video_publication_decis_submission_id_analysis_revis_fkey FOREIGN KEY (submission_id, analysis_revision) REFERENCES media_video_analyses(submission_id, analysis_revision);
+
+ALTER TABLE ONLY media_video_publication_wakeups
+    ADD CONSTRAINT media_video_publication_wakeups_effect_identity_fkey FOREIGN KEY (effect_identity) REFERENCES media_video_analysis_outbox(effect_identity);
 
 ALTER TABLE ONLY media_video_reservation_command_replays
     ADD CONSTRAINT media_video_reservation_command_replays_reservation_id_fkey FOREIGN KEY (reservation_id) REFERENCES media_upload_reservations(reservation_id);

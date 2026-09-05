@@ -1151,8 +1151,11 @@ export function makeControlPlaneVideoPublicationStore(
                 current.state.videoRevision !== input.submission.videoRevision ||
                 current.state.analysisRevision !== input.submission.analysisRevision ||
                 current.state.status !== "processing" ||
-                current.state.phase !== "analysis" ||
-                current.state.decision !== null
+                !(
+                  (current.state.phase === "analysis" && current.state.decision === null) ||
+                  (current.state.phase === "publish" &&
+                    current.state.analysis?.videoRevision === current.state.videoRevision)
+                )
               )
                 throw new Error("video terminal reconciliation fence rejected");
               const attempts = yield* tx.execute<Row>({
@@ -1185,7 +1188,11 @@ export function makeControlPlaneVideoPublicationStore(
                       row.reconciliation_state !== "resolved" &&
                       row.provider_job_phase === "submitting",
                   );
-              if (!capped && uncertain.length === 0 && attempts.rows.length > 0)
+              if (
+                !capped &&
+                uncertain.length === 0 &&
+                (attempts.rows.length > 0 || current.state.phase === "publish")
+              )
                 return "continue" as const;
               for (const attempt of uncertain) {
                 yield* tx.execute({
@@ -1571,6 +1578,12 @@ export function makeControlPlaneVideoPublicationStore(
                   readonly: false,
                 });
               }
+              if (publicationOnly)
+                yield* insertPublicationWakeup(
+                  tx,
+                  next,
+                  `video-publication-retry:${current.state.operationId}:${input.idempotencyKey}`,
+                );
               yield* storeCommand(tx, {
                 state: current.state,
                 actorAccountId: current.state.actorAccountId,
@@ -1753,6 +1766,7 @@ export function makeControlPlaneVideoPublicationStore(
                   ? ",review_ref=NULL,review_reason_code=NULL,held_revision=NULL"
                   : "",
               });
+              if (allApproved) yield* insertPublicationWakeup(tx, next, actionId);
               yield* storeCommand(tx, {
                 state: current.state,
                 actorAccountId: input.actor.userId,
@@ -1768,6 +1782,39 @@ export function makeControlPlaneVideoPublicationStore(
         }),
       ),
   };
+}
+
+function insertPublicationWakeup(
+  tx: Pick<ControlPlaneTransaction, "execute">,
+  state: VideoSubmissionState,
+  actionId: string,
+) {
+  return Effect.gen(function* () {
+    if (state.video === null || state.analysis === null || state.phase !== "publish")
+      throw new Error("video publication wakeup authority rejected");
+    const identity = `video-analysis:${state.operationId}:v${state.videoRevision}:c${state.creationRevision}`;
+    yield* tx.execute({
+      label: "video-publication.wakeup-intent",
+      readonly: false,
+      text: `INSERT INTO media_video_analysis_outbox (effect_identity,submission_id,operation_id,video_revision,creation_revision,canonical_video_sha256)
+        VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`,
+      values: [
+        identity,
+        state.submissionId,
+        state.operationId,
+        state.videoRevision,
+        state.creationRevision,
+        state.video.canonicalSha256,
+      ],
+    });
+    yield* tx.execute({
+      label: "video-publication.wakeup",
+      readonly: false,
+      text: `INSERT INTO media_video_publication_wakeups (wakeup_identity,effect_identity,action_id)
+        VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`,
+      values: [`video-publication:${identity}:${actionId}`, identity, actionId],
+    });
+  });
 }
 
 function publishTransaction(input: VideoPublishBundle) {

@@ -121,7 +121,7 @@
     "0118_hns_community_root_activation.sql": "f49062df910eb1fe89c44a1ac0bcad08857ab3d7978fcbd7480a084dc90838f2",
     "0119_hns_root_health_renewal.sql": "1870db49b6e76c6cd748889e8bdb2a64a2283e2af0515b14c65f1f89d45cc73a",
     "0120_hns_root_health_renewal_recovery.sql": "c4cf5757d3c6951502186637398504df7b9be02ecbff1b7c30819bb226ada399",
-    "0120_video_workflow_execution.sql": "ba112a705456c5e94a0a7308beaa12662c84f7444069633a1e8acc6f8931d428",
+    "0120_video_workflow_execution.sql": "ab4e3ae733b74d58be2607bd8196b41d6eb033415aec0ac298e005042bae97a0",
     "0121_hns_imported_inventory_renewal.sql": "3d83fb50b91572af79780bd80deff588aa4d5a8b00f14c3f410793d57bca2977"
   }
 }

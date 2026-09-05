@@ -13,9 +13,13 @@ import {
 export type { VideoWorkflowStatusFetch } from "./video-workflow-status-api.ts";
 
 export interface VideoAnalysisWorkflowBinding {
-  readonly get: (
-    id: string,
-  ) => Promise<{ readonly status: () => Promise<{ readonly status: string }> }>;
+  readonly get: (id: string) => Promise<{
+    readonly status: () => Promise<{ readonly status: string }>;
+    readonly sendEvent?: (event: {
+      type: "video-publication";
+      payload: { effectIdentity: string; actionId: string };
+    }) => Promise<void>;
+  }>;
   readonly createBatch: (
     instances: readonly {
       readonly id: string;
@@ -68,6 +72,23 @@ export function makeCloudflareVideoAnalysisWorkflowLauncher(
         await binding.createBatch([{ id, params: { effectIdentity: logical } }]),
         "Video Workflow createBatch returned an unexpected instance count",
       );
+    },
+    notify: async (
+      effectIdentity: string,
+      continuation: number,
+      actionId: string,
+    ): Promise<void> => {
+      const id = await cloudflareDigestWorkflowId(
+        "vaw",
+        logicalIdentity(effectIdentity, continuation),
+      );
+      const instance = await binding.get(id);
+      if (instance.sendEvent === undefined)
+        throw new Error("video Workflow event transport unavailable");
+      await instance.sendEvent({
+        type: "video-publication",
+        payload: { effectIdentity, actionId },
+      });
     },
     inspect,
     get: async (identity: string, continuation = 0) =>

@@ -107,3 +107,32 @@ describe("video Workflow transport", () => {
     await expect(launcher.create(logical)).rejects.toThrow("unexpected instance count");
   });
 });
+
+test("publication notify uses the current continuation id and identity-only event", async () => {
+  const gets: string[] = [];
+  const events: unknown[] = [];
+  const launcher = makeCloudflareVideoAnalysisWorkflowLauncher(
+    {
+      createBatch: async () => [],
+      get: async (id) => {
+        gets.push(id);
+        return {
+          status: async () => ({ status: "waiting" }),
+          sendEvent: async (event) => {
+            events.push(event);
+          },
+        };
+      },
+    },
+    () => false,
+  );
+  const identity = "video-analysis:operation:v1:c1";
+  await launcher.notify(identity, 1, "video-moderation:moderator:action");
+  expect(gets).toEqual([await launcher.instanceId(identity, 1)]);
+  expect(events).toEqual([
+    {
+      type: "video-publication",
+      payload: { effectIdentity: identity, actionId: "video-moderation:moderator:action" },
+    },
+  ]);
+});

@@ -343,9 +343,13 @@ export function makeControlPlaneVideoAnalysisOutboxRepository(
               AND s.video_revision=media_video_analysis_outbox.video_revision
               AND (s.status='processing' OR (s.status='processing_failed'
                 AND media_video_analysis_outbox.state='launching' AND launch_attempts=3)))
-          AND NOT EXISTS (SELECT 1 FROM media_video_publication_decisions d
+          AND (NOT EXISTS (SELECT 1 FROM media_video_publication_decisions d
             WHERE d.submission_id=media_video_analysis_outbox.submission_id
               AND d.creation_revision=media_video_analysis_outbox.creation_revision)
+            OR EXISTS (SELECT 1 FROM media_post_submissions s
+              WHERE s.submission_id=media_video_analysis_outbox.submission_id
+                AND s.creation_revision=media_video_analysis_outbox.creation_revision
+                AND s.status='processing' AND s.phase='publish'))
           ORDER BY updated_at,effect_identity LIMIT $1`,
           values: [limit],
           readonly: true,
