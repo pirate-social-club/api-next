@@ -8,6 +8,7 @@ import {
 } from "../../../scripts/postgres-test-baseline.ts";
 import {
   createVideoSubmission,
+  projectVideoSubmission,
   renewVideoUploadParts,
   reserveVideoUpload,
   VIDEO_MULTIPART_PART_SIZE_BYTES,
@@ -885,6 +886,110 @@ suite("video publication PostgreSQL", () => {
         posterSha256: analysis.frames.extracted[0].sha256,
         originalSoundId: publication.originalSound.originalSoundId,
       });
+    });
+  });
+  test("attempt reconciliation atomically fences technical and poster retries and their projection", async () => {
+    await fixture(async (admin, connection) => {
+      const { store, finalized } = await finalizedFixture(connection);
+      await admin.query(
+        `INSERT INTO media_video_transform_attempts
+        (request_id,submission_id,operation_id,video_revision,creation_revision,analysis_revision,
+         canonical_video_sha256,capability,submitted_at_ms,runtime_deadline_ms,provider_job_id,provider_job_phase)
+        VALUES ('uncertain-task',$1,$2,1,1,1,$3,'frames',0,10000,'provider-task','submitting')`,
+        [submissionId, operationId, videoSha256],
+      );
+      const reconciled = await store.enterAttemptReconciliation({
+        submission: finalized.state,
+        observedEventSequence: finalized.eventSequence,
+        requestId: "uncertain-task",
+        state: "required",
+        observation: { status: "not_found", observedAt: "2026-09-05T00:00:00Z" },
+      });
+      expect(reconciled.state.reconciliationRequired).toBe(true);
+      const projection = projectVideoSubmission(reconciled);
+      expect(projection.status).toBe("processing_failed");
+      expect(projection).toMatchObject({ retryable: false });
+      const attempt = await admin.query(
+        "SELECT reconciliation_state,reconciliation_evidence_ref FROM media_video_transform_attempts WHERE request_id='uncertain-task'",
+      );
+      expect(attempt.rows[0]).toEqual({
+        reconciliation_state: "required",
+        reconciliation_evidence_ref: "video-submission-unconfirmed:uncertain-task",
+      });
+      const command = {
+        submission: reconciled.state,
+        endpointTemplate: "/media-post-submissions/:submissionId/retry",
+        idempotencyKey: "retry-blocked",
+        requestHash: "1".repeat(64),
+        responseBytes,
+        responseSha256,
+      };
+      await expect(store.retryTechnical(command)).rejects.toThrow("video technical retry rejected");
+      // Even a poster-specific failure must retain the independent uncertainty fence.
+      await admin.query(
+        `UPDATE media_post_submissions SET failure_code='poster_undecodable',
+        video_state_snapshot=jsonb_set(video_state_snapshot,'{failureCode}','"poster_undecodable"'),
+        event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE submission_id=$1`,
+        [submissionId],
+      );
+      await expect(store.retryPoster({ ...command, posterTimestampMs: 2000 })).rejects.toThrow(
+        "poster retry rejected",
+      );
+      const current = await store.getSubmissionByOperation({ submissionId, operationId });
+      expect(current?.state.creationRevision).toBe(1);
+      expect(current?.state.retryCount).toBe(0);
+      expect(current?.state.reconciliationRequired).toBe(true);
+    });
+  });
+
+  test("reconciliation rolls back the attempt if its submission snapshot write fails", async () => {
+    await fixture(async (admin, connection) => {
+      const { store, finalized } = await finalizedFixture(connection);
+      await admin.query(
+        `INSERT INTO media_video_transform_attempts
+        (request_id,submission_id,operation_id,video_revision,creation_revision,analysis_revision,
+         canonical_video_sha256,capability,submitted_at_ms,runtime_deadline_ms,provider_job_id,provider_job_phase)
+        VALUES ('rollback-task',$1,$2,1,1,1,$3,'probe',0,10000,'provider-task','started')`,
+        [submissionId, operationId, videoSha256],
+      );
+      await admin.query(`CREATE FUNCTION reject_reconciliation_fixture() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'injected snapshot failure'; END $$`);
+      await admin.query(`CREATE TRIGGER reject_reconciliation_fixture BEFORE UPDATE ON media_post_submissions
+        FOR EACH ROW EXECUTE FUNCTION reject_reconciliation_fixture()`);
+      try {
+        await expect(
+          store.enterAttemptReconciliation({
+            submission: finalized.state,
+            observedEventSequence: finalized.eventSequence,
+            requestId: "rollback-task",
+            state: "required",
+            observation: { status: "workflow_terminal", observedAt: "2026-09-05T00:00:00Z" },
+          }),
+        ).rejects.toMatchObject({
+          _tag: "ControlPlaneStatementFailed",
+          sqlState: "P0001",
+          label: "video-publication.submission-update",
+        });
+      } finally {
+        await admin.query("DROP TRIGGER reject_reconciliation_fixture ON media_post_submissions");
+        await admin.query("DROP FUNCTION reject_reconciliation_fixture()");
+      }
+      const attempt = await admin.query(
+        "SELECT reconciliation_state,first_uncertainty_at FROM media_video_transform_attempts WHERE request_id='rollback-task'",
+      );
+      expect(attempt.rows[0]).toEqual({ reconciliation_state: "none", first_uncertainty_at: null });
+      const current = await store.getSubmissionByOperation({ submissionId, operationId });
+      expect(current?.eventSequence).toBe(finalized.eventSequence);
+      expect(current?.state.reconciliationRequired).toBe(false);
+      await expect(
+        store.enterAttemptReconciliation({
+          submission: finalized.state,
+          observedEventSequence: finalized.eventSequence - 1,
+          requestId: "rollback-task",
+          state: "required",
+          observation: { status: "workflow_terminal", observedAt: "2026-09-05T00:00:00Z" },
+        }),
+      ).rejects.toThrow("video reconciliation fence rejected");
     });
   });
 });

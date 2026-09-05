@@ -1,11 +1,76 @@
 # Video Workflow next tranche
 
+## Attempt reconciliation and stage storage — 2026-09-05
+
+Control-plane decision 1a5ffa728d928f904626b86374e95af992567598 authorizes
+amending the unmerged, unapplied 0120 before the pull request. The lane's
+ordinary inventory at edit time was 0110 through 0119 plus its reserved
+0120_video_workflow_execution.sql; no later file was present. The existing
+refusal guards remain. Checksums, schema baseline and reset inventory were
+regenerated. No migration was run against a deployed environment.
+
+The attempt owns reconciliation_state, first_uncertainty_at, last_observation
+and reconciliation_evidence_ref. States are none, pending, required and
+resolved; uncertainty requires an allocated provider identity in submitting
+or started, a structured observation and private evidence. The submission
+snapshot now carries reconciliationRequired. The reconciliation store updates
+the attempt and submission under one transaction and the observed event
+sequence, retaining the original uncertainty time. A failed snapshot write
+rolls the attempt back. It refuses attempts from another lineage or an already
+accepted capability. Reconciliation writes submission-unconfirmed evidence and
+a processing_failed snapshot with retryable false. Both retry commands and
+the projection enforce the snapshot fact; no public reason field was added.
+
+Historical snapshots missing the fact decode false because 0120 refuses
+historical attempts; malformed values fail closed. A database constraint also
+requires a true snapshot fact to agree with the non-retryable failure columns.
+The new media_video_stage_facts table keys immutable accepted JSON snapshots
+by submission, video revision, creation revision and stage, retaining analysis
+and adapter revisions. Its SQL bounds and first-winner behavior are tested.
+Stage-specific validation and the runtime fact writer/reader remain pending;
+a table alone is not accepted-stage execution evidence.
+
+Seventeen focused PostgreSQL tests passed with 124 assertions. The migration
+case initially exposed PostgreSQL CHECK's null semantics: a JSON null status
+could pass an incomplete predicate. Explicit JSON type checks now reject that
+case. The transaction fault injection asserts SQLSTATE P0001 at the snapshot
+update and proves the earlier attempt write rolled back. Both direct retry
+store calls are tested, including a poster-specific failure with the separate
+uncertainty fact retained. Existing publication and attempt drills also passed.
+Full check and ordinary test commands passed. The first full PostgreSQL run
+failed only because the foundation's explicit table list omitted the new
+stage-facts table. After correcting that inventory, all 14 foundation tests
+passed and the full command passed on rerun: 35 isolated and 343 general cases.
+The [validation inventory](evidence/video-execution-2026-09-05/reconciliation-validation.json)
+records command outcomes, summaries and log digests; raw temporary logs are
+not archived. Script-check found no issues. The local secret-boundary audit
+found no violations before preservation.
+
+The runner and sweep do not yet call the new reconciliation transaction. The
+next tranche must route terminated instances with unresolved provider attempts
+to it, implement safe resolution without clearing another attempt's retry
+fence, and enforce authority when persisting provider submission intent. The
+current attempt advance still fences its attempt binding, not the submission's
+current status under a shared row lock. Before enabling effects, test an old
+creation paused before submitting while an author retry advances creation:
+the old writer must be refused before issuing another provider start. The
+runner must recover a sealed result after R2 succeeds and the fact write fails;
+sharing a durable step does not make those effects atomic. The existing seal
+method HEADs a deterministic R2 key before fetching bytes, but observe first
+requires provider status/output descriptors, and probe metadata is only read
+from a temporary URL. The recovery drill must remove those descriptors and
+URLs too; an R2 HEAD-only success fixture does not establish complete recovery.
+Publication-only
+replacement instances must use a distinct logical identity and the same
+publication executor, skipping capability work when retained analysis matches.
+The class, bindings, provider composition and drills through the real
+entrypoint remain open. Video analysis remains disabled.
+
 ## Workers redirect correction — 2026-09-05
 
 Preserved as 914ef07ba49db615be61545a2fb98caadef99199. The
 [record amendment](evidence/video-execution-2026-09-05/workers-redirect-record.patch)
-is prepared while other control-plane writers are active. Recheck current
-HEAD, writer state and applicability before applying it.
+was applied in control-plane commit 1a5ffa7 and is historical; do not reapply.
 
 The previous authenticated lookup passed redirect error to global fetch.
 A new Workerd test using the real Request/fetch path and a local network stub

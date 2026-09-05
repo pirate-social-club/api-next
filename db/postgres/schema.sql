@@ -10839,6 +10839,14 @@ EXCEPTION WHEN OTHERS THEN
 END;
 $_$;
 
+CREATE FUNCTION media_video_stage_fact_immutable() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'video stage fact is immutable';
+END
+$$;
+
 CREATE FUNCTION moderation_platform_floor_preimage_v1(input_policy_revision_id text) RETURNS text
     LANGUAGE sql STABLE PARALLEL SAFE
     AS $$
@@ -23834,7 +23842,8 @@ CREATE TABLE media_post_submissions (
     CONSTRAINT media_post_submissions_submission_id_check CHECK ((btrim(submission_id) <> ''::text)),
     CONSTRAINT media_post_submissions_track_shape CHECK ((((media_kind = 'song'::text) AND (title IS NOT NULL) AND (btrim(title) <> ''::text) AND (char_length(title) <= 200) AND (song_type = ANY (ARRAY['original'::text, 'remix'::text])) AND (video_intent IS NULL) AND (caption IS NULL) AND (video_revision = 0) AND (poster_timestamp_ms IS NULL) AND (video_state_snapshot IS NULL)) OR ((media_kind = 'video'::text) AND (title IS NULL) AND (song_type IS NULL) AND (video_intent = 'original_audio'::text) AND ((caption IS NULL) OR (char_length(caption) <= 5000)) AND (audio_revision = 0) AND (lyrics_revision = 0) AND (current_terms_revision IS NULL) AND (current_lyrics_revision IS NULL) AND (bound_reference_asset_id IS NULL) AND (video_revision >= 0) AND (jsonb_typeof(video_state_snapshot) = 'object'::text) AND ((poster_timestamp_ms IS NULL) OR ((poster_timestamp_ms >= 0) AND (poster_timestamp_ms <= 179999)))))),
     CONSTRAINT media_post_submissions_workflow_replacement_sequence_check CHECK ((workflow_replacement_sequence >= 0)),
-    CONSTRAINT media_post_submissions_workflow_revision_check CHECK ((workflow_revision >= 0))
+    CONSTRAINT media_post_submissions_workflow_revision_check CHECK ((workflow_revision >= 0)),
+    CONSTRAINT media_video_submission_reconciliation_shape CHECK (((media_kind <> 'video'::text) OR (((NOT (video_state_snapshot ? 'reconciliationRequired'::text)) OR (jsonb_typeof((video_state_snapshot -> 'reconciliationRequired'::text)) = 'boolean'::text)) AND (((video_state_snapshot ->> 'reconciliationRequired'::text) IS DISTINCT FROM 'true'::text) OR ((status = 'processing_failed'::text) AND (retryable IS FALSE))))))
 );
 
 CREATE TABLE media_processing_attempts (
@@ -24424,6 +24433,23 @@ CREATE TABLE media_video_rights (
     CONSTRAINT media_video_rights_royalty_allocations_check CHECK (((royalty_allocations @> '[{"share_bps": 10000}]'::jsonb) AND (jsonb_array_length(royalty_allocations) = 1)))
 );
 
+CREATE TABLE media_video_stage_facts (
+    submission_id text NOT NULL,
+    video_revision bigint NOT NULL,
+    creation_revision bigint NOT NULL,
+    stage text NOT NULL,
+    analysis_revision bigint NOT NULL,
+    adapter_revision text NOT NULL,
+    fact_snapshot jsonb NOT NULL,
+    accepted_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT media_video_stage_facts_adapter_revision_check CHECK ((btrim(adapter_revision) <> ''::text)),
+    CONSTRAINT media_video_stage_facts_analysis_revision_check CHECK ((analysis_revision > 0)),
+    CONSTRAINT media_video_stage_facts_creation_revision_check CHECK ((creation_revision > 0)),
+    CONSTRAINT media_video_stage_facts_fact_snapshot_check CHECK (((jsonb_typeof(fact_snapshot) = 'object'::text) AND (octet_length((fact_snapshot)::text) <= 262144))),
+    CONSTRAINT media_video_stage_facts_stage_check CHECK ((stage = ANY (ARRAY['probe'::text, 'audio'::text, 'frames'::text, 'recognition'::text, 'safety'::text]))),
+    CONSTRAINT media_video_stage_facts_video_revision_check CHECK ((video_revision > 0))
+);
+
 CREATE TABLE media_video_stream_ingests (
     operation_id text NOT NULL,
     state text DEFAULT 'not_started'::text NOT NULL,
@@ -24454,8 +24480,13 @@ CREATE TABLE media_video_transform_attempts (
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     creation_revision bigint NOT NULL,
+    reconciliation_state text DEFAULT 'none'::text NOT NULL,
+    first_uncertainty_at timestamp with time zone,
+    last_observation jsonb,
+    reconciliation_evidence_ref text,
     CONSTRAINT media_video_transform_attempt_deadline CHECK ((runtime_deadline_ms > submitted_at_ms)),
     CONSTRAINT media_video_transform_attempt_provider_shape CHECK ((((provider_job_id IS NULL) AND (provider_job_phase IS NULL)) OR ((provider_job_id IS NOT NULL) AND (provider_job_phase IS NOT NULL)))),
+    CONSTRAINT media_video_transform_attempt_reconciliation_shape CHECK ((((reconciliation_state = 'none'::text) AND (first_uncertainty_at IS NULL) AND (last_observation IS NULL) AND (reconciliation_evidence_ref IS NULL)) OR ((reconciliation_state = ANY (ARRAY['pending'::text, 'required'::text, 'resolved'::text])) AND (provider_job_id IS NOT NULL) AND (provider_job_phase = ANY (ARRAY['submitting'::text, 'started'::text])) AND (first_uncertainty_at IS NOT NULL) AND (last_observation IS NOT NULL) AND (jsonb_typeof(last_observation) = 'object'::text) AND (last_observation ? 'status'::text) AND (last_observation ? 'observedAt'::text) AND (jsonb_typeof((last_observation -> 'observedAt'::text)) = 'string'::text) AND (btrim((last_observation ->> 'observedAt'::text)) <> ''::text) AND (jsonb_typeof((last_observation -> 'status'::text)) = 'string'::text) AND ((last_observation ->> 'status'::text) = ANY (ARRAY['not_found'::text, 'processing'::text, 'completed'::text, 'failed'::text, 'unavailable'::text, 'workflow_terminal'::text])) AND (reconciliation_evidence_ref IS NOT NULL) AND (btrim(reconciliation_evidence_ref) <> ''::text)))),
     CONSTRAINT media_video_transform_attempts_analysis_revision_check CHECK ((analysis_revision > 0)),
     CONSTRAINT media_video_transform_attempts_canonical_video_sha256_check CHECK ((canonical_video_sha256 ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT media_video_transform_attempts_capability_check CHECK ((capability = ANY (ARRAY['probe'::text, 'audio'::text, 'frames'::text]))),
@@ -24463,6 +24494,7 @@ CREATE TABLE media_video_transform_attempts (
     CONSTRAINT media_video_transform_attempts_operation_id_check CHECK ((btrim(operation_id) <> ''::text)),
     CONSTRAINT media_video_transform_attempts_provider_job_id_check CHECK (((provider_job_id IS NULL) OR (btrim(provider_job_id) <> ''::text))),
     CONSTRAINT media_video_transform_attempts_provider_job_phase_check CHECK (((provider_job_phase IS NULL) OR (provider_job_phase = ANY (ARRAY['allocated'::text, 'submitting'::text, 'started'::text])))),
+    CONSTRAINT media_video_transform_attempts_reconciliation_state_check CHECK ((reconciliation_state = ANY (ARRAY['none'::text, 'pending'::text, 'required'::text, 'resolved'::text]))),
     CONSTRAINT media_video_transform_attempts_request_id_check CHECK ((btrim(request_id) <> ''::text)),
     CONSTRAINT media_video_transform_attempts_submitted_at_ms_check CHECK ((submitted_at_ms >= 0)),
     CONSTRAINT media_video_transform_attempts_video_revision_check CHECK ((video_revision > 0))
@@ -28676,6 +28708,9 @@ ALTER TABLE ONLY media_video_revisions
 ALTER TABLE ONLY media_video_rights
     ADD CONSTRAINT media_video_rights_pkey PRIMARY KEY (submission_id);
 
+ALTER TABLE ONLY media_video_stage_facts
+    ADD CONSTRAINT media_video_stage_facts_pkey PRIMARY KEY (submission_id, video_revision, creation_revision, stage);
+
 ALTER TABLE ONLY media_video_stream_ingests
     ADD CONSTRAINT media_video_stream_ingests_pkey PRIMARY KEY (operation_id);
 
@@ -29721,6 +29756,8 @@ CREATE INDEX media_upload_reservations_expiry_idx ON media_upload_reservations U
 
 CREATE INDEX media_video_analysis_outbox_eligible_idx ON media_video_analysis_outbox USING btree (created_at, effect_identity) WHERE ((state = ANY (ARRAY['pending'::text, 'retry_wait'::text])) OR ((state = 'launched'::text) AND (instance_missing_at IS NOT NULL)));
 
+CREATE INDEX media_video_transform_attempt_reconciliation_idx ON media_video_transform_attempts USING btree (submission_id, video_revision, creation_revision) WHERE (reconciliation_state = ANY (ARRAY['pending'::text, 'required'::text]));
+
 CREATE INDEX megapot_drawing_observations_latest_idx ON megapot_drawing_observations USING btree (attestation_id, drawing_id, block_number DESC, observation_id);
 
 CREATE UNIQUE INDEX megapot_one_active_attestation_per_environment_uidx ON megapot_deployment_attestations USING btree (environment) WHERE (status = 'active'::text);
@@ -30532,6 +30569,8 @@ CREATE TRIGGER media_transcript_artifacts_append_only BEFORE DELETE OR UPDATE ON
 CREATE TRIGGER media_upload_reservations_active_persona BEFORE INSERT ON media_upload_reservations FOR EACH ROW EXECUTE FUNCTION require_active_author_persona();
 
 CREATE TRIGGER media_video_reservation_update_guard BEFORE UPDATE ON media_upload_reservations FOR EACH ROW WHEN ((old.media_kind = 'video'::text)) EXECUTE FUNCTION guard_media_video_reservation_update();
+
+CREATE TRIGGER media_video_stage_fact_immutable BEFORE UPDATE ON media_video_stage_facts FOR EACH ROW EXECUTE FUNCTION media_video_stage_fact_immutable();
 
 CREATE TRIGGER media_video_submission_update_guard BEFORE UPDATE ON media_post_submissions FOR EACH ROW WHEN ((old.media_kind = 'video'::text)) EXECUTE FUNCTION guard_media_video_submission_update();
 
@@ -32352,6 +32391,9 @@ ALTER TABLE ONLY media_video_revisions
 
 ALTER TABLE ONLY media_video_rights
     ADD CONSTRAINT media_video_rights_submission_id_fkey FOREIGN KEY (submission_id) REFERENCES media_post_submissions(submission_id);
+
+ALTER TABLE ONLY media_video_stage_facts
+    ADD CONSTRAINT media_video_stage_facts_submission_id_video_revision_fkey FOREIGN KEY (submission_id, video_revision) REFERENCES media_video_revisions(submission_id, video_revision);
 
 ALTER TABLE ONLY media_video_transform_attempts
     ADD CONSTRAINT media_video_transform_attempt_submission_id_video_revision_fkey FOREIGN KEY (submission_id, video_revision) REFERENCES media_video_revisions(submission_id, video_revision);

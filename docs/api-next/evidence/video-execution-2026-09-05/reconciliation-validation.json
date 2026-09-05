@@ -1,0 +1,100 @@
+{
+  "version": "video-reconciliation-validation-v1",
+  "date": "2026-09-05",
+  "source_parent": "b8d989017f63a9f387c24f50e614a39225f49411",
+  "migration": "0120_video_workflow_execution.sql",
+  "migration_sha256": "9dc076d08e60589e68cde0f25c775f2943d950781b5b18a6855ef7ed236f8acc",
+  "commands": [
+    {
+      "name": "check",
+      "command": "bun run check",
+      "exit_code": 0,
+      "log_path": "/tmp/video-reconciliation-check.log",
+      "log_sha256": "a299320c737bf6935e5c684363b90a434c783d156d9340bfba1f088eb00a9b74",
+      "summaries": []
+    },
+    {
+      "name": "ordinary-tests",
+      "command": "bun run test",
+      "exit_code": 0,
+      "log_path": "/tmp/video-reconciliation-test.log",
+      "log_sha256": "1e89cd524e4edef2e477ae662b60311141d03d7fb331851c83068bef25c220b9",
+      "summaries": [
+        "2968 pass",
+        "0 fail",
+        "Ran 2968 tests across 460 files. [11.97s]",
+        "Test Files  1 passed (1)",
+        "Tests  20 passed (20)",
+        "Test Files  11 passed (11)",
+        "Tests  72 passed (72)",
+        "Test Files  16 passed (16)",
+        "Tests  50 passed (50)",
+        "Test Files  1 passed (1)",
+        "Tests  2 passed (2)",
+        "Test Files  6 passed (6)",
+        "Tests  9 passed (9)"
+      ]
+    },
+    {
+      "name": "focused-postgres",
+      "command": "focused migration/publication/attempt PostgreSQL tests",
+      "exit_code": 0,
+      "log_path": "/tmp/video-reconciliation-pg.log",
+      "log_sha256": "b1bd8b487973e20d08531171b5431cbca728a8b8d0bbd462b039cac5b2420937",
+      "summaries": [
+        "17 pass",
+        "0 fail",
+        "Ran 17 tests across 3 files. [21.17s]"
+      ]
+    },
+    {
+      "name": "first-full-postgres",
+      "command": "bun run test:postgres",
+      "exit_code": 1,
+      "log_path": "/tmp/video-reconciliation-full-pg.log",
+      "log_sha256": "dcc6cfd7abf17f05b99b49c28bcb752273661a2a059f77e40ba4aa11ddbf9b5a",
+      "summaries": [
+        "35 pass",
+        "0 fail",
+        "Ran 35 tests across 1 file. [43.43s]",
+        "342 pass",
+        "1 fail",
+        "Ran 343 tests across 55 files. [581.84s]"
+      ]
+    },
+    {
+      "name": "foundation-continuation",
+      "command": "foundation PostgreSQL suite",
+      "exit_code": 0,
+      "log_path": "/tmp/video-reconciliation-foundation.log",
+      "log_sha256": "ad5a4027a3dc942d94ece2b0b847709fa262bb4e6523464cf507e3d35b48adc1",
+      "summaries": [
+        "14 pass",
+        "0 fail",
+        "Ran 14 tests across 1 file. [22.25s]"
+      ]
+    },
+    {
+      "name": "full-postgres-rerun",
+      "command": "bun run test:postgres",
+      "exit_code": 0,
+      "log_path": "/tmp/video-reconciliation-full-pg-rerun.log",
+      "log_sha256": "cda483f4ebc39c7f1dba488ef1c18427f044779d28b3482160e9a7f07a6315bd",
+      "summaries": [
+        "35 pass",
+        "0 fail",
+        "Ran 35 tests across 1 file. [50.17s]",
+        "343 pass",
+        "0 fail",
+        "Ran 343 tests across 55 files. [609.83s]"
+      ]
+    }
+  ],
+  "first_full_failure": "Foundation explicit table inventory omitted media_video_stage_facts; corrected inventory passed all 14 foundation tests and full PostgreSQL rerun.",
+  "limitations": [
+    "Raw logs remain under temporary paths and are not archived.",
+    "Stage-specific fact validation and runtime fact writer/reader are not implemented.",
+    "Sweep integration, resolution and real Workflow entrypoint drills remain pending.",
+    "No live migration, provider call, credential provisioning or deployment."
+  ]
+}

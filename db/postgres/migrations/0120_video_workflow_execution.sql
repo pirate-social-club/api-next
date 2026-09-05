@@ -37,6 +37,77 @@ ALTER TABLE media_video_transform_attempts
   ADD CONSTRAINT media_video_transform_attempts_provider_job_phase_check
     CHECK (provider_job_phase IS NULL OR provider_job_phase IN ('allocated', 'submitting', 'started'));
 
+-- Historical video snapshots predate the flag; absence is false because this
+-- migration refuses historical provider attempts. New true flags must agree
+-- with the stored non-retryable author outcome.
+ALTER TABLE media_post_submissions
+  ADD CONSTRAINT media_video_submission_reconciliation_shape CHECK (
+    media_kind <> 'video' OR (
+      (NOT video_state_snapshot ? 'reconciliationRequired'
+        OR jsonb_typeof(video_state_snapshot->'reconciliationRequired') = 'boolean')
+      AND (video_state_snapshot->>'reconciliationRequired' IS DISTINCT FROM 'true'
+        OR (status = 'processing_failed' AND retryable IS FALSE))
+    )
+  );
+
+-- Reconciliation stays on the attempt identity. The submission snapshot carries
+-- the retry prohibition; entering reconciliation must write both in one transaction.
+ALTER TABLE media_video_transform_attempts
+  ADD COLUMN reconciliation_state TEXT NOT NULL DEFAULT 'none'
+    CHECK (reconciliation_state IN ('none', 'pending', 'required', 'resolved')),
+  ADD COLUMN first_uncertainty_at TIMESTAMPTZ,
+  ADD COLUMN last_observation JSONB,
+  ADD COLUMN reconciliation_evidence_ref TEXT,
+  ADD CONSTRAINT media_video_transform_attempt_reconciliation_shape CHECK (
+    (reconciliation_state = 'none' AND first_uncertainty_at IS NULL
+      AND last_observation IS NULL AND reconciliation_evidence_ref IS NULL)
+    OR (reconciliation_state IN ('pending', 'required', 'resolved')
+      AND provider_job_id IS NOT NULL
+      AND provider_job_phase IN ('submitting', 'started')
+      AND first_uncertainty_at IS NOT NULL
+      AND last_observation IS NOT NULL
+      AND jsonb_typeof(last_observation) = 'object'
+      AND last_observation ? 'status' AND last_observation ? 'observedAt'
+      AND jsonb_typeof(last_observation->'observedAt') = 'string'
+      AND btrim(last_observation->>'observedAt') <> ''
+      AND jsonb_typeof(last_observation->'status') = 'string'
+      AND last_observation->>'status' IN
+        ('not_found', 'processing', 'completed', 'failed', 'unavailable', 'workflow_terminal')
+      AND reconciliation_evidence_ref IS NOT NULL
+      AND btrim(reconciliation_evidence_ref) <> '')
+  );
+CREATE INDEX media_video_transform_attempt_reconciliation_idx
+  ON media_video_transform_attempts (submission_id, video_revision, creation_revision)
+  WHERE reconciliation_state IN ('pending', 'required');
+
+-- Accepted stage results outlive Workflow history and temporary provider outputs.
+-- The application validates each stage's closed snapshot before writing. SQL
+-- additionally fences identity, object shape, size and immutable first-winner storage.
+CREATE TABLE media_video_stage_facts (
+  submission_id TEXT NOT NULL,
+  video_revision BIGINT NOT NULL CHECK (video_revision > 0),
+  creation_revision BIGINT NOT NULL CHECK (creation_revision > 0),
+  stage TEXT NOT NULL CHECK (stage IN ('probe', 'audio', 'frames', 'recognition', 'safety')),
+  analysis_revision BIGINT NOT NULL CHECK (analysis_revision > 0),
+  adapter_revision TEXT NOT NULL CHECK (btrim(adapter_revision) <> ''),
+  fact_snapshot JSONB NOT NULL CHECK (
+    jsonb_typeof(fact_snapshot) = 'object' AND octet_length(fact_snapshot::text) <= 262144
+  ),
+  accepted_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  PRIMARY KEY (submission_id, video_revision, creation_revision, stage),
+  FOREIGN KEY (submission_id, video_revision)
+    REFERENCES media_video_revisions (submission_id, video_revision)
+);
+CREATE FUNCTION media_video_stage_fact_immutable() RETURNS trigger
+LANGUAGE plpgsql AS $function$
+BEGIN
+  RAISE EXCEPTION 'video stage fact is immutable';
+END
+$function$;
+CREATE TRIGGER media_video_stage_fact_immutable
+  BEFORE UPDATE ON media_video_stage_facts
+  FOR EACH ROW EXECUTE FUNCTION media_video_stage_fact_immutable();
+
 -- request_id's primary key is deliberately unchanged: replay selects that one
 -- candidate and verifies all binding columns, including creation revision.
 DROP INDEX media_video_analysis_outbox_eligible_idx;

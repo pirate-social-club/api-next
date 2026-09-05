@@ -1387,6 +1387,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "media_video_review_holds",
         "media_video_revisions",
         "media_video_rights",
+        "media_video_stage_facts",
         "media_video_stream_ingests",
         "media_video_transform_attempts",
         "media_video_upload_parts",

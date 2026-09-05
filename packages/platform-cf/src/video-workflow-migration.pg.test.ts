@@ -134,4 +134,69 @@ suite("video Workflow migration refusal and replay fences", () => {
       ).rejects.toThrow("media_video_analysis_outbox_state_shape");
     });
   });
+  test("reconciliation requires provider identity and complete observation evidence", async () => {
+    for (const invalid of [
+      "reconciliation_state='required'",
+      "reconciliation_state='required',first_uncertainty_at=clock_timestamp(),last_observation='{}',reconciliation_evidence_ref='evidence'",
+      "reconciliation_state='required',first_uncertainty_at=clock_timestamp(),last_observation='{\"status\":null,\"observedAt\":\"2026-09-05T00:00:00Z\"}',reconciliation_evidence_ref='evidence'",
+    ]) {
+      await transaction(async () => {
+        await client.query(sql);
+        await attempt("uncertain", 1);
+        await client.query(
+          "UPDATE media_video_transform_attempts SET provider_job_id='task',provider_job_phase='submitting'",
+        );
+        await expect(
+          client.query(`UPDATE media_video_transform_attempts SET ${invalid}`),
+        ).rejects.toThrow("reconciliation_shape");
+      });
+    }
+    await transaction(async () => {
+      await client.query(sql);
+      await attempt("uncertain", 1);
+      await client.query(`UPDATE media_video_transform_attempts SET provider_job_id='task',provider_job_phase='submitting',
+        reconciliation_state='required',first_uncertainty_at=clock_timestamp(),
+        last_observation='{"status":"not_found","observedAt":"2026-09-05T00:00:00Z"}',
+        reconciliation_evidence_ref='video-submission-unconfirmed:uncertain'`);
+      const result = await client.query(
+        "SELECT reconciliation_state,last_observation FROM media_video_transform_attempts",
+      );
+      expect(result.rows[0]).toEqual({
+        reconciliation_state: "required",
+        last_observation: { status: "not_found", observedAt: "2026-09-05T00:00:00Z" },
+      });
+    });
+  });
+
+  test("stage facts are creation-bound first winners and cannot be overwritten", async () => {
+    await transaction(async () => {
+      await client.query(sql);
+      const insert = `INSERT INTO media_video_stage_facts
+        (submission_id,video_revision,creation_revision,stage,analysis_revision,adapter_revision,fact_snapshot)
+        VALUES ('submission',1,$1,'frames',1,'fixture-v1',$2::jsonb) ON CONFLICT DO NOTHING`;
+      await client.query(insert, [1, '{"artifactRef":"sealed:first"}']);
+      await client.query(insert, [1, '{"artifactRef":"sealed:replacement"}']);
+      await client.query(insert, [2, '{"artifactRef":"sealed:retry"}']);
+      const result = await client.query(
+        "SELECT creation_revision,fact_snapshot FROM media_video_stage_facts ORDER BY creation_revision",
+      );
+      expect(result.rows).toEqual([
+        { creation_revision: "1", fact_snapshot: { artifactRef: "sealed:first" } },
+        { creation_revision: "2", fact_snapshot: { artifactRef: "sealed:retry" } },
+      ]);
+      // Restore triggers: the immutable-fact trigger must run in this proof.
+      await client.query("SET LOCAL session_replication_role = origin");
+      await expect(
+        client.query("UPDATE media_video_stage_facts SET adapter_revision='replacement'"),
+      ).rejects.toThrow("video stage fact is immutable");
+    });
+    await transaction(async () => {
+      await client.query(sql);
+      await expect(
+        client.query(`INSERT INTO media_video_stage_facts
+        (submission_id,video_revision,creation_revision,stage,analysis_revision,adapter_revision,fact_snapshot)
+        VALUES ('submission',1,1,'frames',1,'fixture-v1','[]')`),
+      ).rejects.toThrow("fact_snapshot_check");
+    });
+  });
 });

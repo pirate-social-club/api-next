@@ -161,6 +161,28 @@ export type VideoTechnicalFailureCode = Exclude<
 >;
 
 /** PostgreSQL owns replay, revisions, membership rechecks, and atomic publication effects. */
+/** Private provider uncertainty is fenced in the same transaction as author retries. */
+export interface VideoAttemptReconciliationStore {
+  readonly enterAttemptReconciliation: (
+    input: Readonly<{
+      submission: VideoSubmissionState;
+      observedEventSequence: number;
+      requestId: string;
+      state: "pending" | "required";
+      observation: Readonly<{
+        status:
+          | "not_found"
+          | "processing"
+          | "completed"
+          | "failed"
+          | "unavailable"
+          | "workflow_terminal";
+        observedAt: string;
+      }>;
+    }>,
+  ) => Promise<VideoSubmissionRecord>;
+}
+
 export interface VideoPublicationStore {
   readonly replayReservation: (input: {
     endpointTemplate?: string;
@@ -462,7 +484,10 @@ export function projectVideoSubmission(record: VideoSubmissionRecord): VideoPost
         status: "processing_failed",
         reason_code: state.failureCode,
         retry_count: state.retryCount as 0 | 1 | 2 | 3,
-        retryable: state.retryCount < 3 && state.failureCode !== "upload_seal_conflict",
+        retryable:
+          !state.reconciliationRequired &&
+          state.retryCount < 3 &&
+          state.failureCode !== "upload_seal_conflict",
       };
     case "abandoned":
       return { ...common, status: "abandoned", reason_code: "author_cancelled_before_finalize" };
@@ -1066,6 +1091,7 @@ export async function retryVideoPoster(
     !["poster_undecodable", "poster_timestamp_out_of_range"].includes(
       record.state.failureCode ?? "",
     ) ||
+    record.state.reconciliationRequired ||
     record.state.retryCount >= 3
   )
     throw new Conflict({
@@ -1123,6 +1149,7 @@ export async function retryVideoSubmission(
   }
   if (
     record.state.status !== "processing_failed" ||
+    record.state.reconciliationRequired ||
     record.state.retryCount >= 3 ||
     record.state.failureCode === "upload_seal_conflict"
   ) {
