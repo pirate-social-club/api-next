@@ -1,5 +1,50 @@
 # Video delivery implementation boundary
 
+## Current poster adapter tranche — 2026-09-05
+
+Delivery rebased cleanly onto origin/main aaafc02e. Main now carries client
+0.62.0 and 0120_hns_root_health_renewal_recovery.sql; the earlier execution
+reservation of 0120 is no longer available. Execution still integrates first,
+but its migration number must be reconciled against this actual inventory.
+Delivery has allocated no migration and made no client cut.
+
+The poster adapter now calls the shared authorization before resolving the
+sealed artifact or reading R2. Its authority query joins the publication's
+exact submission, operation, video and analysis revisions to the poster row
+and analysis source digest. It derives the storage key from those facts and
+requires the exact expected artifact reference, never stripping a client URI.
+The storage reader checks key, digest metadata, source identity, poster policy,
+JPEG type, size and ETag before either bytes or a conditional success. It passes
+the existing ReadableStream directly into the response without another copy;
+304 and pre-response failures cancel unused bodies. Each admitted request
+currently performs one artifact query and one R2 get in addition to the shared
+authorization reads. Conditional requests still read and validate the object;
+the feed-scale latency/bytes measurement remains unperformed.
+
+Authorized missing or unreadable artifacts now return a redacted system error.
+Ineligible viewers still receive the uniform privacy denial and never resolve
+an artifact. Fixture tests establish this distinction and stream ownership,
+not real R2 or provider acceptance. The new authority SQL still needs a real
+PostgreSQL fixture. Cloudflare and Workers best-practices skills informed the
+direct stream handoff and cancellation. The current R2 API reference is design
+evidence: https://developers.cloudflare.com/r2/api/workers/workers-api-reference/.
+
+No access endpoint is registered yet. The frozen endpoint definition supports
+JSON responses, not JPEG/304; the coordinator-mediated response-contract
+extension remains the prerequisite for the registered poster route. Do not use
+beforeDecode or another route bypass. Production composition and the Workerd
+HTTP harness both call createHttpWorker, which owns the middleware stack.
+The required matching-ETag denial test must execute the registered poster
+operation through that constructor after the contract extension, not just this
+response adapter. Production media-processor composition remains untouched
+until execution integration. Full PostgreSQL and CI remain pre-PR gates.
+
+## Earlier checkpoint history
+
+The following paragraphs describe earlier tranches and their then-current
+boundaries; the current section above supersedes their inventory and artifact
+status. None establishes backend deployability or staging acceptance.
+
 This is an incomplete delivery-lane checkpoint based on main 3a3b3637.
 The delivery writer owns the separate feat/video-delivery-completion worktree;
 execution and Solid worktrees were inspected only where needed, never edited.
