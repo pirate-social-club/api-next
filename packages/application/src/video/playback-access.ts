@@ -1,7 +1,10 @@
 import { BadRequest, InternalError, NotFound, RateLimited } from "@pirate/contracts";
 import { VIDEO_INGEST_POLICY_V1 } from "@pirate/domain";
 import { Effect } from "effect";
-import type { ContentStoreService } from "../ports.ts";
+import {
+  authorizeVideoAccess,
+  type VideoAccessAuthorizationServices,
+} from "./access-authorization.ts";
 
 export const VIDEO_PLAYBACK_ACCESS_POLICY = Object.freeze({
   lifetimeSeconds: VIDEO_INGEST_POLICY_V1.maxDurationMs / 1_000 + 120,
@@ -18,8 +21,7 @@ export type VideoPlaybackAccess = Readonly<{
   renew_after: number;
 }>;
 
-export interface VideoPlaybackAccessServices {
-  readonly contentStore: Pick<ContentStoreService, "resolvePost" | "getPost">;
+export interface VideoPlaybackAccessServices extends VideoAccessAuthorizationServices {
   /** Resolve the opaque reference against current approved, encoding-ready durable facts. */
   readonly resolveApprovedPlayback: (
     input: Readonly<{ postId: string; communityId: string; playbackRef: string }>,
@@ -84,26 +86,8 @@ export const getVideoPlaybackAccess = Effect.fn("getVideoPlaybackAccess")(functi
       retry_after_seconds: retry,
     });
   }
-  const location = yield* services.contentStore
-    .resolvePost({ postId: input.postId })
-    .pipe(Effect.mapError(() => new InternalError({ message: "Video delivery unavailable" })));
-  if (location === null || location.postId !== input.postId)
-    return yield* new NotFound({ message: "Video not found" });
-  const result = yield* services.contentStore
-    .getPost({ ...location, viewerUserId: input.viewerUserId ?? "public-post-anonymous" })
-    .pipe(Effect.mapError(() => new InternalError({ message: "Video delivery unavailable" })));
-  if (
-    result === null ||
-    !("post" in result) ||
-    result.post.id !== input.postId ||
-    result.post.community !== location.communityId ||
-    result.post.post_type !== "video" ||
-    result.post.status !== "published" ||
-    result.video?.soundtrack.kind !== "original_audio"
-  ) {
-    return yield* new NotFound({ message: "Video not found" });
-  }
-  const playback = result.video.playback;
+  const { location, video } = yield* authorizeVideoAccess(input, services);
+  const playback = video.playback;
   if (playback.status !== "ready") return yield* new NotFound({ message: "Video not found" });
   const approved = yield* services
     .resolveApprovedPlayback({ ...location, playbackRef: playback.playback_ref })

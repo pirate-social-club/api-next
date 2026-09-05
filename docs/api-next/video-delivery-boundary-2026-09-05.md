@@ -65,6 +65,22 @@ test clocks here are synthetic, not production deadline selections. No new
 public port, provider driver, SQL schema or Worker composition is introduced.
 # Playback policy implementation boundary — 2026-09-05
 
+Playback and conditional-poster use cases now call authorizeVideoAccess.
+The shared PostgreSQL publication-approval adapter performs one current-policy
+query and returns only a boolean, including revision/rights and hold checks.
+The existing publication fixture exercises public and member access, missing
+posts, age denial, hidden posts and re-opened safety holds against Postgres 17.
+Paired caller fixtures compare identical serialized error status/body across
+denials and prove matching-ETag requests cannot skip approval.
+
+The poster result is an internal serving descriptor, not a response exposing
+the artifact locator. Actual JPEG reading, registered HTTP routes and their
+middleware-ordering regression remain outstanding. A use-case test does not
+prove the future HTTP transport cannot intercept conditional requests early.
+Playback-ready and poster artifact resolution adapters, limiter and secret
+loading also remain outstanding. This tranche introduces no client cut or
+schema migration and does not establish deployability.
+
 The signing adapter now generates minimal RS256 tokens using an injected
 private CryptoKey and configured key identifier, with expiry bounded by the
 frozen policy. Ephemeral local-key tests verify signatures and exact claims;
