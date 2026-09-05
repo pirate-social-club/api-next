@@ -118,6 +118,17 @@ suite("phased reset in disposable PostgreSQL 17", () => {
       await expect(
         reconstructStagingInPhases(admin, artifacts, {
           ...admission,
+          replayBudget: { ...admission.replayBudget, maxClusterLockRows: 1_100 },
+        }),
+      ).rejects.toThrow("common_cluster_budget_required");
+      await admin.query("CREATE PUBLICATION reset_refusal FOR TABLE api_next.users");
+      await expect(reconstructStagingInPhases(admin, artifacts, admission)).rejects.toThrow(
+        "replication_membership_requires_disposition",
+      );
+      await admin.query("DROP PUBLICATION reset_refusal");
+      await expect(
+        reconstructStagingInPhases(admin, artifacts, {
+          ...admission,
           removalBudget: { ...admission.removalBudget, maxClosureObjects: 1 },
         }),
       ).rejects.toThrow("closure_budget_exceeded");

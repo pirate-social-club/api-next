@@ -56,6 +56,8 @@ export async function reconstructStagingInPhases(
     )
   )
     throw new Error("reset_phase_budget_invalid");
+  if (admission.removalBudget.maxClusterLockRows !== admission.replayBudget.maxClusterLockRows)
+    throw new Error("reset_common_cluster_budget_required");
   // This orchestrator owns COMMIT. Refuse a caller-owned transaction rather
   // than accepting PostgreSQL's nested-BEGIN warning and committing its work.
   const first = (await admin.query("SELECT pg_catalog.pg_current_xact_id()::text AS id")).rows[0]
@@ -65,6 +67,19 @@ export async function reconstructStagingInPhases(
   if (first === second) throw new Error("reset_fresh_idle_connection_required");
   await admission.assertFenceAndRecovery();
   await admission.assertBaselineReference(plan.sourceSha, admission.baselineDigest);
+  const replicated = (
+    await admin.query(`SELECT EXISTS (
+    SELECT 1 FROM pg_catalog.pg_publication_rel p JOIN pg_catalog.pg_class c ON c.oid=p.prrelid
+    WHERE c.relnamespace='api_next'::regnamespace
+    UNION ALL
+    SELECT 1 FROM pg_catalog.pg_subscription_rel s JOIN pg_catalog.pg_class c ON c.oid=s.srrelid
+    WHERE c.relnamespace='api_next'::regnamespace
+    UNION ALL
+    SELECT 1 FROM pg_catalog.pg_publication_namespace WHERE pnnspid='api_next'::regnamespace
+    UNION ALL SELECT 1 FROM pg_catalog.pg_publication WHERE puballtables
+  ) AS present`)
+  ).rows[0].present;
+  if (replicated) throw new Error("reset_replication_membership_requires_disposition");
   const marker = await createResetMarker(admission.markerDirectory, {
     sourceSha: plan.sourceSha,
     recoveryDigest: admission.recoveryDigest,
@@ -107,11 +122,7 @@ export async function reconstructStagingInPhases(
       if (
         locks.own >
           Math.max(admission.removalBudget.maxOwnLockRows, admission.replayBudget.maxLockRows) ||
-        locks.cluster >
-          Math.min(
-            admission.removalBudget.maxClusterLockRows,
-            admission.replayBudget.maxClusterLockRows,
-          )
+        locks.cluster > admission.removalBudget.maxClusterLockRows
       )
         throw new Error("reset_final_batch_lock_budget_exceeded_restore_required");
       await admission.assertFreshFence();
