@@ -161,6 +161,7 @@ type MediaTransformProgress =
   | Readonly<{
       readonly status: "rejected";
       readonly reason: MediaTransformRejectedReason;
+      readonly evidenceRef?: string;
       readonly attempt: MediaTransformAttempt;
     }>
   | Readonly<{

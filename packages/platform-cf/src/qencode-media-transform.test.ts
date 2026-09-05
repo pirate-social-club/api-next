@@ -799,3 +799,34 @@ test("recovers sealed audio and frames after temporary outputs and the runtime w
   expect(frames.status).toBe("completed");
   expect(providerCalls).toBe(0);
 });
+
+test("Qencode status preserves bounded source-fetch evidence without bearer or object identity", async () => {
+  const capability = "z".repeat(43);
+  const transport = makeQencodeTaskTransport(async () =>
+    Response.json({
+      error: 0,
+      statuses: {
+        [JOB_ID]: {
+          error: 1,
+          error_description: `Source download failed HTTP 503 https://source.example/.well-known/pirate/video-source/v1/${capability} ${source.objectKey} ${SOURCE_SHA256} ${"x".repeat(5000)}`,
+        },
+      },
+    }),
+  );
+  const adapter = makeQencodeMediaTransform(options(transport));
+  const outcome = await Effect.runPromise(
+    adapter.observe({
+      version: "media-transform-video-probe-input-v1",
+      binding,
+      source,
+      attempt: acceptedAttempt("started"),
+    }),
+  );
+  expect(outcome.status).toBe("rejected");
+  if (outcome.status !== "rejected") throw new Error("expected rejection");
+  const evidence = outcome.evidenceRef ?? "";
+  expect(decodeURIComponent(evidence)).toContain("Source download failed HTTP 503");
+  expect(evidence.length).toBeLessThanOrEqual(433);
+  for (const secret of [capability, source.objectKey, SOURCE_SHA256])
+    expect(decodeURIComponent(evidence)).not.toContain(secret);
+});

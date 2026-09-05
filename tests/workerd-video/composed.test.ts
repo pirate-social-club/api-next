@@ -9,6 +9,7 @@ import { makeMediaProcessorComposition } from "../../apps/media-processor-worker
 import { VideoAnalysisWorkflow } from "../../apps/media-processor-worker/src/entrypoint.ts";
 import { makeMediaProcessorQueueWorker } from "../../apps/media-processor-worker/src/index.ts";
 import type { VideoAnalysisWorkflowStep } from "../../apps/media-processor-worker/src/video-workflow.ts";
+import sourceGatewayWorker from "../../apps/video-source-gateway/src/index.ts";
 import type {
   VideoSafetyFact,
   VideoSoundtrackFact,
@@ -61,7 +62,7 @@ afterEach(async () => {
   await admin?.end();
 });
 
-function harness() {
+function harness(durableGrants = false) {
   const objects = new Map<
     string,
     {
@@ -162,12 +163,16 @@ function harness() {
       },
       qencode: {
         artifacts,
-        sourceGateway: {
-          issue: async (input) => ({
-            url: "https://video-source.example.invalid/grant",
-            expiresAtMs: input.expiresAtMs,
-          }),
-        },
+        ...(durableGrants
+          ? {}
+          : {
+              sourceGateway: {
+                issue: async (input) => ({
+                  url: "https://video-source.example.invalid/grant",
+                  expiresAtMs: input.expiresAtMs,
+                }),
+              },
+            }),
         transport: {
           createTask: async () => (++nextTask).toString(16).padStart(32, "0"),
           startTask: async ({ taskToken, query }) => {
@@ -191,7 +196,10 @@ function harness() {
               terminalFrameFailure &&
               query.format.some((format) => String(format.user_tag).includes("frame"))
             )
-              return { state: "failed" };
+              return {
+                state: "failed",
+                errorDescription: `Source download failed HTTP 503 ${query.source}`,
+              };
             return {
               state: "completed",
               outputs: query.format.map((format) => {
@@ -240,6 +248,7 @@ function harness() {
     MEDIA_DERIVED_ARTIFACTS: bucket as unknown as R2Bucket,
     VIDEO_ANALYSIS_ENABLED: "true",
     QENCODE_API_KEY: "fixture-key",
+    VIDEO_SOURCE_GATEWAY_ORIGIN: "https://video-source.example",
     VIDEO_WORKFLOW_ACCOUNT_ID: "a".repeat(32),
     VIDEO_WORKFLOW_NAME: "video-fixture",
     VIDEO_WORKFLOW_SCRIPT_NAME: "processor-fixture",
@@ -595,6 +604,15 @@ test("drill 7: terminal provider job failure then technical retry creates a fres
   expect(await h.run(await h.launch())).toEqual({ status: "stopped" });
   const failed = await fixture.store.getSubmissionByOperation({ submissionId, operationId });
   expect(failed?.state.failureCode).toBe("transform_failed");
+  const evidence = (
+    await admin.query(
+      "SELECT failure_evidence_ref FROM media_post_submissions WHERE submission_id=$1",
+      [submissionId],
+    )
+  ).rows[0].failure_evidence_ref;
+  expect(decodeURIComponent(evidence)).toContain("Source download failed HTTP 503");
+  expect(decodeURIComponent(evidence)).not.toContain("https://");
+
   if (!failed) throw new Error("missing failure");
   await fixture.store.retryTechnical({
     submission: failed.state,
@@ -628,4 +646,53 @@ test("sealed audio survives a failed fact write and expired provider output", as
   expect(await h.run(event)).toEqual({ status: "published" });
   await assertPublished();
   expect(h.starts).toHaveLength(3);
+});
+
+test("durable source grant composition: submit replay preserves one grant and start per capability", async () => {
+  const h = harness(true);
+  h.loseStart();
+  h.crash("probe-submit");
+  const event = await h.launch();
+  await expect(h.run(event)).rejects.toThrow("injected Worker termination");
+  const first = (
+    await admin.query("SELECT capability_sha256,request_id FROM media_video_source_grants")
+  ).rows;
+  expect(first).toHaveLength(1);
+  expect(await h.run(event)).toEqual({ status: "published" });
+  await assertPublished();
+  const rows = (
+    await admin.query(
+      "SELECT capability_sha256,request_id,expires_at FROM media_video_source_grants",
+    )
+  ).rows;
+  expect(rows).toHaveLength(3);
+  expect(rows.filter((row) => row.request_id === first[0].request_id)).toHaveLength(1);
+  expect(h.starts).toHaveLength(3);
+  for (const query of h.tasks.values()) {
+    const source = new URL(query.source);
+    expect(source.origin).toBe("https://video-source.example");
+    expect(source.search).toBe("");
+    const response = await sourceGatewayWorker.fetch(
+      new Request(source.toString(), { method: "HEAD" }),
+      {
+        CONTROL_PLANE: { connectionString: bindings.VIDEO_TEST_DATABASE },
+        MEDIA_IMMUTABLE_ORIGINALS: {
+          head: async (key) => ({
+            key,
+            etag: "immutable-etag",
+            version: "immutable-version",
+            size: 1024,
+            httpMetadata: { contentType: "video/mp4" },
+          }),
+          get: async () => null,
+        },
+      },
+    );
+    expect(response.status).toBe(200);
+
+    expect(source.pathname).toMatch(
+      /^\/\.well-known\/pirate\/video-source\/v1\/[A-Za-z0-9_-]{43}$/u,
+    );
+    expect(JSON.stringify(rows)).not.toContain(source.pathname.split("/").at(-1));
+  }
 });

@@ -1,0 +1,26 @@
+import type { MediaProcessorRuntimeEnv } from "../apps/media-processor-worker/src/composition.ts";
+
+export const MEDIA_BINDING_KINDS = {
+  CONTROL_PLANE: "platform",
+  MEDIA_PROCESSING_ENABLED: "var",
+  VIDEO_ANALYSIS_ENABLED: "var",
+  MEDIA_PROCESSING_WORKFLOW: "platform",
+  VIDEO_ANALYSIS_WORKFLOW: "platform",
+  VIDEO_WORKFLOW_ACCOUNT_ID: "var",
+  VIDEO_WORKFLOW_NAME: "var",
+  VIDEO_WORKFLOW_SCRIPT_NAME: "var",
+  VIDEO_WORKFLOW_READ_TOKEN: "secret",
+  MEDIA_IMMUTABLE_ORIGINALS: "platform",
+  MEDIA_DERIVED_ARTIFACTS: "platform",
+  IMAGE_TRANSFORMATIONS: "platform",
+  ACRCLOUD_IDENTIFY_HOST: "var",
+  ACRCLOUD_ACCESS_KEY: "secret",
+  ACRCLOUD_ACCESS_SECRET: "secret",
+  ELEVENLABS_API_KEY: "secret",
+  OPENAI_API_KEY: "secret",
+  OPENROUTER_API_KEY: "secret",
+  QENCODE_API_KEY: "secret",
+  VIDEO_SOURCE_GATEWAY_ORIGIN: "var",
+  DATA_REGISTRATION_ENABLED: "var",
+  DATA_REGISTRATION_CHAIN_ID: "var",
+} as const satisfies { [K in keyof MediaProcessorRuntimeEnv]-?: "platform" | "secret" | "var" };

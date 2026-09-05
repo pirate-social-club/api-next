@@ -25,6 +25,7 @@ const dependencyRoots = [
   "packages/verifier-response-contract",
   "apps/http-worker",
   "apps/jobs-worker",
+  "apps/video-source-gateway",
   "apps/media-processor-worker",
   "apps/data-registration-worker",
   "apps/hns-owner-verifier",

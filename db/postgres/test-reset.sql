@@ -232,6 +232,7 @@ TRUNCATE TABLE
   "media_video_review_holds",
   "media_video_revisions",
   "media_video_rights",
+  "media_video_source_grants",
   "media_video_stage_facts",
   "media_video_stream_ingests",
   "media_video_transform_attempts",

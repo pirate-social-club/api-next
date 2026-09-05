@@ -306,7 +306,8 @@ export async function runVideoAnalysisWorkflow(
                     requestId: input.binding.requestId,
                     observation: {
                       status: "failed",
-                      evidenceRef: `video-provider:${input.binding.requestId}:failed`,
+                      evidenceRef:
+                        outcome.evidenceRef ?? `video-provider:${input.binding.requestId}:failed`,
                       observedAt: services.nowIso(),
                     },
                   });
@@ -314,7 +315,7 @@ export async function runVideoAnalysisWorkflow(
                   await failure(
                     record,
                     capability,
-                    `video-provider:${input.binding.requestId}:failed`,
+                    outcome.evidenceRef ?? `video-provider:${input.binding.requestId}:failed`,
                   );
                 return "failed";
               }
