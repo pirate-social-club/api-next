@@ -117,10 +117,9 @@ async function runObservation(input: {
         : claim.operation_kind === "teardown_root_v1"
           ? "zone_teardown_unavailable"
           : "observation_failed";
-    const retry =
-      code === "owner_update_pending" ||
-      code === "authority_unavailable" ||
-      code === "zone_teardown_unavailable";
+    // Only proven invalid evidence is terminal. Unknown transport and runtime
+    // failures must not permanently disable a live renewal generation.
+    const retry = code !== "invalid_request" && code !== "authority_mismatch";
     const finalized = await input.queue.finalize({
       ...base,
       outcome: retry ? "retry" : "failed",

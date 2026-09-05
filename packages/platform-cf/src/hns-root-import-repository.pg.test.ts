@@ -17,6 +17,7 @@ import { canonicalJson } from "@pirate/domain";
 import { Effect } from "effect";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
+import { verifyHnsRenewalRecovery } from "./hns-root-health-renewal.pg-cases.ts";
 import { makeControlPlaneHnsRootImportStore } from "./hns-root-import-repository.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 
@@ -61,6 +62,7 @@ async function withSchema<A>(use: (connection: string, admin: Client) => Promise
     await seedOwnership(admin);
     return await use(scoped, admin);
   } finally {
+    await admin.query("ROLLBACK");
     await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
     await admin.end();
   }
@@ -1253,24 +1255,13 @@ suite("Postgres 17 HNS root-import repository", () => {
       );
       expect(heartbeat.rows).toEqual([{ fresh: true, freshness_threshold_seconds: 7200 }]);
 
-      await admin.query("SELECT * FROM schedule_hns_root_health_renewals_v1(25,259200,7200)");
-      for (let attempt = 1; attempt <= 3; attempt += 1) {
-        const boundedClaim = await admin.query<{
-          observation_job_id: string;
-          request_sha256: string;
-          lease_fence: string;
-        }>("SELECT * FROM claim_hns_root_health_renewal_job_v1($1,$2)", ["authority-executor", 60]);
-        const bounded = await admin.query<{ outcome: string }>(
-          "SELECT * FROM finalize_hns_root_health_renewal_job_v1($1,$2,$3,$4,'retry',NULL,NULL,'authority_unavailable')",
-          [
-            boundedClaim.rows[0]?.observation_job_id,
-            "authority-executor",
-            Number(boundedClaim.rows[0]?.lease_fence),
-            boundedClaim.rows[0]?.request_sha256,
-          ],
-        );
-        expect(bounded.rows[0]?.outcome).toBe(attempt < 3 ? "retry" : "failed");
-      }
+      await verifyHnsRenewalRecovery(admin, connection, () =>
+        makeReadinessArtifact({
+          ownershipResultHash,
+          publishPlanSha256: sha256(provisioned.planBytes),
+          provisionResultSha256: sha256(provisioned.resultBytes),
+        }),
+      );
       expect(await Effect.runPromise(Effect.scoped(store.activate(activation)))).toMatchObject({
         kind: "replayed",
         response: { replayed: true, revision: 6 },

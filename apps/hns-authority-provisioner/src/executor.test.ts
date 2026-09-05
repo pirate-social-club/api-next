@@ -196,3 +196,80 @@ describe("HNS authority provision executor", () => {
     });
   });
 });
+
+for (const corruptRequest of [false, true]) {
+  test(
+    corruptRequest
+      ? "terminally refuses changed renewal evidence"
+      : "retries an unclassified renewal exception on its first attempt",
+    async () => {
+      const publishPlanBytes = encoder.encode("retained-plan");
+      const provisionResultBytes = encoder.encode("retained-provision");
+      const planHash = await hash(publishPlanBytes);
+      const provisionHash = await hash(provisionResultBytes);
+      const requestBytes = encoder.encode(
+        canonicalJson({
+          version: "pirate-hns-root-readiness-observation-request-v1",
+          root_import_session_id: "root-import-session",
+          namespace_session_id: "namespace-session",
+          root_label: "newroot",
+          challenge_txt_value: "pirate-verification=challenge",
+          ownership_result_sha256: "a".repeat(64),
+          publish_plan_sha256: planHash,
+          provision_result_sha256: provisionHash,
+          expires_at: "2099-01-01T00:00:00.000Z",
+        }),
+      );
+      let finalized: unknown;
+      let clockCalled = false;
+      const result = await runHnsAuthorityProvisionExecutorOnce({
+        executor_id: "renewal-executor",
+        queue: { claim: async () => null, finalize: async () => Promise.reject() },
+        provision: {} as never,
+        observation: {
+          queue: {
+            claim: async () => ({
+              observation_job_id: "renewal-job",
+              root_import_session_id: "root-import-session",
+              operation_kind: "renew_health_v1",
+              request_bytes: requestBytes,
+              request_sha256: corruptRequest ? "f".repeat(64) : await hash(requestBytes),
+              publish_plan_bytes: publishPlanBytes,
+              publish_plan_sha256: planHash,
+              provision_result_bytes: provisionResultBytes,
+              provision_result_sha256: provisionHash,
+              lease_fence: 1,
+            }),
+            finalize: async (input) => {
+              finalized = input;
+              return {
+                outcome: input.outcome,
+                root_import_session_id: "root-import-session",
+                session_revision: 6,
+              };
+            },
+          },
+          observe: {} as never,
+          teardown_zone: async () => {
+            throw new Error("Unexpected teardown");
+          },
+          config: {
+            environment: "test",
+            valid_for_seconds: 604800,
+            now: () => {
+              clockCalled = true;
+              throw new TypeError("unclassified observation runtime failure");
+            },
+          },
+        },
+      });
+      expect(clockCalled).toBe(!corruptRequest);
+      expect(result.outcome).toBe(corruptRequest ? "failed" : "retry");
+      expect(finalized).toMatchObject({
+        outcome: corruptRequest ? "failed" : "retry",
+        failure_code: corruptRequest ? "invalid_request" : "observation_failed",
+        lease_fence: 1,
+      });
+    },
+  );
+}
