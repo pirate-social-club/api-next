@@ -82,6 +82,7 @@
     "./media-transform": "./src/media-transform.ts",
     "./qencode-media-transform": "./src/qencode-media-transform.ts",
     "./video-source-gateway": "./src/video-source-gateway.ts",
+    "./video-poster-stream": "./src/video-poster-stream.ts",
     "./video-multipart-r2": "./src/video-multipart-r2.ts",
     "./video-publication-repository": "./src/video-publication-repository.ts",
     "./video-analysis-outbox-repository": "./src/video-analysis-outbox-repository.ts",
