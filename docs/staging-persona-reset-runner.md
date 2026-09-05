@@ -214,3 +214,35 @@ unproven. The fixture has one pending persona, not the full live dataset. The
 test compares an actual restored copy, but its schema-only comparison shares
 the same PostgreSQL toolchain and is not an independent semantic SQL verifier.
 The schema CREATE credential blocker still prohibits live reset execution.
+
+## Read-only provider backup observation
+
+`bun scripts/staging-persona-provider-backup.ts <backup-id>` performs only GET
+requests through the authenticated PlanetScale CLI, with its API base fixed to
+the official HTTPS endpoint. It checks the staging database and main branch
+IDs and the selected backup's source branch relationship before emitting
+sanitized metadata. The normal backup CLI presentation omits database_branch;
+the raw API response carries it. Missing relationships, failed backups, malformed
+timestamps and unexpected targets are refused without logging provider bodies.
+
+This is not capture, retention protection or recovery verification. It never
+creates a backup or branch, selects a backup automatically, grants privileges
+or connects to SQL. A successful result can describe an expired or unprotected
+backup: those facts are evidence for a future admission decision, not approval.
+The SQL connection, account/project context, continuous fence, actual backup
+contents and restored branch health still require independent verification.
+The injected reader is a unit-test seam and confers no execution authority.
+
+A read-only observation on September 5 found staging database mvydkmmwh5x4,
+main branch syu03e00w3ux, and backup pz8v156wu3kn completed at
+2026-09-05T14:21:09.145Z. The backup was unprotected, expires at
+2026-09-07T14:17:02.947Z, and listed no restored branches. The existing
+recovery-20260828-moderation-e2e branch remains present, but is not a fresh
+capture for this ceremony. None of these reads established a writer fence.
+
+PlanetScale's [restore documentation](https://planetscale.com/docs/postgres/backups)
+states that restored branches do not restore database extensions automatically.
+The provider rehearsal must therefore inventory and verify required extensions
+explicitly; the local pg_dump test cannot establish that provider behavior.
+The [backup read contract](https://planetscale.com/docs/api/reference/get_backup)
+provides the source-branch metadata used by this observer.
