@@ -24,8 +24,13 @@ the feed-scale latency/bytes measurement remains unperformed.
 Authorized missing or unreadable artifacts now return a redacted system error.
 Ineligible viewers still receive the uniform privacy denial and never resolve
 an artifact. Fixture tests establish this distinction and stream ownership,
-not real R2 or provider acceptance. The new authority SQL still needs a real
-PostgreSQL fixture. Cloudflare and Workers best-practices skills informed the
+not real R2 or provider acceptance. The authority SQL now passes the existing
+publication fixture against the CI-pinned PostgreSQL 17 image: 51 assertions
+include exact sealed poster resolution after publication replay and refusal
+for wrong post/community, non-poster frames, wrong video/analysis revisions
+and arbitrary locators. This establishes the pre-execution-rebase baseline;
+full PostgreSQL shards still remain a pre-PR obligation. No suite count changed.
+Cloudflare and Workers best-practices skills informed the
 direct stream handoff and cancellation. The current R2 API reference is design
 evidence: https://developers.cloudflare.com/r2/api/workers/workers-api-reference/.
 
