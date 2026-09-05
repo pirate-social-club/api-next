@@ -41,6 +41,7 @@
     "./media/submission-service": "./src/media/submission-service.ts",
     "./media/submission-sealing": "./src/media/submission-sealing.ts",
     "./video/publication": "./src/video/publication.ts",
+    "./video/stream-ingest": "./src/video/stream-ingest.ts",
     "./video/stage-facts": "./src/video/stage-facts.ts",
     "./video/playback-access": "./src/video/playback-access.ts",
     "./video/access-authorization": "./src/video/access-authorization.ts",

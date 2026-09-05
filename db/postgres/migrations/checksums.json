@@ -124,6 +124,7 @@
     "0121_hns_imported_inventory_renewal.sql": "3d83fb50b91572af79780bd80deff588aa4d5a8b00f14c3f410793d57bca2977",
     "0122_video_workflow_execution.sql": "cbaba4484fa88ceed38e3ac8149e70e9309e0308d4e71f215f576038f6db5446",
     "0123_video_source_grants.sql": "2cbee9ae295db74ca1c01cf70c9e5c1c4dcfa72d821bf22db702a533df956214",
+    "0124_video_delivery_ingest.sql": "75a1fd73700d2d8c851806a05396acf05741371c4f7f5338bfc605bc890960da",
     "0124_video_safety_evidence.sql": "1def57d4bddd8e1f218f3eb8e0111c1acb0fb9ecbb417b581265eba6d456d4bf",
     "0125_video_publication_failure_reasons.sql": "3e2d858364ac3ff1f672485c28322d8a9b0ff398d53dd3c7e696ab4fa1c966a4",
     "0126_hns_renewal_execution_privileges.sql": "79096935d3a49b8fb3b178065264ceca37b167fc488ec1ac905610a091987e36"
