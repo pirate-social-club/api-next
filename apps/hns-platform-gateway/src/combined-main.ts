@@ -1,14 +1,14 @@
 import { isAbsolute, join, resolve } from "node:path";
 import {
-  encodeHnsCommunityAppInteractiveGatewayProfileV2,
+  encodeHnsCommunityAppInteractiveGatewayProfileV3,
   HNS_COMMUNITY_APP_INTERACTIVE_GATEWAY_SHA256,
-  verifyHnsCommunityAppInteractiveGatewayProfileV2,
+  verifyHnsCommunityAppInteractiveGatewayProfileV3,
 } from "@pirate/application/hns-community-app-gateway";
 import {
-  encodeHnsCommunityHandlePersonaGatewayProfileV1,
+  encodeHnsCommunityHandlePersonaGatewayProfileV2,
   HNS_COMMUNITY_HANDLE_PERSONA_GATEWAY_PROFILE,
   HNS_COMMUNITY_HANDLE_PERSONA_GATEWAY_SHA256,
-  verifyHnsCommunityHandlePersonaGatewayProfileV1,
+  verifyHnsCommunityHandlePersonaGatewayProfileV2,
 } from "@pirate/application/hns-community-handle-gateway";
 import {
   type HnsCommunityAppHandleGatewayPostgresAuthorityV1,
@@ -159,13 +159,13 @@ export function assembleHnsCommunityAppHandleGatewayRuntime(input: {
   } as const;
   const communityApp = makeHnsCommunityAppGatewayComposition(true, {
     ...common,
-    profile_bytes: encodeHnsCommunityAppInteractiveGatewayProfileV2(),
+    profile_bytes: encodeHnsCommunityAppInteractiveGatewayProfileV3(),
     authority_source: authority.community_authority_source,
     forwarder_limits: input.configuration.forwarder_limits,
   });
   const handleHost = makeHnsCommunityHandleGatewayComposition(true, {
     ...common,
-    profile_bytes: encodeHnsCommunityHandlePersonaGatewayProfileV1(),
+    profile_bytes: encodeHnsCommunityHandlePersonaGatewayProfileV2(),
     authority_source: authority.handle_authority_source,
     forwarder_limits: Object.freeze({
       ...input.configuration.forwarder_limits,
@@ -209,8 +209,8 @@ function credentialReader(directory: string) {
 async function runHnsCommunityAppHandleGateway(arguments_: readonly string[]): Promise<void> {
   const argumentsValue = parseHnsCommunityAppHandleGatewayArguments(arguments_);
   await Promise.all([
-    verifyHnsCommunityAppInteractiveGatewayProfileV2(),
-    verifyHnsCommunityHandlePersonaGatewayProfileV1(),
+    verifyHnsCommunityAppInteractiveGatewayProfileV3(),
+    verifyHnsCommunityHandlePersonaGatewayProfileV2(),
   ]);
   const credentialsDirectory = process.env.CREDENTIALS_DIRECTORY;
   if (credentialsDirectory === undefined) {

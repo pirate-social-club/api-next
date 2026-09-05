@@ -1,8 +1,8 @@
 {
   "schema": "pirate-hns-community-app-gateway-deployment-v1",
-  "profile_version": "pirate-hns-community-app-interactive-gateway-v2",
+  "profile_version": "pirate-hns-community-app-interactive-gateway-v3",
   "profile_utf8_bytes": 622,
-  "profile_sha256": "f49ac37bd45da71bdf1e1cc65f184729d85f9d72ce811f0551a70f7785aa8d86",
+  "profile_sha256": "c4f4c07252ba10a25467f476cc5b56d50ef9cf02e25ad368a05551d19ba861ed",
   "production_gateway_listener": "127.0.0.1:4069",
   "production_health_listener": "127.0.0.1:4071",
   "shadow_gateway_listener": "127.0.0.1:4169",

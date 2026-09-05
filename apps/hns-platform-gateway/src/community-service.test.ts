@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { ControlPlaneAcquireFailed } from "@pirate/application";
 import {
-  encodeHnsCommunityAppInteractiveGatewayProfileV2,
+  encodeHnsCommunityAppInteractiveGatewayProfileV3,
   HNS_COMMUNITY_APP_INTERACTIVE_GATEWAY_PROFILE,
 } from "@pirate/application/hns-community-app-gateway";
 import {
@@ -109,7 +109,7 @@ function composition(input: {
 }) {
   const current = input.current === undefined ? activeState : input.current;
   return makeHnsCommunityAppGatewayComposition(true, {
-    profile_bytes: encodeHnsCommunityAppInteractiveGatewayProfileV2(),
+    profile_bytes: encodeHnsCommunityAppInteractiveGatewayProfileV3(),
     gateway_deployment_reference: input.deployment_reference ?? deploymentReference,
     solid_origin: "https://solid.example",
     solid_access_client_id: "gateway-access-client-id",
@@ -143,7 +143,7 @@ describe("interactive HNS community application gateway", () => {
       "HNS community app gateway composition is incomplete or invalid",
     );
     const valid = {
-      profile_bytes: encodeHnsCommunityAppInteractiveGatewayProfileV2(),
+      profile_bytes: encodeHnsCommunityAppInteractiveGatewayProfileV3(),
       gateway_deployment_reference: deploymentReference,
       solid_origin: "https://solid.example",
       solid_access_client_id: "gateway-access-client-id",
@@ -488,7 +488,7 @@ describe("interactive HNS community application gateway", () => {
   test("interrupts the current-authority lookup when the caller disconnects", async () => {
     let interrupted = false;
     const enabled = makeHnsCommunityAppGatewayComposition(true, {
-      profile_bytes: encodeHnsCommunityAppInteractiveGatewayProfileV2(),
+      profile_bytes: encodeHnsCommunityAppInteractiveGatewayProfileV3(),
       gateway_deployment_reference: deploymentReference,
       solid_origin: "https://solid.example",
       solid_access_client_id: "gateway-access-client-id",
