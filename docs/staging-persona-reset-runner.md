@@ -128,3 +128,25 @@ was explicitly configured with max_prepared_transactions=10 for the last proof.
 The ordinary CI service defaults to zero, so the test also covers PostgreSQL's
 refusal to prepare there rather than claiming that branch tests a live prepared
 transaction. Both configurations have been exercised locally.
+
+Read-only execution prerequisite observed on 2026-09-05: the credential injected
+from Infisical staging /services/api-next/operator matched the complete pinned
+0109 ledger and connected directly to SQL database postgres. It owns api_next,
+but has_database_privilege(current_user, current_database(), 'CREATE') returned
+false. The observation transaction was rolled back; no grants or DDL ran.
+Provider identity was not independently reverified in this SQL-only check.
+
+Schema ownership alone cannot authorize a drop/recreate plan. The new
+schema-authority observer refuses this condition without performing DDL or
+granting anything; its PostgreSQL regression reproduces the missing CREATE
+privilege and proves the original schema remains. It also requires SET ROLE
+capability for the original owner, so inherited ownership without SET cannot
+pass a plan that must recreate the schema under that owner. A future executor must call
+this check before destruction as well as the other target/recovery/fence gates.
+The current credential therefore blocks execution of the approved approach.
+Use a separately approved staging administrative credential with the necessary
+rights, or obtain a reviewed change of approach. Never grant broader rights or
+choose an object-level rebuild automatically. PlanetScale documents a separate
+[administrative role](https://planetscale.com/docs/postgres/connecting/roles);
+that provider capability is not evidence that such a credential is available
+to this lane. Do not rotate the default credential as a workaround.
