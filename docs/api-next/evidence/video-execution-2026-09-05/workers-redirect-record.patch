@@ -1,0 +1,43 @@
+--- a/tasks/records/api-video-execution-completion.md
++++ b/tasks/records/api-video-execution-completion.md
+@@ -520,3 +520,40 @@
+ tranche document records the prerequisites and superseded patch disposition.
+ The owned PostgreSQL test container was stopped. No runner, Workflow class,
+ Wrangler binding, publication wakeup or concrete provider enablement is claimed.
++
++## Workers fetch correction — 2026-09-05
++
++Source 914ef07ba49db615be61545a2fb98caadef99199 corrects the authenticated
++lookup's unsupported redirect error mode. A Workerd test first reproduced
++Invalid redirect value before reaching the local stub. Manual mode with
++explicit status rejection then passed the real Request/fetch test and a
++redirect case proving no request or token reached the redirect target. Only
++200 and the existing separately verified 404 path can proceed. Full check and
++test passed: 2,968 unit, 20 Node and 133 workerd tests. The local secret-boundary
++audit found no violations; script-check reported no findings and one size
++advisory. No PostgreSQL rerun, live query or deployment occurred.
++
++Both staging Wrangler files now declare VIDEO_WORKFLOW_READ_TOKEN under
++secrets.required and the three read-access variables. The reserved Workflow
++is pirate-video-analysis-staging on pirate-media-processor-worker-staging;
++the entrypoint must export exactly VideoAnalysisWorkflow. The runner's binding
++contract must assert this name/script/class combination in every environment.
++Analysis remains disabled and the class and Workflow bindings remain pending.
++
++The new API credential is held by both Workers and requires dedicated
++read-only access to Workflows, not deployment or write authority. Cloudflare's
++current public API documentation lists Workers Scripts Read and Workers Tail
++Read as accepted read permissions, not a dedicated Workflows Read permission.
++Verify the provider-enforceable scope before provisioning; any broader read
++scope requires explicit owner disposition. Token creation, addition to the
++staging Infisical inventory and installation on both Workers remain separately
++authorized mutations. Record scope and consumer metadata without token bytes.
++None of these external mutations was performed in this checkpoint.
++
++The interim local interpreter treats an unstarted or absent task as pending
++and never repeats start. Runtime deadline expiry still maps to generic probe
++or transform failure and generic evidence. This is not the requested durable
++reconciliation state or proof of provider rejection. The runner must persist
++submission-unconfirmed evidence tied to the attempt and retain a retry fence
++until provider reconciliation permits a safe new encode. No distinct evidence
++or reconciliation-state implementation is claimed by this transport fix.

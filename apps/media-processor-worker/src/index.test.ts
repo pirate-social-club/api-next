@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import type {
+  VideoAnalysisOutboxRecord,
+  VideoAnalysisQueueDependencies,
+} from "@pirate/application/video/analysis-queue";
+import { makeCloudflareVideoAnalysisWorkflowLauncher } from "@pirate/platform-cf/video-analysis-workflow-cloudflare";
+import type {
   MediaProcessingAuthority,
   MediaProcessingStore,
 } from "../../../packages/application/src/media/processing-contracts.ts";
@@ -13,6 +18,106 @@ import {
 import { isMediaProcessingEnabled } from "./posture.ts";
 
 describe("media processor Worker posture", () => {
+  test("drill 3 launch boundary: accepted create with lost response converges through the queue Worker", async () => {
+    let row: VideoAnalysisOutboxRecord = {
+      effectIdentity: "video-analysis:operation:v1:c1",
+      submissionId: "submission",
+      operationId: "operation",
+      videoRevision: 1,
+      creationRevision: 1,
+      canonicalVideoSha256: "a".repeat(64),
+      state: "pending",
+      launchAttempts: 0,
+      continuation: 0,
+      claimOwner: null,
+      claimFence: 0,
+      workflowInstanceId: null,
+      instanceMissing: false,
+    };
+    const instances = new Set<string>();
+    let launches = 0;
+    const launcher = makeCloudflareVideoAnalysisWorkflowLauncher(
+      {
+        get: async () => ({ status: async () => ({ status: "running" }) }),
+        createBatch: async ([input]) => {
+          if (!input) throw new Error("missing launch");
+          expect(input.params).toEqual({ effectIdentity: row.effectIdentity });
+          if (instances.has(input.id)) return [];
+          instances.add(input.id);
+          launches += 1;
+          throw new Error("accepted response lost");
+        },
+      },
+      () => false,
+    );
+    const videoAnalysis: VideoAnalysisQueueDependencies = {
+      launcher,
+      workerId: "worker",
+      runtime: {
+        store: {
+          getSubmissionByOperation: async () => ({
+            state: {
+              videoRevision: 1,
+              creationRevision: 1,
+              video: { canonicalSha256: "a".repeat(64) },
+              status: "processing",
+              decision: null,
+            },
+          }),
+        },
+      } as unknown as VideoAnalysisQueueDependencies["runtime"],
+      outbox: {
+        get: async () => row,
+        claim: async () => {
+          row = {
+            ...row,
+            state: "launching",
+            launchAttempts: row.launchAttempts + 1,
+            claimOwner: "worker",
+            claimFence: row.claimFence + 1,
+          };
+          return row;
+        },
+        markRetryWait: async () => {
+          row = { ...row, state: "retry_wait", claimOwner: null };
+          return true;
+        },
+        markLaunched: async (_claim, id) => {
+          row = { ...row, state: "launched", workflowInstanceId: id, claimOwner: null };
+          return true;
+        },
+        markExhausted: async () => {
+          throw new Error("must not exhaust");
+        },
+        markInstanceMissing: async () => {
+          throw new Error("not a sweep");
+        },
+      },
+    };
+    const worker = makeMediaProcessorQueueWorker(() => ({
+      queue: {} as MediaProcessingQueueDependencies,
+      workflow: {} as MediaProcessingWorkflowDependencies,
+      videoAnalysis,
+    }));
+    const actions: string[] = [];
+    const batch = {
+      messages: [
+        {
+          body: { kind: "video_analysis", outbox_id: row.effectIdentity },
+          ack: () => actions.push("ack"),
+          retry: () => actions.push("retry"),
+        },
+      ],
+    };
+    await worker.queue(batch, {});
+    await worker.queue(batch, {});
+    await worker.queue(batch, {});
+    expect(actions).toEqual(["retry", "ack", "ack"]);
+    expect(launches).toBe(1);
+    expect(row.launchAttempts).toBe(2);
+    expect(row.workflowInstanceId).toMatch(/^vaw-[0-9a-f]{64}$/u);
+  });
+
   test("is disabled by default and requires an exact opt-in", () => {
     expect(isMediaProcessingEnabled(undefined)).toBe(false);
     expect(isMediaProcessingEnabled("false")).toBe(false);

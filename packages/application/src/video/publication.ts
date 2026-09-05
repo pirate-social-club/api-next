@@ -37,6 +37,8 @@ import {
 } from "../media/submission-service.ts";
 import type { M2Actor } from "../ports.ts";
 import type { PersonaRecord } from "../use-cases/personas.ts";
+import type { VideoStageFact } from "./stage-facts.ts";
+import { VideoWorkflowTerminalError } from "./workflow-errors.ts";
 
 export const VIDEO_PUBLICATION_ENDPOINTS = {
   reserve: "/communities/:communityId/media-upload-reservations",
@@ -133,6 +135,7 @@ export type VideoReservationRecord = Readonly<{
 
 export type VideoSubmissionRecord = Readonly<{
   state: VideoSubmissionState;
+  eventSequence: number;
   authorPersona: VideoPostSubmissionV1["author_persona"];
   updatedAt: string;
 }>;
@@ -160,8 +163,58 @@ export type VideoTechnicalFailureCode = Exclude<
 >;
 
 /** PostgreSQL owns replay, revisions, membership rechecks, and atomic publication effects. */
+/** Private provider uncertainty is fenced in the same transaction as author retries. */
+export type VideoReconciliationStageFact = Extract<
+  VideoStageFact,
+  { stage: "probe" | "audio" | "frames" }
+>;
+
+export interface VideoAttemptReconciliationStore {
+  readonly reconcileTerminalWorkflow: (
+    input: Readonly<{
+      submission: VideoSubmissionState;
+      observedEventSequence: number;
+      evidenceRef: string;
+      continuation: number;
+    }>,
+  ) => Promise<"failed" | "reconciliation_required" | "continue">;
+
+  readonly resolveAttemptReconciliation: (
+    input: Readonly<{
+      submission: VideoSubmissionState;
+      observedEventSequence: number;
+      requestId: string;
+      observation: (
+        | Readonly<{ status: "completed"; fact: VideoReconciliationStageFact }>
+        | Readonly<{ status: "failed"; evidenceRef: string }>
+        | Readonly<{ status: "workflow_terminal"; evidenceRef: string }>
+      ) &
+        Readonly<{ observedAt: string }>;
+    }>,
+  ) => Promise<VideoSubmissionRecord>;
+  readonly enterAttemptReconciliation: (
+    input: Readonly<{
+      submission: VideoSubmissionState;
+      observedEventSequence: number;
+      requestId: string;
+      state: "pending" | "required";
+      observation: Readonly<{
+        status:
+          | "not_found"
+          | "processing"
+          | "completed"
+          | "failed"
+          | "unavailable"
+          | "workflow_terminal";
+        observedAt: string;
+      }>;
+    }>,
+  ) => Promise<VideoSubmissionRecord>;
+}
+
 export interface VideoPublicationStore {
   readonly replayReservation: (input: {
+    endpointTemplate?: string;
     communityId: string;
     actorAccountId: string;
     authorPersonaId: string;
@@ -270,6 +323,7 @@ export interface VideoPublicationStore {
   }) => Promise<VideoSubmissionRecord>;
   readonly recordProcessingFailure: (input: {
     submission: VideoSubmissionState;
+    observedEventSequence: number;
     failureCode: VideoTechnicalFailureCode | "poster_undecodable" | "poster_timestamp_out_of_range";
     evidenceRef: string;
   }) => Promise<VideoSubmissionRecord>;
@@ -459,7 +513,10 @@ export function projectVideoSubmission(record: VideoSubmissionRecord): VideoPost
         status: "processing_failed",
         reason_code: state.failureCode,
         retry_count: state.retryCount as 0 | 1 | 2 | 3,
-        retryable: state.retryCount < 3 && state.failureCode !== "upload_seal_conflict",
+        retryable:
+          !state.reconciliationRequired &&
+          state.retryCount < 3 &&
+          state.failureCode !== "upload_seal_conflict",
       };
     case "abandoned":
       return { ...common, status: "abandoned", reason_code: "author_cancelled_before_finalize" };
@@ -641,10 +698,13 @@ export async function renewVideoUploadParts(
       details: { reason_code: "reservation_persona_required" },
     });
   }
+  const remainingSeconds = Math.floor(
+    (Date.parse(reservation.expiresAt) - Date.parse(services.nowIso())) / 1_000,
+  );
   if (
-    reservation.state !== "issued" ||
+    !["issued", "claimed"].includes(reservation.state) ||
     reservation.manifest !== null ||
-    Date.parse(reservation.expiresAt) <= Date.parse(services.nowIso())
+    remainingSeconds < 1
   ) {
     throw new Conflict({
       message: "Video upload action expired",
@@ -663,7 +723,8 @@ export async function renewVideoUploadParts(
       communityId: reservation.communityId,
       actorAccountId: input.actor.userId,
       authorPersonaId: body.persona_id,
-      idempotencyKey: `${VIDEO_PUBLICATION_ENDPOINTS.renewParts}:${body.idempotency_key}`,
+      endpointTemplate: VIDEO_PUBLICATION_ENDPOINTS.renewParts,
+      idempotencyKey: body.idempotency_key,
       requestHash,
     }),
   );
@@ -674,7 +735,7 @@ export async function renewVideoUploadParts(
       objectKey: videoIngressObjectKey(reservation.reservationId),
       uploadId: reservation.uploadId,
       partNumbers,
-      expiresInSeconds: VIDEO_MULTIPART_URL_TTL_SECONDS,
+      expiresInSeconds: Math.min(VIDEO_MULTIPART_URL_TTL_SECONDS, remainingSeconds),
     });
   } catch {
     throw new InternalError({ message: "Video multipart renewal is unavailable" });
@@ -746,6 +807,7 @@ export async function createVideoSubmission(
   const response = await snapshot(
     projectVideoSubmission({
       state,
+      eventSequence: 1,
       authorPersona: publicPersona(persona),
       updatedAt: services.nowIso(),
     }),
@@ -964,13 +1026,20 @@ export async function acceptTrustedVideoAnalysis(
               .trim(),
           ),
         );
-  const decision = decideOriginalAudioVideo({
-    state: record.state,
-    analysis: input.analysis,
-    canonicalCaptionSha256: captionSha256,
-    decidedAt: services.nowIso(),
-  });
-  const nextState = attachVideoDecision(record.state, input.analysis, decision);
+  const { decision, nextState } = (() => {
+    try {
+      const decision = decideOriginalAudioVideo({
+        state: record.state,
+        analysis: input.analysis,
+        canonicalCaptionSha256: captionSha256,
+        decidedAt: services.nowIso(),
+      });
+      const nextState = attachVideoDecision(record.state, input.analysis, decision);
+      return { decision, nextState };
+    } catch {
+      throw new VideoWorkflowTerminalError("analysis_rejected");
+    }
+  })();
   let committed = await services.store.commitAnalysisDecision({
     submission: record.state,
     analysis: input.analysis,
@@ -1000,6 +1069,7 @@ export async function recordVideoProcessingFailure(
   return projectVideoSubmission(
     await services.store.recordProcessingFailure({
       submission: record.state,
+      observedEventSequence: record.eventSequence,
       failureCode: input.failureCode,
       evidenceRef: input.evidenceRef,
     }),
@@ -1057,6 +1127,7 @@ export async function retryVideoPoster(
     !["poster_undecodable", "poster_timestamp_out_of_range"].includes(
       record.state.failureCode ?? "",
     ) ||
+    record.state.reconciliationRequired ||
     record.state.retryCount >= 3
   )
     throw new Conflict({
@@ -1114,6 +1185,7 @@ export async function retryVideoSubmission(
   }
   if (
     record.state.status !== "processing_failed" ||
+    record.state.reconciliationRequired ||
     record.state.retryCount >= 3 ||
     record.state.failureCode === "upload_seal_conflict"
   ) {

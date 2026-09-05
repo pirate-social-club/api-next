@@ -8,6 +8,7 @@ import { consumeDataRegistrationQueueMessage } from "@pirate/application/data/re
 import {
   applyCloudflareQueueDisposition,
   classifyWorkflowCreateBatch,
+  cloudflareDigestWorkflowId,
   isPresentWorkflowStatus,
 } from "../cloudflare-orchestration-primitives.ts";
 
@@ -37,10 +38,7 @@ export async function cloudflareDataRegistrationWorkflowId(logicalId: string): P
   if (logicalId.length === 0 || logicalId.length > 512 || logicalId !== logicalId.trim()) {
     throw new TypeError("invalid logical DATA registration Workflow identity");
   }
-  const digest = new Uint8Array(
-    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(logicalId)),
-  );
-  return `drw-${Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+  return cloudflareDigestWorkflowId("drw", logicalId);
 }
 
 export function makeCloudflareDataRegistrationWorkflowLauncher(

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createHash } from "node:crypto";
+import type { VideoStageFact } from "@pirate/application/video/stage-facts";
 import { Effect } from "effect";
 import type { Client } from "pg";
 import {
@@ -7,39 +7,52 @@ import {
   withReusablePostgresTestSchema,
 } from "../../../scripts/postgres-test-baseline.ts";
 import {
+  createVideoSubmission,
+  projectVideoSubmission,
+  renewVideoUploadParts,
+  reserveVideoUpload,
+  VIDEO_MULTIPART_PART_SIZE_BYTES,
+  type VideoPublicationServices,
+} from "../../application/src/video/publication.ts";
+import { dispatchVideoPublicationWakeups } from "../../application/src/video/publication-wakeup.ts";
+import { recoverVideoWorkflowLaunches } from "../../application/src/video/workflow-recovery.ts";
+import {
   attachVideoDecision,
-  createOriginalVideoSubmission,
   decideOriginalAudioVideo,
   publishOriginalVideo,
   type VideoTrustedAnalysis,
 } from "../../domain/src/video-submission.ts";
-import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture.ts";
 import { makeControlPlaneContentStore } from "./content-repository.ts";
 import { makePostgresDataRegistrationArtifactAuthorityReader } from "./data/registration-artifact-pipeline.ts";
 import { makeDataRegistrationStore } from "./data-registration-repository.ts";
 import { makeControlPlaneFeedStore } from "./feed-repository.ts";
-import { createActivePersonaFixture } from "./persona-wallet.pg-fixture.ts";
+import { makeControlPlanePersonaStore } from "./persona-repository.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { makeControlPlaneVideoAnalysisOutboxRepository } from "./video-analysis-outbox-repository.ts";
+import {
+  actor,
+  audioSha256,
+  community,
+  finalizedFixture,
+  operationId,
+  persona,
+  responseBytes,
+  responseSha256,
+  seedVideoActors,
+  submissionId,
+  trustedAnalysis,
+  videoSha256,
+} from "./video-publication.pg-fixture.ts";
 import { makeControlPlaneVideoPublicationStore } from "./video-publication-repository.ts";
+import { makeVideoPublicationWakeupStore } from "./video-publication-wakeup-repository.ts";
+import { makeVideoSealedSourceVerifier } from "./video-sealed-source-verifier.ts";
+import { makeControlPlaneVideoStageFactStore } from "./video-stage-fact-repository.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
 if (required && connectionString === undefined)
   throw new Error("CONTROL_PLANE_POSTGRES_TEST_URL is required for the Postgres 17 suite");
 const suite = connectionString === undefined ? describe.skip : describe;
-
-const actor = "video_publication_actor";
-const persona = "video_publication_persona";
-const community = "video_publication_community";
-const reservationId = "media-reservation-00000000-0000-4000-8000-000000000010";
-const submissionId = "media-submission-video-publication";
-const operationId = "media-operation-video-publication";
-const responseBytes = new TextEncoder().encode('{"track":"video"}');
-const sha256 = (value: Uint8Array): string => createHash("sha256").update(value).digest("hex");
-const responseSha256 = sha256(responseBytes);
-const videoSha256 = "a".repeat(64);
-const audioSha256 = "b".repeat(64);
 
 function quoteIdentifier(value: string): string {
   return `"${value.replaceAll('"', '""')}"`;
@@ -58,189 +71,530 @@ async function fixture<A>(use: (admin: Client, connection: string) => Promise<A>
       const connection = scopedConnection(connectionString, schema);
       await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
       await applyPostgresTestBaselineConnection({ connectionString: connection });
-      await admin.query("INSERT INTO users (user_id) VALUES ($1)", [actor]);
-      await admin.query(
-        `INSERT INTO communities
-          (community_id,display_name,status,created_by_user_id,created_at,updated_at)
-         VALUES ($1,'Video publication','active',$2,clock_timestamp(),clock_timestamp())`,
-        [community, actor],
-      );
-      await insertActiveCommunityMembershipFixture(admin, {
-        communityId: community,
-        membershipId: "video-publication-membership",
-        userId: actor,
-      });
-      await createActivePersonaFixture(admin, {
-        accountId: actor,
-        personaId: persona,
-        profile: { displayName: "Video Fixture", preferredLocale: "en" },
-      });
-      await admin.query(
-        `INSERT INTO persona_community_bindings
-          (persona_id,account_id,community_id,binding_source)
-         VALUES ($1,$2,$3,'persona_creation')`,
-        [persona, actor, community],
-      );
+      await seedVideoActors(admin);
       return use(admin, connection);
     },
   });
 }
 
-function trustedAnalysis(): VideoTrustedAnalysis {
-  const frames = ["poster", "first", "midpoint"].map((role, index) => ({
-    role: role as "poster" | "first" | "midpoint",
-    requestedTimestampMs: index === 0 ? 1_000 : null,
-    timestampMs: index === 0 ? 1_000 : index === 1 ? 0 : 5_000,
-    sha256: String(index + 1).repeat(64),
-    artifactRef: `media://derived/${operationId}/${role}`,
-  })) as unknown as VideoTrustedAnalysis["frames"]["extracted"];
-  return {
-    version: "video-trusted-analysis-v1",
-    operationId,
-    videoRevision: 1,
-    analysisRevision: 1,
-    finalizedVideoRef: `media://immutable/${operationId}/video/1`,
-    canonicalVideoSha256: videoSha256,
-    byteLength: 1_024,
-    mediaType: "video/mp4",
-    probe: {
-      evidenceRef: "probe:fixture",
-      ingestPolicyRevision: 1,
-      durationMs: 10_000,
-      width: 1_080,
-      height: 1_920,
-      frameRateMillihertz: 30_000,
-      videoCodec: "h264",
-      audioCodec: "aac",
-      hasAudio: true,
-    },
-    audio: {
-      intent: "original_audio",
-      soundtrack: {
-        extractedAudioRef: `media://derived/${operationId}/audio`,
-        extractedAudioSha256: audioSha256,
-        verification: {
-          status: "no_match",
-          evidenceRef: "acr:no-match",
-          adapterRevision: "acr-v1",
-        },
-        policyRevision: "extract-audio-v1",
-      },
-    },
-    frames: {
-      posterPolicyRevision: 1,
-      evidenceRef: "frames:fixture",
-      adapterRevision: "frames-v1",
-      extracted: frames,
-    },
-    safetyRequest: {
-      requestId: "safety-request-fixture",
-      frameSha256s: frames.map(({ sha256: hash }) => hash),
-      captionSha256: null,
-      evidenceRef: "safety:fixture",
-      minorSafetyEvidenceRef: "minor-safety:fixture",
-    },
-    mediaSafety: "allow",
-    captionSafety: "not_applicable",
-    automatedRating: "general",
-    safetyPolicyRevision: "safety-v1",
-    adapterRevisions: {
-      probe: "probe-v1",
-      acr: "acr-v1",
-      frames: "frames-v1",
-      safety: "safety-v1",
-    },
-  };
-}
-
 suite("video publication PostgreSQL", () => {
-  test("commits original-video publication effects atomically and replay creates no duplicate", async () => {
+  test("drill 3 launch fence: sweep converges an accepted instance after the launch lease expires", async () => {
+    await fixture(async (admin, connection) => {
+      const { layer, store } = await finalizedFixture(connection);
+      const outbox = makeControlPlaneVideoAnalysisOutboxRepository(layer);
+      const [pending] = await outbox.listEligible(10);
+      if (!pending) throw new Error("missing intent");
+      const claimed = await outbox.claim(pending.effectIdentity, "lost-worker");
+      if (!claimed) throw new Error("missing claim");
+      await admin.query(
+        `UPDATE media_video_analysis_outbox SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE effect_identity=$1`,
+        [pending.effectIdentity],
+      );
+      expect(await outbox.claim(pending.effectIdentity, "queue-redelivery")).toBeNull();
+      const instanceId = `vaw-${"a".repeat(64)}`;
+      expect(
+        await recoverVideoWorkflowLaunches({
+          outbox,
+          store,
+          launcher: {
+            inspect: async () => ({ state: "present", status: "running" }),
+            instanceId: async () => instanceId,
+          },
+        }),
+      ).toMatchObject({ recovered: 1, failed: 0 });
+      expect(await outbox.get(pending.effectIdentity)).toMatchObject({
+        state: "launched",
+        launchAttempts: 1,
+        claimFence: 2,
+      });
+      expect(await outbox.markLaunched(claimed, instanceId)).toBe(false);
+    });
+  });
+
+  test("drill 3 recovery: missing Workflow marks the launch for Queue redispatch without spending an attempt", async () => {
+    await fixture(async (_admin, connection) => {
+      const { layer, store } = await finalizedFixture(connection);
+      const outbox = makeControlPlaneVideoAnalysisOutboxRepository(layer);
+      const [pending] = await outbox.listEligible(10);
+      if (!pending) throw new Error("missing intent");
+      const claimed = await outbox.claim(pending.effectIdentity, "launch-worker");
+      if (!claimed) throw new Error("missing claim");
+      const instanceId = `vaw-${"a".repeat(64)}`;
+      await outbox.markLaunched(claimed, instanceId);
+      const result = await recoverVideoWorkflowLaunches({
+        outbox,
+        store,
+        launcher: {
+          inspect: async () => ({ state: "missing", status: null }),
+          instanceId: async () => instanceId,
+        },
+      });
+      expect(result).toMatchObject({ missing: 1, failed: 0 });
+      expect(await outbox.get(pending.effectIdentity)).toMatchObject({
+        state: "launched",
+        instanceMissing: true,
+        launchAttempts: 1,
+      });
+      expect((await outbox.listEligible(10)).map((row) => row.effectIdentity)).toEqual([
+        pending.effectIdentity,
+      ]);
+    });
+  });
+
+  test("drill 3 recovery: terminal Workflow without a PostgreSQL outcome records a typed failure", async () => {
+    await fixture(async (_admin, connection) => {
+      const { layer, store } = await finalizedFixture(connection);
+      const outbox = makeControlPlaneVideoAnalysisOutboxRepository(layer);
+      const [pending] = await outbox.listEligible(10);
+      if (!pending) throw new Error("missing intent");
+      const claimed = await outbox.claim(pending.effectIdentity, "launch-worker");
+      if (!claimed) throw new Error("missing claim");
+      const instanceId = `vaw-${"a".repeat(64)}`;
+      await outbox.markLaunched(claimed, instanceId);
+      expect(
+        await recoverVideoWorkflowLaunches({
+          outbox,
+          store,
+          launcher: {
+            inspect: async () => ({ state: "terminal", status: "errored" }),
+            instanceId: async () => instanceId,
+          },
+        }),
+      ).toMatchObject({ terminal: 1, failed: 0 });
+      expect(
+        (await store.getSubmissionByOperation({ submissionId, operationId }))?.state,
+      ).toMatchObject({ status: "processing_failed", failureCode: "transform_failed" });
+      await expect(
+        outbox.loadOrCreate({
+          submissionId,
+          capability: "probe",
+          binding: {
+            requestId: "too-late",
+            operationId,
+            creationRevision: 1,
+            videoRevision: 1,
+            analysisRevision: 1,
+            canonicalVideoSha256: videoSha256,
+          },
+          initialAttempt: {
+            version: "media-transform-attempt-v1",
+            runtimeFence: { submittedAtMs: 0, runtimeDeadlineMs: 10000 },
+          },
+        }),
+      ).rejects.toMatchObject({ reason: "invalid-row" });
+      expect(await outbox.listForReconciliation(10)).toEqual([]);
+    });
+  });
+
+  for (const { accepted, phase } of [
+    { accepted: false, phase: "started" },
+    { accepted: false, phase: "submitting" },
+    { accepted: true, phase: "started" },
+    { accepted: false, phase: "allocated" },
+  ]) {
+    test(`terminal sweep ${phase}: ${phase === "submitting" && !accepted ? "requires reconciliation for ambiguous submission" : "continues safely from durable work"}`, async () => {
+      await fixture(async (admin, connection) => {
+        const { layer, store, finalized } = await finalizedFixture(connection);
+        const outbox = makeControlPlaneVideoAnalysisOutboxRepository(layer);
+        const [pending] = await outbox.listEligible(10);
+        if (!pending) throw new Error("missing intent");
+        const claimed = await outbox.claim(pending.effectIdentity, "sweep-fixture");
+        if (!claimed) throw new Error("missing claim");
+        const instanceId = `vaw-${"a".repeat(64)}`;
+        await outbox.markLaunched(claimed, instanceId);
+        await admin.query(
+          `INSERT INTO media_video_transform_attempts
+          (request_id,submission_id,operation_id,video_revision,creation_revision,analysis_revision,
+           canonical_video_sha256,capability,submitted_at_ms,runtime_deadline_ms,provider_job_id,provider_job_phase)
+          VALUES ('sweep-task',$1,$2,1,1,1,$3,'probe',0,10000,'provider-task',$4)`,
+          [submissionId, operationId, videoSha256, phase],
+        );
+        if (accepted) {
+          const analysis = trustedAnalysis();
+          const soundtrack = analysis.audio.soundtrack;
+          if (soundtrack.verification === null) throw new Error("fixture requires recognition");
+          const facts: VideoStageFact[] = [
+            {
+              stage: "probe",
+              adapterRevision: "qencode-v1",
+              snapshot: analysis.probe,
+              artifacts: [],
+            },
+            {
+              stage: "audio",
+              adapterRevision: "qencode-v1",
+              snapshot: {
+                artifactRef: soundtrack.extractedAudioRef,
+                canonicalSha256: soundtrack.extractedAudioSha256,
+                sourceSha256: videoSha256,
+                videoRevision: 1,
+                mediaType: "audio/mp4",
+                policyRevision: soundtrack.policyRevision,
+                adapterRevision: "qencode-v1",
+              },
+              artifacts: [
+                {
+                  artifactRef: soundtrack.extractedAudioRef,
+                  canonicalSha256: soundtrack.extractedAudioSha256,
+                  sizeBytes: 42,
+                  contentType: "audio/mp4",
+                },
+              ],
+            },
+            {
+              stage: "frames",
+              adapterRevision: "frames-v1",
+              snapshot: {
+                evidenceRef: analysis.frames.evidenceRef,
+                adapterRevision: "frames-v1",
+                sourceSha256: videoSha256,
+                videoRevision: 1,
+                posterPolicyRevision: 1,
+                frames: analysis.frames.extracted,
+              },
+              artifacts: analysis.frames.extracted.map((frame) => ({
+                artifactRef: frame.artifactRef,
+                canonicalSha256: frame.sha256,
+                sizeBytes: 42,
+                contentType: "image/jpeg",
+              })),
+            },
+            {
+              stage: "recognition",
+              adapterRevision: "acr-v1",
+              snapshot: {
+                verification: soundtrack.verification,
+                evidenceRef: "acr:fixture",
+                adapterRevision: "acr-v1",
+              },
+              artifacts: [],
+            },
+            {
+              stage: "safety",
+              adapterRevision: "safety-v1",
+              snapshot: {
+                requestId: analysis.safetyRequest.requestId,
+                evidenceRef: analysis.safetyRequest.evidenceRef,
+                minorSafetyEvidenceRef: analysis.safetyRequest.minorSafetyEvidenceRef,
+                mediaSafety: analysis.mediaSafety,
+                captionSafety: analysis.captionSafety,
+                automatedRating: analysis.automatedRating,
+                policyRevision: analysis.safetyPolicyRevision,
+                adapterRevision: "safety-v1",
+              },
+              artifacts: [],
+            },
+          ];
+          const factStore = makeControlPlaneVideoStageFactStore(layer);
+          for (const fact of facts)
+            await factStore.write({
+              submission: finalized.state,
+              observedEventSequence: finalized.eventSequence,
+              fact,
+            });
+          expect(
+            await factStore.read({ submissionId, videoRevision: 1, creationRevision: 1 }),
+          ).toHaveLength(5);
+        }
+
+        const result = await recoverVideoWorkflowLaunches({
+          outbox,
+          store,
+          launcher: {
+            inspect: async () => ({ state: "terminal", status: "errored" }),
+            instanceId: async () => instanceId,
+          },
+        });
+        const required = !accepted && phase === "submitting";
+        expect(result).toMatchObject({
+          terminal: required ? 1 : 0,
+          failed: 0,
+          recovered: required ? 0 : 1,
+        });
+        const current = await store.getSubmissionByOperation({ submissionId, operationId });
+        expect(current?.state.status).toBe(required ? "processing_failed" : "processing");
+        expect(current?.state.reconciliationRequired).toBe(required);
+        if (!required) expect(current?.eventSequence).toBe(finalized.eventSequence);
+        else if (current)
+          expect(projectVideoSubmission(current)).toMatchObject({ retryable: false });
+        const continued = await outbox.get(pending.effectIdentity);
+        expect(continued?.continuation).toBe(required ? 0 : 1);
+        if (!required) {
+          expect(continued?.state).toBe("pending");
+          expect(continued?.workflowInstanceId).toBeNull();
+          const nextClaim = await outbox.claim(pending.effectIdentity, "continuation-launcher");
+          if (!nextClaim) throw new Error("missing continuation claim");
+          const nextId = `vaw-${"b".repeat(64)}`;
+          expect(await outbox.markLaunched(nextClaim, nextId)).toBe(true);
+          expect((await outbox.get(pending.effectIdentity))?.workflowInstanceId).toBe(nextId);
+          expect(await outbox.scheduleContinuation(claimed, finalized.eventSequence)).toBe(false);
+        }
+        const attempt = await admin.query(
+          "SELECT reconciliation_state,last_observation FROM media_video_transform_attempts WHERE request_id='sweep-task'",
+        );
+        expect(attempt.rows[0]?.reconciliation_state).toBe(required ? "required" : "none");
+        if (required) expect(attempt.rows[0]?.last_observation.status).toBe("workflow_terminal");
+      });
+    });
+  }
+
+  for (const phase of ["allocated", "started"] as const) {
+    test(`continuation cap requires reconciliation on third terminal ${phase}`, async () => {
+      await fixture(async (admin, connection) => {
+        const { layer, store, finalized } = await finalizedFixture(connection);
+        const outbox = makeControlPlaneVideoAnalysisOutboxRepository(layer);
+        const [pending] = await outbox.listEligible(10);
+        if (!pending) throw new Error("missing intent");
+        await admin.query(
+          `INSERT INTO media_video_transform_attempts
+          (request_id,submission_id,operation_id,video_revision,creation_revision,analysis_revision,
+           canonical_video_sha256,capability,submitted_at_ms,runtime_deadline_ms,provider_job_id,provider_job_phase)
+          VALUES ('capped-task',$1,$2,1,1,1,$3,'probe',0,10000,'provider-task',$4)`,
+          [submissionId, operationId, videoSha256, phase],
+        );
+        for (let continuation = 0; continuation <= 2; continuation++) {
+          const claim = await outbox.claim(pending.effectIdentity, "cap-fixture");
+          if (!claim) throw new Error("missing claim");
+          expect(claim.continuation).toBe(continuation);
+          await outbox.markLaunched(claim, `vaw-${String(continuation + 1).repeat(64)}`);
+          const result = await recoverVideoWorkflowLaunches({
+            outbox,
+            store,
+            launcher: {
+              inspect: async () => ({ state: "terminal", status: "errored" }),
+              instanceId: async () => `vaw-${String(continuation + 1).repeat(64)}`,
+            },
+          });
+          expect(result).toMatchObject({
+            failed: 0,
+            recovered: continuation < 2 ? 1 : 0,
+            terminal: continuation === 2 ? 1 : 0,
+          });
+        }
+        const current = await store.getSubmissionByOperation({ submissionId, operationId });
+        expect(current?.state.reconciliationRequired).toBe(true);
+        expect(current?.state.creationRevision).toBe(finalized.state.creationRevision);
+        if (current) expect(projectVideoSubmission(current)).toMatchObject({ retryable: false });
+        expect((await outbox.get(pending.effectIdentity))?.continuation).toBe(2);
+        expect(await outbox.listEligible(10)).toEqual([]);
+      });
+    });
+  }
+
+  test("drill 3 recovery: a transition during status inspection fences the stale terminal failure", async () => {
+    await fixture(async (admin, connection) => {
+      const { layer, store } = await finalizedFixture(connection);
+      const outbox = makeControlPlaneVideoAnalysisOutboxRepository(layer);
+      const [pending] = await outbox.listEligible(10);
+      if (!pending) throw new Error("missing intent");
+      const claimed = await outbox.claim(pending.effectIdentity, "launch-worker");
+      if (!claimed) throw new Error("missing claim");
+      const instanceId = `vaw-${"a".repeat(64)}`;
+      await outbox.markLaunched(claimed, instanceId);
+      const before = await store.getSubmissionByOperation({ submissionId, operationId });
+      if (!before) throw new Error("missing submission");
+      const result = await recoverVideoWorkflowLaunches({
+        outbox,
+        store,
+        launcher: {
+          inspect: async () => {
+            // Same creation/video/analysis revisions: only the committed event
+            // fence distinguishes the newer publication phase from the read.
+            await admin.query(
+              `UPDATE media_post_submissions SET event_sequence=event_sequence+1,updated_at=clock_timestamp(),
+                 phase='publish',video_state_snapshot=jsonb_set(video_state_snapshot,'{phase}','"publish"')
+               WHERE submission_id=$1`,
+              [submissionId],
+            );
+            return { state: "terminal", status: "complete" };
+          },
+          instanceId: async () => instanceId,
+        },
+      });
+      expect(result).toMatchObject({ terminal: 0, failed: 1 });
+      const after = await store.getSubmissionByOperation({ submissionId, operationId });
+      expect(after?.state).toMatchObject({
+        status: "processing",
+        phase: "publish",
+        failureCode: null,
+      });
+      expect(after?.eventSequence).toBe(before.eventSequence + 1);
+      await expect(
+        store.recordProcessingFailure({
+          submission: before.state,
+          observedEventSequence: before.eventSequence,
+          failureCode: "transform_failed",
+          evidenceRef: "stale-launch-exhaustion",
+        }),
+      ).rejects.toThrow();
+    });
+  });
+
+  test("renews one expired part after claim without changing other parts or the reservation deadline", async () => {
     await fixture(async (admin, connection) => {
       const layer = makeDirectPostgresControlPlaneLayer(connection);
       const store = makeControlPlaneVideoPublicationStore(layer);
-      const reservationResponse = new TextEncoder().encode('{"reservation_id":"fixture"}');
-      const reservationResponseSha = sha256(reservationResponse);
-      await store.createReservation({
-        record: {
-          reservationId,
-          communityId: community,
-          actorAccountId: actor,
-          authorPersonaId: persona,
-          requestHash: "c".repeat(64),
-          expectedContentType: "video/mp4",
-          expectedSizeBytes: 1_024,
-          expectedSha256: videoSha256,
-          ingestPolicyRevision: 1,
-          uploadId: "multipart-upload-fixture",
-          partSizeBytes: 10 * 1024 * 1024,
-          partCount: 1,
-          expiresAt: "2099-09-04T01:00:00.000Z",
-          state: "issued",
-          submissionId: null,
-          operationId: null,
-          manifest: null,
-          responseBytes: reservationResponse,
-          updatedAt: "2026-09-04T00:00:00.000Z",
-        },
-        idempotencyKey: "reserve-fixture",
-        responseSha256: reservationResponseSha,
-        parts: [
-          {
-            partNumber: 1,
-            url: "https://upload.invalid/part-one",
-            expiresAt: "2099-09-04T01:00:00.000Z",
+      let now = new Date().toISOString();
+      const deadline = new Date(Date.parse(now) + 3_600_000).toISOString();
+      let renewals = 0;
+      const unused = async (): Promise<never> => {
+        throw new Error("unexpected upload effect");
+      };
+      const services: VideoPublicationServices = {
+        store,
+        personaServices: { personaStore: makeControlPlanePersonaStore(layer) },
+        nowIso: () => now,
+        randomUuid: () => crypto.randomUUID(),
+        sealer: { inspect: unused, seal: unused },
+        multipart: {
+          create: async ({ partCount, partSizeBytes }) => ({
+            uploadId: "renew-upload",
+            partCount,
+            partSizeBytes,
+            expiresAt: deadline,
+            parts: [1, 2].map((partNumber) => ({
+              partNumber,
+              url: `https://upload.invalid/original/${partNumber}`,
+              expiresAt: deadline,
+            })),
+          }),
+          renew: async ({ partNumbers, expiresInSeconds }) => {
+            renewals++;
+            expect(partNumbers).toEqual([2]);
+            expect(expiresInSeconds).toBe(1_800);
+            return [
+              { partNumber: 2, url: "https://upload.invalid/renewed/2", expiresAt: deadline },
+            ];
           },
+          completeOrInspect: unused,
+          abort: unused,
+        },
+      };
+      const author = { kind: "user" as const, userId: actor };
+      const reserved = await reserveVideoUpload(
+        {
+          communityId: community,
+          actor: author,
+          body: {
+            track: "video",
+            slot: "primary_video",
+            intent: "original_audio",
+            persona_id: persona,
+            idempotency_key: "reserve-renew",
+            expected_content_type: "video/mp4",
+            expected_size_bytes: VIDEO_MULTIPART_PART_SIZE_BYTES + 1,
+          },
+        },
+        services,
+      );
+      const id = reserved.reservation_id;
+      await createVideoSubmission(
+        {
+          communityId: community,
+          actor: author,
+          body: {
+            version: "video-start-input-v1",
+            persona_id: persona,
+            video_reservation_id: id,
+            idempotency_key: "start-renew",
+          },
+        },
+        services,
+      );
+      await admin.query(
+        "UPDATE media_video_upload_parts SET expires_at=clock_timestamp()-interval '1 second' WHERE reservation_id=$1 AND part_number=2",
+        [id],
+      );
+      now = new Date(Date.parse(deadline) - 1_800_000).toISOString();
+      const input = {
+        reservationId: id,
+        actor: author,
+        body: {
+          persona_id: persona,
+          reservation_id: id,
+          part_numbers: [2],
+          idempotency_key: "renew-part-two",
+        },
+      };
+      const renewed = await renewVideoUploadParts(input, services);
+      expect(renewed.upload.parts.map((part) => part.part_number)).toEqual([2]);
+      expect(await renewVideoUploadParts(input, services)).toEqual(renewed);
+      expect(renewals).toBe(1);
+      await expect(
+        renewVideoUploadParts({ ...input, body: { ...input.body, part_numbers: [1] } }, services),
+      ).rejects.toMatchObject({ _tag: "IdempotencyConflict" });
+      const parts = await admin.query(
+        "SELECT part_number,presigned_url FROM media_video_upload_parts WHERE reservation_id=$1 ORDER BY part_number",
+        [id],
+      );
+      expect(parts.rows).toEqual([
+        { part_number: 1, presigned_url: "https://upload.invalid/original/1" },
+        { part_number: 2, presigned_url: "https://upload.invalid/renewed/2" },
+      ]);
+      expect(
+        await store.getReservationForAccount({ reservationId: id, actorAccountId: actor }),
+      ).toMatchObject({ state: "claimed", expiresAt: deadline });
+      now = deadline;
+      await expect(
+        renewVideoUploadParts(
+          { ...input, body: { ...input.body, idempotency_key: "renew-expired" } },
+          services,
+        ),
+      ).rejects.toMatchObject({ details: { reason_code: "action_expired" } });
+      expect(renewals).toBe(1);
+      now = new Date(Date.parse(deadline) - 1_800_000).toISOString();
+      const reservation = await store.getReservationForAccount({
+        reservationId: id,
+        actorAccountId: actor,
+      });
+      if (reservation?.submissionId == null || reservation.operationId == null)
+        throw new Error("missing claimed reservation");
+      const submission = await store.getSubmissionByOperation({
+        submissionId: reservation.submissionId,
+        operationId: reservation.operationId,
+      });
+      if (submission === null) throw new Error("missing submission");
+      await store.beginFinalize({
+        submission: submission.state,
+        expectedCreationRevision: 1,
+        posterTimestampMs: 0,
+        manifest: [
+          { partNumber: 1, etag: "retained-etag" },
+          { partNumber: 2, etag: "renewed-etag" },
         ],
       });
-      const initial = createOriginalVideoSubmission({
-        submissionId,
-        operationId,
-        communityId: community,
-        actorAccountId: actor,
-        authorPersonaId: persona,
-        reservationId,
-        caption: null,
-        authorDeclaredRating: "general",
-      });
-      await store.createSubmission({
-        state: initial,
-        idempotencyKey: "create-fixture",
-        requestHash: "d".repeat(64),
-        startInput: { version: "video-start-input-v1", video_reservation_id: reservationId },
-        responseBytes,
-        responseSha256,
-      });
-      await store.beginFinalize({
-        submission: initial,
-        expectedCreationRevision: 1,
-        posterTimestampMs: 1_000,
-        manifest: [{ partNumber: 1, etag: "etag-one" }],
-      });
-      await store.recordMultipartCompleted({
-        submission: initial,
-        manifest: [{ partNumber: 1, etag: "etag-one" }],
-      });
-      await store.finalizeSealed({
-        submission: initial,
-        expectedCreationRevision: 1,
-        immutable: {
-          immutableRef: `media://immutable/${operationId}/video/1`,
-          destinationRef: `r2://immutable/${operationId}/video/1`,
-          etag: "immutable-etag",
-          objectVersion: "immutable-version",
-          sizeBytes: 1_024,
-          contentType: "video/mp4",
-          canonicalSha256: videoSha256,
-        },
-        responseBytes,
-        responseSha256,
-        endpointTemplate: "/media-post-submissions/:submissionId/finalize",
-        idempotencyKey: "finalize-fixture",
-        requestHash: "e".repeat(64),
-      });
-      const finalized = await store.getSubmissionByOperation({ submissionId, operationId });
-      expect(finalized?.state.phase).toBe("analysis");
-      if (finalized === null) throw new Error("finalized fixture missing");
+      await expect(
+        renewVideoUploadParts(
+          { ...input, body: { ...input.body, idempotency_key: "renew-after-finalize" } },
+          services,
+        ),
+      ).rejects.toMatchObject({ details: { reason_code: "action_expired" } });
+      await expect(
+        store.renewParts({
+          reservation,
+          endpointTemplate: "/media-upload-reservations/:reservationId/parts/renew",
+          idempotencyKey: "stale-renewal",
+          requestHash: "f".repeat(64),
+          responseBytes,
+          responseSha256,
+          parts: [{ partNumber: 2, url: "https://upload.invalid/stale", expiresAt: deadline }],
+        }),
+      ).rejects.toThrow("video reservation action expired");
+      expect(renewals).toBe(1);
+    });
+  });
+
+  test("commits original-video publication effects atomically and replay creates no duplicate", async () => {
+    await fixture(async (admin, connection) => {
+      const { layer, store, finalized } = await finalizedFixture(connection);
+      await expect(
+        store.recordProcessingFailure({
+          submission: { ...finalized.state, creationRevision: 0 },
+          observedEventSequence: finalized.eventSequence,
+          failureCode: "transform_failed",
+          evidenceRef: "workflow:stale-creation",
+        }),
+      ).rejects.toThrow("video processing failure fence rejected");
       const analysisOutbox = makeControlPlaneVideoAnalysisOutboxRepository(layer, {
         leaseSeconds: 60,
         retryBaseMs: 1,
@@ -249,6 +603,7 @@ suite("video publication PostgreSQL", () => {
       const transformBinding = {
         operationId,
         videoRevision: 1,
+        creationRevision: 1,
         analysisRevision: 1,
         canonicalVideoSha256: videoSha256,
         requestId: `${operationId}:probe:v1:a1`,
@@ -290,6 +645,20 @@ suite("video publication PostgreSQL", () => {
         ...allocatedTransformAttempt,
         providerJobPhase: "started" as const,
       };
+      await expect(
+        analysisOutbox.advance({
+          submissionId,
+          binding: transformBinding,
+          capability: "probe",
+          attempt: startedTransformAttempt,
+        }),
+      ).rejects.toMatchObject({ reason: "invalid-row" });
+      await analysisOutbox.advance({
+        submissionId,
+        binding: transformBinding,
+        capability: "probe",
+        attempt: { ...allocatedTransformAttempt, providerJobPhase: "submitting" },
+      });
       expect(
         await analysisOutbox.advance({
           submissionId,
@@ -326,67 +695,28 @@ suite("video publication PostgreSQL", () => {
         "video-analysis-worker-1",
       );
       if (firstClaim === null) throw new Error("video analysis claim missing");
-      expect(firstClaim).toMatchObject({ state: "running", deliveryAttempts: 1, claimFence: 1 });
-      expect(
-        await analysisOutbox.claim(firstClaim.effectIdentity, "video-analysis-worker-2"),
-      ).toBeNull();
-      expect(await analysisOutbox.defer(firstClaim, 1)).toBe(true);
-      await admin.query(
-        `UPDATE media_video_analysis_outbox
-            SET next_eligible_at=clock_timestamp()-interval '1 second'
-          WHERE effect_identity=$1`,
-        [firstClaim.effectIdentity],
-      );
-      const polledClaim = await analysisOutbox.claim(
-        firstClaim.effectIdentity,
-        "video-analysis-worker-2",
-      );
-      if (polledClaim === null) throw new Error("deferred video analysis was not reclaimed");
-      expect(polledClaim).toMatchObject({
-        state: "running",
-        deliveryAttempts: 1,
-        claimFence: 2,
-        claimOwner: "video-analysis-worker-2",
-      });
-      await admin.query(
-        `UPDATE media_video_analysis_outbox
-            SET lease_expires_at=clock_timestamp()-interval '1 second'
-          WHERE effect_identity=$1`,
-        [firstClaim.effectIdentity],
-      );
-      expect((await analysisOutbox.listEligible(10)).map((row) => row.effectIdentity)).toEqual([
-        firstClaim.effectIdentity,
-      ]);
-      const recoveredClaim = await analysisOutbox.claim(
-        firstClaim.effectIdentity,
-        "video-analysis-worker-2",
-      );
-      if (recoveredClaim === null)
-        throw new Error("expired video analysis lease was not recovered");
-      expect(recoveredClaim).toMatchObject({
-        state: "running",
-        deliveryAttempts: 2,
-        claimFence: 3,
-        claimOwner: "video-analysis-worker-2",
-      });
-      expect(await analysisOutbox.complete(firstClaim)).toBe(false);
-      expect(await analysisOutbox.fail(recoveredClaim, "provider_timeout")).toBe(true);
-      await admin.query(
-        `UPDATE media_video_analysis_outbox
-            SET next_eligible_at=clock_timestamp()-interval '1 second'
-          WHERE effect_identity=$1`,
-        [firstClaim.effectIdentity],
-      );
-      const finalClaim = await analysisOutbox.claim(
-        firstClaim.effectIdentity,
-        "video-analysis-worker-3",
-      );
-      if (finalClaim === null) throw new Error("failed video analysis was not replayed");
-      expect(finalClaim.deliveryAttempts).toBe(3);
-      expect(await analysisOutbox.fail(finalClaim, "provider_unavailable")).toBe(true);
+      expect(firstClaim).toMatchObject({ state: "launching", launchAttempts: 1, claimFence: 1 });
+      expect(await analysisOutbox.claim(firstClaim.effectIdentity, "other-worker")).toBeNull();
+      const instanceId = `vaw-${"a".repeat(64)}`;
+      expect(await analysisOutbox.markLaunched(firstClaim, instanceId)).toBe(true);
+      expect(await analysisOutbox.markLaunched(firstClaim, instanceId)).toBe(false);
+      expect(await analysisOutbox.listEligible(10)).toEqual([]);
+      const launched = await analysisOutbox.get(firstClaim.effectIdentity);
+      if (launched === null) throw new Error("launch record missing");
+      expect(await analysisOutbox.markInstanceMissing(launched)).toBe(true);
+      expect((await analysisOutbox.get(firstClaim.effectIdentity))?.launchAttempts).toBe(1);
+      const recovered = await analysisOutbox.claim(firstClaim.effectIdentity, "recovery-worker");
+      if (recovered === null) throw new Error("missing instance not eligible");
+      expect(recovered.launchAttempts).toBe(2);
+      expect(await analysisOutbox.markRetryWait(recovered, "provider_timeout")).toBe(true);
+      const finalClaim = await analysisOutbox.claim(firstClaim.effectIdentity, "final-worker");
+      if (finalClaim === null) throw new Error("retry not eligible");
+      expect(finalClaim.launchAttempts).toBe(3);
+      expect(await analysisOutbox.markRetryWait(finalClaim, "provider_unavailable")).toBe(false);
+      expect(await analysisOutbox.markExhausted(finalClaim)).toBe(true);
       expect(await analysisOutbox.get(firstClaim.effectIdentity)).toMatchObject({
         state: "exhausted",
-        deliveryAttempts: 3,
+        launchAttempts: 3,
       });
       expect(await analysisOutbox.listEligible(10)).toEqual([]);
       const baseAnalysis = trustedAnalysis();
@@ -596,4 +926,496 @@ suite("video publication PostgreSQL", () => {
       });
     });
   });
+  test("attempt reconciliation atomically fences technical and poster retries and their projection", async () => {
+    await fixture(async (admin, connection) => {
+      const { store, finalized } = await finalizedFixture(connection);
+      await admin.query(
+        `INSERT INTO media_video_transform_attempts
+        (request_id,submission_id,operation_id,video_revision,creation_revision,analysis_revision,
+         canonical_video_sha256,capability,submitted_at_ms,runtime_deadline_ms,provider_job_id,provider_job_phase)
+        VALUES ('uncertain-task',$1,$2,1,1,1,$3,'frames',0,10000,'provider-task','submitting')`,
+        [submissionId, operationId, videoSha256],
+      );
+      const pending = await store.enterAttemptReconciliation({
+        submission: finalized.state,
+        observedEventSequence: finalized.eventSequence,
+        requestId: "uncertain-task",
+        state: "pending",
+        observation: { status: "not_found", observedAt: "2026-09-05T00:00:00Z" },
+      });
+      expect(pending).toEqual(finalized);
+      expect(await store.getSubmissionByOperation({ submissionId, operationId })).toEqual(
+        finalized,
+      );
+      const pendingAttempt = await admin.query(
+        "SELECT reconciliation_state FROM media_video_transform_attempts WHERE request_id='uncertain-task'",
+      );
+      expect(pendingAttempt.rows[0]?.reconciliation_state).toBe("pending");
+      const reconciled = await store.enterAttemptReconciliation({
+        submission: finalized.state,
+        observedEventSequence: finalized.eventSequence,
+        requestId: "uncertain-task",
+        state: "required",
+        observation: { status: "not_found", observedAt: "2026-09-05T00:00:00Z" },
+      });
+      expect(reconciled.state.reconciliationRequired).toBe(true);
+      const projection = projectVideoSubmission(reconciled);
+      expect(projection.status).toBe("processing_failed");
+      expect(projection).toMatchObject({ retryable: false });
+      const attempt = await admin.query(
+        "SELECT reconciliation_state,reconciliation_evidence_ref FROM media_video_transform_attempts WHERE request_id='uncertain-task'",
+      );
+      expect(attempt.rows[0]).toEqual({
+        reconciliation_state: "required",
+        reconciliation_evidence_ref: "video-submission-unconfirmed:uncertain-task",
+      });
+      const stillRequired = await store.enterAttemptReconciliation({
+        submission: reconciled.state,
+        observedEventSequence: reconciled.eventSequence,
+        requestId: "uncertain-task",
+        state: "pending",
+        observation: { status: "processing", observedAt: "2026-09-05T00:01:00Z" },
+      });
+      expect(stillRequired.state).toEqual(reconciled.state);
+      expect(stillRequired.eventSequence).toBe(reconciled.eventSequence);
+      const requiredAttempt = await admin.query(
+        "SELECT reconciliation_state FROM media_video_transform_attempts WHERE request_id='uncertain-task'",
+      );
+      expect(requiredAttempt.rows[0]?.reconciliation_state).toBe("required");
+      const command = {
+        submission: reconciled.state,
+        endpointTemplate: "/media-post-submissions/:submissionId/retry",
+        idempotencyKey: "retry-blocked",
+        requestHash: "1".repeat(64),
+        responseBytes,
+        responseSha256,
+      };
+      await expect(store.retryTechnical(command)).rejects.toThrow("video technical retry rejected");
+      // Even a poster-specific failure must retain the independent uncertainty fence.
+      await admin.query(
+        `UPDATE media_post_submissions SET failure_code='poster_undecodable',
+        video_state_snapshot=jsonb_set(video_state_snapshot,'{failureCode}','"poster_undecodable"'),
+        event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE submission_id=$1`,
+        [submissionId],
+      );
+      await expect(store.retryPoster({ ...command, posterTimestampMs: 2000 })).rejects.toThrow(
+        "poster retry rejected",
+      );
+      const current = await store.getSubmissionByOperation({ submissionId, operationId });
+      expect(current?.state.creationRevision).toBe(1);
+      expect(current?.state.retryCount).toBe(0);
+      expect(current?.state.reconciliationRequired).toBe(true);
+    });
+  });
+
+  for (const outcome of ["completed", "failed", "workflow_terminal"] as const) {
+    test(`reconciliation resolution: required through ${outcome}`, async () => {
+      await fixture(async (admin, connection) => {
+        const { store, finalized } = await finalizedFixture(connection);
+        await admin.query(
+          `INSERT INTO media_video_transform_attempts
+          (request_id,submission_id,operation_id,video_revision,creation_revision,analysis_revision,
+           canonical_video_sha256,capability,submitted_at_ms,runtime_deadline_ms,provider_job_id,provider_job_phase)
+          VALUES ('resolve-task',$1,$2,1,1,1,$3,'probe',0,10000,'provider-task','submitting')`,
+          [submissionId, operationId, videoSha256],
+        );
+        const required = await store.enterAttemptReconciliation({
+          submission: finalized.state,
+          observedEventSequence: finalized.eventSequence,
+          requestId: "resolve-task",
+          state: "required",
+          observation: { status: "not_found", observedAt: "2026-09-05T00:00:00Z" },
+        });
+        const input = {
+          submission: required.state,
+          observedEventSequence: required.eventSequence,
+          requestId: "resolve-task",
+          observation:
+            outcome === "completed"
+              ? {
+                  status: "completed" as const,
+                  observedAt: "2026-09-05T00:01:00Z",
+                  fact: {
+                    stage: "probe" as const,
+                    adapterRevision: "qencode-v1",
+                    snapshot: trustedAnalysis().probe,
+                    artifacts: [],
+                  },
+                }
+              : {
+                  status: outcome,
+                  evidenceRef: "provider:confirmed",
+                  observedAt: "2026-09-05T00:01:00Z",
+                },
+        };
+        await expect(
+          store.resolveAttemptReconciliation({
+            ...input,
+            observedEventSequence: required.eventSequence - 1,
+          }),
+        ).rejects.toThrow("video reconciliation resolution fence rejected");
+        const resolved = await store.resolveAttemptReconciliation(input);
+        expect(resolved.state.reconciliationRequired).toBe(outcome === "workflow_terminal");
+        expect(resolved.state.status).toBe(
+          outcome === "completed" ? "processing" : "processing_failed",
+        );
+        expect(resolved.state.phase).toBe(outcome === "completed" ? "analysis" : null);
+        expect(resolved.state.retryCount).toBe(0);
+        if (outcome !== "completed")
+          expect(projectVideoSubmission(resolved)).toMatchObject({
+            retryable: outcome === "failed",
+          });
+        const facts = await admin.query(
+          "SELECT fact_snapshot FROM media_video_stage_facts WHERE submission_id=$1",
+          [submissionId],
+        );
+        expect(facts.rows.length).toBe(outcome === "completed" ? 1 : 0);
+        if (outcome === "completed")
+          expect(facts.rows[0]?.fact_snapshot.snapshot).toEqual(trustedAnalysis().probe);
+        const attempt = await admin.query(
+          "SELECT reconciliation_state FROM media_video_transform_attempts WHERE request_id='resolve-task'",
+        );
+        expect(attempt.rows[0]?.reconciliation_state).toBe(
+          outcome === "workflow_terminal" ? "required" : "resolved",
+        );
+      });
+    });
+  }
+
+  test("stage facts accept identical replay, reject divergent replay and fence stale authority", async () => {
+    await fixture(async (_admin, connection) => {
+      const { layer, finalized } = await finalizedFixture(connection);
+      const facts = makeControlPlaneVideoStageFactStore(layer);
+      const fact = {
+        stage: "probe" as const,
+        adapterRevision: "qencode-v1",
+        snapshot: trustedAnalysis().probe,
+        artifacts: [],
+      };
+      const input = {
+        submission: finalized.state,
+        observedEventSequence: finalized.eventSequence,
+        fact,
+      };
+      expect(await facts.write(input)).toEqual(fact);
+      expect(
+        await facts.write({ ...input, fact: { ...fact, snapshot: { ...fact.snapshot } } }),
+      ).toEqual(fact);
+      await expect(
+        facts.write({
+          ...input,
+          fact: { ...fact, snapshot: { ...fact.snapshot, durationMs: 9999 } },
+        }),
+      ).rejects.toThrow("video stage fact invariant rejected");
+      await expect(
+        facts.write({ ...input, observedEventSequence: finalized.eventSequence - 1 }),
+      ).rejects.toThrow("video stage fact authority rejected");
+      expect(await facts.read({ submissionId, videoRevision: 1, creationRevision: 1 })).toEqual([
+        fact,
+      ]);
+      expect(await facts.read({ submissionId, videoRevision: 1, creationRevision: 2 })).toEqual([]);
+    });
+  });
+
+  test("reconciliation resolution rolls back on a divergent immutable fact", async () => {
+    await fixture(async (admin, connection) => {
+      const { store, finalized } = await finalizedFixture(connection);
+      await admin.query(
+        `INSERT INTO media_video_transform_attempts
+        (request_id,submission_id,operation_id,video_revision,creation_revision,analysis_revision,
+         canonical_video_sha256,capability,submitted_at_ms,runtime_deadline_ms,provider_job_id,provider_job_phase)
+        VALUES ('conflict-task',$1,$2,1,1,1,$3,'probe',0,10000,'provider-task','started')`,
+        [submissionId, operationId, videoSha256],
+      );
+      const required = await store.enterAttemptReconciliation({
+        submission: finalized.state,
+        observedEventSequence: finalized.eventSequence,
+        requestId: "conflict-task",
+        state: "required",
+        observation: { status: "not_found", observedAt: "2026-09-05T00:00:00Z" },
+      });
+      await admin.query(
+        `INSERT INTO media_video_stage_facts
+        (submission_id,video_revision,creation_revision,stage,analysis_revision,adapter_revision,fact_snapshot)
+        VALUES ($1,1,1,'probe',1,'qencode-v1',$2::jsonb)`,
+        [submissionId, JSON.stringify({ ...trustedAnalysis().probe, durationMs: 9999 })],
+      );
+      await expect(
+        store.resolveAttemptReconciliation({
+          submission: required.state,
+          observedEventSequence: required.eventSequence,
+          requestId: "conflict-task",
+          observation: {
+            status: "completed",
+            observedAt: "2026-09-05T00:01:00Z",
+            fact: {
+              stage: "probe",
+              adapterRevision: "qencode-v1",
+              snapshot: trustedAnalysis().probe,
+              artifacts: [],
+            },
+          },
+        }),
+      ).rejects.toThrow("video stage fact invariant rejected");
+      expect(
+        (await store.getSubmissionByOperation({ submissionId, operationId }))?.eventSequence,
+      ).toBe(required.eventSequence);
+      const attempt = await admin.query(
+        "SELECT reconciliation_state FROM media_video_transform_attempts WHERE request_id='conflict-task'",
+      );
+      expect(attempt.rows[0]?.reconciliation_state).toBe("required");
+    });
+  });
+
+  test("reconciliation resolution preserves another attempt's prohibition and confirmed failure", async () => {
+    await fixture(async (admin, connection) => {
+      const { store, finalized } = await finalizedFixture(connection);
+      for (const capability of ["probe", "frames"] as const) {
+        await admin.query(
+          `INSERT INTO media_video_transform_attempts
+          (request_id,submission_id,operation_id,video_revision,creation_revision,analysis_revision,
+           canonical_video_sha256,capability,submitted_at_ms,runtime_deadline_ms,provider_job_id,provider_job_phase)
+          VALUES ($4,$1,$2,1,1,1,$3,$4,0,10000,'provider-task','started')`,
+          [submissionId, operationId, videoSha256, capability],
+        );
+      }
+      let current = finalized;
+      for (const requestId of ["probe", "frames"])
+        current = await store.enterAttemptReconciliation({
+          submission: current.state,
+          observedEventSequence: current.eventSequence,
+          requestId,
+          state: "required",
+          observation: { status: "not_found", observedAt: "2026-09-05T00:00:00Z" },
+        });
+      current = await store.resolveAttemptReconciliation({
+        submission: current.state,
+        observedEventSequence: current.eventSequence,
+        requestId: "frames",
+        observation: {
+          status: "failed",
+          evidenceRef: "frames:failed",
+          observedAt: "2026-09-05T00:01:00Z",
+        },
+      });
+      expect(current.state.reconciliationRequired).toBe(true);
+      expect(projectVideoSubmission(current)).toMatchObject({ retryable: false });
+      current = await store.resolveAttemptReconciliation({
+        submission: current.state,
+        observedEventSequence: current.eventSequence,
+        requestId: "probe",
+        observation: {
+          status: "completed",
+          observedAt: "2026-09-05T00:02:00Z",
+          fact: {
+            stage: "probe",
+            adapterRevision: "qencode-v1",
+            snapshot: trustedAnalysis().probe,
+            artifacts: [],
+          },
+        },
+      });
+      expect(current.state.reconciliationRequired).toBe(false);
+      expect(current.state.failureCode).toBe("transform_failed");
+      expect(projectVideoSubmission(current)).toMatchObject({ retryable: true });
+    });
+  });
+
+  test("reconciliation rolls back the attempt if its submission snapshot write fails", async () => {
+    await fixture(async (admin, connection) => {
+      const { store, finalized } = await finalizedFixture(connection);
+      await admin.query(
+        `INSERT INTO media_video_transform_attempts
+        (request_id,submission_id,operation_id,video_revision,creation_revision,analysis_revision,
+         canonical_video_sha256,capability,submitted_at_ms,runtime_deadline_ms,provider_job_id,provider_job_phase)
+        VALUES ('rollback-task',$1,$2,1,1,1,$3,'probe',0,10000,'provider-task','started')`,
+        [submissionId, operationId, videoSha256],
+      );
+      await admin.query(`CREATE FUNCTION reject_reconciliation_fixture() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'injected snapshot failure'; END $$`);
+      await admin.query(`CREATE TRIGGER reject_reconciliation_fixture BEFORE UPDATE ON media_post_submissions
+        FOR EACH ROW EXECUTE FUNCTION reject_reconciliation_fixture()`);
+      try {
+        await expect(
+          store.enterAttemptReconciliation({
+            submission: finalized.state,
+            observedEventSequence: finalized.eventSequence,
+            requestId: "rollback-task",
+            state: "required",
+            observation: { status: "workflow_terminal", observedAt: "2026-09-05T00:00:00Z" },
+          }),
+        ).rejects.toMatchObject({
+          _tag: "ControlPlaneStatementFailed",
+          sqlState: "P0001",
+          label: "video-publication.submission-update",
+        });
+      } finally {
+        await admin.query("DROP TRIGGER reject_reconciliation_fixture ON media_post_submissions");
+        await admin.query("DROP FUNCTION reject_reconciliation_fixture()");
+      }
+      const attempt = await admin.query(
+        "SELECT reconciliation_state,first_uncertainty_at FROM media_video_transform_attempts WHERE request_id='rollback-task'",
+      );
+      expect(attempt.rows[0]).toEqual({ reconciliation_state: "none", first_uncertainty_at: null });
+      const current = await store.getSubmissionByOperation({ submissionId, operationId });
+      expect(current?.eventSequence).toBe(finalized.eventSequence);
+      expect(current?.state.reconciliationRequired).toBe(false);
+      await expect(
+        store.enterAttemptReconciliation({
+          submission: finalized.state,
+          observedEventSequence: finalized.eventSequence - 1,
+          requestId: "rollback-task",
+          state: "required",
+          observation: { status: "workflow_terminal", observedAt: "2026-09-05T00:00:00Z" },
+        }),
+      ).rejects.toThrow("video reconciliation fence rejected");
+    });
+  });
+});
+
+suite("video source seal authority", () => {
+  test("HEAD verifies the recorded immutable identity without reading the video bytes", async () => {
+    await fixture(async (admin, connection) => {
+      const { layer, finalized } = await finalizedFixture(connection);
+      const seal = (
+        await admin.query(
+          "SELECT etag,object_version,size_bytes,content_type FROM media_immutable_objects WHERE submission_id=$1",
+          [submissionId],
+        )
+      ).rows[0];
+      const valid = {
+        etag: seal.etag as string,
+        version: seal.object_version as string,
+        size: Number(seal.size_bytes),
+        httpMetadata: { contentType: seal.content_type as string },
+      };
+      let current = valid;
+      let heads = 0;
+      const verify = makeVideoSealedSourceVerifier(layer, async (reference) => {
+        heads++;
+        expect(reference).toBe(finalized.state.video?.immutableRef ?? "");
+        return current;
+      });
+      await verify(finalized);
+      for (const invalid of [
+        { ...valid, version: "replacement" },
+        { ...valid, etag: "replacement" },
+        { ...valid, size: valid.size + 1 },
+        { ...valid, httpMetadata: { contentType: "video/quicktime" } },
+      ]) {
+        current = invalid;
+        await expect(verify(finalized)).rejects.toThrow("video sealed source identity mismatch");
+      }
+      expect(heads).toBe(5);
+    });
+  });
+});
+
+suite("video publication wakeup delivery", () => {
+  for (const disposition of [
+    "present",
+    "terminal",
+    "missing",
+    "lost-response",
+    "superseded",
+  ] as const) {
+    test(`drill 4 publication wakeup: ${disposition}`, async () => {
+      await fixture(async (_admin, connection) => {
+        const { layer, store, finalized } = await finalizedFixture(connection);
+        const outbox = makeControlPlaneVideoAnalysisOutboxRepository(layer);
+        const identity = `video-analysis:${operationId}:v1:c1`;
+        const claim = await outbox.claim(identity, "wakeup-fixture");
+        if (claim === null) throw new Error("missing claim");
+        await outbox.markLaunched(claim, `vaw-${"a".repeat(64)}`);
+        const analysis = { ...trustedAnalysis(), mediaSafety: "review_required" as const };
+        const decision = decideOriginalAudioVideo({
+          state: finalized.state,
+          analysis,
+          canonicalCaptionSha256: null,
+          decidedAt: "2026-09-05T00:00:00Z",
+        });
+        const held = await store.commitAnalysisDecision({
+          submission: finalized.state,
+          analysis,
+          decision,
+          nextState: attachVideoDecision(finalized.state, analysis, decision),
+        });
+        const approval = {
+          submission: held.state,
+          actor: { kind: "user" as const, userId: actor },
+          expectedCreationRevision: 1,
+          action: { kind: "approve" as const, hold: "safety" as const, evidenceRef: null },
+          endpointTemplate: "/moderation/media-post-submissions/:submissionId/actions",
+          idempotencyKey: "wakeup-approval",
+          requestHash: "8".repeat(64),
+          responseBytes,
+          responseSha256,
+        };
+        await store.moderate(approval);
+        await store.moderate(approval);
+        const wakeups = makeVideoPublicationWakeupStore(layer);
+        expect(await wakeups.listPending(10)).toHaveLength(1);
+        if (disposition === "superseded") {
+          const current = await store.getSubmissionByOperation({ submissionId, operationId });
+          if (!current) throw new Error("missing approved submission");
+          const failed = await store.recordProcessingFailure({
+            submission: current.state,
+            observedEventSequence: current.eventSequence,
+            failureCode: "publication_failed",
+            evidenceRef: "publication:fixture",
+          });
+          await store.retryTechnical({
+            submission: failed.state,
+            endpointTemplate: "/media-post-submissions/:submissionId/retry",
+            idempotencyKey: "wakeup-retry",
+            requestHash: "9".repeat(64),
+            responseBytes,
+            responseSha256,
+          });
+          expect(await wakeups.listPending(10)).toHaveLength(2);
+        }
+        let notifications = 0;
+        let lost = disposition === "lost-response";
+        const dispatcher = {
+          wakeups,
+          outbox,
+          store,
+          launcher: {
+            inspect: async () => ({
+              state:
+                disposition === "terminal" || disposition === "missing"
+                  ? disposition
+                  : ("present" as const),
+              status: "complete",
+            }),
+            notify: async (_identity: string, _continuation: number, actionId: string) => {
+              notifications++;
+              expect(actionId).toBe(`video-moderation:${actor}:wakeup-approval`);
+              if (lost) {
+                lost = false;
+                throw new Error("lost notify response");
+              }
+            },
+          },
+        };
+        const result = await dispatchVideoPublicationWakeups(dispatcher);
+        if (disposition === "terminal" || disposition === "missing") {
+          expect(result.continued).toBe(1);
+          expect((await outbox.get(identity))?.continuation).toBe(1);
+          expect((await outbox.get(identity))?.state).toBe("pending");
+          expect(notifications).toBe(0);
+        } else if (disposition === "superseded") {
+          expect(notifications).toBe(0);
+          expect((await wakeups.listPending(10))[0]?.effectIdentity).toBe(
+            `video-analysis:${operationId}:v1:c2`,
+          );
+        } else {
+          expect(result.failed).toBe(disposition === "lost-response" ? 1 : 0);
+          await dispatchVideoPublicationWakeups(dispatcher);
+          expect(await wakeups.listPending(10)).toHaveLength(0);
+          expect(notifications).toBe(disposition === "lost-response" ? 2 : 1);
+        }
+      });
+    });
+  }
 });

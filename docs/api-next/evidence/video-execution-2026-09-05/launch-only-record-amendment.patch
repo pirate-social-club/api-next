@@ -1,0 +1,42 @@
+--- a/tasks/records/api-video-execution-completion.md
++++ b/tasks/records/api-video-execution-completion.md
+@@ -418,3 +418,39 @@
+ commits are not independently deployable. No staging preflight, provider call,
+ push or deployment occurred. Full PostgreSQL and remote gates remain owed.
+ The lane-owned next-tranche document records validation and remaining scope.
++
++## Launch-only follow-up — 2026-09-05
++
++Tip 6bd80bf9 intentionally has an inconsistent Qencode/store submit boundary.
++The adapter starts from allocated and returns started, but the real store
++requires submitting between them. The old interpreter would turn the rejected
++write after provider acceptance into probe_failed or transform_failed. Its
++fake-store unit tests and adapter-only tests cannot expose that composition.
++Keep it disabled. The first runner commit splits allocate/submit/observe and
++persists submitting before start, with database errors kept out of terminal
++media-failure classification. Do not rebase again until PR preparation.
++
++The launch-only conversion removes Queue analysis execution and poll_wait
++from the repository. Recovery checks PostgreSQL outcomes before instance
++inspection; missing instances are marked for Queue redispatch, terminal
++instances record a typed failure, and expired launch claims converge under
++their original fence. The composed Queue Worker lost-response test proves one
++logical launch; PostgreSQL tests cover missing, terminal and expired-claim
++recovery. These are launch evidence, not provider execution or publication
++acceptance. The lane document records commands and current preservation refs.
++
++Terminal recovery reproduced existing SQLSTATE 42703 (missing private
++failure_evidence_ref column), then 23514 (missing required failure metadata).
++The unmerged 0120 now includes that internal evidence column, with regenerated
++checksum and baseline. The failure writer sets required retry/phase metadata
++and fences creation, video and analysis revisions. This necessary shared
++publication-store correction precedes the separate wakeup transaction work.
++No wire-visible code or contract was added. Delivery still allocates its
++migration only after 0120 merges.
++
++Live missing-instance exception classification remains unproved. The Workers
++API documents an exception without a distinct stable shape; the local SDK
++collapses any status exception into instance.not_found. Production therefore
++continues to fail closed rather than equating transport failure with absence.
++Runner/class/Wrangler composition and provider enablement remain outstanding;
++no live migration, provider call or deployment occurred.

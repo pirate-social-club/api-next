@@ -41,8 +41,10 @@
     "./media/submission-service": "./src/media/submission-service.ts",
     "./media/submission-sealing": "./src/media/submission-sealing.ts",
     "./video/publication": "./src/video/publication.ts",
+    "./video/stage-facts": "./src/video/stage-facts.ts",
     "./video/analysis": "./src/video/analysis.ts",
     "./video/analysis-queue": "./src/video/analysis-queue.ts",
+    "./video/workflow-recovery": "./src/video/workflow-recovery.ts",
     "./dance/reference-processing": "./src/dance/reference-processing.ts",
     "./dance/reference-processing-wakeup": "./src/dance/reference-processing-wakeup.ts",
     "./dance/attempt-cleanup": "./src/dance/attempt-cleanup.ts",
@@ -89,6 +91,8 @@
     "./use-cases/rewards/study-generation": "./src/use-cases/rewards/study-generation.ts",
     "./use-cases/session-authentication": "./src/use-cases/session-authentication.ts",
     "./use-cases/session-exchange": "./src/use-cases/session-exchange.ts",
-    "./use-cases/identity-registration-handler": "./src/use-cases/identity-registration-handler.ts"
+    "./use-cases/identity-registration-handler": "./src/use-cases/identity-registration-handler.ts",
+    "./video/workflow": "./src/video/workflow.ts",
+    "./video/publication-wakeup": "./src/video/publication-wakeup.ts"
   }
 }

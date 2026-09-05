@@ -31,6 +31,11 @@
       "binding": "MEDIA_PROCESSING_WORKFLOW",
       "name": "pirate-media-processing",
       "class_name": "MediaProcessingWorkflow"
+    },
+    {
+      "binding": "VIDEO_ANALYSIS_WORKFLOW",
+      "name": "pirate-video-analysis",
+      "class_name": "VideoAnalysisWorkflow"
     }
   ],
   "queues": {
@@ -100,6 +105,11 @@
           "binding": "MEDIA_PROCESSING_WORKFLOW",
           "name": "pirate-media-processing-staging",
           "class_name": "MediaProcessingWorkflow"
+        },
+        {
+          "binding": "VIDEO_ANALYSIS_WORKFLOW",
+          "name": "pirate-video-analysis-staging",
+          "class_name": "VideoAnalysisWorkflow"
         }
       ],
       "queues": {
@@ -129,12 +139,16 @@
       "vars": {
         "MEDIA_PROCESSING_ENABLED": "true",
         "VIDEO_ANALYSIS_ENABLED": "false",
+        "VIDEO_WORKFLOW_ACCOUNT_ID": "08a4c22cf52e2ecae883e36f80a33f4a",
+        "VIDEO_WORKFLOW_NAME": "pirate-video-analysis-staging",
+        "VIDEO_WORKFLOW_SCRIPT_NAME": "pirate-media-processor-worker-staging",
         "DATA_REGISTRATION_ENABLED": "true",
         "DATA_REGISTRATION_CHAIN_ID": "1315",
         "ACRCLOUD_IDENTIFY_HOST": "identify-eu-west-1.acrcloud.com"
       },
       "secrets": {
         "required": [
+          "VIDEO_WORKFLOW_READ_TOKEN",
           "ACRCLOUD_ACCESS_KEY",
           "ACRCLOUD_ACCESS_SECRET",
           "ELEVENLABS_API_KEY",
@@ -173,6 +187,11 @@
           "binding": "MEDIA_PROCESSING_WORKFLOW",
           "name": "pirate-media-processing-production",
           "class_name": "MediaProcessingWorkflow"
+        },
+        {
+          "binding": "VIDEO_ANALYSIS_WORKFLOW",
+          "name": "pirate-video-analysis-production",
+          "class_name": "VideoAnalysisWorkflow"
         }
       ],
       "queues": {

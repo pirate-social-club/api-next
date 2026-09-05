@@ -1,0 +1,61 @@
+{
+  "date": "2026-09-05",
+  "checks": [
+    {
+      "name": "composed",
+      "exit_status": 0,
+      "tests": 14,
+      "sha256": "d6980ed7b1e303b2632b9634cf51f3a787113c730dc5e36b8bed4fbe0debf002"
+    },
+    {
+      "name": "focused",
+      "exit_status": 0,
+      "tests": 51,
+      "sha256": "f5b7232fc08e47bb6829b6c82b15f5e89c15da2f4bb896d0c7804398d012bcff"
+    },
+    {
+      "name": "reconciliation-regression",
+      "exit_status": 0,
+      "tests": 9,
+      "sha256": "0973bd3d3922c243e57ba24fc473d57bfc65d05163e3975796595f64e4daf50a"
+    },
+    {
+      "name": "check",
+      "exit_status": 0,
+      "tests": null,
+      "sha256": "78d330e431a82521d2a9209ced97d3d71bf90f0a0991b770245e8748749e7ed8"
+    },
+    {
+      "name": "ordinary-tests",
+      "exit_status": 0,
+      "tests": 3149,
+      "sha256": "ffbf64dadcb39640a76838922f59b1799841f3ca990fdf661aff5055799aac9f"
+    }
+  ],
+  "composed_test_names": [
+    "composed success: queue and exported Workflow class reach one Post without test-side publication",
+    "drill 1: accepted start and lost response survive Workflow replay with one start per capability",
+    "drill 3: publication commit before completion acknowledgement replays to one Post and registration",
+    "drill 4: last hold approved before-wait, scheduled delivery publishes without author action",
+    "drill 4: last hold approved entering-wait, scheduled delivery publishes without author action",
+    "drill 7: terminal undecodable poster then author retry uses new attempts and requested timestamp",
+    "database failure after accepted start keeps submitting and resumes without an additional encode",
+    "event-sequence change during status inspection fences recovery while the real runner can resume",
+    "drill 5 fail closed: membership loss before publication cannot create a Post",
+    "terminal continuation after probe-allocate resumes the real class without duplicate encode",
+    "terminal continuation after probe-submit resumes the real class without duplicate encode",
+    "terminal continuation after safety resumes the real class without duplicate encode",
+    "drill 7: terminal provider job failure then technical retry creates a fresh provider attempt",
+    "sealed audio survives a failed fact write and expired provider output"
+  ],
+  "limitations": [
+    "Controlled durable-step replay in Workerd, not physical hosted-instance kills",
+    "Real PostgreSQL/application/Workflow class; fixture provider boundaries and R2",
+    "No deploy, enablement, live provider or secret mutation",
+    "Full PostgreSQL gate deferred to single PR-preparation rebase and migration ordinal repair"
+  ],
+  "initial_failures": [
+    "Ordinary suite exact Workflow binding assertion omitted dormant video binding; corrected and rerun passed",
+    "New regression formatting failed check; formatted and rerun passed"
+  ]
+}

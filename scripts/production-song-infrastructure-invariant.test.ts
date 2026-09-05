@@ -123,6 +123,7 @@ describe("disabled production song infrastructure", () => {
     ]);
     expect(resourceNames(configs.jobs.workflows, "name")).toEqual([
       "pirate-media-processing-production",
+      "pirate-video-analysis-production",
       "pirate-data-registration-production",
     ]);
 
@@ -135,6 +136,7 @@ describe("disabled production song infrastructure", () => {
     ]);
     expect(resourceNames(configs.media.workflows, "name")).toEqual([
       "pirate-media-processing-production",
+      "pirate-video-analysis-production",
     ]);
 
     const dataQueues = configs.data.queues as JsonRecord;

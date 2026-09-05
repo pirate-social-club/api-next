@@ -158,6 +158,11 @@ const JOBS_BINDING_KINDS = {
   VIDEO_ANALYSIS_ENABLED: "var",
   MEDIA_PROCESSING_QUEUE: "platform",
   MEDIA_PROCESSING_WORKFLOW: "platform",
+  VIDEO_ANALYSIS_WORKFLOW: "platform",
+  VIDEO_WORKFLOW_ACCOUNT_ID: "var",
+  VIDEO_WORKFLOW_NAME: "var",
+  VIDEO_WORKFLOW_SCRIPT_NAME: "var",
+  VIDEO_WORKFLOW_READ_TOKEN: "secret",
   DATA_REGISTRATION_ENABLED: "var",
   DATA_REGISTRATION_RPC_URL: "var",
   DATA_REGISTRATION_SIGNER_ADDRESS: "var",
@@ -173,6 +178,11 @@ const MEDIA_BINDING_KINDS = {
   MEDIA_PROCESSING_ENABLED: "var",
   VIDEO_ANALYSIS_ENABLED: "var",
   MEDIA_PROCESSING_WORKFLOW: "platform",
+  VIDEO_ANALYSIS_WORKFLOW: "platform",
+  VIDEO_WORKFLOW_ACCOUNT_ID: "var",
+  VIDEO_WORKFLOW_NAME: "var",
+  VIDEO_WORKFLOW_SCRIPT_NAME: "var",
+  VIDEO_WORKFLOW_READ_TOKEN: "secret",
   MEDIA_IMMUTABLE_ORIGINALS: "platform",
   MEDIA_DERIVED_ARTIFACTS: "platform",
   IMAGE_TRANSFORMATIONS: "platform",
@@ -230,6 +240,12 @@ const DATA_CONFIG_PATH = new URL(
 );
 
 interface RawWranglerEnvironment {
+  readonly workflows?: readonly {
+    binding: string;
+    name: string;
+    class_name: string;
+    script_name?: string;
+  }[];
   readonly vars?: Record<string, unknown>;
   readonly secrets?: { readonly required?: readonly unknown[] };
   readonly observability?: {
@@ -683,6 +699,39 @@ describe("source-to-Wrangler binding contract", () => {
     expect(declaredEnvironment(configs.http, "production").secrets).not.toContain(
       "ELEVENLABS_API_KEY",
     );
+  });
+
+  test("video Workflow bindings agree on class, name and processor script in every environment", () => {
+    for (const environment of ENVIRONMENTS) {
+      const suffix = environment === "development" ? "" : `-${environment}`;
+      for (const worker of ["media", "jobs"] as const) {
+        const block = rawEnvironment(configs[worker], environment);
+        expect(block.vars?.VIDEO_ANALYSIS_ENABLED).toBe("false");
+        const bindings = block.workflows?.filter(
+          (item) => item.binding === "VIDEO_ANALYSIS_WORKFLOW",
+        );
+        expect(bindings).toEqual([
+          {
+            binding: "VIDEO_ANALYSIS_WORKFLOW",
+            name: `pirate-video-analysis${suffix}`,
+            class_name: "VideoAnalysisWorkflow",
+            ...(worker === "jobs" ? { script_name: `pirate-media-processor-worker${suffix}` } : {}),
+          },
+        ]);
+      }
+    }
+  });
+
+  test("declares staging video Workflow read access in both Workers while keeping analysis disabled", () => {
+    for (const worker of ["jobs", "media"] as const) {
+      const staging = declaredEnvironment(configs[worker], "staging");
+      expect(staging.vars.VIDEO_ANALYSIS_ENABLED).toBe("false");
+      expect(staging.vars.VIDEO_WORKFLOW_ACCOUNT_ID).toBe("08a4c22cf52e2ecae883e36f80a33f4a");
+      expect(staging.vars.VIDEO_WORKFLOW_NAME).toBe("pirate-video-analysis-staging");
+      expect(staging.vars.VIDEO_WORKFLOW_SCRIPT_NAME).toBe("pirate-media-processor-worker-staging");
+      expect(staging.secrets).toContain("VIDEO_WORKFLOW_READ_TOKEN");
+      expect(staging.vars).not.toHaveProperty("VIDEO_WORKFLOW_READ_TOKEN");
+    }
   });
 
   test("does not declare the retired ElevenLabs logging policy variable", () => {

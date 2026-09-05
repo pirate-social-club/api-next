@@ -200,6 +200,7 @@ describe("video publication application", () => {
       store: storeWith({
         getSubmissionForAccount: async () => ({
           state: failed,
+          eventSequence: 1,
           authorPersona: {
             persona_id: persona.persona_id,
             object: "persona",
@@ -368,6 +369,7 @@ describe("video publication application", () => {
     });
     const record: VideoSubmissionRecord = {
       state,
+      eventSequence: 1,
       authorPersona: {
         persona_id: persona.persona_id,
         object: "persona",

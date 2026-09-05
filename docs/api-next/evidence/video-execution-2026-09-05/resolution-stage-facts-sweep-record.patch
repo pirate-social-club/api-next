@@ -1,0 +1,53 @@
+--- a/tasks/records/api-video-execution-completion.md
++++ b/tasks/records/api-video-execution-completion.md
+@@ -645,3 +645,50 @@
+ drill must remove those descriptors as well as expire temporary output URLs.
+ The Workerd redirect regression exists in 914ef07b. Token permission-list
+ verification and provisioning have not occurred. Video analysis stays disabled.
++
++## Resolution, stage facts and terminal sweep checkpoints — 2026-09-05
++
++Source 1b8c6092b0df642e026b8338beabc4cc37b1a83e corrects pending
++reconciliation: observations update only the attempt, preserve the submission
++and event sequence, and cannot downgrade required reconciliation. This
++supersedes the earlier checkpoint's undifferentiated entry description.
++
++Source 3037116b3530429242070e8b18ca61f99dff7cd9 adds atomic resolution.
++Confirmed completion persists a stage fact and resumes analysis after all
++uncertainty clears. Confirmed failure restores ordinary retry policy. A
++Workflow-terminal observation retains required reconciliation. Another
++attempt's uncertainty or previously confirmed failure cannot be erased.
++
++Source 3b0d33782a12c619897f9d7287e295430eaaf598 adds closed application
++validators, immutable stage-fact read/write operations and sealed artifact
++receipts. Canonical snapshot digest equality is required for replay. Derived
++artifact HEAD recovery checks digest, size and content type. Recovery of an
++accepted fact is proven; recovery after seal but before fact persistence,
++without provider descriptors, remains a runner acceptance requirement.
++
++Source 1a3c8442462c6815a2db0d4e17b1a007795f8581 integrates terminal
++reconciliation into the sweep under a submission lock and event-sequence
++fence. Unaccepted submitting or started work enters required; no attempt
++receives an ordinary technical failure; all five accepted facts remain with
++the decision fence. Fresh allocation takes the same submission lock and
++rejects failed, superseded or source-mismatched authority. The Workerd
++harnesses include the new application's stage-facts subpath alias.
++
++Final focused PostgreSQL validation passed 19 tests and 180 assertions.
++Full check passed. The ordinary suite passed 2981 Bun, 20 Node and 133 Workerd
++tests after correcting missing Workerd aliases. The first focused sweep run
++failed SQL parameter inference; explicit casts fixed it. Script-check found
++zero issues across three configuration files. Named tests, command exit
++statuses and log digests are retained in the lane's
++resolution-stage-facts-sweep-validation.json. Raw logs remain temporary.
++The owned PostgreSQL container was stopped. The full PostgreSQL gate remains
++due at pull-request preparation; no rebase or migration amendment occurred.
++
++Allocated-only terminal work, or partial accepted facts without an unconfirmed
++encode, is deferred without falsely reporting provider failure. The owner was
++asked whether to launch a distinct durable analysis continuation retaining
++creation-bound attempts/facts or require explicit operator recovery. This
++choice is outstanding; neither is enabled. The runner, class/bindings,
++publication wakeups and composed fault-injection acceptance remain open.
++No provider_submission_unconfirmed contract waiver is ratified or applied.
++Nothing in these checkpoints enables video or claims staging readiness.

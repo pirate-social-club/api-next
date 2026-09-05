@@ -1,0 +1,62 @@
+{
+  "date": "2026-09-05",
+  "resolution_commit": "3037116b3530429242070e8b18ca61f99dff7cd9",
+  "stage_facts_commit": "3b0d33782a12c619897f9d7287e295430eaaf598",
+  "checks": [
+    {
+      "command": "bun run check",
+      "exit_status": 0,
+      "summary": "Full local check passed.",
+      "raw_log_sha256": "dce4b456e731ed2597f2a59ffdd166cd1d9f759e10327f55d56ee9bcdedf926c",
+      "raw_log_archived": false
+    },
+    {
+      "command": "CONTROL_PLANE_POSTGRES_TEST_REQUIRED=1 bun test packages/platform-cf/src/video-publication-repository.pg.test.ts packages/platform-cf/src/video-transform-attempt-repository.pg.test.ts",
+      "exit_status": 0,
+      "summary": "19 passed, 180 assertions.",
+      "raw_log_sha256": "b0397cb49a154240177cff185b6bc647675d92245198263c3bea61bf476bd189",
+      "raw_log_archived": false,
+      "passed_test_names": [
+        "video transform attempt PostgreSQL fences > drill 1 submit boundary: accepted start with lost response recovers from persisted submitting",
+        "video transform attempt PostgreSQL fences > drill 7 store boundary: fresh creation preserves replay and forbids skipped or reversed submit phases",
+        "video publication PostgreSQL > drill 3 launch fence: sweep converges an accepted instance after the launch lease expires",
+        "video publication PostgreSQL > drill 3 recovery: missing Workflow marks the launch for Queue redispatch without spending an attempt",
+        "video publication PostgreSQL > drill 3 recovery: terminal Workflow without a PostgreSQL outcome records a typed failure",
+        "video publication PostgreSQL > terminal sweep started: requires reconciliation for unaccepted provider work",
+        "video publication PostgreSQL > terminal sweep started: preserves accepted facts for the decision fence",
+        "video publication PostgreSQL > terminal sweep allocated: requires reconciliation for unaccepted provider work",
+        "video publication PostgreSQL > drill 3 recovery: a transition during status inspection fences the stale terminal failure",
+        "video publication PostgreSQL > renews one expired part after claim without changing other parts or the reservation deadline",
+        "video publication PostgreSQL > commits original-video publication effects atomically and replay creates no duplicate",
+        "video publication PostgreSQL > attempt reconciliation atomically fences technical and poster retries and their projection",
+        "video publication PostgreSQL > reconciliation resolution: required through completed",
+        "video publication PostgreSQL > reconciliation resolution: required through failed",
+        "video publication PostgreSQL > reconciliation resolution: required through workflow_terminal",
+        "video publication PostgreSQL > stage facts accept identical replay, reject divergent replay and fence stale authority",
+        "video publication PostgreSQL > reconciliation resolution rolls back on a divergent immutable fact",
+        "video publication PostgreSQL > reconciliation resolution preserves another attempt's prohibition and confirmed failure",
+        "video publication PostgreSQL > reconciliation rolls back the attempt if its submission snapshot write fails"
+      ]
+    },
+    {
+      "command": "bun run test",
+      "exit_status": 1,
+      "summary": "Workerd could not resolve the new stage-facts package subpath; explicit harness aliases were missing.",
+      "raw_log_sha256": "0f5bd36a51cf402c0e04c08b260d872dd2a8c8f61e9f61dfca7363d30063d0d6",
+      "raw_log_archived": false
+    },
+    {
+      "command": "bun run test",
+      "exit_status": 0,
+      "summary": "2981 Bun tests, 20 Node tests, 133 Workerd tests passed.",
+      "raw_log_sha256": "7106d9d948f1e94d06e029f2be97e26a092bc267311763efd187e6090edafb0f",
+      "raw_log_archived": false
+    }
+  ],
+  "limitations": [
+    "Runner, class, bindings, wakeups and composed drill acceptance remain outstanding.",
+    "The full PostgreSQL gate is deferred to pull-request preparation as instructed.",
+    "Terminal allocated-only or partially accepted work awaits a continuation policy decision.",
+    "Video remains disabled; no contract, migration or provider credential changed."
+  ]
+}

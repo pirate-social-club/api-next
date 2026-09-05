@@ -1,4 +1,3 @@
-import { describe, expect, test } from "bun:test";
 import { Effect } from "effect";
 import {
   attachImmutableVideo,
@@ -11,17 +10,14 @@ import type {
   MediaTransformVideoCapabilities,
 } from "../media/transform.ts";
 import type { PersonaRecord } from "../use-cases/personas.ts";
-import {
-  runOriginalVideoAnalysis,
-  VideoAnalysisPending,
-  type VideoAnalysisProviders,
-  VideoAnalysisRetryable,
-  type VideoAnalysisRuntimeServices,
-  type VideoTransformAttemptStore,
+import type {
+  VideoAnalysisProviders,
+  VideoAnalysisRuntimeServices,
+  VideoTransformAttemptStore,
 } from "./analysis.ts";
 import type { VideoPublicationStore, VideoSubmissionRecord } from "./publication.ts";
 
-const HASHES = ["a", "b", "c", "d", "e"].map((value) => value.repeat(64));
+export const HASHES = ["a", "b", "c", "d", "e"].map((value) => value.repeat(64));
 const actor = "video-analysis-account";
 const personaId = "video-analysis-persona";
 const persona: PersonaRecord = {
@@ -45,7 +41,7 @@ const persona: PersonaRecord = {
   retired_at: null,
 };
 
-const publicPersona = {
+export const publicPersona = {
   persona_id: personaId,
   object: "persona" as const,
   display_name: persona.profile.display_name,
@@ -53,7 +49,7 @@ const publicPersona = {
   primary_public_handle: null,
 };
 
-function analysisState(): VideoSubmissionState {
+export function analysisState(): VideoSubmissionState {
   return {
     ...attachImmutableVideo(
       createOriginalVideoSubmission({
@@ -78,7 +74,11 @@ function analysisState(): VideoSubmissionState {
   };
 }
 
-const frames = (): readonly [VideoExtractedFrame, VideoExtractedFrame, VideoExtractedFrame] => [
+export const frames = (): readonly [
+  VideoExtractedFrame,
+  VideoExtractedFrame,
+  VideoExtractedFrame,
+] => [
   {
     role: "poster",
     requestedTimestampMs: 1_500,
@@ -102,7 +102,7 @@ const frames = (): readonly [VideoExtractedFrame, VideoExtractedFrame, VideoExtr
   },
 ];
 
-function providers(overrides: Partial<VideoAnalysisProviders> = {}): VideoAnalysisProviders {
+export function providers(overrides: Partial<VideoAnalysisProviders> = {}): VideoAnalysisProviders {
   return {
     hash: async (source) => ({
       canonicalSha256: source.canonicalSha256,
@@ -138,10 +138,34 @@ function transformContext(
   };
 }
 
-function transform(
+export function transform(
   overrides: Partial<MediaTransformVideoCapabilities> = {},
 ): MediaTransformVideoCapabilities {
-  return {
+  const capabilities: MediaTransformVideoCapabilities = {
+    allocate: (input) =>
+      Effect.succeed({
+        status: "submitted",
+        attempt: {
+          ...input.attempt,
+          providerJobId: input.binding.requestId,
+          providerJobPhase: "allocated",
+        },
+      }),
+    submit: (input) =>
+      Effect.succeed({
+        status: "processing",
+        attempt: {
+          ...input.attempt,
+          providerJobId: input.binding.requestId,
+          providerJobPhase: "started",
+        },
+      }),
+    observe: ((input) =>
+      input.version === "media-transform-video-probe-input-v1"
+        ? capabilities.probe(input)
+        : input.version === "media-transform-video-audio-input-v1"
+          ? capabilities.extractVideoAudio(input)
+          : capabilities.extractVideoFrames(input)) as MediaTransformVideoCapabilities["observe"],
     probe: (input) =>
       Effect.succeed({
         status: "completed",
@@ -197,9 +221,9 @@ function transform(
       }),
     ...overrides,
   };
+  return capabilities;
 }
-
-function services(input: {
+export function services(input: {
   providers: VideoAnalysisProviders;
   transform?: MediaTransformVideoCapabilities;
   transformAttempts?: VideoTransformAttemptStore;
@@ -208,6 +232,7 @@ function services(input: {
 }): VideoAnalysisRuntimeServices {
   const initial: VideoSubmissionRecord = {
     state: analysisState(),
+    eventSequence: 1,
     authorPersona: publicPersona,
     updatedAt: "2026-09-04T00:00:00.000Z",
   };
@@ -259,126 +284,3 @@ function services(input: {
     },
   };
 }
-
-describe("original-video trusted analysis runtime", () => {
-  test("persists provider progress and defers without recording a technical failure", async () => {
-    let advanced = 0;
-    let failures = 0;
-    const pendingTransform = transform({
-      probe: (input) =>
-        Effect.succeed({
-          status: "submitted",
-          attempt: {
-            ...input.attempt,
-            providerJobId: "b".repeat(32),
-            providerJobPhase: "allocated",
-          },
-        }),
-    });
-    const runtime = services({
-      providers: providers(),
-      transform: pendingTransform,
-      transformAttempts: {
-        loadOrCreate: async ({ initialAttempt }) => initialAttempt,
-        advance: async ({ attempt }) => {
-          advanced += 1;
-          return attempt;
-        },
-      },
-      onFailure: () => failures++,
-    });
-
-    await expect(
-      runOriginalVideoAnalysis(
-        { submissionId: "video-analysis-submission", operationId: "video-analysis-operation" },
-        runtime,
-      ),
-    ).rejects.toBeInstanceOf(VideoAnalysisPending);
-    expect(advanced).toBe(1);
-    expect(failures).toBe(0);
-  });
-
-  test("leaves a retryable provider failure to the bounded outbox retry policy", async () => {
-    let failures = 0;
-    const retryableTransform = transform({
-      probe: (input) =>
-        Effect.succeed({
-          status: "retryable_failure",
-          reason: "transport",
-          attempt: input.attempt,
-        }),
-    });
-
-    await expect(
-      runOriginalVideoAnalysis(
-        { submissionId: "video-analysis-submission", operationId: "video-analysis-operation" },
-        services({
-          providers: providers(),
-          transform: retryableTransform,
-          onFailure: () => failures++,
-        }),
-      ),
-    ).rejects.toBeInstanceOf(VideoAnalysisRetryable);
-    expect(failures).toBe(0);
-  });
-
-  test("uses the persisted poster timestamp and publishes one closed trusted bundle", async () => {
-    const decisions: VideoSubmissionState[] = [];
-    const result = await runOriginalVideoAnalysis(
-      { submissionId: "video-analysis-submission", operationId: "video-analysis-operation" },
-      services({ providers: providers(), onDecision: (state) => decisions.push(state) }),
-    );
-    expect(result.status).toBe("published");
-    expect(decisions[0]?.analysis?.frames.extracted[0]).toMatchObject({
-      requestedTimestampMs: 1_500,
-      timestampMs: 1_500,
-    });
-    expect(decisions[0]?.analysis?.safetyRequest.captionSha256).toMatch(/^[0-9a-f]{64}$/);
-  });
-
-  test("routes ACR exhaustion and safety adapter absence to review, never implicit allow", async () => {
-    const decisions: VideoSubmissionState[] = [];
-    const result = await runOriginalVideoAnalysis(
-      { submissionId: "video-analysis-submission", operationId: "video-analysis-operation" },
-      services({
-        providers: providers({
-          identifySoundtrack: async () => {
-            throw new Error("provider exhausted");
-          },
-          moderate: async () => {
-            throw new Error("safety unavailable");
-          },
-        }),
-        onDecision: (state) => decisions.push(state),
-      }),
-    );
-    expect(result.status).toBe("manual_review");
-    expect(decisions[0]?.reviewReasons).toContain("soundtrack_exhausted");
-    expect(decisions[0]?.reviewReasons).toContain("safety_adapter_unavailable");
-  });
-
-  test("records poster extraction responsibility without discarding the sealed revision", async () => {
-    const failures: string[] = [];
-    const result = await runOriginalVideoAnalysis(
-      { submissionId: "video-analysis-submission", operationId: "video-analysis-operation" },
-      services({
-        providers: providers(),
-        transform: transform({
-          extractVideoFrames: (input) =>
-            Effect.succeed({
-              status: "rejected",
-              reason: "poster_timestamp_out_of_range",
-              attempt: input.attempt,
-            }),
-        }),
-        onFailure: (code) => failures.push(code),
-      }),
-    );
-    expect(result).toMatchObject({
-      status: "processing_failed",
-      reason_code: "poster_timestamp_out_of_range",
-      video_revision: 1,
-    });
-    expect(failures).toEqual(["poster_timestamp_out_of_range"]);
-  });
-});

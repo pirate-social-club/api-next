@@ -36,7 +36,15 @@ import {
   type QencodeTaskTransport,
 } from "@pirate/platform-cf/qencode-media-transform";
 import { makeControlPlaneVideoAnalysisOutboxRepository } from "@pirate/platform-cf/video-analysis-outbox-repository";
+import {
+  makeConfiguredVideoAnalysisWorkflowLauncher,
+  type VideoAnalysisWorkflowBinding,
+  type VideoWorkflowStatusFetch,
+} from "@pirate/platform-cf/video-analysis-workflow-cloudflare";
 import { makeControlPlaneVideoPublicationStore } from "@pirate/platform-cf/video-publication-repository";
+import { makeVideoSealedSourceVerifier } from "@pirate/platform-cf/video-sealed-source-verifier";
+import { makeVideoStageArtifactHead } from "@pirate/platform-cf/video-stage-artifact-head";
+import { makeControlPlaneVideoStageFactStore } from "@pirate/platform-cf/video-stage-fact-repository";
 import { Effect } from "effect";
 import type { MediaProcessorComposition, MediaProcessorWorkerEnv } from "./index.ts";
 import { isMediaProcessingEnabled } from "./posture.ts";
@@ -61,11 +69,17 @@ export type MediaProcessorRuntimeEnv = MediaProcessorWorkerEnv &
     readonly DATA_REGISTRATION_ENABLED?: string;
     readonly DATA_REGISTRATION_CHAIN_ID?: string;
     readonly VIDEO_ANALYSIS_ENABLED?: string;
+    readonly VIDEO_ANALYSIS_WORKFLOW?: VideoAnalysisWorkflowBinding;
+    readonly VIDEO_WORKFLOW_ACCOUNT_ID?: string;
+    readonly VIDEO_WORKFLOW_NAME?: string;
+    readonly VIDEO_WORKFLOW_SCRIPT_NAME?: string;
+    readonly VIDEO_WORKFLOW_READ_TOKEN?: string;
   }>;
 
 export type MediaProcessorRuntimeAdapters = Readonly<{
   readonly videoAnalysis?: Readonly<{
     readonly providers: VideoAnalysisProviders;
+    readonly workflowFetch?: VideoWorkflowStatusFetch;
     readonly transform?: MediaTransformVideoCapabilities;
     readonly qencode?: Readonly<{
       readonly sourceGateway: QencodeSourceGrantIssuer;
@@ -196,6 +210,12 @@ function bindVideoPhysicalR2Keys(
     },
   });
   return {
+    allocate: (input) => Effect.suspend(() => transform.allocate(source(input))),
+    submit: (input) => Effect.suspend(() => transform.submit(source(input))),
+    observe: ((input) =>
+      Effect.suspend(() =>
+        transform.observe(source(input)),
+      )) as MediaTransformVideoCapabilities["observe"],
     probe: (input) => Effect.suspend(() => transform.probe(source(input))),
     extractVideoAudio: (input) => Effect.suspend(() => transform.extractVideoAudio(source(input))),
     extractVideoFrames: (input) =>
@@ -355,13 +375,47 @@ export function makeMediaProcessorComposition(
       ? videoTransform(env, adapters.videoAnalysis)
       : undefined;
 
+  if (videoAnalysisEnabled && env.VIDEO_ANALYSIS_WORKFLOW === undefined) {
+    throw new Error("VIDEO_ANALYSIS_WORKFLOW is required when video analysis is enabled");
+  }
+
   return {
     queue: { store, workflow, workerId },
     ...(videoAnalysisRepository !== undefined &&
     enabledVideoTransform !== undefined &&
-    adapters.videoAnalysis !== undefined
+    adapters.videoAnalysis !== undefined &&
+    env.VIDEO_ANALYSIS_WORKFLOW !== undefined
       ? {
+          videoWorkflow: {
+            store: makeControlPlaneVideoPublicationStore(runtime),
+            reconciliation: makeControlPlaneVideoPublicationStore(runtime),
+            outbox: videoAnalysisRepository,
+            stageFacts: makeControlPlaneVideoStageFactStore(runtime),
+            verifySource: makeVideoSealedSourceVerifier(runtime, (reference) =>
+              requiredBinding(env.MEDIA_IMMUTABLE_ORIGINALS, "MEDIA_IMMUTABLE_ORIGINALS").head(
+                mediaProcessingPhysicalObjectKey(reference),
+              ),
+            ),
+            artifactHead: makeVideoStageArtifactHead(
+              requiredBinding(env.MEDIA_DERIVED_ARTIFACTS, "MEDIA_DERIVED_ARTIFACTS"),
+            ),
+            nowIso: () => new Date().toISOString(),
+            randomUuid: () => crypto.randomUUID(),
+            analysisProviders: adapters.videoAnalysis.providers,
+            transform: bindVideoPhysicalR2Keys(enabledVideoTransform),
+            transformAttempts: videoAnalysisRepository,
+          },
           videoAnalysis: {
+            launcher: makeConfiguredVideoAnalysisWorkflowLauncher(
+              env.VIDEO_ANALYSIS_WORKFLOW,
+              {
+                accountId: env.VIDEO_WORKFLOW_ACCOUNT_ID,
+                workflowName: env.VIDEO_WORKFLOW_NAME,
+                scriptName: env.VIDEO_WORKFLOW_SCRIPT_NAME,
+                readToken: env.VIDEO_WORKFLOW_READ_TOKEN,
+              },
+              adapters.videoAnalysis.workflowFetch,
+            ),
             outbox: videoAnalysisRepository,
             runtime: {
               store: makeControlPlaneVideoPublicationStore(runtime),

@@ -1,0 +1,2 @@
+Postgres migration worktree is consistent (122 migrations).
+api-client package verification passed (/tmp/pirate-api-client-qXF0OC/pack/pirate-api-client-0.62.0.tgz)

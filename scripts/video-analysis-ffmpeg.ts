@@ -273,7 +273,31 @@ export function makeLocalPinnedFfmpegVideoAnalysisEngine(
     }
   };
 
-  return {
+  const engine: MediaTransformVideoCapabilities & Pick<VideoAnalysisProviders, "hash"> = {
+    allocate: (input) =>
+      Effect.succeed({
+        status: "submitted",
+        attempt: {
+          ...input.attempt,
+          providerJobId: input.binding.requestId,
+          providerJobPhase: "allocated",
+        },
+      }),
+    submit: (input) =>
+      Effect.succeed({
+        status: "processing",
+        attempt: {
+          ...input.attempt,
+          providerJobId: input.binding.requestId,
+          providerJobPhase: "started",
+        },
+      }),
+    observe: ((input) =>
+      input.version === "media-transform-video-probe-input-v1"
+        ? engine.probe(input)
+        : input.version === "media-transform-video-audio-input-v1"
+          ? engine.extractVideoAudio(input)
+          : engine.extractVideoFrames(input)) as MediaTransformVideoCapabilities["observe"],
     hash: (source) =>
       withSource(transformSource(source), async (_inputPath, bytes) => ({
         canonicalSha256: await mediaSha256Bytes(bytes),
@@ -468,6 +492,7 @@ export function makeLocalPinnedFfmpegVideoAnalysisEngine(
             })),
           ),
   };
+  return engine;
 }
 
 function validIdentifier(value: unknown): value is string {

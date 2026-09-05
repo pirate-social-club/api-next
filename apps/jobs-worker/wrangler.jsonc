@@ -50,6 +50,12 @@
       "script_name": "pirate-media-processor-worker"
     },
     {
+      "binding": "VIDEO_ANALYSIS_WORKFLOW",
+      "name": "pirate-video-analysis",
+      "class_name": "VideoAnalysisWorkflow",
+      "script_name": "pirate-media-processor-worker"
+    },
+    {
       "binding": "DATA_REGISTRATION_WORKFLOW",
       "name": "pirate-data-registration",
       "class_name": "DataRegistrationWorkflow",
@@ -162,6 +168,12 @@
           "script_name": "pirate-media-processor-worker-staging"
         },
         {
+          "binding": "VIDEO_ANALYSIS_WORKFLOW",
+          "name": "pirate-video-analysis-staging",
+          "class_name": "VideoAnalysisWorkflow",
+          "script_name": "pirate-media-processor-worker-staging"
+        },
+        {
           "binding": "DATA_REGISTRATION_WORKFLOW",
           "name": "pirate-data-registration-staging",
           "class_name": "DataRegistrationWorkflow",
@@ -200,6 +212,9 @@
         "COMMUNITY_MAINTENANCE_ENABLED": "true",
         "MEDIA_PROCESSING_ENABLED": "true",
         "VIDEO_ANALYSIS_ENABLED": "false",
+        "VIDEO_WORKFLOW_ACCOUNT_ID": "08a4c22cf52e2ecae883e36f80a33f4a",
+        "VIDEO_WORKFLOW_NAME": "pirate-video-analysis-staging",
+        "VIDEO_WORKFLOW_SCRIPT_NAME": "pirate-media-processor-worker-staging",
         "DATA_REGISTRATION_ENABLED": "true",
         "DATA_REGISTRATION_RPC_URL": "https://aeneid.storyrpc.io",
         "DATA_REGISTRATION_SIGNER_ADDRESS": "0xE128f4da57540962FF788d5462aE76671499F05E",
@@ -235,6 +250,7 @@
       ],
       "secrets": {
         "required": [
+          "VIDEO_WORKFLOW_READ_TOKEN",
           "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
           "MEGAPOT_V2_RPC_URL",
           "MEGAPOT_CUSTODY_PRIVATE_KEY",
@@ -291,6 +307,12 @@
           "binding": "MEDIA_PROCESSING_WORKFLOW",
           "name": "pirate-media-processing-production",
           "class_name": "MediaProcessingWorkflow",
+          "script_name": "pirate-media-processor-worker-production"
+        },
+        {
+          "binding": "VIDEO_ANALYSIS_WORKFLOW",
+          "name": "pirate-video-analysis-production",
+          "class_name": "VideoAnalysisWorkflow",
           "script_name": "pirate-media-processor-worker-production"
         },
         {

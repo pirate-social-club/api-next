@@ -1,0 +1,29 @@
+bun test v1.4.0 (34cbb9a40)
+
+packages/platform-cf/src/video-workflow-composed.pg.test.ts:
+RUN  v4.1.10 /media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-video-execution-completion
+
+ ✓ tests/workerd-video/composed.test.ts > composed success: queue and exported Workflow class reach one Post without test-side publication 1462ms
+ ✓ tests/workerd-video/composed.test.ts > drill 1: accepted start and lost response survive Workflow replay with one start per capability 1389ms
+ ✓ tests/workerd-video/composed.test.ts > drill 3: publication commit before completion acknowledgement replays to one Post and registration 1319ms
+ ✓ tests/workerd-video/composed.test.ts > drill 4: last hold approved before-wait, scheduled delivery publishes without author action 1420ms
+ ✓ tests/workerd-video/composed.test.ts > drill 4: last hold approved entering-wait, scheduled delivery publishes without author action 1435ms
+ ✓ tests/workerd-video/composed.test.ts > drill 7: terminal undecodable poster then author retry uses new attempts and requested timestamp 2102ms
+ ✓ tests/workerd-video/composed.test.ts > database failure after accepted start keeps submitting and resumes without an additional encode 1325ms
+ ✓ tests/workerd-video/composed.test.ts > event-sequence change during status inspection fences recovery while the real runner can resume 1321ms
+ ✓ tests/workerd-video/composed.test.ts > drill 5 fail closed: membership loss before publication cannot create a Post 1232ms
+ ✓ tests/workerd-video/composed.test.ts > terminal continuation after probe-allocate resumes the real class without duplicate encode 1518ms
+ ✓ tests/workerd-video/composed.test.ts > terminal continuation after probe-submit resumes the real class without duplicate encode 1556ms
+ ✓ tests/workerd-video/composed.test.ts > terminal continuation after safety resumes the real class without duplicate encode 1538ms
+ ✓ tests/workerd-video/composed.test.ts > drill 7: terminal provider job failure then technical retry creates a fresh provider attempt 1975ms
+ ✓ tests/workerd-video/composed.test.ts > sealed audio survives a failed fact write and expired provider output 1514ms
+
+ Test Files  1 passed (1)
+      Tests  14 passed (14)
+   Start at  22:08:30
+   Duration  28.20s (transform 2.56s, setup 0ms, import 5.48s, tests 21.11s, environment 0ms)
+(pass) composed video Workflow PostgreSQL and Workerd gate > runs the exported entrypoint success case and named fault drills [29631.68ms]
+
+ 1 pass
+ 0 fail
+Ran 1 test across 1 file. [29.67s]
