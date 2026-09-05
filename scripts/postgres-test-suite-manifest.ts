@@ -55,6 +55,7 @@ export const noBaselinePostgresTestSuites = [
   "scripts/staging-persona-session-drain.pg.test.ts",
   "scripts/staging-persona-runtime-denial.pg.test.ts",
   "scripts/staging-persona-reset-replay.pg.test.ts",
+  "scripts/staging-persona-reconstruct.pg.test.ts",
   "packages/platform-cf/src/community-moderation-foundation.pg.test.ts",
   "packages/platform-cf/src/community-membership-follow-invariant.pg.test.ts",
   "packages/platform-cf/src/community-route-migration.pg.test.ts",

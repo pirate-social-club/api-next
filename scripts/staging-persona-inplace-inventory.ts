@@ -23,7 +23,7 @@ const classes = [
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
 /** Catalog evidence, not DROP eligibility or an approved grant replay manifest. */
-export async function observeInplaceInventory(client: Client) {
+export async function observeInplaceInventory(client: Client, runtimeRole?: string) {
   try {
     await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
     await client.query("SET LOCAL statement_timeout = '10s'");
@@ -81,6 +81,25 @@ export async function observeInplaceInventory(client: Client) {
     const special = await client.query(`SELECT 'text search parser' AS kind,count(*)::int AS count
         FROM pg_ts_parser WHERE prsnamespace='api_next'::regnamespace
       UNION ALL SELECT 'text search template',count(*)::int FROM pg_ts_template WHERE tmplnamespace='api_next'::regnamespace`);
+    const capacity = await client.query(`SELECT
+      current_setting('max_locks_per_transaction')::int AS max_locks_per_transaction,
+      current_setting('max_connections')::int AS max_connections,
+      current_setting('max_prepared_transactions')::int AS max_prepared_transactions`);
+    const defaultReview = await client.query(
+      `SELECT
+      CASE WHEN d.defaclrole=(SELECT oid FROM pg_roles WHERE rolname=current_user) THEN 'operator'
+        WHEN d.defaclrole=(SELECT oid FROM pg_roles WHERE rolname=$1) THEN 'runtime' ELSE 'other' END AS owner_role,
+      CASE WHEN d.defaclnamespace=0 THEN 'global' ELSE 'api_next' END AS scope,
+      d.defaclobjtype AS object_type,
+      CASE WHEN a.grantee=0 THEN 'PUBLIC'
+        WHEN a.grantee=(SELECT oid FROM pg_roles WHERE rolname=current_user) THEN 'operator'
+        WHEN a.grantee=(SELECT oid FROM pg_roles WHERE rolname=$1) THEN 'runtime' ELSE 'other' END AS grantee_role,
+      a.privilege_type AS privilege,a.is_grantable AS grant_option
+      FROM pg_default_acl d CROSS JOIN LATERAL aclexplode(d.defaclacl) a
+      WHERE d.defaclnamespace IN (0,'api_next'::regnamespace)
+      ORDER BY owner_role,scope,object_type,grantee_role,privilege,grant_option`,
+      [runtimeRole ?? null],
+    );
     await client.query("ROLLBACK");
     return {
       observed_at: new Date().toISOString(),
@@ -112,6 +131,8 @@ export async function observeInplaceInventory(client: Client) {
       extensions: extensions.rows,
       extensions_sha256: hash(extensions.rows),
       special_classes: special.rows,
+      lock_capacity: capacity.rows[0],
+      default_acl_review: defaultReview.rows,
       provider_target_verified: false,
       execution_authorized: false,
     };
@@ -123,6 +144,7 @@ export async function observeInplaceInventory(client: Client) {
 
 if (import.meta.main) {
   let client: Client | undefined;
+  let runtimeClient: Client | undefined;
   try {
     if (Bun.argv.length !== 3 || Bun.argv[2] !== "--read-only") throw new Error();
     const raw = process.env.CONTROL_PLANE_POSTGRES_ADMIN_URL;
@@ -132,11 +154,30 @@ if (import.meta.main) {
       connectionTimeoutMillis: 10_000,
     });
     await client.connect();
-    console.log(JSON.stringify(await observeInplaceInventory(client)));
+    const runtime = process.env.CONTROL_PLANE_POSTGRES_RUNTIME_URL;
+    let runtimeRole: string | undefined;
+    if (runtime) {
+      runtimeClient = new Client({
+        connectionString: normalizePostgresConnectionString(runtime),
+        connectionTimeoutMillis: 10_000,
+      });
+      await runtimeClient.connect();
+      // Provider connection usernames may include a branch suffix. Use the SQL
+      // identity, not URL spelling, when attributing default grants.
+      const identity = await runtimeClient.query(
+        "SELECT session_user AS role, current_database() AS database",
+      );
+      if (identity.rows[0]?.database !== "postgres") throw new Error();
+      runtimeRole = identity.rows[0].role;
+      await runtimeClient.end();
+      runtimeClient = undefined;
+    }
+    console.log(JSON.stringify(await observeInplaceInventory(client, runtimeRole)));
   } catch {
     console.error("inplace_catalog_inventory_unproven");
     process.exitCode = 1;
   } finally {
+    await runtimeClient?.end().catch(() => undefined);
     await client?.end().catch(() => undefined);
   }
 }
