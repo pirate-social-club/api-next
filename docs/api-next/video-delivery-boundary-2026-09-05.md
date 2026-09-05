@@ -65,6 +65,14 @@ test clocks here are synthetic, not production deadline selections. No new
 public port, provider driver, SQL schema or Worker composition is introduced.
 # Playback policy implementation boundary — 2026-09-05
 
+The signing adapter now generates minimal RS256 tokens using an injected
+private CryptoKey and configured key identifier, with expiry bounded by the
+frozen policy. Ephemeral local-key tests verify signatures and exact claims;
+they do not prove Cloudflare accepts the tokens. The deployment-secret importer,
+rotation composition and HTTP wiring are still outstanding. No provider key
+was read, created or rotated. The Cloudflare skill's current Stream reference
+informed the claim shape; its example geo rules are intentionally not adopted.
+
 The application playback-access use case now exercises anonymous access,
 current-policy renewal denials, pending-state denial, limiter failure,
 redacted provider failures, bounded lifetime and trusted customer-host policy.
