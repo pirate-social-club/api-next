@@ -149,14 +149,37 @@ event even when the author makes no further request for an hour.
 
 ## Upload lifetime proposal and Solid integration note
 
-Propose a reservation lifetime derived from declared byte length and a
-conservative throughput floor, plus a fixed interruption allowance, clamped
-between a minimum and a hard maximum measured in hours. One-hour renewable
-part URLs are capped by remaining reservation life. The throughput floor,
-allowance and maximum require owner disposition; this note selects no values.
-The server computes and persists the deadline once. Renewals cannot extend it;
-cleanup must cover expired multipart uploads and ingress objects. Existing
-expiry columns suffice.
+The supplied review recommends a reservation lifetime in seconds of
+`min(21600, 3600 + ceil(declared_bytes / 32768))`: one hour of interruption
+allowance plus transfer time at 32 KiB/s, capped at six hours. A 500 MiB source
+receives 19,600 seconds (5 hours, 26 minutes, 40 seconds). The reviewer
+explicitly reserves ratification for the owner; these concrete values remain
+a recommendation until that disposition is recorded in the execution record.
+The current runtime still uses one hour.
+
+The server computes and persists the reservation deadline once. Part URLs
+remain valid for at most one hour, capped by remaining reservation life;
+renewal never extends the reservation. Existing expiry columns suffice, but
+reservation creation currently copies the gateway's URL expiry, so those
+values must be separated in the application when the policy is implemented.
+After reservation expiry, reopening must return the typed expiry outcome and
+require source reselection rather than silently starting another upload.
+
+Pair adoption with verified storage cleanup: either an incomplete-multipart
+bucket lifecycle rule with an explicit few-day age, or a scheduled abort of
+expired issued/claimed reservations with no manifest. Do not infer deployed
+lifecycle configuration from a database deadline. A few-day lifecycle rule
+provides eventual cleanup, not a six-hour storage-retention guarantee. A
+scheduled abort must fence against finalize, tolerate an already absent
+upload, retry failures durably and record completion only after storage
+confirms it. Protect manifest-bearing/sealing work and its recovery identity.
+Keep completed ingress-object cleanup distinct from incomplete-upload abort.
+
+Acceptance must cover the size formula and hard cap, independent initial URL
+expiry, exact renewal replay without deadline extension, typed expiry on
+reopen, abandoned claimed uploads, cleanup retry and a finalize/cleanup race.
+No lifecycle configuration or scheduled cleanup has been verified by this
+recommendation checkpoint.
 
 For Solid, single-part renewal after claim works on `8d3aef46`, not yet on
 main or staging. The one-hour hard ceiling remains. A renewal racing finalize
