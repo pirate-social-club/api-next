@@ -177,3 +177,36 @@ objects with closure digest
 It returned execution_authorized=false and exited zero. Provider identity,
 continuous fencing and recovery were not established by that observation;
 the missing schema-CREATE privilege remains a separate execution blocker.
+## Local data-bearing recovery rehearsal
+
+`scripts/staging-persona-recovery.pg.test.ts` creates UUID-named test databases
+only. It replays the pinned 0001–0109 source chain, inserts a synthetic account
+through the ordinary first-persona trigger, and captures an unmodified custom
+pg_dump archive. A separate database receives the archive through a
+single-transaction, exit-on-error pg_restore. Every api_next table is compared
+row-for-row, including timestamps and pending wallet/profile state. Additional
+checks cover sequence continuation, extension version, function search_path,
+row-level security, default privileges and an effective read-only grant. A
+deliberately revoked grant must change the schema digest.
+
+The baseline generator is not a recovery tool: it removes owners and ACLs,
+rewrites schema references and changes seed timestamps. This rehearsal does
+none of those. PostgreSQL itself simplifies some CHECK-expression parentheses
+when parsing a dump, so a separate schema-only restore supplies the canonical
+schema comparison. Both restored schemas are dumped by the same PostgreSQL 17
+tool with a fixed restrict key; no SQL text is stripped or rewritten.
+
+The test requires PostgreSQL 17 and Docker with the postgres:17 image. The
+optional CONTROL_PLANE_POSTGRES_RECOVERY_TEST_CONTAINER selects an existing
+local test container for its client binaries; otherwise a resource-bounded
+Docker client runs on host networking. Credentials pass through environment
+variables, not command arguments, and tool errors are redacted. The test
+creates no provider resource and reads no staging or production data.
+
+This is not the required live recovery receipt. All test databases share one
+local cluster, so roles already exist and provider role recreation, independent
+branch recovery, credential switching and maintained writer fencing remain
+unproven. The fixture has one pending persona, not the full live dataset. The
+test compares an actual restored copy, but its schema-only comparison shares
+the same PostgreSQL toolchain and is not an independent semantic SQL verifier.
+The schema CREATE credential blocker still prohibits live reset execution.
