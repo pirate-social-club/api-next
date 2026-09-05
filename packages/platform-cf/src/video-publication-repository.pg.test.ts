@@ -411,6 +411,7 @@ suite("video publication PostgreSQL", () => {
       const transformBinding = {
         operationId,
         videoRevision: 1,
+        creationRevision: 1,
         analysisRevision: 1,
         canonicalVideoSha256: videoSha256,
         requestId: `${operationId}:probe:v1:a1`,
@@ -452,6 +453,20 @@ suite("video publication PostgreSQL", () => {
         ...allocatedTransformAttempt,
         providerJobPhase: "started" as const,
       };
+      await expect(
+        analysisOutbox.advance({
+          submissionId,
+          binding: transformBinding,
+          capability: "probe",
+          attempt: startedTransformAttempt,
+        }),
+      ).rejects.toMatchObject({ reason: "invalid-row" });
+      await analysisOutbox.advance({
+        submissionId,
+        binding: transformBinding,
+        capability: "probe",
+        attempt: { ...allocatedTransformAttempt, providerJobPhase: "submitting" },
+      });
       expect(
         await analysisOutbox.advance({
           submissionId,

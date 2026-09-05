@@ -139,6 +139,7 @@ const VIDEO_TRANSFORM_RUNTIME_MS = 30 * 60 * 1_000;
 async function videoTransformBinding(
   source: VideoAnalysisSource,
   analysisRevision: number,
+  creationRevision: number,
   capability: "probe" | "audio" | "frames",
 ): Promise<MediaTransformVideoBinding> {
   const digest = await mediaSha256Bytes(
@@ -146,6 +147,7 @@ async function videoTransformBinding(
       [
         source.operationId,
         source.videoRevision,
+        creationRevision,
         analysisRevision,
         source.canonicalSha256,
         capability,
@@ -155,6 +157,7 @@ async function videoTransformBinding(
   return {
     operationId: source.operationId,
     videoRevision: source.videoRevision,
+    creationRevision,
     analysisRevision,
     canonicalVideoSha256: source.canonicalSha256,
     requestId: `video-${capability}-${digest.slice(0, 32)}`,
@@ -285,7 +288,12 @@ export async function runOriginalVideoAnalysis(
   let probe: VideoProbeFact;
   let probeAdapterRevision: string;
   try {
-    const transformBinding = await videoTransformBinding(source, analysisRevision, "probe");
+    const transformBinding = await videoTransformBinding(
+      source,
+      analysisRevision,
+      state.creationRevision,
+      "probe",
+    );
     const outcome = await runTransform(
       {
         submissionId: state.submissionId,
@@ -343,7 +351,12 @@ export async function runOriginalVideoAnalysis(
     adapterRevision: string;
   }>;
   try {
-    const transformBinding = await videoTransformBinding(source, analysisRevision, "audio");
+    const transformBinding = await videoTransformBinding(
+      source,
+      analysisRevision,
+      state.creationRevision,
+      "audio",
+    );
     const outcome = await runTransform(
       {
         submissionId: state.submissionId,
@@ -401,7 +414,12 @@ export async function runOriginalVideoAnalysis(
     state.posterTimestampMs ?? VIDEO_POSTER_POLICY_V1.defaultPosterTimestampMs;
   let extracted: VideoFrameExtractionResult;
   try {
-    const transformBinding = await videoTransformBinding(source, analysisRevision, "frames");
+    const transformBinding = await videoTransformBinding(
+      source,
+      analysisRevision,
+      state.creationRevision,
+      "frames",
+    );
     const outcome = await runTransform(
       {
         submissionId: state.submissionId,

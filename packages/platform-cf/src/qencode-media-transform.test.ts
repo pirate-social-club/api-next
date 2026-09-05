@@ -26,6 +26,7 @@ const binding: MediaTransformVideoBinding = {
   operationId: "operation-1",
   videoRevision: 1,
   analysisRevision: 1,
+  creationRevision: 1,
   canonicalVideoSha256: SOURCE_SHA256,
   requestId: "request-1",
 };

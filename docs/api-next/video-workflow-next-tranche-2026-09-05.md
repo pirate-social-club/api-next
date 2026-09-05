@@ -37,6 +37,18 @@ leases, primary-index preservation, creation uniqueness, submitting and an
 untouched pending intent. These tests use a private schema and roll back each
 case; they do not establish staging preflight counts or Workflow reachability.
 
+The following attempt-store change binds both request-ID derivation and SQL
+replay predicates to creation revision. Allocation may be written only from
+an empty attempt; subsequent transitions are allocated to submitting to
+started, or an idempotent same-phase write. Job identity and the original
+deadline remain fenced. The focused PostgreSQL store test passed 15
+assertions, including a separate fresh creation row and replay of the prior
+started job. Its drill 7 name identifies only this store boundary; terminal
+provider failure, author retry and changed poster output still need composed
+proof. TypeScript and 18 analysis/transform tests passed. The old Queue runner
+and Qencode submit path have not yet adopted these transitions, so their
+composition remains intentionally disabled and is not accepted by this test.
+
 The historical [execution-record amendment](evidence/video-execution-2026-09-05/execution-record-amendment.patch)
 passed its applicability check and was applied before the final reservation,
 allocated-job preflight, and replay-index requirements were added. It must not

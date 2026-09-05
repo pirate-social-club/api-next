@@ -351,6 +351,8 @@ export function makeControlPlaneVideoAnalysisOutboxRepository(
       input.binding.videoRevision < 1 ||
       !Number.isSafeInteger(input.binding.analysisRevision) ||
       input.binding.analysisRevision < 1 ||
+      !Number.isSafeInteger(input.binding.creationRevision) ||
+      input.binding.creationRevision < 1 ||
       !["audio", "frames", "probe"].includes(input.capability) ||
       !Number.isSafeInteger(fence.submittedAtMs) ||
       !Number.isSafeInteger(fence.runtimeDeadlineMs) ||
@@ -369,8 +371,8 @@ export function makeControlPlaneVideoAnalysisOutboxRepository(
           label: "video-transform-attempt.insert",
           text: `INSERT INTO media_video_transform_attempts
                    (request_id,submission_id,operation_id,video_revision,analysis_revision,
-                    canonical_video_sha256,capability,submitted_at_ms,runtime_deadline_ms)
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                    canonical_video_sha256,capability,submitted_at_ms,runtime_deadline_ms,creation_revision)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
                  ON CONFLICT (request_id) DO NOTHING`,
           values: [
             input.binding.requestId,
@@ -382,6 +384,7 @@ export function makeControlPlaneVideoAnalysisOutboxRepository(
             input.capability,
             fence.submittedAtMs,
             fence.runtimeDeadlineMs,
+            input.binding.creationRevision,
           ],
           readonly: false,
         });
@@ -391,7 +394,7 @@ export function makeControlPlaneVideoAnalysisOutboxRepository(
                    FROM media_video_transform_attempts
                   WHERE request_id=$1 AND submission_id=$2 AND operation_id=$3
                     AND video_revision=$4 AND analysis_revision=$5
-                    AND canonical_video_sha256=$6 AND capability=$7`,
+                    AND canonical_video_sha256=$6 AND capability=$7 AND creation_revision=$8`,
           values: [
             input.binding.requestId,
             input.submissionId,
@@ -400,6 +403,7 @@ export function makeControlPlaneVideoAnalysisOutboxRepository(
             input.binding.analysisRevision,
             input.binding.canonicalVideoSha256,
             input.capability,
+            input.binding.creationRevision,
           ],
           readonly: true,
         });
@@ -419,6 +423,7 @@ export function makeControlPlaneVideoAnalysisOutboxRepository(
           (row.provider_job_id !== null && !validIdentifier(row.provider_job_id)) ||
           (row.provider_job_phase !== null &&
             row.provider_job_phase !== "allocated" &&
+            row.provider_job_phase !== "submitting" &&
             row.provider_job_phase !== "started")
         ) {
           return yield* Effect.fail(
@@ -432,7 +437,7 @@ export function makeControlPlaneVideoAnalysisOutboxRepository(
             ? {}
             : {
                 providerJobId: row.provider_job_id as string,
-                providerJobPhase: row.provider_job_phase as "allocated" | "started",
+                providerJobPhase: row.provider_job_phase as "allocated" | "submitting" | "started",
               }),
         };
       }),
@@ -445,7 +450,10 @@ export function makeControlPlaneVideoAnalysisOutboxRepository(
       !validIdentifier(input.binding.requestId) ||
       !validIdentifier(input.binding.operationId) ||
       !validIdentifier(input.attempt.providerJobId) ||
+      !Number.isSafeInteger(input.binding.creationRevision) ||
+      input.binding.creationRevision < 1 ||
       (input.attempt.providerJobPhase !== "allocated" &&
+        input.attempt.providerJobPhase !== "submitting" &&
         input.attempt.providerJobPhase !== "started")
     ) {
       return Promise.reject(
@@ -463,10 +471,12 @@ export function makeControlPlaneVideoAnalysisOutboxRepository(
                     AND video_revision=$6 AND analysis_revision=$7
                     AND canonical_video_sha256=$8 AND capability=$9
                     AND submitted_at_ms=$10 AND runtime_deadline_ms=$11
-                    AND (provider_job_id IS NULL OR (
+                    AND creation_revision=$12
+                    AND ((provider_job_id IS NULL AND $2='allocated') OR (
                       provider_job_id=$1 AND (
                         provider_job_phase=$2 OR
-                        (provider_job_phase='allocated' AND $2='started')
+                        (provider_job_phase='allocated' AND $2='submitting') OR
+                        (provider_job_phase='submitting' AND $2='started')
                       )
                     ))
                   RETURNING submitted_at_ms,runtime_deadline_ms,provider_job_id,provider_job_phase`,
@@ -482,6 +492,7 @@ export function makeControlPlaneVideoAnalysisOutboxRepository(
             input.capability,
             input.attempt.runtimeFence.submittedAtMs,
             input.attempt.runtimeFence.runtimeDeadlineMs,
+            input.binding.creationRevision,
           ],
           readonly: false,
         });

@@ -39,14 +39,14 @@ export type MediaTransformAttempt = Readonly<{
   readonly version: "media-transform-attempt-v1";
   readonly runtimeFence: MediaTransformRuntimeFence;
   readonly providerJobId?: string;
-  readonly providerJobPhase?: "allocated" | "started";
+  readonly providerJobPhase?: "allocated" | "submitting" | "started";
 }>;
 
 export type MediaTransformAcceptedAttempt = Readonly<{
   readonly version: "media-transform-attempt-v1";
   readonly runtimeFence: MediaTransformRuntimeFence;
   readonly providerJobId: string;
-  readonly providerJobPhase?: "allocated" | "started";
+  readonly providerJobPhase?: "allocated" | "submitting" | "started";
 }>;
 
 export type MediaTransformProbeInput = Readonly<{
@@ -190,6 +190,7 @@ export type MediaTransformAudioSampleOutcome =
 export type MediaTransformVideoBinding = Readonly<{
   readonly operationId: string;
   readonly videoRevision: number;
+  readonly creationRevision: number;
   readonly analysisRevision: number;
   readonly canonicalVideoSha256: string;
   readonly requestId: string;

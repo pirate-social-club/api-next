@@ -18,6 +18,7 @@ describe("disabled media transform", () => {
       operationId: "operation",
       videoRevision: 1,
       analysisRevision: 1,
+      creationRevision: 1,
       canonicalVideoSha256: "a".repeat(64),
       requestId: "request",
     };
