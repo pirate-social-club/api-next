@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
+import { CommunityModerationStoreError } from "@pirate/application/use-cases/content/community-moderation-runtime";
 import type { TextPostModerationEvaluation } from "@pirate/application/use-cases/content/text-post";
 import { Effect } from "effect";
 import {
@@ -178,6 +180,132 @@ function stores(
 }
 
 describe("HTTP product handlers", () => {
+  for (const target of ["post", "comment", "action"] as const) {
+    const isAction = target === "action";
+    const body = isAction
+      ? {
+          version: "moderation-case-action-v2",
+          idempotency_key: "key-a",
+          expected_case_revision: 3,
+          action: "hide",
+        }
+      : { idempotency_key: "key-a", reason_code: "spam" };
+    const params = isAction ? { caseRef: "case-a" } : { [`${target}Id`]: `${target}-a` };
+    const preimage = isAction
+      ? '{"body":{"action":"hide","expected_case_revision":3,"idempotency_key":"key-a","version":"moderation-case-action-v2"},"case_ref":"case-a","endpoint":"POST /moderation/cases/:caseRef/actions"}'
+      : target === "comment"
+        ? '{"body":{"idempotency_key":"key-a","reason_code":"spam"},"comment_id":"comment-a","endpoint":"POST /comments/:commentId/reports"}'
+        : '{"body":{"idempotency_key":"key-a","reason_code":"spam"},"endpoint":"POST /posts/:postId/reports","post_id":"post-a"}';
+    const handlerName = isAction
+      ? "ModerateCaseAction"
+      : target === "post"
+        ? "ReportPost"
+        : "ReportComment";
+    const report = { report_id: "report-a", case_ref: "case-a", status: "open" as const };
+    const action = {
+      version: "moderation-case-action-result-v2" as const,
+      action_id: "action-a",
+      case_ref: "case-a",
+      action: "hide" as const,
+      target_status: "hidden" as const,
+    };
+
+    test(`${target} preserves canonical fingerprint, storage input and replay response`, async () => {
+      const inputs: unknown[] = [];
+      const handlers = makeProductHandlers(
+        stores({
+          moderation: {
+            reportTarget: (input) => {
+              inputs.push(input);
+              return Effect.succeed(report);
+            },
+            actOnCase: (input) => {
+              inputs.push(input);
+              return Effect.succeed(action);
+            },
+          },
+        }),
+      );
+      const expectedInput = {
+        actor: { kind: "user", userId: "user-a" },
+        idempotencyKey: "key-a",
+        requestHash: createHash("sha256").update(preimage).digest("hex"),
+        ...(isAction
+          ? { caseRef: "case-a", expectedCaseRevision: 3, action: "hide" }
+          : { targetType: target, targetId: `${target}-a`, reasonCode: "spam" }),
+      };
+      for (const requestBody of [body, Object.fromEntries(Object.entries(body).reverse())]) {
+        await expect(
+          handlers[handlerName](request({ params, body: requestBody })),
+        ).resolves.toEqual(isAction ? action : report);
+      }
+      expect(inputs).toEqual([expectedInput, expectedInput]);
+    });
+
+    test(`${target} preserves storage error mapping`, async () => {
+      for (const [reason, code] of [
+        ["not-found", "not_found"],
+        ["membership-required", "membership_required"],
+        ["idempotency-conflict", "conflict"],
+        ["conflict", "conflict"],
+        ["constraint", "bad_request"],
+        ["invalid-row", "internal_error"],
+      ] as const) {
+        const failure = new CommunityModerationStoreError({
+          operation: isAction ? "action" : "report",
+          reason,
+        });
+        let calls = 0;
+        const fail = () => {
+          calls += 1;
+          return Effect.fail(failure);
+        };
+        const handlers = makeProductHandlers(
+          stores({ moderation: { reportTarget: fail, actOnCase: fail } }),
+        );
+        await expect(handlers[handlerName](request({ params, body }))).rejects.toMatchObject({
+          code,
+          ...(reason === "idempotency-conflict"
+            ? {
+                details: {
+                  reason_code: "idempotency_conflict",
+                  submission_id: isAction ? "case-a" : `${target}-a`,
+                },
+              }
+            : {}),
+        });
+        expect(calls).toBe(1);
+      }
+    });
+
+    test(`${target} fingerprints before authorization and never mutates after an earlier failure`, async () => {
+      let calls = 0;
+      const handlers = makeProductHandlers(
+        stores({
+          moderation: {
+            reportTarget: () => {
+              calls += 1;
+              return Effect.succeed(report);
+            },
+            actOnCase: () => {
+              calls += 1;
+              return Effect.succeed(action);
+            },
+          },
+        }),
+      );
+      await expect(
+        handlers[handlerName](
+          request({ params, principal: null, body: { ...body, idempotency_key: "\ud800" } }),
+        ),
+      ).rejects.toMatchObject({ code: "internal_error", message: "Unable to fingerprint request" });
+      await expect(
+        handlers[handlerName](request({ params, principal: null, body })),
+      ).rejects.toMatchObject({ code: "auth_error" });
+      expect(calls).toBe(0);
+    });
+  }
+
   test("maps comment report and moderation action outcomes to contract response shapes", async () => {
     const handlers = makeProductHandlers(
       stores({
