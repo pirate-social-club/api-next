@@ -1,13 +1,27 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
-  "ignoreDependencies": ["@effect/language-service", "cloudflare"],
+  "ignoreDependencies": [
+    "@effect/language-service",
+    "cloudflare"
+  ],
   "ignoreIssues": {
-    "packages/platform-cf/src/verification/providers/contract-fixture.ts": ["files"]
+    "packages/platform-cf/src/verification/providers/contract-fixture.ts": [
+      "files"
+    ]
   },
   "workspaces": {
     ".": {
-      "entry": ["scripts/**/*.ts", "tests/**/entry.ts", "infra/**/src/index.ts"],
-      "project": ["scripts/**/*.ts", "tests/**/*.ts", "infra/**/*.ts"]
+      "entry": [
+        "scripts/**/*.ts",
+        "tests/**/entry.ts",
+        "infra/**/src/index.ts"
+      ],
+      "project": [
+        "scripts/**/*.ts",
+        "tests/**/*.ts",
+        "infra/**/*.ts",
+        "scripts/hns-continuity/*.mjs"
+      ]
     }
   }
 }
