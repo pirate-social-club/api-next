@@ -25,7 +25,6 @@ export type VideoSourceBucket = Readonly<{
 }>;
 
 export type VideoSourceGrant = Readonly<{
-  capability: string;
   expiresAtMs: number;
   object: Readonly<{
     key: string;
@@ -128,21 +127,22 @@ export function makeVideoSourceGateway(
 ): (request: Request) => Promise<Response> {
   return async (request) => {
     const method = request.method.toUpperCase();
-    if (method !== "GET" && method !== "HEAD") {
-      return new Response(null, { status: 405, headers: { allow: "GET, HEAD" } });
-    }
-
     const url = new URL(request.url);
     const capability = url.pathname.startsWith(SOURCE_PATH_PREFIX)
       ? url.pathname.slice(SOURCE_PATH_PREFIX.length)
       : "";
     if (url.search.length > 0 || !CAPABILITY_PATTERN.test(capability)) {
-      input.logger?.({ event: "source_request", method, outcome: "not_found", status: 404 });
+      if (method === "GET" || method === "HEAD") {
+        input.logger?.({ event: "source_request", method, outcome: "not_found", status: 404 });
+      }
       return new Response(null, { status: 404 });
+    }
+    if (method !== "GET" && method !== "HEAD") {
+      return new Response(null, { status: 405, headers: { allow: "GET, HEAD" } });
     }
 
     const grant = await input.grants.resolve(capability);
-    if (grant === null || grant.capability !== capability || grant.expiresAtMs <= input.now()) {
+    if (grant === null || grant.expiresAtMs <= input.now()) {
       input.logger?.({ event: "source_request", method, outcome: "not_found", status: 404 });
       return new Response(null, { status: 404 });
     }

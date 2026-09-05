@@ -13,7 +13,6 @@ const canonicalSha256 = "ab".repeat(32);
 const bytes = new TextEncoder().encode("0123456789");
 
 const grant: VideoSourceGrant = {
-  capability,
   expiresAtMs: 2_000,
   object: {
     key: objectKey,
