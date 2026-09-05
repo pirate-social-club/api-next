@@ -249,6 +249,8 @@ describe("interactive HNS community application gateway", () => {
       ["X-CSRF-Token", "csrf"],
       ["CF-Access-Jwt-Assertion", "client-forgery"],
       ["X-Pirate-Hns-Forwarder-Signature", "client-forgery"],
+      ["X-Pirate-Hns-Diagnostic-Id", "public-forgery"],
+      ["x-pirate-hns-diagnostic-id", "duplicate-forgery"],
     ];
     const response = await enabled.service.handle(
       request({
@@ -264,6 +266,7 @@ describe("interactive HNS community application gateway", () => {
     const observed = observations[0];
     expect(observed?.request.url).toBe("https://solid.example/api/auth/session/exchange?attempt=1");
     expect(observed?.request.method).toBe("POST");
+    expect(observed?.request.headers.get("x-pirate-hns-diagnostic-id")).toBeNull();
     expect(observed?.request.headers.get("origin")).toBe(`https://${host}`);
     expect(observed?.request.headers.get("x-csrf-token")).toBe("csrf");
     expect(observed?.request.headers.get("cookie")).toBe(

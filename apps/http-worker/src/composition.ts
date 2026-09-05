@@ -230,6 +230,7 @@ import { createHttpWorker, type EndpointHandler, type Principal } from "./transp
 import { makeVerificationHandlers } from "./verification-handlers.ts";
 
 export interface HttpWorkerBindings {
+  readonly CF_VERSION_METADATA?: { readonly id: string };
   readonly CONTROL_PLANE?: unknown;
   readonly STUDY_GENERATION_ENABLED?: string;
   readonly STUDY_GENERATION_OPENROUTER_MODEL?: string;

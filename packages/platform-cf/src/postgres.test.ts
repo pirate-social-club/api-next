@@ -3,7 +3,7 @@ import { ControlPlaneDb } from "@pirate/application";
 import { Effect, Fiber } from "effect";
 import { TestClock } from "effect/testing";
 import type { ClientConfig } from "pg";
-
+import { HnsAuthorityDiagnostic, withHnsAuthoritySpan } from "./hns-authority-diagnostics.ts";
 import {
   CONTROL_PLANE_CONNECT_TIMEOUT_MS,
   CONTROL_PLANE_HYPERDRIVE_SEARCH_PATH,
@@ -19,6 +19,7 @@ import {
   type PostgresQueryConfig,
   type PostgresQueryResult,
 } from "./postgres";
+import type { WorkerDiagnosticFields } from "./worker-request-diagnostics.ts";
 
 const statement = {
   label: "community.lookup",
@@ -107,6 +108,59 @@ function layerFor(
 }
 
 describe("Postgres control-plane adapter", () => {
+  test("request cancellation fences an in-flight query and retains only redacted correlated spans", async () => {
+    const client = new FakePostgresClient();
+    const queryStarted = Promise.withResolvers<void>();
+    const originalQuery = client.query.bind(client);
+    client.query = (config) => {
+      const result = originalQuery(config);
+      if (config.text === "SELECT stall") queryStarted.resolve();
+      return result;
+    };
+    const records: WorkerDiagnosticFields[] = [];
+    const controller = new AbortController();
+    const program = withHnsAuthoritySpan(
+      "authority",
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        return yield* db.execute({ ...statement, text: "SELECT stall" });
+      }).pipe(Effect.provide(layerFor(client))),
+    ).pipe(
+      Effect.provideService(HnsAuthorityDiagnostic, {
+        correlation_id: "12345678-1234-4234-8234-123456789abc",
+        emit: (record) => {
+          records.push(record);
+        },
+      }),
+    );
+    const result = Effect.runPromiseExit(program, { signal: controller.signal });
+    await queryStarted.promise;
+    controller.abort();
+    expect((await result)._tag).toBe("Failure");
+    expect(client.events).toContain("destroy");
+    expect(client.events.indexOf("destroy")).toBeLessThan(client.events.indexOf("end"));
+    expect(records.map(({ phase, outcome }) => [phase, outcome])).toEqual([
+      ["authority", "started"],
+      ["client_initialization", "started"],
+      ["client_initialization", "success"],
+      ["connection_acquisition", "started"],
+      ["connection_acquisition", "success"],
+      ["query", "started"],
+      ["query", "canceled"],
+      ["authority", "canceled"],
+    ]);
+    for (const record of records) {
+      expect(record.correlation_id).toBe("12345678-1234-4234-8234-123456789abc");
+      expect(
+        Object.keys(record).every((key) =>
+          ["phase", "outcome", "correlation_id", "elapsed_ms"].includes(key),
+        ),
+      ).toBe(true);
+    }
+    expect(JSON.stringify(records)).not.toContain("SELECT");
+    expect(JSON.stringify(records)).not.toContain("community_9");
+  });
+
   test("passes exact deadlines, preserves native SQL, and scopes a client", async () => {
     const client = new FakePostgresClient();
     let receivedConfig: ClientConfig | undefined;

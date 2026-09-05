@@ -142,7 +142,9 @@
     "./video-publication-wakeup-repository": "./src/video-publication-wakeup-repository.ts",
     "./media-immutable-object-key": "./src/media-immutable-object-key.ts",
     "./video-source-grant-issuer": "./src/video-source-grant-issuer.ts",
-    "./video-source-grant-resolver": "./src/video-source-grant-resolver.ts"
+    "./video-source-grant-resolver": "./src/video-source-grant-resolver.ts",
+    "./worker-request-diagnostics": "./src/worker-request-diagnostics.ts",
+    "./hns-authority-diagnostics": "./src/hns-authority-diagnostics.ts"
   },
   "dependencies": {
     "@pirate/verifier-response-contract": "0.0.0",
