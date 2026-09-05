@@ -394,25 +394,25 @@ const reportHandler = async (
   const targetId =
     targetType === "post" ? postPath(request).postId : commentPath(request).commentId;
   const body = request.body as ReportBody;
-  const requestHash = await Effect.runPromise(
-    canonicalBodyHash({
-      endpoint: `POST /${targetType}s/:${targetType}Id/reports`,
-      [`${targetType}_id`]: targetId,
-      body,
-    }),
-  );
   return Effect.runPromise(
-    reportCommunityContent(
-      {
-        targetType,
-        targetId,
-        actor: communityActor(request.principal),
-        idempotencyKey: body.idempotency_key,
-        reasonCode: body.reason_code,
-        requestHash,
-      },
-      { moderationStore: moderationStoreFrom(services) },
-    ),
+    Effect.gen(function* () {
+      const requestHash = yield* canonicalBodyHash({
+        endpoint: `POST /${targetType}s/:${targetType}Id/reports`,
+        [`${targetType}_id`]: targetId,
+        body,
+      });
+      return yield* reportCommunityContent(
+        {
+          targetType,
+          targetId,
+          actor: communityActor(request.principal),
+          idempotencyKey: body.idempotency_key,
+          reasonCode: body.reason_code,
+          requestHash,
+        },
+        { moderationStore: moderationStoreFrom(services) },
+      );
+    }),
   );
 };
 
@@ -422,25 +422,25 @@ const moderateCaseActionHandler = async (
 ) => {
   const { caseRef } = casePath(request);
   const body = request.body as ActionBody;
-  const requestHash = await Effect.runPromise(
-    canonicalBodyHash({
-      endpoint: "POST /moderation/cases/:caseRef/actions",
-      case_ref: caseRef,
-      body,
-    }),
-  );
   return Effect.runPromise(
-    moderateCommunityCase(
-      {
-        caseRef,
-        actor: communityActor(request.principal),
-        idempotencyKey: body.idempotency_key,
-        expectedCaseRevision: body.expected_case_revision,
-        action: body.action,
-        requestHash,
-      },
-      { moderationStore: moderationStoreFrom(services) },
-    ),
+    Effect.gen(function* () {
+      const requestHash = yield* canonicalBodyHash({
+        endpoint: "POST /moderation/cases/:caseRef/actions",
+        case_ref: caseRef,
+        body,
+      });
+      return yield* moderateCommunityCase(
+        {
+          caseRef,
+          actor: communityActor(request.principal),
+          idempotencyKey: body.idempotency_key,
+          expectedCaseRevision: body.expected_case_revision,
+          action: body.action,
+          requestHash,
+        },
+        { moderationStore: moderationStoreFrom(services) },
+      );
+    }),
   );
 };
 
