@@ -2,6 +2,11 @@
 
 ## Workers redirect correction — 2026-09-05
 
+Preserved as 914ef07ba49db615be61545a2fb98caadef99199. The
+[record amendment](evidence/video-execution-2026-09-05/workers-redirect-record.patch)
+is prepared while other control-plane writers are active. Recheck current
+HEAD, writer state and applicability before applying it.
+
 The previous authenticated lookup passed redirect error to global fetch.
 A new Workerd test using the real Request/fetch path and a local network stub
 reproduced the runtime rejection before the stub was reached: Invalid redirect
