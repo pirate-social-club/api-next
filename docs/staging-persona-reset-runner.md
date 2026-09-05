@@ -246,3 +246,30 @@ The provider rehearsal must therefore inventory and verify required extensions
 explicitly; the local pg_dump test cannot establish that provider behavior.
 The [backup read contract](https://planetscale.com/docs/api/reference/get_backup)
 provides the source-branch metadata used by this observer.
+
+## Secure credential assistance, September 5
+
+The workspace owner asked the agent to provision the needed credential without
+displaying its value. A separate staging-main role, provider ID 9eon4hzg2r7a,
+was created with postgres inheritance and a two-hour TTL. It expires at
+2026-09-05T19:58:02.131Z. Its connection string passed directly from captured
+provider output to Infisical stdin under the new staging operator key
+CONTROL_PLANE_POSTGRES_RESET_ADMIN_URL. No credential value entered chat,
+command arguments or tracked files. Existing secrets were not overwritten.
+
+Reading that new secret back verified the complete 0109 ledger and database
+postgres. It has database CREATE permission, but neither schema ownership nor
+SET ROLE authority for the original api_next owner. Attempts to grant the
+original owner role to this temporary role, first through postgres and then
+through the existing operator credential, both failed with SQLSTATE 42501 and
+were rolled back. No schema, data, existing runtime permission or deployment
+changed. The new role and new secret are the only completed external writes.
+
+The credential transfer is complete, not reset readiness. Do not substitute
+this key blindly for ADMIN_URL or transfer schema ownership as a workaround.
+The ownership-administration path still needs resolution and review. The
+temporary role must not be used after expiry; retire its dedicated secret and
+role when the credential work is concluded. The provider role must not acquire
+object ownership during that cleanup window. The control-plane checkout had
+another active writer at this checkpoint, so this receipt is preserved on the
+owning lane pending task-record reconciliation.
