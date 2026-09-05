@@ -24,7 +24,9 @@ export const getVideoPosterAccess = Effect.fn("getVideoPosterAccess")(function* 
   const poster = yield* services
     .resolvePoster({ ...location, artifactRef: video.thumbnail.artifact_ref })
     .pipe(Effect.mapError(() => new InternalError({ message: "Video delivery unavailable" })));
-  if (poster === null) return yield* new NotFound({ message: "Video not found" });
+  // Eligibility has already succeeded. A missing sealed artifact is an outage,
+  // not a privacy denial, even when the viewer supplied a matching ETag.
+  if (poster === null) return yield* new InternalError({ message: "Video delivery unavailable" });
   if (
     poster.artifactRef !== video.thumbnail.artifact_ref ||
     !/^"[\x21\x23-\x7e]{1,128}"$/u.test(poster.etag)

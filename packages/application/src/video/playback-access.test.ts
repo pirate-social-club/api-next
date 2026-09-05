@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { NotFound, toErrorBody } from "@pirate/contracts";
+import { InternalError, NotFound, toErrorBody } from "@pirate/contracts";
 import { Effect } from "effect";
 import type { LocalizedPostDocument } from "../ports.ts";
 import type { PublicPostLiveRecord } from "../use-cases/content/public-post-routes.ts";
@@ -151,6 +151,27 @@ function fixture() {
 }
 
 describe("video playback access policy with fixture-only ready media", () => {
+  test.each(["missing", "unreadable"])(
+    "eligible viewer receives an honest %s artifact error, never a conditional success",
+    async (failure) => {
+      const f = fixture();
+      const result = await Effect.runPromise(
+        getVideoPosterAccess(
+          { postId: "post-1", ifNoneMatch: '"same"' },
+          {
+            ...f.services,
+            resolvePoster: () =>
+              failure === "missing"
+                ? Effect.succeed(null)
+                : Effect.fail(new Error("private bucket locator must not escape")),
+          },
+        ),
+      ).catch((error: unknown) => toErrorBody(error));
+      expect(result).toEqual(
+        toErrorBody(new InternalError({ message: "Video delivery unavailable" })),
+      );
+    },
+  );
   test("eligible matching ETag yields 304 only after fresh approval", async () => {
     const f = fixture();
     const calls: string[] = [];
