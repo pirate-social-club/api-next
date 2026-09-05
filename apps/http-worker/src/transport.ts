@@ -21,6 +21,7 @@ import { Schema } from "effect";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { binaryEndpointResponse } from "./binary-response.ts";
 import { routeTable } from "./generated/route-table.ts";
 import {
   disabledProductionHnsCommunityAppApiComposition,
@@ -896,6 +897,15 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
           const status = isHandlerResult(result)
             ? (result.status ?? declaredStatuses(binding.endpoint)[0] ?? 200)
             : (declaredStatuses(binding.endpoint)[0] ?? 200);
+          if (binding.endpoint.responseRepresentation !== undefined) {
+            if (!isHandlerResult(result))
+              throw new InternalError({
+                message: "Binary endpoint requires a tagged handler result",
+              });
+            const headers = new Headers(result.responseHeaders);
+            headers.set("x-request-id", requestId(context));
+            return await binaryEndpointResponse(binding.endpoint, body, status, headers);
+          }
           validateHandlerStatus(binding.endpoint, status);
           const decoded = decodeResponse(binding.endpoint, body);
           const responseHeaders = isHandlerResult(result) ? result.responseHeaders : undefined;

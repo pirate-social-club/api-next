@@ -33,7 +33,6 @@ import {
 export {
   MEDIA_MP3_SAMPLE_ADAPTER_REVISION,
   makeR2Mp3SampleMediaTransform,
-  readMp3FrameWindow,
 } from "./media-mp3-sample.ts";
 
 const IMMUTABLE_REF_PREFIX = "media://immutable/";
