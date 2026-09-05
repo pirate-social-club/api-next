@@ -253,6 +253,23 @@ export function makeControlPlaneVideoPublicationStore(
       run(
         Effect.gen(function* () {
           const db = yield* ControlPlaneDb;
+          if (input.endpointTemplate !== undefined) {
+            const result = yield* db.execute<Row>({
+              label: "video-publication.reservation-command-replay",
+              text: `SELECT reservation_id,request_hash,response_snapshot_bytes
+                       FROM media_video_reservation_command_replays
+                      WHERE actor_account_id=$1 AND actor_persona_id=$2
+                        AND endpoint_template=$3 AND idempotency_key=$4`,
+              values: [
+                input.actorAccountId,
+                input.authorPersonaId,
+                input.endpointTemplate,
+                input.idempotencyKey,
+              ],
+              readonly: true,
+            });
+            return replayFromRow(result.rows[0], input.requestHash, "reservation_id");
+          }
           const result = yield* db.execute<Row>({
             label: "video-publication.reservation-replay",
             text: `SELECT reservation_id,request_hash,response_snapshot_bytes
@@ -403,7 +420,8 @@ export function makeControlPlaneVideoPublicationStore(
                 label: "video-publication.renew-guard",
                 text: `SELECT reservation_id FROM media_upload_reservations
                         WHERE reservation_id=$1 AND actor_user_id=$2 AND actor_persona_id=$3
-                          AND media_kind='video' AND state='issued' AND multipart_manifest IS NULL
+                          AND media_kind='video' AND state IN ('issued','claimed')
+                          AND multipart_manifest IS NULL
                           AND expires_at>clock_timestamp() FOR UPDATE`,
                 values: [
                   input.reservation.reservationId,

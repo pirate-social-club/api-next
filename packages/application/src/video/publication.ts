@@ -162,6 +162,7 @@ export type VideoTechnicalFailureCode = Exclude<
 /** PostgreSQL owns replay, revisions, membership rechecks, and atomic publication effects. */
 export interface VideoPublicationStore {
   readonly replayReservation: (input: {
+    endpointTemplate?: string;
     communityId: string;
     actorAccountId: string;
     authorPersonaId: string;
@@ -641,10 +642,13 @@ export async function renewVideoUploadParts(
       details: { reason_code: "reservation_persona_required" },
     });
   }
+  const remainingSeconds = Math.floor(
+    (Date.parse(reservation.expiresAt) - Date.parse(services.nowIso())) / 1_000,
+  );
   if (
-    reservation.state !== "issued" ||
+    !["issued", "claimed"].includes(reservation.state) ||
     reservation.manifest !== null ||
-    Date.parse(reservation.expiresAt) <= Date.parse(services.nowIso())
+    remainingSeconds < 1
   ) {
     throw new Conflict({
       message: "Video upload action expired",
@@ -663,7 +667,8 @@ export async function renewVideoUploadParts(
       communityId: reservation.communityId,
       actorAccountId: input.actor.userId,
       authorPersonaId: body.persona_id,
-      idempotencyKey: `${VIDEO_PUBLICATION_ENDPOINTS.renewParts}:${body.idempotency_key}`,
+      endpointTemplate: VIDEO_PUBLICATION_ENDPOINTS.renewParts,
+      idempotencyKey: body.idempotency_key,
       requestHash,
     }),
   );
@@ -674,7 +679,7 @@ export async function renewVideoUploadParts(
       objectKey: videoIngressObjectKey(reservation.reservationId),
       uploadId: reservation.uploadId,
       partNumbers,
-      expiresInSeconds: VIDEO_MULTIPART_URL_TTL_SECONDS,
+      expiresInSeconds: Math.min(VIDEO_MULTIPART_URL_TTL_SECONDS, remainingSeconds),
     });
   } catch {
     throw new InternalError({ message: "Video multipart renewal is unavailable" });

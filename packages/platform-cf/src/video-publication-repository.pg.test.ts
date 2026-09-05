@@ -7,6 +7,13 @@ import {
   withReusablePostgresTestSchema,
 } from "../../../scripts/postgres-test-baseline.ts";
 import {
+  createVideoSubmission,
+  renewVideoUploadParts,
+  reserveVideoUpload,
+  VIDEO_MULTIPART_PART_SIZE_BYTES,
+  type VideoPublicationServices,
+} from "../../application/src/video/publication.ts";
+import {
   attachVideoDecision,
   createOriginalVideoSubmission,
   decideOriginalAudioVideo,
@@ -18,6 +25,7 @@ import { makeControlPlaneContentStore } from "./content-repository.ts";
 import { makePostgresDataRegistrationArtifactAuthorityReader } from "./data/registration-artifact-pipeline.ts";
 import { makeDataRegistrationStore } from "./data-registration-repository.ts";
 import { makeControlPlaneFeedStore } from "./feed-repository.ts";
+import { makeControlPlanePersonaStore } from "./persona-repository.ts";
 import { createActivePersonaFixture } from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { makeControlPlaneVideoAnalysisOutboxRepository } from "./video-analysis-outbox-repository.ts";
@@ -154,6 +162,160 @@ function trustedAnalysis(): VideoTrustedAnalysis {
 }
 
 suite("video publication PostgreSQL", () => {
+  test("renews one expired part after claim without changing other parts or the reservation deadline", async () => {
+    await fixture(async (admin, connection) => {
+      const layer = makeDirectPostgresControlPlaneLayer(connection);
+      const store = makeControlPlaneVideoPublicationStore(layer);
+      let now = new Date().toISOString();
+      const deadline = new Date(Date.parse(now) + 3_600_000).toISOString();
+      let renewals = 0;
+      const unused = async (): Promise<never> => {
+        throw new Error("unexpected upload effect");
+      };
+      const services: VideoPublicationServices = {
+        store,
+        personaServices: { personaStore: makeControlPlanePersonaStore(layer) },
+        nowIso: () => now,
+        randomUuid: () => crypto.randomUUID(),
+        sealer: { inspect: unused, seal: unused },
+        multipart: {
+          create: async ({ partCount, partSizeBytes }) => ({
+            uploadId: "renew-upload",
+            partCount,
+            partSizeBytes,
+            expiresAt: deadline,
+            parts: [1, 2].map((partNumber) => ({
+              partNumber,
+              url: `https://upload.invalid/original/${partNumber}`,
+              expiresAt: deadline,
+            })),
+          }),
+          renew: async ({ partNumbers, expiresInSeconds }) => {
+            renewals++;
+            expect(partNumbers).toEqual([2]);
+            expect(expiresInSeconds).toBe(1_800);
+            return [
+              { partNumber: 2, url: "https://upload.invalid/renewed/2", expiresAt: deadline },
+            ];
+          },
+          completeOrInspect: unused,
+          abort: unused,
+        },
+      };
+      const author = { kind: "user" as const, userId: actor };
+      const reserved = await reserveVideoUpload(
+        {
+          communityId: community,
+          actor: author,
+          body: {
+            track: "video",
+            slot: "primary_video",
+            intent: "original_audio",
+            persona_id: persona,
+            idempotency_key: "reserve-renew",
+            expected_content_type: "video/mp4",
+            expected_size_bytes: VIDEO_MULTIPART_PART_SIZE_BYTES + 1,
+          },
+        },
+        services,
+      );
+      const id = reserved.reservation_id;
+      await createVideoSubmission(
+        {
+          communityId: community,
+          actor: author,
+          body: {
+            version: "video-start-input-v1",
+            persona_id: persona,
+            video_reservation_id: id,
+            idempotency_key: "start-renew",
+          },
+        },
+        services,
+      );
+      await admin.query(
+        "UPDATE media_video_upload_parts SET expires_at=clock_timestamp()-interval '1 second' WHERE reservation_id=$1 AND part_number=2",
+        [id],
+      );
+      now = new Date(Date.parse(deadline) - 1_800_000).toISOString();
+      const input = {
+        reservationId: id,
+        actor: author,
+        body: {
+          persona_id: persona,
+          reservation_id: id,
+          part_numbers: [2],
+          idempotency_key: "renew-part-two",
+        },
+      };
+      const renewed = await renewVideoUploadParts(input, services);
+      expect(renewed.upload.parts.map((part) => part.part_number)).toEqual([2]);
+      expect(await renewVideoUploadParts(input, services)).toEqual(renewed);
+      expect(renewals).toBe(1);
+      await expect(
+        renewVideoUploadParts({ ...input, body: { ...input.body, part_numbers: [1] } }, services),
+      ).rejects.toMatchObject({ _tag: "IdempotencyConflict" });
+      const parts = await admin.query(
+        "SELECT part_number,presigned_url FROM media_video_upload_parts WHERE reservation_id=$1 ORDER BY part_number",
+        [id],
+      );
+      expect(parts.rows).toEqual([
+        { part_number: 1, presigned_url: "https://upload.invalid/original/1" },
+        { part_number: 2, presigned_url: "https://upload.invalid/renewed/2" },
+      ]);
+      expect(
+        await store.getReservationForAccount({ reservationId: id, actorAccountId: actor }),
+      ).toMatchObject({ state: "claimed", expiresAt: deadline });
+      now = deadline;
+      await expect(
+        renewVideoUploadParts(
+          { ...input, body: { ...input.body, idempotency_key: "renew-expired" } },
+          services,
+        ),
+      ).rejects.toMatchObject({ details: { reason_code: "action_expired" } });
+      expect(renewals).toBe(1);
+      now = new Date(Date.parse(deadline) - 1_800_000).toISOString();
+      const reservation = await store.getReservationForAccount({
+        reservationId: id,
+        actorAccountId: actor,
+      });
+      if (reservation?.submissionId == null || reservation.operationId == null)
+        throw new Error("missing claimed reservation");
+      const submission = await store.getSubmissionByOperation({
+        submissionId: reservation.submissionId,
+        operationId: reservation.operationId,
+      });
+      if (submission === null) throw new Error("missing submission");
+      await store.beginFinalize({
+        submission: submission.state,
+        expectedCreationRevision: 1,
+        posterTimestampMs: 0,
+        manifest: [
+          { partNumber: 1, etag: "retained-etag" },
+          { partNumber: 2, etag: "renewed-etag" },
+        ],
+      });
+      await expect(
+        renewVideoUploadParts(
+          { ...input, body: { ...input.body, idempotency_key: "renew-after-finalize" } },
+          services,
+        ),
+      ).rejects.toMatchObject({ details: { reason_code: "action_expired" } });
+      await expect(
+        store.renewParts({
+          reservation,
+          endpointTemplate: "/media-upload-reservations/:reservationId/parts/renew",
+          idempotencyKey: "stale-renewal",
+          requestHash: "f".repeat(64),
+          responseBytes,
+          responseSha256,
+          parts: [{ partNumber: 2, url: "https://upload.invalid/stale", expiresAt: deadline }],
+        }),
+      ).rejects.toThrow("video reservation action expired");
+      expect(renewals).toBe(1);
+    });
+  });
+
   test("commits original-video publication effects atomically and replay creates no duplicate", async () => {
     await fixture(async (admin, connection) => {
       const layer = makeDirectPostgresControlPlaneLayer(connection);
