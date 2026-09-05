@@ -13,6 +13,7 @@ const Revision = Schema.String.check(Schema.isPattern(/^[1-9][0-9]*$/u));
 const PosterRow = Schema.Struct({
   operation_id: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{1,200}$/u)),
   video_revision: Revision,
+  creation_revision: Revision,
   analysis_revision: Revision,
   artifact_ref: Schema.String,
   canonical_sha256: Digest,
@@ -33,7 +34,8 @@ const resolve = Effect.fn("resolveVideoPosterAuthority")(function* (input: Video
   const db = yield* ControlPlaneDb;
   const result = yield* db.execute({
     label: "video-access.poster-authority",
-    text: `SELECT pub.operation_id, pub.video_revision::text, pub.analysis_revision::text,
+    text: `SELECT pub.operation_id, pub.video_revision::text, pub.creation_revision::text,
+        pub.analysis_revision::text,
         a.artifact_ref, a.canonical_sha256, pub.canonical_video_sha256 AS source_sha256,
         v.analysis_snapshot->'frames'->>'posterPolicyRevision' AS poster_policy_revision
       FROM media_publication_projections pub
@@ -52,7 +54,7 @@ const resolve = Effect.fn("resolveVideoPosterAuthority")(function* (input: Video
   if (result.rows.length === 0) return null;
   if (result.rows.length !== 1) return yield* Effect.fail(new Error("Ambiguous poster authority"));
   const row = yield* Effect.try(() => Schema.decodeUnknownSync(PosterRow)(result.rows[0]));
-  const key = `video-analysis/${row.operation_id}/v${row.video_revision}/a${row.analysis_revision}/poster.jpg`;
+  const key = `video-analysis/${row.operation_id}/v${row.video_revision}/c${row.creation_revision}/a${row.analysis_revision}/poster.jpg`;
   // Never turn a client locator into a bucket key by stripping a URI prefix.
   if (row.artifact_ref !== input.artifactRef || row.artifact_ref !== `media://derived/${key}`)
     return yield* Effect.fail(new Error("Invalid poster authority"));
