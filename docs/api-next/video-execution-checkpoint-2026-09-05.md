@@ -102,6 +102,6 @@ PR, or live browser acceptance was performed. Both task-owned test containers
 were stopped after verification; no unrelated container was changed.
 
 The control-plane record at `496f30e` predates this final PostgreSQL result.
-Its final validation refresh is deferred while another control-plane writer
-has uncommitted work. This note preserves the completed local evidence without
-changing task status or claiming the Workflow integration milestone.
+The final validation qualification and reviewed next-tranche direction were
+subsequently recorded in `82da717` after the control-plane handoff. Task status
+remains active; this does not claim the Workflow integration milestone.

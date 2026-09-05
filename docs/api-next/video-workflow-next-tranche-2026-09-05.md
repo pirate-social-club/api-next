@@ -1,16 +1,16 @@
 # Video Workflow next tranche
 
 This records the supplied checkpoint review and the resulting implementation
-order for `api-video-execution-completion`. It is a proposed control-plane
-amendment, preserved in the owned worktree while another writer has dirty
-control-plane records. It does not reserve a migration number, change a wire
-contract, or enable a provider.
+order for `api-video-execution-completion`. The control-plane amendment landed
+in `82da717` after the other writer checkpointed. That record reserves
+`0120_video_workflow_execution.sql` for execution. No migration has yet been
+written or applied, no wire contract changed, and no provider enabled.
 
-The prepared [execution-record amendment](evidence/video-execution-2026-09-05/execution-record-amendment.patch)
-passes `git apply --check` against the current control-plane record. Recheck
-applicability and writer ownership before applying it; the check is not an
-authority handover. It includes the final PostgreSQL qualification and the
-Solid integration note.
+The historical [execution-record amendment](evidence/video-execution-2026-09-05/execution-record-amendment.patch)
+passed its applicability check and was applied before the final reservation,
+allocated-job preflight, and replay-index requirements were added. It must not
+be reapplied. The authoritative record now includes the final PostgreSQL
+qualification and the Solid integration note.
 
 ## Corrections established from the tree
 
@@ -27,12 +27,37 @@ must not be assigned a guessed creation revision from the current submission.
 Identify an unambiguous historical outbox association or retain the attempt
 for reconciliation; the migration preflight must expose ambiguous rows.
 
+The [read-only transform preflight](evidence/video-execution-2026-09-05/transform-attempt-preflight.sql)
+reports phase counts without disclosing provider job identifiers and rejects
+any `allocated` attempt with a stored job ID. The expected staging count is
+zero, but no staging query has established that yet. A nonzero result requires
+explicit reconciliation before adopting `submitting` semantics; do not relabel
+those rows automatically. This check is additional to historical creation-
+revision provenance checks, not a replacement for them.
+
+Local preflight validation used PostgreSQL 17 and a connection-local temporary
+table: an empty ledger with its request-ID primary index passed, an allocated
+stored job was rejected, and a missing request-ID primary index was rejected.
+The first connection attempt to the previous full-suite container failed with
+`57P03`, database starting up, before any preflight SQL ran. A fresh minimal
+container supplied these three checks. No staging query, numbered migration,
+or full application test suite ran for this preflight-only change.
+
+Retain the `request_id` primary key and its valid index. `loadOrCreate` first
+selects that unique request ID and then checks every binding column; the
+primary index already bounds that lookup to at most one row. Replacing the
+separate retry-uniqueness constraint must not drop this index or remove those
+binding predicates. Prove exact replay, changed-binding rejection and distinct
+creation retries in the migration/repository tests; no redundant wide replay
+index is needed solely because the other uniqueness rule changes.
+
 The inspected main and three other api-next worktrees end their ordinary
 migration inventory at 0119. The HNS deployment worktree is clean and its 0119
-file is already present on main. Thus 0120 is the next observed candidate,
-not an established reservation. Recheck all active migration writers and
-record ownership before adding it; the current video worktree predates newer
-main commits and needs a checked integration base.
+file is already present on main. A fresh inventory after the control-plane
+handoff still found 0120 free; `82da717` reserves it for execution. Other
+migration writers must use a separately checked later number. The current
+video worktree predates newer main commits and needs a checked integration
+base before the migration is implemented.
 
 Cloudflare excludes duplicate retained IDs from `createBatch` results. After
 retention expires, an ID can be reused. PostgreSQL must therefore prevent
