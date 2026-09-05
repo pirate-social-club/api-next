@@ -4,6 +4,7 @@
   "package": "@pirate/api-client",
   "version": "0.61.0",
   "releaseType": "private-persona-community-binding",
+  "sourceCommit": "7d38f73bd1053cccc240a8dc34c9f74e14db01e8",
   "wireContract": "GET /personas adds nullable community_binding with community_id and binding_source; private, no-store; public projections unchanged",
   "supersedes": "0.60.0; additive private read for community-scoped persona selection, no new route or migration",
   "artifact": {
@@ -27,7 +28,7 @@
     "fullUnitSuite": "passed: 2944 unit, 20 Node, and 131 Workerd tests",
     "checkBreaking": "passed against 7d3c8aae with no waiver",
     "postgres17Focused": "passed: all nine persona repository tests, including unbound, active bound, retired bound, suspended bound, and cross-account exclusion",
-    "postgres17Full": "running before publication",
+    "postgres17Full": "local isolated namespace suite passed; general run terminated at its 900-second limit with exit 143 and no observed assertion failure; required sharded CI gate must pass before merge",
     "packageVerifier": "passed: immutable artifact, provenance and clean consumer",
     "secretBoundaryLocal": "passed: zero violations",
     "scriptCheck": "passed: zero findings"
