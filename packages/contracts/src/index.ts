@@ -35,3 +35,4 @@ export * from "./study-v2.ts";
 export * from "./text-moderation.ts";
 export * from "./v1.ts";
 export * from "./verification.ts";
+export * from "./video-access.ts";
