@@ -109,7 +109,16 @@ describe("video source Worker real handler in Workerd", () => {
       JSON.stringify([JSON.stringify({ event: "source_unavailable", status: 503 })]),
     ]);
   });
-  test("default entrypoint cannot serve a fixture before durable composition lands", async () => {
-    expect((await worker.fetch(new Request(url), bindings)).status).toBe(503);
+  test("default entrypoint fails closed for invalid control-plane configuration", async () => {
+    expect(
+      (
+        await worker.fetch(new Request(url), {
+          ...bindings,
+          CONTROL_PLANE: {
+            connectionString: "postgresql://fixture:fixture@127.0.0.1:invalid/unavailable",
+          },
+        })
+      ).status,
+    ).toBe(503);
   });
 });

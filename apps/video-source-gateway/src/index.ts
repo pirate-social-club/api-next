@@ -1,10 +1,14 @@
-import type { HyperdriveConnection } from "@pirate/platform-cf/postgres";
+import {
+  type HyperdriveConnection,
+  makeReadOnlyPostgresControlPlaneLayer,
+} from "@pirate/platform-cf/postgres";
 import {
   makeVideoSourceGateway,
   type VideoSourceBucket,
   type VideoSourceGatewayLogEvent,
   type VideoSourceGrantResolver,
 } from "@pirate/platform-cf/video-source-gateway";
+import { makeVideoSourceGrantResolver } from "@pirate/platform-cf/video-source-grant-resolver";
 
 export type VideoSourceGatewayEnv = Readonly<{
   CONTROL_PLANE: HyperdriveConnection;
@@ -20,7 +24,12 @@ type GatewayEvent =
 
 /** Resolver injection is the sole test seam; no test binding or write route. */
 export function makeVideoSourceGatewayWorker(
-  resolver?: (env: VideoSourceGatewayEnv) => VideoSourceGrantResolver,
+  resolver: (env: VideoSourceGatewayEnv) => VideoSourceGrantResolver = (env) =>
+    makeVideoSourceGrantResolver(
+      makeReadOnlyPostgresControlPlaneLayer(env.CONTROL_PLANE.connectionString, {
+        logger: { info: () => {}, error: () => {} },
+      }),
+    ),
 ) {
   return {
     async fetch(request: Request, env: VideoSourceGatewayEnv): Promise<Response> {
@@ -30,9 +39,6 @@ export function makeVideoSourceGatewayWorker(
           bucket: env.MEDIA_IMMUTABLE_ORIGINALS,
           grants: {
             resolve: async (capability) => {
-              // The durable resolver lands with the reserved grant migration.
-              // A deployment of this checkpoint cannot serve fixture grants.
-              if (resolver === undefined) throw new Error("source resolver unavailable");
               return resolver(env).resolve(capability);
             },
           },

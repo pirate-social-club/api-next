@@ -21,6 +21,7 @@ import {
 } from "@pirate/application/media/transform";
 import { VIDEO_INGEST_POLICY_V1, VIDEO_POSTER_POLICY_V1 } from "@pirate/domain";
 import { Effect, Predicate } from "effect";
+import { qencodeFailureEvidence } from "./qencode-failure-evidence.ts";
 
 const QENCODE_ORIGIN = "https://api.qencode.com";
 const QENCODE_ACCESS_TOKEN_ENDPOINT = `${QENCODE_ORIGIN}/v1/access_token`;
@@ -59,7 +60,8 @@ export type QencodeOutput = Readonly<{
 }>;
 
 export type QencodeTaskStatus =
-  | Readonly<{ state: "not_started" | "processing" | "failed" | "not_found" }>
+  | Readonly<{ state: "not_started" | "processing" | "not_found" }>
+  | Readonly<{ state: "failed"; errorDescription?: string }>
   | Readonly<{ state: "completed"; outputs: readonly QencodeOutput[] }>;
 
 export type QencodeTaskTransport = Readonly<{
@@ -310,7 +312,12 @@ export function makeQencodeTaskTransport(fetcher: QencodeFetch = fetch): Qencode
         status = record(raw);
       }
       if (status.error !== undefined && status.error !== 0 && status.error !== false) {
-        return { state: "failed" };
+        return {
+          state: "failed",
+          ...(typeof status.error_description === "string"
+            ? { errorDescription: status.error_description.slice(0, 4096) }
+            : {}),
+        };
       }
       if (status.status === "completed") {
         return {
@@ -966,7 +973,17 @@ async function observeJob(
       };
     }
     if (status.state === "failed") {
-      return { status: "rejected", reason: "provider_rejected", attempt: input.attempt };
+      const evidenceRef = qencodeFailureEvidence(
+        providerJobId,
+        status.errorDescription,
+        input.source.objectKey,
+      );
+      return {
+        status: "rejected",
+        reason: "provider_rejected",
+        attempt: input.attempt,
+        ...(evidenceRef === undefined ? {} : { evidenceRef }),
+      };
     }
     if (status.state !== "completed") {
       return { status: "retryable_failure", reason: "provider", attempt: input.attempt };

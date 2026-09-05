@@ -24446,6 +24446,35 @@ CREATE TABLE media_video_rights (
     CONSTRAINT media_video_rights_royalty_allocations_check CHECK (((royalty_allocations @> '[{"share_bps": 10000}]'::jsonb) AND (jsonb_array_length(royalty_allocations) = 1)))
 );
 
+CREATE TABLE media_video_source_grants (
+    capability_sha256 text NOT NULL,
+    request_id text NOT NULL,
+    consumer text NOT NULL,
+    immutable_ref text NOT NULL,
+    physical_key text NOT NULL,
+    object_version text NOT NULL,
+    etag text NOT NULL,
+    size_bytes bigint NOT NULL,
+    content_type text NOT NULL,
+    canonical_sha256 text NOT NULL,
+    issued_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    revoked_at timestamp with time zone,
+    CONSTRAINT media_video_source_grants_canonical_sha256_check CHECK ((canonical_sha256 ~ '^[a-f0-9]{64}$'::text)),
+    CONSTRAINT media_video_source_grants_capability_sha256_check CHECK ((capability_sha256 ~ '^[a-f0-9]{64}$'::text)),
+    CONSTRAINT media_video_source_grants_check CHECK ((isfinite(expires_at) AND (expires_at > issued_at))),
+    CONSTRAINT media_video_source_grants_check1 CHECK (((revoked_at IS NULL) OR (isfinite(revoked_at) AND (revoked_at >= issued_at)))),
+    CONSTRAINT media_video_source_grants_consumer_check CHECK ((consumer = ANY (ARRAY['qencode'::text, 'stream'::text]))),
+    CONSTRAINT media_video_source_grants_content_type_check CHECK ((content_type = ANY (ARRAY['video/mp4'::text, 'video/quicktime'::text]))),
+    CONSTRAINT media_video_source_grants_etag_check CHECK ((btrim(etag) <> ''::text)),
+    CONSTRAINT media_video_source_grants_issued_at_check CHECK (isfinite(issued_at)),
+    CONSTRAINT media_video_source_grants_object_version_check CHECK ((btrim(object_version) <> ''::text)),
+    CONSTRAINT media_video_source_grants_physical_key_check CHECK (((length(physical_key) >= 11) AND (length(physical_key) <= 778))),
+    CONSTRAINT media_video_source_grants_request_id_check CHECK (((length(request_id) >= 1) AND (length(request_id) <= 512) AND (btrim(request_id) = request_id))),
+    CONSTRAINT media_video_source_grants_size_bytes_check CHECK ((size_bytes > 0)),
+    CONSTRAINT video_source_grant_key_identity CHECK (((immutable_ref ~~ 'media://immutable/%'::text) AND (physical_key = ('immutable/'::text || SUBSTRING(immutable_ref FROM (length('media://immutable/'::text) + 1))))))
+);
+
 CREATE TABLE media_video_stage_facts (
     submission_id text NOT NULL,
     video_revision bigint NOT NULL,
@@ -28727,6 +28756,9 @@ ALTER TABLE ONLY media_video_revisions
 ALTER TABLE ONLY media_video_rights
     ADD CONSTRAINT media_video_rights_pkey PRIMARY KEY (submission_id);
 
+ALTER TABLE ONLY media_video_source_grants
+    ADD CONSTRAINT media_video_source_grants_pkey PRIMARY KEY (capability_sha256);
+
 ALTER TABLE ONLY media_video_stage_facts
     ADD CONSTRAINT media_video_stage_facts_pkey PRIMARY KEY (submission_id, video_revision, creation_revision, stage);
 
@@ -29776,6 +29808,10 @@ CREATE INDEX media_upload_reservations_expiry_idx ON media_upload_reservations U
 CREATE INDEX media_video_analysis_outbox_eligible_idx ON media_video_analysis_outbox USING btree (created_at, effect_identity) WHERE ((state = ANY (ARRAY['pending'::text, 'retry_wait'::text])) OR ((state = 'launched'::text) AND (instance_missing_at IS NOT NULL)));
 
 CREATE INDEX media_video_publication_wakeups_pending_idx ON media_video_publication_wakeups USING btree (last_attempt_at NULLS FIRST, created_at, wakeup_identity) WHERE (delivered_at IS NULL);
+
+CREATE INDEX media_video_source_grants_expiry_idx ON media_video_source_grants USING btree (expires_at) WHERE (revoked_at IS NULL);
+
+CREATE INDEX media_video_source_grants_request_idx ON media_video_source_grants USING btree (request_id);
 
 CREATE INDEX media_video_transform_attempt_reconciliation_idx ON media_video_transform_attempts USING btree (submission_id, video_revision, creation_revision) WHERE (reconciliation_state = ANY (ARRAY['pending'::text, 'required'::text]));
 
@@ -32415,6 +32451,9 @@ ALTER TABLE ONLY media_video_revisions
 
 ALTER TABLE ONLY media_video_rights
     ADD CONSTRAINT media_video_rights_submission_id_fkey FOREIGN KEY (submission_id) REFERENCES media_post_submissions(submission_id);
+
+ALTER TABLE ONLY media_video_source_grants
+    ADD CONSTRAINT media_video_source_grants_immutable_ref_fkey FOREIGN KEY (immutable_ref) REFERENCES media_immutable_objects(immutable_ref) ON DELETE CASCADE;
 
 ALTER TABLE ONLY media_video_stage_facts
     ADD CONSTRAINT media_video_stage_facts_submission_id_video_revision_fkey FOREIGN KEY (submission_id, video_revision) REFERENCES media_video_revisions(submission_id, video_revision);
