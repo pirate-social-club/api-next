@@ -37,7 +37,7 @@ export type VideoSourceGrant = Readonly<{
 }>;
 
 export type VideoSourceGrantResolver = Readonly<{
-  resolve: (capability: string) => Promise<VideoSourceGrant | null>;
+  resolve: (capability: string, signal?: AbortSignal) => Promise<VideoSourceGrant | null>;
 }>;
 
 export type VideoSourceGatewayLogEvent = Readonly<{

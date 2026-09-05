@@ -257,6 +257,8 @@ describe("Postgres control-plane adapter", () => {
           return client;
         },
         logger: silentLogger,
+        connectTimeoutMs: 2_000,
+        statementTimeoutMs: 2_000,
       },
     );
 
@@ -269,6 +271,12 @@ describe("Postgres control-plane adapter", () => {
       ),
     );
     expect(read.rows).toEqual([{ id: "community_9" }]);
+    expect(receivedConfig?.connectionTimeoutMillis).toBe(2_000);
+    expect(receivedConfig?.statement_timeout).toBe(2_000);
+    expect(client.queries).toContainEqual({
+      text: "SELECT set_config('statement_timeout', $1, true)",
+      values: ["2000ms"],
+    });
     expect(receivedConfig?.options).toBe("-c default_transaction_read_only=on");
     expect(client.queries.at(-2)).toEqual({ text: statement.text, values: statement.values });
 

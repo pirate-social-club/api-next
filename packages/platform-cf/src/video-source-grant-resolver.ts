@@ -17,7 +17,7 @@ export function makeVideoSourceGrantResolver(
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
 ): VideoSourceGrantResolver {
   return {
-    async resolve(capability) {
+    async resolve(capability, signal) {
       if (!/^[A-Za-z0-9_-]{43}$/u.test(capability)) return null;
       const digest = await videoSourceCapabilityDigest(capability);
       const result = await Effect.runPromise(
@@ -32,6 +32,7 @@ export function makeVideoSourceGrantResolver(
             values: [digest],
           });
         }).pipe(Effect.provide(runtime)),
+        { signal },
       );
       const row = result.rows[0];
       if (row === undefined) return null;

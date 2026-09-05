@@ -121,4 +121,26 @@ describe("video source Worker real handler in Workerd", () => {
       ).status,
     ).toBe(503);
   });
+  test("default entrypoint bounds unavailable socket resolution", async () => {
+    const started = performance.now();
+    const result = await worker.fetch(new Request(url), {
+      ...bindings,
+      CONTROL_PLANE: { connectionString: "postgresql://fixture:fixture@127.0.0.1:1/unavailable" },
+    });
+    expect(result.status).toBe(503);
+    expect(await result.text()).toBe("");
+    expect(performance.now() - started).toBeLessThan(4_500);
+  }, 6_000);
+  test("resolution deadline aborts even a resolver that never settles", async () => {
+    let observed: AbortSignal | undefined;
+    const hung = makeVideoSourceGatewayWorker(() => ({
+      resolve: (_capability, signal) => {
+        observed = signal;
+        return new Promise(() => {});
+      },
+    }));
+    const result = await hung.fetch(new Request(url), bindings);
+    expect(result.status).toBe(503);
+    expect(observed?.aborted).toBe(true);
+  }, 6_000);
 });

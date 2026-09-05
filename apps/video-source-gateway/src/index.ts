@@ -28,6 +28,8 @@ export function makeVideoSourceGatewayWorker(
     makeVideoSourceGrantResolver(
       makeReadOnlyPostgresControlPlaneLayer(env.CONTROL_PLANE.connectionString, {
         logger: { info: () => {}, error: () => {} },
+        connectTimeoutMs: 2_000,
+        statementTimeoutMs: 2_000,
       }),
     ),
 ) {
@@ -39,7 +41,22 @@ export function makeVideoSourceGatewayWorker(
           bucket: env.MEDIA_IMMUTABLE_ORIGINALS,
           grants: {
             resolve: async (capability) => {
-              return resolver(env).resolve(capability);
+              const controller = new AbortController();
+              let timer: ReturnType<typeof setTimeout> | undefined;
+              const deadline = new Promise<never>((_resolve, reject) => {
+                timer = setTimeout(() => {
+                  controller.abort();
+                  reject(new Error("source resolution deadline"));
+                }, 3_000);
+              });
+              try {
+                return await Promise.race([
+                  resolver(env).resolve(capability, controller.signal),
+                  deadline,
+                ]);
+              } finally {
+                clearTimeout(timer);
+              }
             },
           },
           now: Date.now,

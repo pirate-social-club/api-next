@@ -206,3 +206,30 @@ remain due at pull-request preparation; the results above are the focused
 tranche gates. The owned PostgreSQL test container is stopped after use.
 
 The final ordinary `bun run test` exited 0: 3,041 Bun tests, 20 Node tests, and 150 Workerd tests passed. The full PostgreSQL and remote required gates remain due at pull-request preparation; these focused results do not replace them.
+
+
+## Resolver deadline repair before integration
+
+The gateway now gives its read-only PostgreSQL layer two-second connect and
+statement limits, including the transaction-local server statement timeout.
+Other callers retain their existing defaults. Resolution has a separate
+three-second deadline, passes an AbortSignal into the Effect runtime and returns
+the existing bare 503 even if a dependency does not settle during interruption.
+The deadline timer is cleared on success and failure. No bearer or exception text
+is logged. This bounds resolution, not R2 streaming or provider download time.
+
+Workerd now passes both the real default-entrypoint unavailable-socket case and
+a never-settling resolver case that asserts abort delivery: 11 gateway tests,
+exit 0. The earlier five- and fifteen-second experiments remain historical
+failures; the independent resolver deadline closes their response-time gap.
+The PostgreSQL unit test also asserts the two-second driver and transaction-local
+settings. Socket teardown under every remote network failure is not claimed by
+this local response-bound test.
+
+The merged class wrapper already maps VideoWorkflowTerminalError to Cloudflare
+NonRetryableError inside step.do. Superseded inherits that type, and membership
+rejection is raised as membership_rejected by the publication repository. This
+avoids step retries for those outcomes; continuation disposition remains governed
+by PostgreSQL. No additional wrapper change is necessary.
+
+Timeout repair gates: bun run check exited 0; all nine PostgreSQL adapter unit tests passed; bun run test exited 0 with 3,041 Bun, 20 Node and 152 Workerd tests.
