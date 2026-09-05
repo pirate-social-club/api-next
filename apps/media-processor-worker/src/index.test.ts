@@ -28,6 +28,7 @@ describe("media processor Worker posture", () => {
       canonicalVideoSha256: "a".repeat(64),
       state: "pending",
       launchAttempts: 0,
+      continuation: 0,
       claimOwner: null,
       claimFence: 0,
       workflowInstanceId: null,

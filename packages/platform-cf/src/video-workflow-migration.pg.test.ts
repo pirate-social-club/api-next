@@ -124,16 +124,34 @@ suite("video Workflow migration refusal and replay fences", () => {
     await transaction(async () => {
       await outbox("pending");
       await client.query(sql);
-      const row = await client.query(`SELECT state,launch_attempts,workflow_instance_id,launched_at
+      const row =
+        await client.query(`SELECT state,continuation,launch_attempts,workflow_instance_id,launched_at
         FROM media_video_analysis_outbox`);
       expect(row.rows).toEqual([
-        { state: "pending", launch_attempts: 0, workflow_instance_id: null, launched_at: null },
+        {
+          state: "pending",
+          continuation: 0,
+          launch_attempts: 0,
+          workflow_instance_id: null,
+          launched_at: null,
+        },
       ]);
       await expect(
         client.query(`UPDATE media_video_analysis_outbox SET state='launched'`),
       ).rejects.toThrow("media_video_analysis_outbox_state_shape");
     });
   });
+  test("continuation sequence is bounded at two", async () => {
+    await transaction(async () => {
+      await outbox("pending");
+      await client.query(sql);
+      await client.query("UPDATE media_video_analysis_outbox SET continuation=2");
+      await expect(
+        client.query("UPDATE media_video_analysis_outbox SET continuation=3"),
+      ).rejects.toThrow("continuation_check");
+    });
+  });
+
   test("reconciliation requires provider identity and complete observation evidence", async () => {
     for (const invalid of [
       "reconciliation_state='required'",

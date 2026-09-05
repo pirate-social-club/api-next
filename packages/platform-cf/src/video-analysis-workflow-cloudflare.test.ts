@@ -41,6 +41,35 @@ describe("video Workflow transport", () => {
     expect(instances.size).toBe(2);
   });
 
+  test("continuations digest distinct logical identities and replay the recorded sequence", async () => {
+    const created: { id: string; params: { effectIdentity: string } }[] = [];
+    const gets: string[] = [];
+    const launcher = makeCloudflareVideoAnalysisWorkflowLauncher(
+      {
+        createBatch: async (instances) => {
+          created.push(...instances);
+          return [{}];
+        },
+        get: async (id) => {
+          gets.push(id);
+          return { status: async () => ({ status: "running" }) };
+        },
+      },
+      () => false,
+    );
+    for (const continuation of [0, 1, 2]) {
+      await launcher.create(logical, continuation);
+      await launcher.get(logical, continuation);
+      const identity = continuation === 0 ? logical : `${logical}:k${continuation}`;
+      const id = await cloudflareDigestWorkflowId("vaw", identity);
+      expect(created[continuation]).toEqual({ id, params: { effectIdentity: identity } });
+      expect(gets[continuation]).toBe(id);
+      expect(await launcher.instanceId(logical, continuation)).toBe(id);
+    }
+    expect(new Set(created.map((row) => row.id)).size).toBe(3);
+    await expect(launcher.create(logical, 3)).rejects.toThrow("between zero and two");
+  });
+
   test("keeps retained terminal instances distinct from confirmed absence", async () => {
     for (const status of ["complete", "errored", "terminated"]) {
       const launcher = makeCloudflareVideoAnalysisWorkflowLauncher(

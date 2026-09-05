@@ -174,8 +174,9 @@ export interface VideoAttemptReconciliationStore {
       submission: VideoSubmissionState;
       observedEventSequence: number;
       evidenceRef: string;
+      continuation: number;
     }>,
-  ) => Promise<"failed" | "reconciliation_required" | "accepted" | "allocated">;
+  ) => Promise<"failed" | "reconciliation_required" | "continue">;
 
   readonly resolveAttemptReconciliation: (
     input: Readonly<{

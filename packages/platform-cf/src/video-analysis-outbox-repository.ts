@@ -38,6 +38,7 @@ export class VideoAnalysisOutboxRepositoryError extends Data.TaggedError(
     | "mark-instance-missing"
     | "reconcile-launch"
     | "touch-reconciliation"
+    | "schedule-continuation"
     | "load-transform-attempt"
     | "advance-transform-attempt";
   readonly reason: "invalid-input" | "invalid-row";
@@ -51,6 +52,10 @@ export type VideoAnalysisOutboxRepositoryFailure =
 export interface VideoAnalysisOutboxRepository
   extends VideoAnalysisOutboxStore,
     VideoTransformAttemptStore {
+  readonly scheduleContinuation: (
+    record: VideoAnalysisOutboxRecord,
+    observedEventSequence: number,
+  ) => Promise<boolean>;
   readonly listEligible: (limit: number) => Promise<readonly VideoAnalysisOutboxRecord[]>;
   readonly touchReconciliation: (record: VideoAnalysisOutboxRecord) => Promise<boolean>;
   readonly listForReconciliation: (limit: number) => Promise<readonly VideoAnalysisOutboxRecord[]>;
@@ -86,6 +91,7 @@ function decode(
   const creationRevision = integer(row.creation_revision);
   const launchAttempts = integer(row.launch_attempts);
   const claimFence = integer(row.claim_fence);
+  const continuation = integer(row.continuation);
   const state = row.state;
   if (
     !validIdentifier(row.effect_identity) ||
@@ -98,6 +104,9 @@ function decode(
     typeof row.canonical_video_sha256 !== "string" ||
     !sha256Pattern.test(row.canonical_video_sha256) ||
     !["pending", "launching", "launched", "retry_wait", "exhausted"].includes(String(state)) ||
+    continuation === null ||
+    continuation < 0 ||
+    continuation > 2 ||
     launchAttempts === null ||
     launchAttempts < 0 ||
     launchAttempts > 3 ||
@@ -116,6 +125,7 @@ function decode(
     canonicalVideoSha256: row.canonical_video_sha256,
     state: state as VideoAnalysisOutboxRecord["state"],
     launchAttempts,
+    continuation,
     claimOwner: row.claim_owner as string | null,
     claimFence,
     workflowInstanceId: row.workflow_instance_id as string | null,
@@ -222,7 +232,10 @@ export function makeControlPlaneVideoAnalysisOutboxRepository(
       !validIdentifier(record.effectIdentity) ||
       !validIdentifier(record.claimOwner) ||
       !Number.isSafeInteger(record.claimFence) ||
-      record.claimFence < 1
+      record.claimFence < 1 ||
+      !Number.isInteger(record.continuation) ||
+      record.continuation < 0 ||
+      record.continuation > 2
     ) {
       return Promise.reject(failure(operation, "invalid-input", record.effectIdentity));
     }
@@ -236,7 +249,7 @@ export function makeControlPlaneVideoAnalysisOutboxRepository(
           WHERE effect_identity=$1 AND submission_id=$2 AND operation_id=$3
           AND video_revision=$4 AND creation_revision=$5 AND canonical_video_sha256=$6
           AND claim_owner=$7 AND claim_fence=$8 AND state='launching'
-          AND lease_expires_at>clock_timestamp() ${guard}`,
+          AND continuation=$${9 + extra.length} AND lease_expires_at>clock_timestamp() ${guard}`,
           values: [
             record.effectIdentity,
             record.submissionId,
@@ -247,6 +260,7 @@ export function makeControlPlaneVideoAnalysisOutboxRepository(
             record.claimOwner,
             record.claimFence,
             ...extra,
+            record.continuation,
           ],
           readonly: false,
         });
@@ -377,6 +391,46 @@ export function makeControlPlaneVideoAnalysisOutboxRepository(
       }),
     );
   };
+
+  const scheduleContinuation: VideoAnalysisOutboxRepository["scheduleContinuation"] = (
+    record,
+    observedEventSequence,
+  ) =>
+    run(
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        return yield* db.withTransaction((tx) =>
+          Effect.gen(function* () {
+            const authority = yield* tx.execute({
+              label: "video-analysis-outbox.continuation-authority",
+              readonly: true,
+              text: `SELECT 1 FROM media_post_submissions WHERE submission_id=$1 AND operation_id=$2
+            AND video_revision=$3 AND creation_revision=$4 AND event_sequence=$5 AND status='processing' FOR UPDATE`,
+              values: [
+                record.submissionId,
+                record.operationId,
+                record.videoRevision,
+                record.creationRevision,
+                observedEventSequence,
+              ],
+            });
+            if (authority.rows.length !== 1) return false;
+            const result = yield* tx.execute({
+              label: "video-analysis-outbox.schedule-continuation",
+              readonly: false,
+              text: `UPDATE media_video_analysis_outbox SET continuation=continuation+1,state='pending',
+            launch_attempts=0,claim_owner=NULL,claim_fence=claim_fence+1,lease_expires_at=NULL,
+            workflow_instance_id=NULL,launched_at=NULL,instance_missing_at=NULL,next_eligible_at=NULL,
+            failure_code=NULL,updated_at=clock_timestamp()
+            WHERE effect_identity=$1 AND claim_fence=$2 AND continuation=$3 AND continuation<2
+              AND (state='launched' OR (state='launching' AND lease_expires_at<=clock_timestamp()))`,
+              values: [record.effectIdentity, record.claimFence, record.continuation],
+            });
+            return result.rowCount === 1;
+          }),
+        );
+      }),
+    );
 
   const touchReconciliation: VideoAnalysisOutboxRepository["touchReconciliation"] = (record) =>
     run(
@@ -580,6 +634,7 @@ export function makeControlPlaneVideoAnalysisOutboxRepository(
   return {
     get,
     listEligible,
+    scheduleContinuation,
     claim,
     markLaunched,
     markRetryWait,

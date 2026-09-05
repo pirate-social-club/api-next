@@ -3,6 +3,10 @@ import type { VideoAttemptReconciliationStore, VideoPublicationStore } from "./p
 
 export interface VideoWorkflowRecoveryServices {
   readonly outbox: {
+    readonly scheduleContinuation: (
+      record: VideoAnalysisOutboxRecord,
+      observedEventSequence: number,
+    ) => Promise<boolean>;
     readonly listForReconciliation: (
       limit: number,
     ) => Promise<readonly VideoAnalysisOutboxRecord[]>;
@@ -18,8 +22,9 @@ export interface VideoWorkflowRecoveryServices {
   readonly launcher: {
     readonly inspect: (
       identity: string,
+      continuation?: number,
     ) => Promise<{ state: "present" | "missing" | "terminal"; status: string | null }>;
-    readonly instanceId: (identity: string) => Promise<string>;
+    readonly instanceId: (identity: string, continuation?: number) => Promise<string>;
   };
 }
 
@@ -61,16 +66,27 @@ export async function recoverVideoWorkflowLaunches(
         authority.state.decision !== null
       )
         continue;
-      const observation = await services.launcher.inspect(record.effectIdentity);
+      const observation = await services.launcher.inspect(
+        record.effectIdentity,
+        record.continuation,
+      );
       const status = observation.state;
-      const instanceId = await services.launcher.instanceId(record.effectIdentity);
+      const instanceId = await services.launcher.instanceId(
+        record.effectIdentity,
+        record.continuation,
+      );
       if (status === "terminal" || (status === "missing" && record.launchAttempts >= 3)) {
         const disposition = await services.store.reconcileTerminalWorkflow({
           submission: authority.state,
           observedEventSequence: authority.eventSequence,
           evidenceRef: `video-workflow:${instanceId}:${observation.status ?? status}`,
+          continuation: record.continuation,
         });
-        if (disposition === "allocated") result.deferred += 1;
+        if (disposition === "continue") {
+          if (await services.outbox.scheduleContinuation(record, authority.eventSequence))
+            result.recovered += 1;
+          continue;
+        }
         if (disposition === "failed" || disposition === "reconciliation_required")
           result.terminal += 1;
         if (record.state === "launching" && status === "missing") {

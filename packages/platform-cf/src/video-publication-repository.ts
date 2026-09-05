@@ -1170,25 +1170,23 @@ export function makeControlPlaneVideoPublicationStore(
                   current.state.creationRevision,
                 ],
               });
-              const uncertain = attempts.rows.filter(
-                (row) =>
-                  row.accepted_stage === null &&
-                  row.reconciliation_state !== "resolved" &&
-                  ["submitting", "started"].includes(String(row.provider_job_phase)),
-              );
-              if (attempts.rows.length > 0 && uncertain.length === 0) {
-                const facts = yield* tx.execute({
-                  label: "video-publication.terminal-facts",
-                  readonly: true,
-                  text: "SELECT stage FROM media_video_stage_facts WHERE submission_id=$1 AND video_revision=$2 AND creation_revision=$3",
-                  values: [
-                    current.state.submissionId,
-                    current.state.videoRevision,
-                    current.state.creationRevision,
-                  ],
-                });
-                return facts.rows.length === 5 ? ("accepted" as const) : ("allocated" as const);
-              }
+              if (
+                !Number.isInteger(input.continuation) ||
+                input.continuation < 0 ||
+                input.continuation > 2
+              )
+                throw new Error("invalid video continuation");
+              const capped = input.continuation === 2;
+              const uncertain = capped
+                ? attempts.rows
+                : attempts.rows.filter(
+                    (row) =>
+                      row.accepted_stage === null &&
+                      row.reconciliation_state !== "resolved" &&
+                      row.provider_job_phase === "submitting",
+                  );
+              if (!capped && uncertain.length === 0 && attempts.rows.length > 0)
+                return "continue" as const;
               for (const attempt of uncertain) {
                 yield* tx.execute({
                   label: "video-publication.terminal-reconciliation",
@@ -1204,7 +1202,7 @@ export function makeControlPlaneVideoPublicationStore(
                 ...current.state,
                 status: "processing_failed",
                 phase: null,
-                reconciliationRequired: uncertain.length > 0,
+                reconciliationRequired: capped || uncertain.length > 0,
                 failureCode:
                   uncertain.length === 1 && uncertain[0]?.capability === "probe"
                     ? "probe_failed"
@@ -1224,7 +1222,7 @@ export function makeControlPlaneVideoPublicationStore(
               });
               if (updated.rows.length !== 1)
                 throw new Error("video terminal reconciliation fence rejected");
-              return uncertain.length > 0
+              return capped || uncertain.length > 0
                 ? ("reconciliation_required" as const)
                 : ("failed" as const);
             }),

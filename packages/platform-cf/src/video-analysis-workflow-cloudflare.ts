@@ -24,6 +24,12 @@ export interface VideoAnalysisWorkflowBinding {
   ) => Promise<readonly unknown[]>;
 }
 
+function logicalIdentity(effectIdentity: string, continuation: number): string {
+  if (!Number.isInteger(continuation) || continuation < 0 || continuation > 2)
+    throw new TypeError("video Workflow continuation must be between zero and two");
+  return continuation === 0 ? effectIdentity : `${effectIdentity}:k${continuation}`;
+}
+
 /** Transport boundary only; PostgreSQL owns whether a missing or terminal instance is recoverable. */
 export function makeCloudflareVideoAnalysisWorkflowLauncher(
   binding: VideoAnalysisWorkflowBinding,
@@ -32,8 +38,10 @@ export function makeCloudflareVideoAnalysisWorkflowLauncher(
 ) {
   const inspect = async (
     effectIdentity: string,
+    continuation = 0,
   ): Promise<{ state: "present" | "missing" | "terminal"; status: string | null }> => {
-    const id = await cloudflareDigestWorkflowId("vaw", effectIdentity);
+    const logical = logicalIdentity(effectIdentity, continuation);
+    const id = await cloudflareDigestWorkflowId("vaw", logical);
     try {
       const status = (await (await binding.get(id)).status()).status;
       if (isPresentWorkflowStatus(status)) return { state: "present", status };
@@ -43,21 +51,27 @@ export function makeCloudflareVideoAnalysisWorkflowLauncher(
       throw new Error("Unrecognized video Workflow status");
     } catch (error) {
       if (isMissing(error)) return { state: "missing", status: null };
-      if (recoverLookup !== undefined) return recoverLookup(id, effectIdentity);
+      if (recoverLookup !== undefined) return recoverLookup(id, logical);
       throw error;
     }
   };
   return {
-    instanceId: (effectIdentity: string) => cloudflareDigestWorkflowId("vaw", effectIdentity),
-    create: async (effectIdentity: string): Promise<"created" | "already_exists"> => {
-      const id = await cloudflareDigestWorkflowId("vaw", effectIdentity);
+    instanceId: (effectIdentity: string, continuation = 0) =>
+      cloudflareDigestWorkflowId("vaw", logicalIdentity(effectIdentity, continuation)),
+    create: async (
+      effectIdentity: string,
+      continuation = 0,
+    ): Promise<"created" | "already_exists"> => {
+      const logical = logicalIdentity(effectIdentity, continuation);
+      const id = await cloudflareDigestWorkflowId("vaw", logical);
       return classifyWorkflowCreateBatch(
-        await binding.createBatch([{ id, params: { effectIdentity } }]),
+        await binding.createBatch([{ id, params: { effectIdentity: logical } }]),
         "Video Workflow createBatch returned an unexpected instance count",
       );
     },
     inspect,
-    get: async (identity: string) => (await inspect(identity)).state,
+    get: async (identity: string, continuation = 0) =>
+      (await inspect(identity, continuation)).state,
   };
 }
 

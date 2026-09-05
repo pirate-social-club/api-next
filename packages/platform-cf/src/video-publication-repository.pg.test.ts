@@ -365,6 +365,7 @@ suite("video publication PostgreSQL", () => {
 
   for (const { accepted, phase } of [
     { accepted: false, phase: "started" },
+    { accepted: false, phase: "submitting" },
     { accepted: true, phase: "started" },
     { accepted: false, phase: "allocated" },
   ]) {
@@ -481,11 +482,11 @@ suite("video publication PostgreSQL", () => {
             instanceId: async () => instanceId,
           },
         });
-        const required = !accepted && phase === "started";
+        const required = !accepted && phase === "submitting";
         expect(result).toMatchObject({
           terminal: required ? 1 : 0,
           failed: 0,
-          deferred: phase === "allocated" ? 1 : 0,
+          recovered: required ? 0 : 1,
         });
         const current = await store.getSubmissionByOperation({ submissionId, operationId });
         expect(current?.state.status).toBe(required ? "processing_failed" : "processing");
@@ -493,11 +494,66 @@ suite("video publication PostgreSQL", () => {
         if (!required) expect(current?.eventSequence).toBe(finalized.eventSequence);
         else if (current)
           expect(projectVideoSubmission(current)).toMatchObject({ retryable: false });
+        const continued = await outbox.get(pending.effectIdentity);
+        expect(continued?.continuation).toBe(required ? 0 : 1);
+        if (!required) {
+          expect(continued?.state).toBe("pending");
+          expect(continued?.workflowInstanceId).toBeNull();
+          const nextClaim = await outbox.claim(pending.effectIdentity, "continuation-launcher");
+          if (!nextClaim) throw new Error("missing continuation claim");
+          const nextId = `vaw-${"b".repeat(64)}`;
+          expect(await outbox.markLaunched(nextClaim, nextId)).toBe(true);
+          expect((await outbox.get(pending.effectIdentity))?.workflowInstanceId).toBe(nextId);
+          expect(await outbox.scheduleContinuation(claimed, finalized.eventSequence)).toBe(false);
+        }
         const attempt = await admin.query(
           "SELECT reconciliation_state,last_observation FROM media_video_transform_attempts WHERE request_id='sweep-task'",
         );
         expect(attempt.rows[0]?.reconciliation_state).toBe(required ? "required" : "none");
         if (required) expect(attempt.rows[0]?.last_observation.status).toBe("workflow_terminal");
+      });
+    });
+  }
+
+  for (const phase of ["allocated", "started"] as const) {
+    test(`continuation cap requires reconciliation on third terminal ${phase}`, async () => {
+      await fixture(async (admin, connection) => {
+        const { layer, store, finalized } = await finalizedFixture(connection);
+        const outbox = makeControlPlaneVideoAnalysisOutboxRepository(layer);
+        const [pending] = await outbox.listEligible(10);
+        if (!pending) throw new Error("missing intent");
+        await admin.query(
+          `INSERT INTO media_video_transform_attempts
+          (request_id,submission_id,operation_id,video_revision,creation_revision,analysis_revision,
+           canonical_video_sha256,capability,submitted_at_ms,runtime_deadline_ms,provider_job_id,provider_job_phase)
+          VALUES ('capped-task',$1,$2,1,1,1,$3,'probe',0,10000,'provider-task',$4)`,
+          [submissionId, operationId, videoSha256, phase],
+        );
+        for (let continuation = 0; continuation <= 2; continuation++) {
+          const claim = await outbox.claim(pending.effectIdentity, "cap-fixture");
+          if (!claim) throw new Error("missing claim");
+          expect(claim.continuation).toBe(continuation);
+          await outbox.markLaunched(claim, `vaw-${String(continuation + 1).repeat(64)}`);
+          const result = await recoverVideoWorkflowLaunches({
+            outbox,
+            store,
+            launcher: {
+              inspect: async () => ({ state: "terminal", status: "errored" }),
+              instanceId: async () => `vaw-${String(continuation + 1).repeat(64)}`,
+            },
+          });
+          expect(result).toMatchObject({
+            failed: 0,
+            recovered: continuation < 2 ? 1 : 0,
+            terminal: continuation === 2 ? 1 : 0,
+          });
+        }
+        const current = await store.getSubmissionByOperation({ submissionId, operationId });
+        expect(current?.state.reconciliationRequired).toBe(true);
+        expect(current?.state.creationRevision).toBe(finalized.state.creationRevision);
+        if (current) expect(projectVideoSubmission(current)).toMatchObject({ retryable: false });
+        expect((await outbox.get(pending.effectIdentity))?.continuation).toBe(2);
+        expect(await outbox.listEligible(10)).toEqual([]);
       });
     });
   }

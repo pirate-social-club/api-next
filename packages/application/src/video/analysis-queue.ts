@@ -40,6 +40,7 @@ export type VideoAnalysisOutboxRecord = Readonly<{
   readonly canonicalVideoSha256: string;
   readonly state: "pending" | "launching" | "launched" | "retry_wait" | "exhausted";
   readonly launchAttempts: number;
+  readonly continuation: number;
   readonly workflowInstanceId: string | null;
   readonly instanceMissing: boolean;
   readonly claimOwner: string | null;
@@ -80,9 +81,15 @@ export type VideoAnalysisQueueDependencies = Readonly<{
   readonly outbox: VideoAnalysisOutboxStore;
   readonly runtime: VideoAnalysisRuntimeServices;
   readonly launcher: {
-    readonly instanceId: (effectIdentity: string) => Promise<string>;
-    readonly create: (effectIdentity: string) => Promise<"created" | "already_exists">;
-    readonly get: (effectIdentity: string) => Promise<"present" | "missing" | "terminal">;
+    readonly instanceId: (effectIdentity: string, continuation?: number) => Promise<string>;
+    readonly create: (
+      effectIdentity: string,
+      continuation?: number,
+    ) => Promise<"created" | "already_exists">;
+    readonly get: (
+      effectIdentity: string,
+      continuation?: number,
+    ) => Promise<"present" | "missing" | "terminal">;
   };
   readonly workerId: string;
   readonly observe?: (observation: VideoAnalysisQueueObservation) => void;
@@ -169,16 +176,19 @@ export async function consumeVideoAnalysisQueueMessage(
     // PostgreSQL outcomes outlive the provider's instance-retention period.
     return { disposition: "ack" };
   }
-  const instanceId = await dependencies.launcher.instanceId(claimed.effectIdentity);
+  const instanceId = await dependencies.launcher.instanceId(
+    claimed.effectIdentity,
+    claimed.continuation,
+  );
   // No database operation belongs in this catch: only a failed provider create
   // consumes the launch-failure path. A lost acknowledgement reuses the same ID.
   try {
-    await dependencies.launcher.create(claimed.effectIdentity);
+    await dependencies.launcher.create(claimed.effectIdentity, claimed.continuation);
   } catch {
     if (claimed.launchAttempts >= 3) {
       // Three lost responses still do not prove three rejected launches.
       // Resolve the deterministic instance before permitting an author retry.
-      const status = await dependencies.launcher.get(claimed.effectIdentity);
+      const status = await dependencies.launcher.get(claimed.effectIdentity, claimed.continuation);
       if (status === "present") {
         return (await dependencies.outbox.markLaunched(claimed, instanceId))
           ? { disposition: "ack" }

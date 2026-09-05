@@ -62,8 +62,8 @@ ALTER TABLE media_video_transform_attempts
     (reconciliation_state = 'none' AND first_uncertainty_at IS NULL
       AND last_observation IS NULL AND reconciliation_evidence_ref IS NULL)
     OR (reconciliation_state IN ('pending', 'required', 'resolved')
-      AND provider_job_id IS NOT NULL
-      AND provider_job_phase IN ('submitting', 'started')
+      AND ((provider_job_id IS NOT NULL AND provider_job_phase IN ('submitting', 'started'))
+        OR (reconciliation_state='required' AND last_observation->>'status'='workflow_terminal'))
       AND first_uncertainty_at IS NOT NULL
       AND last_observation IS NOT NULL
       AND jsonb_typeof(last_observation) = 'object'
@@ -118,6 +118,7 @@ ALTER TABLE media_video_analysis_outbox
   DROP COLUMN delivered_at;
 ALTER TABLE media_video_analysis_outbox RENAME COLUMN delivery_attempts TO launch_attempts;
 ALTER TABLE media_video_analysis_outbox
+  ADD COLUMN continuation INTEGER NOT NULL DEFAULT 0 CHECK (continuation BETWEEN 0 AND 2),
   ADD COLUMN workflow_instance_id TEXT,
   ADD COLUMN launched_at TIMESTAMPTZ,
   ADD COLUMN instance_missing_at TIMESTAMPTZ,
@@ -129,7 +130,7 @@ ALTER TABLE media_video_analysis_outbox
     workflow_instance_id IS NULL OR workflow_instance_id ~ '^vaw-[0-9a-f]{64}$'
   ),
   ADD CONSTRAINT media_video_analysis_outbox_state_shape CHECK (
-    (state = 'pending' AND launch_attempts = 0 AND claim_owner IS NULL
+    (state = 'pending' AND continuation BETWEEN 0 AND 2 AND launch_attempts = 0 AND claim_owner IS NULL
       AND lease_expires_at IS NULL AND next_eligible_at IS NULL
       AND launched_at IS NULL AND workflow_instance_id IS NULL
       AND instance_missing_at IS NULL AND failure_code IS NULL)

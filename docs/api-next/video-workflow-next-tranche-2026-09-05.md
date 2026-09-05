@@ -1,3 +1,34 @@
+## Authorized continuation amendment, 2026-09-05
+
+The continuation persistence/launcher/sweep checkpoint passes 37 focused tests
+with 258 assertions and `bun run check`, both exit zero. The first full check
+caught a missing continuation field in a Worker test fixture; the field and its
+formatting were corrected. The generated baseline and migration checksum were
+regenerated. These tests prove dispatch and cap fences; actual resumed submit,
+observation and publication are still owed through the executor and composed
+entrypoint drills. No provider call or enablement was performed.
+
+The latest owner instruction authorizes two continuation instances per creation
+revision, retaining attempt identities and accepted facts. Started work resumes
+observation; allocated work follows the ordinary submit fence; accepted facts
+skip their stages. Submitting remains ambiguous. A third terminal observation
+requires reconciliation regardless of phase. This bounds retained instances and
+prevents an indefinitely restarting Workflow from consuming resources.
+
+Fresh main inventory at 6620174f416ca87a07c3386f81f6672ee9f8d643 contains
+0120_hns_root_health_renewal_recovery.sql, merged by e91d92a7 through PR 266.
+The execution record now explicitly authorizes renumbering the colliding video
+migration during integration. All new schema remains in the one unmerged
+0120_video_workflow_execution.sql on this lane; its ordinal must be reconciled
+at the single PR-preparation rebase. No merged HNS migration is amended and no
+second video migration is reserved. The latest owner continuation instructions
+supersede the record's earlier scope-freeze note for this implementing session.
+
+An operator recovery command remains a named follow-up: authenticate a provider
+status observation for a request, verify/seal its output when complete, and feed
+it to resolveAttemptReconciliation. This tranche does not claim that tooling
+exists merely because the resolution store exists.
+
 ## Terminal sweep checkpoint, 2026-09-05
 
 Final validation passed with exit zero: 19 focused PostgreSQL tests (180
