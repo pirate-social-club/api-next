@@ -19,6 +19,11 @@ import {
 } from "@pirate/application";
 import { Effect, type Layer } from "effect";
 import { publicPersonaFromSql } from "./public-persona-projection";
+import {
+  videoPostProjectionFromRow,
+  videoPostProjectionJoins,
+  videoPostProjectionSelect,
+} from "./video-post-projection";
 
 export interface ContentRepository {
   readonly resolvePost: (input: {
@@ -295,7 +300,8 @@ const postFromRow = (row: Row): PostDocument | null => {
     comments_locked: booleanValue(row, "comments_locked") as boolean,
     visibility,
     title: stringValue(row, "title"),
-    body: stringValue(row, "body"),
+    body: postType === "video" ? null : stringValue(row, "body"),
+    ...(postType === "video" ? { caption: stringValue(row, "video_caption") } : {}),
     analysis_state: "pending",
     content_safety_state: "pending",
     age_gate_policy: "none",
@@ -1000,14 +1006,16 @@ export function makeControlPlaneContentRepository(): ContentRepository {
           if (location === null || location.communityId !== communityId) return null;
           const result = yield* transaction.execute<Row>({
             label: "content.posts.get",
-            text: `SELECT community_id,post_id,author_user_id,
-                          public_persona_projection(author_persona_id) AS author_persona,
-                          post_type,status,visibility,title,body,
-                          content_rating,
-                          can_account_view_content_rating_v1($3, content_rating) AS rating_view_allowed,
-                          comments_locked, created_at
-                   FROM posts
-                  WHERE community_id = $1 AND post_id = $2`,
+            text: `SELECT p.community_id,p.post_id,p.author_user_id,
+                          public_persona_projection(p.author_persona_id) AS author_persona,
+                          p.post_type,p.status,p.visibility,p.title,p.body,
+                          p.content_rating,
+                          can_account_view_content_rating_v1($3, p.content_rating) AS rating_view_allowed,
+                          p.comments_locked, p.created_at,
+                          ${videoPostProjectionSelect}
+                   FROM posts AS p
+                   ${videoPostProjectionJoins}
+                  WHERE p.community_id = $1 AND p.post_id = $2`,
             values: [communityId, postId, viewerUserId],
             readonly: true,
           });
@@ -1052,7 +1060,9 @@ export function makeControlPlaneContentRepository(): ContentRepository {
             return yield* invalid("get-post");
           }
           if (
-            (post.post_type === "text" || post.post_type === "song") &&
+            (post.post_type === "text" ||
+              post.post_type === "song" ||
+              post.post_type === "video") &&
             contentRating === "adult_18" &&
             !ratingViewAllowed
           ) {
@@ -1062,7 +1072,9 @@ export function makeControlPlaneContentRepository(): ContentRepository {
               next_action: { kind: "verify_minimum_age", minimum_age: 18 },
             } as const;
           }
-          const canonicalBody = stringValue(row, "body");
+          const video = post.post_type === "video" ? videoPostProjectionFromRow(row) : undefined;
+          if (post.post_type === "video" && video === null) return yield* invalid("get-post");
+          const canonicalBody = post.post_type === "video" ? null : stringValue(row, "body");
           const localizationRows =
             canonicalBody === null
               ? []
@@ -1181,6 +1193,7 @@ export function makeControlPlaneContentRepository(): ContentRepository {
           }
           return {
             post,
+            ...(video === undefined || video === null ? {} : { video }),
             thread_snapshot: null,
             upvote_count: storedUpvoteCount,
             downvote_count: storedDownvoteCount,

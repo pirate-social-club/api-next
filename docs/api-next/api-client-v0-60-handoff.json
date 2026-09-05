@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.60.0",
+  "releaseType": "video-post-public-projection",
+  "wireContract": "guarded original-audio video Post projection with typed playback, thumbnail, DATA registration, caption, sound, origin Post, and origin persona state",
+  "sourceCommit": "74c694ebc272897c4891db9bbab5eef3ecb03f38",
+  "supersedes": "0.59.0; adds the phase-one public original-audio video projection while retaining song_reference as an unbuilt exhaustive union member.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.60.0.tgz",
+    "sha256": "64197265735919f0deedd443c57c2167c2f03428a29ddd918d812810fbd4c9ad",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@cc59bde1665d70e887392ab962258377c5a0eb750908f80ca3214c2c2f3def28",
+    "openapiSha256": "cc59bde1665d70e887392ab962258377c5a0eb750908f80ca3214c2c2f3def28",
+    "clientSha256": "e18db0bf3b8a055c15bc1f0b682aabbd58408f8617739bb86740522936f100fe"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": "passed against origin/main d5c39f7e489b5d9d5b75bb74af239ff406f1fedd",
+    "focusedSuites": "passed: 66 contract, mapper, guarded content and feed tests; covers all private evidence families, enrichment states and malformed playback references",
+    "fullUnitSuite": "passed: 2942 unit tests, 20 Node tests and 131 Workerd tests",
+    "postgres17": "passed on PostgreSQL 17.11: 35 isolated and 325 general tests, including the durable video publication privacy proof; 31 completion markers verified",
+    "packageVerifier": "passed: immutable artifact, provenance, package contents and clean consumer",
+    "repositoryCheck": "passed",
+    "secretBoundaryLocal": "passed: 17 changed files, zero violations; required remote check remains a PR gate",
+    "scriptCheck": "passed: one changed script, zero findings"
+  }
+}

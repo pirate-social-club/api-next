@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
+import { Effect } from "effect";
 import type { Client } from "pg";
 import {
   applyPostgresTestBaselineConnection,
@@ -13,8 +14,10 @@ import {
   type VideoTrustedAnalysis,
 } from "../../domain/src/video-submission.ts";
 import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture.ts";
+import { makeControlPlaneContentStore } from "./content-repository.ts";
 import { makePostgresDataRegistrationArtifactAuthorityReader } from "./data/registration-artifact-pipeline.ts";
 import { makeDataRegistrationStore } from "./data-registration-repository.ts";
+import { makeControlPlaneFeedStore } from "./feed-repository.ts";
 import { createActivePersonaFixture } from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { makeControlPlaneVideoAnalysisOutboxRepository } from "./video-analysis-outbox-repository.ts";
@@ -478,6 +481,57 @@ suite("video publication PostgreSQL", () => {
       };
       await store.publish(bundle);
       await store.publish(bundle);
+
+      await admin.query(
+        `INSERT INTO home_feed_projection
+          (community_id,feed_item_id,post_id,rank_score,projected_at)
+         VALUES ($1,'feed-video-publication','post-video-publication',1,clock_timestamp())`,
+        [community],
+      );
+      const contentStore = makeControlPlaneContentStore(layer);
+      const feedStore = makeControlPlaneFeedStore(layer);
+      const projectedPost = await Effect.runPromise(
+        Effect.scoped(
+          contentStore.getPost({
+            communityId: community,
+            postId: "post-video-publication",
+            viewerUserId: actor,
+          }),
+        ),
+      );
+      const projectedFeed = await Effect.runPromise(
+        Effect.scoped(feedStore.listHome({ query: {}, viewerUserId: actor })),
+      );
+      const publicVideo = {
+        soundtrack: {
+          kind: "original_audio",
+          origin_video_post_id: "post-video-publication",
+          origin_author_persona_id: persona,
+        },
+        playback: { status: "pending" },
+        thumbnail: { status: "pending" },
+        data_registration: "registration_pending",
+      };
+      expect(projectedPost).toMatchObject({
+        post: { post_type: "video", body: null },
+        video: publicVideo,
+      });
+      expect(projectedFeed.items[0]).toMatchObject({
+        post: {
+          post: { id: "post-video-publication", post_type: "video", body: null },
+          video: publicVideo,
+        },
+      });
+      const publicProjection = JSON.stringify({ projectedPost, projectedFeed });
+      for (const privateEvidence of [
+        videoSha256,
+        audioSha256,
+        "rights-evidence:fixture",
+        analysis.audio.soundtrack.extractedAudioRef,
+        analysis.probe.evidenceRef,
+      ]) {
+        expect(publicProjection).not.toContain(privateEvidence);
+      }
 
       const counts = await admin.query<{
         posts: number;
