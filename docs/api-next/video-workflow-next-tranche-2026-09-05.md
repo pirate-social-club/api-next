@@ -2,6 +2,11 @@
 
 ## Launch checkpoint validation — 2026-09-05
 
+Source checkpoint `82926a28c250e59e1832439a7b2c25873c941cf9` preserves this
+tranche. The [checkpoint record patch](evidence/video-execution-2026-09-05/launch-checkpoint-record.patch)
+is prepared but not applied because another control-plane writer is active.
+Recheck current HEAD and applicability after that writer checkpoints.
+
 The final `bun run check` passed. `bun run test` passed 2,959 unit, 20 Node
 and 131 workerd tests. Earlier runs exposed an obsolete FFmpeg test that still
 expected Queue delivery to execute analysis, and missing package exports and
