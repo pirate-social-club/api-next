@@ -113,7 +113,11 @@ suite("community HNS root-import repositories", () => {
       });
       const current = (actor = actorId, community = communityId) =>
         Effect.runPromise(communityStore.getCurrent({ actor_id: actor, community_id: community }));
-      expect(await current()).toEqual({ community_id: communityId, session: null });
+      expect(await current()).toEqual({
+        community_id: communityId,
+        attachment: null,
+        session: null,
+      });
       expect(await current("another-actor")).toBeNull();
       expect(await current(actorId, "missing-community")).toBeNull();
       const prepareInput = {
@@ -385,6 +389,7 @@ suite("community HNS root-import repositories", () => {
 
       expect(await current(actorId, secondCommunityId)).toEqual({
         community_id: secondCommunityId,
+        attachment: null,
         session: null,
       });
       const proofMessageSha256 = "4".repeat(64);

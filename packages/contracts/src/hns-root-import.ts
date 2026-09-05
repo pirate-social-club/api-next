@@ -1,6 +1,7 @@
 import { parseCanonicalRouteLabelV1 } from "@pirate/route-label-codec";
 import { Schema } from "effect";
 import { Auth } from "./auth.ts";
+import { CommunityCanonicalRouteV2, CommunityRouteLifecycleStatusV1 } from "./community-routes.ts";
 import { endpoint } from "./endpoint.ts";
 import {
   AuthError,
@@ -343,6 +344,12 @@ export type HnsCommunityRootImportSessionResponseV1 = Schema.Schema.Type<
 
 export const HnsCommunityRootImportCurrentResponseV1 = Schema.Struct({
   community_id: OpaqueId,
+  attachment: Schema.NullOr(
+    Schema.Struct({
+      canonical_route: CommunityCanonicalRouteV2,
+      status: CommunityRouteLifecycleStatusV1,
+    }),
+  ),
   session: Schema.NullOr(HnsCommunityRootImportSessionResponseV1),
 });
 export type HnsCommunityRootImportCurrentResponseV1 = Schema.Schema.Type<

@@ -1,8 +1,8 @@
 # Community import discovery and publication checks
 
 GET /communities/:communityId/hns-root-imports returns community_id and a
-nullable session. It requires authentication, an active community using the
-optional-route model, and the caller's active manage_routes grant. Missing or
+nullable attachment and session. It requires authentication, an active
+community using the optional-route model, and the caller's active manage_routes grant. Missing or
 unauthorized communities return the same not-found response. Sessions remain
 scoped to the initiating actor, matching the existing session-keyed API.
 The response is not cacheable.
@@ -10,9 +10,12 @@ The response is not cacheable.
 Discovery prefers the import serving the current active canonical HNS route,
 then the most recent import, including terminal outcomes. Creation time and
 the session identifier determine the order. The schema permits only one open
-route attachment per community. Failed or expired ownership sessions are terminal in this projection
-even before the import row is reconciled. Null means no import for this actor
-and community; it does not mean that the community has no route attachment.
+route attachment per community. Failed or expired ownership sessions are
+terminal in this projection even before the import row is reconciled. A null
+session means no import for this actor and community. The attachment
+summary independently describes the canonical route and its lifecycle status,
+including an attachment created through another ceremony. Its app_host is null
+because this read does not evaluate live serving health.
 
 The awaiting_owner_update and observing responses may include
 publication_check_pending. True means verification was requested and the

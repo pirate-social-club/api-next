@@ -46,6 +46,7 @@ test("the generated discovery route requires credentials and disables caching", 
     handlers: {
       GetCurrentHnsCommunityRootImport: async () => ({
         community_id: awaiting.community_id,
+        attachment: null,
         session: null,
       }),
     },
@@ -60,7 +61,11 @@ test("the generated discovery route requires credentials and disables caching", 
   const response = await app.request(url, { headers: { authorization: "actor-panel" } });
   expect(response.status).toBe(200);
   expect(response.headers.get("cache-control")).toBe("no-store");
-  expect(await response.json()).toEqual({ community_id: awaiting.community_id, session: null });
+  expect(await response.json()).toEqual({
+    community_id: awaiting.community_id,
+    attachment: null,
+    session: null,
+  });
 });
 
 test("community discovery uses authenticated actor and community without a locator", async () => {
@@ -69,7 +74,11 @@ test("community discovery uses authenticated actor and community without a locat
     store: {
       getCurrent: (input: unknown) => {
         captured = input;
-        return Effect.succeed({ community_id: awaiting.community_id, session: null });
+        return Effect.succeed({
+          community_id: awaiting.community_id,
+          attachment: null,
+          session: null,
+        });
       },
     },
   } as unknown as Parameters<typeof makeHnsCommunityRootImportHandlers>[0]);
@@ -82,7 +91,11 @@ test("community discovery uses authenticated actor and community without a locat
     discoveryRequest,
   )) as EndpointHandlerResult;
   expect(response.status).toBe(200);
-  expect(response.body).toEqual({ community_id: awaiting.community_id, session: null });
+  expect(response.body).toEqual({
+    community_id: awaiting.community_id,
+    attachment: null,
+    session: null,
+  });
   expect(captured).toEqual({ actor_id: "actor-panel", community_id: awaiting.community_id });
   expect(GetCurrentHnsCommunityRootImport.path).toBe("/communities/:communityId/hns-root-imports");
   expect(() =>

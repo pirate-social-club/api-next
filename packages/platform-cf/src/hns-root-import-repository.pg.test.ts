@@ -1563,11 +1563,40 @@ suite("Postgres 17 HNS root-import repository", () => {
         response: { status: "activated", revision: 6, replayed: true },
       });
       expect(await discover()).toMatchObject({
+        attachment: {
+          status: "active",
+          canonical_route: {
+            family: "hns",
+            root_label: "newroot",
+            href: "/c/newroot",
+            app_host: null,
+          },
+        },
         session: {
           root_import_session_id: "root-import-session",
           status: "activated",
           retry_after_seconds: null,
         },
+      });
+      await admin.query(
+        "INSERT INTO users(user_id,status,account) VALUES ('route-reader','active','{}'::jsonb)",
+      );
+      await admin.query(`INSERT INTO community_route_authority_grants
+        (grant_id,community_id,principal_user_id,authority,source_kind,status,granted_at,granted_by_user_id)
+        VALUES ('route-reader-grant','community_123e4567-e89b-42d3-a456-426614174099',
+          'route-reader','manage_routes','creator_owner','active',clock_timestamp(),'actor-root-import')`);
+      expect(
+        await Effect.runPromise(
+          discovery
+            .getCurrent({
+              actor_id: "route-reader",
+              community_id: "community_123e4567-e89b-42d3-a456-426614174099",
+            })
+            .pipe(Effect.provide(makeDirectPostgresControlPlaneLayer(connection))),
+        ),
+      ).toMatchObject({
+        attachment: { status: "active", canonical_route: { root_label: "newroot" } },
+        session: null,
       });
       const state = await admin.query(
         `SELECT community.canonical_route_binding_id,intent.status AS attachment_status,

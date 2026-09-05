@@ -14,6 +14,7 @@ import {
 } from "@pirate/application";
 import { decodeStrictHnsJsonBytes } from "@pirate/application/namespace-ownership";
 import {
+  HnsCommunityRootImportCurrentResponseV1,
   type HnsCommunityRootImportSessionResponseV1 as HnsCommunityRootImportSessionResponse,
   HnsCommunityRootImportSessionResponseV1,
 } from "@pirate/contracts";
@@ -679,8 +680,17 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
         const db = yield* ControlPlaneDb;
         const result = yield* db.execute<Row>({
           label: "hns.community-root-import.get-current",
-          text: `SELECT ${sessionReadColumns}
+          text: `SELECT ${sessionReadColumns},
+                        CASE WHEN route.route_binding_id IS NULL THEN NULL ELSE jsonb_build_object(
+                          'status',route.route_lifecycle_status,
+                          'canonical_route',jsonb_build_object('family',route.family,
+                            'root_label',route.root_label,'root_label_display',route.root_label_display,
+                            'path_segment',route.public_path_segment_v2,'href',route.public_href_v2,
+                            'app_host',NULL)) END AS attachment
                    FROM communities AS target
+                   LEFT JOIN community_canonical_route_bindings AS route
+                     ON route.route_binding_id=target.canonical_route_binding_id
+                    AND route.community_id=target.community_id
                    LEFT JOIN LATERAL (
                      SELECT candidate.* FROM hns_root_import_sessions AS candidate
                       WHERE candidate.actor_id=$1 AND candidate.community_id=target.community_id
@@ -715,7 +725,11 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
         if (row.root_import_session_id !== null && session === null) {
           return yield* Effect.fail(storageFailure());
         }
-        return { community_id: input.community_id, session };
+        const decoded = Schema.decodeUnknownOption(
+          HnsCommunityRootImportCurrentResponseV1,
+          exactParseOptions,
+        )({ community_id: input.community_id, attachment: row.attachment, session });
+        return Option.isSome(decoded) ? decoded.value : yield* Effect.fail(storageFailure());
       }),
     get: (input: Parameters<HnsCommunityRootImportPollStore["get"]>[0]) =>
       Effect.gen(function* () {

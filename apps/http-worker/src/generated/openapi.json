@@ -18532,6 +18532,111 @@
                         }
                       ]
                     },
+                    "attachment": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "canonical_route": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "family": {
+                                      "type": "string",
+                                      "enum": [
+                                        "hns"
+                                      ]
+                                    },
+                                    "root_label": {
+                                      "type": "string"
+                                    },
+                                    "root_label_display": {
+                                      "type": "string"
+                                    },
+                                    "path_segment": {
+                                      "type": "string"
+                                    },
+                                    "href": {
+                                      "type": "string"
+                                    },
+                                    "app_host": {
+                                      "anyOf": [
+                                        {
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "family",
+                                    "root_label",
+                                    "root_label_display",
+                                    "path_segment",
+                                    "href",
+                                    "app_host"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "family": {
+                                      "type": "string",
+                                      "enum": [
+                                        "spaces"
+                                      ]
+                                    },
+                                    "root_label": {
+                                      "type": "string"
+                                    },
+                                    "root_label_display": {
+                                      "type": "string"
+                                    },
+                                    "path_segment": {
+                                      "type": "string"
+                                    },
+                                    "href": {
+                                      "type": "string"
+                                    },
+                                    "app_host": {
+                                      "type": "null"
+                                    }
+                                  },
+                                  "required": [
+                                    "family",
+                                    "root_label",
+                                    "root_label_display",
+                                    "path_segment",
+                                    "href",
+                                    "app_host"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "active",
+                                "suspended"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "canonical_route",
+                            "status"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "session": {
                       "anyOf": [
                         {
@@ -19011,6 +19116,7 @@
                   },
                   "required": [
                     "community_id",
+                    "attachment",
                     "session"
                   ],
                   "additionalProperties": false,
