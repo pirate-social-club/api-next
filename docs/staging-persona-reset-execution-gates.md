@@ -45,6 +45,49 @@ PostgreSQL describes this shared pool in its
 CI initializes its disposable general-test service with the larger setting using
 [initdb's --set option](https://www.postgresql.org/docs/17/app-initdb.html).
 
+## Measured phase proposal, not an adopted mechanism
+
+The local-only command `rtk proxy bun scripts/staging-persona-lock-measure.ts
+--local-measure` measures separate removal of populated 0109 and fresh replay
+of 0001–0119. It accepts only the local test URL, creates UUID-named disposable
+databases, rolls removal back and deletes only those databases. It does not
+change the reset executor. A separate observer samples pg_locks every 20 ms;
+the counts are observed lower bounds and may miss transient peaks. Distinct
+lock tags, lock rows and shared-memory capacity are not interchangeable exact
+accounting units, so these numbers must not automatically choose a batch size.
+
+On PostgreSQL 17.11 configured at 512/100/0, removal reached 10,728 rows,
+10,711 non-fast-path rows and 10,728 distinct lock tags in 109 samples over
+5,148 ms. Fresh replay reached 6,840 rows, 6,825 non-fast-path rows and 4,598
+distinct tags in 61 samples over 2,471 ms. Each measurement ran alone in the
+one-CPU, 512-MiB local container. Its setting override was reset afterward and
+the container stopped. The first sampling attempt failed on PostgreSQL's xid
+comparison inside a composite DISTINCT; casting the transaction ID to text
+fixed the observer, and the full measurement rerun passed.
+
+Removal alone therefore needs investigation; batching only replay is not a
+demonstrated solution at staging's last observed 64/25/0 settings. Fresh staging
+inventory and settings reads in this follow-up failed and did not re-establish
+those settings. The final attempt failed during connection with SQLSTATE 53300
+(too many connections), before any settings query. No session was terminated
+and no provider parameter changed.
+
+PlanetScale's parameter table is explicitly the default-visible list, with
+additional parameters searchable. Absence of max_locks_per_transaction from
+that table does not prove it unavailable. max_connections is documented as
+configurable with restart, but attainable bounds and memory cost need checking;
+see the [provider parameter reference](https://planetscale.com/docs/postgres/cluster-configuration/parameters).
+
+A phased reset changes the approved rollback mechanism and needs an explicit
+amendment before implementation. A strict-prefix ledger is accepted by the
+migration runner: it neither fences runtime nor refuses a naive rerun. The
+amendment must specify a durable progress marker surviving removal, its trusted
+reader and start/rerun refusal, continuously maintained producer fencing, no
+automatic resumption, and independently rehearsed recovery after a committed
+partial reset. Final ledger checks alone do not establish these properties.
+The current executor remains atomic; no phased reset or connection increase
+is authorized by this measurement.
+
 ## Privilege decision still required
 
 The pinned migration chain issues no named runtime GRANT statements. The older
