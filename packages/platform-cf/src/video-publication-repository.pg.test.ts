@@ -33,6 +33,7 @@ import { createActivePersonaFixture } from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { makeControlPlaneVideoAnalysisOutboxRepository } from "./video-analysis-outbox-repository.ts";
 import { makeControlPlaneVideoPublicationStore } from "./video-publication-repository.ts";
+import { makeVideoSealedSourceVerifier } from "./video-sealed-source-verifier.ts";
 import { makeControlPlaneVideoStageFactStore } from "./video-stage-fact-repository.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -1446,6 +1447,44 @@ suite("video publication PostgreSQL", () => {
           observation: { status: "workflow_terminal", observedAt: "2026-09-05T00:00:00Z" },
         }),
       ).rejects.toThrow("video reconciliation fence rejected");
+    });
+  });
+});
+
+suite("video source seal authority", () => {
+  test("HEAD verifies the recorded immutable identity without reading the video bytes", async () => {
+    await fixture(async (admin, connection) => {
+      const { layer, finalized } = await finalizedFixture(connection);
+      const seal = (
+        await admin.query(
+          "SELECT etag,object_version,size_bytes,content_type FROM media_immutable_objects WHERE submission_id=$1",
+          [submissionId],
+        )
+      ).rows[0];
+      const valid = {
+        etag: seal.etag as string,
+        version: seal.object_version as string,
+        size: Number(seal.size_bytes),
+        httpMetadata: { contentType: seal.content_type as string },
+      };
+      let current = valid;
+      let heads = 0;
+      const verify = makeVideoSealedSourceVerifier(layer, async (reference) => {
+        heads++;
+        expect(reference).toBe(finalized.state.video?.immutableRef ?? "");
+        return current;
+      });
+      await verify(finalized);
+      for (const invalid of [
+        { ...valid, version: "replacement" },
+        { ...valid, etag: "replacement" },
+        { ...valid, size: valid.size + 1 },
+        { ...valid, httpMetadata: { contentType: "video/quicktime" } },
+      ]) {
+        current = invalid;
+        await expect(verify(finalized)).rejects.toThrow("video sealed source identity mismatch");
+      }
+      expect(heads).toBe(5);
     });
   });
 });

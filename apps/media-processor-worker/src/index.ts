@@ -12,6 +12,7 @@ import {
   consumeVideoAnalysisQueueMessage,
   type VideoAnalysisQueueDependencies,
 } from "../../../packages/application/src/video/analysis-queue.ts";
+import type { VideoWorkflowServices } from "../../../packages/application/src/video/workflow.ts";
 import {
   type CloudflareWorkflowStepDo,
   PROCESSING_WORKFLOW_STEP_OPTIONS,
@@ -28,6 +29,7 @@ export type MediaProcessorWorkerEnv = Readonly<{
 export type MediaProcessorComposition = Readonly<{
   readonly queue: MediaProcessingQueueDependencies;
   readonly videoAnalysis?: VideoAnalysisQueueDependencies;
+  readonly videoWorkflow?: VideoWorkflowServices;
   readonly workflow: MediaProcessingWorkflowDependencies;
 }>;
 

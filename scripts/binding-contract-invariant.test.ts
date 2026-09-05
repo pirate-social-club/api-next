@@ -240,6 +240,12 @@ const DATA_CONFIG_PATH = new URL(
 );
 
 interface RawWranglerEnvironment {
+  readonly workflows?: readonly {
+    binding: string;
+    name: string;
+    class_name: string;
+    script_name?: string;
+  }[];
   readonly vars?: Record<string, unknown>;
   readonly secrets?: { readonly required?: readonly unknown[] };
   readonly observability?: {
@@ -693,6 +699,27 @@ describe("source-to-Wrangler binding contract", () => {
     expect(declaredEnvironment(configs.http, "production").secrets).not.toContain(
       "ELEVENLABS_API_KEY",
     );
+  });
+
+  test("video Workflow bindings agree on class, name and processor script in every environment", () => {
+    for (const environment of ENVIRONMENTS) {
+      const suffix = environment === "development" ? "" : `-${environment}`;
+      for (const worker of ["media", "jobs"] as const) {
+        const block = rawEnvironment(configs[worker], environment);
+        expect(block.vars?.VIDEO_ANALYSIS_ENABLED).toBe("false");
+        const bindings = block.workflows?.filter(
+          (item) => item.binding === "VIDEO_ANALYSIS_WORKFLOW",
+        );
+        expect(bindings).toEqual([
+          {
+            binding: "VIDEO_ANALYSIS_WORKFLOW",
+            name: `pirate-video-analysis${suffix}`,
+            class_name: "VideoAnalysisWorkflow",
+            ...(worker === "jobs" ? { script_name: `pirate-media-processor-worker${suffix}` } : {}),
+          },
+        ]);
+      }
+    }
   });
 
   test("declares staging video Workflow read access in both Workers while keeping analysis disabled", () => {

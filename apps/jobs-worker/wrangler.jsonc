@@ -50,6 +50,12 @@
       "script_name": "pirate-media-processor-worker"
     },
     {
+      "binding": "VIDEO_ANALYSIS_WORKFLOW",
+      "name": "pirate-video-analysis",
+      "class_name": "VideoAnalysisWorkflow",
+      "script_name": "pirate-media-processor-worker"
+    },
+    {
       "binding": "DATA_REGISTRATION_WORKFLOW",
       "name": "pirate-data-registration",
       "class_name": "DataRegistrationWorkflow",
@@ -159,6 +165,12 @@
           "binding": "MEDIA_PROCESSING_WORKFLOW",
           "name": "pirate-media-processing-staging",
           "class_name": "MediaProcessingWorkflow",
+          "script_name": "pirate-media-processor-worker-staging"
+        },
+        {
+          "binding": "VIDEO_ANALYSIS_WORKFLOW",
+          "name": "pirate-video-analysis-staging",
+          "class_name": "VideoAnalysisWorkflow",
           "script_name": "pirate-media-processor-worker-staging"
         },
         {
@@ -295,6 +307,12 @@
           "binding": "MEDIA_PROCESSING_WORKFLOW",
           "name": "pirate-media-processing-production",
           "class_name": "MediaProcessingWorkflow",
+          "script_name": "pirate-media-processor-worker-production"
+        },
+        {
+          "binding": "VIDEO_ANALYSIS_WORKFLOW",
+          "name": "pirate-video-analysis-production",
+          "class_name": "VideoAnalysisWorkflow",
           "script_name": "pirate-media-processor-worker-production"
         },
         {

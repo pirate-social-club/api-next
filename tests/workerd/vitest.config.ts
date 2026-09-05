@@ -160,6 +160,9 @@ export default defineConfig({
               export class MediaProcessingWorkflow extends WorkflowEntrypoint {
                 async run() { return { outcome: "inert" }; }
               }
+              export class VideoAnalysisWorkflow extends WorkflowEntrypoint {
+                async run() { return { status: "stopped" }; }
+              }
             `,
           },
           {

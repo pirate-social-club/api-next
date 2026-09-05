@@ -42,6 +42,9 @@ import {
   type VideoWorkflowStatusFetch,
 } from "@pirate/platform-cf/video-analysis-workflow-cloudflare";
 import { makeControlPlaneVideoPublicationStore } from "@pirate/platform-cf/video-publication-repository";
+import { makeVideoSealedSourceVerifier } from "@pirate/platform-cf/video-sealed-source-verifier";
+import { makeVideoStageArtifactHead } from "@pirate/platform-cf/video-stage-artifact-head";
+import { makeControlPlaneVideoStageFactStore } from "@pirate/platform-cf/video-stage-fact-repository";
 import { Effect } from "effect";
 import type { MediaProcessorComposition, MediaProcessorWorkerEnv } from "./index.ts";
 import { isMediaProcessingEnabled } from "./posture.ts";
@@ -383,6 +386,25 @@ export function makeMediaProcessorComposition(
     adapters.videoAnalysis !== undefined &&
     env.VIDEO_ANALYSIS_WORKFLOW !== undefined
       ? {
+          videoWorkflow: {
+            store: makeControlPlaneVideoPublicationStore(runtime),
+            reconciliation: makeControlPlaneVideoPublicationStore(runtime),
+            outbox: videoAnalysisRepository,
+            stageFacts: makeControlPlaneVideoStageFactStore(runtime),
+            verifySource: makeVideoSealedSourceVerifier(runtime, (reference) =>
+              requiredBinding(env.MEDIA_IMMUTABLE_ORIGINALS, "MEDIA_IMMUTABLE_ORIGINALS").head(
+                mediaProcessingPhysicalObjectKey(reference),
+              ),
+            ),
+            artifactHead: makeVideoStageArtifactHead(
+              requiredBinding(env.MEDIA_DERIVED_ARTIFACTS, "MEDIA_DERIVED_ARTIFACTS"),
+            ),
+            nowIso: () => new Date().toISOString(),
+            randomUuid: () => crypto.randomUUID(),
+            analysisProviders: adapters.videoAnalysis.providers,
+            transform: bindVideoPhysicalR2Keys(enabledVideoTransform),
+            transformAttempts: videoAnalysisRepository,
+          },
           videoAnalysis: {
             launcher: makeConfiguredVideoAnalysisWorkflowLauncher(
               env.VIDEO_ANALYSIS_WORKFLOW,

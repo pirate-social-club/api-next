@@ -48,6 +48,8 @@ describe("media processor composition", () => {
         MEDIA_PROCESSING_WORKFLOW: base.MEDIA_PROCESSING_WORKFLOW as NonNullable<
           MediaProcessorRuntimeEnv["MEDIA_PROCESSING_WORKFLOW"]
         >,
+        MEDIA_IMMUTABLE_ORIGINALS: { head: async () => null } as unknown as R2Bucket,
+        MEDIA_DERIVED_ARTIFACTS: { head: async () => null } as unknown as R2Bucket,
         VIDEO_ANALYSIS_ENABLED: "true",
         VIDEO_WORKFLOW_ACCOUNT_ID: "a".repeat(32),
         VIDEO_WORKFLOW_NAME: "video-fixture",
@@ -148,6 +150,8 @@ describe("media processor composition", () => {
         MEDIA_PROCESSING_WORKFLOW: base.MEDIA_PROCESSING_WORKFLOW as NonNullable<
           MediaProcessorRuntimeEnv["MEDIA_PROCESSING_WORKFLOW"]
         >,
+        MEDIA_IMMUTABLE_ORIGINALS: { head: async () => null } as unknown as R2Bucket,
+        MEDIA_DERIVED_ARTIFACTS: { head: async () => null } as unknown as R2Bucket,
         VIDEO_ANALYSIS_ENABLED: "true",
         VIDEO_WORKFLOW_ACCOUNT_ID: "a".repeat(32),
         VIDEO_WORKFLOW_NAME: "video-fixture",
@@ -182,6 +186,7 @@ describe("media processor composition", () => {
         },
       },
     );
+    expect(composition.videoWorkflow).toBeDefined();
     const attempt = {
       version: "media-transform-attempt-v1" as const,
       runtimeFence: { submittedAtMs: 1, runtimeDeadlineMs: 2 },
