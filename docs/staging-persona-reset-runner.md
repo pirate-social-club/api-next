@@ -274,7 +274,7 @@ object ownership during that cleanup window. The control-plane checkout had
 another active writer at this checkpoint, so this receipt is preserved on the
 owning lane pending task-record reconciliation.
 
-## Proposed in-place reconstruction, pending approach sign-off
+## In-place reconstruction, authorized mechanism with execution gates
 
 The owner-requested read-only inventory at 2026-09-05T18:09:15.139Z used the
 existing operator credential and revalidated the entire 0109 ledger. The
@@ -322,8 +322,60 @@ Tests must prove schema identity preservation, full rollback of old populated
 state on replay or verification failure, exact ledger/baseline and empty new
 identity state, extension/unrelated-schema preservation, and continued runtime
 denial. Verified provider recovery and isolated rehearsal still precede any
-live destruction. No in-place executor is implemented or authorized here.
+live destruction. The workspace owner's subsequent proceed authorizes this
+mechanism and implementation under those conditions, recorded in the control
+plane as f8774e7. It does not waive independent review, fencing or recovery
+rehearsal, and no live in-place executor has been admitted.
 
 The temporary maintenance key will expire without renewal or promotion. No
 additional privilege request is part of this proposal. Production HNS rollout
 state is outside this lane and was not rechecked in this inventory.
+
+## Remaining inventory and supplied-transaction foundation
+
+The read-only catalog follow-up at 2026-09-05T18:22:18.290Z found 658
+effectively owned relation objects outside api_next, all in pg_toast. Those
+must be attributed to their parent tables by dependency closure, not ignored
+as a namespace-wide exception. No other inventoried owner-bearing class had
+effectively owned objects outside api_next. Inside api_next the relation
+kinds were 329 ordinary tables, 872 indexes, two sequences and one composite
+relation. Both sequences have column ownership dependencies; none is
+standalone. No event triggers, publications or foreign servers were present.
+
+The operator can execute the pg_terminate_backend signature but is neither
+a member of pg_signal_backend nor of the configured runtime role. The runtime
+role is not a superuser. Function EXECUTE alone does not authorize terminating
+that role's sessions. No sessions were terminated, and this read-only
+transaction rolled back. An effective drain mechanism remains a live-run gate.
+
+The migration library now exposes a supplied-transaction entrypoint. Ordinary
+callers retain their existing transaction-owning wrapper; reconstruction can
+compose deletion, replay and verification without invoking the separate CLI.
+The local PostgreSQL 17 test replays all 119 pinned migrations, proves the
+backend PID stayed unchanged, then injects a verification failure. Rollback
+restores a synthetic populated predecessor table, removes the newly created
+ledger and preserves the schema OID and unrelated sentinel. The three focused
+PostgreSQL tests pass with 22 assertions. This is not yet a test of catalog-driven
+removal of the populated 0109 schema, grant reconciliation or provider limits.
+
+The initial test invocation imported the platform barrel and failed on the
+Worker-only cloudflare:workers module. The test now uses the direct platform
+modules, matching the existing migration script. No live database was involved
+in these tests. Catalog-driven removal, the reviewed grant target, a maintained
+producer fence and provider rehearsal remain outstanding.
+
+Independent read-only review found no blocking extraction defect. The helper
+requires a caller-owned active writable transaction and a validated target with
+pinned search_path; it adds no authorization or environmental safety checks.
+The ordinary wrapper preserves its existing validation and transaction ownership.
+The full repository check passed with 41 existing Biome warnings and the existing
+configuration deprecation notice. Script-check and focused Biome passed. The
+local PostgreSQL container was stopped after the targeted tests to release its
+resource allocation. No publication or deployment occurred at this checkpoint.
+
+The complete bun run test gate exited zero: 3,011 unit tests across 464 files,
+20 Node tests, 73 Worker tests across 11 files, 48 HTTP tests across 15 files,
+two self-verifier tests and nine HNS verifier tests across six files. The Worker
+harness emitted missing optional funding RPC secret warnings. Required full
+PostgreSQL publication and secret-boundary gates remain for the completed runner;
+the targeted replay suite is not a substitute for them.

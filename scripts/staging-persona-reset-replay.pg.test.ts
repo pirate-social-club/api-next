@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { ControlPlaneDb } from "@pirate/application";
+import { Effect } from "effect";
 import { Client } from "pg";
+import { makeDirectPostgresControlPlaneLayer } from "../packages/platform-cf/src/postgres.ts";
+import { applyPostgresMigrationsInTransaction } from "../packages/platform-cf/src/postgres-migrations.ts";
 import { runPostgresMigrations } from "./postgres-migrations";
 import {
   loadStagingResetArtifacts,
@@ -43,6 +47,72 @@ async function isolated(use: (admin: Client, scoped: string, schema: string) => 
 }
 
 suite("pinned staging reset replay on PostgreSQL 17", () => {
+  test("removal and full replay share the caller transaction and roll back on failed verification", async () => {
+    await isolated(async (admin, scoped, schema) => {
+      await admin.query("CREATE TABLE before_rebuild (value text PRIMARY KEY)");
+      await admin.query("INSERT INTO before_rebuild VALUES ('original populated state')");
+      const originalSchema = (await admin.query("SELECT $1::regnamespace::oid AS id", [schema]))
+        .rows;
+      let sameConnection = false;
+      const rebuild = Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        return yield* db.withTransaction((transaction) =>
+          Effect.gen(function* () {
+            const before = yield* transaction.execute<{ pid: number }>({
+              label: "reset.test.pid-before",
+              text: "SELECT pg_backend_pid() AS pid",
+              values: [],
+              readonly: true,
+            });
+            yield* transaction.execute({
+              label: "reset.test.remove",
+              text: "DROP TABLE before_rebuild",
+              values: [],
+              readonly: false,
+            });
+            const result = yield* applyPostgresMigrationsInTransaction(
+              transaction,
+              plan.migrations,
+            );
+            expect(result.applied).toEqual(plan.migrations.map((migration) => migration.version));
+            const after = yield* transaction.execute<{ pid: number }>({
+              label: "reset.test.pid-after",
+              text: "SELECT pg_backend_pid() AS pid",
+              values: [],
+              readonly: true,
+            });
+            sameConnection = before.rows[0]?.pid === after.rows[0]?.pid;
+            const rows = yield* transaction.execute({
+              label: "reset.test.ledger",
+              text: "SELECT version, checksum FROM schema_migrations ORDER BY version",
+              values: [],
+              readonly: true,
+            });
+            expect(rows.rows).toEqual(
+              plan.migrations.map(({ version, checksum }) => ({ version, checksum })),
+            );
+            return yield* Effect.fail(new Error("injected_post_replay_verification_failure"));
+          }),
+        );
+      });
+      await expect(
+        Effect.runPromise(
+          Effect.scoped(rebuild.pipe(Effect.provide(makeDirectPostgresControlPlaneLayer(scoped)))),
+        ),
+      ).rejects.toThrow("injected_post_replay_verification_failure");
+      expect(sameConnection).toBe(true);
+      expect((await admin.query("SELECT value FROM before_rebuild")).rows).toEqual([
+        { value: "original populated state" },
+      ]);
+      expect((await admin.query("SELECT to_regclass('schema_migrations') AS ledger")).rows).toEqual(
+        [{ ledger: null }],
+      );
+      expect((await admin.query("SELECT $1::regnamespace::oid AS id", [schema])).rows).toEqual(
+        originalSchema,
+      );
+    });
+  }, 60_000);
+
   test("replays exactly 0001–0119 once without touching an unrelated schema", async () => {
     await isolated(async (admin, scoped) => {
       const result = await runPostgresMigrations({
