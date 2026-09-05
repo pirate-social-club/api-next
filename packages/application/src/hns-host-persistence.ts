@@ -469,6 +469,13 @@ function canonicalHsdName(value: unknown): string {
   return canonical;
 }
 
+function decodeHsdTranscriptResponse(responseHex: string): unknown {
+  const wire = bytesFromHex(responseHex);
+  // HSD terminates its HTTP JSON body with one LF. Retain it in the transcript.
+  const json = wire[wire.byteLength - 1] === 0x0a ? wire.subarray(0, -1) : wire;
+  return decodeStrictHnsJsonBytes(json, 8 * 1_024 * 1_024);
+}
+
 function decodeHsdTranscriptAuthorityRecords(
   entry: HnsAuthorityEncodedTranscriptEntryV1,
 ): Readonly<{
@@ -479,7 +486,7 @@ function decodeHsdTranscriptAuthorityRecords(
   let response: unknown;
   try {
     request = decodeStrictHnsJsonBytes(bytesFromHex(entry.request_hex), 1_048_576);
-    response = decodeStrictHnsJsonBytes(bytesFromHex(entry.response_hex), 8 * 1_024 * 1_024);
+    response = decodeHsdTranscriptResponse(entry.response_hex);
   } catch {
     throw new HnsAuthorityEmitRefusal("observer_evidence_mismatch");
   }
@@ -592,7 +599,7 @@ function decodeHsdTranscriptRpcResult(
   const requestBytes = bytesFromHex(entry.request_hex);
   try {
     request = decodeStrictHnsJsonBytes(requestBytes, 1_048_576);
-    response = decodeStrictHnsJsonBytes(bytesFromHex(entry.response_hex), 8 * 1_024 * 1_024);
+    response = decodeHsdTranscriptResponse(entry.response_hex);
   } catch {
     throw new HnsAuthorityEmitRefusal("observer_evidence_mismatch");
   }
