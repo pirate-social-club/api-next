@@ -233,3 +233,16 @@ avoids step retries for those outcomes; continuation disposition remains governe
 by PostgreSQL. No additional wrapper change is necessary.
 
 Timeout repair gates: bun run check exited 0; all nine PostgreSQL adapter unit tests passed; bun run test exited 0 with 3,041 Bun, 20 Node and 152 Workerd tests.
+
+
+## Pull-request preparation gate
+
+The single rebase onto fetched origin/main 46ea81d822ef6cd30b76b09699be77c629be954a
+was a no-op. Origin still ends at 0122; the grant migration remains 0123.
+The full host-network `bun run test:postgres` exited 0: 35 isolated namespace
+tests and 370 general tests passed, with 2,813 assertions in the general run.
+The general run completed in 644.62 seconds, so no timeout split was needed.
+Its composed Workflow child suite passed all 15 cases, including durable grant
+issuance and default gateway resolution across submit replay. Check and ordinary
+test gates passed on the same code tree. Script-check reported zero findings.
+This is local acceptance; the required remote checks remain the merge gate.
