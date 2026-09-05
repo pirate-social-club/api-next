@@ -14,7 +14,7 @@ import {
 import { readResetSchemaShape } from "./staging-persona-schema-shape";
 
 /** No new connection or transaction: migration SQL uses exactly the removal client. */
-function migrationTransaction(admin: Pick<Client, "query">): ControlPlaneTransaction {
+export function migrationTransaction(admin: Pick<Client, "query">): ControlPlaneTransaction {
   return {
     execute: (statement) =>
       Effect.tryPromise({

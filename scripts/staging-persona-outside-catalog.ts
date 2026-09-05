@@ -43,11 +43,21 @@ const relationCatalogs = [
   ["pg_policy", "polrelid"],
   ["pg_sequence", "seqrelid"],
   ["pg_foreign_table", "ftrelid"],
+  ["pg_partitioned_table", "partrelid"],
 ] as const;
 
 /** Same-database catalog digest. Never use it as a portable recovery fingerprint. */
 export async function snapshotOutsideResetCatalog(admin: Pick<Client, "query">) {
   const queries: [string, string][] = [
+    [
+      "pg_inherits",
+      `${relationScope} SELECT to_jsonb(o) AS fact FROM pg_catalog.pg_inherits o
+      WHERE inhrelid NOT IN (SELECT oid FROM target_relations)
+         OR inhparent NOT IN (SELECT oid FROM target_relations)`,
+    ],
+    ...["pg_publication_rel", "pg_publication_namespace", "pg_subscription_rel"].map(
+      (table): [string, string] => [table, `SELECT to_jsonb(o) AS fact FROM pg_catalog.${table} o`],
+    ),
     [
       "pg_class",
       `${relationScope} SELECT to_jsonb(o) - ARRAY[

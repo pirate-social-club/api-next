@@ -11,7 +11,8 @@ const closureQuery = `WITH RECURSIVE
     UNION ALL
     SELECT classid, objid, refclassid, refobjid FROM pg_catalog.pg_depend WHERE deptype IN ('i','e')
   ), closure(classid,objid) AS (
-    SELECT 'pg_catalog.pg_namespace'::regclass::oid, oid FROM pg_catalog.pg_namespace WHERE nspname=$1
+    (SELECT 'pg_catalog.pg_namespace'::regclass::oid, oid FROM pg_catalog.pg_namespace WHERE nspname=$1 AND $2::text IS NULL
+    UNION SELECT $2::regclass::oid,$3::oid WHERE $2::text IS NOT NULL)
     UNION
     SELECT e.target_class,e.target_id FROM edges e JOIN closure c
       ON e.source_class=c.classid AND e.source_id=c.objid
@@ -72,8 +73,29 @@ export async function scanResetDependencyClosureInTransaction(
   admin: Pick<Client, "query">,
   schema = "api_next",
 ) {
+  return scanClosure(admin, schema, null, null);
+}
+
+/** Root-scoped re-scan for a phased batch. The initial full namespace inventory
+ * and final outside-catalog comparison remain required by its orchestrator.
+ */
+export async function scanResetRootDependencyClosure(
+  admin: Pick<Client, "query">,
+  root: { class: string; id: string },
+) {
+  if (!["pg_class", "pg_proc", "pg_type"].includes(root.class) || !/^\d+$/.test(root.id))
+    throw new Error("dependency_scan_root_input");
+  return scanClosure(admin, "api_next", root.class, root.id);
+}
+
+async function scanClosure(
+  admin: Pick<Client, "query">,
+  schema: string,
+  objectClass: string | null,
+  objectId: string | null,
+) {
   if (!/^[a-z_][a-z0-9_]{0,62}$/u.test(schema)) throw new Error("dependency_scan_input");
-  const result = await admin.query(closureQuery, [schema]);
+  const result = await admin.query(closureQuery, [schema, objectClass, objectId]);
   if (
     result.rows.length === 0 ||
     result.rows.length > 50000 ||

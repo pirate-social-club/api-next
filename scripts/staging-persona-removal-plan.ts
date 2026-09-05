@@ -97,10 +97,7 @@ export async function inspectStagingRemovalPlan(
   const release = validateStagingResetArtifacts(artifacts);
   if (!/^[a-z_][a-z0-9_]{0,62}$/u.test(schema)) throw new Error("removal_plan_schema");
   const closure = await scanResetDependencyClosureInTransaction(admin, schema);
-  const unsupported = await admin.query(unsupportedQuery, [schema]);
-  if (Number(unsupported.rows[0]?.unsupported) !== 0) {
-    throw new Error("removal_plan_unsupported_objects");
-  }
+  await assertSupportedResetObjects(admin, schema);
   const roots = await listResetRemovalRoots(admin, schema);
   return Object.freeze({
     source_sha: release.sourceSha,
@@ -109,4 +106,13 @@ export async function inspectStagingRemovalPlan(
     roots_sha256: createHash("sha256").update(JSON.stringify(roots)).digest("hex"),
     execution_authorized: false,
   });
+}
+
+export async function assertSupportedResetObjects(
+  admin: Pick<Client, "query">,
+  schema = "api_next",
+) {
+  const unsupported = await admin.query(unsupportedQuery, [schema]);
+  if (Number(unsupported.rows[0]?.unsupported) !== 0)
+    throw new Error("removal_plan_unsupported_objects");
 }
