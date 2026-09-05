@@ -1381,6 +1381,8 @@ DECLARE
   observation hns_root_import_observation_jobs%ROWTYPE;
   current_generation BIGINT;
   latest_health_generation BIGINT;
+  app_generation BIGINT;
+  sale_generation BIGINT;
   database_now TIMESTAMPTZ := clock_timestamp();
 BEGIN
   IF NOT is_hns_host_persistence_identity(input_executor_id, 256)
@@ -1420,9 +1422,16 @@ BEGIN
     FROM hns_dns_zone_health_observations AS health
     WHERE health.dns_zone_activation_id = candidate.dns_zone_activation_id
       AND health.activation_generation = candidate.activation_generation;
+  SELECT app.current_generation, sale.current_generation INTO app_generation, sale_generation
+    FROM hns_root_import_activation_operations activation
+    JOIN hns_community_app_host_activation_current app ON app.app_host_activation_id=activation.app_host_activation_id
+    JOIN community_handle_sale_namespace_activation_current sale ON sale.sale_namespace_activation_id=activation.sale_namespace_activation_id
+    WHERE activation.root_import_session_id=candidate.root_import_session_id
+    FOR SHARE OF app, sale;
   IF session.status IS DISTINCT FROM 'activated'
     OR current_generation IS DISTINCT FROM candidate.activation_generation
     OR latest_health_generation IS DISTINCT FROM candidate.expected_health_generation
+    OR app_generation IS NULL OR sale_generation IS NULL
     OR provision.state IS DISTINCT FROM 'completed'
     OR observation.state IS DISTINCT FROM 'completed'
   THEN
@@ -1442,6 +1451,7 @@ BEGIN
     SET state = 'leased', attempt_count = LEAST(candidate.attempt_count + 1, 1024),
         lease_fence = candidate.lease_fence + 1, leased_by = input_executor_id,
         lease_expires_at = database_now + input_lease_seconds * interval '1 second',
+        expected_app_generation=app_generation, expected_sale_generation=sale_generation,
         failure_code = NULL, next_attempt_at = NULL, updated_at = database_now
   WHERE job.renewal_job_id = candidate.renewal_job_id;
 
@@ -11213,6 +11223,146 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION prepare_hns_root_inventory_renewal_v1(input_renewal_job_id text, input_executor_id text, input_lease_fence bigint, input_request_sha256 text, input_outcome text, input_result_bytes bytea, input_result_sha256 text, input_failure_code text) RETURNS TABLE(outcome text, root_import_session_id text, session_revision bigint)
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+DECLARE
+  job hns_root_health_renewal_jobs%ROWTYPE;
+  session hns_root_import_sessions%ROWTYPE;
+  observation hns_root_import_observation_jobs%ROWTYPE;
+  result JSONB;
+  dns_revision hns_dns_zone_activation_revisions%ROWTYPE;
+  remaining_seconds INTEGER;
+  latest_health_generation BIGINT;
+  current_generation BIGINT;
+  app_generation BIGINT;
+  sale_generation BIGINT;
+  database_now TIMESTAMPTZ := clock_timestamp();
+BEGIN
+  IF input_outcome IS DISTINCT FROM 'ready' THEN
+    RAISE EXCEPTION 'invalid HNS root health renewal finalization';
+  END IF;
+  SELECT * INTO job FROM hns_root_health_renewal_jobs
+    WHERE renewal_job_id = input_renewal_job_id FOR UPDATE;
+  IF NOT FOUND THEN RETURN QUERY SELECT 'not_found'::text, NULL::text, NULL::bigint; RETURN; END IF;
+  SELECT * INTO session FROM hns_root_import_sessions
+    WHERE hns_root_import_sessions.root_import_session_id = job.root_import_session_id FOR UPDATE;
+  SELECT * INTO observation FROM hns_root_import_observation_jobs
+    WHERE hns_root_import_observation_jobs.root_import_session_id = job.root_import_session_id;
+
+  database_now := clock_timestamp();
+  IF job.state IN ('completed', 'terminal') THEN
+    IF job.state = 'completed' AND input_outcome = 'ready'
+      AND observation.request_sha256 = input_request_sha256
+      AND job.result_bytes = input_result_bytes AND job.result_sha256 = input_result_sha256
+      AND input_failure_code IS NULL
+    THEN RETURN QUERY SELECT 'replayed'::text, session.root_import_session_id, session.revision;
+    ELSE RETURN QUERY SELECT 'conflict'::text, session.root_import_session_id, session.revision;
+    END IF;
+    RETURN;
+  END IF;
+  IF job.state <> 'leased' OR job.leased_by IS DISTINCT FROM input_executor_id
+    OR job.lease_fence IS DISTINCT FROM input_lease_fence OR job.lease_expires_at <= database_now
+    OR observation.request_sha256 IS DISTINCT FROM input_request_sha256
+  THEN RETURN QUERY SELECT 'lost'::text, session.root_import_session_id, session.revision; RETURN; END IF;
+
+  SELECT dns.current_generation INTO current_generation
+    FROM hns_dns_zone_activation_current AS dns
+    WHERE dns.dns_zone_activation_id = job.dns_zone_activation_id FOR UPDATE;
+  SELECT max(health.health_generation) INTO latest_health_generation
+    FROM hns_dns_zone_health_observations AS health
+    WHERE health.dns_zone_activation_id = job.dns_zone_activation_id
+      AND health.activation_generation = job.activation_generation;
+  -- Recheck expiry after authority locks, which can wait behind a promotion.
+  database_now := clock_timestamp();
+  IF job.lease_expires_at <= database_now THEN
+    RETURN QUERY SELECT 'lost'::text, session.root_import_session_id, session.revision; RETURN;
+  END IF;
+
+  IF session.status IS DISTINCT FROM 'activated'
+    OR current_generation IS DISTINCT FROM job.activation_generation
+    OR latest_health_generation IS DISTINCT FROM job.expected_health_generation
+  THEN
+    UPDATE hns_root_health_renewal_jobs SET state = 'terminal', leased_by = NULL,
+      lease_expires_at = NULL, next_attempt_at = NULL,
+      failure_code = CASE WHEN session.status IS DISTINCT FROM 'activated'
+        THEN 'session_not_activated' ELSE 'generation_superseded' END,
+      completed_at = database_now, updated_at = database_now
+    WHERE renewal_job_id = input_renewal_job_id;
+    RETURN QUERY SELECT 'lost'::text, session.root_import_session_id, session.revision; RETURN;
+  END IF;
+
+  SELECT app.current_generation, sale.current_generation INTO app_generation, sale_generation
+    FROM hns_root_import_activation_operations activation
+    JOIN hns_community_app_host_activation_current app ON app.app_host_activation_id=activation.app_host_activation_id
+    JOIN community_handle_sale_namespace_activation_current sale ON sale.sale_namespace_activation_id=activation.sale_namespace_activation_id
+    WHERE activation.root_import_session_id=job.root_import_session_id
+    FOR UPDATE OF app, sale;
+  database_now := clock_timestamp();
+  IF job.lease_expires_at <= database_now THEN
+    RETURN QUERY SELECT 'lost'::text, session.root_import_session_id, session.revision; RETURN;
+  END IF;
+  IF app_generation IS DISTINCT FROM job.expected_app_generation
+    OR sale_generation IS DISTINCT FROM job.expected_sale_generation
+    OR app_generation IS NULL OR sale_generation IS NULL
+  THEN
+    UPDATE hns_root_health_renewal_jobs SET state='delayed', leased_by=NULL,
+      lease_expires_at=NULL, next_attempt_at=database_now + interval '30 seconds',
+      failure_code='successor_generation_changed', updated_at=database_now
+    WHERE renewal_job_id=input_renewal_job_id;
+    RETURN QUERY SELECT 'retry'::text, session.root_import_session_id, session.revision; RETURN;
+  END IF;
+
+  SELECT * INTO dns_revision FROM hns_dns_zone_activation_revisions AS dns
+    WHERE dns.dns_zone_activation_id = job.dns_zone_activation_id
+      AND dns.dns_zone_activation_generation = job.activation_generation;
+
+  IF input_outcome = 'ready' THEN
+    IF input_result_bytes IS NULL OR input_result_sha256 !~ '^[0-9a-f]{64}$'
+      OR encode(sha256(input_result_bytes), 'hex') <> input_result_sha256
+      OR input_failure_code IS NOT NULL
+    THEN RAISE EXCEPTION 'invalid ready HNS root health renewal result'; END IF;
+    BEGIN result := convert_from(input_result_bytes, 'UTF8')::jsonb;
+    EXCEPTION WHEN OTHERS THEN RAISE EXCEPTION 'invalid HNS root health renewal result bytes'; END;
+    IF (result->>'version' <> 'pirate-hns-root-import-readiness-result-v1'
+      OR result->>'root_import_session_id' <> job.root_import_session_id
+      OR result->>'namespace_session_id' <> session.namespace_session_id
+      OR result->>'root_label' <> session.root_label
+      OR result->>'ownership_result_sha256' <> session.ownership_result_sha256
+      OR result->>'publish_plan_sha256' <> session.publish_plan_sha256
+      OR result->>'provision_result_sha256' IS DISTINCT FROM (
+        SELECT provision.result_sha256 FROM hns_authority_provision_jobs AS provision
+        WHERE provision.root_import_session_id = job.root_import_session_id
+          AND provision.state = 'completed'
+      )
+      OR result->>'delegation_matches' <> 'true'
+      OR result->>'ds_authenticates_zone' <> 'true'
+      OR result->>'retained_zone_digest_matches' <> 'true'
+      OR result->>'gateway_healthy' <> 'true'
+      OR result->>'observed_zone_bytes_sha256' IS DISTINCT FROM dns_revision.zone_bytes_digest
+      OR result->>'dnssec_keyset_reference' IS DISTINCT FROM dns_revision.dnssec_keyset_reference
+      OR result->>'dnssec_keyset_version' IS DISTINCT FROM dns_revision.dnssec_keyset_version
+      OR result->>'gateway_deployment_reference' IS DISTINCT FROM dns_revision.gateway_deployment_reference
+      OR result->>'gateway_certificate_spki_sha256' IS DISTINCT FROM dns_revision.gateway_certificate_spki_sha256
+      OR ('hns-root-chain:' || (result->>'chain_resource_sha256'))
+         IS DISTINCT FROM dns_revision.stable_chain_delegation_snapshot_reference) IS DISTINCT FROM FALSE
+    THEN
+      UPDATE hns_root_health_renewal_jobs SET state = 'terminal', leased_by = NULL,
+        lease_expires_at = NULL, next_attempt_at = NULL, failure_code = 'evidence_mismatch',
+        completed_at = database_now, updated_at = database_now
+      WHERE renewal_job_id = input_renewal_job_id;
+      RETURN QUERY SELECT 'failed'::text, session.root_import_session_id, session.revision; RETURN;
+    END IF;
+    remaining_seconds := floor(extract(epoch FROM ((result->>'valid_until')::timestamptz - database_now)))::integer;
+    IF (result->>'observed_at')::timestamptz > database_now + interval '60 seconds'
+      OR remaining_seconds NOT BETWEEN 1 AND 604800
+    THEN RAISE EXCEPTION 'HNS root health renewal evidence is stale'; END IF;
+    RETURN QUERY SELECT 'prepared'::text, session.root_import_session_id, session.revision;
+  END IF;
+END;
+$_$;
+
 CREATE FUNCTION prepare_platform_pirate_label_insert_v1() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -13445,7 +13595,14 @@ BEGIN
     JOIN latest_health AS health
       ON health.dns_zone_activation_id = activation_row.dns_zone_activation_id
      AND health.activation_generation = activation_row.current_generation
-    WHERE health.valid_until <= database_now
+    JOIN hns_dns_zone_activation_revisions AS revision
+      ON revision.dns_zone_activation_id = activation_row.dns_zone_activation_id
+     AND revision.dns_zone_activation_generation = activation_row.current_generation
+    JOIN hns_authority_inventories AS inventory
+      ON inventory.authority_inventory_reference = revision.pirate_dns_authority_inventory_reference
+     AND inventory.authority_inventory_version = revision.pirate_dns_authority_inventory_version
+     AND inventory.authority_inventory_digest = revision.pirate_dns_authority_inventory_digest
+    WHERE LEAST(health.valid_until, inventory.expires_at) <= database_now
       + input_renew_when_remaining_seconds * interval '1 second'
       AND NOT EXISTS (
         SELECT 1 FROM hns_root_health_renewal_jobs AS existing
@@ -13454,7 +13611,7 @@ BEGIN
           AND existing.expected_health_generation = health.health_generation
           AND NOT (existing.state = 'delayed' AND existing.next_attempt_at <= database_now)
       )
-    ORDER BY health.valid_until, activation.root_import_session_id
+    ORDER BY LEAST(health.valid_until, inventory.expires_at), activation.root_import_session_id
     LIMIT input_limit
   ), inserted AS (
     INSERT INTO hns_root_health_renewal_jobs (
@@ -22854,6 +23011,10 @@ CREATE TABLE hns_root_health_renewal_jobs (
     updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     completed_at timestamp with time zone,
     next_attempt_at timestamp with time zone,
+    expected_app_generation bigint,
+    expected_sale_generation bigint,
+    CONSTRAINT hns_root_health_renewal_jobs_expected_app_generation_check CHECK (((expected_app_generation >= 1) AND (expected_app_generation <= '9007199254740991'::bigint))),
+    CONSTRAINT hns_root_health_renewal_jobs_expected_sale_generation_check CHECK (((expected_sale_generation >= 1) AND (expected_sale_generation <= '9007199254740991'::bigint))),
     CONSTRAINT hns_root_health_renewal_jobs_identity_check CHECK ((is_hns_host_persistence_identity(renewal_job_id, 256) AND ((activation_generation >= 1) AND (activation_generation <= '9007199254740991'::bigint)) AND ((expected_health_generation >= 1) AND (expected_health_generation <= '9007199254740990'::bigint)) AND ((attempt_count >= 0) AND (attempt_count <= 1024)) AND ((lease_fence >= 0) AND (lease_fence <= '9007199254740991'::bigint)))),
     CONSTRAINT hns_root_health_renewal_jobs_state_check CHECK ((state = ANY (ARRAY['queued'::text, 'leased'::text, 'delayed'::text, 'completed'::text, 'terminal'::text]))),
     CONSTRAINT hns_root_health_renewal_jobs_state_shape CHECK ((((state = 'queued'::text) AND (leased_by IS NULL) AND (lease_expires_at IS NULL) AND (result_bytes IS NULL) AND (result_sha256 IS NULL) AND (completed_at IS NULL) AND (next_attempt_at IS NULL)) OR ((state = 'leased'::text) AND is_hns_host_persistence_identity(leased_by, 256) AND (lease_expires_at IS NOT NULL) AND (result_bytes IS NULL) AND (result_sha256 IS NULL) AND (failure_code IS NULL) AND (completed_at IS NULL) AND (next_attempt_at IS NULL)) OR ((state = 'delayed'::text) AND (leased_by IS NULL) AND (lease_expires_at IS NULL) AND (result_bytes IS NULL) AND (result_sha256 IS NULL) AND (completed_at IS NULL) AND (next_attempt_at IS NOT NULL) AND is_hns_host_persistence_identity(failure_code, 128)) OR ((state = 'completed'::text) AND (leased_by IS NULL) AND (lease_expires_at IS NULL) AND ((octet_length(result_bytes) >= 1) AND (octet_length(result_bytes) <= 1048576)) AND (result_sha256 ~ '^[0-9a-f]{64}$'::text) AND (encode(sha256(result_bytes), 'hex'::text) = result_sha256) AND (failure_code IS NULL) AND (completed_at IS NOT NULL) AND (next_attempt_at IS NULL)) OR ((state = 'terminal'::text) AND (leased_by IS NULL) AND (lease_expires_at IS NULL) AND (result_bytes IS NULL) AND (result_sha256 IS NULL) AND is_hns_host_persistence_identity(failure_code, 128) AND (completed_at IS NOT NULL) AND (next_attempt_at IS NULL)))),

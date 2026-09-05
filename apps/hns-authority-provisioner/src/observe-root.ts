@@ -312,6 +312,7 @@ export function decodeHnsAuthorityProvisionResultV1(
 }
 
 export async function observeHnsRootReadinessV1(input: {
+  readonly observation_attempt: { readonly job_id: string; readonly lease_fence: number };
   readonly operation_kind: "observe_root_v1" | "renew_health_v1";
   readonly request: HnsRootReadinessObservationRequestV1;
   readonly publish_plan_bytes: Uint8Array;
@@ -319,6 +320,13 @@ export async function observeHnsRootReadinessV1(input: {
   readonly ports: HnsRootReadinessObservationPorts;
   readonly config: HnsRootReadinessObservationConfig;
 }) {
+  if (
+    !id(input.observation_attempt.job_id) ||
+    !Number.isSafeInteger(input.observation_attempt.lease_fence) ||
+    input.observation_attempt.lease_fence <= 0
+  ) {
+    throw new HnsRootReadinessObservationError("invalid_request");
+  }
   const now = input.config.now?.() ?? Date.now();
   if (
     !id(input.config.environment) ||
@@ -421,10 +429,24 @@ export async function observeHnsRootReadinessV1(input: {
     authoritative_nameserver_glue: nameserverGlue,
     dns_write_capabilities: dnsWriteCapabilities,
   });
+  // A recurring job retains its identity across leases. Fence and evidence
+  // identity distinguish successors; replaying retained bytes keeps the version.
+  const inventoryIdentity = await sha256(
+    encoder.encode(
+      canonicalJson([
+        input.observation_attempt.job_id,
+        input.observation_attempt.lease_fence,
+        input.request.provision_result_sha256,
+        observedAt,
+        validUntil,
+        capabilityDigest,
+      ]),
+    ),
+  );
   const inventoryBytes = await encodeHnsAuthorityInventory({
     version: HNS_AUTHORITY_INVENTORY_VERSION,
     authority_inventory_reference: `hns-authority:${input.request.root_label}`,
-    authority_inventory_version: `readiness-${input.request.provision_result_sha256.slice(0, 16)}`,
+    authority_inventory_version: `readiness-${inventoryIdentity}`,
     environment: input.config.environment,
     completeness: "complete",
     runtime_capability_set_digest: capabilityDigest,

@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { Effect } from "effect";
 import {
   decodeHnsAppHostTransitionDocumentV1,
   decodeHnsDnsZonePersistenceDocumentV1,
@@ -7,14 +6,12 @@ import {
 } from "../../packages/application/src/hns-host-persistence.ts";
 import { decodeHnsAuthorityInventoryBytes } from "../../packages/application/src/namespace-ownership/hns-authority-inventory.ts";
 import {
-  ControlPlaneDb,
-  ControlPlaneStatementFailed,
-} from "../../packages/application/src/ports.ts";
-import { makeControlPlaneHandleSalesRepository } from "../../packages/platform-cf/src/handle-sales-repository.ts";
+  HnsAuthoritySuccessorPromotionRefusal,
+  promoteHnsAuthoritySuccessorInTransaction,
+} from "../../packages/platform-cf/src/hns-authority-successor-promotion.ts";
 import {
   hnsAppHostTransitionStatementFromReviewedDocument,
   hnsDnsHealthStatementFromReviewedDocument,
-  hnsDnsZoneFinalizationStatementFromReviewedDocument,
   hnsDnsZoneReservationStatementFromReviewedDocument,
 } from "../../packages/platform-cf/src/hns-host-persistence-repository.ts";
 import { ContinuityRefusal } from "./refusal.mjs";
@@ -247,171 +244,18 @@ export async function promoteContinuity({
       transactionOpen = false;
       return { ...outcome, committed: false };
     } else {
-      const inventoryValues = [
+      const promotion = await promoteHnsAuthoritySuccessorInTransaction({
+        client,
         inventoryRegistryReference,
-        inventory.inventory.authority_inventory_reference,
-        inventory.inventory.authority_inventory_version,
-        inventory.inventory_digest,
-        inventory.inventory.environment,
-        inventory.inventory.runtime_capability_set_digest,
-        Buffer.from(inventory.inventory_bytes),
-        inventory.inventory.published_at,
-        inventory.inventory.expires_at,
-      ];
-      const inserted = await client.query({
-          text: `INSERT INTO hns_authority_inventories (
-               registry_reference,
-               authority_inventory_reference,
-               authority_inventory_version,
-               authority_inventory_digest,
-               environment,
-               runtime_capability_set_digest,
-               inventory_bytes,
-               published_at,
-               expires_at
-             ) VALUES ($1, $2, $3, $4, $5, $6, $7::bytea, $8::timestamptz, $9::timestamptz)
-             ON CONFLICT DO NOTHING`,
-          values: inventoryValues,
-        }),
-        retainedInventory = await client.query({
-          text: `SELECT count(*)::integer AS matching_rows
-               FROM hns_authority_inventories
-              WHERE registry_reference = $1
-                AND authority_inventory_reference = $2
-                AND authority_inventory_version = $3
-                AND authority_inventory_digest = $4
-                AND environment = $5
-                AND runtime_capability_set_digest = $6
-                AND inventory_bytes = $7::bytea
-                AND published_at = $8::timestamptz
-                AND expires_at = $9::timestamptz`,
-          values: inventoryValues,
-        });
-      if (exactRow(retainedInventory.rows, "retained inventory").matching_rows !== 1)
-        throw new ContinuityRefusal("retained authority inventory differs from reviewed bytes");
-      const reservationResult = exactRow(
-          (
-            await client.query({
-              text: reservationStatement.text,
-              values: reservationStatement.values,
-            })
-          ).rows,
-          reservationStatement.label,
-        ),
-        reservation = {
-          outcome: String(reservationResult.outcome),
-          operation_id: String(reservationResult.operation_id),
-          dns_zone_activation_id: String(reservationResult.dns_zone_activation_id),
-          fence_token: positiveInteger(reservationResult.fence_token, "DNS fence token"),
-          lease_expires_at: new Date(String(reservationResult.lease_expires_at)).toISOString(),
-          activation_generation:
-            reservationResult.activation_generation === null
-              ? null
-              : positiveInteger(reservationResult.activation_generation, "DNS replay generation"),
-        };
-      if (reservation.outcome !== "reserved" && reservation.outcome !== "replayed")
-        throw new ContinuityRefusal("DNS reservation returned an invalid outcome");
-      const finalizationStatement = await hnsDnsZoneFinalizationStatementFromReviewedDocument(
-          reservation,
-          artifact("dns_zone_activation"),
-        ),
-        dnsOutcome = exactRow(
-          (
-            await client.query({
-              text: finalizationStatement.text,
-              values: finalizationStatement.values,
-            })
-          ).rows,
-          finalizationStatement.label,
-        ),
-        appOutcome = exactRow(
-          (await client.query({ text: appStatement.text, values: appStatement.values })).rows,
-          appStatement.label,
-        ),
-        healthOutcome = exactRow(
-          (await client.query({ text: healthStatement.text, values: healthStatement.values })).rows,
-          healthStatement.label,
-        ),
-        transaction = {
-          execute: (statement) =>
-            Effect.tryPromise({
-              try: async () => {
-                const result = await client.query({
-                  text: statement.text,
-                  values: statement.values,
-                });
-                return { rows: result.rows, rowCount: result.rowCount ?? 0 };
-              },
-              catch: (error) =>
-                new ControlPlaneStatementFailed({
-                  label: statement.label,
-                  sqlState: error.code ?? null,
-                  constraint: error.constraint ?? null,
-                  outcomeCertainty: "not_committed",
-                }),
-            }),
-        },
-        saleOutcome = await Effect.runPromise(
-          makeControlPlaneHandleSalesRepository()
-            .reviseSaleNamespace({
-              accountId: state.sale.actor_account_id,
-              communityId: state.sale.community_id,
-              activationId: state.sale.sale_namespace_activation_id,
-              expectedActivationHash: state.sale.sale_namespace_activation_hash,
-              requestedStatus: "active",
-              namespaceAuthorityReference: state.sale.namespace_authority_reference,
-              expectedNamespaceAuthorityGeneration: Number(
-                state.sale.namespace_authority_generation,
-              ),
-              dnsZoneActivationId: dns.dns_zone_activation_id,
-              expectedDnsZoneActivationGeneration: candidate.generations.dns_activation_generation,
-              dedicatedRootReplacementConfirmed: true,
-              idempotencyKey: `hns-continuity-sale:${expectedCandidateSha256}`,
-              actionId: `hns-continuity-sale:${expectedCandidateSha256}`,
-            })
-            .pipe(
-              Effect.provideService(ControlPlaneDb, {
-                ...transaction,
-                withTransaction: (use) => use(transaction),
-              }),
-            ),
-        );
-      if (
-        saleOutcome.activation.serving.dns_zone_activation_generation !==
-          candidate.generations.dns_activation_generation ||
-        saleOutcome.activation.sale_namespace_activation_generation !==
-          Number(state.sale.sale_namespace_activation_generation) + 1
-      )
-        throw new ContinuityRefusal("Sale namespace did not advance atomically");
-      const verified = exactRow(
-        (
-          await client.query({
-            text: `SELECT dns.current_generation AS dns_generation,
-                        app.current_generation AS app_generation,
-                        COALESCE((
-                          SELECT max(health_generation)
-                            FROM hns_dns_zone_health_observations
-                           WHERE dns_zone_activation_id = dns.dns_zone_activation_id
-                             AND activation_generation = dns.current_generation
-                        ), 0) AS health_generation
-                   FROM hns_dns_zone_activation_current AS dns
-                   JOIN hns_community_app_host_activation_current AS app
-                     ON app.normalized_host = $2
-                  WHERE dns.canonical_root = $1`,
-            values: [candidate.root_label, `app.${candidate.root_label}`],
-          })
-        ).rows,
-        "successor verification",
-      );
-      if (
-        positiveInteger(verified.dns_generation, "verified DNS generation") !==
-          candidate.generations.dns_activation_generation ||
-        positiveInteger(verified.app_generation, "verified app-host generation") !==
-          candidate.generations.app_host_activation_generation ||
-        positiveInteger(verified.health_generation, "verified health generation") !==
-          candidate.generations.health_generation
-      )
-        throw new ContinuityRefusal("successor selectors do not match the reviewed generations");
+        authorityInventoryBytes: artifact("authority_inventory"),
+        dnsActivationBytes: artifact("dns_zone_activation"),
+        appActivationBytes: artifact("app_host_activation"),
+        healthObservationBytes: artifact("health_observation"),
+        successorId: expectedCandidateSha256,
+        rootLabel: candidate.root_label,
+        generations: candidate.generations,
+        sale: state.sale,
+      });
       if (mode === "--commit") {
         transactionOpen = false;
         try {
@@ -425,16 +269,14 @@ export async function promoteContinuity({
       transactionOpen = false;
       return {
         ...outcome,
-        inventory_inserted: inserted.rowCount === 1,
-        dns_outcome: dnsOutcome,
-        app_host_outcome: appOutcome,
-        health_outcome: healthOutcome,
-        sale_generation: saleOutcome.activation.sale_namespace_activation_generation,
+        ...promotion,
         committed: mode === "--commit",
       };
     }
   } catch (error) {
     if (transactionOpen) await client.query("ROLLBACK");
+    if (error instanceof HnsAuthoritySuccessorPromotionRefusal)
+      throw new ContinuityRefusal(error.message);
     throw error;
   }
 }

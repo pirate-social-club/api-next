@@ -1,4 +1,8 @@
 import { Client } from "pg";
+import {
+  finalizeImportedInventoryRenewal,
+  HnsInventoryRenewalCommitUnknown,
+} from "../../../packages/platform-cf/src/hns-imported-inventory-renewal.ts";
 
 type HnsRootObservationClaim = Readonly<{
   readonly observation_job_id: string;
@@ -13,7 +17,7 @@ type HnsRootObservationClaim = Readonly<{
   readonly lease_fence: number;
 }>;
 
-type HnsRootObservationFinalizeInput = Readonly<{
+export type HnsRootObservationFinalizeInput = Readonly<{
   readonly observation_job_id: string;
   readonly operation_kind: HnsRootObservationClaim["operation_kind"];
   readonly executor_id: string;
@@ -128,6 +132,38 @@ export function makePostgresHnsRootObservationQueue(
       }),
     finalize: (input) =>
       withClient(connectionString, async (client) => {
+        if (input.operation_kind === "renew_health_v1" && input.outcome === "ready") {
+          try {
+            return await finalizeImportedInventoryRenewal(client, input);
+          } catch (error) {
+            if (!(error instanceof HnsInventoryRenewalCommitUnknown)) throw error;
+            // Use a new connection; an ambiguous COMMIT must never be followed
+            // by a failure finalization or a fresh observation under this lease.
+            return withClient(connectionString, async (reconcile) => {
+              const retained = await reconcile.query<{ revision: string }>(
+                `SELECT session.revision
+                FROM hns_root_health_renewal_jobs job
+                JOIN hns_root_import_sessions session USING(root_import_session_id)
+                JOIN hns_root_import_observation_jobs observation USING(root_import_session_id)
+                WHERE job.renewal_job_id=$1 AND job.state='completed'
+                  AND job.result_bytes=$2::bytea AND job.result_sha256=$3
+                  AND observation.request_sha256=$4`,
+                [
+                  input.observation_job_id,
+                  Buffer.from(input.result_bytes),
+                  input.result_sha256,
+                  input.request_sha256,
+                ],
+              );
+              if (retained.rows.length !== 1) throw error;
+              return {
+                outcome: "replayed",
+                root_import_session_id: error.rootImportSessionId,
+                session_revision: positiveInteger(retained.rows[0]?.revision),
+              };
+            });
+          }
+        }
         const ready = input.outcome === "ready";
         const finalizer =
           input.operation_kind === "renew_health_v1"
