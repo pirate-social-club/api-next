@@ -218,7 +218,27 @@ export function generateOpenApi(
         String(status),
         {
           description: "Success",
-          content: { "application/json": { schema: schemaToOpenApi(endpoint.response) } },
+          ...(endpoint.responseRepresentation === undefined
+            ? { content: { "application/json": { schema: schemaToOpenApi(endpoint.response) } } }
+            : {
+                headers: {
+                  ETag: { required: true, schema: { type: "string" } },
+                  "Cache-Control": {
+                    required: true,
+                    schema: { const: endpoint.responseRepresentation.cacheControl },
+                  },
+                },
+                "x-conditional-authorization": "handler-before-304",
+                ...(status === 304
+                  ? {}
+                  : {
+                      content: {
+                        [endpoint.responseRepresentation.contentType]: {
+                          schema: { type: "string", format: "binary" },
+                        },
+                      },
+                    }),
+              }),
         },
       ]),
     );
@@ -537,7 +557,11 @@ export function generateClient(registry: Record<string, EndpointDefinition>): st
     operationTypeName: pascalCase(operationId(endpoint, index)),
     registryTypeName: pascalCase(key),
     inputType: clientInputType(endpoint),
-    responseType: jsonSchemaToType(schemaToOpenApi(endpoint.response)),
+    responseType:
+      endpoint.responseRepresentation === undefined
+        ? jsonSchemaToType(schemaToOpenApi(endpoint.response))
+        : "{ readonly status: 200; readonly body: ReadableStream<Uint8Array>; readonly etag: string } | { readonly status: 304; readonly body: null; readonly etag: string }",
+    responseRepresentation: endpoint.responseRepresentation,
     method: endpoint.method,
     path: endpoint.path,
     responseSchema: schemaToOpenApi(endpoint.response),
@@ -601,6 +625,36 @@ export type ${registryTypeName}Response = ${operationTypeName}Response;
 export type ${registryTypeName}Error = ${operationTypeName}Error;`,
     )
     .join("\n\n");
+  const binaryRepresentations = Object.fromEntries(
+    methods
+      .filter(({ responseRepresentation }) => responseRepresentation !== undefined)
+      .map(({ operationId, responseRepresentation }) => [operationId, responseRepresentation]),
+  );
+  const binaryDispatch =
+    Object.keys(binaryRepresentations).length === 0
+      ? ""
+      : `
+    const binaryContracts: Record<string, { contentType: string; cacheControl: string }> = ${JSON.stringify(binaryRepresentations)};
+    const binary = binaryContracts[operation];
+    if (binary !== undefined && (SUCCESS_STATUSES[operation] ?? []).includes(response.status)) {
+      const etag = response.headers.get("etag");
+      if (etag === null || !/^"[\\x21\\x23-\\x7e]{1,128}"$/u.test(etag) || response.headers.get("cache-control") !== binary.cacheControl) {
+        await response.body?.cancel();
+        throw new ApiClientProtocolError("Invalid binary response headers", response.status);
+      }
+      if (response.status === 304) {
+        if (response.body !== null) {
+          await response.body.cancel();
+          throw new ApiClientProtocolError("Conditional response carried a body", response.status);
+        }
+        return { status: 304, body: null, etag } as T;
+      }
+      if (response.status !== 200 || response.body === null || response.headers.get("content-type") !== binary.contentType) {
+        await response.body?.cancel();
+        throw new ApiClientProtocolError("Invalid binary response body", response.status);
+      }
+      return { status: 200, body: response.body, etag } as T;
+    }`;
   return `// GENERATED FILE. DO NOT EDIT. Regenerate with bun run generate:contracts.
 ${operationTypes}
 
@@ -855,7 +909,7 @@ export function createPirateApiClient(baseUrl: string, optionsOrFetch: PirateApi
       ...(requestInput.body === undefined ? {} : { body: rawBody || bodyEncoding === "raw-bytes" ? requestInput.body as Exclude<RequestInit["body"], undefined> : bodyEncoding === "raw-text" ? requestInput.body as string : bodyEncoding === "exact-json" ? serializeExactJsonBody(requestInput.body, exactJsonMembers) : JSON.stringify(requestInput.body) }),
       ...(signal === undefined ? {} : { signal }),
     });
-    let payload: unknown;
+${binaryDispatch === "" ? "" : `${binaryDispatch}\n`}    let payload: unknown;
     try { payload = await response.json(); } catch { throw new ApiClientProtocolError("API response was not valid JSON", response.status); }
     const declaredSuccess = (SUCCESS_STATUSES[operation] ?? []).includes(response.status);
     if (!declaredSuccess && !response.ok) {
