@@ -15,7 +15,10 @@ import {
   makeControlPlanePersonaRepository,
   makeControlPlanePersonaWalletRepository,
 } from "./persona-repository.ts";
-import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture.ts";
+import {
+  activatePendingPersonaFixtures,
+  createActivePersonaFixture,
+} from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { applyPostgresMigrations } from "./postgres-migrations.ts";
 
@@ -30,7 +33,7 @@ const sentinelPath =
   "/tmp/api-next-control-plane-postgres-persona-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-persona-suite-complete\n";
 const migrations = await loadPostgresMigrations();
-const testCount = 8;
+const testCount = 9;
 let completedTestCount = 0;
 
 const schemaIdentifier = (): string =>
@@ -85,6 +88,7 @@ const personaRecord = (personaId: string, createdAt: string): PersonaRecord => (
     primary_public_handle: null,
   },
   wallet_set: { evm: null },
+  community_binding: null,
   created_at: createdAt,
   retired_at: null,
 });
@@ -116,6 +120,71 @@ async function seedBornBoundCommunity(
 }
 
 suite("Postgres 17 account persona and EVM wallet persistence", () => {
+  test("lists private bindings for every published status without exposing another account", async () => {
+    await withSchema(async (admin, connection) => {
+      await admin.query("INSERT INTO users (user_id) VALUES ('binding-owner'), ('binding-other')");
+      await activatePendingPersonaFixtures(admin);
+      await seedBornBoundCommunity(admin, "binding-home", ["binding-owner", "binding-other"]);
+      for (const personaId of ["bound-active", "bound-retired", "bound-suspended"]) {
+        await createActivePersonaFixture(admin, { accountId: "binding-owner", personaId });
+        await admin.query(
+          `INSERT INTO persona_community_bindings
+             (persona_id, account_id, community_id, binding_source)
+           VALUES ($1, 'binding-owner', 'binding-home', 'persona_creation')`,
+          [personaId],
+        );
+      }
+      await admin.query(
+        `INSERT INTO persona_community_bindings
+           (persona_id, account_id, community_id, binding_source)
+         SELECT persona_id, account_id, 'binding-home', 'first_membership'
+           FROM personas WHERE account_id='binding-other'`,
+      );
+      await admin.query(
+        "UPDATE personas SET status='suspended' WHERE persona_id='bound-suspended'",
+      );
+      const wallets = makeControlPlanePersonaWalletRepository();
+      await run(
+        connection,
+        wallets.retire({
+          accountId: "binding-owner",
+          personaId: "bound-retired",
+          idempotencyKey: "retire-bound",
+        }),
+      );
+      const repository = makeControlPlanePersonaRepository();
+      const listed = await run(connection, repository.listByAccount("binding-owner"));
+      expect(listed).toHaveLength(4);
+      expect(listed.filter((persona) => persona.community_binding === null)).toHaveLength(1);
+      for (const [personaId, status] of [
+        ["bound-active", "active"],
+        ["bound-retired", "retired"],
+        ["bound-suspended", "suspended"],
+      ]) {
+        expect(listed.find((persona) => persona.persona_id === personaId)).toMatchObject({
+          status,
+          community_binding: { community_id: "binding-home", binding_source: "persona_creation" },
+        });
+        expect(
+          await run(
+            connection,
+            repository.findOwned({
+              accountId: "binding-other",
+              personaId: personaId as string,
+            }),
+          ),
+        ).toBeNull();
+      }
+      const other = await run(connection, repository.listByAccount("binding-other"));
+      expect(other).toHaveLength(1);
+      expect(other[0]?.community_binding).toEqual({
+        community_id: "binding-home",
+        binding_source: "first_membership",
+      });
+      expect(listed.some((persona) => persona.persona_id === other[0]?.persona_id)).toBe(false);
+    });
+    completedTestCount += 1;
+  });
   test("fails the wallet activation migration before changing a retained walletless schema", async () => {
     if (connectionString === undefined) throw new Error("test URL was not configured");
     const schema = schemaIdentifier();

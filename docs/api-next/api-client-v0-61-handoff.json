@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.61.0",
+  "releaseType": "private-persona-community-binding",
+  "sourceCommit": "7d38f73bd1053cccc240a8dc34c9f74e14db01e8",
+  "wireContract": "GET /personas adds nullable community_binding with community_id and binding_source; private, no-store; public projections unchanged",
+  "supersedes": "0.60.0; additive private read for community-scoped persona selection, no new route or migration",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.61.0.tgz",
+    "sha256": "5c9dadec3abdf65f2cc6775ea9bbd7e23fcbc89f1a14bb941138bfd206dc8781",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@56ec9f71f900f7bc5fad41aa0f6ff5b92fb524c3133a6f6ca62dac4043f8ce16",
+    "openapiSha256": "56ec9f71f900f7bc5fad41aa0f6ff5b92fb524c3133a6f6ca62dac4043f8ce16",
+    "clientSha256": "b8f136907becf320620d103aed6c3ab770d4aeeca4bd24c5f8efa7990cff756b"
+  },
+  "verification": {
+    "focusedSuites": "63 passed: persona contracts, use cases, handlers and transport including private no-store",
+    "repositoryCheck": "passed; 41 existing Biome warnings, no new warnings",
+    "fullUnitSuite": "passed: 2944 unit, 20 Node, and 131 Workerd tests",
+    "checkBreaking": "passed against 7d3c8aae with no waiver",
+    "postgres17Focused": "passed: all nine persona repository tests, including unbound, active bound, retired bound, suspended bound, and cross-account exclusion",
+    "postgres17Full": "local isolated namespace suite passed; general run terminated at its 900-second limit with exit 143 and no observed assertion failure; required sharded CI gate must pass before merge",
+    "packageVerifier": "passed: immutable artifact, provenance and clean consumer",
+    "secretBoundaryLocal": "passed: zero violations",
+    "scriptCheck": "passed: zero findings"
+  }
+}

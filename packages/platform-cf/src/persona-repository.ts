@@ -9,7 +9,8 @@ import {
   PersonaWalletStoreConflict,
   type PersonaWalletStoreService,
 } from "@pirate/application";
-import { Effect, type Layer } from "effect";
+import { PersonaCommunityBindingV1 } from "@pirate/contracts";
+import { Effect, type Layer, Schema } from "effect";
 
 type PersonaRow = Readonly<Record<string, unknown>>;
 
@@ -81,6 +82,11 @@ const personaFromRow = (row: PersonaRow) => {
       primary_public_handle: nullableString(row.primary_public_handle),
     },
     wallet_set: { evm: wallet },
+    community_binding: Schema.decodeUnknownSync(Schema.NullOr(PersonaCommunityBindingV1))(
+      row.bound_community_id === null && row.binding_source === null
+        ? null
+        : { community_id: row.bound_community_id, binding_source: row.binding_source },
+    ),
     created_at: iso(row.created_at),
     retired_at: row.retired_at === null ? null : iso(row.retired_at),
   };
@@ -91,6 +97,8 @@ const PERSONA_SELECT = `
          persona.status,
          persona.created_at,
          persona.retired_at,
+         binding.community_id AS bound_community_id,
+         binding.binding_source,
          profile.revision AS profile_revision,
          profile.display_name,
          profile.avatar_ref,
@@ -104,6 +112,9 @@ const PERSONA_SELECT = `
          wallet.assigned_at AS wallet_assigned_at
     FROM personas AS persona
     JOIN persona_profiles AS profile ON profile.persona_id = persona.persona_id
+    LEFT JOIN persona_community_bindings AS binding
+      ON binding.persona_id = persona.persona_id
+     AND binding.account_id = persona.account_id
     LEFT JOIN LATERAL (
       SELECT candidate.label_display
         FROM public_handle_index AS candidate

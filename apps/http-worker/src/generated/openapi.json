@@ -35885,6 +35885,36 @@
                             ],
                             "additionalProperties": false
                           },
+                          "community_binding": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "community_id": {
+                                    "type": "string"
+                                  },
+                                  "binding_source": {
+                                    "type": "string",
+                                    "enum": [
+                                      "first_membership",
+                                      "community_creation",
+                                      "persona_creation",
+                                      "migration_single_evidence",
+                                      "explicit_migration_resolution"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "community_id",
+                                  "binding_source"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "created_at": {
                             "type": "string"
                           },
@@ -35905,6 +35935,7 @@
                           "status",
                           "profile",
                           "wallet_set",
+                          "community_binding",
                           "created_at",
                           "retired_at"
                         ],

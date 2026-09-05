@@ -31,6 +31,7 @@ const activePersona: PersonaRecord = {
     primary_public_handle: "name.charizard",
   },
   wallet_set: { evm: null },
+  community_binding: null,
   created_at: "2026-08-23T18:00:00.000Z",
   retired_at: null,
 };

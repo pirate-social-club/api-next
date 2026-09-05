@@ -35,6 +35,7 @@ const personaStore = {
         primary_public_handle: null,
       },
       wallet_set: { evm: null },
+      community_binding: null,
       created_at: "2026-08-21T12:00:00.000Z",
       retired_at: null,
     }),
