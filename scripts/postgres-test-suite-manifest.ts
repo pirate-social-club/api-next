@@ -20,6 +20,7 @@ export const reusablePostgresTestSuites = [
   "packages/platform-cf/src/route-revalidation-completion-repository.pg.test.ts",
   "packages/platform-cf/src/video-publication-repository.pg.test.ts",
   "packages/platform-cf/src/video-stream-ingest-repository.pg.test.ts",
+  "packages/platform-cf/src/video-thumbnail-repository.pg.test.ts",
   "scripts/community-purchase-funding-plans.pg.test.ts",
   "scripts/very-staging-community-fixture.pg.test.ts",
 ] as const;

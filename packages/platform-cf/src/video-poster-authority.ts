@@ -1,4 +1,8 @@
-import { ControlPlaneDb, type ControlPlaneError } from "@pirate/application";
+import {
+  ControlPlaneDb,
+  type ControlPlaneError,
+  type ControlPlaneTransaction,
+} from "@pirate/application";
 import { VIDEO_POSTER_POLICY_V1 } from "@pirate/domain";
 import { Effect, type Layer, Schema } from "effect";
 
@@ -29,9 +33,12 @@ export interface VideoPosterAuthority {
   readonly policyRevision: string;
 }
 
-/** Storage identity only. The shared application authorization must run first. */
-const resolve = Effect.fn("resolveVideoPosterAuthority")(function* (input: VideoPosterIdentity) {
-  const db = yield* ControlPlaneDb;
+/** Storage identity only. Viewer-facing callers must run shared authorization first. */
+export const readVideoPosterAuthority = Effect.fn("readVideoPosterAuthority")(function* (
+  input: VideoPosterIdentity,
+  db: ControlPlaneTransaction,
+  lock = false,
+) {
   const result = yield* db.execute({
     label: "video-access.poster-authority",
     text: `SELECT pub.operation_id, pub.video_revision::text, pub.creation_revision::text,
@@ -47,9 +54,9 @@ const resolve = Effect.fn("resolveVideoPosterAuthority")(function* (input: Video
         AND v.video_revision=pub.video_revision AND v.analysis_revision=pub.analysis_revision
         AND v.canonical_video_sha256=pub.canonical_video_sha256
       WHERE pub.post_id=$1 AND pub.community_id=$2 AND pub.media_kind='video'
-        AND pub.poster_artifact_ref=$3`,
+        AND pub.poster_artifact_ref=$3${lock ? " FOR SHARE OF pub,a,v" : ""}`,
     values: [input.postId, input.communityId, input.artifactRef],
-    readonly: true,
+    readonly: !lock,
   });
   if (result.rows.length === 0) return null;
   if (result.rows.length !== 1) return yield* Effect.fail(new Error("Ambiguous poster authority"));
@@ -70,5 +77,8 @@ const resolve = Effect.fn("resolveVideoPosterAuthority")(function* (input: Video
 export function makeVideoPosterAuthority(
   layer: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
 ) {
+  const resolve = Effect.fn("resolveVideoPosterAuthority")(function* (input: VideoPosterIdentity) {
+    return yield* readVideoPosterAuthority(input, yield* ControlPlaneDb);
+  });
   return (input: VideoPosterIdentity) => resolve(input).pipe(Effect.provide(layer));
 }

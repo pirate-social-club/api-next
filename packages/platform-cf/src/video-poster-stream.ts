@@ -1,9 +1,9 @@
 import type { VideoAccessAuthorizationServices } from "@pirate/application/video/access-authorization";
 import { getVideoPosterAccess } from "@pirate/application/video/poster-access";
 import { InternalError } from "@pirate/contracts";
-import { VIDEO_POSTER_POLICY_V1 } from "@pirate/domain";
 import { Effect } from "effect";
 import type { VideoPosterAuthority, VideoPosterIdentity } from "./video-poster-authority.ts";
+import { matchesSealedVideoPoster } from "./video-poster-object.ts";
 
 interface PosterObject {
   readonly key: string;
@@ -40,17 +40,7 @@ export const streamVideoPoster = Effect.fn("streamVideoPoster")(function* (
         const found = yield* Effect.tryPromise(() => services.bucket.get(authority.key));
         object = found;
         if (found === null) return null;
-        if (
-          found.key !== authority.key ||
-          !Number.isSafeInteger(found.size) ||
-          found.size <= 0 ||
-          found.size > VIDEO_POSTER_POLICY_V1.maxBytesPerFrame ||
-          found.httpMetadata?.contentType !== "image/jpeg" ||
-          found.httpMetadata.contentEncoding !== undefined ||
-          found.customMetadata?.sha256 !== authority.sha256 ||
-          found.customMetadata.sourceSha256 !== authority.sourceSha256 ||
-          found.customMetadata.policyRevision !== authority.policyRevision
-        )
+        if (!matchesSealedVideoPoster(found, authority))
           return yield* Effect.fail(new Error("Invalid sealed poster"));
         return { artifactRef: authority.artifactRef, etag: found.httpEtag };
       }),
