@@ -45,9 +45,37 @@ const privatePersona = {
   },
   created_at: "2026-08-23T00:00:00.000Z",
   retired_at: null,
+  community_binding: null,
 } as const;
 
 describe("account-owned persona contracts", () => {
+  test("projects a nullable closed binding only on private personas", () => {
+    for (const binding_source of [
+      "first_membership",
+      "community_creation",
+      "persona_creation",
+      "migration_single_evidence",
+      "explicit_migration_resolution",
+    ]) {
+      const bound = {
+        ...privatePersona,
+        community_binding: { community_id: "community_a", binding_source },
+      };
+      expect(strictDecode(PrivatePersonaV1)(bound)).toEqual(bound);
+    }
+    for (const community_binding of [
+      undefined,
+      { community_id: "", binding_source: "first_membership" },
+      { community_id: "community_a", binding_source: "unknown" },
+    ]) {
+      expect(() =>
+        strictDecode(PrivatePersonaV1)({
+          ...privatePersona,
+          community_binding,
+        }),
+      ).toThrow();
+    }
+  });
   test("keeps the public persona projection free of account and wallet authority", () => {
     const publicPersona = {
       persona_id: privatePersona.persona_id,
@@ -62,6 +90,7 @@ describe("account-owned persona contracts", () => {
       { user_id: "account_private" },
       { wallet_address: privatePersona.wallet_set.evm.address },
       { hd_wallet_index: 2 },
+      { community_binding: { community_id: "community_a", binding_source: "first_membership" } },
     ]) {
       expect(() => strictDecode(PublicPersonaV1)({ ...publicPersona, ...forbidden })).toThrow();
     }
