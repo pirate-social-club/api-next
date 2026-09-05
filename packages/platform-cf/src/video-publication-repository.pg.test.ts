@@ -30,6 +30,7 @@ import { makeControlPlanePersonaStore } from "./persona-repository.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { makeVideoPublicationAuthorization } from "./video-access-authorization.ts";
 import { makeControlPlaneVideoAnalysisOutboxRepository } from "./video-analysis-outbox-repository.ts";
+import { makeVideoPosterAuthority } from "./video-poster-authority.ts";
 import {
   actor,
   audioSha256,
@@ -44,7 +45,6 @@ import {
   trustedAnalysis,
   videoSha256,
 } from "./video-publication.pg-fixture.ts";
-import { makeVideoPosterAuthority } from "./video-poster-authority.ts";
 import { makeControlPlaneVideoPublicationStore } from "./video-publication-repository.ts";
 import { makeVideoPublicationWakeupStore } from "./video-publication-wakeup-repository.ts";
 import { makeVideoSealedSourceVerifier } from "./video-sealed-source-verifier.ts";
@@ -721,12 +721,15 @@ suite("video publication PostgreSQL", () => {
         launchAttempts: 3,
       });
       expect(await analysisOutbox.listEligible(10)).toEqual([]);
-      const baseAnalysis = trustedAnalysis();
-      const posterFrames = baseAnalysis.frames.extracted.map((frame) => ({
+      const fixtureAnalysis = trustedAnalysis();
+      const posterFrames = fixtureAnalysis.frames.extracted.map((frame) => ({
         ...frame,
-        artifactRef: `media://derived/video-analysis/${operationId}/v1/a1/${frame.role}.jpg`,
+        artifactRef: `media://derived/video-analysis/${operationId}/v1/c${finalized.state.creationRevision}/a1/${frame.role}.jpg`,
       })) as unknown as VideoTrustedAnalysis["frames"]["extracted"];
-      baseAnalysis.frames = { ...baseAnalysis.frames, extracted: posterFrames };
+      const baseAnalysis = {
+        ...fixtureAnalysis,
+        frames: { ...fixtureAnalysis.frames, extracted: posterFrames },
+      };
       const analysis: VideoTrustedAnalysis = {
         ...baseAnalysis,
         mediaSafety: "review_required",
@@ -826,7 +829,7 @@ suite("video publication PostgreSQL", () => {
       };
       expect(await Effect.runPromise(resolvePoster(posterIdentity))).toEqual({
         artifactRef: posterIdentity.artifactRef,
-        key: `video-analysis/${operationId}/v1/a1/poster.jpg`,
+        key: `video-analysis/${operationId}/v1/c${finalized.state.creationRevision}/a1/poster.jpg`,
         sha256: analysis.frames.extracted[0].sha256,
         sourceSha256: videoSha256,
         policyRevision: "1",
@@ -838,6 +841,8 @@ suite("video publication PostgreSQL", () => {
         { artifactRef: analysis.frames.extracted[2].artifactRef },
         { artifactRef: `media://derived/video-analysis/${operationId}/v2/a1/poster.jpg` },
         { artifactRef: `media://derived/video-analysis/${operationId}/v1/a2/poster.jpg` },
+        { artifactRef: `media://derived/video-analysis/${operationId}/v1/c2/a1/poster.jpg` },
+        { artifactRef: `media://derived/video-analysis/${operationId}/v1/a1/poster.jpg` },
         { artifactRef: "media://derived/private/secret" },
       ]) {
         expect(
