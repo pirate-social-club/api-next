@@ -622,6 +622,44 @@ async function observerEvidenceWithTranscript(
   });
 }
 
+test("accepts one HSD response LF while retaining exact transcript bytes", async () => {
+  const input = await canonicalCandidateInput();
+  const observer = await decodeHnsAuthorityDetachedObserverEvidenceV1(
+    input.artifacts.observer_evidence,
+  );
+  for (const suffix of ["\n", "\n\n", " \n"]) {
+    const transcript = observer.detached_transcript.map((entry) => ({
+      ...entry,
+      request_bytes: Uint8Array.from(Buffer.from(entry.request_hex, "hex")),
+      response_bytes: Uint8Array.from(
+        Buffer.concat([
+          Buffer.from(entry.response_hex, "hex"),
+          Buffer.from(entry.exchange_kind === "hns_rpc" ? suffix : ""),
+        ]),
+      ),
+    }));
+    const evidence = await observerEvidenceWithTranscript(input, transcript);
+    const candidate = prepareHnsAuthoritySuccessorCandidateV1({
+      ...input,
+      artifacts: { ...input.artifacts, observer_evidence: evidence },
+    });
+    if (suffix !== "\n") {
+      await expect(candidate).rejects.toThrow("observer_evidence_mismatch");
+      continue;
+    }
+    const result = await candidate;
+    const retained = result.candidate.artifacts.find((entry) => entry.name === "observer_evidence");
+    expect(retained?.bytes_hex).toBe(Buffer.from(evidence).toString("hex"));
+    const decoded = await decodeHnsAuthorityDetachedObserverEvidenceV1(evidence);
+    expect(decoded.detached_transcript_sha256).not.toBe(observer.detached_transcript_sha256);
+    expect(
+      decoded.detached_transcript
+        .filter((entry) => entry.exchange_kind === "hns_rpc")
+        .every((entry) => entry.response_hex.endsWith("0a")),
+    ).toBe(true);
+  }
+});
+
 async function rewriteDnsArtifact(
   bytes: Uint8Array,
   transform: (document: DecodedDnsDocument) => DecodedDnsDocument,
