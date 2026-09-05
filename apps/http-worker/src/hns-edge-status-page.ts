@@ -131,7 +131,17 @@ function renderHnsEdgeStatusPage(
       ? ""
       : ` · earliest expiry ${instant(renewal.earliest_health_valid_until_unix_seconds)}`
   }`;
-  const renewalHealthy = renewalFresh && renewal.healthy_root_count === renewal.active_root_count;
+  const renewalHealthy =
+    renewalFresh &&
+    renewal.healthy_root_count === renewal.active_root_count &&
+    renewal.delayed_job_count === 0 &&
+    renewal.terminal_job_count === 0 &&
+    (renewal.active_root_count === 0 || (renewal.serving_remaining_seconds ?? 0) > 0);
+  const renewalJobs = `${renewal.delayed_job_count} delayed · ${renewal.terminal_job_count} terminal`;
+  const servingValidity =
+    renewal.serving_remaining_seconds === null
+      ? "No active serving evidence"
+      : `${duration(renewal.serving_remaining_seconds)} remaining · expires ${instant(renewal.earliest_serving_valid_until_unix_seconds)}`;
   const title =
     status.state === "healthy" && renewalHealthy ? "HNS healthy" : "HNS needs attention";
 
@@ -147,15 +157,17 @@ function renderHnsEdgeStatusPage(
     section{border:1px solid #30363d;border-radius:12px;overflow:hidden;background:#161b22}.row{display:grid;grid-template-columns:minmax(160px,1fr) minmax(0,2fr);gap:16px;padding:15px 16px;border-top:1px solid #30363d}.row:first-child{border-top:0}.row strong{text-align:right;overflow-wrap:anywhere}.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:10px;background:#f85149}.dot.ok{background:#3fb950}@media(max-width:560px){body{padding:16px}.row{grid-template-columns:1fr;gap:5px}.row strong{text-align:left;padding-left:19px}}
   </style>
 </head>
-<body><main><h1>${title}</h1><p>jazleeuw · latest VPS observation</p><section>
+<body><main><h1>${title}</h1><p>Retained root · latest VPS observation</p><section>
 ${row("Heartbeat", heartbeat, status.heartbeat_fresh)}
 ${row("RRSIG margin", rrsig, status.rrsig_healthy)}
 ${row("Authority serials", serials, status.authority_serials_agree)}
 ${row("Certificate and TLSA", certificate, (status.certificate_remaining_seconds ?? -1) > 0 && status.spki_matches_tlsa)}
-${row("app.jazleeuw HTTP", httpStatus, status.app_http_status === 200)}
+${row("Retained app HTTP", httpStatus, status.app_http_status === 200)}
 ${row("Failed units", failedUnits, status.failed_units.length === 0)}
 ${row("Health renewal scheduler", renewalHeartbeat, renewalFresh)}
 ${row("Imported root health", rootHealth, renewalHealthy)}
+${row("Current renewal jobs", renewalJobs, renewal.delayed_job_count === 0 && renewal.terminal_job_count === 0)}
+${row("Imported serving validity", servingValidity, renewal.active_root_count === 0 || (renewal.serving_remaining_seconds ?? 0) > 0)}
 </section></main></body>
 </html>`;
 }

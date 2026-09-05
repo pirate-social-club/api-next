@@ -38,6 +38,10 @@ export type HnsRootHealthRenewalStatusV1 = Readonly<{
   readonly freshness_threshold_seconds: number | null;
   readonly active_root_count: number;
   readonly healthy_root_count: number;
+  readonly delayed_job_count: number;
+  readonly terminal_job_count: number;
+  readonly earliest_serving_valid_until_unix_seconds: number | null;
+  readonly serving_remaining_seconds: number | null;
   readonly earliest_health_valid_until_unix_seconds: number | null;
 }>;
 

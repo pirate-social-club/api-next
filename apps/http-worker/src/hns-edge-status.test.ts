@@ -52,7 +52,13 @@ const report: HnsEdgeStatusReportV1 = {
   failed_units: [],
 };
 
-function app() {
+function app(
+  renewal: {
+    delayed_job_count?: number;
+    terminal_job_count?: number;
+    serving_remaining_seconds?: number;
+  } = {},
+) {
   let snapshot: HnsEdgeStatusSnapshotV1 | null = null;
   const store: HnsEdgeStatusStore = {
     load: () => Effect.succeed(snapshot),
@@ -75,7 +81,12 @@ function app() {
           freshness_threshold_seconds: 7_200,
           active_root_count: 1,
           healthy_root_count: 1,
+          delayed_job_count: 0,
+          terminal_job_count: 0,
+          earliest_serving_valid_until_unix_seconds: now + 3600,
+          serving_remaining_seconds: 3600,
           earliest_health_valid_until_unix_seconds: now + 86_400,
+          ...renewal,
         }),
     },
     clock: { nowUnixSeconds: () => now },
@@ -136,11 +147,12 @@ describe("HNS edge status HTTP surface", () => {
     expect(page.headers.get("cache-control")).toBe("no-store");
     expect(page.headers.get("content-security-policy")).toContain("default-src 'none'");
     expect(html).toContain("HNS needs attention");
-    expect(html).toContain("app.jazleeuw HTTP");
+    expect(html).toContain("Retained app HTTP");
     expect(html).toContain(">421<");
     expect(html).toContain("Health renewal scheduler");
     expect(html).toContain("Imported root health");
-    expect((html.match(/class="row"/gu) ?? []).length).toBe(8);
+    expect(html).toContain("0 delayed · 0 terminal");
+    expect(html).toContain("1.0 hours remaining");
     expect(html).not.toContain("email");
   });
 
@@ -158,3 +170,31 @@ describe("HNS edge status HTTP surface", () => {
     expect((await createHttpWorker().request("https://worker.test/admin/hns")).status).toBe(404);
   });
 });
+
+for (const renewal of [
+  { delayed_job_count: 1 },
+  { terminal_job_count: 1 },
+  { serving_remaining_seconds: 0 },
+]) {
+  test("a fresh heartbeat cannot hide renewal or serving validity failure", async () => {
+    const worker = app(renewal);
+    await worker.request(
+      new Request("https://worker.test/internal/hns-edge-status", {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ ...report, app: { ...report.app, http_status: 200 } }),
+      }),
+    );
+    const response = await worker.request(
+      new Request("https://worker.test/admin/hns", {
+        headers: { "cf-access-jwt-assertion": "valid-access" },
+      }),
+    );
+    const html = await response.text();
+    expect(response.status).toBe(200);
+    expect(html).toContain("HNS needs attention");
+    expect(html).toContain(
+      `${renewal.delayed_job_count ?? 0} delayed · ${renewal.terminal_job_count ?? 0} terminal`,
+    );
+  });
+}
