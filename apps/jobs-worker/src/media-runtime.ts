@@ -7,8 +7,9 @@ import {
 import { makeMediaProcessingStore } from "@pirate/platform-cf/media-processing-store";
 import { makeControlPlaneVideoAnalysisOutboxRepository } from "@pirate/platform-cf/video-analysis-outbox-repository";
 import {
-  makeCloudflareVideoAnalysisWorkflowLauncher,
+  makeConfiguredVideoAnalysisWorkflowLauncher,
   type VideoAnalysisWorkflowBinding,
+  type VideoWorkflowStatusFetch,
 } from "@pirate/platform-cf/video-analysis-workflow-cloudflare";
 import { makeControlPlaneVideoPublicationStore } from "@pirate/platform-cf/video-publication-repository";
 import type { Layer } from "effect";
@@ -31,6 +32,10 @@ export type MediaJobsBindings = Readonly<{
   readonly MEDIA_PROCESSING_ENABLED?: string;
   readonly VIDEO_ANALYSIS_ENABLED?: string;
   readonly VIDEO_ANALYSIS_WORKFLOW?: VideoAnalysisWorkflowBinding;
+  readonly VIDEO_WORKFLOW_ACCOUNT_ID?: string;
+  readonly VIDEO_WORKFLOW_NAME?: string;
+  readonly VIDEO_WORKFLOW_SCRIPT_NAME?: string;
+  readonly VIDEO_WORKFLOW_READ_TOKEN?: string;
   readonly MEDIA_PROCESSING_QUEUE?: MediaOutboxDispatchQueue;
   readonly MEDIA_PROCESSING_WORKFLOW?: CloudflareMediaWorkflowBinding;
 }>;
@@ -59,6 +64,7 @@ const workflowIsNeverMissingByThrownError = (): boolean => false;
 export function makeMediaMaintenance(
   env: MediaJobsBindings,
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+  workflowFetch: VideoWorkflowStatusFetch = fetch,
 ): (() => Promise<MediaMaintenanceResult>) | null {
   if (env.MEDIA_PROCESSING_ENABLED !== "true") return null;
   if (env.MEDIA_PROCESSING_QUEUE === undefined || env.MEDIA_PROCESSING_WORKFLOW === undefined) {
@@ -73,9 +79,15 @@ export function makeMediaMaintenance(
       ? {
           outbox: makeControlPlaneVideoAnalysisOutboxRepository(runtime),
           store: makeControlPlaneVideoPublicationStore(runtime),
-          launcher: makeCloudflareVideoAnalysisWorkflowLauncher(
+          launcher: makeConfiguredVideoAnalysisWorkflowLauncher(
             env.VIDEO_ANALYSIS_WORKFLOW,
-            workflowIsNeverMissingByThrownError,
+            {
+              accountId: env.VIDEO_WORKFLOW_ACCOUNT_ID,
+              workflowName: env.VIDEO_WORKFLOW_NAME,
+              scriptName: env.VIDEO_WORKFLOW_SCRIPT_NAME,
+              readToken: env.VIDEO_WORKFLOW_READ_TOKEN,
+            },
+            workflowFetch,
           ),
         }
       : null;

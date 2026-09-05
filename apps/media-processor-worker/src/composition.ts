@@ -37,8 +37,9 @@ import {
 } from "@pirate/platform-cf/qencode-media-transform";
 import { makeControlPlaneVideoAnalysisOutboxRepository } from "@pirate/platform-cf/video-analysis-outbox-repository";
 import {
-  makeCloudflareVideoAnalysisWorkflowLauncher,
+  makeConfiguredVideoAnalysisWorkflowLauncher,
   type VideoAnalysisWorkflowBinding,
+  type VideoWorkflowStatusFetch,
 } from "@pirate/platform-cf/video-analysis-workflow-cloudflare";
 import { makeControlPlaneVideoPublicationStore } from "@pirate/platform-cf/video-publication-repository";
 import { Effect } from "effect";
@@ -66,11 +67,16 @@ export type MediaProcessorRuntimeEnv = MediaProcessorWorkerEnv &
     readonly DATA_REGISTRATION_CHAIN_ID?: string;
     readonly VIDEO_ANALYSIS_ENABLED?: string;
     readonly VIDEO_ANALYSIS_WORKFLOW?: VideoAnalysisWorkflowBinding;
+    readonly VIDEO_WORKFLOW_ACCOUNT_ID?: string;
+    readonly VIDEO_WORKFLOW_NAME?: string;
+    readonly VIDEO_WORKFLOW_SCRIPT_NAME?: string;
+    readonly VIDEO_WORKFLOW_READ_TOKEN?: string;
   }>;
 
 export type MediaProcessorRuntimeAdapters = Readonly<{
   readonly videoAnalysis?: Readonly<{
     readonly providers: VideoAnalysisProviders;
+    readonly workflowFetch?: VideoWorkflowStatusFetch;
     readonly transform?: MediaTransformVideoCapabilities;
     readonly qencode?: Readonly<{
       readonly sourceGateway: QencodeSourceGrantIssuer;
@@ -378,9 +384,15 @@ export function makeMediaProcessorComposition(
     env.VIDEO_ANALYSIS_WORKFLOW !== undefined
       ? {
           videoAnalysis: {
-            launcher: makeCloudflareVideoAnalysisWorkflowLauncher(
+            launcher: makeConfiguredVideoAnalysisWorkflowLauncher(
               env.VIDEO_ANALYSIS_WORKFLOW,
-              workflowIsNeverMissingByThrownError,
+              {
+                accountId: env.VIDEO_WORKFLOW_ACCOUNT_ID,
+                workflowName: env.VIDEO_WORKFLOW_NAME,
+                scriptName: env.VIDEO_WORKFLOW_SCRIPT_NAME,
+                readToken: env.VIDEO_WORKFLOW_READ_TOKEN,
+              },
+              adapters.videoAnalysis.workflowFetch,
             ),
             outbox: videoAnalysisRepository,
             runtime: {

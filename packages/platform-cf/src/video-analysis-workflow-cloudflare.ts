@@ -3,6 +3,14 @@ import {
   cloudflareDigestWorkflowId,
   isPresentWorkflowStatus,
 } from "./cloudflare-orchestration-primitives.ts";
+import {
+  makeAuthenticatedVideoWorkflowLookup,
+  type VideoWorkflowAccess,
+  type VideoWorkflowObservation,
+  type VideoWorkflowStatusFetch,
+} from "./video-workflow-status-api.ts";
+
+export type { VideoWorkflowStatusFetch } from "./video-workflow-status-api.ts";
 
 export interface VideoAnalysisWorkflowBinding {
   readonly get: (
@@ -20,6 +28,7 @@ export interface VideoAnalysisWorkflowBinding {
 export function makeCloudflareVideoAnalysisWorkflowLauncher(
   binding: VideoAnalysisWorkflowBinding,
   isMissing: (error: unknown) => boolean,
+  recoverLookup?: (instanceId: string, effectIdentity: string) => Promise<VideoWorkflowObservation>,
 ) {
   const inspect = async (
     effectIdentity: string,
@@ -34,6 +43,7 @@ export function makeCloudflareVideoAnalysisWorkflowLauncher(
       throw new Error("Unrecognized video Workflow status");
     } catch (error) {
       if (isMissing(error)) return { state: "missing", status: null };
+      if (recoverLookup !== undefined) return recoverLookup(id, effectIdentity);
       throw error;
     }
   };
@@ -49,4 +59,17 @@ export function makeCloudflareVideoAnalysisWorkflowLauncher(
     inspect,
     get: async (identity: string) => (await inspect(identity)).state,
   };
+}
+
+/** Both concrete Workers use the same authenticated recovery boundary. */
+export function makeConfiguredVideoAnalysisWorkflowLauncher(
+  binding: VideoAnalysisWorkflowBinding,
+  access: VideoWorkflowAccess,
+  fetcher: VideoWorkflowStatusFetch = fetch,
+) {
+  return makeCloudflareVideoAnalysisWorkflowLauncher(
+    binding,
+    () => false,
+    makeAuthenticatedVideoWorkflowLookup(access, fetcher),
+  );
 }

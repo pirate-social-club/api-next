@@ -1,5 +1,42 @@
 # Video Workflow next tranche
 
+## Authenticated absence checkpoint — 2026-09-05
+
+Both concrete Worker compositions now use an authenticated read fallback when
+binding inspection throws. A structured instance 404 establishes absence only
+after a second read verifies the configured Workflow name, script and class.
+Authentication errors, rate limits, server failures, malformed or oversized
+responses, unknown statuses and a mismatched parent fail closed. Successful
+instance reads must carry the expected logical effect identity. Requests use
+a fixed API origin, reject redirects and share a five-second timeout.
+
+The fallback follows the [instance read API](https://developers.cloudflare.com/api/resources/workflows/subresources/instances/methods/get/)
+and [Workflow read API](https://developers.cloudflare.com/api/resources/workflows/methods/get/).
+The structured-404 plus verified-parent rule is this application's recovery
+policy; it does not assume a stable binding exception message or error code.
+Both Workers require VIDEO_WORKFLOW_ACCOUNT_ID, VIDEO_WORKFLOW_NAME,
+VIDEO_WORKFLOW_SCRIPT_NAME and the VIDEO_WORKFLOW_READ_TOKEN secret when video
+analysis is enabled. Provisioning and live absence proof remain outstanding.
+No authenticated Cloudflare request was made for this checkpoint.
+
+Twenty-three focused tests passed with 98 assertions, including the actual
+media-processor composition recovering a thrown binding lookup through fake
+HTTP responses. Full check passed. The first full test run failed on two
+unchanged Self Pass five-second timeouts; that group passed on an unchanged
+rerun, and a subsequent full test command passed, including all 131 workerd
+tests. Script-check had no findings and one file-size advisory. The local
+secret-boundary audit found no violations. PostgreSQL tests were not repeated
+for this transport-only change; the adapter checkpoint's two real-store tests
+remain its database evidence.
+
+Control-plane commit 5b911bb411de4331491ebe84eb81d20b8bdba4f2 consolidates the
+launch, sequence-fence and adapter checkpoints. The older launch-checkpoint
+and recovery-sequence patch files are historical and must not be reapplied.
+The adapter split is preserved as 803f850180404d1cd756095d0a39b2f6ced19867.
+The granular runner, Workflow class and bindings, publication wakeups, source
+grants and concrete analysis providers remain pending. Video stays disabled;
+this checkpoint is not staging readiness or end-to-end publication evidence.
+
 ## Adapter boundary checkpoint — 2026-09-05
 
 Qencode now exposes allocate, submit and observe on the application-owned
@@ -31,7 +68,7 @@ Workflow absence recovery remain to be composed and tested.
 
 Preserved as `66f6bc7bcdd091a999e62c66984fbce905cdaaed`. The
 [record amendment](evidence/video-execution-2026-09-05/recovery-sequence-record.patch)
-is pending the active control-plane writers; recheck applicability before use.
+was consolidated by control-plane commit 5b911bb and is historical; do not reapply.
 
 Failure writes now require the observed submission event sequence, exposed by
 the PostgreSQL record loader. Both sweep recovery and Queue launch exhaustion
@@ -74,8 +111,7 @@ remain the first runner change.
 
 Source checkpoint `82926a28c250e59e1832439a7b2c25873c941cf9` preserves this
 tranche. The [checkpoint record patch](evidence/video-execution-2026-09-05/launch-checkpoint-record.patch)
-is prepared but not applied because another control-plane writer is active.
-Recheck current HEAD and applicability after that writer checkpoints.
+was consolidated by control-plane commit 5b911bb and is historical; do not reapply.
 
 The final `bun run check` passed. `bun run test` passed 2,959 unit, 20 Node
 and 131 workerd tests. Earlier runs exposed an obsolete FFmpeg test that still
