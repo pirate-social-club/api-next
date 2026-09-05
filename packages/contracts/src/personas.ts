@@ -121,12 +121,26 @@ export type PersonaEvmWalletPreparationV1 = Schema.Schema.Type<
   typeof PersonaEvmWalletPreparationV1
 >;
 
+/** Account-private binding history, never part of the public persona projection. */
+export const PersonaCommunityBindingV1 = Schema.Struct({
+  community_id: boundedIdentifier("community identifier"),
+  binding_source: Schema.Literals([
+    "first_membership",
+    "community_creation",
+    "persona_creation",
+    "migration_single_evidence",
+    "explicit_migration_resolution",
+  ]),
+});
+export type PersonaCommunityBindingV1 = Schema.Schema.Type<typeof PersonaCommunityBindingV1>;
+
 export const PrivatePersonaV1 = Schema.Struct({
   persona_id: PersonaIdV1,
   object: Schema.Literal("persona"),
   status: PersonaStatusV1,
   profile: PersonaProfileV1,
   wallet_set: PersonaWalletSetV1,
+  community_binding: Schema.NullOr(PersonaCommunityBindingV1),
   created_at: Schema.String,
   retired_at: Schema.NullOr(Schema.String),
 });
