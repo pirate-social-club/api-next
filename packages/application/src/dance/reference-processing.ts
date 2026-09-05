@@ -528,17 +528,21 @@ function decodeOutcome(
  * exact request bytes before claim; every provider call happens after claim
  * returns and therefore outside the store transaction.
  */
-export async function runDanceReferenceProcessing(
+export const runDanceReferenceProcessing = Effect.fn("runDanceReferenceProcessing")(function* (
   input: RunDanceReferenceProcessingInput,
   dependencies: Readonly<{
     readonly store: DanceReferenceProcessingStore;
     readonly processor: DanceReferenceProcessorService;
   }>,
-): Promise<DanceReferenceProcessingDisposition> {
+): Effect.fn.Return<DanceReferenceProcessingDisposition, unknown> {
+  const frozenInput = input.frozenInput;
   const request =
-    input.frozenInput === undefined
+    frozenInput === undefined
       ? undefined
-      : await freezeDanceReferenceInput(input.frozenInput);
+      : yield* Effect.tryPromise({
+          try: () => freezeDanceReferenceInput(frozenInput),
+          catch: (error) => error,
+        });
   if (
     request !== undefined &&
     (request.frozenInput.choreographyId !== input.choreographyId ||
@@ -549,36 +553,46 @@ export async function runDanceReferenceProcessing(
       reason: "authority_mismatch",
     });
   }
-  const claimed = await dependencies.store.claim({
-    choreographyId: input.choreographyId,
-    choreographyRevision: input.choreographyRevision,
-    workerId: input.workerId,
-    leaseSeconds: input.leaseSeconds,
-    adapterId: input.adapterId,
-    adapterRevision: input.adapterRevision,
-    ...(input.resume === undefined ? {} : { resume: input.resume }),
-    ...(request === undefined ? {} : { request }),
-  });
+  yield* Effect.yieldNow;
+  const claimed = yield* Effect.uninterruptible(
+    Effect.tryPromise({
+      try: () =>
+        dependencies.store.claim({
+          choreographyId: input.choreographyId,
+          choreographyRevision: input.choreographyRevision,
+          workerId: input.workerId,
+          leaseSeconds: input.leaseSeconds,
+          adapterId: input.adapterId,
+          adapterRevision: input.adapterRevision,
+          ...(input.resume === undefined ? {} : { resume: input.resume }),
+          ...(request === undefined ? {} : { request }),
+        }),
+      catch: (error) => error,
+    }),
+  );
   if (claimed.kind !== "claimed") return claimed;
+  yield* Effect.yieldNow;
   const claim = claimed.claim;
   let prepared = claim.preparedOperation;
   if (prepared === null) {
     prepared = decodePrepared(
       claim,
-      await Effect.runPromise(
-        dependencies.processor.prepareReference(claim.frozenInput, claim.binding),
-      ),
+      yield* dependencies.processor.prepareReference(claim.frozenInput, claim.binding),
     );
-    if (!(await dependencies.store.recordPrepared(claim, prepared))) return { kind: "stale" };
+    yield* Effect.yieldNow;
+    const operation = prepared;
+    const recorded = yield* Effect.uninterruptible(
+      Effect.tryPromise({
+        try: () => dependencies.store.recordPrepared(claim, operation),
+        catch: (error) => error,
+      }),
+    );
+    if (!recorded) return { kind: "stale" };
   } else {
     prepared = decodePrepared(claim, prepared);
   }
-  const outcome = decodeOutcome(
-    claim,
-    await Effect.runPromise(
-      dependencies.processor.observeReference(prepared as PreparedDanceReferenceOperation),
-    ),
-  );
+  yield* Effect.yieldNow;
+  const outcome = decodeOutcome(claim, yield* dependencies.processor.observeReference(prepared));
   if (outcome.status === "pending") {
     return {
       kind: "pending",
@@ -586,10 +600,16 @@ export async function runDanceReferenceProcessing(
       outboxClaimFence: claim.outboxClaimFence,
     };
   }
-  const completed = await dependencies.store.complete(claim, outcome);
+  yield* Effect.yieldNow;
+  const completed = yield* Effect.uninterruptible(
+    Effect.tryPromise({
+      try: () => dependencies.store.complete(claim, outcome),
+      catch: (error) => error,
+    }),
+  );
   if (completed === "stale") return { kind: "stale" };
   return {
     kind: completed,
     status: outcome.status === "ready" ? "ready" : "failed",
   };
-}
+});

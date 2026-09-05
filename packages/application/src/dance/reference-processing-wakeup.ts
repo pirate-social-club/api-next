@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 import {
   type DanceReferenceProcessingStore,
   type DanceReferenceProcessorService,
@@ -143,12 +143,12 @@ function decodeWorkflowPayload(input: unknown): DanceReferenceWorkflowPayload {
   })(input);
 }
 
-export async function advanceDanceReferenceWorkflow(
+export const advanceDanceReferenceWorkflow = Effect.fn("advanceDanceReferenceWorkflow")(function* (
   payloadInput: unknown,
   instanceIdInput: unknown,
   dependencies: DanceReferenceWorkflowDependencies,
   resume?: DanceReferenceWorkflowResume,
-): Promise<DanceReferenceWorkflowAdvance> {
+): Effect.fn.Return<DanceReferenceWorkflowAdvance, unknown> {
   let payload: DanceReferenceWorkflowPayload;
   let instanceId: string;
   try {
@@ -158,7 +158,10 @@ export async function advanceDanceReferenceWorkflow(
     return { outcome: "inert" };
   }
   if (dependencies.processor === null) return { outcome: "inert" };
-  const authority = await dependencies.store.getWakeup(payload.outboxId);
+  const authority = yield* Effect.tryPromise({
+    try: () => dependencies.store.getWakeup(payload.outboxId),
+    catch: (error) => error,
+  });
   if (
     authority === null ||
     authority.choreographyId !== payload.choreographyId ||
@@ -178,7 +181,7 @@ export async function advanceDanceReferenceWorkflow(
   }
   if (resume === undefined && !authority.eligible) return { outcome: "busy" };
 
-  const disposition = await runDanceReferenceProcessing(
+  const disposition = yield* runDanceReferenceProcessing(
     {
       choreographyId: payload.choreographyId,
       choreographyRevision: payload.choreographyRevision,
@@ -209,4 +212,4 @@ export async function advanceDanceReferenceWorkflow(
     };
   }
   return { outcome: disposition.kind };
-}
+});

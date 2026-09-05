@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Effect } from "effect";
+import { Cause, Effect, Exit } from "effect";
 import {
   type DanceReferenceOutcome,
   type DanceReferenceProcessingBinding,
@@ -10,6 +10,11 @@ import {
   type PreparedDanceReferenceOperation,
   runDanceReferenceProcessing,
 } from "./reference-processing.ts";
+
+const runProcessing = (...args: Parameters<typeof runDanceReferenceProcessing>) =>
+  Effect.runPromise(runDanceReferenceProcessing(...args));
+
+import { advanceDanceReferenceWorkflow } from "./reference-processing-wakeup.ts";
 
 const HASH_A = "11".repeat(32);
 const HASH_B = "22".repeat(32);
@@ -240,7 +245,7 @@ describe("Dance reference processing interpreter", () => {
   test("persists preparation and commits a strictly bound ready outcome", async () => {
     const store = new FakeStore();
     let calls = 0;
-    const disposition = await runDanceReferenceProcessing(
+    const disposition = await runProcessing(
       {
         choreographyId: "choreography-1",
         choreographyRevision: 1,
@@ -290,7 +295,7 @@ describe("Dance reference processing interpreter", () => {
     };
     store.saved = prepared(binding);
     let prepareCalls = 0;
-    const disposition = await runDanceReferenceProcessing(
+    const disposition = await runProcessing(
       {
         choreographyId: "choreography-1",
         choreographyRevision: 1,
@@ -316,7 +321,7 @@ describe("Dance reference processing interpreter", () => {
 
   test("does not commit pending observation", async () => {
     const store = new FakeStore();
-    const disposition = await runDanceReferenceProcessing(
+    const disposition = await runProcessing(
       {
         choreographyId: "choreography-1",
         choreographyRevision: 1,
@@ -342,7 +347,7 @@ describe("Dance reference processing interpreter", () => {
   test("rejects a ready result whose visibility can evade the frozen evidence binding", async () => {
     const store = new FakeStore();
     await expect(
-      runDanceReferenceProcessing(
+      runProcessing(
         {
           choreographyId: "choreography-1",
           choreographyRevision: 1,
@@ -376,7 +381,7 @@ describe("Dance reference processing interpreter", () => {
   test("recomputes coverage and rejects provider-owned quality pass flags", async () => {
     const store = new FakeStore();
     await expect(
-      runDanceReferenceProcessing(
+      runProcessing(
         {
           choreographyId: "choreography-1",
           choreographyRevision: 1,
@@ -414,5 +419,227 @@ describe("Dance reference processing interpreter", () => {
       reason: "terminal_evidence_mismatch",
     });
     expect(store.committed).toBeNull();
+  });
+});
+
+const processingEffect = runDanceReferenceProcessing;
+const barrier = () => {
+  let release!: () => void;
+  const promise = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { promise, release };
+};
+const processingInput = () => ({
+  choreographyId: "choreography-1",
+  choreographyRevision: 1,
+  workerId: "worker-1",
+  leaseSeconds: 60,
+  adapterId: "fake-reference",
+  adapterRevision: "fake-v1",
+  frozenInput: frozenInput(),
+});
+const ordinaryProcessor = () => ({
+  prepareReference: (_input: FrozenDanceReferenceInput, binding: DanceReferenceProcessingBinding) =>
+    Effect.succeed(prepared(binding)),
+  observeReference: (operation: PreparedDanceReferenceOperation) =>
+    Effect.succeed(ready(operation.binding)),
+});
+const expectInterrupted = (exit: Exit.Exit<unknown, unknown>) => {
+  expect(Exit.isFailure(exit) && Cause.hasInterrupts(exit.cause)).toBe(true);
+};
+
+describe("Dance reference interruption contract", () => {
+  for (const stage of ["prepare", "observe"] as const) {
+    test(`interrupts ${stage} locally once without starting another durable write`, async () => {
+      const store = new FakeStore();
+      const entered = barrier();
+      const finish = barrier();
+      let finalized = 0;
+      const controller = new AbortController();
+      const processor = ordinaryProcessor();
+      const wait = <A>(value: A) =>
+        Effect.gen(function* () {
+          entered.release();
+          yield* Effect.promise(() => finish.promise);
+          return value;
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              finalized += 1;
+            }),
+          ),
+        );
+      if (stage === "prepare")
+        processor.prepareReference = (_input, binding) => wait(prepared(binding));
+      else processor.observeReference = (operation) => wait(ready(operation.binding));
+      const running = Effect.runPromiseExit(
+        processingEffect(processingInput(), { store, processor }),
+        { signal: controller.signal },
+      );
+      try {
+        await entered.promise;
+        controller.abort();
+        expectInterrupted(await running);
+        expect(finalized).toBe(1);
+        expect(store.committed).toBeNull();
+        expect(store.saved === null).toBe(stage === "prepare");
+      } finally {
+        finish.release();
+      }
+    });
+  }
+
+  for (const stage of ["claim", "recordPrepared", "complete"] as const) {
+    test(`finishes an in-flight ${stage} before interruption, then starts no next step`, async () => {
+      const store = new FakeStore();
+      const entered = barrier();
+      const finish = barrier();
+      const events: string[] = [];
+      const claim = store.claim.bind(store);
+      const record = store.recordPrepared.bind(store);
+      const complete = store.complete.bind(store);
+      const checkpoint = async (name: string) => {
+        events.push(`${name}:started`);
+        if (name === stage) {
+          entered.release();
+          await finish.promise;
+        }
+        events.push(`${name}:settled`);
+      };
+      store.claim = async (input) => {
+        await checkpoint("claim");
+        return claim(input);
+      };
+      store.recordPrepared = async (lease, operation) => {
+        await checkpoint("recordPrepared");
+        return record(lease, operation);
+      };
+      store.complete = async (lease, outcome) => {
+        await checkpoint("complete");
+        return complete(lease, outcome);
+      };
+      const processor = ordinaryProcessor();
+      processor.prepareReference = (_input, binding) =>
+        Effect.sync(() => {
+          events.push("prepare");
+          return prepared(binding);
+        });
+      processor.observeReference = (operation) =>
+        Effect.sync(() => {
+          events.push("observe");
+          return ready(operation.binding);
+        });
+      const controller = new AbortController();
+      let settled = false;
+      const running = Effect.runPromiseExit(
+        processingEffect(processingInput(), { store, processor }),
+        { signal: controller.signal },
+      );
+      void running.then(() => {
+        settled = true;
+      });
+      try {
+        await entered.promise;
+        controller.abort();
+        await Effect.runPromise(Effect.yieldNow);
+        expect(settled).toBe(false);
+        finish.release();
+        expectInterrupted(await running);
+        expect(events.at(-1)).toBe(`${stage}:settled`);
+        expect(store.saved !== null).toBe(stage !== "claim");
+        expect(store.committed !== null).toBe(stage === "complete");
+      } finally {
+        finish.release();
+      }
+    });
+  }
+
+  test("discards an unrecorded preparation when interruption precedes its write", async () => {
+    const store = new FakeStore();
+    const controller = new AbortController();
+    let preparedCalls = 0;
+    const processor = ordinaryProcessor();
+    processor.prepareReference = (_input, binding) =>
+      Effect.sync(() => {
+        preparedCalls += 1;
+        controller.abort();
+        return prepared(binding);
+      });
+    const exit = await Effect.runPromiseExit(
+      processingEffect(processingInput(), { store, processor }),
+      { signal: controller.signal },
+    );
+    expectInterrupted(exit);
+    expect(store.saved).toBeNull();
+    expect(store.committed).toBeNull();
+    processor.prepareReference = (_input, binding) =>
+      Effect.sync(() => {
+        preparedCalls += 1;
+        return prepared(binding);
+      });
+    await Effect.runPromise(processingEffect(processingInput(), { store, processor }));
+    expect(preparedCalls).toBe(2);
+  });
+});
+
+describe("Dance reference lifted failure boundaries", () => {
+  for (const stage of ["claim", "recordPrepared", "complete"] as const) {
+    test(`preserves the ${stage} rejection and starts no downstream operation`, async () => {
+      const store = new FakeStore();
+      const failure = new Error(`${stage} failed`);
+      store[stage] = async () => {
+        throw failure;
+      };
+      let prepares = 0;
+      let observations = 0;
+      const processor = ordinaryProcessor();
+      processor.prepareReference = (_input, binding) =>
+        Effect.sync(() => {
+          prepares += 1;
+          return prepared(binding);
+        });
+      processor.observeReference = (operation) =>
+        Effect.sync(() => {
+          observations += 1;
+          return ready(operation.binding);
+        });
+      await expect(runProcessing(processingInput(), { store, processor })).rejects.toBe(failure);
+      expect(prepares).toBe(stage === "claim" ? 0 : 1);
+      expect(observations).toBe(stage === "complete" ? 1 : 0);
+      expect(store.committed).toBeNull();
+    });
+  }
+
+  test("propagates a wakeup read rejection without starting a claim", async () => {
+    const failure = new Error("wakeup read failed");
+    const store = Object.assign(new FakeStore(), {
+      getWakeup: async () => {
+        throw failure;
+      },
+      listEligibleWakeups: async () => [],
+    });
+    await expect(
+      Effect.runPromise(
+        advanceDanceReferenceWorkflow(
+          {
+            version: "dance-reference-workflow-v1",
+            outboxId: "outbox-1",
+            choreographyId: "choreography-1",
+            choreographyRevision: 1,
+            effectIdentity: frozenInput().effectIdentity,
+          },
+          "workflow-1",
+          {
+            store,
+            processor: ordinaryProcessor(),
+            leaseSeconds: 60,
+            adapterId: "fake-reference",
+            adapterRevision: "fake-v1",
+          },
+        ),
+      ),
+    ).rejects.toBe(failure);
+    expect(store.request).toBeUndefined();
   });
 });
