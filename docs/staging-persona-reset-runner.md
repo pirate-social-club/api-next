@@ -197,7 +197,11 @@ schema comparison. Both restored schemas are dumped by the same PostgreSQL 17
 tool with a fixed restrict key; no SQL text is stripped or rewritten.
 
 The test requires PostgreSQL 17 and Docker with the postgres:17 image. The
-optional CONTROL_PLANE_POSTGRES_RECOVERY_TEST_CONTAINER selects an existing
+test URL must address the literal 127.0.0.1 host and postgres database; host
+overrides, connection options and nonlocal URLs are refused before connecting.
+The operator must still ensure the local port is a disposable test server,
+not a tunnel to a live service; URL validation cannot detect a port forward.
+The optional CONTROL_PLANE_POSTGRES_RECOVERY_TEST_CONTAINER selects an existing
 local test container for its client binaries; otherwise a resource-bounded
 Docker client runs on host networking. Credentials pass through environment
 variables, not command arguments, and tool errors are redacted. The test

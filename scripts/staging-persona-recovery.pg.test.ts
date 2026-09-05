@@ -2,12 +2,14 @@ import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { Client } from "pg";
 import { runPostgresMigrations } from "./postgres-migrations";
+import { localRecoveryTestUrl } from "./staging-persona-recovery-test-target";
 import {
   loadStagingResetArtifacts,
   validateStagingResetArtifacts,
 } from "./staging-persona-reset-plan";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
+if (connectionString) localRecoveryTestUrl(connectionString);
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && !connectionString) {
   throw new Error("CONTROL_PLANE_POSTGRES_TEST_URL is required");
 }
