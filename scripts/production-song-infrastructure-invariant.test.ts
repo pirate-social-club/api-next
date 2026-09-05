@@ -40,7 +40,7 @@ const configs = {
 };
 
 describe("disabled production song infrastructure", () => {
-  test("restores every production song runtime gate and schedule to disabled", () => {
+  test("keeps production song runtime gates disabled with the independent HNS cron", () => {
     expect(configs.http.vars).toMatchObject({
       MEDIA_UPLOADS_ENABLED: "false",
       MEGAPOT_REWARDS_ENABLED: "false",
@@ -61,7 +61,9 @@ describe("disabled production song infrastructure", () => {
       DATA_REGISTRATION_ENABLED: "false",
       DATA_REGISTRATION_CHAIN_ID: "1315",
     });
-    expect(configs.jobs.triggers).toEqual({ crons: [] });
+    expect(configs.jobs.vars.HNS_ROOT_HEALTH_RENEWAL_ENABLED).toBe("true");
+    expect(configs.jobs.vars.HNS_OWNERSHIP_ENABLED).toBe("false");
+    expect(configs.jobs.triggers).toEqual({ crons: ["*/30 * * * *"] });
   });
 
   test("keeps queue and schedule Workers off public workers.dev routes", () => {
