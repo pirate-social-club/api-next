@@ -49,6 +49,24 @@ proof. TypeScript and 18 analysis/transform tests passed. The old Queue runner
 and Qencode submit path have not yet adopted these transitions, so their
 composition remains intentionally disabled and is not accepted by this test.
 
+The broad check first caught a missing creationRevision in the Worker
+composition fixture. After correcting that fixture, `bun run check` passed,
+including both TypeScript projects, bindings, migration consistency and client
+0.61.0 provenance. `bun run test` passed 2,956 unit, 20 Node and 131 workerd
+tests. The local secret-boundary audit found no violations across 27 changed
+tracked files. The full PostgreSQL gate was not run for this intermediate
+schema conversion: the old outbox repository still targets retired columns
+and must be converted next. The six focused PostgreSQL tests above passed;
+they are not a substitute for that gate or remote CI.
+
+The migration-loader/isolation-manifest check initially failed because the
+new suite file was untracked; after staging it, all eight tests passed. The
+checkpoint record amendment was applied after the control-plane writer
+checkpointed and is committed as `559361e5`; the preserved patch is historical
+and must not be reapplied. The register check passed 346 task files with two
+existing overdue-review warnings. The task-owned PostgreSQL container was
+stopped after focused validation. No live migration or provider call occurred.
+
 The historical [execution-record amendment](evidence/video-execution-2026-09-05/execution-record-amendment.patch)
 passed its applicability check and was applied before the final reservation,
 allocated-job preflight, and replay-index requirements were added. It must not

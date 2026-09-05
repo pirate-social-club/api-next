@@ -144,6 +144,7 @@ describe("media processor composition", () => {
           operationId: "video-operation-1",
           videoRevision: 1,
           analysisRevision: 1,
+          creationRevision: 1,
           canonicalVideoSha256: "a".repeat(64),
           requestId: "video-probe-1",
         },
