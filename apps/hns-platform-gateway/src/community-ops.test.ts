@@ -40,7 +40,7 @@ describe("community gateway staging operations profile", () => {
       ingress_contract: "pirate-hns-community-app-loopback-preflight-v1",
       public_tls_termination: false,
       profile_utf8_bytes: 622,
-      profile_sha256: "f49ac37bd45da71bdf1e1cc65f184729d85f9d72ce811f0551a70f7785aa8d86",
+      profile_sha256: "c4f4c07252ba10a25467f476cc5b56d50ef9cf02e25ad368a05551d19ba861ed",
     });
     expect(manifest).not.toHaveProperty("production_gateway_listener");
     expect(manifest).not.toHaveProperty("production_health_listener");
