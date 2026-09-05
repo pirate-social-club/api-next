@@ -9,7 +9,7 @@ export type VideoWorkflowStatusFetch = (
   url: string,
   init: Readonly<{
     method: "GET";
-    redirect: "error";
+    redirect: "manual";
     signal: AbortSignal;
     headers: Readonly<Record<string, string>>;
   }>,
@@ -78,10 +78,16 @@ export function makeAuthenticatedVideoWorkflowLookup(
     const get = async (url: string) => {
       const response = await fetcher(url, {
         method: "GET",
-        redirect: "error",
+        redirect: "manual",
         signal,
         headers: { Authorization: `Bearer ${access.readToken}`, Accept: "application/json" },
       });
+      // Workers supports manual, not error. Never follow a bearer-bearing
+      // request; only 200 and the explicitly verified 404 path are usable.
+      if (response.status !== 200 && response.status !== 404) {
+        await response.body?.cancel();
+        throw new Error("Workflow lookup did not establish absence");
+      }
       return { status: response.status, body: await boundedJson(response) };
     };
     const instance = await get(`${base}/instances/${instanceId}?simple=true`);

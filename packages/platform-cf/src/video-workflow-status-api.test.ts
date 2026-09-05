@@ -25,7 +25,7 @@ test("authenticated absence requires a structured 404 and the exact existing par
     const url = String(input);
     urls.push(url);
     expect(init?.method).toBe("GET");
-    expect(init?.redirect).toBe("error");
+    expect(init?.redirect).toBe("manual");
     expect(new Headers(init?.headers).get("Authorization")).toBe(`Bearer ${access.readToken}`);
     expect(init?.signal).toBeDefined();
     return url.includes("/instances/")
@@ -40,11 +40,11 @@ test("authenticated absence requires a structured 404 and the exact existing par
 });
 
 test("authorization, rate limits, server errors and invalid parents never imply absence", async () => {
-  for (const status of [401, 403, 429, 500, 503]) {
+  for (const status of [201, 301, 302, 303, 304, 307, 308, 401, 403, 429, 500, 503]) {
     let calls = 0;
     const lookup = makeAuthenticatedVideoWorkflowLookup(access, async () => {
       calls++;
-      return Response.json(missing, { status });
+      return status === 304 ? new Response(null, { status }) : Response.json(missing, { status });
     });
     await expect(lookup(id, identity)).rejects.toThrow("did not establish absence");
     expect(calls).toBe(1);

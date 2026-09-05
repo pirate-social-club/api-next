@@ -1,5 +1,54 @@
 # Video Workflow next tranche
 
+## Workers redirect correction — 2026-09-05
+
+The previous authenticated lookup passed redirect error to global fetch.
+A new Workerd test using the real Request/fetch path and a local network stub
+reproduced the runtime rejection before the stub was reached: Invalid redirect
+value, must be one of follow or manual. The transport now uses manual and
+rejects every status except 200 or the existing, separately verified 404 path
+before decoding a response. Redirects are never followed. Both Workerd cases
+then passed, including a redirect target that receives no request or token.
+Twenty-three focused unit/composition/config tests passed with 122 assertions.
+Full check and test commands passed, including all 133 workerd tests. The
+local secret-boundary audit found no violations across the seven changed
+files; script-check reported no findings and one size advisory. No PostgreSQL
+suite was repeated for this transport/config correction.
+
+Both staging Wrangler files now declare VIDEO_WORKFLOW_READ_TOKEN under
+secrets.required and the account, Workflow name and script variables. The
+reserved pair is pirate-video-analysis-staging on
+pirate-media-processor-worker-staging. The entrypoint must export exactly
+VideoAnalysisWorkflow, matching the authenticated parent check. The later
+runner binding contract must assert that same name/script/class combination
+across every environment. The video flag remains false; these declarations
+do not create the Workflow or provision its read credential.
+
+This is a new Cloudflare API credential held by two Workers. The requirement
+is a dedicated token scoped to Workflow reads only, with no write, deployment,
+R2 or account-administration access. The current public Workflow and instance
+read API documentation lists Workers Scripts Read and Workers Tail Read as
+accepted read permissions, not a dedicated Workflows Read permission. Do not
+claim the stronger scope exists or silently substitute broader read access.
+Before activation, verify the available scope and obtain an explicit owner
+disposition if the provider cannot enforce the requested restriction. Token
+creation, addition to the staging Infisical inventory and installation on both
+Workers are separate authorized mutations, still pending. Inventory evidence
+must record the permission/resource scope and consumer names, never token
+bytes. No Infisical or Cloudflare mutation occurred in this correction.
+
+The local interpreter's ambiguous-start policy remains interim. Observation
+returns not_found for an unstarted or absent task and the interpreter reports
+pending without issuing another start. At the stored runtime deadline the
+adapter returns runtime_exceeded, currently mapped to generic probe_failed or
+transform_failed with generic failure evidence. That is not proof that the
+provider rejected or stopped the job, and is not the requested durable
+reconciliation state. The runner must persist distinct submission-unconfirmed
+evidence tied to request, creation revision, capability and attempt; retain
+the task identity and prevent an author retry from allocating another encode
+until reconciliation proves a safe outcome. This correction does not alter
+those local-interpreter semantics or claim the reconciliation drill complete.
+
 ## Authenticated absence checkpoint — 2026-09-05
 
 Both concrete Worker compositions now use an authenticated read fallback when

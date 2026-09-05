@@ -695,6 +695,18 @@ describe("source-to-Wrangler binding contract", () => {
     );
   });
 
+  test("declares staging video Workflow read access in both Workers while keeping analysis disabled", () => {
+    for (const worker of ["jobs", "media"] as const) {
+      const staging = declaredEnvironment(configs[worker], "staging");
+      expect(staging.vars.VIDEO_ANALYSIS_ENABLED).toBe("false");
+      expect(staging.vars.VIDEO_WORKFLOW_ACCOUNT_ID).toBe("08a4c22cf52e2ecae883e36f80a33f4a");
+      expect(staging.vars.VIDEO_WORKFLOW_NAME).toBe("pirate-video-analysis-staging");
+      expect(staging.vars.VIDEO_WORKFLOW_SCRIPT_NAME).toBe("pirate-media-processor-worker-staging");
+      expect(staging.secrets).toContain("VIDEO_WORKFLOW_READ_TOKEN");
+      expect(staging.vars).not.toHaveProperty("VIDEO_WORKFLOW_READ_TOKEN");
+    }
+  });
+
   test("does not declare the retired ElevenLabs logging policy variable", () => {
     for (const environmentName of ENVIRONMENTS) {
       expect(declaredEnvironment(configs.http, environmentName).vars).not.toHaveProperty(
