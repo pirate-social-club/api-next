@@ -92,7 +92,7 @@ export const videoPostProjectionFromRow = (row: Row): PublicVideoPostProjection 
     originalSoundId === null ||
     originVideoPostId === null ||
     originAuthorPersonaId === null ||
-    streamState === null ||
+    (streamState === null && row.video_stream_state !== null) ||
     playbackRef === undefined ||
     thumbnailState === null ||
     thumbnailArtifactRef === null ||
@@ -105,8 +105,12 @@ export const videoPostProjectionFromRow = (row: Row): PublicVideoPostProjection 
     streamState === "bound"
       ? playbackRef === null || requiredText(row, "video_playback_ref") === null
         ? null
-        : { status: "ready", provider: "stream", playback_ref: playbackRef }
-      : ["not_started", "sending", "manual_review"].includes(streamState) && playbackRef === null
+        : // Binding proves source identity only. A later delivery observation
+          // must establish encoding and signed-access readiness before ready.
+          { status: "pending" }
+      : (streamState === null ||
+            ["not_started", "sending", "manual_review"].includes(streamState)) &&
+          playbackRef === null
         ? { status: "pending" }
         : null;
   const thumbnail: PublicVideoPostProjection["thumbnail"] | null =

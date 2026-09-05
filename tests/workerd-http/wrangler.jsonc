@@ -21,6 +21,10 @@
   "durable_objects": {
     "bindings": [
       {
+        "name": "VIDEO_PLAYBACK_RATE_LIMITER",
+        "class_name": "VideoPlaybackRateLimiterDO"
+      },
+      {
         "name": "REGISTRATION_IP_LIMITER",
         "class_name": "RegistrationIpRateLimiterDO"
       },
@@ -39,6 +43,10 @@
     ]
   },
   "migrations": [
+    {
+      "tag": "video-rate-v1",
+      "new_sqlite_classes": ["VideoPlaybackRateLimiterDO"]
+    },
     {
       "tag": "v1",
       "new_sqlite_classes": [
