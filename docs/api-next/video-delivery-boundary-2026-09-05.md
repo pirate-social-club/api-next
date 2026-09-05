@@ -63,3 +63,19 @@ observations, use execution's grant issuer and durable waits, and fence stale
 observations. Deadline values require recorded policy at composition time;
 test clocks here are synthetic, not production deadline selections. No new
 public port, provider driver, SQL schema or Worker composition is introduced.
+# Playback policy implementation boundary — 2026-09-05
+
+The application playback-access use case now exercises anonymous access,
+current-policy renewal denials, pending-state denial, limiter failure,
+redacted provider failures, bounded lifetime and trusted customer-host policy.
+The opaque playback reference is resolved through a dedicated durable-approval
+interface before selecting the signing subject; it is not interpreted as a
+Stream UID. Fixture implementations do not establish durable authorization,
+distributed rate enforcement, cryptographic signing or provider acceptance.
+
+This use case is not an HTTP endpoint. Concrete approval, signer and global
+rate-limit adapters, endpoint registration and private no-store response
+headers remain outstanding. The JPEG/304 poster response also requires the
+coordinator-mediated response-contract extension; no transport bypass is added.
+Consumer and compare-and-swap integration retain the execution-first sequence.
+There is no new migration or client release in this checkpoint.
