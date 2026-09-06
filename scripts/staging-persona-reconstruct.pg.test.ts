@@ -10,6 +10,7 @@ import type { ResetGrant } from "./staging-persona-grant-reconciliation";
 import { snapshotOutsideResetCatalog } from "./staging-persona-outside-catalog";
 import { reconstructStagingInTransaction } from "./staging-persona-reconstruct";
 import { localRecoveryTestUrl } from "./staging-persona-recovery-test-target";
+import { fingerprintRehearsalData } from "./staging-persona-rehearsal-inventory";
 import {
   loadStagingResetArtifacts,
   validateStagingResetArtifacts,
@@ -109,6 +110,22 @@ async function input(admin: Client, runtime: string, baseline: string) {
 }
 
 suite("composed reset transaction on disposable PostgreSQL 17", () => {
+  test("provider rehearsal fingerprints preserve row multiplicity and sequence state", async () => {
+    await fixture(async (admin) => {
+      await admin.query("CREATE TABLE api_next.fingerprint_probe(value text)");
+      await admin.query("CREATE SEQUENCE api_next.fingerprint_sequence");
+      await admin.query("INSERT INTO api_next.fingerprint_probe VALUES ('b'),('a'),('a')");
+      const first = await fingerprintRehearsalData(admin);
+      expect(first.tables[0]?.count).toBe(3);
+      await admin.query("TRUNCATE api_next.fingerprint_probe");
+      await admin.query("INSERT INTO api_next.fingerprint_probe VALUES ('a'),('b'),('a')");
+      expect((await fingerprintRehearsalData(admin)).sha256).toBe(first.sha256);
+      await admin.query("INSERT INTO api_next.fingerprint_probe VALUES ('a')");
+      expect((await fingerprintRehearsalData(admin)).sha256).not.toBe(first.sha256);
+      await admin.query("SELECT nextval('api_next.fingerprint_sequence')");
+      expect((await fingerprintRehearsalData(admin)).sequences).not.toEqual(first.sequences);
+    });
+  }, 30_000);
   test("in-place authority requires schema CREATE, not database CREATE", async () => {
     await fixture(async (admin, url) => {
       const identity = (

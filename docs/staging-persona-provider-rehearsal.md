@@ -62,3 +62,27 @@ destructive execution. Do not bypass the local-test URL guard or substitute
 invented fence/recovery callbacks. Keep the approved manifest and existing
 0119 release pin until an explicit revised release triple is recorded and
 verified; the later 386be35a API carries a different migration endpoint.
+## Reproducible data fingerprint
+
+The fixed-branch read-only command is
+`bun scripts/staging-persona-rehearsal-inventory.ts --read-only`, under the
+existing staging operator-secret injection. It resolves the exact provider
+branch before remapping either original credential, verifies both SQL roles,
+checks the 0109 catalog, and emits metadata and hashes only. It does not invoke
+the reset, accept a caller-selected host, or broaden the local-test URL guard.
+
+Table rows are hashed inside PostgreSQL in one repeatable-read snapshot;
+row hashes are ordered before aggregation, preserving duplicate multiplicity.
+Sequence value/called state is fingerprinted separately and requires producer
+quiescence for a stable recovery comparison. Foreign tables and materialized
+views are refused rather than silently omitted. Relation/row limits and
+statement timeouts bound the scan. No data rows or per-row hashes are emitted.
+
+At 04:34:12 UTC and again at 04:37:46 UTC, the restored branch contained 329
+tables, 155 nonempty tables, 34520 rows and two sequences, with aggregate digest
+0b1c97ef5efa0d32eee31cf220e9d5a41f74c7cfecbe782c03f16caaf2628bf8.
+The second run followed independent-review fixes pinning the provider API
+origin and refusing materialized views. Both scans are read-only observations,
+not proof of a maintained fence. Retain this fingerprint for comparison after
+the provider failure/restore exercise; do not replace it with fresh empty-state
+evidence from a successful reset.
