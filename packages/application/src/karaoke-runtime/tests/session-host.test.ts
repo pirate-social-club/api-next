@@ -67,6 +67,51 @@ function stt(sequence: number): KaraokeStreamingSttEvent {
 }
 
 describe("KaraokeSessionHost (package)", () => {
+  test("registers queued commit work before it starts and contains admission rejection", async () => {
+    let pending = 0;
+    let closed = false;
+    const release = Promise.withResolvers<void>();
+    const settled = Promise.withResolvers<void>();
+    const order: number[] = [];
+    const host = new KaraokeSessionHost(
+      state(),
+      new FakeKaraokeEffectRunner(),
+      new FakeKaraokeStreamingSttAdapter(),
+      {
+        runCommitTask: async (task) => {
+          if (closed) throw new Error("closed");
+          pending += 1;
+          try {
+            await task();
+          } finally {
+            pending -= 1;
+            if (pending === 0) settled.resolve();
+          }
+        },
+      },
+    );
+    const enqueue = Reflect.get(host, "enqueueCommitTask");
+    if (typeof enqueue !== "function") throw new Error("missing_commit_queue");
+    enqueue.call(host, async () => {
+      await release.promise;
+      order.push(1);
+    });
+    enqueue.call(host, async () => {
+      order.push(2);
+    });
+    expect(pending).toBe(2);
+    expect(order).toEqual([]);
+    closed = true;
+    enqueue.call(host, async () => {
+      order.push(3);
+    });
+    release.resolve();
+    // The rejected third enqueue is handled, but does not cancel prior registered work.
+    await Promise.all([host.drainCommitChain(), settled.promise]);
+    expect(pending).toBe(0);
+    expect(order).toEqual([1, 2]);
+  });
+
   test("drives the reducer, binary audio adapter, and ordered effect runner", async () => {
     const effectRunner = new FakeKaraokeEffectRunner();
     const sttAdapter = new FakeKaraokeStreamingSttAdapter();
