@@ -52,6 +52,7 @@ interface VideoStreamIngestTransport {
       sourceByteLength: number;
       sourceMediaType: "video/mp4" | "video/quicktime";
       acceptanceDeadlineMs: number;
+      encodingDeadlineMs: number;
       requireSignedURLs: true;
       downloadsEnabled: false;
     }>,
@@ -97,6 +98,7 @@ export async function consumeVideoStreamIngest(
         sourceByteLength: claim.sourceByteLength,
         sourceMediaType: claim.sourceMediaType,
         acceptanceDeadlineMs: claim.state.acceptanceDeadlineMs,
+        encodingDeadlineMs: claim.state.encodingDeadlineMs,
         requireSignedURLs: true,
         downloadsEnabled: false,
       });

@@ -111,7 +111,9 @@ export function makeVideoStreamTransport(
         !source.requireSignedURLs ||
         source.downloadsEnabled ||
         !Number.isSafeInteger(source.acceptanceDeadlineMs) ||
-        source.acceptanceDeadlineMs <= input.nowMs()
+        source.acceptanceDeadlineMs <= input.nowMs() ||
+        !Number.isSafeInteger(source.encodingDeadlineMs) ||
+        source.encodingDeadlineMs < source.acceptanceDeadlineMs
       )
         throw new Error("Invalid Stream copy policy or expired intent");
       const grant = await input.grants.issue({
@@ -120,9 +122,9 @@ export function makeVideoStreamTransport(
         sha256: source.identity.sourceSha256,
         byteLength: source.sourceByteLength,
         mediaType: source.sourceMediaType,
-        expiresAtMs: source.acceptanceDeadlineMs,
+        expiresAtMs: source.encodingDeadlineMs,
       });
-      if (grant.expiresAtMs !== source.acceptanceDeadlineMs || grant.expiresAtMs <= input.nowMs())
+      if (grant.expiresAtMs !== source.encodingDeadlineMs || grant.expiresAtMs <= input.nowMs())
         throw new Error("Stream source grant expired or mismatched");
       const capability = grant.url.slice(grant.url.lastIndexOf("/") + 1);
       if (

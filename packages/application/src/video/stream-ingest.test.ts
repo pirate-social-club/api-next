@@ -67,6 +67,7 @@ function fixture() {
           sourceByteLength: row.sourceByteLength,
           sourceMediaType: row.sourceMediaType,
           acceptanceDeadlineMs: 100,
+          encodingDeadlineMs: 1_000,
           requireSignedURLs: true,
           downloadsEnabled: false,
         });

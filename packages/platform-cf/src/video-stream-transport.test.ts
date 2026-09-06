@@ -16,6 +16,7 @@ const source = {
   sourceByteLength: 1234,
   sourceMediaType: "video/mp4",
   acceptanceDeadlineMs: 1000,
+  encodingDeadlineMs: 3000,
   requireSignedURLs: true,
   downloadsEnabled: false,
 } as const;
@@ -74,7 +75,7 @@ test("Stream copy uses exact sealed facts and a signed-only server template", as
       sha256: identity.sourceSha256,
       byteLength: 1234,
       mediaType: "video/mp4",
-      expiresAtMs: 1000,
+      expiresAtMs: 3000,
     },
   ]);
   expect(f.calls).toHaveLength(1);
