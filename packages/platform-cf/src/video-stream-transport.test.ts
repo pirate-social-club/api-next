@@ -78,7 +78,7 @@ test("Stream copy uses exact sealed facts and a signed-only server template", as
     },
   ]);
   expect(f.calls).toHaveLength(1);
-  expect(f.calls[0]?.init?.redirect).toBe("error");
+  expect(f.calls[0]?.init?.redirect).toBe("manual");
   expect(JSON.parse(String(f.calls[0]?.init?.body))).toEqual({
     input: grantUrl,
     creator: identity.creator,
@@ -95,6 +95,26 @@ test("expired intent or invalid logical source cannot issue a grant or copy", as
   ).rejects.toThrow();
   expect(f.grants).toHaveLength(0);
   expect(f.calls).toHaveLength(0);
+});
+
+test("Stream redirects fail closed without forwarding credentials or source grants", async () => {
+  const f = fixture();
+  f.reply(
+    () =>
+      new Response(null, {
+        status: 302,
+        headers: { location: "https://untrusted.invalid/redirect" },
+      }),
+  );
+  await expect(f.transport.copy(source)).rejects.toThrow("Stream transport unavailable");
+  await expect(f.transport.observe(identity)).rejects.toThrow("Stream observation unavailable");
+  expect(f.calls).toHaveLength(2);
+  expect(
+    f.calls.every(
+      ({ url, init }) =>
+        url.startsWith("https://api.cloudflare.com/") && init?.redirect === "manual",
+    ),
+  ).toBe(true);
 });
 
 test("copy transport does not retry a lost response or expose source secrets in errors", async () => {

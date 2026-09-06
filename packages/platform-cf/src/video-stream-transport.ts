@@ -64,7 +64,9 @@ export function makeVideoStreamTransport(
         headers: { Authorization: `Bearer ${input.apiToken}`, "Content-Type": "application/json" },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         signal: controller.signal,
-        redirect: "error",
+        // Workerd supports manual/follow, not error. Non-2xx below rejects every
+        // redirect without forwarding credentials or a source grant to another host.
+        redirect: "manual",
       });
       if (!response.ok || !response.body) {
         await response.body?.cancel();
