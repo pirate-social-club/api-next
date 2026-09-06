@@ -21,6 +21,9 @@ export function makeVideoPlaybackAuthority(
         JOIN media_video_stream_ingests s ON s.operation_id=p.operation_id
           AND s.state='ready' AND s.source_sha256=p.canonical_video_sha256
         JOIN media_video_rights r ON r.submission_id=p.submission_id AND r.rights_basis='original'
+        JOIN media_video_enrichment_outbox e ON e.operation_id=p.operation_id
+          AND e.submission_id=p.submission_id AND e.post_id=p.post_id
+          AND e.enrichment_kind='stream' AND e.state='ready'
         JOIN media_video_revisions v ON v.operation_id=p.operation_id AND v.submission_id=p.submission_id
           AND v.community_id=p.community_id AND v.video_revision=p.video_revision
           AND v.immutable_ref=p.video_asset_ref AND v.canonical_sha256=p.canonical_video_sha256

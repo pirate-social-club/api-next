@@ -16,6 +16,7 @@ export {
   RegistrationApplicationRateLimiterDO,
   RegistrationIpRateLimiterDO,
 } from "@pirate/platform-cf/registration-rate-limiter-do";
+export { VideoPlaybackRateLimiterDO } from "@pirate/platform-cf/video-playback-rate-limiter-do";
 export { makeActivityQualificationHandlers } from "./activity-qualification-handlers.ts";
 export { makeCanonicalCommunityRouteHandlers } from "./canonical-community-route-handlers.ts";
 export { makeCommunityPurchaseFundingHandlers } from "./community-purchase-funding-handlers.ts";

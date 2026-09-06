@@ -15,6 +15,8 @@ import {
 import { makeControlPlaneVideoPublicationStore } from "@pirate/platform-cf/video-publication-repository";
 import { makeVideoPublicationWakeupStore } from "@pirate/platform-cf/video-publication-wakeup-repository";
 import type { Layer } from "effect";
+import { dispatchVideoEnrichment } from "../../../packages/application/src/video/enrichment-dispatch.ts";
+import { makeVideoEnrichmentDispatchSource } from "../../../packages/platform-cf/src/video-enrichment-dispatch-source.ts";
 import {
   dispatchEligibleMediaOutbox,
   type MediaOutboxDispatchQueue,
@@ -33,6 +35,7 @@ import {
 export type MediaJobsBindings = Readonly<{
   readonly MEDIA_PROCESSING_ENABLED?: string;
   readonly VIDEO_ANALYSIS_ENABLED?: string;
+  readonly VIDEO_DELIVERY_ENABLED?: string;
   readonly VIDEO_ANALYSIS_WORKFLOW?: VideoAnalysisWorkflowBinding;
   readonly VIDEO_WORKFLOW_ACCOUNT_ID?: string;
   readonly VIDEO_WORKFLOW_NAME?: string;
@@ -73,6 +76,8 @@ export function makeMediaMaintenance(
     throw new Error("media Queue and Workflow bindings are required when processing is enabled");
   }
   const queue = env.MEDIA_PROCESSING_QUEUE;
+  if (env.VIDEO_DELIVERY_ENABLED === "true" && env.VIDEO_ANALYSIS_WORKFLOW === undefined)
+    throw new Error("video Workflow binding is required when video delivery is enabled");
   if (env.VIDEO_ANALYSIS_ENABLED === "true" && env.VIDEO_ANALYSIS_WORKFLOW === undefined) {
     throw new Error("video Workflow binding is required when video analysis is enabled");
   }
@@ -94,6 +99,8 @@ export function makeMediaMaintenance(
         }
       : null;
   const source = makeMediaOutboxDispatchSource(runtime);
+  const enrichmentSource =
+    env.VIDEO_DELIVERY_ENABLED === "true" ? makeVideoEnrichmentDispatchSource(runtime) : null;
   const videoSource =
     env.VIDEO_ANALYSIS_ENABLED === "true" ? makeVideoAnalysisOutboxDispatchSource(runtime) : null;
   const store = makeMediaProcessingStore(runtime);
@@ -111,16 +118,19 @@ export function makeMediaMaintenance(
             wakeups: makeVideoPublicationWakeupStore(runtime),
           });
         }
-        const [song, video] = await Promise.all([
+        const [song, video, enrichment] = await Promise.all([
           dispatchEligibleMediaOutbox(source, queue),
           videoSource === null
             ? Promise.resolve({ selected: 0, sent: 0, failed: 0 })
             : dispatchEligibleVideoAnalysisOutbox(videoSource, queue),
+          enrichmentSource === null
+            ? Promise.resolve({ selected: 0, sent: 0, failed: 0 })
+            : dispatchVideoEnrichment(enrichmentSource, queue),
         ]);
         return Object.freeze({
-          selected: song.selected + video.selected,
-          sent: song.sent + video.sent,
-          failed: song.failed + video.failed,
+          selected: song.selected + video.selected + enrichment.selected,
+          sent: song.sent + video.sent + enrichment.sent,
+          failed: song.failed + video.failed + enrichment.failed,
         });
       },
       sweep: () => sweepMissingMediaWorkflows({ store, workflow }),

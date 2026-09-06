@@ -20,7 +20,7 @@ export function makeVideoEnrichmentDispatchSource(
         JOIN media_video_rights r ON r.submission_id=o.submission_id AND r.rights_basis='original'
         WHERE o.enrichment_kind IN ('stream','thumbnail')
           AND (o.state='pending' OR (o.state='running' AND o.lease_expires_at<=clock_timestamp()))
-        ORDER BY o.updated_at,o.effect_identity LIMIT $1`,
+        ORDER BY o.workflow_dispatched_at NULLS FIRST,o.created_at,o.effect_identity LIMIT $1`,
       values: [limit],
     });
     return yield* Effect.try(() =>

@@ -17,6 +17,18 @@ const projectionRow = (overrides: Readonly<Record<string, unknown>> = {}) => ({
 });
 
 describe("video Post projection row mapping", () => {
+  test("exhausted delivery is unavailable without exposing its private recovery evidence", () => {
+    const projection = videoPostProjectionFromRow(
+      projectionRow({
+        video_stream_state: "sending",
+        video_playback_ref: null,
+        video_stream_enrichment_state: "failed",
+        workflow_exhausted: true,
+      }),
+    );
+    expect(projection?.playback).toEqual({ status: "unavailable" });
+    expect(JSON.stringify(projection)).not.toContain("workflow_exhausted");
+  });
   test("a published video without an ingest row remains visible and pending", () => {
     expect(
       videoPostProjectionFromRow(

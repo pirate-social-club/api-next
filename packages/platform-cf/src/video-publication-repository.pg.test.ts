@@ -998,6 +998,25 @@ suite("video publication PostgreSQL", () => {
       );
       expect(await access()).toBe(true);
 
+      const safetyRef = `evidence_${"a".repeat(64)}`;
+      await admin.query(
+        `INSERT INTO media_video_safety_evidence
+          (submission_id,video_revision,creation_revision,request_id,input_sha256,evidence_ref,evidence_snapshot,platform_held)
+         VALUES ($1,1,1,'delivery-platform-hold',$2,$3,$4::jsonb,true)`,
+        [
+          submissionId,
+          "b".repeat(64),
+          safetyRef,
+          JSON.stringify({
+            requestId: "delivery-platform-hold",
+            inputDigest: "b".repeat(64),
+            platformHeld: true,
+            fact: { evidenceRef: safetyRef, mediaSafety: "blocked", minorSafetyEvidenceRef: null },
+          }),
+        ],
+      );
+      expect(await access()).toBe(false);
+
       await admin.query(
         `INSERT INTO home_feed_projection
           (community_id,feed_item_id,post_id,rank_score,projected_at)

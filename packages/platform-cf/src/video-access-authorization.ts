@@ -30,6 +30,12 @@ const authorizePublication = Effect.fn("authorizeVideoPublication")(function* (
         )))
         AND can_account_view_content_rating_v1($3,p.content_rating)
         AND can_account_view_content_rating_v1($3,d.effective_content_rating)
+        AND NOT EXISTS (
+          SELECT 1 FROM media_video_safety_evidence safety
+          WHERE safety.submission_id=pub.submission_id
+            AND safety.video_revision=pub.video_revision
+            AND safety.creation_revision=pub.creation_revision AND safety.platform_held
+        )
         AND (d.outcome='publish' OR (d.outcome='review' AND EXISTS (
           SELECT 1 FROM media_video_review_holds h
           WHERE h.submission_id=pub.submission_id AND h.creation_revision=pub.creation_revision

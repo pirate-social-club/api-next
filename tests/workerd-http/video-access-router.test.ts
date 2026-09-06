@@ -1,7 +1,9 @@
 import { SELF } from "cloudflare:test";
 import { expect, test } from "vitest";
 
-test("production router authorizes matching poster ETags before any conditional response", async () => {
+// Covers shared transport, handler, application authorization and binary response;
+// the fixture does not execute index.ts's outer production assembly or deployment.
+test("shared router authorizes matching poster ETags before any conditional response", async () => {
   const allowed = await SELF.fetch("https://worker.test/posts/allowed/video/poster");
   expect(allowed.status).toBe(200);
   expect(allowed.headers.get("content-type")).toBe("image/jpeg");

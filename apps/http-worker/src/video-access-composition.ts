@@ -1,7 +1,6 @@
-import type { ControlPlaneDb, ControlPlaneError } from "@pirate/application";
 import { InternalError } from "@pirate/contracts";
 import { makeControlPlaneContentStore } from "@pirate/platform-cf/content-repository";
-import { Effect, type Layer } from "effect";
+import { Effect } from "effect";
 import { makeVideoPublicationAuthorization } from "../../../packages/platform-cf/src/video-access-authorization.ts";
 import { makeVideoPlaybackAuthority } from "../../../packages/platform-cf/src/video-playback-authority.ts";
 import { loadVideoPlaybackSecurity } from "../../../packages/platform-cf/src/video-playback-security.ts";
@@ -23,7 +22,7 @@ export interface VideoAccessBindings {
 
 export async function makeVideoAccessHandlers(
   bindings: VideoAccessBindings,
-  runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+  runtime: Parameters<typeof makeVideoPublicationAuthorization>[0],
 ) {
   if (bindings.VIDEO_DELIVERY_ENABLED !== "true") {
     const unavailable = () => {

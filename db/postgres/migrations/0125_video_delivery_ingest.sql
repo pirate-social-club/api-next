@@ -1,4 +1,4 @@
--- Source grants owns 0123. Reconcile ordinals and regenerate after its merge.
+-- Delivery follows source grants 0123 and safety evidence 0124.
 -- There was no production consumer for this ledger. Never invent attempt dates
 -- for an unexpected manually started row during rollout.
 DO $$ BEGIN
@@ -13,6 +13,10 @@ END $$;
 ALTER TABLE media_video_enrichment_outbox
   ADD COLUMN lease_owner text,
   ADD COLUMN lease_expires_at timestamptz,
+  ADD COLUMN workflow_generation bigint NOT NULL DEFAULT 0 CHECK (workflow_generation BETWEEN 0 AND 2),
+  ADD COLUMN workflow_exhausted boolean NOT NULL DEFAULT false CHECK (NOT workflow_exhausted OR state='failed'),
+  ADD COLUMN workflow_started_at timestamptz,
+  ADD COLUMN workflow_dispatched_at timestamptz,
   ADD CONSTRAINT media_video_enrichment_lease_shape CHECK (
     (state = 'running' AND lease_owner IS NOT NULL AND btrim(lease_owner) <> ''
       AND lease_expires_at IS NOT NULL)

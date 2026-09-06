@@ -24334,11 +24334,17 @@ CREATE TABLE media_video_enrichment_outbox (
     updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     lease_owner text,
     lease_expires_at timestamp with time zone,
+    workflow_generation bigint DEFAULT 0 NOT NULL,
+    workflow_exhausted boolean DEFAULT false NOT NULL,
+    workflow_started_at timestamp with time zone,
+    workflow_dispatched_at timestamp with time zone,
     CONSTRAINT media_video_enrichment_lease_shape CHECK ((((state = 'running'::text) AND (lease_owner IS NOT NULL) AND (btrim(lease_owner) <> ''::text) AND (lease_expires_at IS NOT NULL)) OR ((state <> 'running'::text) AND (lease_owner IS NULL) AND (lease_expires_at IS NULL)))),
+    CONSTRAINT media_video_enrichment_outbox_check CHECK (((NOT workflow_exhausted) OR (state = 'failed'::text))),
     CONSTRAINT media_video_enrichment_outbox_effect_identity_check CHECK ((btrim(effect_identity) <> ''::text)),
     CONSTRAINT media_video_enrichment_outbox_enrichment_kind_check CHECK ((enrichment_kind = ANY (ARRAY['stream'::text, 'thumbnail'::text]))),
     CONSTRAINT media_video_enrichment_outbox_payload_check CHECK ((jsonb_typeof(payload) = 'object'::text)),
-    CONSTRAINT media_video_enrichment_outbox_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'running'::text, 'ready'::text, 'failed'::text])))
+    CONSTRAINT media_video_enrichment_outbox_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'running'::text, 'ready'::text, 'failed'::text]))),
+    CONSTRAINT media_video_enrichment_outbox_workflow_generation_check CHECK (((workflow_generation >= 0) AND (workflow_generation <= 2)))
 );
 
 CREATE TABLE media_video_original_sounds (

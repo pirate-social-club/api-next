@@ -16,6 +16,7 @@ import {
   publishOriginalVideo,
 } from "../../domain/src/video-submission.ts";
 import { makeVideoEnrichmentDispatchSource } from "./video-enrichment-dispatch-source.ts";
+import { makeVideoEnrichmentExecutionStore } from "./video-enrichment-execution-store.ts";
 import { makeVideoPlaybackAuthority } from "./video-playback-authority.ts";
 import {
   community,
@@ -99,7 +100,7 @@ const expire = (admin: Client) =>
 suite("video Stream ingest durable PostgreSQL", () => {
   test("migration refuses legacy in-flight state instead of inventing deadlines", async () => {
     const migration = await Bun.file(
-      new URL("../../../db/postgres/migrations/0124_video_delivery_ingest.sql", import.meta.url),
+      new URL("../../../db/postgres/migrations/0125_video_delivery_ingest.sql", import.meta.url),
     ).text();
     for (const started of [false, true]) {
       await fixture(async ({ ingest }, admin) => {
@@ -136,6 +137,22 @@ suite("video Stream ingest durable PostgreSQL", () => {
   test("concurrent ownership, revision CAS, expiry recovery and immutable deadlines", async () => {
     await fixture(async ({ layer, ingest }, admin) => {
       const dispatch = makeVideoEnrichmentDispatchSource(layer);
+      const executions = makeVideoEnrichmentExecutionStore(layer);
+      const [launchA, launchB] = await Promise.all([
+        executions.prepare(effectIdentity),
+        executions.prepare(effectIdentity),
+      ]);
+      expect(launchA).toEqual(launchB);
+      if (launchA === null) throw new Error("execution missing");
+      expect(await executions.active(launchA)).toBe(true);
+      const [replacementA, replacementB] = await Promise.all([
+        executions.replace(launchA),
+        executions.replace(launchA),
+      ]);
+      expect([replacementA, replacementB].filter(Boolean)).toHaveLength(1);
+      const replacement = replacementA ?? replacementB;
+      expect(replacement?.startedAtMs).toBe(launchA.startedAtMs);
+      expect(await executions.active(launchA)).toBe(false);
       expect((await dispatch.listEligible(25)).map((row) => row.effectIdentity)).toContain(
         effectIdentity,
       );
@@ -150,6 +167,8 @@ suite("video Stream ingest durable PostgreSQL", () => {
       expect([first, second].filter(Boolean)).toHaveLength(1);
       const winner = first ?? second;
       if (!winner) throw new Error("claim missing");
+      if (replacement === null) throw new Error("replacement missing");
+      expect(await executions.replace(replacement)).toBeNull();
       expect((await dispatch.listEligible(25)).map((row) => row.effectIdentity)).not.toContain(
         effectIdentity,
       );
@@ -180,6 +199,41 @@ suite("video Stream ingest durable PostgreSQL", () => {
         ),
       ).toBeNull();
       expect(await ingest.transition(recovered, recovered.state, true)).not.toBeNull();
+    });
+  });
+  test("terminal Workflow exhaustion is durable and no longer dispatchable", async () => {
+    await fixture(async ({ layer }, admin) => {
+      const executions = makeVideoEnrichmentExecutionStore(layer);
+      let execution = await executions.prepare(effectIdentity);
+      if (execution === null) throw new Error("execution missing");
+      const started = execution.startedAtMs;
+      for (const generation of [1, 2]) {
+        execution = await executions.replace(execution);
+        if (execution === null) throw new Error("replacement missing");
+        expect(execution.generation).toBe(generation);
+        expect(execution.startedAtMs).toBe(started);
+      }
+      expect(await executions.replace(execution)).toBeNull();
+      expect(await executions.prepare(effectIdentity)).toBeNull();
+      expect(
+        (await makeVideoEnrichmentDispatchSource(layer).listEligible(25)).some(
+          (row) => row.effectIdentity === effectIdentity,
+        ),
+      ).toBe(false);
+      const row = (
+        await admin.query(
+          `SELECT state,workflow_generation::int,workflow_exhausted,
+        lease_owner,lease_expires_at FROM media_video_enrichment_outbox WHERE effect_identity=$1`,
+          [effectIdentity],
+        )
+      ).rows[0];
+      expect(row).toEqual({
+        state: "failed",
+        workflow_generation: 2,
+        workflow_exhausted: true,
+        lease_owner: null,
+        lease_expires_at: null,
+      });
     });
   });
 

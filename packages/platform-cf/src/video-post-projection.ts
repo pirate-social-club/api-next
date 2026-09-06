@@ -13,6 +13,7 @@ export const videoPostProjectionSelect = `video_projection.media_kind AS video_m
   origin_post.author_persona_id AS video_origin_author_persona_id,
   stream_ingest.state AS video_stream_state,
   stream_ingest.provider_video_id AS video_playback_ref,
+  stream_enrichment.state AS video_stream_enrichment_state,
   thumbnail_enrichment.state AS video_thumbnail_state,
   video_projection.poster_artifact_ref AS video_thumbnail_artifact_ref,
   video_data_registration.state AS video_data_registration_state`;
@@ -40,6 +41,11 @@ export const videoPostProjectionJoins = `LEFT JOIN media_publication_projections
    AND thumbnail_enrichment.operation_id = video_projection.operation_id
    AND thumbnail_enrichment.post_id = video_projection.post_id
    AND thumbnail_enrichment.enrichment_kind = 'thumbnail'
+  LEFT JOIN media_video_enrichment_outbox AS stream_enrichment
+    ON stream_enrichment.submission_id = video_projection.submission_id
+   AND stream_enrichment.operation_id = video_projection.operation_id
+   AND stream_enrichment.post_id = video_projection.post_id
+   AND stream_enrichment.enrichment_kind = 'stream'
   LEFT JOIN data_registration_operations AS video_data_registration
     ON video_data_registration.submission_id = video_projection.submission_id
    AND video_data_registration.post_id = video_projection.post_id
@@ -139,7 +145,7 @@ export const videoPostProjectionFromRow = (row: Row): PublicVideoPostProjection 
       origin_video_post_id: originVideoPostId,
       origin_author_persona_id: originAuthorPersonaId,
     },
-    playback,
+    playback: row.video_stream_enrichment_state === "failed" ? { status: "unavailable" } : playback,
     thumbnail,
     data_registration: registration,
     capabilities: { can_post_with_song: false },

@@ -90,11 +90,13 @@ describe("disabled production song infrastructure", () => {
       "MEDIA_INGRESS",
       "MEDIA_IMMUTABLE_ORIGINALS",
       "LEARNER_AUDIO",
+      "MEDIA_DERIVED",
     ]);
     expect(resourceNames(configs.http.r2_buckets, "bucket_name")).toEqual([
       "pirate-media-ingress-production",
       "pirate-media-immutable-production",
       "pirate-learner-audio-production",
+      "pirate-media-derived-production",
     ]);
     expect(configs.http.vars).toMatchObject({
       MEDIA_INGRESS_R2_ACCOUNT_ID: ACCOUNT_ID,
