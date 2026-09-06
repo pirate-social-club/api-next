@@ -227,6 +227,23 @@ suite("Karaoke persona boundary", () => {
           reserve(overrides, `karaoke-reject-${label.replace(/\s+/gu, "-")}`),
         ).rejects.toMatchObject({ _tag: "KaraokeCommandRejected", reason: "invalid-input" });
       }
+      // Characterize the ratified-boundary gap with a fully playable fixture:
+      // current membership loss wrongly blocks both replay and a new practice.
+      await admin.query(
+        "UPDATE community_memberships SET status='left', updated_at=clock_timestamp() WHERE membership_id='karaoke-membership'",
+      );
+      const retainedIdentity = await admin.query(
+        "SELECT active_owned_community_persona('karaoke-account','karaoke-persona-bound','karaoke-community') AS bound",
+      );
+      expect(retainedIdentity.rows).toEqual([{ bound: true }]);
+      await expect(reserve()).rejects.toMatchObject({
+        _tag: "KaraokeCommandRejected",
+        reason: "invalid-input",
+      });
+      await expect(reserve({}, "karaoke-after-leaving")).rejects.toMatchObject({
+        _tag: "KaraokeCommandRejected",
+        reason: "invalid-input",
+      });
       const sessions = await admin.query(
         "SELECT persona_id FROM karaoke_sessions ORDER BY created_at, session_id",
       );

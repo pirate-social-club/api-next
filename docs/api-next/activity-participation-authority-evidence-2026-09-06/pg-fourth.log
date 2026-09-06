@@ -1,0 +1,26 @@
+bun test v1.4.0 (34cbb9a40)
+
+packages/platform-cf/src/activity-participation-authority.pg.test.ts:
+121 |             .pipe(Effect.result, Effect.provide(runtime)),
+122 |         ),
+123 |       );
+124 |       expect(Result.isFailure(presentation)).toBe(true);
+125 |       if (!Result.isFailure(presentation)) throw new Error("Expected current membership refusal");
+126 |       expect(presentation.failure._tag).toBe("QualificationCommandRejected");
+                                              ^
+error: expect(received).toBe(expected)
+
+Expected: "QualificationCommandRejected"
+Received: "ActivityQualificationRejected"
+
+      at <anonymous> (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/packages/platform-cf/src/activity-participation-authority.pg.test.ts:126:41)
+(fail) Activity participation authority implementation baseline > owned exact-community identity survives leaving but practice start and presentation reject it [1824.47ms]
+
+packages/platform-cf/src/karaoke-persona-boundary.pg.test.ts:
+(pass) Karaoke persona boundary > requires an explicitly bound persona at session start with no fallback [3858.82ms]
+(pass) Karaoke persona boundary > presents the community activity persona and only community-issued handles on the leaderboard [1771.37ms]
+
+ 2 pass
+ 1 fail
+ 28 expect() calls
+Ran 3 tests across 2 files. [8.38s]

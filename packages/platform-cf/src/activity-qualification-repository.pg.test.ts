@@ -1272,6 +1272,106 @@ suite("Postgres 17 activity qualification repository", () => {
     });
   });
 
+  test("ratified participation keeps completion after membership loss and admits money only from independent evidence", async () => {
+    await withSchema(async ({ admin, scopedConnection }) => {
+      const identity = await seedAccountSong(admin, "participation-money");
+      const missing = await seedParticipant(admin, identity, "participation-missing");
+      await seedVeryRewardEvidence(admin, identity.accountId, "participation-money");
+      const { legId } = await seedOpenMegapotPool(admin, identity, "participation-money");
+      const source = sourceFor(identity);
+      const service = makeActivityQualificationService(
+        makeControlPlaneActivityQualificationStore(
+          makeDirectPostgresControlPlaneLayer(scopedConnection),
+        ),
+      );
+      for (const [actor, suffix] of [
+        [identity, "verified"],
+        [missing, "unverified"],
+      ] as const) {
+        const session = await Effect.runPromise(
+          provideServices(
+            [`session-${suffix}`, `item-${suffix}`],
+            source,
+            "2026-08-25T15:00:00.000Z",
+          )(
+            service.startStudySession({
+              accountId: actor.accountId,
+              personaId: actor.personaId,
+              communityId: identity.communityId,
+              postId: identity.postId,
+              idempotencyKey: `start-${suffix}`,
+              requestedTimezone: "UTC",
+            }),
+          ),
+        );
+        await admin.query(
+          `UPDATE community_memberships SET status='left',updated_at=clock_timestamp()
+          WHERE community_id=$1 AND user_id=$2`,
+          [identity.communityId, actor.accountId],
+        );
+        const result = await Effect.runPromise(
+          provideServices(
+            [`answer-${suffix}`, `qualification-${suffix}`],
+            source,
+            "2026-08-25T15:01:00.000Z",
+          )(
+            service.submitStudyAnswer({
+              accountId: actor.accountId,
+              communityId: identity.communityId,
+              answer: { kind: "text_response", text: "Sail away" },
+              attemptNumber: 1,
+              idempotencyKey: `answer-${suffix}`,
+              sessionId: session.session_id,
+              sessionItemId: session.items[0]?.session_item_id ?? "missing",
+            }),
+          ),
+        );
+        expect(result.session.status).toBe("completed");
+        expect(result.session.qualification).not.toBeNull();
+      }
+      const decisions = await admin.query(
+        `SELECT account_id,outcome,reason
+        FROM reward_eligibility_decisions WHERE leg_id=$1 ORDER BY account_id`,
+        [legId],
+      );
+      expect(decisions.rows).toEqual(
+        [
+          { account_id: missing.accountId, outcome: "ineligible", reason: "verification_missing" },
+          { account_id: identity.accountId, outcome: "eligible", reason: null },
+        ].sort((left, right) => left.account_id.localeCompare(right.account_id)),
+      );
+      const shares = await admin.query(
+        "SELECT account_id FROM megapot_pool_shares WHERE pool_leg_id=$1",
+        [legId],
+      );
+      expect(shares.rows).toEqual([{ account_id: identity.accountId }]);
+      const qualifications = await admin.query(
+        `SELECT count(*)::integer AS count
+        FROM activity_qualifications WHERE community_id=$1`,
+        [identity.communityId],
+      );
+      expect(qualifications.rows).toEqual([{ count: 2 }]);
+      // Later verification is not an instruction to replay a past qualification.
+      await seedVeryRewardEvidence(admin, missing.accountId, "participation-later", "2");
+      expect(
+        (
+          await admin.query("SELECT account_id FROM megapot_pool_shares WHERE pool_leg_id=$1", [
+            legId,
+          ])
+        ).rows,
+      ).toEqual([{ account_id: identity.accountId }]);
+      expect(
+        (
+          await admin.query(
+            `SELECT outcome,reason FROM reward_eligibility_decisions
+        WHERE leg_id=$1 AND account_id=$2`,
+            [legId, missing.accountId],
+          )
+        ).rows,
+      ).toEqual([{ outcome: "ineligible", reason: "verification_missing" }]);
+    });
+  });
+
   test("credits every available asset-bonus leg once per verified account", async () => {
     await withSchema(async ({ admin, scopedConnection }) => {
       const identity = await seedAccountSong(admin, "asset-claim");

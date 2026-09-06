@@ -1,0 +1,56 @@
+bun test v1.4.0 (34cbb9a40)
+
+packages/platform-cf/src/activity-participation-authority.pg.test.ts:
+(pass) Activity participation authority implementation baseline > owned exact-community identity survives leaving but practice start and presentation reject it [2107.09ms]
+
+packages/platform-cf/src/karaoke-persona-boundary.pg.test.ts:
+(pass) Karaoke persona boundary > requires an explicitly bound persona at session start with no fallback [4843.35ms]
+(pass) Karaoke persona boundary > presents the community activity persona and only community-issued handles on the leaderboard [2617.22ms]
+
+packages/platform-cf/src/activity-qualification-repository.pg.test.ts:
+control-plane connection slow {
+  phase: "connection",
+  elapsedMs: 1707,
+  limitMs: 5000,
+}
+control-plane connection slow {
+  phase: "connection",
+  elapsedMs: 1098,
+  limitMs: 5000,
+}
+(pass) Postgres 17 activity qualification repository > derives Study items only from the exact public accepted lyrics revision [29157.51ms]
+(fail) Postgres 17 activity qualification repository > freezes Study evidence, replays commands, and emits one account day [30745.98ms]
+  ^ this test timed out after 30000ms.
+(fail) Postgres 17 activity qualification repository > uses competition rank and keeps every tie at the requested boundary [30940.81ms]
+  ^ this test timed out after 30000ms.
+(pass) Postgres 17 activity qualification repository > projects Study qualification into one Very-gated Megapot share per account [12513.09ms]
+25 |
+26 | type Row = Readonly<Record<string, unknown>>;
+27 |
+28 | const storage = (
+29 |   reason: ConstructorParameters<typeof ActivityQualificationStorageFailed>[0]["reason"],
+30 | ): ActivityQualificationStorageFailed => new ActivityQualificationStorageFailed({ reason });
+                                              ^
+Error:
+ reason: "constraint",
+   _tag: "ActivityQualificationStorageFailed",
+
+      at storage (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/packages/platform-cf/src/activity-qualification-repository.ts:30:42)
+      at ~effect/Utils/internal (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/Utils.js:85:16)
+      at <anonymous> (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:720:53)
+      at runLoop (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:461:98)
+      at evaluate (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:421:23)
+      at <anonymous> (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:780:15)
+      at onExit (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:1010:5)
+      at <anonymous> (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:1021:7)
+      at evaluate (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:434:23)
+      at <anonymous> (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:780:15)
+(fail) Postgres 17 activity qualification repository > ratified participation keeps completion after membership loss and admits money only from independent evidence [1467.77ms]
+(pass) Postgres 17 activity qualification repository > credits every available asset-bonus leg once per verified account [2204.50ms]
+(pass) Postgres 17 activity qualification repository > serializes concurrent asset claims at the funded inventory boundary [2325.84ms]
+(pass) Postgres 17 activity qualification repository > serializes concurrent finalization and keeps timezone updates prospective [2943.29ms]
+
+ 8 pass
+ 3 fail
+ 86 expect() calls
+Ran 11 tests across 3 files. [123.17s]
