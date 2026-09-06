@@ -48,3 +48,11 @@ passed 21 tests with 462 assertions, exit 0; bun run check exited 0. A first
 schema-load failure used the wrong pinned Effect filter signature and was
 corrected to the checked object-form API. No provider response was fabricated
 to bypass the failure.
+
+Binding checkpoint: song and video share makeIdentification with the existing
+host, credentials, limits and redirect-safe fetch transport. Video constructs
+all providers without adapter arguments; missing ACR configuration produces
+acr_skipped. Qencode, gateway and Workflow bindings still require valid
+configuration. VIDEO_ANALYSIS_ENABLED remains false in every environment.
+Composition/provider suites passed 12 tests, 98 assertions, exit 0, and bun run
+check exited 0. Live credentials and provider acceptance remain unproven.
