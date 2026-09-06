@@ -299,6 +299,38 @@ describe("Infisical secret drift audit", () => {
     );
   });
 
+  test("admits optional video secrets only at the staging runtime path", () => {
+    const names = [
+      "VIDEO_WORKFLOW_READ_TOKEN",
+      "VIDEO_STREAM_API_TOKEN",
+      "VIDEO_STREAM_SIGNING_JWK_BASE64",
+      "VIDEO_PLAYBACK_SOURCE_HMAC_BASE64",
+    ];
+    const paths = ["/", "/services/api-next", "/services/api-next/operator"] as const;
+    for (const environment of ["dev", "staging", "prod"] as const) {
+      const base = emptySnapshot(environment);
+      expect(
+        auditInfisicalSnapshots([base]).violations.filter(
+          ({ name }) => name !== undefined && names.includes(name),
+        ),
+      ).toEqual([]);
+      for (const path of paths) {
+        const snapshot = { ...base, secrets: { ...base.secrets, [path]: names } };
+        const unexpected = auditInfisicalSnapshots([snapshot]).violations.filter(
+          ({ kind, name }) =>
+            kind === "unexpected-secret" && name !== undefined && names.includes(name),
+        );
+        expect(unexpected).toEqual(
+          environment === "staging" && path === "/services/api-next"
+            ? []
+            : [...names]
+                .sort()
+                .map((name) => ({ environment, path, kind: "unexpected-secret", name })),
+        );
+      }
+    }
+  });
+
   test("forces the REST query to hide values", async () => {
     let requestedUrl = "";
     const names = await listInfisicalSecretNames({
