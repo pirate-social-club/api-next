@@ -16,10 +16,6 @@ export const createPost = Effect.fn("createPost")(function* (
 ) {
   return yield* createTextPost(input, {
     ...(services.textPostStore === undefined ? {} : { textPostStore: services.textPostStore }),
-    ...(services.textModeration === undefined ? {} : { textModeration: services.textModeration }),
-    ...(services.textPostStoreV2 === undefined
-      ? {}
-      : { textPostStoreV2: services.textPostStoreV2 }),
     ...(services.textModerationProvider === undefined
       ? {}
       : { textModerationProvider: services.textModerationProvider }),

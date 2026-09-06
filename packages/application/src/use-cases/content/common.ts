@@ -14,21 +14,15 @@ import {
   type ContentStore,
   type CreatePostBody,
   type M2Actor,
-  type TextModeration,
   type TextPostStore,
 } from "../../ports.ts";
-import type {
-  TextModerationProviderServiceV1,
-  TextPostStoreServiceV2,
-} from "../../text-moderation-runtime.ts";
+import type { TextModerationProviderServiceV1 } from "../../text-moderation-runtime.ts";
 import type { PersonaStoreService } from "../personas.ts";
 
 export interface ContentUseCaseServices {
   readonly contentStore: ContentStore["Service"];
   /** The target-owned text runtime; no legacy content fallback is allowed. */
   readonly textPostStore?: TextPostStore["Service"];
-  readonly textModeration?: TextModeration["Service"];
-  readonly textPostStoreV2?: TextPostStoreServiceV2;
   readonly textModerationProvider?: TextModerationProviderServiceV1;
   readonly personaStore?: Pick<PersonaStoreService, "findOwned">;
 }

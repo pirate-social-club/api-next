@@ -10,8 +10,6 @@ import {
   type PersonaRecord,
   type PersonaStoreService,
   reportCommunityContent,
-  type TextModeration,
-  TextModerationProviderError,
   TextPostRepositoryError,
   type TextPostStore,
 } from "@pirate/application";
@@ -252,14 +250,12 @@ const personaStore: PersonaStoreService = {
 
 const routeAuthorityFixtureId = "community-very-staging-fixture-acceptance-v1";
 const missingRouteTextPostStore: TextPostStore["Service"] = {
+  readModerationPolicy: () => Effect.die("missing route must fail before policy lookup"),
   replay: () => Effect.succeed({ kind: "none" as const }),
   checkAuthority: () =>
     Effect.fail(new TextPostRepositoryError({ operation: "authority", reason: "not-found" })),
   commitTerminal: () => Effect.die("missing route must fail before moderation or commit"),
   getForAuthor: () => Effect.succeed(null),
-};
-const unavailableTextModeration: TextModeration["Service"] = {
-  evaluate: () => Effect.fail(new TextModerationProviderError({ reason: "unavailable" })),
 };
 
 function createPostThroughContract(request: DecodedRequest) {
@@ -278,7 +274,6 @@ function createPostThroughContract(request: DecodedRequest) {
       },
       {
         textPostStore: missingRouteTextPostStore,
-        textModeration: unavailableTextModeration,
         personaStore,
       },
     ),
@@ -485,6 +480,7 @@ const namespaceCompletion: NamespaceOwnershipCompletionServices = {
 };
 
 const moderationFixture: TextPostStore["Service"] = {
+  readModerationPolicy: () => Effect.die("comment fixture must fail before policy lookup"),
   checkAuthority: ({ communityId }) =>
     communityId === "community_nonmember"
       ? Effect.fail(
@@ -771,7 +767,7 @@ const app = createHttpWorker({
           },
           {
             textPostStore: moderationFixture,
-            textModeration: {
+            textModerationProvider: {
               evaluate: () => Effect.die("comment route fixture must fail before moderation"),
             },
             personaStore,

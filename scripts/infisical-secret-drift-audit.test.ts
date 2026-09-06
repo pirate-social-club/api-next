@@ -1,13 +1,17 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 
 import {
   auditInfisicalSnapshots,
   fetchInfisicalSnapshots,
+  INFISICAL_POLICIES,
   type InfisicalSnapshot,
   listInfisicalSecretNames,
   parseInfisicalFolderPaths,
   parseInfisicalSecretNames,
 } from "./infisical-secret-drift-audit";
+
+import { CLOUDFLARE_WORKERS, parseJsonc } from "./secret-drift-audit";
 
 const emptySnapshot = (environment: InfisicalSnapshot["environment"]): InfisicalSnapshot => ({
   environment,
@@ -228,7 +232,6 @@ describe("Infisical secret drift audit", () => {
       "PIRATE_APP_JWT_PRIVATE_KEY",
       "PRIVY_APP_SECRET",
       "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
-      "MEGAPOT_V2_RPC_URL",
       "HNS_EDGE_ALERT_TOKEN",
     ];
     const withoutSigner: InfisicalSnapshot = {
@@ -299,6 +302,38 @@ describe("Infisical secret drift audit", () => {
     );
   });
 
+  test("admits optional video secrets only at the staging runtime path", () => {
+    const names = [
+      "VIDEO_WORKFLOW_READ_TOKEN",
+      "VIDEO_STREAM_API_TOKEN",
+      "VIDEO_STREAM_SIGNING_JWK_BASE64",
+      "VIDEO_PLAYBACK_SOURCE_HMAC_BASE64",
+    ];
+    const paths = ["/", "/services/api-next", "/services/api-next/operator"] as const;
+    for (const environment of ["dev", "staging", "prod"] as const) {
+      const base = emptySnapshot(environment);
+      expect(
+        auditInfisicalSnapshots([base]).violations.filter(
+          ({ name }) => name !== undefined && names.includes(name),
+        ),
+      ).toEqual([]);
+      for (const path of paths) {
+        const snapshot = { ...base, secrets: { ...base.secrets, [path]: names } };
+        const unexpected = auditInfisicalSnapshots([snapshot]).violations.filter(
+          ({ kind, name }) =>
+            kind === "unexpected-secret" && name !== undefined && names.includes(name),
+        );
+        expect(unexpected).toEqual(
+          environment === "staging" && path === "/services/api-next"
+            ? []
+            : [...names]
+                .sort()
+                .map((name) => ({ environment, path, kind: "unexpected-secret", name })),
+        );
+      }
+    }
+  });
+
   test("forces the REST query to hide values", async () => {
     let requestedUrl = "";
     const names = await listInfisicalSecretNames({
@@ -364,5 +399,62 @@ describe("Infisical secret drift audit", () => {
           url.includes("environment=dev") && url.includes("secretPath=%2Fservices%2Fapi-next"),
       ),
     ).toBe(false);
+  });
+});
+
+describe("Megapot inventory activation policy", () => {
+  test("permits an absent or provisioned RPC in disabled production but requires it in staging", () => {
+    for (const environment of ["prod", "staging"] as const) {
+      const policy = INFISICAL_POLICIES.find(
+        (item) => item.environment === environment && item.path === "/services/api-next",
+      );
+      expect(policy).toBeDefined();
+      for (const present of [false, true]) {
+        const snapshot = emptySnapshot(environment);
+        const report = auditInfisicalSnapshots([
+          {
+            ...snapshot,
+            secrets: {
+              ...snapshot.secrets,
+              "/services/api-next": [
+                ...(policy?.requiredNames ?? []).filter((name) => name !== "MEGAPOT_V2_RPC_URL"),
+                ...(present ? ["MEGAPOT_V2_RPC_URL"] : []),
+              ],
+            },
+          },
+        ]);
+        expect(report.violations.filter(({ name }) => name === "MEGAPOT_V2_RPC_URL")).toEqual(
+          environment === "staging" && !present
+            ? [
+                expect.objectContaining({
+                  kind: "missing-required-secret",
+                  name: "MEGAPOT_V2_RPC_URL",
+                }),
+              ]
+            : [],
+        );
+      }
+    }
+  });
+
+  test("requires the RPC inventory policy whenever either Worker enables rewards", () => {
+    for (const worker of CLOUDFLARE_WORKERS) {
+      const config = parseJsonc<{
+        env: Record<string, { vars: Record<string, string>; secrets: { required: string[] } }>;
+      }>(readFileSync(new URL(`../${worker.configPath}`, import.meta.url), "utf8"));
+      for (const environment of worker.environments) {
+        const declared = config.env[environment];
+        expect(declared).toBeDefined();
+        expect(["true", "false"]).toContain(declared?.vars.MEGAPOT_REWARDS_ENABLED ?? "");
+        if (declared?.vars.MEGAPOT_REWARDS_ENABLED !== "true") continue;
+        const policy = INFISICAL_POLICIES.find(
+          (item) =>
+            item.environment === (environment === "production" ? "prod" : "staging") &&
+            item.path === "/services/api-next",
+        );
+        expect(policy?.requiredNames).toContain("MEGAPOT_V2_RPC_URL");
+        expect(declared.secrets.required).toContain("MEGAPOT_V2_RPC_URL");
+      }
+    }
   });
 });

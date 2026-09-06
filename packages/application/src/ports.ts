@@ -4,7 +4,7 @@ import type {
   CommitCommunityCreationIntent,
   PostDocument as ContractPostDocument,
   TextContentSubmissionV1 as ContractTextContentSubmissionV1,
-  TextModerationEvaluationV1 as ContractTextModerationEvaluationV1,
+  TextModerationEvaluationV2 as ContractTextModerationEvaluationV2,
   TextModerationInputV1 as ContractTextModerationInputV1,
   CreateCommunityCreationIntent,
   CreatePost,
@@ -24,6 +24,10 @@ import type {
 } from "@pirate/contracts";
 import { Context, Data, type Effect, type Schema } from "effect";
 import type { StudyItemSourceSetV1 } from "./study-item-source.ts";
+import type {
+  RestrictedTextModerationEvidenceV1,
+  TextModerationPolicySnapshotV2,
+} from "./text-moderation-runtime.ts";
 
 /**
  * Initial service-tag catalog (api-next 000 §7; 001 phase 0 step 4).
@@ -310,15 +314,6 @@ export class TextModerationProviderError extends Data.TaggedError("TextModeratio
   readonly reason: "unavailable" | "timeout" | "invalid";
 }> {}
 
-export class TextModeration extends Context.Service<
-  TextModeration,
-  {
-    readonly evaluate: (
-      input: ContractTextModerationInputV1,
-    ) => Effect.Effect<ContractTextModerationEvaluationV1, TextModerationProviderError>;
-  }
->()("TextModeration") {}
-
 // --- Identity persistence (coordinator amendment 2026-08-16, wave-2
 // identity-boundary barrier). Derived from the reviewed platform-cf
 // implementation; the frozen physical schema is users(user_id, status,
@@ -465,7 +460,7 @@ export type ClearVoteBody = Schema.Schema.Type<(typeof ClearPostVote.request)["b
  */
 export type TextPostSubmissionDocument = ContractTextContentSubmissionV1;
 export type TextPostModerationInput = ContractTextModerationInputV1;
-export type TextPostModerationEvaluation = ContractTextModerationEvaluationV1;
+export type TextPostModerationEvaluation = ContractTextModerationEvaluationV2;
 export type TextSubmissionSurface = ContractTextModerationInputV1["surface"];
 export type TextSubmissionBody =
   | CreatePostBody
@@ -500,30 +495,6 @@ export type TextCommentTargetResolution =
   | Readonly<{ readonly kind: "not-found" }>
   | Readonly<{ readonly kind: "closed" }>
   | Readonly<{ readonly kind: "depth-exceeded"; readonly depth: number }>;
-
-export type CommentReportReasonCode =
-  | "spam"
-  | "harassment"
-  | "hate"
-  | "sexual_content"
-  | "graphic_content"
-  | "misleading"
-  | "other";
-
-export type CommentReportOutcome = Readonly<{
-  readonly reportId: string;
-  readonly caseRef: string;
-  readonly status: "open" | "coalesced";
-}>;
-
-export type ModerationAction = "approve" | "dismiss" | "hide" | "remove" | "restore";
-export type ModerationTargetStatus = "held" | "published" | "hidden" | "removed";
-export type ModerationActionOutcome = Readonly<{
-  readonly actionId: string;
-  readonly caseRef: string;
-  readonly action: ModerationAction;
-  readonly targetStatus: ModerationTargetStatus;
-}>;
 
 export type TextPostReplayOutcome =
   | { readonly kind: "none" }
@@ -567,6 +538,9 @@ export class TextPostRepositoryError extends Data.TaggedError("TextPostRepositor
 export type TextPostRepositoryFailure = TextPostRepositoryError | ControlPlaneError;
 
 export interface TextPostStoreService {
+  readonly readModerationPolicy: (input: {
+    readonly communityId: string;
+  }) => Effect.Effect<TextModerationPolicySnapshotV2, TextPostRepositoryFailure>;
   /** Read-only authority preflight used before sending text to moderation. */
   readonly checkAuthority: (input: {
     readonly communityId: string;
@@ -598,6 +572,7 @@ export interface TextPostStoreService {
     readonly requestHash: string;
     readonly operationId: string;
     readonly evaluation: TextPostModerationEvaluation;
+    readonly restrictedEvidence?: RestrictedTextModerationEvidenceV1;
     readonly target?: TextSubmissionTarget;
   }) => Effect.Effect<TextPostCommitOutcome, TextPostRepositoryFailure>;
 
@@ -606,22 +581,6 @@ export interface TextPostStoreService {
     readonly surface: "comment" | "reply";
     readonly targetId: string;
   }) => Effect.Effect<TextCommentTargetResolution, TextPostRepositoryFailure>;
-
-  readonly reportComment?: (input: {
-    readonly commentId: string;
-    readonly actor: M2Actor;
-    readonly idempotencyKey: string;
-    readonly reasonCode: CommentReportReasonCode;
-    readonly requestHash: string;
-  }) => Effect.Effect<CommentReportOutcome, TextPostRepositoryFailure>;
-
-  readonly moderateCaseAction?: (input: {
-    readonly caseRef: string;
-    readonly actor: M2Actor;
-    readonly idempotencyKey: string;
-    readonly action: ModerationAction;
-    readonly requestHash: string;
-  }) => Effect.Effect<ModerationActionOutcome, TextPostRepositoryFailure>;
 
   /** Author-scoped current submission state, distinct from immutable replay. */
   readonly getForAuthor: (input: {
