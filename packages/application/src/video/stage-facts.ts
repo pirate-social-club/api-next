@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 import type { VideoSubmissionState } from "../../../domain/src/video-submission.ts";
 import { mediaTransformSampleWindow } from "../media/transform.ts";
+import { VideoRecognitionEvidenceSchema } from "./recognition-evidence.ts";
 
 const Text = Schema.NonEmptyString.check(
   Schema.makeFilter((s) =>
@@ -94,10 +95,20 @@ const schemas = {
     frames: Schema.Tuple([Frame, Frame, Frame]),
   }),
   recognition: Schema.Union([
-    Schema.Struct({ verification: Verification, evidenceRef: Text, adapterRevision: Text }),
+    Schema.Struct({
+      verification: Verification,
+      evidenceRef: Text,
+      adapterRevision: Text,
+      privateEvidence: Schema.optional(
+        Schema.Array(VideoRecognitionEvidenceSchema).check(Schema.isMaxLength(6)),
+      ),
+    }),
     Schema.Struct({
       verification: Schema.Null,
       exhaustion: Schema.Literals(["acr_exhausted", "acr_skipped"]),
+      privateEvidence: Schema.optional(
+        Schema.Array(VideoRecognitionEvidenceSchema).check(Schema.isMaxLength(6)),
+      ),
       evidenceRef: Text,
       adapterRevision: Text,
     }),

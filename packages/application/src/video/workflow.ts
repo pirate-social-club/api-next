@@ -397,8 +397,9 @@ export async function runVideoAnalysisWorkflow(
         const audio = (await requiredFact(record, "audio")).snapshot;
         const snapshot = await services.analysisProviders.identifySoundtrack({
           operationId: record.state.operationId,
-          extractedAudioRef: audio.artifactRef,
-          extractedAudioSha256: audio.canonicalSha256,
+          videoRevision: record.state.videoRevision,
+          creationRevision: record.state.creationRevision,
+          clips: audio.clips,
         });
         await services.stageFacts.write({
           submission: record.state,
