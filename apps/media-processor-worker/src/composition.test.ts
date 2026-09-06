@@ -39,28 +39,34 @@ describe("media processor composition", () => {
     expect(composition.workflow.providers).toBeNull();
   });
 
-  test("requires explicit provider composition before video analysis is enabled", () => {
+  test("constructs every video provider from bindings without an adapter argument", () => {
     const base = disabledEnv();
-    expect(() =>
-      makeMediaProcessorComposition({
-        MEDIA_PROCESSING_ENABLED: base.MEDIA_PROCESSING_ENABLED as string,
-        CONTROL_PLANE: base.CONTROL_PLANE as NonNullable<MediaProcessorRuntimeEnv["CONTROL_PLANE"]>,
-        MEDIA_PROCESSING_WORKFLOW: base.MEDIA_PROCESSING_WORKFLOW as NonNullable<
-          MediaProcessorRuntimeEnv["MEDIA_PROCESSING_WORKFLOW"]
-        >,
-        MEDIA_IMMUTABLE_ORIGINALS: { head: async () => null } as unknown as R2Bucket,
-        MEDIA_DERIVED_ARTIFACTS: { head: async () => null } as unknown as R2Bucket,
-        VIDEO_ANALYSIS_ENABLED: "true",
-        VIDEO_WORKFLOW_ACCOUNT_ID: "a".repeat(32),
-        VIDEO_WORKFLOW_NAME: "video-fixture",
-        VIDEO_WORKFLOW_SCRIPT_NAME: "media-fixture",
-        VIDEO_WORKFLOW_READ_TOKEN: "fixture-workflow-read-token",
-        VIDEO_ANALYSIS_WORKFLOW: {
-          createBatch: async () => [],
-          get: async () => ({ status: async () => ({ status: "running" }) }),
-        },
-      }),
-    ).toThrow("video recognition provider is required");
+    const composition = makeMediaProcessorComposition({
+      MEDIA_PROCESSING_ENABLED: base.MEDIA_PROCESSING_ENABLED as string,
+      CONTROL_PLANE: base.CONTROL_PLANE as NonNullable<MediaProcessorRuntimeEnv["CONTROL_PLANE"]>,
+      MEDIA_PROCESSING_WORKFLOW: base.MEDIA_PROCESSING_WORKFLOW as NonNullable<
+        MediaProcessorRuntimeEnv["MEDIA_PROCESSING_WORKFLOW"]
+      >,
+      MEDIA_IMMUTABLE_ORIGINALS: { head: async () => null } as unknown as R2Bucket,
+      MEDIA_DERIVED_ARTIFACTS: { head: async () => null } as unknown as R2Bucket,
+      VIDEO_ANALYSIS_ENABLED: "true",
+      QENCODE_API_KEY: "fixture-qencode-key",
+      VIDEO_SOURCE_GATEWAY_ORIGIN: "https://video-source.example",
+      ACRCLOUD_IDENTIFY_HOST: "identify-eu-west-1.acrcloud.com",
+      ACRCLOUD_ACCESS_KEY: "fixture-access-key",
+      ACRCLOUD_ACCESS_SECRET: "fixture-access-secret",
+      VIDEO_WORKFLOW_ACCOUNT_ID: "a".repeat(32),
+      VIDEO_WORKFLOW_NAME: "video-fixture",
+      VIDEO_WORKFLOW_SCRIPT_NAME: "media-fixture",
+      VIDEO_WORKFLOW_READ_TOKEN: "fixture-workflow-read-token",
+      VIDEO_ANALYSIS_WORKFLOW: {
+        createBatch: async () => [],
+        get: async () => ({ status: async () => ({ status: "running" }) }),
+      },
+    });
+    expect(composition.videoWorkflow?.analysisProviders.identifySoundtrack).toBeFunction();
+    expect(composition.videoWorkflow?.analysisProviders.moderate).toBeFunction();
+    expect(composition.videoWorkflow?.transform).toBeDefined();
   });
 
   test("refuses the Qencode provisioning sentinel before provider work", () => {

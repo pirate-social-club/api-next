@@ -5,10 +5,12 @@ import type {
 import { mediaSha256Bytes } from "../media/submission-service.ts";
 import type {
   MediaTransformAttempt,
+  MediaTransformVideoAudioArtifact,
   MediaTransformVideoBinding,
   MediaTransformVideoCapabilities,
 } from "../media/transform.ts";
 import type { VideoPublicationCommitServices } from "./publication.ts";
+import type { VideoRecognitionEvidence } from "./recognition-evidence.ts";
 
 export type VideoAnalysisSource = Readonly<{
   operationId: string;
@@ -19,18 +21,22 @@ export type VideoAnalysisSource = Readonly<{
   mediaType: "video/mp4" | "video/quicktime";
 }>;
 
-export type VideoSoundtrackFact =
-  | Readonly<{
-      verification: OriginalAudioVerification;
-      evidenceRef: string;
-      adapterRevision: string;
-    }>
-  | Readonly<{
-      verification: null;
-      exhaustion: "acr_exhausted" | "acr_skipped";
-      evidenceRef: string;
-      adapterRevision: string;
-    }>;
+export type VideoSoundtrackFact = Readonly<{
+  privateEvidence?: readonly VideoRecognitionEvidence[];
+}> &
+  (
+    | Readonly<{
+        verification: OriginalAudioVerification;
+        evidenceRef: string;
+        adapterRevision: string;
+      }>
+    | Readonly<{
+        verification: null;
+        exhaustion: "acr_exhausted" | "acr_skipped";
+        evidenceRef: string;
+        adapterRevision: string;
+      }>
+  );
 
 export type VideoSafetyFact = Readonly<{
   requestId: string;
@@ -48,8 +54,9 @@ export type VideoAnalysisProviders = Readonly<{
   identifySoundtrack: (
     input: Readonly<{
       operationId: string;
-      extractedAudioRef: string;
-      extractedAudioSha256: string;
+      videoRevision: number;
+      creationRevision: number;
+      clips: MediaTransformVideoAudioArtifact["clips"];
     }>,
   ) => Promise<VideoSoundtrackFact>;
   moderate: (

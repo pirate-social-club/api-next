@@ -228,6 +228,7 @@ export type MediaTransformVideoAudioInput = Readonly<{
   readonly binding: MediaTransformVideoBinding;
   readonly source: MediaTransformVideoSource;
   readonly extractionPolicyVersion: typeof MEDIA_TRANSFORM_VIDEO_AUDIO_POLICY_V1;
+  readonly sourceDurationMs: number;
   readonly attempt: MediaTransformAttempt;
   readonly signal?: AbortSignal;
 }>;
@@ -262,7 +263,21 @@ export type MediaTransformVideoProbe = Readonly<{
   readonly hasAudio: true;
 }>;
 
-type MediaTransformVideoAudioArtifact = Readonly<{
+type MediaTransformVideoAudioClip = Readonly<{
+  readonly variant: "primary" | "alternate";
+  readonly artifactRef: string;
+  readonly canonicalSha256: string;
+  readonly sizeBytes: number;
+  readonly mediaType: "audio/mpeg";
+  readonly offsetMs: number;
+  readonly durationMs: number;
+}>;
+
+export type MediaTransformVideoAudioArtifact = Readonly<{
+  readonly sizeBytes: number;
+  readonly offsetMs: 0;
+  readonly durationMs: number;
+  readonly clips: readonly [MediaTransformVideoAudioClip, MediaTransformVideoAudioClip];
   readonly artifactRef: string;
   readonly canonicalSha256: string;
   readonly sourceSha256: string;

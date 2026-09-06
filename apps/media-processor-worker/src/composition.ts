@@ -13,6 +13,7 @@ import {
 } from "@pirate/platform-cf/media-processing-cloudflare";
 import {
   MEDIA_MP3_SAMPLE_ADAPTER_REVISION,
+  type MediaProcessingFetch,
   makeAcrCloudFetchTransport,
   makeElevenLabsAlignmentFetchTransport,
   makeElevenLabsProcessingAlignmentPort,
@@ -46,6 +47,7 @@ import {
   type VideoWorkflowStatusFetch,
 } from "@pirate/platform-cf/video-analysis-workflow-cloudflare";
 import { makeControlPlaneVideoPublicationStore } from "@pirate/platform-cf/video-publication-repository";
+import { makeVideoRecognitionProvider } from "@pirate/platform-cf/video-recognition-provider";
 import { makeVideoSafetyEvidenceStore } from "@pirate/platform-cf/video-safety-evidence-repository";
 import { makeVideoSafetyFrameReader } from "@pirate/platform-cf/video-safety-frame-reader";
 import { makeVideoSafetyProvider } from "@pirate/platform-cf/video-safety-provider";
@@ -91,6 +93,7 @@ export type MediaProcessorRuntimeAdapters = Readonly<{
   readonly videoAnalysis?: Readonly<{
     readonly providers?: Partial<VideoAnalysisProviders>;
     readonly moderationTransport?: OpenAiModerationTransport;
+    readonly recognitionFetch?: MediaProcessingFetch;
     readonly workflowFetch?: VideoWorkflowStatusFetch;
     readonly transform?: MediaTransformVideoCapabilities;
     readonly qencode?: Readonly<{
@@ -217,21 +220,15 @@ function bindVideoPhysicalR2Keys(
   };
 }
 
-function makeEnabledProviders(env: MediaProcessorRuntimeEnv): MediaProcessingProviders {
-  const immutableOriginals = requiredBinding(
-    env.MEDIA_IMMUTABLE_ORIGINALS,
-    "MEDIA_IMMUTABLE_ORIGINALS",
-  );
-  const derivedArtifacts = requiredBinding(env.MEDIA_DERIVED_ARTIFACTS, "MEDIA_DERIVED_ARTIFACTS");
-  const imageTransformations = requiredBinding(env.IMAGE_TRANSFORMATIONS, "IMAGE_TRANSFORMATIONS");
+function makeIdentification(env: MediaProcessorRuntimeEnv, fetcher?: MediaProcessingFetch) {
   const acrHost = requiredText(env.ACRCLOUD_IDENTIFY_HOST, "ACRCLOUD_IDENTIFY_HOST");
-  const identification = makeAcrCloudAdapter({
+  return makeAcrCloudAdapter({
     host: acrHost,
     credentials: {
       accessKey: requiredText(env.ACRCLOUD_ACCESS_KEY, "ACRCLOUD_ACCESS_KEY"),
       accessSecret: requiredText(env.ACRCLOUD_ACCESS_SECRET, "ACRCLOUD_ACCESS_SECRET"),
     },
-    transport: makeAcrCloudFetchTransport(acrHost),
+    transport: makeAcrCloudFetchTransport(acrHost, fetcher),
     clock: () => Math.floor(Date.now() / 1_000),
     adapterRevision: "acrcloud-adapter-v1",
     limits: {
@@ -241,6 +238,16 @@ function makeEnabledProviders(env: MediaProcessorRuntimeEnv): MediaProcessingPro
       timeoutMs: 120_000,
     },
   });
+}
+
+function makeEnabledProviders(env: MediaProcessorRuntimeEnv): MediaProcessingProviders {
+  const immutableOriginals = requiredBinding(
+    env.MEDIA_IMMUTABLE_ORIGINALS,
+    "MEDIA_IMMUTABLE_ORIGINALS",
+  );
+  const derivedArtifacts = requiredBinding(env.MEDIA_DERIVED_ARTIFACTS, "MEDIA_DERIVED_ARTIFACTS");
+  const imageTransformations = requiredBinding(env.IMAGE_TRANSFORMATIONS, "IMAGE_TRANSFORMATIONS");
+  const identification = makeIdentification(env);
   const alignmentAdapter = new ElevenLabsAlignmentAdapter({
     enabled: true,
     api_key: requiredText(env.ELEVENLABS_API_KEY, "ELEVENLABS_API_KEY"),
@@ -361,17 +368,12 @@ export function makeMediaProcessorComposition(
   const enabled = isMediaProcessingEnabled(env.MEDIA_PROCESSING_ENABLED);
   const workerId = `media-processor-${crypto.randomUUID()}`;
   const videoAnalysisEnabled = env.VIDEO_ANALYSIS_ENABLED === "true";
-  if (videoAnalysisEnabled && adapters.videoAnalysis?.providers?.identifySoundtrack === undefined) {
-    throw new Error("video recognition provider is required when video analysis is enabled");
-  }
-  const videoAnalysisRepository =
-    videoAnalysisEnabled && adapters.videoAnalysis !== undefined
-      ? makeControlPlaneVideoAnalysisOutboxRepository(runtime)
-      : undefined;
-  const enabledVideoTransform =
-    videoAnalysisEnabled && adapters.videoAnalysis !== undefined
-      ? videoTransform(env, runtime, adapters.videoAnalysis)
-      : undefined;
+  const videoAnalysisRepository = videoAnalysisEnabled
+    ? makeControlPlaneVideoAnalysisOutboxRepository(runtime)
+    : undefined;
+  const enabledVideoTransform = videoAnalysisEnabled
+    ? videoTransform(env, runtime, adapters.videoAnalysis ?? {})
+    : undefined;
 
   const videoModeration =
     videoAnalysisEnabled && env.OPENAI_MODERATION_ENABLED === "true"
@@ -382,23 +384,35 @@ export function makeMediaProcessorComposition(
             : { transport: adapters.videoAnalysis.moderationTransport }),
         })
       : null;
-  const videoProviders: VideoAnalysisProviders | undefined =
-    videoAnalysisEnabled && adapters.videoAnalysis?.providers?.identifySoundtrack !== undefined
-      ? {
-          identifySoundtrack: adapters.videoAnalysis.providers.identifySoundtrack,
-          moderate:
-            adapters.videoAnalysis.providers.moderate ??
-            makeVideoSafetyProvider({
-              image: videoModeration,
-              text: videoModeration,
-              readFrame: makeVideoSafetyFrameReader(
-                requiredBinding(env.MEDIA_DERIVED_ARTIFACTS, "MEDIA_DERIVED_ARTIFACTS"),
-              ),
-              readPolicy: store.readModerationPolicy,
-              evidence: makeVideoSafetyEvidenceStore(runtime),
-            }),
-        }
-      : undefined;
+  const videoProviders: VideoAnalysisProviders | undefined = videoAnalysisEnabled
+    ? {
+        identifySoundtrack:
+          adapters.videoAnalysis?.providers?.identifySoundtrack ??
+          makeVideoRecognitionProvider({
+            identification: [
+              env.ACRCLOUD_IDENTIFY_HOST,
+              env.ACRCLOUD_ACCESS_KEY,
+              env.ACRCLOUD_ACCESS_SECRET,
+            ].every((value) => value !== undefined && value.trim() !== "" && value !== "PENDING")
+              ? makeIdentification(env, adapters.videoAnalysis?.recognitionFetch)
+              : null,
+            reader: makeR2MediaProcessingArtifactReader(
+              requiredBinding(env.MEDIA_DERIVED_ARTIFACTS, "MEDIA_DERIVED_ARTIFACTS"),
+            ),
+          }),
+        moderate:
+          adapters.videoAnalysis?.providers?.moderate ??
+          makeVideoSafetyProvider({
+            image: videoModeration,
+            text: videoModeration,
+            readFrame: makeVideoSafetyFrameReader(
+              requiredBinding(env.MEDIA_DERIVED_ARTIFACTS, "MEDIA_DERIVED_ARTIFACTS"),
+            ),
+            readPolicy: store.readModerationPolicy,
+            evidence: makeVideoSafetyEvidenceStore(runtime),
+          }),
+      }
+    : undefined;
   if (videoAnalysisEnabled && env.VIDEO_ANALYSIS_WORKFLOW === undefined) {
     throw new Error("VIDEO_ANALYSIS_WORKFLOW is required when video analysis is enabled");
   }
@@ -407,7 +421,6 @@ export function makeMediaProcessorComposition(
     queue: { store, workflow, workerId },
     ...(videoAnalysisRepository !== undefined &&
     enabledVideoTransform !== undefined &&
-    adapters.videoAnalysis !== undefined &&
     videoProviders !== undefined &&
     env.VIDEO_ANALYSIS_WORKFLOW !== undefined
       ? {
@@ -439,7 +452,7 @@ export function makeMediaProcessorComposition(
                 scriptName: env.VIDEO_WORKFLOW_SCRIPT_NAME,
                 readToken: env.VIDEO_WORKFLOW_READ_TOKEN,
               },
-              adapters.videoAnalysis.workflowFetch,
+              adapters.videoAnalysis?.workflowFetch,
             ),
             outbox: videoAnalysisRepository,
             runtime: {
