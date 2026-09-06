@@ -15,14 +15,17 @@ import {
   decideOriginalAudioVideo,
   publishOriginalVideo,
 } from "../../domain/src/video-submission.ts";
+import { makeVideoPublicationAuthorization } from "./video-access-authorization.ts";
 import { makeVideoEnrichmentDispatchSource } from "./video-enrichment-dispatch-source.ts";
 import { makeVideoEnrichmentExecutionStore } from "./video-enrichment-execution-store.ts";
 import { makeVideoPlaybackAuthority } from "./video-playback-authority.ts";
 import {
+  actor,
   community,
   finalizedFixture,
   operationId,
   seedVideoActors,
+  submissionId,
   trustedAnalysis,
 } from "./video-publication.pg-fixture.ts";
 import { makeVideoStreamIngestStore } from "./video-stream-ingest-repository.ts";
@@ -99,6 +102,62 @@ const expire = (admin: Client) =>
   );
 
 suite("video Stream ingest durable PostgreSQL", () => {
+  test("publication access admits anonymous general video and denies adult, platform and open review holds", async () => {
+    for (const mode of ["general", "adult", "platform", "review"] as const) {
+      await fixture(async ({ layer }, admin) => {
+        const authorize = makeVideoPublicationAuthorization(layer);
+        const input = { postId: "post-video-ingest", communityId: community };
+        if (mode === "adult")
+          await admin.query("UPDATE posts SET content_rating='adult_18' WHERE post_id=$1", [
+            input.postId,
+          ]);
+        if (mode === "platform") {
+          const digest = "a".repeat(64);
+          const evidenceRef = `evidence_${"b".repeat(64)}`;
+          await admin.query(
+            `INSERT INTO media_video_safety_evidence
+             (submission_id,video_revision,creation_revision,request_id,input_sha256,evidence_ref,evidence_snapshot,platform_held)
+             VALUES ($1,1,1,'access-platform-hold',$2,$3,$4::jsonb,true)`,
+            [
+              submissionId,
+              digest,
+              evidenceRef,
+              JSON.stringify({
+                requestId: "access-platform-hold",
+                inputDigest: digest,
+                platformHeld: true,
+                fact: {
+                  mediaSafety: "blocked",
+                  captionSafety: "not_applicable",
+                  minorSafetyEvidenceRef: null,
+                  evidenceRef,
+                },
+              }),
+            ],
+          );
+        }
+        if (mode === "review")
+          await admin.query(
+            `INSERT INTO media_video_review_holds
+             (submission_id,creation_revision,hold_kind,reason_codes,status)
+             VALUES ($1,1,'safety','["media_review_required"]'::jsonb,'open')`,
+            [submissionId],
+          );
+        if (mode === "general" || mode === "adult")
+          expect(await Effect.runPromise(authorize(input))).toBe(mode === "general");
+        else
+          expect(
+            await Promise.all(
+              [undefined, actor].map((viewerUserId) =>
+                Effect.runPromise(
+                  authorize({ ...input, ...(viewerUserId ? { viewerUserId } : {}) }),
+                ),
+              ),
+            ),
+          ).toEqual([false, false]);
+      });
+    }
+  }, 30_000);
   test("migration refuses legacy in-flight state instead of inventing deadlines", async () => {
     const migration = await Bun.file(
       new URL("../../../db/postgres/migrations/0127_video_delivery_ingest.sql", import.meta.url),
