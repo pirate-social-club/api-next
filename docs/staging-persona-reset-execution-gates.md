@@ -5,7 +5,26 @@ release remains API ba0fd44529d834f491879126cdb8c67c4ec9fcdc and Solid
 fa5ce5eff47967efb5f13c04de01e75293d3e230, through migration 0119. Do not use
 current main to expand the release. Production is not a target.
 
-## Combined transaction proof and capacity
+Current disposition — 2026-09-06. The owner-approved
+[phased amendment](staging-persona-phased-reset-amendment.md) supersedes the
+atomic mechanism and the unadopted phase proposal recorded below. Those two
+sections retain historical measurements, not current execution instructions.
+The internal phased executor is locally proven, but this document is still not
+a live runbook: trusted admission collectors, complete maintenance artifacts,
+the approved privilege policy and its ledger-write restriction, provider
+recovery rehearsal and final publication gates remain unfinished. Table locks
+are per removal batch, not held over the whole reset; the continuous producer
+fence is essential. Recovery after committed partial progress means restoring
+the verified capture, not rolling back an earlier transaction or resuming.
+
+Review this handoff together with the phased amendment and
+[privilege proposal](staging-persona-runtime-privileges.review.md). Before
+capture, explicitly resolve whether an external HNS provisioner writes staging;
+if so, its direct SQL connection belongs to the fence as well. Queue purge
+requires the owner's separate affirmative decision. No approval of a proposal
+or passing local suite replaces a provider execution receipt.
+
+## Historical combined transaction proof and capacity
 
 The internal reconstructStagingInTransaction body validates pinned artifacts,
 the direct SQL identity, schema OID, exact 0109 ledger and approved default-ACL
@@ -45,7 +64,7 @@ PostgreSQL describes this shared pool in its
 CI initializes its disposable general-test service with the larger setting using
 [initdb's --set option](https://www.postgresql.org/docs/17/app-initdb.html).
 
-## Measured phase proposal, not an adopted mechanism
+## Historical measured phase proposal
 
 The local-only command `rtk proxy bun scripts/staging-persona-lock-measure.ts
 --local-measure` measures separate removal of populated 0109 and fresh replay

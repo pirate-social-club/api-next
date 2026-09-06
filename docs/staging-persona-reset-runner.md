@@ -1,10 +1,12 @@
 # Staging persona reset runner
 
 This is an implementation checkpoint, not an executable reset runbook.
-Available pieces are the offline release planner, evidence-consistency
-validator and read-only database observers. The observers require dedicated
-connections supplied by a future trusted collector. No reset execution option
-is available.
+Available pieces include the offline release planner, evidence-consistency
+validator, read-only database observers and the internal phased executor.
+The [phased amendment](staging-persona-phased-reset-amendment.md) is the current
+mechanism; atomic helpers are retained only for local comparison and tests.
+The observers and executor require dedicated connections and evidence supplied
+by a future trusted collector. No live reset execution option is available.
 The August rebuild script remains
 unchanged and must not be used for this release.
 
