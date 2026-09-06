@@ -1,18 +1,12 @@
 import { createHash, X509Certificate } from "node:crypto";
 import { connect } from "node:tls";
 
-export function inspectPinnedCertificate(
-  raw: Uint8Array,
-  hostname: string,
-  pin: string,
-  now: number,
-): string | null {
+export function inspectPinnedCertificate(raw: Uint8Array, pin: string, now: number): string | null {
   const certificate = new X509Certificate(raw);
   const actualPin = createHash("sha256")
     .update(certificate.publicKey.export({ type: "spki", format: "der" }))
     .digest("hex");
-  if (actualPin !== pin || certificate.checkHost(hostname) === undefined)
-    return "certificate_identity_mismatch";
+  if (actualPin !== pin) return "certificate_identity_mismatch";
   const from = Date.parse(certificate.validFrom) / 1000;
   const until = Date.parse(certificate.validTo) / 1000;
   if (!Number.isFinite(from) || !Number.isFinite(until) || from > now) return "certificate_invalid";
@@ -43,7 +37,7 @@ export async function probePinnedCertificate(
     socket.once("error", () => finish("certificate_observation_unavailable"));
     socket.once("secureConnect", () => {
       try {
-        finish(inspectPinnedCertificate(socket.getPeerCertificate().raw, hostname, pin, now));
+        finish(inspectPinnedCertificate(socket.getPeerCertificate().raw, pin, now));
       } catch {
         finish("certificate_observation_unavailable");
       }
