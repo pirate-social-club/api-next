@@ -101,8 +101,12 @@ async function provider(path: string) {
   return JSON.parse(stdout);
 }
 
-/** Fixed isolated branch only. This neither fences nor invokes reconstruction. */
-export async function inspectProviderRehearsal() {
+/** Trusted in-process access to the fixed isolated branch, never a caller URL.
+ * This establishes identity, not reset authority. Credentials stay private.
+ */
+export async function withProviderRehearsalOperator<T>(
+  use: (client: Client, operator: string, runtime: string) => Promise<T>,
+): Promise<T> {
   let client: Client | undefined;
   let phase = "target";
   try {
@@ -147,28 +151,9 @@ export async function inspectProviderRehearsal() {
         throw new Error();
       if (kind === "runtime") runtimeRole = resolved.role;
       else {
-        if (runtimeRole === resolved.role) throw new Error();
-        phase = "catalog";
-        const inventory = await observeInplaceInventory(client, runtimeRole);
-        phase = "data";
-        const data = await fingerprintRehearsalData(client);
-        return {
-          observed_at: new Date().toISOString(),
-          branch_id: branchId,
-          source_branch_id: sourceId,
-          inventory: {
-            ...inventory,
-            owners: inventory.owners.map((owner) => ({
-              kind: owner.kind,
-              count: owner.count,
-              not_effectively_owned_count: owner.not_effectively_owned.length,
-            })),
-          },
-          data,
-          fence_verified: false,
-          recovery_verified: false,
-          execution_authorized: false,
-        };
+        if (!runtimeRole || runtimeRole === resolved.role) throw new Error();
+        phase = "operation";
+        return await use(client, resolved.role, runtimeRole);
       }
       await client.end();
       client = undefined;
@@ -179,6 +164,31 @@ export async function inspectProviderRehearsal() {
   } finally {
     await client?.end().catch(() => undefined);
   }
+}
+
+/** Fixed isolated branch only. This neither fences nor invokes reconstruction. */
+export async function inspectProviderRehearsal() {
+  return withProviderRehearsalOperator(async (client, _operator, runtimeRole) => {
+    const inventory = await observeInplaceInventory(client, runtimeRole);
+    const data = await fingerprintRehearsalData(client);
+    return {
+      observed_at: new Date().toISOString(),
+      branch_id: branchId,
+      source_branch_id: sourceId,
+      inventory: {
+        ...inventory,
+        owners: inventory.owners.map((owner) => ({
+          kind: owner.kind,
+          count: owner.count,
+          not_effectively_owned_count: owner.not_effectively_owned.length,
+        })),
+      },
+      data,
+      fence_verified: false,
+      recovery_verified: false,
+      execution_authorized: false,
+    };
+  });
 }
 
 if (import.meta.main) {

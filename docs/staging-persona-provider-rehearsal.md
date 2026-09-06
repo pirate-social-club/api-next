@@ -131,3 +131,52 @@ Those counts remain point-in-time evidence, not proof that reconnects are
 prevented. Do not request broader privileges merely to satisfy this helper.
 The provider rehearsal still needs actual branch/producer exclusion checks;
 per-batch locks and the failed-run marker do not supply that maintained fence.
+
+## Provider baseline disposition and isolated entrypoint
+
+The owner explicitly classifies pscale_admin as provider substrate, not an
+application writer. The 05:00:26 UTC comparison found two such sessions on
+each branch, with the same two application-name fingerprints:
+4d610df279c4c8ef752e6ce9ba073967a3ea23cc7d09024922ac9da4f17cf930 and
+a2f5ec7abc29f65a8dfc0527aaca0fe6140718ccec2828d243c8ada40c5fe7e3.
+Client address, backend type and start time were hidden on both branches;
+no address-range comparison is claimed. Main had 19 total sessions and the
+rehearsal branch had three, including the observer. Both reported 64/25/0,
+six non-fast-path lock rows and zero sampled provider lock rows. These are
+samples, not lifetime maxima.
+
+The fixed isolated entrypoint is scripts/staging-persona-provider-rehearsal.ts,
+with --dry-run or --execute. It measures the pinned baseline in a generated
+local PostgreSQL 17 database, checks backup xvvo8r6tcaa5 still names restored
+branch 0ny029b910ob, checks the original data fingerprint and approved defaults,
+and verifies that staging Hyperdrive remains on main. It uses only the original
+operator for reconstruction. The runtime credential is used solely for a fresh
+identity probe, then closed. No caller-selected provider URL is accepted.
+
+During reconstruction an independent operator connection samples locks. The
+session check permits only the two known runner PIDs and the exact observed
+provider application baseline. Unexpected sessions, prepared transactions or
+capacity changes fail the run. Provider sessions are included in headroom:
+reserve 64 entries per observed connection plus two extra connections, and cap
+the remaining cluster budget at the previously reviewed 1200 rows. Each reset
+transaction remains bounded at 1000 own lock rows and removal dependency closure
+800. Sampling can miss transient peaks; receipts say so explicitly.
+
+The fixed host marker is outside the reset schema. It remains after a successful
+isolated run because no paired release happened there; a failed run cannot
+resume. The command neither deletes that marker nor restores or deletes provider
+resources. A second destructive rehearsal requires restoring the original
+capture and recording the resulting provider branch identity before admission.
+The live staging maintenance implementation is separate and is not a
+prerequisite for this owner-dispositioned isolated rehearsal. Post-reset checks
+do not prove absence of every possible concurrent write.
+
+The first entrypoint dry run passed on 2026-09-06. It measured independent
+baseline shape 2e295e58b965fd73e73167c1b6628efe28115fd01386d3fd155b104ba0d432fd,
+reconfirmed the original data fingerprint and observed two provider plus two
+known operator sessions, six shared-lock rows and the derived cluster budget
+1200. It created and removed only its generated local reference database; it
+made no provider data changes. Check passed with 41 baseline warnings; focused
+tests passed 14/14 with 69 assertions; the full unit suite passed 3038/3038
+with 12988 assertions across 473 files. No full Worker or PostgreSQL-suite
+rerun is claimed for this entrypoint checkpoint.
