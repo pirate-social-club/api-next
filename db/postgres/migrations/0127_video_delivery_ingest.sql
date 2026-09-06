@@ -1,4 +1,5 @@
--- Delivery follows source grants 0123 and safety evidence 0124.
+-- Delivery follows source grants 0123, safety 0124, publication reasons 0125
+-- and HNS execution privileges 0126 (origin/main 66b58debe3d7c305cf958545ad7ec98a1a8ad983).
 -- There was no production consumer for this ledger. Never invent attempt dates
 -- for an unexpected manually started row during rollout.
 DO $$ BEGIN

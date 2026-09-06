@@ -67,6 +67,7 @@ async function published(connection: string) {
   });
   const publication = publishOriginalVideo(ready.state, "post-video-ingest");
   await store.publish({
+    observedEventSequence: ready.eventSequence,
     state: publication.state,
     decision,
     originalSound: publication.originalSound,
@@ -100,7 +101,7 @@ const expire = (admin: Client) =>
 suite("video Stream ingest durable PostgreSQL", () => {
   test("migration refuses legacy in-flight state instead of inventing deadlines", async () => {
     const migration = await Bun.file(
-      new URL("../../../db/postgres/migrations/0125_video_delivery_ingest.sql", import.meta.url),
+      new URL("../../../db/postgres/migrations/0127_video_delivery_ingest.sql", import.meta.url),
     ).text();
     for (const started of [false, true]) {
       await fixture(async ({ ingest }, admin) => {

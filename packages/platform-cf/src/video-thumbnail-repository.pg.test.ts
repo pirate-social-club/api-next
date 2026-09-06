@@ -54,6 +54,7 @@ async function published(connection: string) {
   });
   const publication = publishOriginalVideo(ready.state, "post-video-thumbnail");
   await store.publish({
+    observedEventSequence: ready.eventSequence,
     state: publication.state,
     decision,
     originalSound: publication.originalSound,
