@@ -919,6 +919,7 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
           const noStore =
             !isPublic(binding.endpoint) ||
             binding.name === "GetPublicPersona" ||
+            binding.name === "GetPublicCommunityThreads" ||
             authorization !== undefined ||
             context.req.header("cookie") !== undefined ||
             request?.body !== undefined ||

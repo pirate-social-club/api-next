@@ -143,6 +143,7 @@ import {
   type HyperdriveConnection,
   makeHyperdriveControlPlaneLayer,
 } from "@pirate/platform-cf/postgres";
+import { makeControlPlanePublicCommunityThreadsStore } from "@pirate/platform-cf/public-community-threads-repository";
 import { makeControlPlanePublicPostSlugStore } from "@pirate/platform-cf/public-post-slug-repository";
 import { makeControlPlanePublicProfileStore } from "@pirate/platform-cf/public-profile-repository";
 import {
@@ -219,6 +220,7 @@ import { makeNamespaceOwnershipHandlers } from "./namespace-ownership-handlers.t
 import { makePersonaHandlers } from "./persona-handlers.ts";
 import { makePlatformPirateHandleHandlers } from "./platform-pirate-handle-handlers.ts";
 import { makeProductHandlers } from "./product-handlers.ts";
+import { makePublicCommunityThreadsHandler } from "./public-community-threads-handler.ts";
 import { makePublicPostRouteHandlers } from "./public-post-route-handlers.ts";
 import { makeSongRewardOfferHandlers } from "./rewards-song-offer-handlers.ts";
 import { makeSongOwnerVideoPolicyHandlers } from "./song-owner-video-policy-handlers.ts";
@@ -1306,6 +1308,9 @@ export async function createProductionHttpWorker(
     hnsEdgeStatus,
     handlers: {
       ...productHandlers,
+      GetPublicCommunityThreads: makePublicCommunityThreadsHandler({
+        publicCommunityThreadsStore: makeControlPlanePublicCommunityThreadsStore(controlPlane),
+      }),
       ...communityCreationHandlers,
       ...canonicalCommunityRouteHandlers,
       ...publicPostRouteHandlers,

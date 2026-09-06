@@ -8,9 +8,8 @@ import type { DecodedRequest, EndpointHandler } from "./transport.ts";
 type PublicCommunityThreadsPath = Readonly<{ readonly communityRef: string }>;
 
 /**
- * Focused handoff adapter for the public threads endpoint. The production
- * composition intentionally does not install this handler until the
- * coordinator adds its route-specific cache policy.
+ * Anonymous read even when a caller supplies credentials. The installed
+ * transport applies the route-specific no-store policy.
  */
 export const makePublicCommunityThreadsHandler = (
   services: PublicCommunityThreadsServices,
@@ -22,7 +21,6 @@ export const makePublicCommunityThreadsHandler = (
         {
           communityRef,
           query: request.query as Parameters<typeof getPublicCommunityThreads>[0]["query"],
-          ...(request.principal === null ? {} : { viewerUserId: request.principal.subject }),
         },
         services,
       ),

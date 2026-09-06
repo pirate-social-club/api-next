@@ -13,7 +13,7 @@ const request = (overrides: Partial<DecodedRequest> = {}): DecodedRequest => ({
 });
 
 describe("public community threads handler", () => {
-  test("passes the raw ref and closed query to the use case", async () => {
+  test("passes the raw ref and closed query without an authenticated viewer", async () => {
     let observed: unknown;
     const handler = makePublicCommunityThreadsHandler({
       publicCommunityThreadsStore: {
@@ -24,7 +24,9 @@ describe("public community threads handler", () => {
       },
     });
 
-    await expect(handler(request())).rejects.toBeInstanceOf(NotFound);
+    await expect(
+      handler(request({ principal: { kind: "user", subject: "viewer-with-age-grant" } })),
+    ).rejects.toBeInstanceOf(NotFound);
     expect(observed).toEqual({
       communityRef: "alpha-community",
       slugCandidate: "alpha-community",

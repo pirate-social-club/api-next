@@ -1,0 +1,25 @@
+{
+  "status": 200,
+  "headers": {
+    "cache-control": "no-store",
+    "content-type": "application/json; charset=UTF-8"
+  },
+  "body": {
+    "community": {
+      "id": "empty-fixture",
+      "object": "community_preview",
+      "route_slug": "empty-fixture",
+      "display_name": "Empty fixture",
+      "membership_mode": "open",
+      "human_verification_lane": null,
+      "member_count": 0,
+      "follower_count": 0,
+      "moderators": [],
+      "membership_gate_summaries": [],
+      "rules": [],
+      "created": 1788220800
+    },
+    "items": [],
+    "next_cursor": null
+  }
+}
