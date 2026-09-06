@@ -12,6 +12,27 @@ const read: ResetGrant = {
 const write = { ...read, privilege: "INSERT" };
 
 describe("reset grant reconciliation", () => {
+  test("only an explicit policy admits a missing new grant and rejects allow/deny conflicts", () => {
+    const policy = { explicitNew: [read], forbidden: [write] };
+    const result = reconcileResetGrants({ before: [], replay: [write], reviewed: [read], policy });
+    expect(result.newGrants).toEqual([read]);
+    expect(result.revoke).toEqual([write]);
+    expect(result.unfulfilledReviewed).toEqual([]);
+    expect(() => reconcileResetGrants({ before: [], replay: [], reviewed: [], policy })).toThrow(
+      "new_grant_not_reviewed",
+    );
+    expect(() =>
+      reconcileResetGrants({ before: [], replay: [], reviewed: [read, write], policy }),
+    ).toThrow("grant_policy_conflict");
+    expect(() =>
+      reconcileResetGrants({
+        before: [],
+        replay: [],
+        reviewed: [],
+        policy: { explicitNew: [], forbidden: [{ ...write, grantOption: true }] },
+      }),
+    ).toThrow("denial_grant_option_invalid");
+  });
   test("reapplies only old-minus-replay intersected with the reviewed manifest", () => {
     const unreviewed = { ...read, privilege: "DELETE" };
     const result = reconcileResetGrants({

@@ -11,7 +11,7 @@ atomic mechanism and the unadopted phase proposal recorded below. Those two
 sections retain historical measurements, not current execution instructions.
 The internal phased executor is locally proven, but this document is still not
 a live runbook: trusted admission collectors, complete maintenance artifacts,
-the approved privilege policy and its ledger-write restriction, provider
+provider
 recovery rehearsal and final publication gates remain unfinished. Table locks
 are per removal batch, not held over the whole reset; the continuous producer
 fence is essential. Recovery after committed partial progress means restoring
@@ -21,7 +21,8 @@ Review this handoff together with the phased amendment and
 [privilege proposal](staging-persona-runtime-privileges.review.md). Before
 capture, explicitly resolve whether an external HNS provisioner writes staging;
 if so, its direct SQL connection belongs to the fence as well. Queue purge
-requires the owner's separate affirmative decision. No approval of a proposal
+was separately approved on 2026-09-06 for the four exact staging queues below.
+No approval of a proposal
 or passing local suite replaces a provider execution receipt.
 
 ## Historical combined transaction proof and capacity
@@ -107,7 +108,13 @@ partial reset. Final ledger checks alone do not establish these properties.
 The current executor remains atomic; no phased reset or connection increase
 is authorized by this measurement.
 
-## Privilege decision still required
+## Approved privilege policy
+
+The owner ratified the proposal on 2026-09-06. The approved-privileges compiler
+and phased executor now implement the explicit routine addition, ledger-write
+denial, effective runtime checks and in-place schema authority. The historical
+inventory and proposal rationale below remain evidence; their requests for
+approval are superseded by that ratification, not by inferred old ACLs.
 
 The pinned migration chain issues no named runtime GRANT statements. The older
 rebuild's copied ACLs are evidence, not policy. The composed body supports only
@@ -141,6 +148,15 @@ approved manifest. The owner is asked to review the coordinator's proposal,
 not produce this list from scratch.
 
 ## Maintained producer fence
+
+Read-only checks on 2026-09-06 matched the fixed provider database and branch,
+operator/runtime SQL identities and Hyperdrive origin. Hyperdrive caching was
+disabled. This establishes target identity only, not a fence or recovery.
+The known authority host rejected the available noninteractive SSH identity
+with Permission denied (publickey). Its actual provisioner SQL target therefore
+remains unproven. Resolve that target with verified access; if staging is in
+scope, stop and hold the service against restart/reconnect through release
+verification. Missing staging service records do not establish writer absence.
 
 Wrangler 4.123.0 command help and the official queue/workflow references were
 checked for this handoff. Commands below belong to the release coordinator,

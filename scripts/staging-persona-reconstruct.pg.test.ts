@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { Client } from "pg";
 import { runPostgresMigrations } from "./postgres-migrations";
-import { readResetGrantCatalog } from "./staging-persona-grant-catalog";
+import {
+  readResetGrantCatalog,
+  restoreReviewedResetGrants,
+  verifyResetForbiddenGrants,
+} from "./staging-persona-grant-catalog";
 import type { ResetGrant } from "./staging-persona-grant-reconciliation";
 import { snapshotOutsideResetCatalog } from "./staging-persona-outside-catalog";
 import { reconstructStagingInTransaction } from "./staging-persona-reconstruct";
@@ -10,6 +14,7 @@ import {
   loadStagingResetArtifacts,
   validateStagingResetArtifacts,
 } from "./staging-persona-reset-plan";
+import { assertInplaceSchemaAuthority } from "./staging-persona-schema-authority";
 import { readResetSchemaShape } from "./staging-persona-schema-shape";
 
 const raw = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -104,6 +109,102 @@ async function input(admin: Client, runtime: string, baseline: string) {
 }
 
 suite("composed reset transaction on disposable PostgreSQL 17", () => {
+  test("in-place authority requires schema CREATE, not database CREATE", async () => {
+    await fixture(async (admin, url) => {
+      const identity = (
+        await admin.query(
+          "SELECT current_user AS role,'api_next'::regnamespace::oid AS oid,current_database() AS database",
+        )
+      ).rows[0];
+      const statement = (
+        await admin.query(
+          "SELECT format('REVOKE CREATE ON DATABASE %I FROM %I',current_database(),current_user) AS statement",
+        )
+      ).rows[0].statement;
+      await admin.query(statement);
+      expect(
+        (
+          await admin.query(
+            "SELECT has_database_privilege(current_user,current_database(),'CREATE') AS allowed",
+          )
+        ).rows[0].allowed,
+      ).toBe(false);
+      await assertInplaceSchemaAuthority(admin, identity.role, identity.oid);
+      await admin.query(
+        `REVOKE CREATE ON SCHEMA api_next FROM "${decodeURIComponent(new URL(url).username)}"`,
+      );
+      await expect(
+        assertInplaceSchemaAuthority(admin, identity.role, identity.oid),
+      ).rejects.toThrow("inplace_authority_unproven");
+      expect((await admin.query("SELECT id FROM reset_outside.sentinel")).rows).toEqual([
+        { id: 7 },
+      ]);
+    });
+  }, 30_000);
+  test("approved new routine grant and ledger denial land as the non-superuser operator", async () => {
+    await fixture(async (admin, url, runtime) => {
+      await admin.query(`GRANT USAGE ON SCHEMA api_next TO "${runtime}"`);
+      await admin.query(
+        `ALTER DEFAULT PRIVILEGES IN SCHEMA api_next GRANT SELECT,INSERT,UPDATE,DELETE ON TABLES TO "${runtime}"`,
+      );
+      await admin.query("CREATE TABLE api_next.schema_migrations(version text)");
+      await admin.query(
+        "CREATE FUNCTION api_next.policy_probe() RETURNS int LANGUAGE sql AS 'SELECT 7'",
+      );
+      await admin.query("REVOKE ALL ON FUNCTION api_next.policy_probe() FROM PUBLIC");
+      await admin.query("SET search_path=pg_catalog");
+      const before = await readResetGrantCatalog(admin);
+      const routine: ResetGrant = {
+        schema: "api_next",
+        objectKind: "routine",
+        objectIdentity: "api_next.policy_probe()",
+        grantee: runtime,
+        privilege: "EXECUTE",
+        grantOption: false,
+      };
+      const ledger: ResetGrant = {
+        ...routine,
+        objectKind: "table",
+        objectIdentity: "api_next.schema_migrations",
+        privilege: "SELECT",
+      };
+      const forbidden = ["INSERT", "UPDATE", "DELETE", "TRUNCATE"].map((privilege) => ({
+        ...ledger,
+        privilege,
+      }));
+      await admin.query("BEGIN");
+      const result = await restoreReviewedResetGrants(admin, before.grants, [routine, ledger], {
+        explicitNew: [routine],
+        forbidden,
+      });
+      expect(result.added).toBe(1);
+      expect(result.revoked).toBe(3);
+      expect((await readResetGrantCatalog(admin)).defaults_sha256).toBe(before.defaults_sha256);
+      await admin.query("COMMIT");
+      const runtimeUrl = new URL(url);
+      runtimeUrl.username = runtime;
+      const reader = new Client({ connectionString: runtimeUrl.toString() });
+      await reader.connect();
+      try {
+        expect((await reader.query("SELECT api_next.policy_probe() AS value")).rows).toEqual([
+          { value: 7 },
+        ]);
+        expect((await reader.query("SELECT * FROM api_next.schema_migrations")).rows).toEqual([]);
+        await expect(
+          reader.query("INSERT INTO api_next.schema_migrations VALUES ('forbidden')"),
+        ).rejects.toMatchObject({ code: "42501" });
+      } finally {
+        await reader.end();
+      }
+      await admin.query("BEGIN");
+      await admin.query("GRANT INSERT ON api_next.schema_migrations TO PUBLIC");
+      await expect(verifyResetForbiddenGrants(admin, forbidden)).rejects.toThrow(
+        "forbidden_privilege_effective",
+      );
+      await admin.query("ROLLBACK");
+      await verifyResetForbiddenGrants(admin, forbidden);
+    });
+  }, 30_000);
   test("replays the pinned baseline, restores a reviewed grant as operator, then commits only in the caller", async () => {
     const baseline = await referenceShape();
     await fixture(async (admin, url, runtime) => {

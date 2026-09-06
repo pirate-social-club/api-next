@@ -1,6 +1,19 @@
 import type { Client } from "pg";
-import { readResetGrantCatalog, restoreReviewedResetGrants } from "./staging-persona-grant-catalog";
-import { type ResetGrant, reconcileResetGrants } from "./staging-persona-grant-reconciliation";
+import {
+  compileApprovedStagingPrivileges,
+  verifyApprovedStagingRuntime,
+  verifyStagingRuntimeIdentity,
+} from "./staging-persona-approved-privileges";
+import {
+  readResetGrantCatalog,
+  restoreReviewedResetGrants,
+  verifyResetForbiddenGrants,
+} from "./staging-persona-grant-catalog";
+import {
+  type ResetGrant,
+  type ResetGrantPolicy,
+  reconcileResetGrants,
+} from "./staging-persona-grant-reconciliation";
 import { snapshotOutsideResetCatalog } from "./staging-persona-outside-catalog";
 import { type RemovalBatchBudget, removeStagingRootBatch } from "./staging-persona-phased-removal";
 import { replayStagingMigrationBatch } from "./staging-persona-phased-replay";
@@ -10,6 +23,7 @@ import {
   assertStagingResetLedger,
   validateStagingResetArtifacts,
 } from "./staging-persona-reset-plan";
+import { assertInplaceSchemaAuthority } from "./staging-persona-schema-authority";
 import { readResetSchemaShape } from "./staging-persona-schema-shape";
 
 /** Trusted in-process admission, NOT JSON flags. Provider/fence/recovery
@@ -25,10 +39,12 @@ type PhasedAdmission = Readonly<{
   validUntilMs: number;
   database: string;
   role: string;
+  runtimeRole: string;
   schemaOid: number;
   defaultsDigest: string;
   baselineDigest: string;
   reviewedGrants: readonly ResetGrant[];
+  grantPolicy: ResetGrantPolicy;
   removalBudget: RemovalBatchBudget;
   replayBudget: { maxLockRows: number; maxClusterLockRows: number; statementTimeoutMs: number };
   // Test/rehearsal observation or failure injection; never a resumption hook.
@@ -45,6 +61,12 @@ export async function reconstructStagingInPhases(
   admission: PhasedAdmission,
 ) {
   const plan = validateStagingResetArtifacts(artifacts);
+  reconcileResetGrants({
+    before: [],
+    replay: [],
+    reviewed: admission.reviewedGrants,
+    policy: admission.grantPolicy,
+  });
   if (
     !/^[a-f0-9]{64}$/.test(admission.baselineDigest) ||
     !/^[a-f0-9]{64}$/.test(admission.defaultsDigest)
@@ -67,6 +89,20 @@ export async function reconstructStagingInPhases(
   if (first === second) throw new Error("reset_fresh_idle_connection_required");
   await admission.assertFenceAndRecovery();
   await admission.assertBaselineReference(plan.sourceSha, admission.baselineDigest);
+  await assertInplaceSchemaAuthority(admin, admission.role, admission.schemaOid);
+  await verifyStagingRuntimeIdentity(admin, admission.runtimeRole);
+  const approved = await compileApprovedStagingPrivileges(admin, admission.runtimeRole);
+  const normalize = (facts: readonly ResetGrant[]) =>
+    facts.map((fact) => JSON.stringify(fact)).sort();
+  if (
+    JSON.stringify(normalize(approved.reviewed)) !==
+      JSON.stringify(normalize(admission.reviewedGrants)) ||
+    JSON.stringify(normalize(approved.policy.explicitNew)) !==
+      JSON.stringify(normalize(admission.grantPolicy.explicitNew)) ||
+    JSON.stringify(normalize(approved.policy.forbidden)) !==
+      JSON.stringify(normalize(admission.grantPolicy.forbidden))
+  )
+    throw new Error("reset_approved_privilege_manifest_mismatch");
   const replicated = (
     await admin.query(`SELECT EXISTS (
     SELECT 1 FROM pg_catalog.pg_publication_rel p JOIN pg_catalog.pg_class c ON c.oid=p.prrelid
@@ -103,15 +139,22 @@ export async function reconstructStagingInPhases(
       ]);
       const row = (
         await admin.query(`SELECT current_database() AS database,session_user AS login,
-        current_user AS active,'api_next'::regnamespace::oid AS oid,pg_current_xact_id()::text AS xid`)
+        current_user AS active,n.oid,pg_current_xact_id()::text AS xid,
+        pg_has_role(current_user,n.nspowner,'USAGE') AS owns_schema,
+        has_schema_privilege(current_user,n.oid,'USAGE') AS schema_usage,
+        has_schema_privilege(current_user,n.oid,'CREATE') AS schema_create
+        FROM pg_namespace n WHERE n.nspname='api_next'`)
       ).rows[0];
       if (
+        !row ||
         row.database !== admission.database ||
         row.login !== admission.role ||
         row.active !== admission.role ||
         row.oid !== admission.schemaOid
       )
         throw new Error("reset_target_changed_restore_required");
+      if (!row.owns_schema || !row.schema_usage || !row.schema_create)
+        throw new Error("reset_inplace_authority_unproven");
       const result = await body(row.xid);
       const locks = (
         await admin.query(`SELECT count(*) FILTER (WHERE pid=pg_backend_pid())::int AS own,
@@ -186,7 +229,12 @@ export async function reconstructStagingInPhases(
       if ((await readResetSchemaShape(admin)).sha256 !== admission.baselineDigest)
         throw new Error("reset_baseline_shape_mismatch");
       if (restoreGrants)
-        await restoreReviewedResetGrants(admin, original.grants.grants, admission.reviewedGrants);
+        await restoreReviewedResetGrants(
+          admin,
+          original.grants.grants,
+          admission.reviewedGrants,
+          admission.grantPolicy,
+        );
       else if (
         reconcileResetGrants({
           before: [],
@@ -195,6 +243,8 @@ export async function reconstructStagingInPhases(
         }).unfulfilledReviewed.length
       )
         throw new Error("reset_final_grants_changed");
+      await verifyResetForbiddenGrants(admin, admission.grantPolicy.forbidden);
+      await verifyApprovedStagingRuntime(admin, admission.runtimeRole);
       if ((await readResetGrantCatalog(admin)).defaults_sha256 !== admission.defaultsDigest)
         throw new Error("reset_defaults_changed");
       await verifyOutside();

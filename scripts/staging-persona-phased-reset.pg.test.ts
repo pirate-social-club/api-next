@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "pg";
 import { runPostgresMigrations } from "./postgres-migrations";
+import { compileApprovedStagingPrivileges } from "./staging-persona-approved-privileges";
 import { readResetGrantCatalog } from "./staging-persona-grant-catalog";
 import { localResetRecoveryTool } from "./staging-persona-local-recovery-tool";
 import { reconstructStagingInPhases } from "./staging-persona-phased-reset";
@@ -31,9 +32,12 @@ async function seed(url: URL) {
   }
 }
 
-async function fixture(use: (admin: Client, url: URL, markerDirectory: string) => Promise<void>) {
+async function fixture(
+  use: (admin: Client, url: URL, markerDirectory: string, runtime: string) => Promise<void>,
+) {
   const source = localRecoveryTestUrl(raw ?? "");
   const database = `phased_reset_${crypto.randomUUID().replaceAll("-", "")}`;
+  const runtime = `runtime_${crypto.randomUUID().replaceAll("-", "")}`;
   const root = new Client({ connectionString: source.toString() });
   const url = new URL(source);
   url.pathname = `/${database}`;
@@ -42,6 +46,7 @@ async function fixture(use: (admin: Client, url: URL, markerDirectory: string) =
   const directory = await mkdtemp(join(tmpdir(), "phased-reset-marker-"));
   await root.connect();
   try {
+    await root.query(`CREATE ROLE "${runtime}" NOLOGIN`);
     await root.query(`CREATE DATABASE "${database}"`);
     await admin.connect();
     expect(
@@ -50,7 +55,14 @@ async function fixture(use: (admin: Client, url: URL, markerDirectory: string) =
     await admin.query(
       "CREATE SCHEMA api_next; CREATE SCHEMA outside_sentinel; CREATE TABLE outside_sentinel.retained(id int); INSERT INTO outside_sentinel.retained VALUES(7)",
     );
-    await use(admin, url, directory);
+    await admin.query(`GRANT USAGE ON SCHEMA api_next TO "${runtime}"`);
+    await admin.query(
+      `ALTER DEFAULT PRIVILEGES IN SCHEMA api_next GRANT SELECT,INSERT,UPDATE,DELETE ON TABLES TO "${runtime}"`,
+    );
+    await admin.query(
+      `ALTER DEFAULT PRIVILEGES IN SCHEMA api_next GRANT SELECT,UPDATE,USAGE ON SEQUENCES TO "${runtime}"`,
+    );
+    await use(admin, url, directory, runtime);
     expect((await admin.query("SELECT id FROM outside_sentinel.retained")).rows).toEqual([
       { id: 7 },
     ]);
@@ -58,12 +70,19 @@ async function fixture(use: (admin: Client, url: URL, markerDirectory: string) =
     await admin.query("ROLLBACK").catch(() => undefined);
     await admin.end();
     await root.query(`DROP DATABASE IF EXISTS "${database}"`);
+    await root.query(`DROP ROLE IF EXISTS "${runtime}"`);
     await root.end();
     await rm(directory, { recursive: true });
   }
 }
 
-async function expected(admin: Client, markerDirectory: string, baselineDigest: string) {
+async function expected(
+  admin: Client,
+  markerDirectory: string,
+  baselineDigest: string,
+  runtime: string,
+) {
+  const approved = await compileApprovedStagingPrivileges(admin, runtime);
   const row = (
     await admin.query(
       "SELECT current_database() AS database,session_user AS role,'api_next'::regnamespace::oid AS oid",
@@ -82,12 +101,14 @@ async function expected(admin: Client, markerDirectory: string, baselineDigest: 
     validUntilMs: Date.now() + 900_000,
     database: row.database,
     role: row.role,
+    runtimeRole: runtime,
     schemaOid: row.oid,
     defaultsDigest: (await readResetGrantCatalog(admin)).defaults_sha256,
     baselineDigest,
-    reviewedGrants: [],
+    reviewedGrants: approved.reviewed,
     // LOCAL limits derived from 778 observed locks and 603 closure objects.
     // Fresh provider rehearsal must independently validate its own budget.
+    grantPolicy: approved.policy,
     removalBudget: {
       maxOwnLockRows: 1_000,
       maxClusterLockRows: 1_200,
@@ -99,9 +120,9 @@ async function expected(admin: Client, markerDirectory: string, baselineDigest: 
 
 suite("phased reset in disposable PostgreSQL 17", () => {
   test("refuses caller transactions, unverified baseline and oversized closure before the first drop", async () => {
-    await fixture(async (admin, url, directory) => {
+    await fixture(async (admin, url, directory, runtime) => {
       await seed(url);
-      const admission = await expected(admin, directory, "0".repeat(64));
+      const admission = await expected(admin, directory, "0".repeat(64), runtime);
       await admin.query("BEGIN");
       await expect(reconstructStagingInPhases(admin, artifacts, admission)).rejects.toThrow(
         "fresh_idle_connection_required",
@@ -155,10 +176,10 @@ suite("phased reset in disposable PostgreSQL 17", () => {
       await admin.query("SET search_path=pg_catalog");
       baseline = (await readResetSchemaShape(admin)).sha256;
     });
-    await fixture(async (admin, url, directory) => {
+    await fixture(async (admin, url, directory, runtime) => {
       await seed(url);
       await admin.query("INSERT INTO api_next.users(user_id) VALUES('phased-account')");
-      const admission = await expected(admin, directory, baseline);
+      const admission = await expected(admin, directory, baseline, runtime);
       let removals = 0;
       let replays = 0;
       const result = await reconstructStagingInPhases(admin, artifacts, {
@@ -193,10 +214,10 @@ suite("phased reset in disposable PostgreSQL 17", () => {
   }, 600_000);
 
   test("failure after a committed removal retains marker and refuses a fresh invocation", async () => {
-    await fixture(async (admin, url, directory) => {
+    await fixture(async (admin, url, directory, runtime) => {
       await seed(url);
       await admin.query("INSERT INTO api_next.users(user_id) VALUES('retained-in-capture')");
-      const admission = await expected(admin, directory, "0".repeat(64));
+      const admission = await expected(admin, directory, "0".repeat(64), runtime);
       await expect(
         reconstructStagingInPhases(admin, artifacts, {
           ...admission,
@@ -218,7 +239,7 @@ suite("phased reset in disposable PostgreSQL 17", () => {
   }, 60_000);
 
   test("restores a data-bearing recovery copy after a committed partial reset", async () => {
-    await fixture(async (admin, url, directory) => {
+    await fixture(async (admin, url, directory, runtime) => {
       await seed(url);
       await admin.query(
         "INSERT INTO api_next.users(user_id) VALUES('captured-account'); GRANT SELECT ON api_next.users TO PUBLIC",
@@ -242,7 +263,7 @@ suite("phased reset in disposable PostgreSQL 17", () => {
           captured,
         );
         await recovery.connect();
-        const admission = await expected(admin, directory, "0".repeat(64));
+        const admission = await expected(admin, directory, "0".repeat(64), runtime);
         await expect(
           reconstructStagingInPhases(admin, artifacts, {
             ...admission,

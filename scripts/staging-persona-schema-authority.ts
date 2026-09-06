@@ -1,5 +1,31 @@
 import type { Client } from "pg";
 
+/** In-place reset preserves the namespace: database CREATE and SET ROLE are
+ * deliberately not prerequisites. No transaction ownership or DDL here.
+ */
+export async function assertInplaceSchemaAuthority(
+  admin: Pick<Client, "query">,
+  expectedRole: string,
+  schemaOid: number,
+) {
+  const result = await admin.query(`SELECT session_user AS login,current_user AS active,n.oid,
+    pg_catalog.pg_has_role(current_user,n.nspowner,'USAGE') AS owns,
+    pg_catalog.has_schema_privilege(current_user,n.oid,'USAGE') AS usage,
+    pg_catalog.has_schema_privilege(current_user,n.oid,'CREATE') AS create
+    FROM pg_catalog.pg_namespace n WHERE n.nspname='api_next'`);
+  const row = result.rows[0];
+  if (
+    !row ||
+    row.login !== expectedRole ||
+    row.active !== expectedRole ||
+    row.oid !== schemaOid ||
+    !row.owns ||
+    !row.usage ||
+    !row.create
+  )
+    throw new Error("reset_inplace_authority_unproven");
+}
+
 /** Fresh idle connection only. Observe rights; never grant or exercise DDL. */
 export async function observeSchemaRecreationAuthority(
   admin: Client,
