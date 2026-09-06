@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodically verify the HNS secondary DNS release
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=15min
+RandomizedDelaySec=30s
+Unit=pirate-hns-secondary-verify.service
+
+[Install]
+WantedBy=timers.target

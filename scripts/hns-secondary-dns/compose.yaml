@@ -1,0 +1,16 @@
+services:
+  powerdns-secondary:
+    # Keep primary and secondary on the same reviewed PowerDNS release/digest.
+    image: powerdns/pdns-auth-51@sha256:f976e753a1de8ec62636203ecb12ae5fa3d1055601be167de53f1f673e0abe59
+    container_name: pirate-hns-secondary-dns
+    restart: unless-stopped
+    network_mode: host
+    entrypoint: ["/bin/sh", "-lc", "umask 0002 && exec /usr/local/sbin/pdns_server-startup $$@", "--"]
+    command:
+      - --local-address=${NS2_PUBLIC_IP:?set NS2_PUBLIC_IP},127.0.0.1
+      - --allow-notify-from=${PRIMARY_DNS_IP:?set PRIMARY_DNS_IP}
+    volumes:
+      - ./config/pdns.conf:/etc/powerdns/pdns.conf:ro
+      # Stable host path, deliberately NOT ./data: the secondary's SQLite
+      # state must survive checkout replacement and release cleanup.
+      - ${PDNS_DATA_DIR:-/srv/pirate-hns-secondary/shared/data}:/var/lib/powerdns

@@ -32,6 +32,8 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/hns-continuity-python"
           "$RUNNER_TEMP/hns-continuity-python/bin/pip" install --require-hashes -r scripts/hns-continuity/requirements.txt
           "$RUNNER_TEMP/hns-continuity-python/bin/python" scripts/hns-continuity/verify-authorities.test.py
+      - name: Verify secondary DNS release refusal paths
+        run: python3 scripts/hns-secondary-dns/verify-release.test.py
       - run: bun run check
       - run: bun run test
       - name: Resolve OpenAPI baseline
