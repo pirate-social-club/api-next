@@ -8,6 +8,27 @@ import {
 } from "./karaoke-finalization-recovery.ts";
 
 describe("Karaoke finalization central re-drive", () => {
+  test("treats a fenced object as terminal without retry or rearming", async () => {
+    const calls: string[] = [];
+    const summary = await Effect.runPromise(
+      redriveKaraokeFinalizations({
+        store: { listCandidates: () => Effect.succeed([{ sessionId: "fenced-object" }]) },
+        namespace: {
+          getByName: (id) => ({
+            redriveFinalization: async () => {
+              calls.push(id);
+              return id === KARAOKE_FINALIZATION_RECOVERY_BINDING_PROBE
+                ? { outcome: "missing", rearmed: [] }
+                : { outcome: "fenced", rearmed: [] };
+            },
+          }),
+        },
+      }),
+    );
+    expect(summary).toEqual({ selected: 1, scheduled: 0, rearmed: 0, missing: 0, rpcFailures: 0 });
+    expect(calls).toEqual([KARAOKE_FINALIZATION_RECOVERY_BINDING_PROBE, "fenced-object"]);
+  });
+
   test("continues after one RPC failure and reports only aggregate counts", async () => {
     const calls: string[] = [];
     const store: KaraokeFinalizationRecoveryStore = {

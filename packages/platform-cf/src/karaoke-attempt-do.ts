@@ -30,6 +30,7 @@ import {
 import type { KaraokeFinalizationRedriveResult } from "./karaoke-finalization-recovery.ts";
 import { karaokeFinalizationFailureTransition } from "./karaoke-finalization-retry.ts";
 import { makeControlPlaneKaraokeStore } from "./karaoke-repository.ts";
+import { KARAOKE_RESET_MARKER_KEY } from "./karaoke-reset-marker.ts";
 import { type HyperdriveConnection, makeHyperdriveControlPlaneLayer } from "./postgres.ts";
 
 const TOKEN_TTL_MS = 5 * 60 * 1_000;
@@ -52,6 +53,8 @@ type KaraokeWebSocket = WebSocket & {
 type KaraokeDurableObjectState = {
   readonly storage: {
     readonly sql: unknown;
+    get<T = unknown>(key: string): Promise<T | undefined>;
+    deleteAlarm(): Promise<void>;
     setAlarm(scheduledTime: number | Date): Promise<void>;
   };
   acceptWebSocket(socket: WebSocket): void;
@@ -231,6 +234,12 @@ class RuntimeEffects implements KaraokeEffectRunner {
 }
 
 export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
+  private resetFenced = true;
+
+  private assertNotResetFenced(): void {
+    if (this.resetFenced) throw new Error("karaoke_reset_fenced");
+  }
+
   private host: KaraokeSessionHost | null = null;
   private adapter: KaraokeStreamingSttAdapter | null = null;
   private serverSequence = 0;
@@ -244,6 +253,10 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
     this.runtimeEnv = env;
     this.sql = ctx.storage.sql as Sql;
     ctx.blockConcurrencyWhile(async () => {
+      // Every present value denies, including null, unknown versions and mismatches.
+      // This decision never depends on an environment flag surviving a deployment.
+      this.resetFenced = (await ctx.storage.get(KARAOKE_RESET_MARKER_KEY)) !== undefined;
+      if (this.resetFenced) return;
       this.sql.exec(`CREATE TABLE IF NOT EXISTS karaoke_session (
         id INTEGER PRIMARY KEY CHECK (id=1), authority_json TEXT NOT NULL,
         snapshot_json TEXT NOT NULL, server_sequence INTEGER NOT NULL,
@@ -325,6 +338,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
     token: string;
     tokenExpiresAt: number;
   }> {
+    this.assertNotResetFenced();
     if (
       this.runtimeEnv.ELEVENLABS_API_KEY === undefined ||
       this.runtimeEnv.ELEVENLABS_API_KEY.trim() === ""
@@ -385,12 +399,15 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
     } else if (canonicalJson(sqlJson(existing.authority_json)) !== canonicalJson(authority)) {
       throw new Error("karaoke_session_identity_mismatch");
     }
+    this.assertNotResetFenced();
     const credential = token();
     const tokenExpiresAt = Math.min(Date.now() + TOKEN_TTL_MS, Date.parse(authority.expiresAt));
+    const credentialDigest = await digestToken(credential);
+    this.assertNotResetFenced();
     this.sql.exec("DELETE FROM karaoke_token WHERE expires_at <= ?", Date.now());
     this.sql.exec(
       "INSERT INTO karaoke_token (digest,expires_at,used) VALUES (?,?,0)",
-      await digestToken(credential),
+      credentialDigest,
       tokenExpiresAt,
     );
     return {
@@ -401,6 +418,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
   }
 
   async fetch(request: Request): Promise<Response> {
+    if (this.resetFenced) return new Response("Unavailable", { status: 503 });
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
       return new Response("WebSocket upgrade required", { status: 426 });
     }
@@ -411,10 +429,12 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
       return new Response("Expired", { status: 410 });
     const supplied = new URL(request.url).searchParams.get("token");
     if (supplied === null) return new Response("Unauthorized", { status: 401 });
+    const suppliedDigest = await digestToken(supplied);
+    if (this.resetFenced) return new Response("Unavailable", { status: 503 });
     const row = one(
       this.sql,
       "UPDATE karaoke_token SET used=1 WHERE digest=? AND used=0 AND expires_at>? RETURNING digest",
-      await digestToken(supplied),
+      suppliedDigest,
       Date.now(),
     );
     if (row === null) return new Response("Unauthorized", { status: 401 });
@@ -427,6 +447,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
       Number(transport?.epoch_count ?? 0) > 0 ? 1 : 0,
     );
     await this.ensureHost();
+    if (this.resetFenced) return new Response("Unavailable", { status: 503 });
     return new Response(null, {
       status: 101,
       webSocket: pair[0],
@@ -434,6 +455,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
   }
 
   async redriveFinalization(): Promise<KaraokeFinalizationRedriveResult> {
+    if (this.resetFenced) return { outcome: "fenced", rearmed: [] };
     const session = one(this.sql, "SELECT id FROM karaoke_session WHERE id=1");
     if (session === null) return { outcome: "missing", rearmed: [] };
     const now = Date.now();
@@ -464,7 +486,9 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
   }
 
   async webSocketMessage(_socket: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    if (this.resetFenced) return;
     const host = await this.ensureHost();
+    if (this.resetFenced) return;
     if (typeof message === "string") {
       let event: KaraokeClientEvent;
       try {
@@ -474,6 +498,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
         return;
       }
       const error = await host.handleClientEvent(event);
+      if (this.resetFenced) return;
       if (error === null && event.type === "pause")
         this.sql.exec("UPDATE karaoke_transport SET pause_count=pause_count+1 WHERE id=1");
       if (error === null && event.type === "seek")
@@ -492,6 +517,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
       return;
     }
     const error = await host.handleAudioFrame(decoded.frame);
+    if (this.resetFenced) return;
     if (error === null) {
       try {
         await this.archiveFrame(
@@ -500,6 +526,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
           decoded.frame.songEndMs,
         );
       } catch {
+        if (this.resetFenced) return;
         this.sql.exec("UPDATE karaoke_archive SET state='failed' WHERE id=1");
       }
     }
@@ -507,14 +534,20 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
   }
 
   async webSocketClose(): Promise<void> {
+    if (this.resetFenced) return;
     await this.persistHost();
   }
 
   async webSocketError(): Promise<void> {
+    if (this.resetFenced) return;
     await this.persistHost();
   }
 
   async alarm(): Promise<void> {
+    if (this.resetFenced) {
+      await this.runtimeCtx.storage.deleteAlarm();
+      return;
+    }
     const authority = this.authority();
     const outbox = one(this.sql, "SELECT id FROM karaoke_outbox WHERE id=1");
     if (outbox === null && Date.now() >= Date.parse(authority.expiresAt)) {
@@ -524,6 +557,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
   }
 
   authority(): KaraokeSessionAuthority {
+    this.assertNotResetFenced();
     const row = one(this.sql, "SELECT authority_json FROM karaoke_session WHERE id=1");
     if (row === null) throw new Error("karaoke_session_uninitialized");
     return sqlJson(row.authority_json);
@@ -536,6 +570,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
       "attemptId" | "eventId" | "protocolVersion" | "sequence" | "sessionId" | "type"
     >,
   ): void {
+    if (this.resetFenced) return;
     const authority = this.authority();
     this.serverSequence += 1;
     const event = JSON.stringify({
@@ -557,12 +592,14 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
   }
 
   noteTransportError(error: KaraokeTransportError): void {
+    if (this.resetFenced) return;
     if (error.code === "non_monotonic_sequence") {
       this.sql.exec("UPDATE karaoke_transport SET late_frame_count=late_frame_count+1 WHERE id=1");
     }
   }
 
   async persistHost(): Promise<void> {
+    if (this.resetFenced) return;
     if (this.host === null) return;
     const snapshot = serializeKaraokeSessionSnapshot({
       ...this.host.snapshot(),
@@ -580,6 +617,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
     summary: Outbox["summary"],
     scores: readonly KaraokeLineScore[] = [],
   ): Promise<void> {
+    if (this.resetFenced) return;
     const authority = this.authority();
     const payload: Outbox = {
       completedAt: new Date().toISOString(),
@@ -600,6 +638,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
   }
 
   private async ensureHost(): Promise<KaraokeSessionHost> {
+    this.assertNotResetFenced();
     if (this.host !== null) return this.host;
     const row = one(
       this.sql,
@@ -619,6 +658,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
       restore: snapshot,
       persist: () => this.persistHost(),
       onTransportGuardFailure: (diagnostic) => {
+        if (this.resetFenced) return;
         if (diagnostic.code === "non_monotonic_sequence") {
           this.sql.exec(
             "UPDATE karaoke_transport SET late_frame_count=late_frame_count+1 WHERE id=1",
@@ -626,11 +666,13 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
         }
       },
       onReconnectBufferDrop: () => {
+        if (this.resetFenced) return;
         this.sql.exec(
           "UPDATE karaoke_transport SET dropped_frame_count=dropped_frame_count+1 WHERE id=1",
         );
       },
       onCommitSettled: (latencyMs) => {
+        if (this.resetFenced) return;
         const row = one(this.sql, "SELECT commit_latencies_json FROM karaoke_transport WHERE id=1");
         const values = sqlJson<number[]>(row?.commit_latencies_json ?? "[]");
         values.push(Math.round(latencyMs));
@@ -641,11 +683,14 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
       },
     });
     await this.host.resumeSttIfRecording();
+    this.assertNotResetFenced();
     await this.host.invalidateOrphanedPendingCommit(this.adapter.streamGeneration);
+    this.assertNotResetFenced();
     return this.host;
   }
 
   private archive(): ArchiveState {
+    this.assertNotResetFenced();
     const row = one(this.sql, "SELECT * FROM karaoke_archive WHERE id=1");
     if (row === null) throw new Error("karaoke_archive_uninitialized");
     return {
@@ -687,6 +732,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
   }
 
   private async uploadPending(final: boolean): Promise<void> {
+    this.assertNotResetFenced();
     const bucket = this.runtimeEnv.LEARNER_AUDIO;
     if (bucket === undefined) throw new Error("karaoke_archive_bucket_unavailable");
     let archive = this.archive();
@@ -708,6 +754,9 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
       archive = { ...archive, uploadId: upload.uploadId };
       this.sql.exec("UPDATE karaoke_archive SET upload_id=? WHERE id=1", upload.uploadId);
     }
+    // Preserve a newly issued upload ID for operator cleanup, but never issue
+    // its next R2 operation after a fence installed during creation.
+    this.assertNotResetFenced();
     const payload = new Uint8Array(total);
     let offset = 0;
     for (const chunk of chunks) {
@@ -715,6 +764,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
       offset += chunk.payload.byteLength;
     }
     const part = await upload.uploadPart(archive.nextPart, payload);
+    this.assertNotResetFenced();
     const parts = [...archive.parts, part];
     this.sql.exec(
       "UPDATE karaoke_archive SET next_part=?,parts_json=? WHERE id=1",
@@ -725,6 +775,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
   }
 
   private async finishArchive(): Promise<KaraokeRecordingResult> {
+    this.assertNotResetFenced();
     const bucket = this.runtimeEnv.LEARNER_AUDIO;
     if (bucket === undefined) return { state: "failed", failureKind: "multipart_failed" };
     try {
@@ -743,6 +794,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
       if (previous.state === "stored")
         return await this.persistStoredArchiveResult(bucket, previous);
       await this.uploadPending(true);
+      this.assertNotResetFenced();
       const archive = this.archive();
       if (archive.uploadId === null || archive.parts.length === 0) {
         return { state: "failed", failureKind: "multipart_aborted" };
@@ -750,16 +802,20 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
       await bucket
         .resumeMultipartUpload(archive.objectKey, archive.uploadId)
         .complete([...archive.parts]);
+      this.assertNotResetFenced();
       return await this.persistStoredArchiveResult(bucket, archive);
     } catch {
+      this.assertNotResetFenced();
       const archive = this.archive();
       try {
         const recovered = await this.storedArchiveResult(bucket, archive);
+        this.assertNotResetFenced();
         if (recovered.state === "stored") {
           this.storeArchiveResult(recovered);
           return recovered;
         }
       } catch {
+        this.assertNotResetFenced();
         // If R2 cannot confirm the object, the open multipart upload is aborted below.
       }
       if (archive.uploadId !== null) {
@@ -769,6 +825,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
           // The failed state is still reconciled even if R2 abort also fails.
         }
       }
+      this.assertNotResetFenced();
       this.sql.exec("UPDATE karaoke_archive SET state='failed' WHERE id=1");
       return { state: "failed", failureKind: "multipart_failed" };
     }
@@ -778,12 +835,15 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
     bucket: KaraokeR2Bucket,
     archive: ArchiveState,
   ): Promise<KaraokeRecordingResult> {
+    this.assertNotResetFenced();
     const stored = await bucket.get(archive.objectKey);
+    this.assertNotResetFenced();
     if (stored === null) return { state: "failed", failureKind: "reconciliation_failed" };
     const hash = createHash("sha256");
     const reader = stored.body.getReader();
     while (true) {
       const next = await reader.read();
+      this.assertNotResetFenced();
       if (next.done) break;
       hash.update(next.value);
     }
@@ -797,6 +857,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
   }
 
   private storeArchiveResult(result: Extract<KaraokeRecordingResult, { state: "stored" }>): void {
+    this.assertNotResetFenced();
     this.sql.exec(
       "UPDATE karaoke_archive SET state='stored',result_json=? WHERE id=1",
       JSON.stringify(result),
@@ -808,6 +869,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
     archive: ArchiveState,
   ): Promise<KaraokeRecordingResult> {
     const result = await this.storedArchiveResult(bucket, archive);
+    this.assertNotResetFenced();
     if (result.state === "stored") this.storeArchiveResult(result);
     return result;
   }
@@ -850,6 +912,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
   }
 
   private recordProviderRetention(retention: "not_stored" | "stored"): void {
+    if (this.resetFenced) return;
     if (retention !== "stored") return;
     const changed = this.sql
       .exec(
@@ -865,6 +928,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
   }
 
   private async flushOutbox(): Promise<void> {
+    if (this.resetFenced) return;
     const row = one(this.sql, "SELECT * FROM karaoke_outbox WHERE id=1");
     if (row === null) return;
     const payload = sqlJson<Outbox>(row.payload_json);
@@ -886,13 +950,17 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
             transportFacts: this.transportFacts(),
           }),
         );
+        if (this.resetFenced) return;
         this.sql.exec("UPDATE karaoke_outbox SET score_state='stored' WHERE id=1");
       } catch {
+        if (this.resetFenced) return;
         this.recordFinalizationFailure("score", Date.now());
       }
     }
+    if (this.resetFenced) return;
     if (row.recording_state === "pending" && Number(row.recording_next_attempt_at) <= now) {
       const result = await this.finishArchive();
+      if (this.resetFenced) return;
       try {
         await Effect.runPromise(
           store.reconcileRecording({
@@ -905,8 +973,10 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
             sessionId: authority.sessionId,
           }),
         );
+        if (this.resetFenced) return;
         this.sql.exec("UPDATE karaoke_outbox SET recording_state='stored' WHERE id=1");
       } catch {
+        if (this.resetFenced) return;
         this.recordFinalizationFailure("recording", Date.now());
       }
     }
@@ -922,6 +992,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
   }
 
   private recordFinalizationFailure(axis: FinalizationAxis, now: number): void {
+    if (this.resetFenced) return;
     const row = one(this.sql, `SELECT ${axis}_attempts AS attempts FROM karaoke_outbox WHERE id=1`);
     if (row === null) return;
     const transition = karaokeFinalizationFailureTransition({
@@ -942,6 +1013,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
   }
 
   private async scheduleOutboxAlarm(now: number): Promise<boolean> {
+    if (this.resetFenced) return false;
     const row = one(
       this.sql,
       `SELECT min(next_attempt_at) AS next_attempt_at
