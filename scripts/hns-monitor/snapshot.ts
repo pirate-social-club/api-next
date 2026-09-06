@@ -7,6 +7,9 @@ const Root = Schema.Struct({
   root: Schema.String,
   activation_generation: Schema.String,
   pin: Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u)),
+  inventory_hex: Schema.NullOr(
+    Schema.String.check(Schema.isPattern(/^(?:[0-9a-f]{2}){1,65536}$/u)),
+  ),
   imported: Schema.Boolean,
   inventory_remaining: NullableSeconds,
   inventory_age: NullableSeconds,
@@ -28,6 +31,7 @@ WITH instant AS (SELECT transaction_timestamp() AS now), roots AS (
  SELECT current_dns.canonical_root AS root,
         current_dns.current_generation::text AS activation_generation,
         dns.gateway_certificate_spki_sha256 AS pin,
+        encode(inventory.inventory_bytes,'hex') AS inventory_hex,
         EXISTS (SELECT 1 FROM hns_root_import_activation_operations operation
           JOIN hns_root_import_sessions session
             ON session.root_import_session_id=operation.root_import_session_id

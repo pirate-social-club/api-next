@@ -30,6 +30,7 @@ suite("HNS monitor database projection", () => {
       expect(snapshot.roots[0]?.inventory_remaining).toBeGreaterThan(86000);
       expect(snapshot.heartbeat_remaining).toBeNull();
       expect(snapshot.roots[0]?.pin).toBe(fixture.state.dns.gateway_certificate_spki_sha256);
+      expect(snapshot.roots[0]?.inventory_hex).toBe(fixture.state.inventory.bytes_hex);
       // Deliberately incomplete evidence is constructed only in this isolated fixture.
       await client.query("SET session_replication_role=replica");
       await client.query(

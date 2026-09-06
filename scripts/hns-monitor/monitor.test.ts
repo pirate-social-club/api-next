@@ -13,6 +13,7 @@ const root = {
   root: "fixture",
   activation_generation: "2",
   pin: "a".repeat(64),
+  inventory_hex: null,
   imported: true,
   inventory_remaining: 604800,
   inventory_age: 0,

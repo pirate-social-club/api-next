@@ -13,9 +13,11 @@ import {
   monitorSubject,
 } from "./hns-monitor/evaluate.ts";
 import { type MonitorSnapshot, readMonitorSnapshot } from "./hns-monitor/snapshot.ts";
+import { probeZoneFreshness, ZoneFreshnessConfig } from "./hns-monitor/zone-freshness.ts";
 
 const Config = Schema.Struct({
   gateway_address: Schema.String.check(Schema.makeFilter((value) => isIP(value) !== 0)),
+  zone_freshness: ZoneFreshnessConfig,
   checkpoints: Schema.Array(
     Schema.Struct({
       root: Schema.String.check(Schema.isPattern(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u)),
@@ -80,22 +82,33 @@ async function main(): Promise<void> {
     observedAt = snapshot.observed_at;
     rootCount = snapshot.roots.length;
     conditions = evaluateMonitorSnapshot(snapshot, config.checkpoints);
+    const probeDeadline = performance.now() + 75_000;
     // Bounded batches avoid creating an unbounded socket burst as roots grow.
     for (let index = 0; index < snapshot.roots.length; index += 4) {
+      if (probeDeadline - performance.now() < 35_000) {
+        conditions.push({ subject: "monitor", code: "dns_observation_capacity" });
+        break;
+      }
       const batch = snapshot.roots.slice(index, index + 4);
       const results = await Promise.all(
-        batch.map(async (root) => ({
-          subject: monitorSubject(root.root),
-          code: await probePinnedCertificate(
-            config.gateway_address,
-            `app.${root.root}`,
-            root.pin,
-            snapshot.observed_at,
-          ),
-        })),
+        batch.map(async (root) => {
+          const [certificate, dns] = await Promise.all([
+            probePinnedCertificate(
+              config.gateway_address,
+              `app.${root.root}`,
+              root.pin,
+              snapshot.observed_at,
+            ),
+            probeZoneFreshness(config.zone_freshness, root),
+          ]);
+          return {
+            subject: monitorSubject(root.root),
+            codes: certificate === null ? dns : [...dns, certificate],
+          };
+        }),
       );
       for (const result of results)
-        if (result.code !== null) conditions.push({ subject: result.subject, code: result.code });
+        for (const code of result.codes) conditions.push({ subject: result.subject, code });
     }
   } catch {
     conditions = [{ subject: "monitor", code: "observation_unavailable" }];

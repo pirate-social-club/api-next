@@ -11,8 +11,8 @@ hostname as SNI. It checks the served SPKI against the DNS activation pin and
 checks certificate validity. Spec 009 uses DANE-EE identity: one controlled
 certificate may serve many activated HNS names, so WebPKI SAN hostname matching
 is not required.
-This is a retained-pin check, not a fresh DNSSEC or DANE validation. The existing
-authority and DANE probes still need their separate repair. The configured IP
+The separate zone probe validates signed SOA and TLSA answers from both
+authorities against freshly read chain DS. The configured gateway IP
 must serve all monitored roots in the reviewed deployment topology.
 
 ## Configuration and dry-run
@@ -25,6 +25,15 @@ does not keep alerting on its predecessor's checkpoint. Operator roots also
 alert when their pinned inventory reaches five days old. Imported roots do not
 receive a manual-checkpoint alert.
 
+The required `zone_freshness` object contains absolute `python` and `script`
+paths, the local private driver's `driver_port` and `driver_reference`, and the
+reviewed `primary_authority_address`. The script is the release's adjacent
+`zone-freshness.py`; Python uses an isolated virtual environment installed from
+`scripts/hns-continuity/requirements.txt` with `pip --require-hashes`.
+Authority addresses come from each activation's exact pinned inventory, not a
+root list. This topology requires two distinct active authority addresses,
+including the configured primary. A topology change requires reviewed config.
+
 Load the database URL through the existing Infisical operator path. A dedicated
 read-only database role is preferred; the command itself always starts a
 repeatable-read, read-only transaction with a ten-second statement timeout.
@@ -34,7 +43,7 @@ rtk proxy infisical run --env=prod --path=/services/api-next/operator --silent -
 ```
 
 Dry-run creates no receipt database and makes no outbound alert request. It
-does perform database reads and bounded TLS probes. Output contains hashed root
+does perform database reads, local driver reads and bounded DNS/TLS probes. Output contains hashed root
 identities and condition codes, never connection strings, webhook URLs, raw
 database errors, certificate bodies or authenticated sessions. Exit status zero
 means no detected condition; one means conditions exist; two means the command
@@ -46,6 +55,45 @@ a delayed job at least three hours old, a missed manual checkpoint, certificate
 validity below fourteen days, a pin mismatch, and unavailable observation.
 Delayed age uses job creation time while the job is delayed, so retry updates
 cannot reset its age. Superseded generation jobs do not alert.
+
+## Zone evidence and trust
+
+The helper uses the existing private driver's loopback HSD interface. It has
+no HSD key, Docker access, database URL or webhook; the parent explicitly removes
+those environment values when starting it. The driver admits only its reviewed
+read/proof methods. No new daemon or public RPC route is installed. Deployment
+must verify that this exact listener is loopback-only and owned by the reviewed
+driver release. Trust in that local process is the chain-evidence boundary.
+
+Each observation brackets the root resource and direct authoritative answers
+with matching mainnet tip/hash/header reads. It requires near-complete HSD
+verification progress and a tip timestamp within six hours of local time (with
+the chain's two-hour future allowance). This detects a stalled local chain;
+it does not independently establish consensus against an eclipsed full node.
+A changing tip produces an unavailable observation for the next timer to retry.
+The driver reads current HSD state; retained activation DS and cached recursive
+DNS answers are never substituted. In particular, hnsd's root response cache
+can retain responses for six hours, so its AD bit is insufficient for this
+fresh-resource requirement.
+
+Both authorities receive nonrecursive TCP DNSKEY, SOA and app TLSA queries.
+The probe requires authoritative, complete, matching answers, authenticates
+DNSKEY against SHA-256/SHA-384 chain DS, then validates exact-owner SOA/TLSA
+signatures and the retained DANE-EE SPKI association. Serial comparison follows
+RFC 1982, including wraparound and undefined half-range ordering. Equal serials
+must also agree on SOA and TLSA content. This samples serving records; it does
+not compare complete zones or prove a clean client's DNSSEC/DANE path.
+
+Requests have three-second transport bounds, each helper has a thirty-second
+observation deadline, and its parent kills it after thirty-five seconds with
+bounded output. At most four roots are probed concurrently. Missing answers,
+lag, signature/DS/pin failure and unavailable chain evidence use the existing
+condition delivery, suppression and recovery mechanism. Raw answers and root
+labels are never logged by the helper.
+The parent reserves a seventy-five-second probe window and starts no batch
+with less than thirty-five seconds left. Unprobed roots produce an explicit
+monitor capacity condition rather than letting the timer kill a silently
+incomplete observation. Capacity is an operational failure, not healthy coverage.
 
 ## Delivery and acknowledgment
 
@@ -87,7 +135,9 @@ rtk bun build scripts/hns-monitor.ts --target=bun --outfile=/absolute/release/hn
 ```
 
 The adjacent systemd units are installation templates, not evidence of deployment.
-Stage the bundle, record its digest and source commit, supply the environment
+Stage the bundle, Python helper and hash-locked Python environment. Record all
+artifact and dependency provenance and their source commit; verify the local
+driver and run the helper as the service identity. Supply the environment
 and configuration, run a dry-run and delivery test, then install the timer.
 The service uses a dynamic identity and its own private state directory.
 Systemd passes the private configuration through LoadCredential, so the
@@ -96,8 +146,9 @@ Its fifteen-minute period is independent of the production renewal cron.
 Monitor timer execution from another host or an external dead-man destination;
 a stopped monitor cannot report its own absence.
 
-The old backup heartbeat, authority deployment drift checks, missing secondary
-scripts and static DNSSEC/DANE probes remain distinct installation repairs.
+The old backup heartbeat and authority deployment drift checks remain distinct
+installation repairs. The secondary release verifier is a local integrity
+check; this monitor owns dynamic zone observation after its own deployment.
 This command does not make those old scripts valid or reactivate the disabled
 HTTP status page. Do not retire them as repaired solely because this command's
 dry-run is healthy.
