@@ -5,6 +5,19 @@ import type { Client } from "pg";
 // are observations, not an exhaustive identity list. Observe verifies the role.
 type Session = { pid: number; usename: string | null; application_sha256: string | null };
 
+export function describeRehearsalSessions(
+  sessions: readonly Session[],
+  ownedPids: readonly number[],
+) {
+  return sessions.map((session) => ({
+    pid: session.pid,
+    owned: ownedPids.includes(session.pid),
+    role_sha256:
+      session.usename === null ? null : createHash("sha256").update(session.usename).digest("hex"),
+    application_sha256: session.application_sha256,
+  }));
+}
+
 /** Pure baseline comparison; it neither proves branch identity nor prevents
  * reconnects. The isolated-branch target and Hyperdrive checks remain separate.
  */
@@ -85,18 +98,29 @@ export async function observeRehearsalSessions(
     await admin.query(`SELECT pid,usename,application_name FROM pg_catalog.pg_stat_activity
       WHERE datid=(SELECT oid FROM pg_catalog.pg_database WHERE datname=current_database())`)
   ).rows;
-  const observed = assertRehearsalSessions(
-    sessions.map((session) => ({
-      pid: session.pid,
-      usename: session.usename,
-      application_sha256:
-        session.application_name === null
-          ? null
-          : createHash("sha256").update(session.application_name).digest("hex"),
-    })),
-    operator,
-    observerPid === undefined ? [identity.pid] : [identity.pid, observerPid],
-  );
+  const mapped = sessions.map((session) => ({
+    pid: session.pid,
+    usename: session.usename,
+    application_sha256:
+      session.application_name === null
+        ? null
+        : createHash("sha256").update(session.application_name).digest("hex"),
+  }));
+  const ownedPids = observerPid === undefined ? [identity.pid] : [identity.pid, observerPid];
+  let observed: ReturnType<typeof assertRehearsalSessions>;
+  try {
+    observed = assertRehearsalSessions(mapped, operator, ownedPids);
+  } catch (error) {
+    // Capture the failing observation itself, not a later scan after a transient
+    // session disappears. Never log role names, application strings or queries.
+    console.error(
+      JSON.stringify({
+        mode: "rehearsal-session-refused",
+        sessions: describeRehearsalSessions(mapped, ownedPids),
+      }),
+    );
+    throw error;
+  }
   const row = (
     await admin.query(`SELECT
       (SELECT count(*)::int FROM pg_catalog.pg_prepared_xacts WHERE database=current_database()) AS prepared,

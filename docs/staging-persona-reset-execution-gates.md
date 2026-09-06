@@ -260,3 +260,21 @@ A deny-all control blocks health too. Do not silently weaken it with a health
 bypass: either review the denial itself as the ingress probe and use independent
 deployment evidence, or explicitly review a strictly read-only health exception.
 Neither alternative changes the queue, Workflow, cron, helper or recovery gates.
+
+Read-only provider metadata resolves the HTTP Worker ID to
+7ada21fbaf794466bae2eda487299555, with custom domain api-next-staging.pirate.sc
+and workers.dev hostname pirate-http-worker-staging.piratesocialclub.workers.dev;
+preview ingress is disabled. No service bindings were reported on the four
+staging Workers. This does not enumerate external HTTP or direct SQL callers.
+
+The Karaoke alarm boundary is not hypothetical. The staging namespace
+d692b9d32ecc4cb4825510bde88cf97a, named
+pirate-http-worker-staging_KaraokeAttemptDO, contains six objects across two
+cursor pages, with stored data present. Source alarm calls flushOutbox, which
+can finalize an attempt and reconcile a recording through Hyperdrive, then
+reschedule retries. Object enumeration does not reveal pending outboxes or
+alarms. No object was invoked, deleted or modified. HTTP Access alone does not
+fence this producer; a reviewed alarm/outbox disposition and execution receipt
+remain required before the live window. The
+[alarm API](https://developers.cloudflare.com/durable-objects/api/alarms/)
+requires explicit alarm cancellation; normal HTTP denial is not cancellation.

@@ -21,7 +21,7 @@ import {
   validateStagingResetArtifacts,
 } from "./staging-persona-reset-plan";
 
-const branchId = "pxo3svqjoxvn";
+const branchId = "abkmnvey02z5";
 const backupId = "xvvo8r6tcaa5";
 const originalData = "0b1c97ef5efa0d32eee31cf220e9d5a41f74c7cfecbe782c03f16caaf2628bf8";
 const originalDefaults = "f0973701f1b93a794190b0a16ab24126ff6bda647a0d4476f6a00f9d75b2329d";
@@ -155,7 +155,7 @@ export async function rehearseProviderReset(execute: boolean) {
           assertFreshFence: fresh,
           markerDirectory: resolve(
             import.meta.dir,
-            "../../../../.state/staging-reset-rehearsal/pxo3svqjoxvn",
+            "../../../../.state/staging-reset-rehearsal/abkmnvey02z5",
           ),
           recoveryDigest: hash({ backup, data: data.sha256 }),
           targetAndFenceDigest: hash({ branchId, hyperdrive, sessions }),

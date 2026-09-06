@@ -3,6 +3,7 @@ import {
   assertRehearsalProviderRole,
   assertRehearsalSessionHeadroom,
   assertRehearsalSessions,
+  describeRehearsalSessions,
 } from "./staging-persona-rehearsal-sessions";
 
 const provider = [
@@ -18,6 +19,23 @@ const provider = [
   },
 ] as const;
 const operator = { pid: 3, usename: "operator", application_sha256: null };
+
+test("failure observations retain hashes and owned PIDs without role strings", () => {
+  const described = describeRehearsalSessions(
+    [operator, { pid: 4, usename: null, application_sha256: null }],
+    [3],
+  );
+  expect(described[0]).toMatchObject({ pid: 3, owned: true, application_sha256: null });
+  expect(described[0]?.role_sha256).toMatch(/^[a-f0-9]{64}$/);
+  expect(described[1]).toEqual({
+    pid: 4,
+    owned: false,
+    role_sha256: null,
+    application_sha256: null,
+  });
+  expect(JSON.stringify(described)).not.toContain("operator");
+  expect(JSON.stringify(described)).not.toContain("usename");
+});
 
 test("accepts the observed provider baseline plus only the known operator connections", () => {
   expect(assertRehearsalSessions([...provider, operator], "operator", [3])).toMatchObject({

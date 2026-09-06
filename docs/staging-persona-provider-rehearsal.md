@@ -321,3 +321,40 @@ including malformed files, broken symlinks and filesystem errors. Independent
 review accepted the ordering change. Full check passed with the same 41
 baseline warnings, and the changed-script gate reports zero findings.
 This local test does not substitute for the separate provider recovery exercise.
+
+The fourth attempt stopped after 109 committed removal batches. The retained
+failed marker has run a618aadf-48e1-493f-a120-6fcddc53e009 and completedBatches
+109. SQLSTATE was null and fingerprint
+6d338de8ed578f24e6b98a8822b69e816f145a4c91869534844e7117218c100b
+maps to rehearsal_unexpected_session. The observer reported no failure in
+2458 samples; maximum sampled own/shared locks were 739/740. The exact
+unexpected session was not retained by the diagnostic wrapper. A subsequent
+read at 2026-09-06T06:35:21.214Z saw only the two recognized provider sessions
+and its own operator connection, so it cannot identify the vanished session.
+No lock failure, provider identity or alternative producer is inferred.
+The log is preserved in the branch-specific evidence directory as
+execution-8aaab120.log. This incomplete attribution does not justify resuming
+or relaxing session admission. A further isolated diagnostic attempt must
+preserve the exact rejected observation before returning the failure.
+
+The complete local phased suite then passed five tests with 369 assertions,
+including both interrupted-replay refusal and data-bearing restore. All 3043
+unit tests passed with 13018 assertions. These results do not establish a
+successful provider reset. Both remaining isolated branches retain their
+existing review/delete deadline; the backup remains unchanged.
+
+Afterward, 180 read-only observations on the failed branch saw no unexpected
+session, so the cause remains unidentified. The next diagnostic change retains
+PID, owned-PID flag, role hash and application hash at the exact refusal,
+without raw names, queries or credentials. All admission checks are unchanged;
+nine focused tests passed with 43 assertions and independent review accepted
+the diagnostic-only change. A fifth isolated restore was requested from the
+same backup for this purpose; it is not a live-staging reset or a recovery
+capture taken under a live fence.
+
+The fifth target is abkmnvey02z5, persona-reset-rehearsal-r5-20260906, created
+at 2026-09-06T06:42:42.027Z from the same backup at PS_5_AWS_ARM. Branch-local
+default-role metadata was initialized at 06:44:23.599Z with returned
+credentials discarded. The fixed entrypoint and marker path now name this
+branch only. Read-only fidelity remains required before execution. The
+review/delete deadline remains 2026-09-07T04:00:00Z; no deadline was extended.
