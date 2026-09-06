@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createResetMarker } from "./staging-persona-reset-marker";
+import { assertResetMarkerAbsent, createResetMarker } from "./staging-persona-reset-marker";
 import { STAGING_RESET_RELEASE } from "./staging-persona-reset-plan";
 
 const input = {
@@ -11,6 +11,22 @@ const input = {
   targetAndFenceDigest: "c".repeat(64),
   validUntilMs: Date.now() + 60_000,
 };
+test("early marker check refuses malformed files, broken symlinks and filesystem errors", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "reset-marker-test-"));
+  const path = join(directory, "pirate-staging-api-next.reset-in-progress.json");
+  try {
+    await expect(assertResetMarkerAbsent(directory)).resolves.toBeUndefined();
+    await writeFile(path, "malformed");
+    await expect(assertResetMarkerAbsent(directory)).rejects.toThrow("restore_required");
+    await expect(assertResetMarkerAbsent(path)).rejects.toThrow("unreadable_restore_required");
+    await rm(path);
+    await symlink(join(directory, "absent"), path);
+    await expect(assertResetMarkerAbsent(directory)).rejects.toThrow("restore_required");
+  } finally {
+    await rm(directory, { recursive: true });
+  }
+});
+
 test("durable marker refuses a second run and persists failure across a new caller", async () => {
   const directory = await mkdtemp(join(tmpdir(), "reset-marker-test-"));
   try {

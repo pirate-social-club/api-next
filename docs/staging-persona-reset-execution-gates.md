@@ -247,11 +247,14 @@ override Worker-level Access. Existing applications must not be overwritten.
 Record the newly created application ID for exact reversal and prove denial
 on every public ingress before capture and after each normal-code deployment.
 
-The current Wrangler OAuth permissions have no Access application scope. A
-working deployment login does not establish authority to install this control.
-The account/API permission check, exact Worker-ID resolution, precedence
-inventory and executable receipts remain outstanding. The reviewed fence must
-also account for any service-binding callers separately.
+The displayed Wrangler OAuth permissions have no Access application scope.
+Nevertheless, a read-only account Access-app inventory on 2026-09-06 returned
+HTTP 200, success true and total_count zero (page one, per_page 1000,
+total_pages zero). The existing token stayed in memory and only pagination
+metadata was emitted. No write was attempted: installation authority is
+unproven, not established absent. Exact Worker-ID resolution, a fresh
+precedence inventory and executable receipts remain outstanding. The reviewed
+fence must also account for service-binding callers separately.
 
 A deny-all control blocks health too. Do not silently weaken it with a health
 bypass: either review the denial itself as the ingress probe and use independent

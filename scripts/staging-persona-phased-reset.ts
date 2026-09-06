@@ -18,7 +18,7 @@ import { snapshotOutsideResetCatalog } from "./staging-persona-outside-catalog";
 import { type RemovalBatchBudget, removeStagingRootBatch } from "./staging-persona-phased-removal";
 import { replayStagingMigrationBatch } from "./staging-persona-phased-replay";
 import { inspectStagingRemovalPlan } from "./staging-persona-removal-plan";
-import { createResetMarker } from "./staging-persona-reset-marker";
+import { assertResetMarkerAbsent, createResetMarker } from "./staging-persona-reset-marker";
 import {
   assertStagingResetLedger,
   validateStagingResetArtifacts,
@@ -61,6 +61,7 @@ export async function reconstructStagingInPhases(
   admission: PhasedAdmission,
 ) {
   const plan = validateStagingResetArtifacts(artifacts);
+  await assertResetMarkerAbsent(admission.markerDirectory);
   reconcileResetGrants({
     before: [],
     replay: [],

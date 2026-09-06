@@ -309,3 +309,15 @@ serially: 11 files/73 tests, 15 files/48 tests, one file/two tests and six
 files/nine tests. Node tests passed 20. No fresh full PostgreSQL or
 secret-boundary suite result is claimed. Successful full provider replay and
 the deliberate between-replay-batches recovery exercise remain outstanding.
+
+While the fourth attempt runs on its loaded 8aaab120 source, an additional
+local failure-injection test exposed a diagnostic ordering gap: after replay
+batch one, a rerun refused because a policy routine was absent before reaching
+the existing marker. The follow-up checks marker presence before database
+inspection while retaining exclusive marker creation as the race-safe gate.
+The PostgreSQL 17 test now passes with nine assertions, proving the one-entry
+ledger remains unchanged on rerun. Three marker tests pass with 13 assertions,
+including malformed files, broken symlinks and filesystem errors. Independent
+review accepted the ordering change. Full check passed with the same 41
+baseline warnings, and the changed-script gate reports zero findings.
+This local test does not substitute for the separate provider recovery exercise.

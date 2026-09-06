@@ -238,6 +238,38 @@ suite("phased reset in disposable PostgreSQL 17", () => {
     });
   }, 60_000);
 
+  test("failure between replay batches keeps its partial ledger and refuses rerun", async () => {
+    await fixture(async (admin, url, directory, runtime) => {
+      await seed(url);
+      const admission = await expected(admin, directory, "0".repeat(64), runtime);
+      let replayBatches = 0;
+      await expect(
+        reconstructStagingInPhases(admin, artifacts, {
+          ...admission,
+          afterBatch: async (phase) => {
+            if (phase === "replaying" && ++replayBatches === 1)
+              throw new Error("injected_between_replay_batches");
+          },
+        }),
+      ).rejects.toThrow("injected_between_replay_batches");
+      const marker = JSON.parse(
+        await readFile(join(directory, "pirate-staging-api-next.reset-in-progress.json"), "utf8"),
+      );
+      expect(marker.phase).toBe("failed");
+      expect(marker.completedBatches).toBeGreaterThan(1);
+      expect(replayBatches).toBe(1);
+      expect(
+        (await admin.query("SELECT count(*)::int AS n FROM api_next.schema_migrations")).rows[0].n,
+      ).toBe(1);
+      await expect(reconstructStagingInPhases(admin, artifacts, admission)).rejects.toThrow(
+        "restore_required",
+      );
+      expect(
+        (await admin.query("SELECT count(*)::int AS n FROM api_next.schema_migrations")).rows[0].n,
+      ).toBe(1);
+    });
+  }, 600_000);
+
   test("restores a data-bearing recovery copy after a committed partial reset", async () => {
     await fixture(async (admin, url, directory, runtime) => {
       await seed(url);

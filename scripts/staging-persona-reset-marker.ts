@@ -4,6 +4,22 @@ import { isAbsolute, join } from "node:path";
 import { STAGING_RESET_RELEASE } from "./staging-persona-reset-plan";
 
 const target = "pirate-staging/postgres/api_next";
+const markerName = "pirate-staging-api-next.reset-in-progress.json";
+
+/** Early refusal before consulting a partially reconstructed schema. The
+ * exclusive creation below remains the race-safe final admission check.
+ */
+export async function assertResetMarkerAbsent(directory: string) {
+  if (!isAbsolute(directory)) throw new Error("reset_marker_input_invalid");
+  try {
+    await lstat(join(directory, markerName));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw new Error("reset_marker_unreadable_restore_required");
+  }
+  throw new Error("reset_marker_exists_restore_required");
+}
+
 type Marker = Readonly<{
   version: 1;
   target: typeof target;
@@ -56,7 +72,7 @@ export async function createResetMarker(
     (stat.mode & 0o077) !== 0
   )
     throw new Error("reset_marker_directory_untrusted");
-  const path = join(directory, "pirate-staging-api-next.reset-in-progress.json");
+  const path = join(directory, markerName);
   let current: Marker = {
     version: 1,
     target,
