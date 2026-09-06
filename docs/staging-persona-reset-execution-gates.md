@@ -335,3 +335,21 @@ and object mismatch, failed cancellation retaining the marker, monotonic
 retirement, and both amended releases preserving the same marker protocol.
 An authenticated operator entrypoint and its staging-only admission need
 independent review; this document does not introduce a public control route.
+
+The owner-requested smaller disposition now has a real PostgreSQL 17
+counterexample test in staging-persona-reconstruct.pg.test.ts. Against the
+pinned reset baseline, with an account but no Karaoke session or recording,
+the actual repository's score finalization returns a constraint failure and
+leaves zero attempts. Stored-recording reconciliation succeeds and commits
+one learner_audio_artifacts row while sessions and recordings remain empty.
+The artifact has an account FK but no session FK; the subsequent recording
+UPDATE does not require an affected row. This disproves the broad assertion
+that a missing session prevents every central write.
+
+The fixture uses the operator and synthetic abandoned-session input. It is
+not runtime-ACL evidence, not evidence that the final empty reset contains
+an account, and not a live provider reproduction. It isolates schema behavior
+with an existing account. The focused test passed with eight assertions;
+repository check passed with the existing 41 warnings. No runtime fix, marker
+or provider action was introduced. The smaller disposition still needs
+explicit treatment of all producer effects, not just attempt-row counts.

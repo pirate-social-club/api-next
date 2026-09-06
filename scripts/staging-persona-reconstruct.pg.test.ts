@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { Effect } from "effect";
 import { Client } from "pg";
+import { aggregateKaraokeSession } from "../packages/application/src/karaoke-runtime/scoring";
+import type { KaraokeSessionAuthority } from "../packages/application/src/karaoke-service";
+import { makeControlPlaneKaraokeRepository } from "../packages/platform-cf/src/karaoke-repository";
+import { makeDirectPostgresControlPlaneLayer } from "../packages/platform-cf/src/postgres";
 import { runPostgresMigrations } from "./postgres-migrations";
 import {
   readResetGrantCatalog,
@@ -110,6 +115,98 @@ async function input(admin: Client, runtime: string, baseline: string) {
 }
 
 suite("composed reset transaction on disposable PostgreSQL 17", () => {
+  test("missing Karaoke sessions reject scores but do not fence recording artifacts for an existing account", async () => {
+    await fixture(async (admin, url) => {
+      await admin.query(artifacts.baseline);
+      await admin.query("INSERT INTO users (user_id) VALUES ('reset-karaoke-account')");
+      const repository = makeControlPlaneKaraokeRepository();
+      const layer = makeDirectPostgresControlPlaneLayer(url);
+      const authority: KaraokeSessionAuthority = {
+        accountId: "reset-karaoke-account",
+        artifactId: "reset-karaoke-artifact",
+        attemptId: "reset-karaoke-attempt",
+        sessionId: "reset-karaoke-session",
+        communityId: "reset-karaoke-community",
+        personaId: "reset-karaoke-persona",
+        postId: "reset-karaoke-post",
+        audioRevision: 1,
+        lyricsRevision: 1,
+        createdAt: "2026-09-01T00:00:00Z",
+        expiresAt: "2026-09-01T00:10:00Z",
+        karaokeRevisionId: "reset-karaoke-revision",
+        lines: [],
+        playbackKind: "full_mix",
+        qualificationPolicyVersionId: "karaoke_qualification_v2@1",
+        requestHash: "a".repeat(64),
+        scoringModel: "scribe_v2_realtime",
+        scoringProvider: "elevenlabs",
+        scoringVersion: 5,
+        timezone: "UTC",
+      };
+      const score = await Effect.runPromise(
+        repository
+          .finalizeAttempt({
+            authority,
+            completedAt: authority.expiresAt,
+            completionReason: "abandoned",
+            qualificationId: "reset-karaoke-qualification",
+            diagnostics: { schema_version: 1, scoring_version: 5, line_diagnostics: [] },
+            summary: { ...aggregateKaraokeSession({ lineScores: [] }), lineCount: 1 },
+            transportFacts: {
+              schema_version: 1,
+              reconnect_count: 0,
+              pause_count: 0,
+              seek_count: 0,
+              epoch_count: 0,
+              dropped_frame_count: 0,
+              late_frame_count: 0,
+              mic_sample_rate: 16000,
+              provider_commit_latency_p50_ms: null,
+              provider_commit_latency_p95_ms: null,
+            },
+          })
+          .pipe(Effect.provide(layer), Effect.result),
+      );
+      expect(score).toMatchObject({ _tag: "Failure", failure: { reason: "constraint" } });
+      expect((await admin.query("SELECT count(*)::int AS n FROM karaoke_attempts")).rows).toEqual([
+        { n: 0 },
+      ]);
+      await Effect.runPromise(
+        repository
+          .reconcileRecording({
+            accountId: authority.accountId,
+            artifactId: authority.artifactId,
+            attemptId: authority.attemptId,
+            sessionId: authority.sessionId,
+            reconciledAt: authority.expiresAt,
+            providerRetention: "not_stored",
+            result: {
+              state: "stored",
+              objectRef: "reset-test/audio.pcm",
+              contentSha256: "b".repeat(64),
+              byteSize: 32,
+              durationMs: 1,
+            },
+          })
+          .pipe(Effect.provide(layer)),
+      );
+      expect((await admin.query("SELECT count(*)::int AS n FROM karaoke_sessions")).rows).toEqual([
+        { n: 0 },
+      ]);
+      expect((await admin.query("SELECT count(*)::int AS n FROM karaoke_recordings")).rows).toEqual(
+        [{ n: 0 }],
+      );
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::int AS n FROM learner_audio_artifacts WHERE learner_audio_artifact_id=$1",
+            [authority.artifactId],
+          )
+        ).rows,
+      ).toEqual([{ n: 1 }]);
+    });
+  }, 120_000);
+
   test("provider rehearsal fingerprints preserve row multiplicity and sequence state", async () => {
     await fixture(async (admin) => {
       await admin.query("CREATE TABLE api_next.fingerprint_probe(value text)");
