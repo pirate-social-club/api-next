@@ -10,6 +10,7 @@ import {
 } from "@pirate/application/data/registration-persistence";
 import type {
   DataRegistrationArtifactPipeline,
+  DataRegistrationPinResult,
   DataRegistrationPreparedArtifact,
 } from "@pirate/application/data/registration-workflow";
 import { canonicalJson } from "@pirate/domain";
@@ -588,6 +589,101 @@ export function makeDataRegistrationArtifactPipeline(
   options: DataRegistrationArtifactPipelineOptions,
 ): DataRegistrationArtifactPipeline {
   const now = options.now ?? Date.now;
+  const pinAndVerifyEffect = Effect.fn("DataRegistrationArtifactPipeline.pinAndVerify")(function* (
+    prepared: DataRegistrationPreparedArtifact,
+  ): Effect.fn.Return<DataRegistrationPinResult, unknown> {
+    if (prepared.artifact.byteLength > BigInt(Number.MAX_SAFE_INTEGER)) {
+      return { status: "failed", evidenceRef: "data-registration://artifact-too-large" };
+    }
+    const retainedPins = yield* Effect.tryPromise({
+      try: () => options.authority.listPins(prepared.artifact.registrationOperationId),
+      catch: (error) => error,
+    });
+    const retainedPrimary = retainedPins.find(
+      (pin) =>
+        pin.artifactId === prepared.artifact.artifactId &&
+        pin.role === "primary" &&
+        pin.providerId === "filebase" &&
+        pin.outcome === "verified" &&
+        pin.cid !== null &&
+        pin.byteLength === prepared.artifact.byteLength &&
+        pin.canonicalSha256 === prepared.artifact.canonicalSha256,
+    );
+    if (retainedPrimary?.cid !== undefined && retainedPrimary.cid !== null) {
+      const gateway = yield* options.gateway.verify({
+        version: "ipfs-gateway-verification-v1",
+        request_id: prepared.artifact.artifactId,
+        cid: retainedPrimary.cid,
+        expected_byte_length: Number(prepared.artifact.byteLength),
+        expected_sha256: prepared.artifact.canonicalSha256,
+      });
+      if (gateway.status === "verified") {
+        return {
+          status: "verified",
+          cid: retainedPrimary.cid,
+          byteLength: BigInt(gateway.byte_length),
+          canonicalSha256: gateway.sha256,
+          primaryEvidenceRef: retainedPrimary.evidenceRef,
+          gatewayEvidenceRef: `data-registration://ipfs.io/${prepared.artifact.artifactId}`,
+          verifiedAt: new Date(now()).toISOString(),
+        };
+      }
+      return {
+        status: "primary_verified",
+        cid: retainedPrimary.cid,
+        byteLength: prepared.artifact.byteLength,
+        canonicalSha256: prepared.artifact.canonicalSha256,
+        primaryEvidenceRef: retainedPrimary.evidenceRef,
+        gatewayEvidenceRef: `data-registration://ipfs.io/${prepared.artifact.artifactId}`,
+        verifiedAt: retainedPrimary.verifiedAt ?? new Date(now()).toISOString(),
+        gatewayRetryable: gateway.status === "retryable",
+      };
+    }
+    const result = yield* pinAndVerifyIpfsArtifact(options.pinning, options.gateway, {
+      version: "ipfs-pinning-v1",
+      request_id: prepared.artifact.artifactId,
+      filename: prepared.filename,
+      content_type: prepared.contentType,
+      source: {
+        byte_length: Number(prepared.artifact.byteLength),
+        open: prepared.open,
+      },
+      expected_byte_length: Number(prepared.artifact.byteLength),
+      expected_sha256: prepared.artifact.canonicalSha256,
+    });
+    if (result.status === "verified") {
+      return {
+        status: "verified",
+        cid: result.pin.cid,
+        byteLength: BigInt(result.pin.byte_length),
+        canonicalSha256: result.pin.sha256,
+        primaryEvidenceRef: `data-registration://filebase/${prepared.artifact.artifactId}`,
+        gatewayEvidenceRef: `data-registration://ipfs.io/${prepared.artifact.artifactId}`,
+        verifiedAt: new Date(now()).toISOString(),
+      };
+    }
+    if (result.status === "gateway_failed") {
+      return {
+        status: "primary_verified",
+        cid: result.pin.cid,
+        byteLength: BigInt(result.pin.byte_length),
+        canonicalSha256: result.pin.sha256,
+        primaryEvidenceRef: `data-registration://filebase/${prepared.artifact.artifactId}`,
+        gatewayEvidenceRef: `data-registration://ipfs.io/${prepared.artifact.artifactId}`,
+        verifiedAt: new Date(now()).toISOString(),
+        gatewayRetryable: result.gateway.status === "retryable",
+      };
+    }
+    const retryable =
+      result.status === "pin_failed" &&
+      ["timeout", "retryable", "cancelled", "not_found"].includes(result.pin.status);
+    return retryable
+      ? { status: "retryable" }
+      : {
+          status: "failed",
+          evidenceRef: `data-registration://pin-failed/${prepared.artifact.artifactId}`,
+        };
+  });
   return {
     prepare: async (operation) => {
       const authority = await options.authority.read(operation);
@@ -787,101 +883,6 @@ export function makeDataRegistrationArtifactPipeline(
       });
       return [audio, ipMetadata, nftMetadata];
     },
-    pinAndVerify: async (_operation, prepared) => {
-      if (prepared.artifact.byteLength > BigInt(Number.MAX_SAFE_INTEGER)) {
-        return { status: "failed", evidenceRef: "data-registration://artifact-too-large" };
-      }
-      const retainedPins = await options.authority.listPins(
-        prepared.artifact.registrationOperationId,
-      );
-      const retainedPrimary = retainedPins.find(
-        (pin) =>
-          pin.artifactId === prepared.artifact.artifactId &&
-          pin.role === "primary" &&
-          pin.providerId === "filebase" &&
-          pin.outcome === "verified" &&
-          pin.cid !== null &&
-          pin.byteLength === prepared.artifact.byteLength &&
-          pin.canonicalSha256 === prepared.artifact.canonicalSha256,
-      );
-      if (retainedPrimary?.cid !== undefined && retainedPrimary.cid !== null) {
-        const gateway = await Effect.runPromise(
-          options.gateway.verify({
-            version: "ipfs-gateway-verification-v1",
-            request_id: prepared.artifact.artifactId,
-            cid: retainedPrimary.cid,
-            expected_byte_length: Number(prepared.artifact.byteLength),
-            expected_sha256: prepared.artifact.canonicalSha256,
-          }),
-        );
-        if (gateway.status === "verified") {
-          return {
-            status: "verified",
-            cid: retainedPrimary.cid,
-            byteLength: BigInt(gateway.byte_length),
-            canonicalSha256: gateway.sha256,
-            primaryEvidenceRef: retainedPrimary.evidenceRef,
-            gatewayEvidenceRef: `data-registration://ipfs.io/${prepared.artifact.artifactId}`,
-            verifiedAt: new Date(now()).toISOString(),
-          };
-        }
-        return {
-          status: "primary_verified",
-          cid: retainedPrimary.cid,
-          byteLength: prepared.artifact.byteLength,
-          canonicalSha256: prepared.artifact.canonicalSha256,
-          primaryEvidenceRef: retainedPrimary.evidenceRef,
-          gatewayEvidenceRef: `data-registration://ipfs.io/${prepared.artifact.artifactId}`,
-          verifiedAt: retainedPrimary.verifiedAt ?? new Date(now()).toISOString(),
-          gatewayRetryable: gateway.status === "retryable",
-        };
-      }
-      const result = await Effect.runPromise(
-        pinAndVerifyIpfsArtifact(options.pinning, options.gateway, {
-          version: "ipfs-pinning-v1",
-          request_id: prepared.artifact.artifactId,
-          filename: prepared.filename,
-          content_type: prepared.contentType,
-          source: {
-            byte_length: Number(prepared.artifact.byteLength),
-            open: prepared.open,
-          },
-          expected_byte_length: Number(prepared.artifact.byteLength),
-          expected_sha256: prepared.artifact.canonicalSha256,
-        }),
-      );
-      if (result.status === "verified") {
-        return {
-          status: "verified",
-          cid: result.pin.cid,
-          byteLength: BigInt(result.pin.byte_length),
-          canonicalSha256: result.pin.sha256,
-          primaryEvidenceRef: `data-registration://filebase/${prepared.artifact.artifactId}`,
-          gatewayEvidenceRef: `data-registration://ipfs.io/${prepared.artifact.artifactId}`,
-          verifiedAt: new Date(now()).toISOString(),
-        };
-      }
-      if (result.status === "gateway_failed") {
-        return {
-          status: "primary_verified",
-          cid: result.pin.cid,
-          byteLength: BigInt(result.pin.byte_length),
-          canonicalSha256: result.pin.sha256,
-          primaryEvidenceRef: `data-registration://filebase/${prepared.artifact.artifactId}`,
-          gatewayEvidenceRef: `data-registration://ipfs.io/${prepared.artifact.artifactId}`,
-          verifiedAt: new Date(now()).toISOString(),
-          gatewayRetryable: result.gateway.status === "retryable",
-        };
-      }
-      const retryable =
-        result.status === "pin_failed" &&
-        ["timeout", "retryable", "cancelled", "not_found"].includes(result.pin.status);
-      return retryable
-        ? { status: "retryable" }
-        : {
-            status: "failed",
-            evidenceRef: `data-registration://pin-failed/${prepared.artifact.artifactId}`,
-          };
-    },
+    pinAndVerify: (_operation, prepared) => Effect.runPromise(pinAndVerifyEffect(prepared)),
   };
 }
