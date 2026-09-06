@@ -1,13 +1,23 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import type { ControlPlaneDb } from "@pirate/application";
-import { NotFound } from "@pirate/contracts";
+import { MODERATION_POLICY_CATEGORIES_V1, NotFound } from "@pirate/contracts";
+import { canonicalTextModerationInput } from "@pirate/domain";
 import { Effect } from "effect";
 import { Client } from "pg";
 import {
   applyPostgresTestBaselineConnection,
   withReusablePostgresTestSchema,
 } from "../../../scripts/postgres-test-baseline.ts";
+import type {
+  MediaProcessingProviders,
+  MediaProcessingStore,
+} from "../../application/src/media/processing-contracts.ts";
+import { runMediaProcessingWorkflow } from "../../application/src/media/processing-workflow.ts";
+import type {
+  MediaTransformProbeInput,
+  MediaTransformService,
+} from "../../application/src/media/transform.ts";
 import type {
   PublicationDecision,
   SongTerms,
@@ -34,7 +44,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-media-persistence-suite-complete\n";
-const testCount = 25;
+const testCount = 40;
 let completedTestCount = 0;
 const actor = "media_pg_actor",
   moderator = "media_pg_moderator",
@@ -263,6 +273,7 @@ async function createThroughDecision(
   selectedAnalysis: TrustedSongAnalysis = analysis,
   skipDecision = false,
   initialLyrics?: string,
+  stopBeforeAnalysis = false,
 ): Promise<void> {
   expect(
     await run(connection, (store) =>
@@ -374,6 +385,7 @@ async function createThroughDecision(
       ),
     ).toEqual({ kind: "committed", submissionId: submission });
   }
+  if (stopBeforeAnalysis) return;
   expect(
     await run(connection, (store) =>
       store.acceptAnalysis({
@@ -436,6 +448,525 @@ async function expectHostileLyricsProjectionLeakRejected(
 }
 
 suite("song media persistence PostgreSQL 17 race suite", () => {
+  for (const stage of [
+    "probe",
+    "sample_primary",
+    "sample_alternate",
+    "acr_primary",
+    "acr_alternate",
+    "metadata",
+    "classifier",
+    "audio_read",
+    "cover_read",
+    "text",
+    "cover",
+    "alignment",
+    "publication_commit",
+    "alignment_commit",
+  ] as const) {
+    test(`preserves durable state when interrupted during ${stage}`, async () => {
+      await withCurrentSchema(async (admin, connection) => {
+        const store = makeMediaProcessingStore(makeDirectPostgresControlPlaneLayer(connection));
+        if (
+          stage === "alignment" ||
+          stage === "publication_commit" ||
+          stage === "alignment_commit"
+        ) {
+          const ready: TrustedSongAnalysis = {
+            ...analysis,
+            lyricsAnalysis: {
+              status: "ready",
+              lyricsRevision: 1,
+              explicitness: "not_explicit",
+              primaryLanguageBcp47: "en",
+              secondaryLanguageBcp47: null,
+              evidenceRef: "fixture-lyrics",
+              policyRevision: "fixture-v1",
+              adapterRevision: "fixture-v1",
+            },
+            lyricsSafety: "allow",
+          };
+          await createThroughDecision(
+            connection,
+            { ...decision, creationRevision: 3, lyricsRevision: 1 },
+            ready,
+            false,
+            "accepted fixture lyrics",
+          );
+          const current = await store.loadAuthority(submission, operation);
+          if (current === null) throw new Error("missing publication fixture");
+          if (stage !== "publication_commit")
+            expect(await store.commitPublication(current)).toBe("committed");
+          else
+            await run(connection, (_submissions, outbox) =>
+              outbox.enqueue({
+                outboxEventId: "media_pg_publication_checkpoint",
+                effectIdentity: "media-pg-publication-checkpoint",
+                submissionId: submission,
+                communityId: community,
+                actorUserId: actor,
+                personaId: personaFor(connection),
+                operationId: operation,
+                creationRevision: 3,
+                audioRevision: 1,
+                analysisRevision: 1,
+                lyricsRevision: 1,
+                workflowRevision: 1,
+                workflowInstanceId: `media-${operation}-r1`,
+                eventType: "publication",
+                payload: {
+                  kind: "publication",
+                  submission_id: submission,
+                  operation_id: operation,
+                  creation_revision: 3,
+                  lyrics_revision: 1,
+                  workflow_revision: 1,
+                  workflow_instance_id: `media-${operation}-r1`,
+                },
+              }),
+            );
+        } else {
+          await createThroughDecision(
+            connection,
+            decision,
+            analysis,
+            true,
+            "accepted fixture lyrics",
+            true,
+          );
+        }
+        const entered = Promise.withResolvers<void>();
+        const release = Promise.withResolvers<void>();
+        let selectedInput: Parameters<MediaProcessingStore["startAttempt"]>[0] | undefined;
+        let claimed:
+          | Extract<Awaited<ReturnType<MediaProcessingStore["startAttempt"]>>, { kind: "run" }>
+          | undefined;
+        const observedStore: MediaProcessingStore = {
+          ...store,
+          commitPublication: async (authority) => {
+            const result = await store.commitPublication(authority);
+            await pause("publication_commit");
+            return result;
+          },
+          commitAlignment: async (authority, result) => {
+            const committed = await store.commitAlignment(authority, result);
+            await pause("alignment_commit");
+            return committed;
+          },
+          startAttempt: async (input) => {
+            if (
+              input.stage === stage ||
+              (stage === "audio_read" && input.stage === "acr_primary") ||
+              (stage === "publication_commit" && input.stage === "publication") ||
+              (stage === "alignment_commit" && input.stage === "alignment")
+            )
+              selectedInput = input;
+            const result = await store.startAttempt(input);
+            if (input === selectedInput && result.kind === "run") claimed = result;
+            return result;
+          },
+        };
+        const pause = async (selected: string) => {
+          if (selected !== stage) return;
+          entered.resolve();
+          await release.promise;
+        };
+        const context = (
+          binding: {
+            operationId: string;
+            audioRevision: number;
+            analysisRevision: number;
+            canonicalAudioSha256: string;
+            requestId: string;
+          },
+          version: string,
+        ) => ({ ...binding, version, adapterRevision: "fixture-v1" });
+        const unexpected = () => Effect.die(new Error("unexpected fixture provider"));
+        let acrCalls = 0;
+        const provider: MediaProcessingProviders = {
+          transform: {
+            probe: ((input: MediaTransformProbeInput) =>
+              Effect.promise(async () => {
+                await pause("probe");
+                return {
+                  status: "completed" as const,
+                  attempt: input.attempt,
+                  context: {
+                    ...context(input.binding, "media-transform-attempt-context-v1"),
+                    version: "media-transform-attempt-context-v1" as const,
+                  },
+                  probe: {
+                    version: "media-transform-probe-v1" as const,
+                    durationMs: 180000,
+                    container: "mp3" as const,
+                    mimeType: "audio/mpeg" as const,
+                    tracks: [
+                      {
+                        kind: "audio" as const,
+                        codec: "mp3",
+                        channels: 2,
+                        sampleRateHz: 44100,
+                        bitrateBps: 192000,
+                        bitrateMode: "constant" as const,
+                      },
+                    ],
+                  },
+                };
+              })) as unknown as MediaTransformService["probe"],
+            extractAudioSample: (input) =>
+              Effect.promise(async () => {
+                await pause(`sample_${input.variant}`);
+                return {
+                  status: "completed" as const,
+                  attempt: input.attempt,
+                  context: {
+                    ...context(input.binding, "media-transform-attempt-context-v1"),
+                    version: "media-transform-attempt-context-v1" as const,
+                  },
+                  artifact: {
+                    version: "media-transform-sample-artifact-v1" as const,
+                    objectKey: `sample/${input.variant}`,
+                    contentType: "audio/mpeg" as const,
+                    byteLength: 4,
+                    offsetMs: input.variant === "primary" ? 42000 : 126000,
+                    durationMs: 12000,
+                    variant: input.variant,
+                    retainedObjectVerification: "required" as const,
+                  },
+                };
+              }),
+            extractCanonicalAudioSegment: unexpected,
+            alignVideoSoundtrackToSong: unexpected,
+            extractVideoAudio: unexpected,
+            extractVideoFrames: unexpected,
+            cancelJob: unexpected,
+          },
+          identification: {
+            identify: (input) =>
+              Effect.promise(async () => {
+                acrCalls += 1;
+                const selected = acrCalls === 1 ? "acr_primary" : "acr_alternate";
+                await pause(selected);
+                return {
+                  context: {
+                    ...context(input, "media-identification-attempt-context-v1"),
+                    version: "media-identification-attempt-context-v1" as const,
+                  },
+                  outcome:
+                    selected === "acr_primary"
+                      ? ("inconclusive_fingerprint" as const)
+                      : ("no_match" as const),
+                };
+              }),
+          },
+          artifactReader: {
+            readAudioSample: async () => {
+              await pause("audio_read");
+              return new Uint8Array([1, 2, 3, 4]);
+            },
+            readCoverArtifact: async () => {
+              await pause("cover_read");
+              return new Uint8Array([5, 6, 7, 8]);
+            },
+          },
+          metadata: {
+            extract: async () => {
+              await pause("metadata");
+              return {
+                evidenceRef: "fixture-metadata",
+                adapterRevision: "fixture-v1",
+                trackTitle: "Fixture song",
+                cover:
+                  stage === "cover" || stage === "cover_read"
+                    ? {
+                        status: "ready",
+                        artifactRef: "fixture-cover",
+                        artifactSha256: "b".repeat(64),
+                        mediaType: "image/jpeg",
+                        width: 1200,
+                        height: 1200,
+                        normalizationRevision: "fixture-v1",
+                        safetyPolicyRevision: "fixture-v1",
+                      }
+                    : { status: "absent", reasonCode: "not_embedded" },
+              };
+            },
+          },
+          textModeration: {
+            evaluate: (input) => {
+              const canonical = canonicalTextModerationInput(input);
+              if (canonical.kind !== "accepted") throw new Error("invalid text fixture");
+              return Effect.gen(function* () {
+                yield* Effect.promise(() => pause("text"));
+                return {
+                  provider_id: "openai",
+                  requested_model: "omni-moderation-2024-09-26",
+                  returned_model: "omni-moderation-2024-09-26",
+                  input_sha256: canonical.sha256,
+                  matched_categories: [],
+                  inputs: [],
+                } as const;
+              });
+            },
+          },
+          imageModeration: {
+            evaluateImage: (input) =>
+              Effect.gen(function* () {
+                yield* Effect.promise(() => pause("cover"));
+                return {
+                  provider_id: "openai" as const,
+                  requested_model: "omni-moderation-2024-09-26",
+                  returned_model: "omni-moderation-2024-09-26",
+                  input_sha256: input.sha256,
+                  matched_categories: [],
+                  evidence: {
+                    input_sha256: input.sha256,
+                    categories: Object.fromEntries(
+                      MODERATION_POLICY_CATEGORIES_V1.map((category) => [category, false]),
+                    ) as Record<(typeof MODERATION_POLICY_CATEGORIES_V1)[number], boolean>,
+                    scores: Object.fromEntries(
+                      MODERATION_POLICY_CATEGORIES_V1.map((category) => [category, 0]),
+                    ) as Record<(typeof MODERATION_POLICY_CATEGORIES_V1)[number], number>,
+                    applied_input_types: {},
+                  },
+                };
+              }),
+          },
+          classifier: {
+            classify: (input) =>
+              Effect.gen(function* () {
+                yield* Effect.promise(() => pause("classifier"));
+                return {
+                  version: "media-explicitness-classifier-result-v1" as const,
+                  status: "classified" as const,
+                  explicitness: "not_explicit" as const,
+                  primary_language_bcp47: "en",
+                  secondary_language_bcp47: null,
+                  confidence: {
+                    explicitness: 0.98,
+                    primary_language: 0.97,
+                    secondary_language: null,
+                  },
+                  evidence: [
+                    { kind: "explicitness" as const, confidence: 0.98 },
+                    { kind: "primary_language" as const, confidence: 0.97 },
+                  ],
+                  lyrics_identity: {
+                    operation_id: input.accepted_lyrics.operation_id,
+                    audio_revision: input.accepted_lyrics.audio_revision,
+                    lyrics_revision: input.accepted_lyrics.lyrics_revision,
+                    canonical_audio_sha256: input.accepted_lyrics.canonical_audio_sha256,
+                  },
+                  attempt_id: input.attempt.attempt_id,
+                  policy_revision: "fixture-v1",
+                  prompt_revision: "fixture-v1",
+                  classifier_revision: "fixture-v1",
+                  adapter_revision: "fixture-v1",
+                };
+              }),
+          },
+          alignment: {
+            align: async () => {
+              await pause("alignment");
+              return { status: "unavailable", failureCode: "alignment_failed" };
+            },
+          },
+        };
+        const controller = new AbortController();
+        const runWorkflow = (activeStore: MediaProcessingStore = observedStore) =>
+          runMediaProcessingWorkflow(
+            {
+              outboxId:
+                stage === "alignment" || stage === "alignment_commit"
+                  ? `media-alignment-outbox-${operation}-r2`
+                  : stage === "publication_commit"
+                    ? "media_pg_publication_checkpoint"
+                    : "media_pg_analysis_outbox",
+              submissionId: submission,
+              operationId: operation,
+              workflowRevision: stage === "alignment" || stage === "alignment_commit" ? 2 : 1,
+            },
+            stage === "alignment" || stage === "alignment_commit"
+              ? "alignment"
+              : stage === "publication_commit"
+                ? "publication"
+                : "analysis_launch",
+            {
+              store: activeStore,
+              providers: provider,
+              options: {
+                enabled: true,
+                workerId: "media-interruption-worker",
+                now: Date.now,
+                policyRevision: "fixture-v1",
+                transformAdapterRevision: "fixture-v1",
+                metadataAdapterRevision: "fixture-v1",
+                classifierTimeoutMs: 10000,
+                transformRuntimeMs: 60000,
+                maximumSampleBytes: 1000000,
+              },
+            },
+          );
+        const workflow = runWorkflow();
+        let workflowFailure: unknown;
+        const completed = workflow.then(
+          () => "completed",
+          (error: unknown) => {
+            workflowFailure = error;
+            return "rejected";
+          },
+        );
+        const parent = Effect.runPromiseExit(
+          Effect.promise(() => workflow),
+          { signal: controller.signal },
+        );
+        try {
+          const reached = await Promise.race([entered.promise.then(() => "entered"), completed]);
+          if (reached === "rejected")
+            throw new Error("workflow rejected before target barrier", { cause: workflowFailure });
+          expect(reached).toBe("entered");
+          const hasClaim = !["text", "cover", "cover_read"].includes(stage);
+          if (hasClaim && selectedInput === undefined)
+            throw new Error("target attempt was not reached");
+          const rows = async () =>
+            (
+              await admin.query(
+                "SELECT attempt_id,state,claim_owner,claim_fence,attempt_number,result AS result_snapshot,failure_code,lease_expires_at,lease_expires_at > clock_timestamp() AS live FROM media_processing_attempts ORDER BY attempt_id",
+              )
+            ).rows;
+          const before = await rows();
+          const beforeAuthority = await store.loadAuthority(submission, operation);
+          if (stage === "publication_commit" || stage === "alignment_commit") {
+            const durable = await store.loadAuthority(submission, operation);
+            expect(durable).toMatchObject({
+              status: "published",
+              postId: `media-post-${operation}`,
+              publishedLyricsRevision: 1,
+            });
+          }
+
+          if (hasClaim) {
+            if (claimed === undefined) throw new Error("target claim did not succeed");
+            const targetRows = before.filter((row) => row.attempt_id === claimed.lease.attemptId);
+            expect(targetRows).toHaveLength(1);
+            expect(targetRows[0]).toMatchObject({
+              state: "running",
+              claim_owner: claimed.lease.claimOwner,
+              claim_fence: String(claimed.lease.claimFence),
+              attempt_number: claimed.lease.attemptNumber,
+              live: true,
+              result_snapshot: null,
+              failure_code: null,
+            });
+          }
+          controller.abort();
+          expect((await parent)._tag).toBe("Failure");
+          if (selectedInput !== undefined)
+            expect(
+              await store.startAttempt({ ...selectedInput, workerId: "competing-worker" }),
+            ).toEqual({ kind: "busy" });
+          if (stage === "publication_commit" || stage === "alignment_commit") {
+            expect(await runWorkflow(store)).toEqual({
+              outcome: stage === "publication_commit" ? "inert" : "waiting_for_provider",
+            });
+            expect(await store.loadAuthority(submission, operation)).toEqual(beforeAuthority);
+            const projection = await admin.query(
+              "SELECT status,alignment_revision FROM media_alignment_projections WHERE submission_id=$1",
+              [submission],
+            );
+            expect(projection.rows).toEqual([
+              {
+                status: stage === "publication_commit" ? "pending" : "unavailable",
+                alignment_revision: stage === "publication_commit" ? "0" : "1",
+              },
+            ]);
+          }
+          release.resolve();
+          await completed;
+          const after = await rows();
+          const afterAuthority = await store.loadAuthority(submission, operation);
+          expect({ attempts: after, authority: afterAuthority }).toEqual({
+            attempts: before,
+            authority: beforeAuthority,
+          });
+        } finally {
+          controller.abort();
+          release.resolve();
+          await completed;
+        }
+      });
+      completedTestCount += 1;
+    }, 40000);
+  }
+
+  test("reclaims an expired processing lease with prior progress and rejects every stale mutation", async () => {
+    await withCurrentSchema(async (admin, connection) => {
+      await createThroughDecision(connection);
+      const store = makeMediaProcessingStore(makeDirectPostgresControlPlaneLayer(connection), {
+        attemptLeaseSeconds: 1,
+        retryBaseMs: 1,
+      });
+      const current = await store.loadAuthority(submission, operation);
+      if (current === null) throw new Error("missing fixture authority");
+      const input = {
+        authority: current,
+        stage: "probe" as const,
+        attemptId: "media-pg-expiry-probe",
+        workerId: "original-worker",
+        inputRevision: 1,
+        inputHash: audioSha256,
+        policyRevision: "fixture-v1",
+        adapterRevision: "fixture-v1",
+      };
+      const first = await store.startAttempt(input);
+      if (first.kind !== "run") throw new Error("initial claim did not run");
+      const progress = {
+        kind: "probe" as const,
+        value: {
+          status: "submitted" as const,
+          attempt: {
+            version: "media-transform-attempt-v1" as const,
+            runtimeFence: { submittedAtMs: 1, runtimeDeadlineMs: 60001 },
+            providerJobId: "preserved-provider-job",
+          },
+        },
+      };
+      expect(await store.deferAttempt(first.lease, progress, 1)).toBe(true);
+      await admin.query(
+        "SELECT pg_sleep(GREATEST(0,EXTRACT(EPOCH FROM (next_eligible_at-clock_timestamp())))) FROM media_processing_attempts WHERE attempt_id=$1",
+        [first.lease.attemptId],
+      );
+      const resumed = await store.startAttempt(input);
+      if (resumed.kind !== "run") throw new Error("progress claim did not resume");
+      expect(resumed.lease).toMatchObject({ attemptNumber: 1, priorResult: progress });
+      expect(await store.startAttempt({ ...input, workerId: "recovery-worker" })).toEqual({
+        kind: "busy",
+      });
+      await admin.query(
+        "SELECT pg_sleep(GREATEST(0,EXTRACT(EPOCH FROM (lease_expires_at-clock_timestamp())))) FROM media_processing_attempts WHERE attempt_id=$1",
+        [resumed.lease.attemptId],
+      );
+      const reclaimed = await store.startAttempt({ ...input, workerId: "recovery-worker" });
+      if (reclaimed.kind !== "run") throw new Error("expired claim did not resume");
+      expect(reclaimed.lease).toMatchObject({ attemptNumber: 1, priorResult: progress });
+      expect(reclaimed.lease.claimFence).toBeGreaterThan(resumed.lease.claimFence);
+      const result = {
+        kind: "probe" as const,
+        value: {
+          status: "rejected" as const,
+          reason: "unsupported_codec" as const,
+          attempt: progress.value.attempt,
+        },
+      };
+      expect(await store.completeAttempt(resumed.lease, result)).toBe(false);
+      expect(await store.deferAttempt(resumed.lease, progress, 1)).toBe(false);
+      expect(await store.failAttempt(resumed.lease, "provider_unavailable", true)).toBe(false);
+      expect(await store.completeAttempt(reclaimed.lease, result)).toBe(true);
+      expect(await store.startAttempt(input)).toEqual({ kind: "replay", result });
+    });
+    completedTestCount += 1;
+  }, 40000);
+
   test("installs the general-audience cover evidence and projection gate", async () => {
     await withCurrentSchema(async (admin) => {
       const columns = await admin.query<{ column_name: string; is_nullable: string }>(
