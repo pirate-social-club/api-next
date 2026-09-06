@@ -1,6 +1,6 @@
 {
   "name": "@pirate/api-client",
-  "version": "0.62.0",
+  "version": "0.64.0",
   "type": "module",
   "exports": {
     ".": {

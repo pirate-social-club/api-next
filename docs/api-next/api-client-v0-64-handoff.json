@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.64.0",
+  "releaseType": "video-publication-recovery-reasons",
+  "sourceCommit": "pending-review",
+  "wireContract": "Video processing failures add membership_required and provider_submission_unconfirmed. Eligible membership recovery is publication-only; reconciliation is non-retryable.",
+  "supersedes": "0.62.0; preserves the delivery lane 0.63.0 candidate. Solid must skip this intermediate release and adopt the subsequent delivery release containing both tranches.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.64.0.tgz",
+    "sha256": "9a212eac27328e90a6bb9a5a83c5159c0825db870fe77b3e24652818ed4cf97f",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@b478fb4baecff388c8e2deb59d1a4aefc3ee1457f1299252f5ffd3147a00f195",
+    "openapiSha256": "b478fb4baecff388c8e2deb59d1a4aefc3ee1457f1299252f5ffd3147a00f195",
+    "clientSha256": "9edec95f4843c7b2907a87e3670e77453d47f75cb29a8be9c971fc1e06853eba"
+  },
+  "verification": {
+    "checkBreaking": "Exact ten-operation waivers against 76a95f57872a93fd87c9a1c72ea0c7267d02a546 pass.",
+    "focusedSuites": "23 domain/application/workflow tests passed before migration; 18 breaking-policy tests passed.",
+    "fullUnitSuite": "3073 Bun tests passed before migration.",
+    "postgres17Full": "pending",
+    "repositoryCheck": "pending new migration and release verification",
+    "remoteCI": "required before merge"
+  }
+}
