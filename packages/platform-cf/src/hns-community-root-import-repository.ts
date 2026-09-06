@@ -91,7 +91,7 @@ const preparationColumns = `
   preparation.actor_id, preparation.community_id, preparation.attachment_intent_id,
   preparation.ceremony_intent_id, preparation.root_label,
   preparation.root_import_session_id, preparation.provision_job_id,
-  attachment.revision AS attachment_revision, preparation.start_request_sha256,
+  attachment.revision AS attachment_revision, preparation.start_request_sha256, preparation.admission_kind,
   preparation.expires_at`;
 
 // A retained verification attempt supports resuming checks, not a claim that
@@ -686,6 +686,13 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
             });
             const row = oneRow(inserted);
             if (row === undefined || row === null) return yield* Effect.fail(storageFailure());
+            if (preparation.admission_kind === "name_signature") {
+              // A retained pre-amendment preparation keeps its original proof gate.
+              const response = sessionResponse(row, options.environment, false);
+              return response === null
+                ? yield* Effect.fail(storageFailure())
+                : ({ kind: "created", session: response } as const);
+            }
             const provisionRequest = {
               version: "pirate-hns-authority-provision-request-v1",
               root_import_session_id: input.preparation.root_import_session_id,
