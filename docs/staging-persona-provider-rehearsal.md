@@ -216,3 +216,14 @@ match the original capture fingerprints. Original runtime and operator
 credentials authenticate on the replacement. The separate rolled-back 0110
 evidence-function check remains outstanding; no full recovery sign-off or
 successful reset is claimed by these comparisons.
+
+At 2026-09-06T05:42:04.915Z the remaining evidence check passed on k1d9pj5znk6t:
+unbound 2, single-community 3, multi-community 1, with digest
+85a756a5f36bcbdec2ce55b9cb108baa82a035e9fdec1761d82819e4861f7817.
+Only the two pinned evidence functions were installed inside a transaction,
+then rolled back; all 109 ledger checksums were rechecked unchanged. This
+completes the original-capture fidelity checks after the real partial failure.
+The next isolated attempt is fixed to this replacement branch and a new marker
+directory with its exact branch id. The old failed marker is retained. No
+retry rule, lock-budget change, reset artifact pin or live-staging authority
+changed with this target update.
