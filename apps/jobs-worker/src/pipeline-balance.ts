@@ -1,5 +1,5 @@
 import type { ControlPlaneDb, ControlPlaneError } from "@pirate/application";
-import { Effect, type Layer } from "effect";
+import { Cause, Effect, Fiber, type Layer } from "effect";
 import {
   type AlertSink,
   type PipelineLogEvent,
@@ -47,43 +47,73 @@ function isPipelineSnapshotBoundary(scheduledTime: number): boolean {
   );
 }
 
-async function claimSnapshot(sink: AlertSink, role: "data" | "megapot", scheduledTime: number) {
+const claimSnapshot = Effect.fn("pipelineBalance.claimSnapshot")(function* (
+  sink: AlertSink,
+  role: "data" | "megapot",
+  scheduledTime: number,
+): Effect.fn.Return<boolean, unknown> {
   if (!isPipelineSnapshotBoundary(scheduledTime)) return false;
   if (sink.delivery === undefined) return true;
-  try {
-    return await Effect.runPromise(
-      sink.delivery.markSent(
-        `pipeline-balance:${role}:window-${Math.floor(scheduledTime / PIPELINE_SNAPSHOT_INTERVAL_MS)}`,
-      ),
-    );
-  } catch {
-    console.error("pipeline balance snapshot claim unavailable");
-    return false;
-  }
-}
+  const key = `pipeline-balance:${role}:window-${Math.floor(
+    scheduledTime / PIPELINE_SNAPSHOT_INTERVAL_MS,
+  )}`;
+  const delivery = sink.delivery;
+  return yield* Effect.uninterruptible(Effect.suspend(() => delivery.markSent(key))).pipe(
+    Effect.catchCause((cause) =>
+      Cause.hasInterrupts(cause)
+        ? Effect.failCause(cause)
+        : Effect.sync(() => {
+            console.error("pipeline balance snapshot claim unavailable");
+            return false;
+          }),
+    ),
+  );
+});
 
-async function compensateSnapshot(sink: AlertSink, key: string): Promise<void> {
-  if (sink.delivery === undefined) return;
-  try {
-    await Effect.runPromise(sink.delivery.compensate(key));
-  } catch {
-    console.error("pipeline balance snapshot compensation unavailable");
-  }
-}
-
-async function runClaimedSnapshot(
+const compensateSnapshot = Effect.fn("pipelineBalance.compensateSnapshot")(function* (
   sink: AlertSink,
   key: string,
-  emit: () => Promise<boolean>,
-): Promise<void> {
-  try {
-    if (await emit()) return;
-    console.error("pipeline balance snapshot input invalid");
-  } catch {
-    console.error("pipeline balance snapshot log unavailable");
+): Effect.fn.Return<void, unknown> {
+  const delivery = sink.delivery;
+  if (delivery === undefined) return;
+  yield* Effect.uninterruptible(Effect.suspend(() => delivery.compensate(key))).pipe(
+    Effect.catchCause((cause) =>
+      Cause.hasInterrupts(cause)
+        ? Effect.failCause(cause)
+        : Effect.sync(() => {
+            console.error("pipeline balance snapshot compensation unavailable");
+          }),
+    ),
+  );
+});
+
+const runClaimedSnapshot = Effect.fn("pipelineBalance.runClaimedSnapshot")(function* (
+  sink: AlertSink,
+  key: string,
+  emit: Effect.Effect<boolean, unknown>,
+): Effect.fn.Return<void, unknown> {
+  const result = yield* Effect.exit(Effect.suspend(() => emit));
+  if (result._tag === "Failure") {
+    if (Cause.hasInterrupts(result.cause)) return yield* Effect.failCause(result.cause);
+    yield* Effect.sync(() => console.error("pipeline balance snapshot log unavailable"));
+  } else if (result.value) {
+    return;
+  } else {
+    yield* Effect.sync(() => console.error("pipeline balance snapshot input invalid"));
   }
-  await compensateSnapshot(sink, key);
-}
+  yield* compensateSnapshot(sink, key);
+});
+
+const settleObservation = Effect.fn("pipelineBalance.settleObservation")(function* (
+  sink: AlertSink,
+  key: string,
+  emit: Effect.Effect<boolean, unknown>,
+): Effect.fn.Return<void, unknown> {
+  const result = yield* Effect.exit(runClaimedSnapshot(sink, key, emit));
+  if (result._tag === "Failure" && Cause.hasInterrupts(result.cause)) {
+    return yield* Effect.failCause(result.cause);
+  }
+});
 
 function requiredString(value: string | undefined, name: string): string {
   const result = value?.trim();
@@ -146,44 +176,47 @@ function writerFor(sink: AlertSink): (event: PipelineLogEvent, fields: PipelineL
   return sink.log ?? ((event, fields) => console.info(event, fields));
 }
 
-async function emitDataBalance(
+const emitDataBalance = Effect.fn("pipelineBalance.emitDataBalance")(function* (
   config: DataRegistrationBalanceConfig,
   environment: string,
   scheduledTime: number,
   writer: (event: PipelineLogEvent, fields: PipelineLogFields) => void,
   reader: DataBalanceReader,
-): Promise<boolean> {
-  let balance: bigint | null = null;
-  try {
-    balance = await reader(config);
-  } catch {
-    // Balance observation is diagnostic and must not reject DATA maintenance.
-  }
-  return writeOperationsBalanceSnapshot(
-    {
-      environment,
-      emitted_at: new Date(scheduledTime).toISOString(),
-      wallet_role: "data_registration_signer",
-      chain_id: 1315,
-      public_address: config.publicAddress,
-      balance_wei: balance,
-      reserve_floor_wei: config.reserveFloorWei,
-      blocked_floor_wei: DATA_REGISTRATION_BLOCKED_BALANCE_WEI,
-    },
-    writer,
+): Effect.fn.Return<boolean, unknown> {
+  const balance = yield* Effect.tryPromise({
+    try: () => reader(config),
+    catch: (error) => error,
+  }).pipe(
+    Effect.catchCause((cause) =>
+      Cause.hasInterrupts(cause) ? Effect.failCause(cause) : Effect.succeed(null),
+    ),
   );
-}
+  return yield* Effect.sync(() =>
+    writeOperationsBalanceSnapshot(
+      {
+        environment,
+        emitted_at: new Date(scheduledTime).toISOString(),
+        wallet_role: "data_registration_signer",
+        chain_id: 1315,
+        public_address: config.publicAddress,
+        balance_wei: balance as bigint | null,
+        reserve_floor_wei: config.reserveFloorWei,
+        blocked_floor_wei: DATA_REGISTRATION_BLOCKED_BALANCE_WEI,
+      },
+      writer,
+    ),
+  );
+});
 
-async function emitMegapotBalance(
-  runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+const emitMegapotBalance = Effect.fn("pipelineBalance.emitMegapotBalance")(function* (
   config: MegapotBalanceConfig,
   environment: string,
   scheduledTime: number,
   writer: (event: PipelineLogEvent, fields: PipelineLogFields) => void,
-  loadDeployment: MegapotDeploymentLoader,
+  loadDeployment: Effect.Effect<MegapotV2DeploymentAttestation, unknown>,
   readBalance: MegapotBalanceReader,
-): Promise<boolean> {
-  const unavailable = () =>
+): Effect.fn.Return<boolean, unknown> {
+  const unavailable = Effect.sync(() =>
     writeOperationsBalanceSnapshot(
       {
         environment,
@@ -196,37 +229,137 @@ async function emitMegapotBalance(
         blocked_floor_wei: 1n,
       },
       writer,
-    );
-  try {
-    const deployment = await loadDeployment(runtime, config.attestationId);
+    ),
+  );
+  const observed = Effect.gen(function* () {
+    const deployment = yield* loadDeployment;
     if (deployment.environment !== environment || deployment.chainId !== config.chainId) {
-      return unavailable();
+      return yield* unavailable;
     }
-    let balance: bigint | null = null;
-    try {
-      balance = await readBalance(config.rpcUrl, deployment);
-    } catch {
-      // Balance observation is diagnostic and must not reject rewards work.
-    }
-    return writeOperationsBalanceSnapshot(
-      {
-        environment,
-        emitted_at: new Date(scheduledTime).toISOString(),
-        wallet_role: "megapot_custody",
-        chain_id: deployment.chainId,
-        public_address: deployment.custodyAddress,
-        balance_wei: balance,
-        reserve_floor_wei: config.reserveFloorWei,
-        blocked_floor_wei: 1n,
-      },
-      writer,
+    const balance = yield* Effect.tryPromise({
+      try: () => readBalance(config.rpcUrl, deployment),
+      catch: (error) => error,
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Cause.hasInterrupts(cause) ? Effect.failCause(cause) : Effect.succeed(null),
+      ),
     );
-  } catch {
-    return unavailable();
-  }
-}
+    return yield* Effect.sync(() =>
+      writeOperationsBalanceSnapshot(
+        {
+          environment,
+          emitted_at: new Date(scheduledTime).toISOString(),
+          wallet_role: "megapot_custody",
+          chain_id: deployment.chainId,
+          public_address: deployment.custodyAddress,
+          balance_wei: balance as bigint | null,
+          reserve_floor_wei: config.reserveFloorWei,
+          blocked_floor_wei: 1n,
+        },
+        writer,
+      ),
+    );
+  });
+  return yield* observed.pipe(
+    Effect.catchCause((cause) =>
+      Cause.hasInterrupts(cause) ? Effect.failCause(cause) : unavailable,
+    ),
+  );
+});
 
-export async function runPipelineBalanceSnapshots(
+const runPipelineBalanceSnapshotsEffect = Effect.fn("pipelineBalance.runPipelineBalanceSnapshots")(
+  function* (
+    options: Readonly<{
+      runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>;
+      sink: AlertSink;
+      environment: string;
+      scheduledTime: number;
+      data: DataRegistrationBalanceConfig | null;
+      megapot: MegapotBalanceConfig | null;
+      readDataBalance?: DataBalanceReader;
+      loadMegapotDeployment?: MegapotDeploymentLoader;
+      readMegapotBalance?: MegapotBalanceReader;
+    }>,
+  ): Effect.fn.Return<void, unknown> {
+    if (!isPipelineSnapshotBoundary(options.scheduledTime)) return;
+    const writer = writerFor(options.sink);
+    const observationFibers: Fiber.Fiber<void, unknown>[] = [];
+    const startObservation = (key: string, emit: Effect.Effect<boolean, unknown>) =>
+      Effect.forkChild(settleObservation(options.sink, key, emit), { startImmediately: true });
+    const dataKey = `pipeline-balance:data:window-${Math.floor(
+      options.scheduledTime / PIPELINE_SNAPSHOT_INTERVAL_MS,
+    )}`;
+    const data = options.data;
+    if (data !== null && (yield* claimSnapshot(options.sink, "data", options.scheduledTime))) {
+      const readDataBalance =
+        options.readDataBalance ??
+        ((config: DataRegistrationBalanceConfig) =>
+          readNativeBalance(makeJsonRpcTransport(config.rpcUrl), config.publicAddress));
+      observationFibers.push(
+        yield* startObservation(
+          dataKey,
+          emitDataBalance(
+            data,
+            options.environment,
+            options.scheduledTime,
+            writer,
+            readDataBalance,
+          ),
+        ),
+      );
+      yield* Effect.yieldNow;
+    }
+    const megapotKey = `pipeline-balance:megapot:window-${Math.floor(
+      options.scheduledTime / PIPELINE_SNAPSHOT_INTERVAL_MS,
+    )}`;
+    const megapot = options.megapot;
+    if (
+      megapot !== null &&
+      (yield* claimSnapshot(options.sink, "megapot", options.scheduledTime))
+    ) {
+      const loadMegapotDeployment = Effect.fn("pipelineBalance.loadMegapotDeployment")(function* (
+        runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+        attestationId: string,
+      ): Effect.fn.Return<MegapotV2DeploymentAttestation, unknown> {
+        const configuredLoader = options.loadMegapotDeployment;
+        if (configuredLoader !== undefined) {
+          return yield* Effect.tryPromise({
+            try: () => configuredLoader(runtime, attestationId),
+            catch: (error) => error,
+          });
+        }
+        return yield* Effect.suspend(() =>
+          makeControlPlaneMegapotDrawingObservationStore(runtime).loadCandidate(attestationId),
+        );
+      });
+      const readMegapotBalance =
+        options.readMegapotBalance ??
+        ((rpcUrl: string, deployment: MegapotV2DeploymentAttestation) =>
+          makeMegapotV2RpcClient({ rpcUrl, attestation: deployment }).readNativeBalance(
+            deployment.custodyAddress,
+          ));
+      observationFibers.push(
+        yield* startObservation(
+          megapotKey,
+          emitMegapotBalance(
+            megapot,
+            options.environment,
+            options.scheduledTime,
+            writer,
+            loadMegapotDeployment(options.runtime, megapot.attestationId),
+            readMegapotBalance,
+          ),
+        ),
+      );
+    }
+    yield* Effect.all(
+      observationFibers.map((fiber) => Fiber.join(fiber)),
+      { concurrency: "unbounded", discard: true },
+    );
+  },
+);
+
+export function runPipelineBalanceSnapshots(
   options: Readonly<{
     runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>;
     sink: AlertSink;
@@ -239,56 +372,5 @@ export async function runPipelineBalanceSnapshots(
     readMegapotBalance?: MegapotBalanceReader;
   }>,
 ): Promise<void> {
-  if (!isPipelineSnapshotBoundary(options.scheduledTime)) return;
-  const writer = writerFor(options.sink);
-  const observations: Promise<void>[] = [];
-  const dataKey = `pipeline-balance:data:window-${Math.floor(
-    options.scheduledTime / PIPELINE_SNAPSHOT_INTERVAL_MS,
-  )}`;
-  const data = options.data;
-  if (data !== null && (await claimSnapshot(options.sink, "data", options.scheduledTime))) {
-    observations.push(
-      runClaimedSnapshot(options.sink, dataKey, () =>
-        emitDataBalance(
-          data,
-          options.environment,
-          options.scheduledTime,
-          writer,
-          options.readDataBalance ??
-            ((config) =>
-              readNativeBalance(makeJsonRpcTransport(config.rpcUrl), config.publicAddress)),
-        ),
-      ),
-    );
-  }
-  const megapotKey = `pipeline-balance:megapot:window-${Math.floor(
-    options.scheduledTime / PIPELINE_SNAPSHOT_INTERVAL_MS,
-  )}`;
-  const megapot = options.megapot;
-  if (megapot !== null && (await claimSnapshot(options.sink, "megapot", options.scheduledTime))) {
-    observations.push(
-      runClaimedSnapshot(options.sink, megapotKey, () =>
-        emitMegapotBalance(
-          options.runtime,
-          megapot,
-          options.environment,
-          options.scheduledTime,
-          writer,
-          options.loadMegapotDeployment ??
-            ((runtime, attestationId) =>
-              Effect.runPromise(
-                makeControlPlaneMegapotDrawingObservationStore(runtime).loadCandidate(
-                  attestationId,
-                ),
-              )),
-          options.readMegapotBalance ??
-            ((rpcUrl, deployment) =>
-              makeMegapotV2RpcClient({ rpcUrl, attestation: deployment }).readNativeBalance(
-                deployment.custodyAddress,
-              )),
-        ),
-      ),
-    );
-  }
-  await Promise.allSettled(observations);
+  return Effect.runPromise(runPipelineBalanceSnapshotsEffect(options));
 }
