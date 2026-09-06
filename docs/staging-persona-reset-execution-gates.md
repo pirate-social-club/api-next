@@ -152,11 +152,13 @@ not produce this list from scratch.
 Read-only checks on 2026-09-06 matched the fixed provider database and branch,
 operator/runtime SQL identities and Hyperdrive origin. Hyperdrive caching was
 disabled. This establishes target identity only, not a fence or recovery.
-The known authority host rejected the available noninteractive SSH identity
-with Permission denied (publickey). Its actual provisioner SQL target therefore
-remains unproven. Resolve that target with verified access; if staging is in
-scope, stop and hold the service against restart/reconnect through release
-verification. Missing staging service records do not establish writer absence.
+SSH correction on 2026-09-06: the failed invocation was root@94.103.168.161,
+not the documented operator login. SSH_AUTH_SOCK is available; ubuntu connects
+noninteractively to 94.103.168.161, 81.15.150.159 and 94.103.168.209, and
+sudo -n read-only inspection succeeds. No key repair or transfer is needed.
+The external-producer inventory is recorded in
+[the host inspection](staging-persona-external-producer-inventory.md).
+Target binding and maintained service fencing are still separate from access.
 
 Wrangler 4.123.0 command help and the official queue/workflow references were
 checked for this handoff. Commands below belong to the release coordinator,
