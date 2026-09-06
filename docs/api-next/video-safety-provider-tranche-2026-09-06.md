@@ -126,3 +126,32 @@ exit 0. Normalized schema.sql and test-reset.sql regenerated without a content
 diff, since the table semantics are unchanged. The foundation inventory now
 asserts the 0124 safety filename and rejects the former 0125 filename.
 Script-check reported zero findings. Integration rebase and its full gates follow.
+
+
+## Integrated local gate receipt — 2026-09-06
+
+Rebase onto fetched f1a548a3 produced runtime source 52c27edb. The sole conflict
+was package exports; both HNS diagnostics and video safety exports were kept.
+Range-diff preserves the other three commits unchanged. The pre-rebase tip
+708ef9bd remains on preserve/video-safety-pre-rebase-20260906. Migration 0124
+remains free on fetched main and belongs to safety; delivery follows as 0125.
+
+Integrated check exited 0. Ordinary tests exited 0: 3,056 Bun, 20 Node and
+155 Workerd cases. Isolated PostgreSQL passed 35 cases. The first general run
+hit three unchanged song-policy tests' 15-second timeouts and was stopped with
+SIGTERM after the failures; the command exited 1. At observation, host load was
+above 60, swap was full and about 1 GiB was available. Contention is a plausible
+contributor, not a proven cause. No test or timeout was changed.
+
+The four supported general shards then ran serially and each exited 0: 79, 89,
+123 and 90 cases, totaling 381 general cases. The three timed-out song-policy
+cases passed unchanged in shard zero in roughly 0.4–1.1 seconds. The final shard
+passed the composed exported-entrypoint success/fault-drill wrapper, including
+all 19 nested Workerd cases. This is complete split coverage, not a claim that
+the first standard command passed. Script-check reported zero findings.
+
+This receipt-only commit follows the validated runtime. Required remote check,
+postgres17 and secret-boundary are still owed on the published source. Video
+and moderation flags remain false; no provider, credential or deployment action
+was performed. The post-merge task remains active for recognition and the
+remaining execution obligations.
