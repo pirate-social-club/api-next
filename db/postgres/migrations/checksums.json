@@ -127,6 +127,7 @@
     "0124_video_safety_evidence.sql": "1def57d4bddd8e1f218f3eb8e0111c1acb0fb9ecbb417b581265eba6d456d4bf",
     "0125_video_publication_failure_reasons.sql": "3e2d858364ac3ff1f672485c28322d8a9b0ff398d53dd3c7e696ab4fa1c966a4",
     "0126_hns_renewal_execution_privileges.sql": "79096935d3a49b8fb3b178065264ceca37b167fc488ec1ac905610a091987e36",
-    "0127_video_delivery_ingest.sql": "3b154f8d9ce7aa90d743f719ad6c43033ed9fa8b1875d4b24f59a261d2045bf8"
+    "0127_video_delivery_ingest.sql": "3b154f8d9ce7aa90d743f719ad6c43033ed9fa8b1875d4b24f59a261d2045bf8",
+    "0129_hns_provisional_community_import.sql": "933ae29b72c704b5bc046e357b7b7bb156e115d11e4a52ce17a81002034897a2"
   }
 }

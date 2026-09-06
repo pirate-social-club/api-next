@@ -339,6 +339,38 @@ CREATE FUNCTION active_owned_persona(expected_account_id text, expected_persona_
   )
 $$;
 
+CREATE FUNCTION admit_hns_community_root_import_v1(input_actor_id text, input_community_id text, input_root_label text) RETURNS boolean
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  database_now TIMESTAMPTZ;
+BEGIN
+  PERFORM pg_advisory_xact_lock(hashtextextended('hns-community-provisional-admission-v1', 0));
+  database_now := clock_timestamp();
+  IF NOT EXISTS (
+    SELECT 1 FROM communities AS community
+    WHERE community.community_id = input_community_id AND community.status = 'active'
+      AND community.route_authority_version = 'optional_route_v2'
+      AND community.canonical_route_binding_id IS NULL
+      AND has_community_route_authority(input_community_id, input_actor_id)
+  ) THEN RETURN FALSE; END IF;
+  IF (SELECT count(*) FROM hns_community_root_import_preparations
+      WHERE actor_id = input_actor_id AND admission_kind = 'community_provisional'
+        AND created_at > database_now - interval '24 hours') >= 3
+  THEN RETURN FALSE; END IF;
+  IF EXISTS (
+    SELECT 1 FROM hns_community_root_import_preparations AS preparation
+    WHERE (community_id = input_community_id OR root_label = input_root_label)
+      AND hns_community_root_import_reservation_held_v1(preparation.root_import_session_id)
+  ) THEN RETURN FALSE; END IF;
+  IF (SELECT count(*) FROM hns_community_root_import_preparations AS preparation
+      WHERE hns_community_root_import_reservation_held_v1(preparation.root_import_session_id)) >= 32
+  THEN RETURN FALSE; END IF;
+  RETURN TRUE;
+END;
+$$;
+
 CREATE FUNCTION advance_handle_linkage_after_grant_v1() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -845,7 +877,7 @@ BEGIN
       AND job.request_sha256 = input_provision_request_sha256
       AND (
         (
-          input_authorization_kind = 'namespace_ownership'
+          input_authorization_kind IN ('namespace_ownership', 'community_provisional')
           AND input_name_proof_result_bytes IS NULL
           AND input_name_proof_message_sha256 IS NULL
           AND input_name_proof_signature_sha256 IS NULL
@@ -870,7 +902,7 @@ BEGIN
     OR session.expires_at <= database_now
     OR session.provision_job_id IS DISTINCT FROM input_provision_job_id
     OR input_poll_request_sha256 !~ '^[0-9a-f]{64}$'
-    OR input_authorization_kind NOT IN ('namespace_ownership', 'hns_name_signature')
+    OR input_authorization_kind NOT IN ('namespace_ownership', 'hns_name_signature', 'community_provisional')
     OR input_authorization_sha256 !~ '^[0-9a-f]{64}$'
     OR input_provision_request_sha256 !~ '^[0-9a-f]{64}$'
     OR encode(sha256(input_provision_request_bytes), 'hex')
@@ -880,7 +912,29 @@ BEGIN
     RETURN;
   END IF;
 
-  IF input_authorization_kind = 'namespace_ownership' THEN
+  IF input_authorization_kind = 'community_provisional' THEN
+    IF session.origin_kind <> 'community_attachment'
+      OR input_name_proof_result_bytes IS NOT NULL
+      OR input_name_proof_message_sha256 IS NOT NULL
+      OR input_name_proof_signature_sha256 IS NOT NULL
+      OR NOT has_community_route_authority(session.community_id, session.actor_id)
+      OR NOT EXISTS (
+        SELECT 1 FROM hns_community_root_import_preparations AS preparation
+        WHERE preparation.root_import_session_id = session.root_import_session_id
+          AND preparation.attachment_intent_id = session.attachment_intent_id
+          AND preparation.actor_id = session.actor_id
+          AND preparation.community_id = session.community_id
+          AND preparation.root_label = session.root_label
+          AND preparation.provision_job_id = input_provision_job_id
+          AND preparation.admission_kind = 'community_provisional'
+          AND preparation.start_request_sha256 = input_authorization_sha256
+          AND preparation.expires_at > database_now
+      )
+    THEN
+      RETURN QUERY SELECT 'conflict'::TEXT, session.root_import_session_id, session.revision;
+      RETURN;
+    END IF;
+  ELSIF input_authorization_kind = 'namespace_ownership' THEN
     IF input_name_proof_result_bytes IS NOT NULL
       OR input_name_proof_message_sha256 IS NOT NULL
       OR input_name_proof_signature_sha256 IS NOT NULL
@@ -956,6 +1010,16 @@ BEGIN
   -- Root reservation starts only after either durable namespace ownership or
   -- an exact safe name-signature result has been verified.
   PERFORM pg_advisory_xact_lock(hashtextextended('hns-root-import:' || session.root_label, 0));
+  IF EXISTS (
+    SELECT 1 FROM hns_community_root_import_preparations AS preparation
+    WHERE preparation.root_label = session.root_label
+      AND preparation.root_import_session_id <> session.root_import_session_id
+      AND hns_community_root_import_reservation_held_v1(preparation.root_import_session_id)
+  ) THEN
+    RETURN QUERY SELECT 'conflict'::TEXT, session.root_import_session_id, session.revision;
+    RETURN;
+  END IF;
+
   UPDATE hns_authority_provision_jobs AS stale_job
      SET state = 'failed', leased_by = NULL, lease_expires_at = NULL,
          failure_code = 'session_expired', completed_at = database_now,
@@ -1346,6 +1410,19 @@ BEGIN
          AND proof.safe IS TRUE
          AND proof.verified IS TRUE
        )
+       OR (
+         session.provision_authorization_kind = 'community_provisional'
+         AND session.ownership_result_sha256 IS NULL
+         AND EXISTS (
+           SELECT 1 FROM hns_community_root_import_preparations AS preparation
+           WHERE preparation.root_import_session_id = session.root_import_session_id
+             AND preparation.admission_kind = 'community_provisional'
+             AND preparation.start_request_sha256 = session.provision_authorization_sha256
+             AND preparation.actor_id = session.actor_id
+             AND preparation.community_id = session.community_id
+             AND preparation.provision_job_id = job.provision_job_id
+         )
+       )
      )
    ORDER BY job.created_at, job.provision_job_id
    FOR UPDATE OF job SKIP LOCKED
@@ -1498,6 +1575,15 @@ BEGIN
          AND cleanup_session.expires_at <= database_now
        )
      )
+     AND EXISTS (
+       SELECT 1 FROM hns_authority_provision_jobs AS retained_job
+       WHERE retained_job.provision_job_id = cleanup_session.provision_job_id
+         AND (retained_job.state = 'completed' OR (
+           retained_job.state = 'failed'
+           AND cleanup_session.provision_authorization_kind = 'community_provisional'
+           AND retained_job.updated_at <= database_now - interval '2 minutes'
+         ))
+     )
    ORDER BY job.created_at, job.teardown_job_id
    FOR UPDATE OF job SKIP LOCKED
    LIMIT 1;
@@ -1509,7 +1595,9 @@ BEGIN
     SELECT * INTO provision
       FROM hns_authority_provision_jobs
      WHERE provision_job_id = session.provision_job_id;
-    IF provision.state <> 'completed' THEN
+    IF provision.state <> 'completed' AND NOT (
+      provision.state = 'failed' AND session.provision_authorization_kind = 'community_provisional'
+    ) THEN
       RAISE EXCEPTION 'HNS root teardown provision authority is unavailable';
     END IF;
     UPDATE hns_root_import_teardown_jobs AS job
@@ -1520,7 +1608,9 @@ BEGIN
      WHERE job.teardown_job_id = teardown.teardown_job_id;
     RETURN QUERY SELECT
       teardown.teardown_job_id, teardown.root_import_session_id,
-      'teardown_root_v1'::TEXT, provision.request_bytes, provision.request_sha256,
+      CASE WHEN session.provision_authorization_kind = 'community_provisional'
+        THEN 'teardown_provisional_root_v1' ELSE 'teardown_root_v1' END,
+      provision.request_bytes, provision.request_sha256,
       provision.publish_plan_bytes, provision.publish_plan_sha256,
       provision.result_bytes, provision.result_sha256,
       teardown.lease_fence + 1,
@@ -1543,6 +1633,15 @@ BEGIN
          cleanup_session.status IN ('awaiting_owner_update', 'observing', 'ready')
          AND cleanup_session.expires_at <= database_now
        )
+     )
+     AND EXISTS (
+       SELECT 1 FROM hns_authority_provision_jobs AS retained_job
+       WHERE retained_job.provision_job_id = cleanup_session.provision_job_id
+         AND (retained_job.state = 'completed' OR (
+           retained_job.state = 'failed'
+           AND cleanup_session.provision_authorization_kind = 'community_provisional'
+           AND retained_job.updated_at <= database_now - interval '2 minutes'
+         ))
      )
    ORDER BY job.created_at, job.teardown_job_id
    FOR UPDATE OF job SKIP LOCKED
@@ -2369,13 +2468,16 @@ CREATE FUNCTION enqueue_hns_root_import_teardown_job_v1() RETURNS trigger
     SET search_path FROM CURRENT
     AS $$
 BEGIN
-  IF NEW.state = 'completed' AND OLD.state <> 'completed' THEN
-    INSERT INTO hns_root_import_teardown_jobs (
-      teardown_job_id, root_import_session_id
-    ) VALUES (
-      'teardown_' || encode(sha256(convert_to(NEW.root_import_session_id, 'UTF8')), 'hex'),
-      NEW.root_import_session_id
-    ) ON CONFLICT (root_import_session_id) DO NOTHING;
+  IF (NEW.state = 'completed' AND OLD.state <> 'completed') OR (
+    NEW.state = 'leased' AND EXISTS (
+      SELECT 1 FROM hns_root_import_sessions AS session
+      WHERE session.root_import_session_id = NEW.root_import_session_id
+        AND session.provision_authorization_kind = 'community_provisional'
+    )
+  ) THEN
+    INSERT INTO hns_root_import_teardown_jobs(teardown_job_id,root_import_session_id)
+    VALUES ('teardown_' || encode(sha256(convert_to(NEW.root_import_session_id,'UTF8')),'hex'),NEW.root_import_session_id)
+    ON CONFLICT (root_import_session_id) DO NOTHING;
   END IF;
   RETURN NEW;
 END;
@@ -6468,6 +6570,21 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION guard_hns_community_root_import_admission_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+  IF NEW.admission_kind = 'community_provisional' THEN
+    IF NOT admit_hns_community_root_import_v1(NEW.actor_id, NEW.community_id, NEW.root_label)
+    THEN RAISE EXCEPTION 'HNS provisional admission refused'; END IF;
+    -- The immutable ledger uses database time even for direct SQL callers.
+    NEW.created_at := clock_timestamp();
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION guard_hns_control_observer_reservation_change() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -10250,6 +10367,29 @@ CREATE FUNCTION has_community_route_authority(expected_community_id text, expect
   )
 $$;
 
+CREATE FUNCTION hns_community_root_import_reservation_held_v1(input_session_id text) RETURNS boolean
+    LANGUAGE sql
+    SET search_path FROM CURRENT
+    AS $$
+  SELECT COALESCE((
+    SELECT CASE
+      WHEN session.status = 'activated' THEN FALSE
+      WHEN teardown.state = 'completed' THEN FALSE
+      WHEN COALESCE(session.expires_at, preparation.expires_at) > clock_timestamp() THEN TRUE
+      WHEN job.provision_job_id IS NULL OR job.attempt_count = 0 THEN FALSE
+      ELSE TRUE
+    END
+    FROM hns_community_root_import_preparations AS preparation
+    LEFT JOIN hns_root_import_sessions AS session
+      ON session.root_import_session_id = preparation.root_import_session_id
+    LEFT JOIN hns_authority_provision_jobs AS job
+      ON job.provision_job_id = preparation.provision_job_id
+    LEFT JOIN hns_root_import_teardown_jobs AS teardown
+      ON teardown.root_import_session_id = preparation.root_import_session_id
+    WHERE preparation.root_import_session_id = input_session_id
+  ), FALSE)
+$$;
+
 CREATE FUNCTION hns_root_health_renewal_delay_v1(attempt integer) RETURNS interval
     LANGUAGE sql IMMUTABLE
     SET search_path FROM CURRENT
@@ -10838,6 +10978,44 @@ EXCEPTION WHEN OTHERS THEN
   RETURN FALSE;
 END;
 $_$;
+
+CREATE FUNCTION lock_hns_root_zone_mutation_v1(input_root_label text, input_challenge_txt_value text, input_teardown boolean, input_job_id text, input_executor_id text, input_lease_fence bigint) RETURNS boolean
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  retained_session hns_root_import_sessions%ROWTYPE;
+  selected_session_id TEXT;
+BEGIN
+  SELECT root_import_session_id INTO selected_session_id
+    FROM hns_root_import_sessions
+    WHERE root_label=input_root_label AND challenge_txt_value=input_challenge_txt_value;
+  IF NOT FOUND THEN RETURN FALSE; END IF;
+  IF input_teardown THEN
+    PERFORM 1 FROM hns_root_import_teardown_jobs
+      WHERE root_import_session_id=selected_session_id AND state='leased'
+        AND teardown_job_id=input_job_id AND leased_by=input_executor_id AND lease_fence=input_lease_fence
+        AND lease_expires_at>clock_timestamp() FOR UPDATE;
+  ELSE
+    PERFORM 1 FROM hns_authority_provision_jobs
+      WHERE root_import_session_id=selected_session_id AND state='leased'
+        AND provision_job_id=input_job_id AND leased_by=input_executor_id AND lease_fence=input_lease_fence
+        AND lease_expires_at>clock_timestamp() FOR UPDATE;
+  END IF;
+  IF NOT FOUND THEN RETURN FALSE; END IF;
+  SELECT * INTO retained_session FROM hns_root_import_sessions
+    WHERE root_import_session_id=selected_session_id FOR UPDATE;
+  IF input_teardown THEN
+    RETURN retained_session.provision_authorization_kind='community_provisional'
+      AND (retained_session.status IN ('failed','expired') OR (
+        retained_session.status IN ('awaiting_owner_update','observing','ready')
+        AND retained_session.expires_at<=clock_timestamp()
+      ));
+  END IF;
+  RETURN retained_session.status='provisioning'
+    AND retained_session.expires_at>clock_timestamp();
+END;
+$$;
 
 CREATE FUNCTION media_video_stage_fact_immutable() RETURNS trigger
     LANGUAGE plpgsql
@@ -22762,7 +22940,9 @@ CREATE TABLE hns_community_root_import_preparations (
     start_request_sha256 text NOT NULL,
     expires_at timestamp with time zone NOT NULL,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    admission_kind text DEFAULT 'name_signature'::text NOT NULL,
     CONSTRAINT hns_community_root_import_preparatio_start_request_sha256_check CHECK ((start_request_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT hns_community_root_import_preparations_admission_kind_check CHECK ((admission_kind = ANY (ARRAY['name_signature'::text, 'community_provisional'::text]))),
     CONSTRAINT hns_community_root_import_preparations_identity_check CHECK ((is_hns_host_persistence_identity(root_import_session_id, 256) AND is_hns_host_persistence_identity(provision_job_id, 256) AND is_hns_host_persistence_identity(start_idempotency_key, 256) AND (is_community_route_root_label('hns'::text, root_label) IS TRUE) AND (expires_at > created_at)))
 );
 
@@ -23136,8 +23316,8 @@ CREATE TABLE hns_root_import_sessions (
     CONSTRAINT hns_root_import_sessions_hash_check CHECK (((start_request_sha256 ~ '^[0-9a-f]{64}$'::text) AND ((provision_poll_request_sha256 IS NULL) OR (provision_poll_request_sha256 ~ '^[0-9a-f]{64}$'::text)) AND ((ownership_result_sha256 IS NULL) OR (ownership_result_sha256 ~ '^[0-9a-f]{64}$'::text)) AND ((observation_request_sha256 IS NULL) OR (observation_request_sha256 ~ '^[0-9a-f]{64}$'::text)) AND ((publish_plan_sha256 IS NULL) OR (publish_plan_sha256 ~ '^[0-9a-f]{64}$'::text)) AND ((readiness_result_sha256 IS NULL) OR (readiness_result_sha256 ~ '^[0-9a-f]{64}$'::text)) AND ((publish_plan_bytes IS NULL) OR ((octet_length(publish_plan_bytes) >= 1) AND (octet_length(publish_plan_bytes) <= 1048576) AND (encode(sha256(publish_plan_bytes), 'hex'::text) = publish_plan_sha256))) AND ((readiness_result_bytes IS NULL) OR ((octet_length(readiness_result_bytes) >= 1) AND (octet_length(readiness_result_bytes) <= 1048576) AND (encode(sha256(readiness_result_bytes), 'hex'::text) = readiness_result_sha256))))),
     CONSTRAINT hns_root_import_sessions_identity_check CHECK ((is_hns_host_persistence_identity(root_import_session_id, 256) AND is_hns_host_persistence_identity(actor_id, 256) AND ((creation_intent_id IS NULL) OR is_hns_host_persistence_identity(creation_intent_id, 256)) AND ((ceremony_intent_id IS NULL) OR is_hns_host_persistence_identity(ceremony_intent_id, 256)) AND is_hns_host_persistence_identity(namespace_session_id, 256) AND (is_community_route_root_label('hns'::text, root_label) IS TRUE) AND (challenge_txt_value ~~ 'pirate-verification=%'::text) AND ((octet_length(challenge_txt_value) >= 21) AND (octet_length(challenge_txt_value) <= 16448)) AND (challenge_txt_value !~ '[[:cntrl:]]'::text) AND is_hns_host_persistence_identity(start_idempotency_key, 256) AND is_hns_host_persistence_identity(provision_job_id, 256) AND ((provision_idempotency_key IS NULL) OR is_hns_host_persistence_identity(provision_idempotency_key, 256)) AND ((observation_job_id IS NULL) OR is_hns_host_persistence_identity(observation_job_id, 256)) AND ((observation_idempotency_key IS NULL) OR is_hns_host_persistence_identity(observation_idempotency_key, 256)))),
     CONSTRAINT hns_root_import_sessions_origin_check CHECK ((((origin_kind = 'creation_intent'::text) AND (creation_intent_id IS NOT NULL) AND (ceremony_intent_id IS NOT NULL) AND (namespace_session_id IS NOT NULL) AND (ownership_generation IS NOT NULL) AND (ownership_expected_revision IS NOT NULL) AND (community_id IS NULL) AND (attachment_intent_id IS NULL)) OR ((origin_kind = 'community_attachment'::text) AND (creation_intent_id IS NULL) AND (ceremony_intent_id IS NULL) AND (namespace_session_id IS NOT NULL) AND (ownership_generation IS NOT NULL) AND (ownership_expected_revision IS NOT NULL) AND (community_id IS NOT NULL) AND (attachment_intent_id IS NOT NULL)))),
-    CONSTRAINT hns_root_import_sessions_provision_authorization_check CHECK ((((provision_authorization_kind IS NULL) AND (provision_authorization_sha256 IS NULL)) OR ((provision_authorization_kind = ANY (ARRAY['namespace_ownership'::text, 'hns_name_signature'::text])) AND (provision_authorization_sha256 ~ '^[0-9a-f]{64}$'::text)))),
-    CONSTRAINT hns_root_import_sessions_state_shape CHECK ((((status = 'awaiting_ownership'::text) AND (publish_plan_bytes IS NULL) AND (publish_plan_sha256 IS NULL) AND (readiness_result_bytes IS NULL) AND (readiness_result_sha256 IS NULL) AND (ownership_result_sha256 IS NULL) AND (provision_authorization_kind IS NULL) AND (provision_authorization_sha256 IS NULL) AND (provision_idempotency_key IS NULL) AND (provision_poll_request_sha256 IS NULL) AND (observation_job_id IS NULL) AND (observation_idempotency_key IS NULL) AND (observation_request_sha256 IS NULL) AND (activated_community_id IS NULL)) OR ((status = ANY (ARRAY['provisioning'::text, 'awaiting_owner_update'::text])) AND (((provision_authorization_kind = 'namespace_ownership'::text) AND (provision_authorization_sha256 = ownership_result_sha256)) OR ((provision_authorization_kind = 'hns_name_signature'::text) AND (ownership_result_sha256 IS NULL))) AND (provision_idempotency_key IS NOT NULL) AND (provision_poll_request_sha256 IS NOT NULL) AND (((status = 'provisioning'::text) AND (publish_plan_bytes IS NULL) AND (publish_plan_sha256 IS NULL)) OR ((status = 'awaiting_owner_update'::text) AND (publish_plan_bytes IS NOT NULL) AND (publish_plan_sha256 IS NOT NULL))) AND (readiness_result_bytes IS NULL) AND (readiness_result_sha256 IS NULL) AND (observation_job_id IS NULL) AND (observation_idempotency_key IS NULL) AND (observation_request_sha256 IS NULL) AND (activated_community_id IS NULL)) OR ((status = ANY (ARRAY['observing'::text, 'ready'::text, 'activated'::text])) AND (provision_authorization_kind IS NOT NULL) AND (provision_authorization_sha256 IS NOT NULL) AND (ownership_result_sha256 IS NOT NULL) AND (publish_plan_bytes IS NOT NULL) AND (publish_plan_sha256 IS NOT NULL) AND (provision_idempotency_key IS NOT NULL) AND (provision_poll_request_sha256 IS NOT NULL) AND (observation_job_id IS NOT NULL) AND (observation_idempotency_key IS NOT NULL) AND (observation_request_sha256 IS NOT NULL) AND (((status = 'observing'::text) AND (readiness_result_bytes IS NULL) AND (readiness_result_sha256 IS NULL) AND (activated_community_id IS NULL)) OR ((status = 'ready'::text) AND (readiness_result_bytes IS NOT NULL) AND (readiness_result_sha256 IS NOT NULL) AND (activated_community_id IS NULL)) OR ((status = 'activated'::text) AND (readiness_result_bytes IS NOT NULL) AND (readiness_result_sha256 IS NOT NULL) AND (activated_community_id IS NOT NULL)))) OR ((status = ANY (ARRAY['failed'::text, 'expired'::text])) AND (activated_community_id IS NULL)))),
+    CONSTRAINT hns_root_import_sessions_provision_authorization_check CHECK ((((provision_authorization_kind IS NULL) AND (provision_authorization_sha256 IS NULL)) OR ((provision_authorization_kind = ANY (ARRAY['namespace_ownership'::text, 'hns_name_signature'::text, 'community_provisional'::text])) AND (provision_authorization_sha256 ~ '^[0-9a-f]{64}$'::text)))),
+    CONSTRAINT hns_root_import_sessions_state_shape CHECK ((((status = 'awaiting_ownership'::text) AND (publish_plan_bytes IS NULL) AND (publish_plan_sha256 IS NULL) AND (readiness_result_bytes IS NULL) AND (readiness_result_sha256 IS NULL) AND (ownership_result_sha256 IS NULL) AND (provision_authorization_kind IS NULL) AND (provision_authorization_sha256 IS NULL) AND (provision_idempotency_key IS NULL) AND (provision_poll_request_sha256 IS NULL) AND (observation_job_id IS NULL) AND (observation_idempotency_key IS NULL) AND (observation_request_sha256 IS NULL) AND (activated_community_id IS NULL)) OR ((status = ANY (ARRAY['provisioning'::text, 'awaiting_owner_update'::text])) AND (((provision_authorization_kind = 'namespace_ownership'::text) AND (provision_authorization_sha256 = ownership_result_sha256)) OR ((provision_authorization_kind = ANY (ARRAY['hns_name_signature'::text, 'community_provisional'::text])) AND (ownership_result_sha256 IS NULL))) AND (provision_idempotency_key IS NOT NULL) AND (provision_poll_request_sha256 IS NOT NULL) AND (((status = 'provisioning'::text) AND (publish_plan_bytes IS NULL) AND (publish_plan_sha256 IS NULL)) OR ((status = 'awaiting_owner_update'::text) AND (publish_plan_bytes IS NOT NULL) AND (publish_plan_sha256 IS NOT NULL))) AND (readiness_result_bytes IS NULL) AND (readiness_result_sha256 IS NULL) AND (observation_job_id IS NULL) AND (observation_idempotency_key IS NULL) AND (observation_request_sha256 IS NULL) AND (activated_community_id IS NULL)) OR ((status = ANY (ARRAY['observing'::text, 'ready'::text, 'activated'::text])) AND (provision_authorization_kind IS NOT NULL) AND (provision_authorization_sha256 IS NOT NULL) AND (ownership_result_sha256 IS NOT NULL) AND (publish_plan_bytes IS NOT NULL) AND (publish_plan_sha256 IS NOT NULL) AND (provision_idempotency_key IS NOT NULL) AND (provision_poll_request_sha256 IS NOT NULL) AND (observation_job_id IS NOT NULL) AND (observation_idempotency_key IS NOT NULL) AND (observation_request_sha256 IS NOT NULL) AND (((status = 'observing'::text) AND (readiness_result_bytes IS NULL) AND (readiness_result_sha256 IS NULL) AND (activated_community_id IS NULL)) OR ((status = 'ready'::text) AND (readiness_result_bytes IS NOT NULL) AND (readiness_result_sha256 IS NOT NULL) AND (activated_community_id IS NULL)) OR ((status = 'activated'::text) AND (readiness_result_bytes IS NOT NULL) AND (readiness_result_sha256 IS NOT NULL) AND (activated_community_id IS NOT NULL)))) OR ((status = ANY (ARRAY['failed'::text, 'expired'::text])) AND (activated_community_id IS NULL)))),
     CONSTRAINT hns_root_import_sessions_status_check CHECK ((status = ANY (ARRAY['awaiting_ownership'::text, 'provisioning'::text, 'awaiting_owner_update'::text, 'observing'::text, 'ready'::text, 'activated'::text, 'failed'::text, 'expired'::text]))),
     CONSTRAINT hns_root_import_sessions_time_check CHECK (((expires_at > created_at) AND (updated_at >= created_at)))
 );
@@ -29794,6 +29974,8 @@ CREATE INDEX hns_authority_inventories_current_idx ON hns_authority_inventories 
 
 CREATE INDEX hns_authority_provision_jobs_claim_idx ON hns_authority_provision_jobs USING btree (state, created_at, provision_job_id);
 
+CREATE INDEX hns_community_root_import_admission_actor_idx ON hns_community_root_import_preparations USING btree (actor_id, created_at) WHERE (admission_kind = 'community_provisional'::text);
+
 CREATE INDEX hns_control_observer_reservations_live_lease_idx ON hns_control_observer_reservations USING btree (lease_expires_at, observation_id) WHERE (state = 'reserved'::text);
 
 CREATE INDEX hns_dns_zone_activation_operations_live_idx ON hns_dns_zone_activation_operations USING btree (lease_expires_at, operation_id) WHERE (state = 'reserved'::text);
@@ -30437,6 +30619,8 @@ CREATE TRIGGER hns_community_app_host_activation_revisions_append_only BEFORE DE
 CREATE TRIGGER hns_community_app_host_current_change_guard BEFORE DELETE OR UPDATE ON hns_community_app_host_activation_current FOR EACH ROW EXECUTE FUNCTION guard_hns_community_app_host_current_change();
 
 CREATE TRIGGER hns_community_app_host_operations_append_only BEFORE DELETE OR UPDATE ON hns_community_app_host_operations FOR EACH ROW EXECUTE FUNCTION reject_hns_host_persistence_append_only_change();
+
+CREATE TRIGGER hns_community_root_import_preparations_admission_guard BEFORE INSERT ON hns_community_root_import_preparations FOR EACH ROW EXECUTE FUNCTION guard_hns_community_root_import_admission_v1();
 
 CREATE TRIGGER hns_community_root_import_preparations_change_guard BEFORE DELETE OR UPDATE ON hns_community_root_import_preparations FOR EACH ROW EXECUTE FUNCTION reject_hns_community_root_import_preparation_change();
 

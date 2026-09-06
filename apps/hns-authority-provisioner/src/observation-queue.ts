@@ -7,15 +7,20 @@ import {
 type HnsRootObservationClaim = Readonly<{
   readonly observation_job_id: string;
   readonly root_import_session_id: string;
-  readonly operation_kind: "observe_root_v1" | "teardown_root_v1" | "renew_health_v1";
   readonly request_bytes: Uint8Array;
   readonly request_sha256: string;
-  readonly publish_plan_bytes: Uint8Array;
-  readonly publish_plan_sha256: string;
-  readonly provision_result_bytes: Uint8Array;
-  readonly provision_result_sha256: string;
   readonly lease_fence: number;
-}>;
+}> &
+  (
+    | Readonly<{ readonly operation_kind: "teardown_provisional_root_v1" }>
+    | Readonly<{
+        readonly operation_kind: "observe_root_v1" | "teardown_root_v1" | "renew_health_v1";
+        readonly publish_plan_bytes: Uint8Array;
+        readonly publish_plan_sha256: string;
+        readonly provision_result_bytes: Uint8Array;
+        readonly provision_result_sha256: string;
+      }>
+  );
 
 export type HnsRootObservationFinalizeInput = Readonly<{
   readonly observation_job_id: string;
@@ -98,6 +103,26 @@ export function makePostgresHnsRootObservationQueue(
         const publishPlanBytes = bytes(row?.publish_plan_bytes);
         const provisionResultBytes = bytes(row?.provision_result_bytes);
         const leaseFence = positiveInteger(row?.lease_fence);
+        if (row?.operation_kind === "teardown_provisional_root_v1") {
+          if (
+            typeof row.observation_job_id !== "string" ||
+            typeof row.root_import_session_id !== "string" ||
+            requestBytes === null ||
+            typeof row.request_sha256 !== "string" ||
+            !/^[0-9a-f]{64}$/u.test(row.request_sha256) ||
+            leaseFence === null
+          )
+            throw new Error("HNS provisional teardown returned an invalid job");
+          return {
+            observation_job_id: row.observation_job_id,
+            root_import_session_id: row.root_import_session_id,
+            operation_kind: "teardown_provisional_root_v1" as const,
+            request_bytes: requestBytes,
+            request_sha256: row.request_sha256,
+            lease_fence: leaseFence,
+          };
+        }
+
         if (
           typeof row?.observation_job_id !== "string" ||
           typeof row.root_import_session_id !== "string" ||

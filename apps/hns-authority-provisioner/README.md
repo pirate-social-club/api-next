@@ -54,3 +54,35 @@ Read back an early successor and both app and existing username serving paths
 before claiming production acceptance. Retained operator roots remain outside
 this queue until adoption; their manual checkpoints and certificate renewal
 remain required.
+
+## Wallet-independent provisional imports
+
+Spec 012's September 6 amendment permits a community manager to obtain a
+complete resource before proving root ownership. Migration 0129 admits one
+open import per community, three new provisional admissions per actor over
+24 hours, and 32 held community reservations deployment-wide. Exact replay
+consumes no new admission. The parent-chain TXT and delegation observations
+remain required; provisioning does not grant ownership or activate serving.
+
+Deploy the forward migration and explicitly grant the executor role
+`EXECUTE ON FUNCTION lock_hns_root_zone_mutation_v1(TEXT,TEXT,BOOLEAN,TEXT,TEXT,BIGINT)` before
+this provisioner. Deploy this provisioner before enabling the new HTTP start
+path, and deploy HTTP before the matching frontend. Older provisioners cannot
+consume provisional teardown requests. Resolve the reviewed migration prefix
+explicitly; this release does not authorize unrelated video migrations.
+
+PowerDNS stores a reservation marker in the zone account at creation. A retry
+may reconcile only the matching reservation, including after a lost create
+response. Provisional teardown validates that marker, deletes the zone, and
+reads back absence. Database job and session locks cover the provider mutation
+so a competing completion cannot release and reuse the reservation mid-write.
+The executor aborts provider requests if its lock connection is lost.
+
+The existing teardown queue is populated on the first provisional execution,
+including attempts that never retain a successful provision result. Failed
+attempts retain capacity until confirmed cleanup; a two-minute drain window
+precedes cleanup of a failed provision. Expired, never-attempted preparations
+can release capacity without DNS work. Cleanup exhaustion keeps the reservation
+held for operator reconciliation rather than silently refunding it. Provisioning
+and teardown requests remain individually bounded; no retry is performed by
+the mutation-lock wrapper after an ambiguous transaction acknowledgement.
