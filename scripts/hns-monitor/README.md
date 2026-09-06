@@ -87,6 +87,8 @@ The adjacent systemd units are installation templates, not evidence of deploymen
 Stage the bundle, record its digest and source commit, supply the environment
 and configuration, run a dry-run and delivery test, then install the timer.
 The service uses a dynamic identity and its own private state directory.
+Systemd passes the private configuration through LoadCredential, so the
+dynamic identity does not need direct access to the operator-owned source file.
 Its fifteen-minute period is independent of the production renewal cron.
 Monitor timer execution from another host or an external dead-man destination;
 a stopped monitor cannot report its own absence.
