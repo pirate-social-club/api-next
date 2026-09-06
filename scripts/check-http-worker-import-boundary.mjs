@@ -14,6 +14,7 @@ const canonicalApplicationImports = new Set([
   "@pirate/application/route-revalidation",
   "@pirate/application/rewards/song-reward-offers",
   "@pirate/application/verification",
+  "@pirate/application/video/playback-access",
 ]);
 
 async function files(directory) {

@@ -231,7 +231,9 @@ import { makeStudyV2Handlers } from "./study-v2-handlers.ts";
 import { createHttpWorker, type EndpointHandler, type Principal } from "./transport.ts";
 import { makeVerificationHandlers } from "./verification-handlers.ts";
 
-export interface HttpWorkerBindings {
+import { makeVideoAccessHandlers, type VideoAccessBindings } from "./video-access-composition.ts";
+
+export interface HttpWorkerBindings extends VideoAccessBindings {
   readonly CF_VERSION_METADATA?: { readonly id: string };
   readonly CONTROL_PLANE?: unknown;
   readonly STUDY_GENERATION_ENABLED?: string;
@@ -783,6 +785,7 @@ export async function createProductionHttpWorker(
       ? {}
       : makeMediaUploadHandlers(makeMediaUploadApplicationCommands(mediaServices, videoServices));
   const contentStore = makeControlPlaneContentStore(controlPlane);
+  const videoAccessHandlers = await makeVideoAccessHandlers(bindings, controlPlane);
   const textPostStore = makeControlPlaneTextSubmissionStore(controlPlane);
   const moderationStore = makeControlPlaneCommunityModerationStore(controlPlane);
   const ageAccessStore = makeControlPlaneAgeAccessStore(controlPlane);
@@ -1332,6 +1335,7 @@ export async function createProductionHttpWorker(
       ...songRewardOfferHandlers,
       ...songOwnerVideoPolicyHandlers,
       ...mediaHandlers,
+      ...videoAccessHandlers,
       ...danceReferenceHandlers,
       ...danceAttemptHandlers,
       GetJwks: () => sessionCrypto.jwks(),

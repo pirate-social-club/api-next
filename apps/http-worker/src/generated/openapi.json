@@ -40,6 +40,652 @@
         "x-errors": []
       }
     },
+    "/posts/{postId}/video/playback-access": {
+      "post": {
+        "operationId": "post_postsPostIdVideoPlaybackAccess",
+        "parameters": [
+          {
+            "name": "postId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "playback_url": {
+                      "type": "string"
+                    },
+                    "expires_at": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "string",
+                          "enum": [
+                            "Infinity",
+                            "-Infinity",
+                            "NaN"
+                          ]
+                        }
+                      ]
+                    },
+                    "renew_after": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "string",
+                          "enum": [
+                            "Infinity",
+                            "-Infinity",
+                            "NaN"
+                          ]
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "playback_url",
+                    "expires_at",
+                    "renew_after"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "404": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "not_found"
+            ]
+          },
+          "429": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "rate_limited"
+            ]
+          },
+          "500": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "user"
+          },
+          "optionalUser": true
+        },
+        "x-errors": [
+          "AuthError",
+          "BadRequest",
+          "InternalError",
+          "NotFound",
+          "RateLimited"
+        ]
+      }
+    },
+    "/posts/{postId}/video/poster": {
+      "get": {
+        "operationId": "get_postsPostIdVideoPoster",
+        "parameters": [
+          {
+            "name": "postId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "if-none-match",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "headers": {
+              "ETag": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Cache-Control": {
+                "required": true,
+                "schema": {
+                  "const": "private, no-cache"
+                }
+              }
+            },
+            "x-conditional-authorization": "handler-before-304",
+            "content": {
+              "image/jpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "Success",
+            "headers": {
+              "ETag": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Cache-Control": {
+                "required": true,
+                "schema": {
+                  "const": "private, no-cache"
+                }
+              }
+            },
+            "x-conditional-authorization": "handler-before-304"
+          },
+          "400": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "404": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "not_found"
+            ]
+          },
+          "500": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "user"
+          },
+          "optionalUser": true
+        },
+        "x-errors": [
+          "AuthError",
+          "BadRequest",
+          "NotFound",
+          "InternalError"
+        ]
+      }
+    },
     "/community-creation-intents": {
       "post": {
         "operationId": "post_communityCreationIntents",
@@ -73697,6 +74343,21 @@
                                             "status"
                                           ],
                                           "additionalProperties": false
+                                        },
+                                        {
+                                          "type": "object",
+                                          "properties": {
+                                            "status": {
+                                              "type": "string",
+                                              "enum": [
+                                                "unavailable"
+                                              ]
+                                            }
+                                          },
+                                          "required": [
+                                            "status"
+                                          ],
+                                          "additionalProperties": false
                                         }
                                       ]
                                     },
@@ -73728,6 +74389,21 @@
                                               "type": "string",
                                               "enum": [
                                                 "pending"
+                                              ]
+                                            }
+                                          },
+                                          "required": [
+                                            "status"
+                                          ],
+                                          "additionalProperties": false
+                                        },
+                                        {
+                                          "type": "object",
+                                          "properties": {
+                                            "status": {
+                                              "type": "string",
+                                              "enum": [
+                                                "unavailable"
                                               ]
                                             }
                                           },
@@ -82707,6 +83383,21 @@
                                                       "status"
                                                     ],
                                                     "additionalProperties": false
+                                                  },
+                                                  {
+                                                    "type": "object",
+                                                    "properties": {
+                                                      "status": {
+                                                        "type": "string",
+                                                        "enum": [
+                                                          "unavailable"
+                                                        ]
+                                                      }
+                                                    },
+                                                    "required": [
+                                                      "status"
+                                                    ],
+                                                    "additionalProperties": false
                                                   }
                                                 ]
                                               },
@@ -82738,6 +83429,21 @@
                                                         "type": "string",
                                                         "enum": [
                                                           "pending"
+                                                        ]
+                                                      }
+                                                    },
+                                                    "required": [
+                                                      "status"
+                                                    ],
+                                                    "additionalProperties": false
+                                                  },
+                                                  {
+                                                    "type": "object",
+                                                    "properties": {
+                                                      "status": {
+                                                        "type": "string",
+                                                        "enum": [
+                                                          "unavailable"
                                                         ]
                                                       }
                                                     },
@@ -85424,6 +86130,21 @@
                                                   "status"
                                                 ],
                                                 "additionalProperties": false
+                                              },
+                                              {
+                                                "type": "object",
+                                                "properties": {
+                                                  "status": {
+                                                    "type": "string",
+                                                    "enum": [
+                                                      "unavailable"
+                                                    ]
+                                                  }
+                                                },
+                                                "required": [
+                                                  "status"
+                                                ],
+                                                "additionalProperties": false
                                               }
                                             ]
                                           },
@@ -85455,6 +86176,21 @@
                                                     "type": "string",
                                                     "enum": [
                                                       "pending"
+                                                    ]
+                                                  }
+                                                },
+                                                "required": [
+                                                  "status"
+                                                ],
+                                                "additionalProperties": false
+                                              },
+                                              {
+                                                "type": "object",
+                                                "properties": {
+                                                  "status": {
+                                                    "type": "string",
+                                                    "enum": [
+                                                      "unavailable"
                                                     ]
                                                   }
                                                 },
@@ -89579,6 +90315,21 @@
                                                       "status"
                                                     ],
                                                     "additionalProperties": false
+                                                  },
+                                                  {
+                                                    "type": "object",
+                                                    "properties": {
+                                                      "status": {
+                                                        "type": "string",
+                                                        "enum": [
+                                                          "unavailable"
+                                                        ]
+                                                      }
+                                                    },
+                                                    "required": [
+                                                      "status"
+                                                    ],
+                                                    "additionalProperties": false
                                                   }
                                                 ]
                                               },
@@ -89610,6 +90361,21 @@
                                                         "type": "string",
                                                         "enum": [
                                                           "pending"
+                                                        ]
+                                                      }
+                                                    },
+                                                    "required": [
+                                                      "status"
+                                                    ],
+                                                    "additionalProperties": false
+                                                  },
+                                                  {
+                                                    "type": "object",
+                                                    "properties": {
+                                                      "status": {
+                                                        "type": "string",
+                                                        "enum": [
+                                                          "unavailable"
                                                         ]
                                                       }
                                                     },
@@ -133151,6 +133917,21 @@
                                                 "status"
                                               ],
                                               "additionalProperties": false
+                                            },
+                                            {
+                                              "type": "object",
+                                              "properties": {
+                                                "status": {
+                                                  "type": "string",
+                                                  "enum": [
+                                                    "unavailable"
+                                                  ]
+                                                }
+                                              },
+                                              "required": [
+                                                "status"
+                                              ],
+                                              "additionalProperties": false
                                             }
                                           ]
                                         },
@@ -133182,6 +133963,21 @@
                                                   "type": "string",
                                                   "enum": [
                                                     "pending"
+                                                  ]
+                                                }
+                                              },
+                                              "required": [
+                                                "status"
+                                              ],
+                                              "additionalProperties": false
+                                            },
+                                            {
+                                              "type": "object",
+                                              "properties": {
+                                                "status": {
+                                                  "type": "string",
+                                                  "enum": [
+                                                    "unavailable"
                                                   ]
                                                 }
                                               },
@@ -136575,6 +137371,21 @@
                                                 "status"
                                               ],
                                               "additionalProperties": false
+                                            },
+                                            {
+                                              "type": "object",
+                                              "properties": {
+                                                "status": {
+                                                  "type": "string",
+                                                  "enum": [
+                                                    "unavailable"
+                                                  ]
+                                                }
+                                              },
+                                              "required": [
+                                                "status"
+                                              ],
+                                              "additionalProperties": false
                                             }
                                           ]
                                         },
@@ -136606,6 +137417,21 @@
                                                   "type": "string",
                                                   "enum": [
                                                     "pending"
+                                                  ]
+                                                }
+                                              },
+                                              "required": [
+                                                "status"
+                                              ],
+                                              "additionalProperties": false
+                                            },
+                                            {
+                                              "type": "object",
+                                              "properties": {
+                                                "status": {
+                                                  "type": "string",
+                                                  "enum": [
+                                                    "unavailable"
                                                   ]
                                                 }
                                               },

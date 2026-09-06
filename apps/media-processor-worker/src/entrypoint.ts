@@ -57,7 +57,7 @@ const videoAnalysisRunner = makeVideoAnalysisWorkflowRunner(
 const CloudflareVideoAnalysisWorkflow = makeCloudflareWorkflowEntrypoint<
   MediaProcessorRuntimeEnv,
   { readonly effectIdentity: string },
-  VideoWorkflowResult,
+  VideoWorkflowResult | { outcome: "enrichment_complete" },
   VideoAnalysisWorkflowStep
 >(videoAnalysisRunner);
 

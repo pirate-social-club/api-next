@@ -48,6 +48,10 @@
         "class_name": "HnsForwarderReplayStoreDO"
       },
       {
+        "name": "VIDEO_PLAYBACK_RATE_LIMITER",
+        "class_name": "VideoPlaybackRateLimiterDO"
+      },
+      {
         "name": "KARAOKE_ATTEMPT",
         "class_name": "KaraokeAttemptDO"
       }
@@ -78,16 +82,23 @@
     {
       "tag": "v5",
       "new_sqlite_classes": ["KaraokeAttemptDO"]
-    }
+    },
+    { "tag": "v6", "new_sqlite_classes": ["VideoPlaybackRateLimiterDO"] }
   ],
   "r2_buckets": [
     {
       "binding": "LEARNER_AUDIO",
       "bucket_name": "pirate-learner-audio-development"
-    }
+    },
+        { "binding": "MEDIA_DERIVED", "bucket_name": "pirate-media-derived-development" }
   ],
   "vars": {
     "API_NEXT_ENV": "development",
+    "VIDEO_DELIVERY_ENABLED": "false",
+    "VIDEO_STREAM_CUSTOMER_HOST": "",
+    "VIDEO_STREAM_SIGNING_KEY_ID": "",
+    // Before enabling delivery, provision VIDEO_STREAM_SIGNING_JWK_BASE64 and
+    // VIDEO_PLAYBACK_SOURCE_HMAC_BASE64 as secrets, never vars.
     "KARAOKE_FINALIZATION_RECOVERY_ENABLED": "false",
     "STUDY_GENERATION_ENABLED": "false",
     "STUDY_GENERATION_OPENROUTER_MODEL": "",
@@ -184,7 +195,11 @@
             "class_name": "HnsForwarderReplayStoreDO"
           },
           {
-            "name": "KARAOKE_ATTEMPT",
+            "name": "VIDEO_PLAYBACK_RATE_LIMITER",
+        "class_name": "VideoPlaybackRateLimiterDO"
+      },
+      {
+        "name": "KARAOKE_ATTEMPT",
             "class_name": "KaraokeAttemptDO"
           }
         ]
@@ -216,10 +231,16 @@
         {
           "binding": "LEARNER_AUDIO",
           "bucket_name": "pirate-learner-audio-staging"
-        }
+        },
+        { "binding": "MEDIA_DERIVED", "bucket_name": "pirate-media-derived-staging" }
       ],
       "vars": {
         "API_NEXT_ENV": "staging",
+    "VIDEO_DELIVERY_ENABLED": "false",
+    "VIDEO_STREAM_CUSTOMER_HOST": "",
+    "VIDEO_STREAM_SIGNING_KEY_ID": "",
+    // Before enabling delivery, provision VIDEO_STREAM_SIGNING_JWK_BASE64 and
+    // VIDEO_PLAYBACK_SOURCE_HMAC_BASE64 as secrets, never vars.
         "KARAOKE_FINALIZATION_RECOVERY_ENABLED": "true",
         "STUDY_GENERATION_ENABLED": "false",
         "STUDY_GENERATION_OPENROUTER_MODEL": "",
@@ -352,7 +373,11 @@
             "class_name": "HnsForwarderReplayStoreDO"
           },
           {
-            "name": "KARAOKE_ATTEMPT",
+            "name": "VIDEO_PLAYBACK_RATE_LIMITER",
+        "class_name": "VideoPlaybackRateLimiterDO"
+      },
+      {
+        "name": "KARAOKE_ATTEMPT",
             "class_name": "KaraokeAttemptDO"
           }
         ]
@@ -391,10 +416,16 @@
         {
           "binding": "LEARNER_AUDIO",
           "bucket_name": "pirate-learner-audio-production"
-        }
+        },
+        { "binding": "MEDIA_DERIVED", "bucket_name": "pirate-media-derived-production" }
       ],
       "vars": {
         "API_NEXT_ENV": "production",
+    "VIDEO_DELIVERY_ENABLED": "false",
+    "VIDEO_STREAM_CUSTOMER_HOST": "",
+    "VIDEO_STREAM_SIGNING_KEY_ID": "",
+    // Before enabling delivery, provision VIDEO_STREAM_SIGNING_JWK_BASE64 and
+    // VIDEO_PLAYBACK_SOURCE_HMAC_BASE64 as secrets, never vars.
         "KARAOKE_FINALIZATION_RECOVERY_ENABLED": "false",
         "STUDY_GENERATION_ENABLED": "false",
         "STUDY_GENERATION_OPENROUTER_MODEL": "",

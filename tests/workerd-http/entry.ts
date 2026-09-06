@@ -69,6 +69,7 @@ import {
   VERY_WEB_PROVIDER_ID,
   VERY_WEB_RP_SCOPE,
 } from "../../packages/platform-cf/src/verification/providers/very-web.ts";
+import { videoAccessFixtureHandlers } from "./video-access.fixture.ts";
 
 export { HnsForwarderReplayStoreDO } from "../../packages/platform-cf/src/hns-forwarder-replay-store-do.ts";
 export { KaraokeAttemptDO } from "../../packages/platform-cf/src/karaoke-attempt-do.ts";
@@ -76,6 +77,7 @@ export {
   RegistrationApplicationRateLimiterDO,
   RegistrationIpRateLimiterDO,
 } from "../../packages/platform-cf/src/registration-rate-limiter-do.ts";
+export { VideoPlaybackRateLimiterDO } from "../../packages/platform-cf/src/video-playback-rate-limiter-do.ts";
 
 function toBase64(bytes: ArrayBufferLike): string {
   let binary = "";
@@ -723,6 +725,7 @@ const app = createHttpWorker({
   config: { corsOrigin: "https://solid.test" },
   sessionExchange,
   handlers: {
+    ...videoAccessFixtureHandlers(),
     ...verificationHandlers,
     ...makeNamespaceOwnershipHandlers({
       start: namespaceStart,

@@ -109,9 +109,12 @@ import {
 /** Named registry; the client generator references these exports by name. */
 import { v1Registry } from "./v1.ts";
 import * as verification from "./verification.ts";
+import { CreateVideoPlaybackAccess, GetVideoPoster } from "./video-access.ts";
 
 export const registry = {
   Health,
+  CreateVideoPlaybackAccess,
+  GetVideoPoster,
   CreateCommunityCreationIntent,
   GetCommunityCreationIntent,
   UpdateCommunityCreationIntent,
