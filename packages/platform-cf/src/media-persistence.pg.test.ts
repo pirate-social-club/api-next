@@ -44,7 +44,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-media-persistence-suite-complete\n";
-const testCount = 40;
+const testCount = 41;
 let completedTestCount = 0;
 const actor = "media_pg_actor",
   moderator = "media_pg_moderator",
@@ -450,6 +450,7 @@ async function expectHostileLyricsProjectionLeakRejected(
 suite("song media persistence PostgreSQL 17 race suite", () => {
   for (const stage of [
     "probe",
+    "probe_recovery",
     "sample_primary",
     "sample_alternate",
     "acr_primary",
@@ -466,7 +467,11 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
   ] as const) {
     test(`preserves durable state when interrupted during ${stage}`, async () => {
       await withCurrentSchema(async (admin, connection) => {
-        const store = makeMediaProcessingStore(makeDirectPostgresControlPlaneLayer(connection));
+        const targetStage = stage === "probe_recovery" ? "probe" : stage;
+        const store = makeMediaProcessingStore(
+          makeDirectPostgresControlPlaneLayer(connection),
+          stage === "probe_recovery" ? { attemptLeaseSeconds: 3 } : {},
+        );
         if (
           stage === "alignment" ||
           stage === "publication_commit" ||
@@ -555,7 +560,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           },
           startAttempt: async (input) => {
             if (
-              input.stage === stage ||
+              input.stage === targetStage ||
               (stage === "audio_read" && input.stage === "acr_primary") ||
               (stage === "publication_commit" && input.stage === "publication") ||
               (stage === "alignment_commit" && input.stage === "alignment")
@@ -566,8 +571,11 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
             return result;
           },
         };
+        let targetCalls = 0;
         const pause = async (selected: string) => {
-          if (selected !== stage) return;
+          if (selected !== targetStage) return;
+          targetCalls += 1;
+          if (stage === "probe_recovery" && targetCalls > 1) return;
           entered.resolve();
           await release.promise;
         };
@@ -580,7 +588,15 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
             requestId: string;
           },
           version: string,
-        ) => ({ ...binding, version, adapterRevision: "fixture-v1" });
+        ) => ({
+          operationId: binding.operationId,
+          audioRevision: binding.audioRevision,
+          analysisRevision: binding.analysisRevision,
+          canonicalAudioSha256: binding.canonicalAudioSha256,
+          requestId: binding.requestId,
+          version,
+          adapterRevision: "fixture-v1",
+        });
         const unexpected = () => Effect.die(new Error("unexpected fixture provider"));
         let acrCalls = 0;
         const provider: MediaProcessingProviders = {
@@ -880,6 +896,41 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
                 alignment_revision: stage === "publication_commit" ? "0" : "1",
               },
             ]);
+          }
+          if (stage === "probe_recovery") {
+            if (claimed === undefined) throw new Error("missing interrupted lease");
+            await admin.query(
+              "SELECT pg_sleep(GREATEST(0,EXTRACT(EPOCH FROM (lease_expires_at-clock_timestamp())))) FROM media_processing_attempts WHERE attempt_id=$1",
+              [claimed.lease.attemptId],
+            );
+            const recovery = await runWorkflow(store);
+            expect(recovery).toEqual({ outcome: "published" });
+            const recoveredRows = await rows();
+            const recoveredAuthority = await store.loadAuthority(submission, operation);
+            expect(recoveredAuthority).toMatchObject({
+              status: "published",
+              postId: `media-post-${operation}`,
+              phase: null,
+            });
+            expect(recoveredAuthority?.analysis).not.toBeNull();
+            expect(
+              recoveredRows.filter((row) => row.attempt_id === claimed.lease.attemptId),
+            ).toMatchObject([
+              {
+                state: "succeeded",
+                attempt_number: 1,
+                claim_fence: String(claimed.lease.claimFence + 1),
+                failure_code: null,
+              },
+            ]);
+            expect(targetCalls).toBe(2);
+            release.resolve();
+            expect(await completed).toBe("completed");
+            expect({
+              attempts: await rows(),
+              authority: await store.loadAuthority(submission, operation),
+            }).toEqual({ attempts: recoveredRows, authority: recoveredAuthority });
+            return;
           }
           release.resolve();
           await completed;
