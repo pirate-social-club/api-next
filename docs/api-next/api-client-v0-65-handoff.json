@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.65.0",
+  "releaseType": "coordinated-video-delivery",
+  "sourceCommit": "pending-source-checkpoint",
+  "wireContract": "One Solid adoption carries membership_required publication recovery and provider_submission_unconfirmed retry prohibition, playback/thumbnail unavailable states, authorized JPEG/304 poster and playback-access endpoints. Opaque feed/Post references remain identifiers; access is acquired at use time.",
+  "supersedes": "0.62.0 for Solid adoption; 0.63.0 and 0.64.0 remain immutable intermediate releases and are not adopted by Solid.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.65.0.tgz",
+    "sha256": "d5597441da21539a2532191f5534798dc04e3bf869d7a1a7c383b1869e755be9",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@8085a2f813f6d17785e8645aa5a507c43573212133f8cb2010a028c0bfb69f35",
+    "openapiSha256": "8085a2f813f6d17785e8645aa5a507c43573212133f8cb2010a028c0bfb69f35",
+    "clientSha256": "bc4e4c29bbdbaf2f4c0d2db263f4b29d33f2aa6be3316fc910139ed5c13cae29"
+  },
+  "verification": {
+    "releaseGates": "Pending focused/check/full PostgreSQL on the rebased source. Owner full review required before PR; no deployment or hosted-provider proof."
+  }
+}

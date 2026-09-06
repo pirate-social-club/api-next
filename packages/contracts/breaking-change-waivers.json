@@ -1,7 +1,7 @@
 {
   "breakingChangeWaivers": [
     {
-      "baselineSha": "76a95f57872a93fd87c9a1c72ea0c7267d02a546",
+      "baselineSha": "66b58debe3d7c305cf958545ad7ec98a1a8ad983",
       "operationId": "get_feedHomePublic",
       "kind": "clean-break",
       "reason": "Ratified video delivery completion: represent terminal delivery failure as the bounded unavailable variant without exposing private evidence; independently reviewed for the coordinated client cut.",
@@ -10,7 +10,7 @@
       ]
     },
     {
-      "baselineSha": "76a95f57872a93fd87c9a1c72ea0c7267d02a546",
+      "baselineSha": "66b58debe3d7c305cf958545ad7ec98a1a8ad983",
       "operationId": "get_feedHome",
       "kind": "clean-break",
       "reason": "Ratified video delivery completion: represent terminal delivery failure as the bounded unavailable variant without exposing private evidence; independently reviewed for the coordinated client cut.",
@@ -19,7 +19,7 @@
       ]
     },
     {
-      "baselineSha": "76a95f57872a93fd87c9a1c72ea0c7267d02a546",
+      "baselineSha": "66b58debe3d7c305cf958545ad7ec98a1a8ad983",
       "operationId": "get_postsPostId",
       "kind": "clean-break",
       "reason": "Ratified video delivery completion: represent terminal delivery failure as the bounded unavailable variant without exposing private evidence; independently reviewed for the coordinated client cut.",
@@ -28,7 +28,7 @@
       ]
     },
     {
-      "baselineSha": "76a95f57872a93fd87c9a1c72ea0c7267d02a546",
+      "baselineSha": "66b58debe3d7c305cf958545ad7ec98a1a8ad983",
       "operationId": "get_publicCommunitiesCommunityRefFeed",
       "kind": "clean-break",
       "reason": "Ratified video delivery completion: represent terminal delivery failure as the bounded unavailable variant without exposing private evidence; independently reviewed for the coordinated client cut.",
@@ -37,7 +37,7 @@
       ]
     },
     {
-      "baselineSha": "76a95f57872a93fd87c9a1c72ea0c7267d02a546",
+      "baselineSha": "66b58debe3d7c305cf958545ad7ec98a1a8ad983",
       "operationId": "get_publicPostsByIdPostIdCanonicalRoute",
       "kind": "clean-break",
       "reason": "Ratified video delivery completion: represent terminal delivery failure as the bounded unavailable variant without exposing private evidence; independently reviewed for the coordinated client cut.",
@@ -46,7 +46,7 @@
       ]
     },
     {
-      "baselineSha": "76a95f57872a93fd87c9a1c72ea0c7267d02a546",
+      "baselineSha": "66b58debe3d7c305cf958545ad7ec98a1a8ad983",
       "operationId": "get_publicPostsBySlug",
       "kind": "clean-break",
       "reason": "Ratified video delivery completion: represent terminal delivery failure as the bounded unavailable variant without exposing private evidence; independently reviewed for the coordinated client cut.",
