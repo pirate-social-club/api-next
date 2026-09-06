@@ -77,6 +77,12 @@ outside the storage barrier. Cancellation or drain failure produces incomplete
 evidence while retaining the marker. A final marker read rejects a receipt
 superseded by concurrent retirement.
 
+The final receipt is constructed inside the observation barrier. It is a
+point-in-time snapshot, not a lease or a promise that retirement cannot occur
+after return. The six-receipt structural verifier alone must never authorize
+cleanup; fresh object readback and the operator's maintained fence remain
+separate requirements.
+
 The producer tracker prevents new admission after closure and waits for all
 registered promises, with a maximum ten-second wait and timer cleanup. A
 timeout does not cancel earlier effects. The receipt verifier requires all

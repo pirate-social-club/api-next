@@ -117,20 +117,23 @@ export async function applyKaraokeResetInstallation(
   } catch {
     /* Incomplete, never success. */
   }
-  const current = await port.exclusive(async () => {
+  return port.exclusive(async () => {
     const marker = inspectKaraokeResetMarker(await port.readMarker(), command);
     // Another authorized operation may retire the marker while this call drains.
-    // Never return an active receipt for that now-retired object.
+    // Reject retirement already visible at this observation point.
     if (marker.state !== command.state) throw new Error("karaoke_reset_receipt_superseded");
-    return decode(Observation, await port.observe());
+    const current = decode(Observation, await port.observe());
+    // Construct a point-in-time snapshot inside the final barrier, not a lease
+    // preventing subsequent retirement after the observation is returned.
+    return {
+      ...command,
+      initial,
+      current,
+      cancellationSucceeded:
+        cancellationSucceeded && current.alarm === null && current.sockets === 0,
+      quiescenceEstablished,
+    };
   });
-  return {
-    ...command,
-    initial,
-    current,
-    cancellationSucceeded: cancellationSucceeded && current.alarm === null && current.sockets === 0,
-    quiescenceEstablished,
-  };
 }
 
 /** Requires the exact inventory; timestamps/fresh live readback remain the operator's gate. */
