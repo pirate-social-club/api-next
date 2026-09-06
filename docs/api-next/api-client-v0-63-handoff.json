@@ -4,7 +4,7 @@
   "package": "@pirate/api-client",
   "version": "0.63.0",
   "releaseType": "coordinated-video-delivery",
-  "sourceCommit": "cdab0991a981f4fac76030fedad4cf09318518a6",
+  "sourceCommit": "7084a31b828da4a14ce16b3ff28480a8afeae3a1",
   "wireContract": "Authorized JPEG/304 poster and anonymous-eligible playback grant endpoints; truthful unavailable delivery states; includes the merged execution membership-loss disposition. Opaque feed/Post references remain non-URL identifiers.",
   "supersedes": "0.62.0; adopt only after the delivery integration merges",
   "artifact": {
