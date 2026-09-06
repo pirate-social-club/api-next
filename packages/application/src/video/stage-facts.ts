@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 import type { VideoSubmissionState } from "../../../domain/src/video-submission.ts";
+import { mediaTransformSampleWindow } from "../media/transform.ts";
 
 const Text = Schema.NonEmptyString.check(
   Schema.makeFilter((s) =>
@@ -50,6 +51,15 @@ const Frame = Schema.Struct({
   sha256: Digest,
   artifactRef: Ref,
 });
+const Clip = Schema.Struct({
+  variant: Schema.Literals(["primary", "alternate"]),
+  artifactRef: Ref,
+  canonicalSha256: Digest,
+  sizeBytes: Positive,
+  mediaType: Schema.Literal("audio/mpeg"),
+  offsetMs: Timestamp,
+  durationMs: Positive,
+});
 const schemas = {
   probe: Schema.Struct({
     evidenceRef: Text,
@@ -63,6 +73,10 @@ const schemas = {
     hasAudio: Schema.Literal(true),
   }),
   audio: Schema.Struct({
+    sizeBytes: Positive,
+    offsetMs: Schema.Literal(0),
+    durationMs: Positive,
+    clips: Schema.Tuple([Clip, Clip]),
     artifactRef: Ref,
     canonicalSha256: Digest,
     sourceSha256: Digest,
@@ -103,7 +117,7 @@ const Artifact = Schema.Struct({
   artifactRef: Ref,
   canonicalSha256: Digest,
   sizeBytes: Positive,
-  contentType: Schema.Literals(["audio/mp4", "image/jpeg"]),
+  contentType: Schema.Literals(["audio/mp4", "audio/mpeg", "image/jpeg"]),
 });
 const Envelope = Schema.Struct({
   stage: Schema.Literals(["probe", "audio", "frames", "recognition", "safety"]),
@@ -146,7 +160,13 @@ export function validateVideoStageFact(input: unknown): VideoStageFact {
   if (JSON.stringify(fact).length > 200000) throw new Error("video stage fact exceeds bound");
   if (
     fact.artifacts.some(
-      (a) => a.sizeBytes > (a.contentType === "audio/mp4" ? 8 * 1024 * 1024 : 512 * 1024),
+      (a) =>
+        a.sizeBytes >
+        (a.contentType === "audio/mp4"
+          ? 8_000_000
+          : a.contentType === "audio/mpeg"
+            ? 4_000_000
+            : 512 * 1024),
     )
   )
     throw new Error("video stage artifact exceeds policy bound");
@@ -160,6 +180,11 @@ export function validateVideoStageFact(input: unknown): VideoStageFact {
             digest: fact.snapshot.canonicalSha256,
             contentType: "audio/mp4",
           },
+          ...fact.snapshot.clips.map((clip) => ({
+            artifactRef: clip.artifactRef,
+            digest: clip.canonicalSha256,
+            contentType: clip.mediaType,
+          })),
         ]
       : fact.stage === "frames"
         ? fact.snapshot.frames.map((frame) => ({
@@ -168,6 +193,28 @@ export function validateVideoStageFact(input: unknown): VideoStageFact {
             contentType: "image/jpeg",
           }))
         : [];
+  if (fact.stage === "audio") {
+    for (const [index, clip] of fact.snapshot.clips.entries()) {
+      const variant = index === 0 ? "primary" : "alternate";
+      const window = mediaTransformSampleWindow(fact.snapshot.durationMs, variant);
+      if (
+        clip.variant !== variant ||
+        clip.offsetMs !== window.offsetMs ||
+        clip.durationMs !== window.durationMs
+      )
+        throw new Error("video recognition sample window rejected");
+    }
+    for (const artifact of [fact.snapshot, ...fact.snapshot.clips]) {
+      if (
+        !fact.artifacts.some(
+          (receipt) =>
+            receipt.artifactRef === artifact.artifactRef &&
+            receipt.sizeBytes === artifact.sizeBytes,
+        )
+      )
+        throw new Error("video audio size binding rejected");
+    }
+  }
   if (fact.stage === "frames" && new Set(fact.snapshot.frames.map((f) => f.role)).size !== 3)
     throw new Error("video stage frame roles rejected");
   if (

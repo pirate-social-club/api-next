@@ -128,12 +128,15 @@ function harness(durableGrants = false, safety?: "clean" | "minors" | "caption" 
           { codec_type: "audio", codec_name: "aac" },
         ],
       });
+    const clip = String(url).includes("acr-");
     const audio = String(url).endsWith("audio");
     return new Response(
-      audio
-        ? new Uint8Array([0, 0, 0, 12, 102, 116, 121, 112, 0, 0, 0, 0])
-        : new Uint8Array(frameFailure ? [0, 0, 0, 0] : [255, 216, 255, 217]),
-      { headers: { "content-type": audio ? "audio/mp4" : "image/jpeg" } },
+      clip
+        ? new Uint8Array([255, 251, 144, 0])
+        : audio
+          ? new Uint8Array([0, 0, 0, 12, 102, 116, 121, 112, 0, 0, 0, 0])
+          : new Uint8Array(frameFailure ? [0, 0, 0, 0] : [255, 216, 255, 217]),
+      { headers: { "content-type": clip ? "audio/mpeg" : audio ? "audio/mp4" : "image/jpeg" } },
     );
   });
   // Only provider boundaries are replaced; every application command and repository is concrete.
@@ -215,15 +218,14 @@ function harness(durableGrants = false, safety?: "clean" | "minors" | "caption" 
                 const tag = String(format.user_tag);
                 const kind = tag.includes("probe")
                   ? ("metadata" as const)
-                  : tag.includes("audio")
+                  : tag.includes("audio") || tag.includes("acr-")
                     ? ("audio" as const)
                     : ("image" as const);
                 return {
                   kind,
                   userTag: tag,
-                  url: `https://cdn.qencode.com/${kind}`,
-                  outputFormat:
-                    kind === "metadata" ? "metadata" : kind === "audio" ? "m4a" : "thumbnail",
+                  url: `https://cdn.qencode.com/${tag.includes("acr-") ? tag : kind}`,
+                  outputFormat: String(format.output),
                   mediaFacts: {
                     codec: null,
                     sampleRateHz: null,

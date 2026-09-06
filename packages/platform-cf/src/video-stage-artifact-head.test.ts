@@ -12,6 +12,29 @@ const audio: VideoStageFact = {
   stage: "audio",
   adapterRevision: "qencode-v1",
   snapshot: {
+    sizeBytes: 42,
+    offsetMs: 0,
+    durationMs: 10000,
+    clips: [
+      {
+        variant: "primary",
+        artifactRef: ref + ".primary.mp3",
+        canonicalSha256: digest,
+        sizeBytes: 42,
+        mediaType: "audio/mpeg",
+        offsetMs: 0,
+        durationMs: 10000,
+      },
+      {
+        variant: "alternate",
+        artifactRef: ref + ".alternate.mp3",
+        canonicalSha256: digest,
+        sizeBytes: 42,
+        mediaType: "audio/mpeg",
+        offsetMs: 0,
+        durationMs: 10000,
+      },
+    ],
     artifactRef: ref,
     canonicalSha256: digest,
     sourceSha256: "b".repeat(64),
@@ -21,6 +44,12 @@ const audio: VideoStageFact = {
     adapterRevision: "qencode-v1",
   },
   artifacts: [
+    ...(["primary", "alternate"] as const).map((variant) => ({
+      artifactRef: ref + `.${variant}.mp3`,
+      canonicalSha256: digest,
+      sizeBytes: 42,
+      contentType: "audio/mpeg" as const,
+    })),
     { artifactRef: ref, canonicalSha256: digest, sizeBytes: 42, contentType: "audio/mp4" },
   ],
 };
@@ -34,12 +63,14 @@ describe("sealed video stage recovery", () => {
         return {
           size: 42,
           customMetadata: { sha256: digest },
-          httpMetadata: { contentType: "audio/mp4" },
+          httpMetadata: { contentType: key.endsWith("mp3") ? "audio/mpeg" : "audio/mp4" },
         };
       },
     });
     await verifyVideoStageArtifacts(audio, head);
-    expect(keys).toEqual([ref.slice("media://derived/".length)]);
+    expect(keys).toEqual(
+      audio.artifacts.map((a) => a.artifactRef.slice("media://derived/".length)),
+    );
   });
   for (const mismatch of [
     null,
@@ -61,9 +92,7 @@ describe("sealed video stage recovery", () => {
         snapshot: { ...audio.snapshot, providerUrl: "https://provider.invalid/output" },
       }),
     ).toThrow();
-    expect(() => validateVideoStageFact({ ...audio, artifacts: [] })).toThrow(
-      "video stage artifact binding rejected",
-    );
+    expect(() => validateVideoStageFact({ ...audio, artifacts: [] })).toThrow();
     expect(() =>
       validateVideoStageFact({
         ...audio,

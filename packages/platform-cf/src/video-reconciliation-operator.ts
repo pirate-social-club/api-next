@@ -112,13 +112,16 @@ export function makeVideoReconciliationOperator(
       let input: MediaTransformVideoJobInput;
       if (attempt.capability === "probe")
         input = { ...common, version: "media-transform-video-probe-input-v1" };
-      else if (attempt.capability === "audio")
+      else if (attempt.capability === "audio") {
+        const probe = (await facts.read(record.state)).find((fact) => fact.stage === "probe");
+        if (probe?.stage !== "probe") throw new Error("operator probe fact missing");
         input = {
           ...common,
           version: "media-transform-video-audio-input-v1",
           extractionPolicyVersion: MEDIA_TRANSFORM_VIDEO_AUDIO_POLICY_V1,
+          sourceDurationMs: probe.snapshot.durationMs,
         };
-      else {
+      } else {
         const probe = (await facts.read(record.state)).find((fact) => fact.stage === "probe");
         if (probe?.stage !== "probe") throw new Error("operator probe fact missing");
         input = {
@@ -145,7 +148,10 @@ export function makeVideoReconciliationOperator(
               : observed.extraction;
         const refs =
           "artifact" in observed
-            ? [observed.artifact.artifactRef]
+            ? [
+                observed.artifact.artifactRef,
+                ...observed.artifact.clips.map((clip) => clip.artifactRef),
+              ]
             : "extraction" in observed
               ? observed.extraction.frames.map((frame) => frame.artifactRef)
               : [];

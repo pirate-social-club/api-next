@@ -124,7 +124,7 @@ function fixture() {
       return {
         canonicalSha256: frame?.sha256 ?? (HASHES[1] as string),
         sizeBytes: 100,
-        contentType: frame ? "image/jpeg" : "audio/mp4",
+        contentType: frame ? "image/jpeg" : ref.endsWith(".mp3") ? "audio/mpeg" : "audio/mp4",
       };
     },
     stageFacts: {
