@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { MODERATION_POLICY_CATEGORIES_V1, type ModerationPolicyTableV1 } from "@pirate/contracts";
 import { canonicalTextModerationInput, normalizeTextModerationInput } from "@pirate/domain";
 import { Cause, Effect, Exit, Result } from "effect";
 import {
@@ -8,6 +9,21 @@ import {
   type TextPostStore,
 } from "../../ports.ts";
 import { createCommentReply } from "./comments-replies.ts";
+
+const policy = {
+  policy_revision: "text-policy-1",
+  policy_hash: "a".repeat(64),
+  platform_policy_revision: "platform-1",
+  platform_policy_hash: "b".repeat(64),
+  community_policy_revision: "community-1",
+  community_policy_hash: "c".repeat(64),
+  platform_policy: Object.fromEntries(
+    MODERATION_POLICY_CATEGORIES_V1.map((category) => [category, "permit"]),
+  ) as ModerationPolicyTableV1,
+  community_policy: Object.fromEntries(
+    MODERATION_POLICY_CATEGORIES_V1.map((category) => [category, "permit"]),
+  ) as ModerationPolicyTableV1,
+};
 
 const actor = { userId: "usr_comments_order6", kind: "user" as const };
 const personaId = "persona-comments-author";
@@ -70,23 +86,19 @@ const inputSha = (surface: "comment" | "reply" = "comment", text = body.body): s
   return canonical.sha256;
 };
 
-const evaluation = (
-  surface: "comment" | "reply" = "comment",
-  decision: "allow" | "manual_review" = "allow",
-): TextPostModerationEvaluation => ({
-  version: "text-moderation-v1",
-  surface,
-  decision,
-  reason_codes: decision === "allow" ? [] : ["provider_timeout"],
-  policy_revision: "comments-policy-1",
-  policy_hash: "b".repeat(64),
+const evaluation = (surface: "comment" | "reply" = "comment") => ({
+  provider_id: "openai" as const,
+  requested_model: "test-model",
+  returned_model: "test-model",
   input_sha256: inputSha(surface),
-  evidence_ref: null,
+  matched_categories: [],
+  inputs: [],
 });
 
 const commentStore = (
   overrides: Partial<TextPostStore["Service"]> = {},
 ): TextPostStore["Service"] => ({
+  readModerationPolicy: () => Effect.succeed(policy),
   checkAuthority: () => Effect.succeed(undefined),
   replay: () => Effect.succeed({ kind: "none" as const }),
   commitTerminal: () => Effect.succeed({ kind: "created" as const, snapshot: published }),
@@ -102,6 +114,56 @@ const commentModeration = {
 const run = <A, E>(effect: Effect.Effect<A, E>) => Effect.runPromiseExit(effect);
 
 describe("comments and replies application", () => {
+  test.each(["comment", "reply"] as const)(
+    "provider-absent %s uses the single policy-fenced store",
+    async (surface) => {
+      let committed: Parameters<TextPostStore["Service"]["commitTerminal"]>[0] | undefined;
+      const result = await run(
+        createCommentReply(
+          {
+            surface,
+            targetId: "target",
+            actor,
+            body: { ...body, author_declared_rating: "adult_18" },
+          },
+          {
+            personaStore,
+            textPostStore: commentStore({
+              resolveCommentTarget: () =>
+                Effect.succeed({
+                  ...target,
+                  parentCommentId: surface === "reply" ? "parent" : null,
+                }),
+              commitTerminal: (input) => {
+                committed = input;
+                return Effect.succeed({ kind: "created", snapshot: published });
+              },
+            }),
+          },
+        ),
+      );
+      expect(Exit.isSuccess(result)).toBe(true);
+      expect(committed?.evaluation).toMatchObject({
+        version: "text-moderation-v2",
+        surface,
+        decision: "manual_review",
+        reason_codes: ["provider_unavailable"],
+        policy_revision: policy.policy_revision,
+        policy_hash: policy.policy_hash,
+        platform_policy_revision: policy.platform_policy_revision,
+        platform_policy_hash: policy.platform_policy_hash,
+        community_policy_revision: policy.community_policy_revision,
+        community_policy_hash: policy.community_policy_hash,
+        author_declared_rating: "adult_18",
+        resulting_content_rating: "adult_18",
+        evidence_ref: null,
+        input_sha256: inputSha(surface),
+      });
+      expect(committed?.restrictedEvidence).toBeUndefined();
+      expect(committed?.target?.surface).toBe(surface);
+    },
+  );
+
   test("same-key/different-hash returns a typed 409 with submission_id", async () => {
     const result = await run(
       createCommentReply(
@@ -111,7 +173,7 @@ describe("comments and replies application", () => {
           textPostStore: commentStore({
             replay: () => Effect.succeed({ kind: "conflict", submissionId: "submission-winner" }),
           }),
-          textModeration: commentModeration,
+          textModerationProvider: commentModeration,
         },
       ),
     );
@@ -132,8 +194,10 @@ describe("comments and replies application", () => {
           personaStore,
           textPostStore: commentStore({
             replay: () => Effect.succeed({ kind: "replay", snapshot: published }),
+            checkAuthority: () => Effect.die("replay must precede authority"),
+            readModerationPolicy: () => Effect.die("replay must precede policy"),
           }),
-          textModeration: {
+          textModerationProvider: {
             evaluate: () => {
               moderationCalls += 1;
               return Effect.succeed(evaluation());
@@ -156,7 +220,7 @@ describe("comments and replies application", () => {
           textPostStore: commentStore({
             resolveCommentTarget: () => Effect.succeed({ kind: "depth-exceeded", depth: 9 }),
           }),
-          textModeration: {
+          textModerationProvider: {
             evaluate: () => {
               moderationCalls += 1;
               return Effect.succeed(evaluation("reply"));
@@ -196,7 +260,7 @@ describe("comments and replies application", () => {
               return Effect.succeed({ kind: "created" as const, snapshot: held });
             },
           }),
-          textModeration: {
+          textModerationProvider: {
             evaluate: () => Effect.fail(new TextModerationProviderError({ reason: "unavailable" })),
           },
         },
@@ -210,7 +274,7 @@ describe("comments and replies application", () => {
     });
   });
 
-  test("age_gate_required commits a comment as manual_review", async () => {
+  test("community review policy holds a flagged comment", async () => {
     let committed: TextPostModerationEvaluation | undefined;
     const held = {
       ...published,
@@ -225,16 +289,21 @@ describe("comments and replies application", () => {
         {
           personaStore,
           textPostStore: commentStore({
+            readModerationPolicy: () =>
+              Effect.succeed({
+                ...policy,
+                community_policy: { ...policy.community_policy, harassment: "review" },
+              }),
             commitTerminal: ({ evaluation: value }) => {
               committed = value;
               return Effect.succeed({ kind: "created" as const, snapshot: held });
             },
           }),
-          textModeration: {
+          textModerationProvider: {
             evaluate: () =>
               Effect.succeed({
-                ...evaluation("comment", "manual_review"),
-                reason_codes: ["age_gate_required"],
+                ...evaluation("comment"),
+                matched_categories: ["harassment"],
               }),
           },
         },
@@ -245,7 +314,7 @@ describe("comments and replies application", () => {
     expect(committed).toMatchObject({
       surface: "comment",
       decision: "manual_review",
-      reason_codes: ["age_gate_required"],
+      reason_codes: ["harassment"],
       input_sha256: inputSha(),
     });
   });
@@ -263,7 +332,7 @@ describe("comments and replies application", () => {
                 new TextPostRepositoryError({ operation: "authority", reason: "not-found" }),
               ),
           }),
-          textModeration: {
+          textModerationProvider: {
             evaluate: () => {
               moderationCalls += 1;
               return Effect.succeed(evaluation());

@@ -7,22 +7,13 @@ import {
   MembershipRequired,
   NotFound,
   ReplyDepthExceeded,
-  type TextModerationEvaluation,
 } from "@pirate/contracts";
-import {
-  canonicalTextModerationInput,
-  normalizeTextModerationInput,
-  publicTextPublicationResult,
-  textModerationEvaluationInvariant,
-} from "@pirate/domain";
+import { canonicalTextModerationInput, normalizeTextModerationInput } from "@pirate/domain";
 import { Data, Effect, Schema } from "effect";
 import {
   type CreatePostBody,
   type M2Actor,
-  type TextModeration,
-  type TextModerationProviderError,
   type TextPostCommitOutcome,
-  type TextPostModerationEvaluation,
   type TextPostModerationInput,
   type TextPostReplayOutcome,
   TextPostRepositoryError,
@@ -32,9 +23,7 @@ import {
 } from "../../ports.ts";
 import {
   evaluateTextModerationV2,
-  type RestrictedTextModerationEvidenceV1,
   type TextModerationProviderServiceV1,
-  type TextPostStoreServiceV2,
 } from "../../text-moderation-runtime.ts";
 import {
   type PersonaStoreService,
@@ -48,11 +37,7 @@ import {
   validPublicHumanDirectPost,
 } from "./common.ts";
 
-export {
-  type TextModeration,
-  TextModerationProviderError,
-  type TextPostModerationEvaluation,
-} from "../../ports.ts";
+export { TextModerationProviderError } from "../../ports.ts";
 
 const exactParseOptions = { onExcessProperty: "error" } as const;
 const MAX_POLICY_RETRIES = 3;
@@ -71,8 +56,6 @@ export type TextPostCreateInput = Readonly<{
 
 export type TextPostServices = Readonly<{
   readonly textPostStore?: TextPostStore["Service"];
-  readonly textModeration?: TextModeration["Service"];
-  readonly textPostStoreV2?: TextPostStoreServiceV2;
   readonly textModerationProvider?: TextModerationProviderServiceV1;
   readonly personaStore?: Pick<PersonaStoreService, "findOwned">;
 }>;
@@ -119,45 +102,6 @@ function mapStoreFailure(failure: TextPostRepositoryFailure) {
   }
 }
 
-const providerReason = (
-  reason: TextModerationProviderError["reason"],
-): "provider_unavailable" | "provider_timeout" | "provider_invalid" =>
-  reason === "unavailable"
-    ? "provider_unavailable"
-    : reason === "timeout"
-      ? "provider_timeout"
-      : "provider_invalid";
-
-const fallbackEvaluation = (
-  input: TextPostModerationInput,
-  inputSha256: string,
-  reason: TextModerationProviderError["reason"] | "invalid-evaluation",
-): TextPostModerationEvaluation => ({
-  version: "text-moderation-v1",
-  surface: input.surface,
-  decision: "manual_review",
-  reason_codes: [providerReason(reason === "invalid-evaluation" ? "invalid" : reason)],
-  // A provider failure did not evaluate a policy revision. The terminal
-  // repository binds it to the current revision inside its commit tx.
-  policy_revision: "",
-  policy_hash: "",
-  input_sha256: inputSha256,
-  evidence_ref: null,
-});
-
-const safeEvaluation = (
-  evaluation: TextPostModerationEvaluation,
-  input: TextPostModerationInput,
-  inputSha256: string,
-): TextPostModerationEvaluation => {
-  const valid =
-    textModerationEvaluationInvariant(evaluation) === null &&
-    evaluation.surface === input.surface &&
-    evaluation.input_sha256 === inputSha256 &&
-    publicTextPublicationResult(evaluation) !== null;
-  return valid ? evaluation : fallbackEvaluation(input, inputSha256, "invalid-evaluation");
-};
-
 function normalizeTextInput(
   body: CreatePostBody,
 ): Effect.Effect<
@@ -199,16 +143,10 @@ export const createTextPost = Effect.fn("createTextPost")(function* (
   | TextPostPolicyStale
   | TextPostRuntimeUnavailable
 > {
-  const store = services.textPostStoreV2 ?? services.textPostStore;
-  const moderation = services.textModeration;
+  const store = services.textPostStore;
   const moderationProvider = services.textModerationProvider;
   const personaStore = services.personaStore;
-  if (
-    store === undefined ||
-    (moderation === undefined &&
-      (moderationProvider === undefined || services.textPostStoreV2 === undefined)) ||
-    personaStore === undefined
-  )
+  if (store === undefined || personaStore === undefined)
     return yield* new TextPostRuntimeUnavailable();
   yield* validateIdentifier(input.communityId, "Invalid community identifier");
   yield* validateHumanDirectActor(input.actor);
@@ -252,31 +190,14 @@ export const createTextPost = Effect.fn("createTextPost")(function* (
 
     // The provider is deliberately outside the repository transaction. A
     // stale policy result is discarded by commitTerminal and evaluated again.
-    let evaluation: TextModerationEvaluation;
-    let restrictedEvidence: RestrictedTextModerationEvidenceV1 | undefined;
-    if (moderationProvider !== undefined && services.textPostStoreV2 !== undefined) {
-      const evaluated = yield* evaluateTextModerationV2({
-        communityId: input.communityId,
-        moderationInput: text.input,
-        inputSha256: text.inputSha256,
-        store: services.textPostStoreV2,
-        provider: moderationProvider,
-        authorDeclaredRating: body.author_declared_rating ?? "general",
-      }).pipe(Effect.mapError(mapStoreFailure));
-      evaluation = evaluated.evaluation;
-      restrictedEvidence = evaluated.restrictedEvidence;
-    } else {
-      const legacyModeration = moderation as TextModeration["Service"];
-      evaluation = yield* legacyModeration.evaluate(text.input).pipe(
-        Effect.map((result) => safeEvaluation(result, text.input, text.inputSha256)),
-        Effect.catchTag("TextModerationProviderError", (failure) =>
-          Effect.succeed(fallbackEvaluation(text.input, text.inputSha256, failure.reason)),
-        ),
-        Effect.catchDefect(() =>
-          Effect.succeed(fallbackEvaluation(text.input, text.inputSha256, "invalid-evaluation")),
-        ),
-      );
-    }
+    const { evaluation, restrictedEvidence } = yield* evaluateTextModerationV2({
+      communityId: input.communityId,
+      moderationInput: text.input,
+      inputSha256: text.inputSha256,
+      store,
+      provider: moderationProvider,
+      authorDeclaredRating: body.author_declared_rating ?? "general",
+    }).pipe(Effect.mapError(mapStoreFailure));
     const commitInput = {
       communityId: input.communityId,
       actor: input.actor,
@@ -288,17 +209,11 @@ export const createTextPost = Effect.fn("createTextPost")(function* (
       operationId: `operation_${crypto.randomUUID()}`,
       target: { surface: "text_post", communityId: input.communityId },
     } as const;
-    const commitEffect =
-      services.textPostStoreV2 !== undefined
-        ? services.textPostStoreV2.commitTerminal({
-            ...commitInput,
-            evaluation,
-            ...(restrictedEvidence === undefined ? {} : { restrictedEvidence }),
-          })
-        : (services.textPostStore as TextPostStore["Service"]).commitTerminal({
-            ...commitInput,
-            evaluation: evaluation as TextPostModerationEvaluation,
-          });
+    const commitEffect = store.commitTerminal({
+      ...commitInput,
+      evaluation,
+      ...(restrictedEvidence === undefined ? {} : { restrictedEvidence }),
+    });
     const committed: TextPostCommitOutcome = yield* commitEffect.pipe(
       Effect.mapError(mapStoreFailure),
     );

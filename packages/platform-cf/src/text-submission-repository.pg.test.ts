@@ -3,14 +3,10 @@ import { createHash } from "node:crypto";
 import type {
   CreatePostBody,
   M2Actor,
-  TextPostModerationEvaluation,
   TextPostStore,
   TextPostSubmissionDocument,
 } from "@pirate/application";
-import {
-  evaluateTextModerationV2,
-  type TextPostStoreServiceV2,
-} from "@pirate/application/text-moderation-runtime";
+import { evaluateTextModerationV2 } from "@pirate/application/text-moderation-runtime";
 import { canonicalBodyHash } from "@pirate/application/use-cases/content/common";
 import {
   createTextPost,
@@ -47,31 +43,22 @@ const testCount = 11;
 let completedTestCount = 0;
 const migrations = await loadPostgresMigrations();
 type LoadedPostgresMigration = (typeof migrations)[number];
-const cutoverMigrationIndex = migrations.findIndex(
+// Historical rows are read-only fixtures. Fresh writes always use the full migration set.
+const cutoverIndex = migrations.findIndex(
   (migration) => migration.version === "0061_openai_moderation_driver_cutover.sql",
 );
-if (cutoverMigrationIndex < 1) throw new Error("OpenAI moderation cutover migration is missing");
-const historicalV1Migrations = migrations.slice(0, cutoverMigrationIndex);
-const publicPostSlugMigration = migrations.find(
-  (migration) => migration.version === "0103_public_post_slug_aliases.sql",
-);
-const heldVisibilityMigration = migrations.find(
-  (migration) => migration.version === "0104_text_held_revision_visibility.sql",
-);
-const personaCommunityBindingMigration = migrations.find(
-  (migration) => migration.version === "0110_persona_community_bindings.sql",
-);
-if (publicPostSlugMigration === undefined)
-  throw new Error("Public Post slug alias migration is missing");
-if (heldVisibilityMigration === undefined)
-  throw new Error("Held text visibility migration is missing");
-if (personaCommunityBindingMigration === undefined)
-  throw new Error("Persona community binding migration is missing");
-const slugEnabledHistoricalMigrations = [
-  ...historicalV1Migrations,
-  publicPostSlugMigration,
-  heldVisibilityMigration,
-  personaCommunityBindingMigration,
+if (cutoverIndex < 1) throw new Error("missing moderation cutover");
+const historicalReplayMigrations = [
+  ...migrations.slice(0, cutoverIndex),
+  ...[
+    "0103_public_post_slug_aliases.sql",
+    "0104_text_held_revision_visibility.sql",
+    "0110_persona_community_bindings.sql",
+  ].map((version) => {
+    const migration = migrations.find((candidate) => candidate.version === version);
+    if (migration === undefined) throw new Error(`missing historical fixture support: ${version}`);
+    return migration;
+  }),
 ];
 afterEach(() => {
   completedTestCount += 1;
@@ -80,9 +67,7 @@ afterEach(() => {
 afterAll(async () => {
   if (completedTestCount === testCount) await Bun.write(sentinelPath, sentinelContents);
 });
-type RuntimeStore = TextPostStore["Service"] & {
-  readonly reportComment: NonNullable<TextPostStore["Service"]["reportComment"]>;
-};
+type RuntimeStore = TextPostStore["Service"];
 
 const actor: M2Actor = { userId: "usr_text_order5", kind: "user" };
 const otherActor: M2Actor = { userId: "usr_text_order5_other", kind: "user" };
@@ -95,7 +80,6 @@ const body = {
   body: "terminal text",
 } as CreatePostBody;
 const policyHash = "b0a8fd06312d7f9a99d7100633bc03fafc44b16aae5340899d290f54cb64df9d";
-const policyRevision = "text-moderation-policy-v1";
 const input = {
   version: "text-moderation-input-v1" as const,
   surface: "text_post" as const,
@@ -107,17 +91,6 @@ const inputSha = (() => {
   if (canonical.kind === "rejected") throw new Error(canonical.reason);
   return canonical.sha256;
 })();
-const evaluation: TextPostModerationEvaluation = {
-  version: "text-moderation-v1",
-  surface: "text_post",
-  decision: "allow",
-  reason_codes: [],
-  policy_revision: policyRevision,
-  policy_hash: policyHash,
-  input_sha256: inputSha,
-  evidence_ref: null,
-};
-
 const commentBody = {
   idempotency_key: "comment-order6-race",
   persona_id: actorPersonaId,
@@ -129,21 +102,11 @@ const commentInput = {
   title: null,
   body: commentBody.body,
 };
-const commentInputSha = (() => {
+const _commentInputSha = (() => {
   const canonical = canonicalTextModerationInput(commentInput);
   if (canonical.kind === "rejected") throw new Error(canonical.reason);
   return canonical.sha256;
 })();
-const commentEvaluation: TextPostModerationEvaluation = {
-  version: "text-moderation-v1",
-  surface: "comment",
-  decision: "allow",
-  reason_codes: [],
-  policy_revision: policyRevision,
-  policy_hash: policyHash,
-  input_sha256: commentInputSha,
-  evidence_ref: null,
-};
 const replyBody = {
   idempotency_key: "reply-order6-depth",
   persona_id: actorPersonaId,
@@ -152,12 +115,6 @@ const replyBody = {
 const replyInput = { ...commentInput, surface: "reply" as const, body: replyBody.body };
 const replyCanonical = canonicalTextModerationInput(replyInput);
 if (replyCanonical.kind === "rejected") throw new Error(replyCanonical.reason);
-const replyEvaluation: TextPostModerationEvaluation = {
-  ...commentEvaluation,
-  surface: "reply",
-  input_sha256: replyCanonical.sha256,
-};
-
 async function commentRequestHash(
   idempotencyKey: string,
   text: string,
@@ -189,7 +146,7 @@ function scopedConnection(raw: string, schema: string): string {
 
 async function withSchema<A>(
   use: (client: Client, connection: string) => Promise<A>,
-  migrationPlan: readonly LoadedPostgresMigration[] = slugEnabledHistoricalMigrations,
+  migrationPlan: readonly LoadedPostgresMigration[] = migrations,
 ): Promise<A> {
   if (connectionString === undefined) throw new Error("Postgres test configuration is unavailable");
   const schema = schemaName();
@@ -408,19 +365,68 @@ function runStore<A, E>(
   return Effect.runPromise(Effect.scoped(use(store)));
 }
 
-function runStoreV2<A, E>(
-  connection: string,
-  use: (store: TextPostStoreServiceV2) => Effect.Effect<A, E>,
-): Promise<A> {
-  const layer = makeDirectPostgresControlPlaneLayer(connection);
-  const store = makeControlPlaneTextSubmissionStore(layer) as TextPostStoreServiceV2;
-  return Effect.runPromise(Effect.scoped(use(store)));
-}
-
 const categoryRecord = <A>(value: A): Record<ModerationPolicyCategoryV1, A> =>
   Object.fromEntries(
     MODERATION_POLICY_CATEGORIES_V1.map((category) => [category, value]),
   ) as Record<ModerationPolicyCategoryV1, A>;
+
+const provider = {
+  evaluate: (
+    moderationInput: Parameters<RuntimeStore["commitTerminal"]>[0]["moderationInput"],
+    matched: readonly ModerationPolicyCategoryV1[] = [],
+  ) => {
+    const canonical = canonicalTextModerationInput(moderationInput);
+    if (canonical.kind !== "accepted") throw new Error("invalid fixture input");
+    return Effect.succeed({
+      provider_id: "openai" as const,
+      requested_model: "omni-moderation-2024-09-26",
+      returned_model: "omni-moderation-2024-09-26",
+      input_sha256: canonical.sha256,
+      matched_categories: matched,
+      inputs: [
+        {
+          input_sha256: canonical.sha256,
+          categories: {
+            ...categoryRecord(false),
+            ...Object.fromEntries(matched.map((category) => [category, true])),
+          },
+          scores: {
+            ...categoryRecord(0),
+            ...Object.fromEntries(matched.map((category) => [category, 1])),
+          },
+          applied_input_types: categoryRecord(["text"] as readonly ("text" | "image")[]),
+        },
+      ],
+    });
+  },
+};
+
+const commitWithModeration = (
+  store: RuntimeStore,
+  request: Omit<
+    Parameters<RuntimeStore["commitTerminal"]>[0],
+    "evaluation" | "restrictedEvidence"
+  > & { readonly moderation?: "blocked" | "unavailable" },
+) =>
+  Effect.gen(function* () {
+    const canonical = canonicalTextModerationInput(request.moderationInput);
+    if (canonical.kind !== "accepted") throw new Error("invalid fixture input");
+    const { moderation, ...commit } = request;
+    const result = yield* evaluateTextModerationV2({
+      communityId: request.communityId,
+      moderationInput: request.moderationInput,
+      inputSha256: canonical.sha256,
+      store,
+      provider:
+        moderation === "unavailable"
+          ? undefined
+          : {
+              evaluate: (input) =>
+                provider.evaluate(input, moderation === "blocked" ? ["hate"] : []),
+            },
+    });
+    return yield* store.commitTerminal({ ...commit, ...result });
+  });
 
 function snapshotBytes(snapshot: TextPostSubmissionDocument): Uint8Array {
   return new TextEncoder().encode(JSON.stringify(snapshot));
@@ -470,7 +476,7 @@ suite("Postgres 17 terminal text submission repository", () => {
         canonicalBodyHash({ community_id: "text-community", body }),
       );
       let expectedEvidenceRef: string | undefined;
-      const result = await runStoreV2(connection, (store) =>
+      const result = await runStore(connection, (store) =>
         Effect.gen(function* () {
           const moderated = yield* evaluateTextModerationV2({
             communityId: "text-community",
@@ -501,6 +507,72 @@ suite("Postgres 17 terminal text submission repository", () => {
             throw new Error("expected restricted V2 evidence");
           }
           expectedEvidenceRef = restrictedEvidence.evidence_ref;
+          const commit = {
+            communityId: "text-community",
+            actor,
+            personaId: actorPersonaId,
+            body,
+            moderationInput: input,
+            idempotencyKey: body.idempotency_key,
+            requestHash,
+            operationId: "operation_text_v2",
+            evaluation: moderated.evaluation,
+            restrictedEvidence,
+          };
+          for (const changedEvidence of [
+            { ...restrictedEvidence, community_id: "other-community" },
+            { ...restrictedEvidence, policy_hash: "0".repeat(64) },
+            { ...restrictedEvidence, platform_policy_hash: "0".repeat(64) },
+            { ...restrictedEvidence, community_policy_hash: "0".repeat(64) },
+            { ...restrictedEvidence, input_sha256: "0".repeat(64) },
+            { ...restrictedEvidence, evidence_hash: "0".repeat(64) },
+          ]) {
+            const invalid = yield* store
+              .commitTerminal({ ...commit, restrictedEvidence: changedEvidence })
+              .pipe(Effect.result);
+            expect(Result.isFailure(invalid)).toBe(true);
+          }
+          const unavailable = yield* evaluateTextModerationV2({
+            communityId: "text-community",
+            moderationInput: input,
+            inputSha256: inputSha,
+            store,
+            provider: undefined,
+          });
+          for (const key of [
+            "policy_revision",
+            "policy_hash",
+            "platform_policy_revision",
+            "platform_policy_hash",
+            "community_policy_revision",
+            "community_policy_hash",
+          ] as const) {
+            const { restrictedEvidence: _evidence, ...withoutEvidence } = commit;
+            const stale = yield* store.commitTerminal({
+              ...withoutEvidence,
+              evaluation: {
+                ...unavailable.evaluation,
+                [key]: key.endsWith("hash") ? "0".repeat(64) : "stale-policy",
+              },
+            });
+            expect(stale.kind).toBe("policy-stale");
+          }
+          const v1 = {
+            version: "text-moderation-v1",
+            surface: "text_post",
+            decision: "manual_review",
+            reason_codes: ["provider_unavailable"],
+            policy_revision: "",
+            policy_hash: "",
+            input_sha256: inputSha,
+            evidence_ref: null,
+          };
+          const legacy = yield* store
+            .commitTerminal({ ...commit, evaluation: v1 } as unknown as Parameters<
+              RuntimeStore["commitTerminal"]
+            >[0])
+            .pipe(Effect.result);
+          expect(Result.isFailure(legacy)).toBe(true);
           return yield* store.commitTerminal({
             communityId: "text-community",
             actor,
@@ -559,7 +631,7 @@ suite("Postgres 17 terminal text submission repository", () => {
       );
       const commit = (operationId: string) =>
         runStore(connection, (store) =>
-          store.commitTerminal({
+          commitWithModeration(store, {
             communityId: "text-community",
             actor,
             personaId: actorPersonaId,
@@ -568,7 +640,6 @@ suite("Postgres 17 terminal text submission repository", () => {
             idempotencyKey: body.idempotency_key,
             requestHash,
             operationId,
-            evaluation,
           }),
         );
       const results = await Promise.all([commit("operation_text_1"), commit("operation_text_2")]);
@@ -642,7 +713,7 @@ suite("Postgres 17 terminal text submission repository", () => {
         canonicalBodyHash({ community_id: "text-community", body: guardedBody }),
       );
       const guarded = await runStore(connection, (store) =>
-        store.commitTerminal({
+        commitWithModeration(store, {
           communityId: "text-community",
           actor,
           personaId: actorPersonaId,
@@ -651,7 +722,6 @@ suite("Postgres 17 terminal text submission repository", () => {
           idempotencyKey: guardedBody.idempotency_key,
           requestHash: guardedRequestHash,
           operationId: "operation_text_members_only",
-          evaluation,
         }),
       );
       expect(guarded).toMatchObject({
@@ -685,16 +755,16 @@ suite("Postgres 17 terminal text submission repository", () => {
       const textPostStore = makeControlPlaneTextSubmissionStore(runtime);
       const personaStore = makeControlPlanePersonaStore(runtime);
       let moderationCalls = 0;
-      const textModeration = {
+      const textModerationProvider = {
         evaluate: () => {
           moderationCalls += 1;
-          return Effect.succeed(evaluation);
+          return provider.evaluate(input);
         },
       };
       const first = await Effect.runPromise(
         createTextPost(
           { communityId: "text-community", actor, body: postBody },
-          { textPostStore, textModeration, personaStore },
+          { textPostStore, textModerationProvider, personaStore },
         ),
       );
       const stored = await admin.query<{
@@ -719,7 +789,7 @@ suite("Postgres 17 terminal text submission repository", () => {
       const second = await Effect.runPromise(
         createTextPost(
           { communityId: "text-community", actor, body: postBody },
-          { textPostStore, textModeration, personaStore },
+          { textPostStore, textModerationProvider, personaStore },
         ),
       );
       expect(Array.from(snapshotBytes(second))).toEqual(Array.from(firstBytes));
@@ -731,7 +801,7 @@ suite("Postgres 17 terminal text submission repository", () => {
             actor,
             body: { ...postBody, body: "different terminal text" } as CreatePostBody,
           },
-          { textPostStore, textModeration, personaStore },
+          { textPostStore, textModerationProvider, personaStore },
         ),
       );
       if (Exit.isSuccess(conflictResult))
@@ -754,6 +824,71 @@ suite("Postgres 17 terminal text submission repository", () => {
       );
       expect(count.rows).toEqual([{ count: 1 }]);
     });
+    await withSchema(async (admin, connection) => {
+      const historical: TextPostSubmissionDocument = {
+        submission_id: "submission-historical-v1",
+        href: "/text-content-submissions/submission-historical-v1",
+        surface: "text_post",
+        status: "blocked",
+        result: { decision: "blocked", reason_code: "policy_violation" },
+        published_resource: null,
+        review_ref: null,
+        created_at: "2026-08-21T12:00:00.000Z",
+        updated_at: "2026-08-21T12:00:00.000Z",
+      };
+      const bytes = snapshotBytes(historical);
+      const requestHash = "a".repeat(64);
+      await admin.query(
+        `INSERT INTO text_content_submissions (
+        community_id, submission_id, operation_id, actor_user_id, author_persona_id,
+        surface, idempotency_key, request_hash, status, moderation_decision, public_reason_code,
+        policy_revision_id, policy_hash, input_sha256, internal_reason_codes,
+        created_at, updated_at, response_snapshot_bytes, response_snapshot_sha256
+      ) VALUES ('text-community', $1, 'operation-historical-v1', $2, $3, 'text_post',
+        'historical-v1-key', $4, 'blocked', 'blocked', 'policy_violation',
+        'text-moderation-policy-v1', $5, $6, '["hate"]'::jsonb, $7, $7, $8, $9)`,
+        [
+          historical.submission_id,
+          actor.userId,
+          actorPersonaId,
+          requestHash,
+          policyHash,
+          inputSha,
+          historical.created_at,
+          bytes,
+          sha256(bytes),
+        ],
+      );
+      const replay = await runStore(connection, (store) =>
+        store.replay({
+          communityId: "text-community",
+          actor,
+          personaId: actorPersonaId,
+          idempotencyKey: "historical-v1-key",
+          requestHash,
+          surface: "text_post",
+        }),
+      );
+      if (replay.kind !== "replay") throw new Error("expected historical V1 replay");
+      expect(snapshotBytes(replay.snapshot)).toEqual(bytes);
+      expect(sha256(snapshotBytes(replay.snapshot))).toBe(sha256(bytes));
+      const current = await runStore(connection, (store) =>
+        store.getForAuthor({ submissionId: historical.submission_id, actor }),
+      );
+      expect(current).toEqual(historical);
+      expect(
+        await runStore(connection, (store) =>
+          store.getForAuthor({ submissionId: historical.submission_id, actor: otherActor }),
+        ),
+      ).toBeNull();
+      const persisted = await admin.query(
+        "SELECT policy_revision_id, response_snapshot_bytes, response_snapshot_sha256 FROM text_content_submissions",
+      );
+      expect(persisted.rows).toHaveLength(1);
+      expect(persisted.rows[0].policy_revision_id).toBe("text-moderation-policy-v1");
+      expect(databaseBytes(persisted.rows[0].response_snapshot_bytes)).toEqual(bytes);
+      expect(persisted.rows[0].response_snapshot_sha256).toBe(sha256(bytes));
+    }, historicalReplayMigrations);
   }, 30_000);
 
   test("returns the current GET state while replaying the original held POST response", async () => {
@@ -771,7 +906,7 @@ suite("Postgres 17 terminal text submission repository", () => {
           {
             textPostStore,
             personaStore,
-            textModeration: {
+            textModerationProvider: {
               evaluate: () =>
                 Effect.fail(new TextModerationProviderError({ reason: "unavailable" })),
             },
@@ -861,7 +996,7 @@ suite("Postgres 17 terminal text submission repository", () => {
           {
             textPostStore,
             personaStore,
-            textModeration: {
+            textModerationProvider: {
               evaluate: () => {
                 replayModerationCalls += 1;
                 return Effect.fail(new TextModerationProviderError({ reason: "unavailable" }));
@@ -883,7 +1018,7 @@ suite("Postgres 17 terminal text submission repository", () => {
         canonicalBodyHash({ community_id: "text-community", body: unavailableBody }),
       );
       const result = await runStore(connection, (store) =>
-        store.commitTerminal({
+        commitWithModeration(store, {
           communityId: "text-community",
           actor,
           personaId: actorPersonaId,
@@ -892,16 +1027,22 @@ suite("Postgres 17 terminal text submission repository", () => {
           idempotencyKey: "text-order5-unavailable",
           requestHash: unavailableHash,
           operationId: "operation_text_unavailable",
-          evaluation: {
-            ...evaluation,
-            decision: "manual_review",
-            reason_codes: ["provider_unavailable"],
-            policy_revision: "",
-            policy_hash: "",
-          },
+          moderation: "unavailable",
         }),
       );
       expect(result.kind).toBe("created");
+      const policyRows = await admin.query(
+        `SELECT policy_revision_id, platform_policy_revision_id, community_policy_revision_id, evidence_ref, (SELECT count(*)::int FROM text_moderation_evidence) AS evidence_count FROM text_content_submissions`,
+      );
+      expect(policyRows.rows).toEqual([
+        {
+          policy_revision_id: "text-moderation-policy-openai-omni-2024-09-26-v1",
+          platform_policy_revision_id: "moderation-platform-floor-v1",
+          community_policy_revision_id: "community-moderation-policy:text-community:r1",
+          evidence_ref: null,
+          evidence_count: 0,
+        },
+      ]);
       const counts = await admin.query(
         `SELECT
          (SELECT count(*)::int FROM text_content_submissions) AS submissions,
@@ -919,7 +1060,7 @@ suite("Postgres 17 terminal text submission repository", () => {
         held: 1,
         cases: 1,
       });
-    }, slugEnabledHistoricalMigrations);
+    });
   }, 30_000);
 
   test("publishes posts and comments without a namespace binding", async () => {
@@ -967,7 +1108,7 @@ suite("Postgres 17 terminal text submission repository", () => {
         }),
       );
       const postResult = await runStore(connection, (store) =>
-        store.commitTerminal({
+        commitWithModeration(store, {
           communityId,
           actor,
           personaId: namespacelessPersonaId,
@@ -981,7 +1122,6 @@ suite("Postgres 17 terminal text submission repository", () => {
           idempotencyKey: "namespaceless-text-post",
           requestHash: postRequestHash,
           operationId: "operation_namespaceless_text_post",
-          evaluation: { ...evaluation, input_sha256: postCanonical.sha256 },
         }),
       );
       expect(postResult).toMatchObject({
@@ -1024,7 +1164,7 @@ suite("Postgres 17 terminal text submission repository", () => {
         }),
       );
       const commentResult = await runStore(connection, (store) =>
-        store.commitTerminal({
+        commitWithModeration(store, {
           communityId,
           actor,
           personaId: namespacelessPersonaId,
@@ -1037,7 +1177,6 @@ suite("Postgres 17 terminal text submission repository", () => {
           idempotencyKey: "namespaceless-comment",
           requestHash: commentRequestHash,
           operationId: "operation_namespaceless_comment",
-          evaluation: { ...commentEvaluation, input_sha256: commentCanonical.sha256 },
           target: {
             surface: "comment",
             communityId,
@@ -1070,7 +1209,7 @@ suite("Postgres 17 terminal text submission repository", () => {
       );
       await expect(
         runStore(connection, (store) =>
-          store.commitTerminal({
+          commitWithModeration(store, {
             communityId: "text-community",
             actor,
             personaId: unboundPersonaId,
@@ -1079,7 +1218,6 @@ suite("Postgres 17 terminal text submission repository", () => {
             idempotencyKey: "unbound-author-post",
             requestHash,
             operationId: "operation_unbound_author_post",
-            evaluation,
           }),
         ),
       ).rejects.toMatchObject({ operation: "commit", reason: "not-found" });
@@ -1098,7 +1236,7 @@ suite("Postgres 17 terminal text submission repository", () => {
       const requestHash = await commentRequestHash(commentBody.idempotency_key, commentBody.body);
       const commit = (operationId: string) =>
         runStore(connection, (store) =>
-          store.commitTerminal({
+          commitWithModeration(store, {
             communityId: "text-community",
             actor,
             personaId: actorPersonaId,
@@ -1107,7 +1245,6 @@ suite("Postgres 17 terminal text submission repository", () => {
             idempotencyKey: commentBody.idempotency_key,
             requestHash,
             operationId,
-            evaluation: commentEvaluation,
             target: {
               surface: "comment",
               communityId: "text-community",
@@ -1178,7 +1315,7 @@ suite("Postgres 17 terminal text submission repository", () => {
       if (canonical.kind === "rejected") throw new Error(canonical.reason);
       const requestHash = await commentRequestHash(blockedBody.idempotency_key, blockedBody.body);
       const result = await runStore(connection, (store) =>
-        store.commitTerminal({
+        commitWithModeration(store, {
           communityId: "text-community",
           actor,
           personaId: actorPersonaId,
@@ -1187,12 +1324,7 @@ suite("Postgres 17 terminal text submission repository", () => {
           idempotencyKey: blockedBody.idempotency_key,
           requestHash,
           operationId: "operation_comment_blocked",
-          evaluation: {
-            ...commentEvaluation,
-            decision: "blocked",
-            reason_codes: ["hate"],
-            input_sha256: canonical.sha256,
-          },
+          moderation: "blocked",
           target: { surface: "comment", communityId: "text-community", postId: "text-order6-post" },
         }),
       );
@@ -1228,7 +1360,7 @@ suite("Postgres 17 terminal text submission repository", () => {
         "text-order6-cross-parent",
       );
       const crossThreadFailure = await runStore(connection, (store) =>
-        store.commitTerminal({
+        commitWithModeration(store, {
           communityId: "text-community",
           actor,
           personaId: actorPersonaId,
@@ -1237,7 +1369,6 @@ suite("Postgres 17 terminal text submission repository", () => {
           idempotencyKey: replyBody.idempotency_key,
           requestHash: replyHash,
           operationId: "operation_reply_cross_thread",
-          evaluation: replyEvaluation,
           target: {
             surface: "reply",
             communityId: "text-community",
@@ -1266,7 +1397,7 @@ suite("Postgres 17 terminal text submission repository", () => {
         "text-order6-closed-parent",
       );
       const closedFailure = await runStore(connection, (store) =>
-        store.commitTerminal({
+        commitWithModeration(store, {
           communityId: "text-community",
           actor,
           personaId: actorPersonaId,
@@ -1275,7 +1406,6 @@ suite("Postgres 17 terminal text submission repository", () => {
           idempotencyKey: "reply-order6-closed",
           requestHash: closedHash,
           operationId: "operation_reply_closed",
-          evaluation: replyEvaluation,
           target: {
             surface: "reply",
             communityId: "text-community",
@@ -1304,7 +1434,7 @@ suite("Postgres 17 terminal text submission repository", () => {
         "text-order6-deep-parent",
       );
       const depthFailure = await runStore(connection, (store) =>
-        store.commitTerminal({
+        commitWithModeration(store, {
           communityId: "text-community",
           actor,
           personaId: actorPersonaId,
@@ -1313,7 +1443,6 @@ suite("Postgres 17 terminal text submission repository", () => {
           idempotencyKey: replyBody.idempotency_key,
           requestHash: depthHash,
           operationId: "operation_reply_depth",
-          evaluation: replyEvaluation,
           target: {
             surface: "reply",
             communityId: "text-community",
@@ -1339,7 +1468,7 @@ suite("Postgres 17 terminal text submission repository", () => {
         "text-order6-max-parent",
       );
       const allowed = await runStore(connection, (store) =>
-        store.commitTerminal({
+        commitWithModeration(store, {
           communityId: "text-community",
           actor,
           personaId: actorPersonaId,
@@ -1348,7 +1477,6 @@ suite("Postgres 17 terminal text submission repository", () => {
           idempotencyKey: "reply-order6-max-allowed",
           requestHash: allowedHash,
           operationId: "operation_reply_max_allowed",
-          evaluation: replyEvaluation,
           target: {
             surface: "reply",
             communityId: "text-community",
@@ -1368,94 +1496,16 @@ suite("Postgres 17 terminal text submission repository", () => {
     });
   }, 30_000);
 
-  test("reports coalesce and held state is atomic", async () => {
+  test("provider-absent comments keep held state atomic with no public effects", async () => {
     await withSchema(async (admin, connection) => {
       await insertCommentPost(admin);
-      const requestHash = await commentRequestHash("comment-order6-report", commentBody.body);
-      const publishedResult = await runStore(connection, (store) =>
-        store.commitTerminal({
-          communityId: "text-community",
-          actor,
-          personaId: actorPersonaId,
-          body: { ...commentBody, idempotency_key: "comment-order6-report" },
-          moderationInput: commentInput,
-          idempotencyKey: "comment-order6-report",
-          requestHash,
-          operationId: "operation_comment_report_target",
-          evaluation: commentEvaluation,
-          target: { surface: "comment", communityId: "text-community", postId: "text-order6-post" },
-        }),
-      );
-      if (publishedResult.kind !== "created") throw new Error("expected report target comment");
-      const commentId =
-        publishedResult.snapshot.published_resource?.kind === "comment"
-          ? publishedResult.snapshot.published_resource.comment_id
-          : null;
-      if (commentId === null) throw new Error("missing published comment id");
-      const reportHash = (key: string) =>
-        Effect.runPromise(
-          canonicalBodyHash({
-            endpoint: "POST /comments/:commentId/reports",
-            comment_id: commentId,
-            body: { idempotency_key: key, reason_code: "spam" },
-          }),
-        );
-      const firstReportHash = await reportHash("report-order6-1");
-      const report = await runStore(connection, (store) =>
-        store.reportComment({
-          commentId,
-          actor,
-          idempotencyKey: "report-order6-1",
-          reasonCode: "spam",
-          requestHash: firstReportHash,
-        }),
-      );
-      expect(report.status).toBe("open");
-      const reportConflict = await runStore(connection, (store) =>
-        store.reportComment({
-          commentId,
-          actor,
-          idempotencyKey: "report-order6-1",
-          reasonCode: "spam",
-          requestHash: "0".repeat(64),
-        }),
-      ).then(
-        () => null,
-        (error: unknown) => error,
-      );
-      expect(reportConflict).toMatchObject({
-        _tag: "TextPostRepositoryError",
-        reason: "idempotency-conflict",
-      });
-      const secondReportHash = await reportHash("report-order6-2");
-      const coalesced = await runStore(connection, (store) =>
-        store.reportComment({
-          commentId,
-          actor,
-          idempotencyKey: "report-order6-2",
-          reasonCode: "harassment",
-          requestHash: secondReportHash,
-        }),
-      );
-      expect(coalesced).toMatchObject({ caseRef: report.caseRef, status: "coalesced" });
-      const reportReplay = await runStore(connection, (store) =>
-        store.reportComment({
-          commentId,
-          actor,
-          idempotencyKey: "report-order6-1",
-          reasonCode: "spam",
-          requestHash: firstReportHash,
-        }),
-      );
-      expect(reportReplay).toEqual(report);
-
       const heldKey = "comment-order6-held";
       const heldHash = await commentRequestHash(heldKey, "held comment");
       const heldInput = { ...commentInput, body: "held comment" };
       const heldCanonical = canonicalTextModerationInput(heldInput);
       if (heldCanonical.kind === "rejected") throw new Error(heldCanonical.reason);
       const heldResult = await runStore(connection, (store) =>
-        store.commitTerminal({
+        commitWithModeration(store, {
           communityId: "text-community",
           actor,
           personaId: actorPersonaId,
@@ -1464,12 +1514,7 @@ suite("Postgres 17 terminal text submission repository", () => {
           idempotencyKey: heldKey,
           requestHash: heldHash,
           operationId: "operation_comment_held",
-          evaluation: {
-            ...commentEvaluation,
-            decision: "manual_review",
-            reason_codes: ["provider_unavailable"],
-            input_sha256: heldCanonical.sha256,
-          },
+          moderation: "unavailable",
           target: { surface: "comment", communityId: "text-community", postId: "text-order6-post" },
         }),
       );
@@ -1499,7 +1544,7 @@ suite("Postgres 17 terminal text submission repository", () => {
         open_text_cases: 1,
         open_comment_cases: 1,
         comments: 0,
-        comment_count: 1,
+        comment_count: 0,
         outbox: 0,
       });
     });
