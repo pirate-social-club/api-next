@@ -9,7 +9,12 @@ export const INFISICAL_RUNTIME_ENABLED = {
   staging: true,
   prod: true,
 } as const satisfies Readonly<Record<InfisicalEnvironment, boolean>>;
-export type InfisicalPath = "/" | "/services/api-next" | "/services/api-next/operator";
+export type InfisicalPath =
+  | "/"
+  | "/agents"
+  | "/agents/codex"
+  | "/services/api-next"
+  | "/services/api-next/operator";
 export type InfisicalDriftKind =
   | "unexpected-folder"
   | "missing-folder"
@@ -91,6 +96,11 @@ const STAGING_MODERATION_E2E_OPERATOR_SECRET_NAMES = [
   "MODERATION_E2E_VIEWER_EMAIL",
   "MODERATION_E2E_VIEWER_OTP",
 ] as const;
+// Optional fixture custody; upstream rotation remains governed separately.
+const STAGING_PERSONA_E2E_OPERATOR_SECRET_NAMES = [
+  "PERSONA_WALLET_E2E_EMAIL",
+  "PERSONA_WALLET_E2E_OTP",
+] as const;
 const requiredWhenRuntimeEnabled = (
   environment: InfisicalEnvironment,
   names: readonly string[],
@@ -105,6 +115,21 @@ export type InfisicalPolicy = Readonly<{
 
 export const INFISICAL_POLICIES: readonly InfisicalPolicy[] = [
   { environment: "dev", path: "/", requiredNames: [], allowedNames: [] },
+  { environment: "dev", path: "/agents", requiredNames: [], allowedNames: [] },
+  {
+    environment: "dev",
+    path: "/agents/codex",
+    requiredNames: ["GITHUB_PAT"],
+    allowedNames: ["GITHUB_PAT"],
+  },
+  ...(["staging", "prod"] as const).flatMap((environment) =>
+    (["/agents", "/agents/codex"] as const).map((path) => ({
+      environment,
+      path,
+      requiredNames: [],
+      allowedNames: [],
+    })),
+  ),
   { environment: "dev", path: "/services/api-next", requiredNames: [], allowedNames: [] },
   { environment: "dev", path: "/services/api-next/operator", requiredNames: [], allowedNames: [] },
   { environment: "staging", path: "/", requiredNames: [], allowedNames: [] },
@@ -131,6 +156,7 @@ export const INFISICAL_POLICIES: readonly InfisicalPolicy[] = [
       ...OPERATOR_SECRET_NAMES,
       "MEGAPOT_REFERRER_PRIVATE_KEY",
       ...STAGING_MODERATION_E2E_OPERATOR_SECRET_NAMES,
+      ...STAGING_PERSONA_E2E_OPERATOR_SECRET_NAMES,
     ],
   },
   {
@@ -166,7 +192,7 @@ export const INFISICAL_POLICIES: readonly InfisicalPolicy[] = [
 
 export const EXPECTED_INFISICAL_FOLDERS: Readonly<Record<InfisicalEnvironment, readonly string[]>> =
   {
-    dev: [],
+    dev: ["/agents", "/agents/codex"],
     staging: ["/services", "/services/api-next", "/services/api-next/operator"],
     prod: ["/services", "/services/api-next", "/services/api-next/operator"],
   };
