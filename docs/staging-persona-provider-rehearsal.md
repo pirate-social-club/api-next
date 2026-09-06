@@ -180,3 +180,39 @@ made no provider data changes. Check passed with 41 baseline warnings; focused
 tests passed 14/14 with 69 assertions; the full unit suite passed 3038/3038
 with 12988 assertions across 473 files. No full Worker or PostgreSQL-suite
 rerun is claimed for this entrypoint checkpoint.
+
+## Partial execution and recovery, 2026-09-06
+
+Execution at 0cbfa9073cbd369b21833d0440fd0c997f5bf896 against isolated
+branch 0ny029b910ob failed after five committed removal batches. The failed
+marker reports completedBatches 5 and refuses a new run without contacting
+the database. No resume is permitted. The generic error wrapper discarded
+the specific cause; neither lock exhaustion nor provider sessions have been
+established as the cause. Completed callbacks sampled at most 389 shared locks,
+but transient peaks and the failing batch are not covered by that number.
+
+The execution log is retained under the control-plane .state directory at
+staging-reset-rehearsal/0ny029b910ob/evidence/execution-0cbfa907.log, alongside
+the retained failed marker. Replacement branch persona-reset-recovery-20260906,
+id k1d9pj5znk6t, was restored from backup xvvo8r6tcaa5 and reports ready.
+Its restore fidelity remains under verification. Its default provider role
+credentials were initialized solely to obtain connection metadata; returned
+credentials were discarded and existing operator/runtime identities are used
+for fidelity checks. This mutation affects only the replacement branch.
+
+Both rehearsal branches remain subject to the 2026-09-07T04:00:00Z review or
+deletion deadline. Neither branch is a final fenced staging recovery capture.
+Staging main and production were not changed. A real partial failure has
+occurred, but successful reconstruction and the deliberate between-replay-batch
+failure rehearsal are not yet proven.
+
+At 2026-09-06T05:32:59.970Z the replacement passed the read-only ledger,
+ownership, ACL, default-ACL, extension and data comparisons. All 109 ledger
+checksums match; 329 tables contain 34520 rows, with 155 nonempty tables and
+two sequences. Data fingerprint remains
+0b1c97ef5efa0d32eee31cf220e9d5a41f74c7cfecbe782c03f16caaf2628bf8.
+Ownership, schema ACL, 5933 ACL entries, both default ACLs and extensions all
+match the original capture fingerprints. Original runtime and operator
+credentials authenticate on the replacement. The separate rolled-back 0110
+evidence-function check remains outstanding; no full recovery sign-off or
+successful reset is claimed by these comparisons.

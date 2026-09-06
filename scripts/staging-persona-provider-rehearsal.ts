@@ -4,6 +4,7 @@ import { compileApprovedStagingPrivileges } from "./staging-persona-approved-pri
 import { readResetGrantCatalog } from "./staging-persona-grant-catalog";
 import { reconstructStagingInPhases } from "./staging-persona-phased-reset";
 import { observeStagingProviderBackup } from "./staging-persona-provider-backup";
+import { describeRehearsalFailure } from "./staging-persona-rehearsal-failure";
 import { assertRehearsalHyperdriveExclusion } from "./staging-persona-rehearsal-hyperdrive";
 import {
   fingerprintRehearsalData,
@@ -84,6 +85,7 @@ export async function rehearseProviderReset(execute: boolean) {
 
       let stopped = false;
       let observerFailed = false;
+      let observerFailure: ReturnType<typeof describeRehearsalFailure> | null = null;
       let samples = 0;
       let maximumOwn = 0;
       let maximumCluster = 0;
@@ -107,8 +109,9 @@ export async function rehearseProviderReset(execute: boolean) {
         while (!stopped) {
           try {
             await sample();
-          } catch {
+          } catch (error) {
             observerFailed = true;
+            observerFailure = describeRehearsalFailure(error);
             return;
           }
           await new Promise((done) => setTimeout(done, 100));
@@ -121,6 +124,7 @@ export async function rehearseProviderReset(execute: boolean) {
       const started = performance.now();
       let previous = started;
       const phaseMs = { removing: 0, replaying: 0 };
+      let committedBatches = 0;
       try {
         const result = await reconstructStagingInPhases(admin, artifacts, {
           assertFenceAndRecovery: async () => {
@@ -161,6 +165,7 @@ export async function rehearseProviderReset(execute: boolean) {
             statementTimeoutMs: 120_000,
           },
           afterBatch: async (phase, count) => {
+            committedBatches = count;
             const now = performance.now();
             phaseMs[phase] += now - previous;
             console.log(
@@ -205,6 +210,25 @@ export async function rehearseProviderReset(execute: boolean) {
         };
         console.log(JSON.stringify(receipt));
         return receipt;
+      } catch (error) {
+        stopped = true;
+        await polling;
+        console.error(
+          JSON.stringify({
+            mode: "failed-isolated-rehearsal",
+            branch_id: branchId,
+            completed_batch_callbacks: committedBatches,
+            failure: describeRehearsalFailure(error),
+            observer_failure: observerFailure,
+            samples,
+            sampled_maximum_own: maximumOwn,
+            sampled_maximum_cluster: maximumCluster,
+            inspect_marker_required: true,
+            restore_required_if_any_batch_committed: true,
+            automatic_resume: false,
+          }),
+        );
+        throw error;
       } finally {
         stopped = true;
         await polling;
