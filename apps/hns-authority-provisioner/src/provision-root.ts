@@ -34,6 +34,12 @@ export type HnsAuthorityZoneResult = Readonly<{
   readonly ttl_seconds: number;
 }>;
 
+export type HnsZoneMutationLease = Readonly<{
+  readonly job_id: string;
+  readonly executor_id: string;
+  readonly lease_fence: number;
+}>;
+
 export type HnsAuthorityProvisionPorts = Readonly<{
   readonly inspect_current_resource: (
     rootLabel: string,
@@ -41,6 +47,7 @@ export type HnsAuthorityProvisionPorts = Readonly<{
   readonly ensure_zone: (input: {
     readonly root_label: string;
     readonly challenge_txt_value: string;
+    readonly mutation_lease?: HnsZoneMutationLease;
   }) => Promise<HnsAuthorityZoneResult>;
 }>;
 

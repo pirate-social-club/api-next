@@ -281,3 +281,56 @@ for (const corruptRequest of [false, true]) {
     },
   );
 }
+
+test.each([false, true])(
+  "partial provisional cleanup uses retained request bytes; retry=%s",
+  async (fail) => {
+    const state = await fixture();
+    const provision = await state.queue.claim("fixture", 60);
+    if (provision === null) throw new Error("fixture missing");
+    let completion: unknown;
+    const removed: unknown[] = [];
+    const result = await runHnsAuthorityProvisionExecutorOnce({
+      executor_id: "cleanup-executor",
+      queue: { claim: async () => null, finalize: async () => Promise.reject() },
+      provision: {} as never,
+      observation: {
+        queue: {
+          claim: async () => ({
+            observation_job_id: "cleanup",
+            root_import_session_id: provision.root_import_session_id,
+            operation_kind: "teardown_provisional_root_v1",
+            request_bytes: provision.request_bytes,
+            request_sha256: provision.request_sha256,
+            lease_fence: 1,
+          }),
+          finalize: async (input) => {
+            completion = input;
+            return {
+              outcome: input.outcome,
+              root_import_session_id: provision.root_import_session_id,
+              session_revision: 3,
+            };
+          },
+        },
+        observe: {} as never,
+        teardown_zone: async (input) => {
+          removed.push(input);
+          if (fail) throw new Error("authority unavailable");
+        },
+        config: { environment: "test", valid_for_seconds: 300 },
+      },
+    });
+    expect(removed).toEqual([
+      {
+        root_label: "newroot",
+        challenge_txt_value: "pirate-verification=challenge",
+        mutation_lease: { job_id: "cleanup", executor_id: "cleanup-executor", lease_fence: 1 },
+      },
+    ]);
+    expect(result.outcome).toBe(fail ? "retry" : "failed");
+    expect(completion).toMatchObject({
+      failure_code: fail ? "zone_teardown_unavailable" : "session_expired",
+    });
+  },
+);

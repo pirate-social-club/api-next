@@ -13,7 +13,9 @@ import {
   makePowerDnsRootTeardown,
   type PowerDnsRootProvisionConfig,
 } from "./powerdns.ts";
+import type { HnsZoneMutationLease } from "./provision-root.ts";
 import { makePostgresHnsAuthorityProvisionQueue } from "./queue.ts";
+import { withHnsRootZoneMutation } from "./zone-mutation.ts";
 
 function required(name: string): string {
   const value = process.env[name];
@@ -139,9 +141,40 @@ async function main(serve: boolean): Promise<void> {
     gateway_certificate_spki_sha256: sharedTlsa.spki_sha256,
     ttl_seconds: ttlSeconds(),
   };
-  const ensureZone = makePowerDnsRootProvisioner(powerDnsConfig);
+  const ensureZone = (input: {
+    readonly root_label: string;
+    readonly challenge_txt_value: string;
+    readonly mutation_lease?: HnsZoneMutationLease;
+  }) =>
+    withHnsRootZoneMutation(connectionString, input, false, (signal) =>
+      makePowerDnsRootProvisioner(powerDnsConfig, (url, init) =>
+        fetch(url, {
+          ...init,
+          signal: init?.signal ? AbortSignal.any([signal, init.signal]) : signal,
+        }),
+      )(input),
+    );
   const inspectZone = makePowerDnsRootInspector(powerDnsConfig);
-  const teardownZone = makePowerDnsRootTeardown(powerDnsConfig);
+  const teardownZone = (input: {
+    readonly root_label: string;
+    readonly challenge_txt_value?: string;
+    readonly mutation_lease?: HnsZoneMutationLease;
+  }) => {
+    if (input.challenge_txt_value === undefined)
+      return makePowerDnsRootTeardown(powerDnsConfig)(input);
+    return withHnsRootZoneMutation(
+      connectionString,
+      { ...input, challenge_txt_value: input.challenge_txt_value },
+      true,
+      (signal) =>
+        makePowerDnsRootTeardown(powerDnsConfig, (url, init) =>
+          fetch(url, {
+            ...init,
+            signal: init?.signal ? AbortSignal.any([signal, init.signal]) : signal,
+          }),
+        )(input),
+    );
+  };
   const observeLive = makeLiveHnsRootReadinessObserverV1({
     chain_network: required("HNS_AUTHORITY_CHAIN_NETWORK"),
     chain_genesis_block_hash: required("HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH"),
