@@ -7,7 +7,10 @@ and the certificate served for each app host. No root list is compiled into the
 command. It never schedules renewal or writes serving state.
 
 The certificate probe connects to the configured gateway IP using each app
-hostname as SNI. It checks the hostname and SPKI against the DNS activation pin.
+hostname as SNI. It checks the served SPKI against the DNS activation pin and
+checks certificate validity. Spec 009 uses DANE-EE identity: one controlled
+certificate may serve many activated HNS names, so WebPKI SAN hostname matching
+is not required.
 This is a retained-pin check, not a fresh DNSSEC or DANE validation. The existing
 authority and DANE probes still need their separate repair. The configured IP
 must serve all monitored roots in the reviewed deployment topology.
@@ -40,7 +43,7 @@ could not complete. Zero does not prove user-facing functionality or restoration
 Conditions include a stale or absent scheduler heartbeat, unhealthy or missing
 serving evidence, serving validity below two days, any terminal renewal job,
 a delayed job at least three hours old, a missed manual checkpoint, certificate
-validity below fourteen days, a pin/hostname mismatch, and unavailable observation.
+validity below fourteen days, a pin mismatch, and unavailable observation.
 Delayed age uses job creation time while the job is delayed, so retry updates
 cannot reset its age. Superseded generation jobs do not alert.
 
