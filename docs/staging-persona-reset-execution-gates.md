@@ -278,3 +278,24 @@ fence this producer; a reviewed alarm/outbox disposition and execution receipt
 remain required before the live window. The
 [alarm API](https://developers.cloudflare.com/durable-objects/api/alarms/)
 requires explicit alarm cancellation; normal HTTP denial is not cancellation.
+
+The repeated two-page inventory returned the same six IDs with hasStoredData
+true on every object. SHA-256 of JSON.stringify of the sorted ID list is
+a909a00a14555f0152ce5bc9deb986eef0c4ffb2c50a8a7d6cf25343c26b05db.
+The platform maintenance primitive pins that exact list and namespace; arbitrary
+six-ID caller input is not accepted. It retains a pre-cancellation observation,
+requires exclusive cancellation and socket readback, and requires all six fresh
+post-drain observations to show elapsed finite expiry, no alarm and no sockets.
+Unknown authority is not classified as expired. This primitive has no deployed
+class adapter, RPC admission or HTTP entrypoint and is not a live fence.
+
+Source review found no sufficient fixed drain duration. The pinned Jobs
+recovery has a 45-second caller timeout and at most 50 sequential candidates,
+but an interrupted Durable Object RPC can outlive its caller. Do not use that
+timeout as proof of drain. The maintained closure must cover already-started
+RPCs and delayed alarm delivery, and read the objects again after drain and
+expiry. Cloudflare also documents that getAlarm can return null while an
+alarm is running; null alone is not proof that no finalization is active.
+Temporary-class deployment, event admission and pre-reset rollback still need
+independent review. Do not delete business storage, infer cancellation from
+HTTP denial, or alter the approved normal API sources as a silent workaround.
