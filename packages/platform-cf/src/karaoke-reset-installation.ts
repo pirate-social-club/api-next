@@ -57,6 +57,7 @@ export interface KaraokeResetInstallationPort {
   observe(): Promise<unknown>;
   // Atomically persist marker and original observation, preserving it on replay.
   persist(marker: KaraokeResetMarker, initial: KaraokeResetObservation): Promise<void>;
+  persistReceipt?(receipt: KaraokeResetReceipt): Promise<void>;
   closeAdmission(): void;
   cancelAlarm(): Promise<void>;
   closeSockets(): Promise<void>;
@@ -71,12 +72,16 @@ function decode<S extends Schema.ConstraintDecoder<unknown>>(schema: S, value: u
   }
 }
 
+export function decodeKaraokeResetCommand(input: unknown): typeof Command.Type {
+  return decode(Command, input);
+}
+
 /** Storage-only barrier; cancellation and bounded drain deliberately happen outside it. */
 export async function applyKaraokeResetInstallation(
   port: KaraokeResetInstallationPort,
   input: unknown,
 ): Promise<KaraokeResetReceipt> {
-  const command = decode(Command, input);
+  const command = decodeKaraokeResetCommand(input);
   if (port.environment !== "staging" || !port.enabled || port.objectId !== command.objectId) {
     throw new Error("karaoke_reset_admission_denied");
   }
@@ -125,7 +130,7 @@ export async function applyKaraokeResetInstallation(
     const current = decode(Observation, await port.observe());
     // Construct a point-in-time snapshot inside the final barrier, not a lease
     // preventing subsequent retirement after the observation is returned.
-    return {
+    const receipt = {
       ...command,
       initial,
       current,
@@ -133,6 +138,8 @@ export async function applyKaraokeResetInstallation(
         cancellationSucceeded && current.alarm === null && current.sockets === 0,
       quiescenceEstablished,
     };
+    await port.persistReceipt?.(receipt);
+    return receipt;
   });
 }
 
@@ -161,6 +168,10 @@ export function verifyKaraokeResetReceipts(
 export class KaraokeResetProducerDrain {
   private closed = false;
   private readonly pending = new Set<Promise<void>>();
+
+  get size(): number {
+    return this.pending.size;
+  }
 
   close(): void {
     this.closed = true;

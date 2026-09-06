@@ -26,12 +26,26 @@ queued delivery, but is not evidence of a live deployment or eviction test.
 
 ## Remaining execution boundary
 
-There is not yet an operator installation or retirement RPC. The pure
-transition function is not authentication or durable installation. Before
-exposure, the staging-only operator path must validate the exact six-object
-inventory, persist the marker before cancellation or socket closure, and
-return object-bound receipts with outbox states, prior alarm state, archive
-key, and multipart upload identifier.
+The named service entrypoint `KaraokeResetOperatorEntrypoint.apply` accepts
+an Access assertion and an exact inventory command. It has no HTTP route.
+Both the entrypoint and the object verify the assertion using the existing
+Cloudflare Access signature, issuer, audience and expiry validator, then
+require the configured exact subject. Neither authentication nor installation
+uses PostgreSQL. The object independently checks its actual ID against the
+command, frozen inventory and generation before observing or writing storage.
+
+Admission requires `API_NEXT_ENV=staging`, `KARAOKE_RESET_ENABLED=true`, and
+explicit `KARAOKE_RESET_ACCESS_ISSUER`, `KARAOKE_RESET_ACCESS_AUDIENCE` and
+`KARAOKE_RESET_ACCESS_SUBJECT` settings. Missing settings deny admission.
+No deployment enables these settings in this change. The release review must
+pin their operator identity and service-binding caller; no ordinary browser
+session or active-user lookup substitutes for an Access assertion.
+
+The object atomically stores the marker and original observation before
+cancelling alarms or closing sockets. It persists the returned receipt,
+including outbox states, prior alarm state, archive key and multipart upload
+identifier. Replaying the operation preserves its original observation and
+returns a new current observation; retirement cannot reactivate an object.
 
 Installation must also account for producer work already in flight. A marker
 does not undo an external request already issued. Successful quiescence must
@@ -89,10 +103,17 @@ timeout does not cancel earlier effects. The receipt verifier requires all
 six distinct matching-state complete receipts, but is not a fresh live
 readback or R2-key authorization mechanism.
 
-These are internal adapter tests, not runtime integration. The actual Worker
-authenticator, Durable Object storage adapter, producer-tracker wiring, and
-operator transport remain absent. The fixture script's active-user lookup
-does not authenticate an RPC and is not adopted as reset authority. Generation
-`staging-reset-v1` is the implementation candidate; the release review must
-pin it with the operator admission and inventory. No new capability is exposed
-by this module.
+The runtime now wires the storage adapter and producer tracker. Installation
+waits up to five seconds outside the storage barrier. A durable unsettled flag
+prevents reconstruction after an interrupted drain from mistaking an empty
+in-memory tracker for proven quiescence. Such a replay remains incomplete;
+it does not authorize cleanup. Generation `staging-reset-v1` must be pinned
+with the operator admission and inventory in the release review.
+
+The operator Workerd tests use real SQLite storage, alarm methods, input
+barriers and JWT verification. Local namespaces reject staging object IDs,
+so these tests explicitly substitute only the application-observed ID and
+map entrypoint targets to local instances. They prove installation behavior,
+not live namespace routing. A separate native service-binding call verifies
+invalid-assertion denial. The live window still requires six exact object
+receipts from the staging namespace before cleanup.

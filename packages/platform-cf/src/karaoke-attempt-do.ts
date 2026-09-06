@@ -30,12 +30,24 @@ import {
 import type { KaraokeFinalizationRedriveResult } from "./karaoke-finalization-recovery.ts";
 import { karaokeFinalizationFailureTransition } from "./karaoke-finalization-retry.ts";
 import { makeControlPlaneKaraokeStore } from "./karaoke-repository.ts";
+import {
+  applyKaraokeResetInstallation,
+  KaraokeResetProducerDrain,
+  type KaraokeResetReceipt,
+} from "./karaoke-reset-installation.ts";
 import { KARAOKE_RESET_MARKER_KEY } from "./karaoke-reset-marker.ts";
+import {
+  admitKaraokeResetOperator,
+  type KaraokeResetOperatorBindings,
+} from "./karaoke-reset-operator-auth.ts";
 import { type HyperdriveConnection, makeHyperdriveControlPlaneLayer } from "./postgres.ts";
 
 const TOKEN_TTL_MS = 5 * 60 * 1_000;
 const R2_PART_BYTES = 5 * 1024 * 1024;
 const MAX_SESSION_MS = 30 * 60 * 1_000;
+const RESET_INITIAL_KEY = "karaoke:staging-reset-initial:v1";
+const RESET_RECEIPT_KEY = "karaoke:staging-reset-receipt:v1";
+const RESET_UNSETTLED_KEY = "karaoke:staging-reset-unsettled:v1";
 
 type Row = Readonly<Record<string, unknown>>;
 type Sql = {
@@ -51,14 +63,17 @@ type KaraokeWebSocket = WebSocket & {
   serializeAttachment(value: unknown): void;
 };
 type KaraokeDurableObjectState = {
+  readonly id: { toString(): string };
   readonly storage: {
     readonly sql: unknown;
     get<T = unknown>(key: string): Promise<T | undefined>;
+    put(entries: Record<string, unknown>): Promise<void>;
+    getAlarm(): Promise<number | null>;
     deleteAlarm(): Promise<void>;
     setAlarm(scheduledTime: number | Date): Promise<void>;
   };
   acceptWebSocket(socket: WebSocket): void;
-  blockConcurrencyWhile<A>(callback: () => Promise<A>): void;
+  blockConcurrencyWhile<A>(callback: () => Promise<A>): Promise<A>;
   getWebSockets(): WebSocket[];
 };
 type KaraokeR2UploadedPart = Readonly<{
@@ -90,7 +105,7 @@ declare const WebSocketPair: {
   new (): { readonly 0: KaraokeWebSocket; readonly 1: KaraokeWebSocket };
 };
 
-export interface KaraokeAttemptDoBindings {
+export interface KaraokeAttemptDoBindings extends KaraokeResetOperatorBindings {
   readonly API_NEXT_ENV?: string;
   readonly CONTROL_PLANE: HyperdriveConnection;
   readonly ELEVENLABS_API_KEY?: string;
@@ -235,6 +250,8 @@ class RuntimeEffects implements KaraokeEffectRunner {
 
 export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
   private resetFenced = true;
+  private readonly resetProducers = new KaraokeResetProducerDrain();
+  private recoveredUnsettledReset = false;
 
   private assertNotResetFenced(): void {
     if (this.resetFenced) throw new Error("karaoke_reset_fenced");
@@ -256,7 +273,11 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
       // Every present value denies, including null, unknown versions and mismatches.
       // This decision never depends on an environment flag surviving a deployment.
       this.resetFenced = (await ctx.storage.get(KARAOKE_RESET_MARKER_KEY)) !== undefined;
-      if (this.resetFenced) return;
+      if (this.resetFenced) {
+        this.resetProducers.close();
+        this.recoveredUnsettledReset = (await ctx.storage.get(RESET_UNSETTLED_KEY)) !== false;
+        return;
+      }
       this.sql.exec(`CREATE TABLE IF NOT EXISTS karaoke_session (
         id INTEGER PRIMARY KEY CHECK (id=1), authority_json TEXT NOT NULL,
         snapshot_json TEXT NOT NULL, server_sequence INTEGER NOT NULL,
@@ -333,7 +354,87 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
     });
   }
 
-  async initialize(authority: KaraokeSessionAuthority): Promise<{
+  /** Operator RPC only: no HTTP route, no PostgreSQL or R2 access. */
+  async applyReset(assertion: string, command: unknown): Promise<KaraokeResetReceipt> {
+    return applyKaraokeResetInstallation(
+      {
+        environment: this.runtimeEnv.API_NEXT_ENV ?? "",
+        enabled: this.runtimeEnv.KARAOKE_RESET_ENABLED === "true",
+        objectId: this.runtimeCtx.id.toString(),
+        admitOperator: () => admitKaraokeResetOperator(this.runtimeEnv, assertion),
+        exclusive: async (operation) => {
+          // Catch within the barrier: an expected admission/transition rejection
+          // must not terminate an object and lose its in-flight accounting.
+          const result = await this.runtimeCtx.blockConcurrencyWhile(async () => {
+            try {
+              return { ok: true as const, value: await operation() };
+            } catch (error) {
+              return { ok: false as const, error };
+            }
+          });
+          if (!result.ok) throw result.error;
+          return result.value;
+        },
+        readMarker: () => this.runtimeCtx.storage.get(KARAOKE_RESET_MARKER_KEY),
+        readInitialObservation: () => this.runtimeCtx.storage.get(RESET_INITIAL_KEY),
+        observe: () => this.observeReset(),
+        persist: (marker, initial) =>
+          this.runtimeCtx.storage.put({
+            [KARAOKE_RESET_MARKER_KEY]: marker,
+            [RESET_INITIAL_KEY]: initial,
+            [RESET_UNSETTLED_KEY]: this.recoveredUnsettledReset || this.resetProducers.size > 0,
+          }),
+        persistReceipt: (receipt) => this.runtimeCtx.storage.put({ [RESET_RECEIPT_KEY]: receipt }),
+        closeAdmission: () => {
+          this.resetFenced = true;
+          this.resetProducers.close();
+        },
+        cancelAlarm: () => this.runtimeCtx.storage.deleteAlarm(),
+        closeSockets: async () => {
+          for (const socket of this.runtimeCtx.getWebSockets()) socket.close(1001, "staging_reset");
+          await this.adapter?.close();
+        },
+        drain: async () => {
+          if (this.recoveredUnsettledReset) return false;
+          const settled = await this.resetProducers.drain(5_000);
+          if (settled) await this.runtimeCtx.storage.put({ [RESET_UNSETTLED_KEY]: false });
+          return settled;
+        },
+      },
+      command,
+    );
+  }
+
+  private async observeReset(): Promise<unknown> {
+    const tables = new Set(
+      this.sql
+        .exec<{ name: string }>(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('karaoke_outbox','karaoke_archive')",
+        )
+        .toArray()
+        .map((row) => row.name),
+    );
+    const outbox = tables.has("karaoke_outbox")
+      ? one(this.sql, "SELECT score_state,recording_state FROM karaoke_outbox WHERE id=1")
+      : null;
+    const archive = tables.has("karaoke_archive")
+      ? one(this.sql, "SELECT object_key,upload_id FROM karaoke_archive WHERE id=1")
+      : null;
+    return {
+      alarm: await this.runtimeCtx.storage.getAlarm(),
+      sockets: this.runtimeCtx.getWebSockets().length,
+      scoreState: outbox?.score_state ?? null,
+      recordingState: outbox?.recording_state ?? null,
+      archiveKey: archive?.object_key ?? null,
+      uploadId: archive?.upload_id ?? null,
+    };
+  }
+
+  initialize(authority: KaraokeSessionAuthority) {
+    return this.resetProducers.run(() => this.initializeActive(authority));
+  }
+
+  private async initializeActive(authority: KaraokeSessionAuthority): Promise<{
     providerRetention: "not_stored" | "stored";
     token: string;
     tokenExpiresAt: number;
@@ -419,6 +520,10 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
 
   async fetch(request: Request): Promise<Response> {
     if (this.resetFenced) return new Response("Unavailable", { status: 503 });
+    return this.resetProducers.run(() => this.fetchActive(request));
+  }
+
+  private async fetchActive(request: Request): Promise<Response> {
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
       return new Response("WebSocket upgrade required", { status: 426 });
     }
@@ -456,12 +561,17 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
 
   async redriveFinalization(): Promise<KaraokeFinalizationRedriveResult> {
     if (this.resetFenced) return { outcome: "fenced", rearmed: [] };
+    return this.resetProducers.run(() => this.redriveFinalizationActive());
+  }
+
+  private async redriveFinalizationActive(): Promise<KaraokeFinalizationRedriveResult> {
     const session = one(this.sql, "SELECT id FROM karaoke_session WHERE id=1");
     if (session === null) return { outcome: "missing", rearmed: [] };
     const now = Date.now();
     const outbox = one(this.sql, "SELECT id FROM karaoke_outbox WHERE id=1");
     if (outbox === null) {
       await this.runtimeCtx.storage.setAlarm(now);
+      if (this.resetFenced) return { outcome: "fenced", rearmed: [] };
       return { outcome: "scheduled", rearmed: [] };
     }
     const rearmed: FinalizationAxis[] = [];
@@ -479,6 +589,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
       if (changed.length === 1) rearmed.push(axis);
     }
     const scheduled = await this.scheduleOutboxAlarm(now);
+    if (this.resetFenced) return { outcome: "fenced", rearmed: [] };
     return {
       outcome: scheduled ? "scheduled" : "idle",
       rearmed,
@@ -487,6 +598,10 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
 
   async webSocketMessage(_socket: WebSocket, message: string | ArrayBuffer): Promise<void> {
     if (this.resetFenced) return;
+    return this.resetProducers.run(() => this.webSocketMessageActive(message));
+  }
+
+  private async webSocketMessageActive(message: string | ArrayBuffer): Promise<void> {
     const host = await this.ensureHost();
     if (this.resetFenced) return;
     if (typeof message === "string") {
@@ -548,6 +663,10 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
       await this.runtimeCtx.storage.deleteAlarm();
       return;
     }
+    return this.resetProducers.run(() => this.alarmActive());
+  }
+
+  private async alarmActive(): Promise<void> {
     const authority = this.authority();
     const outbox = one(this.sql, "SELECT id FROM karaoke_outbox WHERE id=1");
     if (outbox === null && Date.now() >= Date.parse(authority.expiresAt)) {
@@ -637,7 +756,11 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
     await this.runtimeCtx.storage.setAlarm(Date.now());
   }
 
-  private async ensureHost(): Promise<KaraokeSessionHost> {
+  private ensureHost(): Promise<KaraokeSessionHost> {
+    return this.resetProducers.run(() => this.ensureHostActive());
+  }
+
+  private async ensureHostActive(): Promise<KaraokeSessionHost> {
     this.assertNotResetFenced();
     if (this.host !== null) return this.host;
     const row = one(
@@ -649,12 +772,47 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
     this.serverSequence = Number(row.server_sequence);
     const key = this.runtimeEnv.ELEVENLABS_API_KEY;
     if (key === undefined || key.trim() === "") throw new Error("karaoke_provider_unavailable");
-    this.adapter = new ElevenLabsKaraokeSttAdapter({
+    const adapter = new ElevenLabsKaraokeSttAdapter({
       apiKey: key,
       enableLogging: this.providerPolicy().enableLogging,
       onProviderRetentionChanged: (retention) => this.recordProviderRetention(retention),
     });
+    this.adapter = {
+      get streamGeneration() {
+        return adapter.streamGeneration;
+      },
+      start: (input) =>
+        this.resetProducers.run(async () => {
+          await adapter.start({
+            ...input,
+            onMessage: async (message) => {
+              if (this.resetFenced) return;
+              return this.resetProducers.run(() => input.onMessage(message));
+            },
+            onUnexpectedClose: () => {
+              if (!this.resetFenced) input.onUnexpectedClose?.();
+            },
+            onTerminalError: (code) => {
+              if (!this.resetFenced) input.onTerminalError?.(code);
+            },
+          });
+          if (this.resetFenced) {
+            await adapter.close();
+            this.assertNotResetFenced();
+          }
+        }),
+      sendPcm16: async (frame) => {
+        if (this.resetFenced) return;
+        return this.resetProducers.run(() => adapter.sendPcm16(frame));
+      },
+      commit: async () => {
+        if (this.resetFenced) return null;
+        return this.resetProducers.run(() => adapter.commit());
+      },
+      close: () => adapter.close(),
+    };
     this.host = new KaraokeSessionHost(snapshot.state, new RuntimeEffects(this), this.adapter, {
+      runCommitTask: (task) => this.resetProducers.run(task),
       restore: snapshot,
       persist: () => this.persistHost(),
       onTransportGuardFailure: (diagnostic) => {
@@ -731,7 +889,11 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
     if (Number(pending?.bytes ?? 0) >= R2_PART_BYTES) await this.uploadPending(false);
   }
 
-  private async uploadPending(final: boolean): Promise<void> {
+  private uploadPending(final: boolean): Promise<void> {
+    return this.resetProducers.run(() => this.uploadPendingActive(final));
+  }
+
+  private async uploadPendingActive(final: boolean): Promise<void> {
     this.assertNotResetFenced();
     const bucket = this.runtimeEnv.LEARNER_AUDIO;
     if (bucket === undefined) throw new Error("karaoke_archive_bucket_unavailable");
@@ -774,7 +936,11 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
     this.sql.exec("DELETE FROM karaoke_audio_chunk");
   }
 
-  private async finishArchive(): Promise<KaraokeRecordingResult> {
+  private finishArchive(): Promise<KaraokeRecordingResult> {
+    return this.resetProducers.run(() => this.finishArchiveActive());
+  }
+
+  private async finishArchiveActive(): Promise<KaraokeRecordingResult> {
     this.assertNotResetFenced();
     const bucket = this.runtimeEnv.LEARNER_AUDIO;
     if (bucket === undefined) return { state: "failed", failureKind: "multipart_failed" };
@@ -927,7 +1093,12 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
     this.broadcast("provider_retention_changed", { provider_retention: "stored" });
   }
 
-  private async flushOutbox(): Promise<void> {
+  private flushOutbox(): Promise<void> {
+    if (this.resetFenced) return Promise.resolve();
+    return this.resetProducers.run(() => this.flushOutboxActive());
+  }
+
+  private async flushOutboxActive(): Promise<void> {
     if (this.resetFenced) return;
     const row = one(this.sql, "SELECT * FROM karaoke_outbox WHERE id=1");
     if (row === null) return;

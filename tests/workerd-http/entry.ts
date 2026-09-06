@@ -73,6 +73,7 @@ import { videoAccessFixtureHandlers } from "./video-access.fixture.ts";
 
 export { HnsForwarderReplayStoreDO } from "../../packages/platform-cf/src/hns-forwarder-replay-store-do.ts";
 export { KaraokeAttemptDO } from "../../packages/platform-cf/src/karaoke-attempt-do.ts";
+export { KaraokeResetOperatorEntrypoint } from "../../packages/platform-cf/src/karaoke-reset-operator-entrypoint.ts";
 export {
   RegistrationApplicationRateLimiterDO,
   RegistrationIpRateLimiterDO,
