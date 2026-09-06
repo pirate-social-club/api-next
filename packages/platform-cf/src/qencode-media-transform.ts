@@ -7,6 +7,7 @@ import {
   type MediaTransformProbeInput,
   MediaTransformRequestInvalid,
   type MediaTransformService,
+  type MediaTransformVideoAudioArtifact,
   type MediaTransformVideoAudioInput,
   type MediaTransformVideoAudioOutcome,
   type MediaTransformVideoBinding,
@@ -18,6 +19,7 @@ import {
   type MediaTransformVideoProbeInput,
   type MediaTransformVideoProbeOutcome,
   type MediaTransformVideoProgress,
+  mediaTransformSampleWindow,
 } from "@pirate/application/media/transform";
 import { VIDEO_INGEST_POLICY_V1, VIDEO_POSTER_POLICY_V1 } from "@pirate/domain";
 import { Effect, Predicate } from "effect";
@@ -28,7 +30,7 @@ const QENCODE_ACCESS_TOKEN_ENDPOINT = `${QENCODE_ORIGIN}/v1/access_token`;
 const QENCODE_CREATE_TASK_ENDPOINT = `${QENCODE_ORIGIN}/v1/create_task`;
 const QENCODE_START_TASK_ENDPOINT = `${QENCODE_ORIGIN}/v1/start_encode2`;
 const QENCODE_STATUS_ENDPOINT = `${QENCODE_ORIGIN}/v1/status`;
-export const QENCODE_ADAPTER_REVISION = "qencode-video-analysis-v1";
+export const QENCODE_ADAPTER_REVISION = "qencode-video-analysis-v2";
 const QENCODE_METADATA_VERSION = "4.1.5";
 const QENCODE_MAX_RESPONSE_BYTES = 2_097_152;
 const QENCODE_MAX_AUDIO_BYTES = 8_000_000;
@@ -99,7 +101,7 @@ type QencodeSealedArtifact = Readonly<{
 type QencodeArtifactIdentity = Readonly<{
   artifactKey: string;
   artifactRef: string;
-  mediaType: "audio/mp4" | "image/jpeg";
+  mediaType: "audio/mp4" | "audio/mpeg" | "image/jpeg";
   maximumBytes: number;
   sourceSha256: string;
   policyRevision: string;
@@ -113,7 +115,7 @@ export type QencodeArtifactStore = Readonly<{
       sourceUrl: string;
       artifactKey: string;
       artifactRef: string;
-      mediaType: "audio/mp4" | "image/jpeg";
+      mediaType: "audio/mp4" | "audio/mpeg" | "image/jpeg";
       maximumBytes: number;
       sourceSha256: string;
       policyRevision: string;
@@ -136,7 +138,7 @@ export type QencodeMediaTransformOptions =
 
 class QencodeMalformedResponse extends Error {}
 class QencodeInvalidArtifact extends Error {
-  constructor(readonly mediaType: "audio/mp4" | "image/jpeg") {
+  constructor(readonly mediaType: "audio/mp4" | "audio/mpeg" | "image/jpeg") {
     super("invalid sealed artifact bytes");
   }
 }
@@ -400,7 +402,10 @@ async function readBoundedBytes(response: Response, maximumBytes: number): Promi
   return bytes;
 }
 
-function validArtifactBytes(mediaType: "audio/mp4" | "image/jpeg", bytes: Uint8Array): boolean {
+function validArtifactBytes(
+  mediaType: "audio/mp4" | "audio/mpeg" | "image/jpeg",
+  bytes: Uint8Array,
+): boolean {
   if (mediaType === "image/jpeg") {
     return (
       bytes.byteLength >= 4 &&
@@ -408,6 +413,17 @@ function validArtifactBytes(mediaType: "audio/mp4" | "image/jpeg", bytes: Uint8A
       bytes[1] === 0xd8 &&
       bytes[bytes.byteLength - 2] === 0xff &&
       bytes[bytes.byteLength - 1] === 0xd9
+    );
+  }
+  if (mediaType === "audio/mpeg") {
+    return (
+      (bytes.byteLength >= 10 && new TextDecoder().decode(bytes.subarray(0, 3)) === "ID3") ||
+      (bytes.byteLength >= 4 &&
+        bytes[0] === 0xff &&
+        ((bytes[1] ?? 0) & 0xe0) === 0xe0 &&
+        ((bytes[1] ?? 0) & 0x06) === 0x02 &&
+        ((bytes[2] ?? 0) & 0xf0) !== 0xf0 &&
+        ((bytes[2] ?? 0) & 0x0c) !== 0x0c)
     );
   }
   return bytes.byteLength >= 12 && new TextDecoder().decode(bytes.subarray(4, 8)) === "ftyp";
@@ -587,7 +603,10 @@ function invalidVideoInput(
   }
   if (
     input.version === "media-transform-video-audio-input-v1" &&
-    input.extractionPolicyVersion !== MEDIA_TRANSFORM_VIDEO_AUDIO_POLICY_V1
+    (input.extractionPolicyVersion !== MEDIA_TRANSFORM_VIDEO_AUDIO_POLICY_V1 ||
+      !Number.isSafeInteger(input.sourceDurationMs) ||
+      input.sourceDurationMs < 1 ||
+      input.sourceDurationMs > VIDEO_INGEST_POLICY_V1.maxDurationMs)
   ) {
     return new MediaTransformRequestInvalid({ reason: "invalid_video_policy" });
   }
@@ -646,6 +665,18 @@ function formatsFor(
         audio_channels_number: 2,
         user_tag: "pirate-audio-v1",
       },
+      ...(["primary", "alternate"] as const).map((variant) => {
+        const window = mediaTransformSampleWindow(input.sourceDurationMs, variant);
+        return {
+          output: "mp3",
+          audio_bitrate: 128,
+          audio_sample_rate: 44_100,
+          audio_channels_number: 2,
+          start_time: window.offsetMs / 1000,
+          duration: window.durationMs / 1000,
+          user_tag: `pirate-acr-${variant}-v1`,
+        };
+      }),
     ];
   }
   const midpointMs = Math.floor(input.sourceDurationMs / 2);
@@ -829,19 +860,53 @@ async function allocateOrSubmitJob(
 
 function artifactIdentity(
   input: MediaTransformVideoAudioInput | MediaTransformVideoFramesInput,
-  role: "soundtrack" | "poster" | "first" | "midpoint",
+  role: "soundtrack" | "primary" | "alternate" | "poster" | "first" | "midpoint",
 ): QencodeArtifactIdentity {
   const audio = input.version === "media-transform-video-audio-input-v1";
-  const key = `video-analysis/${input.binding.operationId}/v${input.binding.videoRevision}/c${input.binding.creationRevision}/a${input.binding.analysisRevision}/${role}.${audio ? "m4a" : "jpg"}`;
+  const clip = role === "primary" || role === "alternate";
+  const key = `video-analysis/${input.binding.operationId}/v${input.binding.videoRevision}/c${input.binding.creationRevision}/a${input.binding.analysisRevision}/${role}.${clip ? "mp3" : audio ? "m4a" : "jpg"}`;
   return {
     artifactKey: key,
     artifactRef: `media://derived/${key}`,
-    mediaType: audio ? "audio/mp4" : "image/jpeg",
-    maximumBytes: audio ? QENCODE_MAX_AUDIO_BYTES : input.posterPolicy.maxBytesPerFrame,
+    mediaType: clip ? "audio/mpeg" : audio ? "audio/mp4" : "image/jpeg",
+    maximumBytes: clip
+      ? 4_000_000
+      : audio
+        ? QENCODE_MAX_AUDIO_BYTES
+        : input.posterPolicy.maxBytesPerFrame,
     sourceSha256: input.source.sha256,
     policyRevision: audio
       ? input.extractionPolicyVersion
       : String(input.posterPolicy.policyRevision),
+  };
+}
+
+function audioArtifact(
+  input: MediaTransformVideoAudioInput,
+  sealed: readonly [QencodeSealedArtifact, QencodeSealedArtifact, QencodeSealedArtifact],
+  adapterRevision: string,
+): MediaTransformVideoAudioArtifact {
+  const [soundtrack, primary, alternate] = sealed;
+  const clip = (variant: "primary" | "alternate", artifact: QencodeSealedArtifact) => ({
+    variant,
+    artifactRef: artifact.artifactRef,
+    canonicalSha256: artifact.canonicalSha256,
+    sizeBytes: artifact.byteLength,
+    mediaType: "audio/mpeg" as const,
+    ...mediaTransformSampleWindow(input.sourceDurationMs, variant),
+  });
+  return {
+    artifactRef: soundtrack.artifactRef,
+    canonicalSha256: soundtrack.canonicalSha256,
+    sizeBytes: soundtrack.byteLength,
+    offsetMs: 0,
+    durationMs: input.sourceDurationMs,
+    sourceSha256: input.source.sha256,
+    videoRevision: input.binding.videoRevision,
+    mediaType: "audio/mp4",
+    policyRevision: input.extractionPolicyVersion,
+    adapterRevision,
+    clips: [clip("primary", primary), clip("alternate", alternate)],
   };
 }
 
@@ -859,24 +924,21 @@ async function recoverSealedTransform(
   const attempt = acceptedAttempt(input.attempt, input.attempt.providerJobId, "started");
   const transformContext = context(input.binding, adapterRevision);
   if (input.version === "media-transform-video-audio-input-v1") {
-    const sealed = await artifacts.recover(artifactIdentity(input, "soundtrack"));
-    return sealed === null
-      ? null
-      : {
-          status: "completed",
-          attempt,
-          context: transformContext,
-          artifact: {
-            artifactRef: sealed.artifactRef,
-            canonicalSha256: sealed.canonicalSha256,
-            sourceSha256: input.source.sha256,
-            videoRevision: input.binding.videoRevision,
-            mediaType: "audio/mp4",
-            policyRevision: input.extractionPolicyVersion,
-            adapterRevision,
-          },
-        };
+    const sealed = await Promise.all(
+      (["soundtrack", "primary", "alternate"] as const).map((role) =>
+        artifacts.recover?.(artifactIdentity(input, role)),
+      ),
+    );
+    const [soundtrack, primary, alternate] = sealed;
+    if (!soundtrack || !primary || !alternate) return null;
+    return {
+      status: "completed",
+      attempt,
+      context: transformContext,
+      artifact: audioArtifact(input, [soundtrack, primary, alternate], adapterRevision),
+    };
   }
+
   const frames = [];
   for (const [role, timestampMs] of [
     ["poster", input.posterTimestampMs],
@@ -1005,29 +1067,34 @@ async function observeJob(
       return { status: "completed", attempt, context: transformContext, probe };
     }
     if (input.version === "media-transform-video-audio-input-v1") {
-      const output = oneOutput(status.outputs, "audio", "pirate-audio-v1", "m4a");
-      // Qencode documents audios[].meta as source-stream metadata. The output
-      // policy is the fixed server-owned M4A query, not those source facts.
-      const artifact = await options.artifacts.seal({
-        sourceUrl: output.url,
-        ...artifactIdentity(input, "soundtrack"),
-        signal,
-      });
+      const sealed = [];
+      for (const role of ["soundtrack", "primary", "alternate"] as const) {
+        const output = oneOutput(
+          status.outputs,
+          "audio",
+          role === "soundtrack" ? "pirate-audio-v1" : `pirate-acr-${role}-v1`,
+          role === "soundtrack" ? "m4a" : "mp3",
+        );
+        sealed.push(
+          await options.artifacts.seal({
+            sourceUrl: output.url,
+            ...artifactIdentity(input, role),
+            signal,
+          }),
+        );
+      }
       return {
         status: "completed",
         attempt,
         context: transformContext,
-        artifact: {
-          artifactRef: artifact.artifactRef,
-          canonicalSha256: artifact.canonicalSha256,
-          sourceSha256: input.source.sha256,
-          videoRevision: input.binding.videoRevision,
-          mediaType: "audio/mp4",
-          policyRevision: input.extractionPolicyVersion,
+        artifact: audioArtifact(
+          input,
+          sealed as [QencodeSealedArtifact, QencodeSealedArtifact, QencodeSealedArtifact],
           adapterRevision,
-        },
+        ),
       };
     }
+
     const requested = [
       ["poster", input.posterTimestampMs],
       ["first", 0],

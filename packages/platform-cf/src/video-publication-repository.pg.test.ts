@@ -224,6 +224,29 @@ suite("video publication PostgreSQL", () => {
               stage: "audio",
               adapterRevision: "qencode-v1",
               snapshot: {
+                sizeBytes: 42,
+                offsetMs: 0,
+                durationMs: 10000,
+                clips: [
+                  {
+                    variant: "primary",
+                    artifactRef: `${soundtrack.extractedAudioRef}.primary.mp3`,
+                    canonicalSha256: soundtrack.extractedAudioSha256,
+                    sizeBytes: 42,
+                    mediaType: "audio/mpeg",
+                    offsetMs: 0,
+                    durationMs: 10000,
+                  },
+                  {
+                    variant: "alternate",
+                    artifactRef: `${soundtrack.extractedAudioRef}.alternate.mp3`,
+                    canonicalSha256: soundtrack.extractedAudioSha256,
+                    sizeBytes: 42,
+                    mediaType: "audio/mpeg",
+                    offsetMs: 0,
+                    durationMs: 10000,
+                  },
+                ],
                 artifactRef: soundtrack.extractedAudioRef,
                 canonicalSha256: soundtrack.extractedAudioSha256,
                 sourceSha256: videoSha256,
@@ -233,6 +256,12 @@ suite("video publication PostgreSQL", () => {
                 adapterRevision: "qencode-v1",
               },
               artifacts: [
+                ...(["primary", "alternate"] as const).map((variant) => ({
+                  artifactRef: `${soundtrack.extractedAudioRef}.${variant}.mp3`,
+                  canonicalSha256: soundtrack.extractedAudioSha256,
+                  sizeBytes: 42,
+                  contentType: "audio/mpeg" as const,
+                })),
                 {
                   artifactRef: soundtrack.extractedAudioRef,
                   canonicalSha256: soundtrack.extractedAudioSha256,

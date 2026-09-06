@@ -254,6 +254,7 @@ describe("Qencode media transform", () => {
         binding,
         source,
         extractionPolicyVersion: MEDIA_TRANSFORM_VIDEO_AUDIO_POLICY_V1,
+        sourceDurationMs: 180_000,
         attempt: acceptedAttempt("submitting"),
       }),
     );
@@ -275,6 +276,15 @@ describe("Qencode media transform", () => {
         audio_channels_number: 2,
         user_tag: "pirate-audio-v1",
       },
+      ...(["primary", "alternate"] as const).map((variant) => ({
+        output: "mp3",
+        audio_bitrate: 128,
+        audio_sample_rate: 44_100,
+        audio_channels_number: 2,
+        start_time: variant === "primary" ? 42 : 126,
+        duration: 12,
+        user_tag: `pirate-acr-${variant}-v1`,
+      })),
     ]);
     expect(started?.query.source).toStartWith("https://video-source.example.invalid/");
   });
@@ -451,6 +461,19 @@ describe("Qencode media transform", () => {
           status: {
             state: "completed",
             outputs: [
+              ...(["primary", "alternate"] as const).map((variant) => ({
+                kind: "audio" as const,
+                userTag: `pirate-acr-${variant}-v1`,
+                url: `https://storage.qencode.com/job/${variant}.mp3`,
+                outputFormat: "mp3",
+                mediaFacts: {
+                  codec: "mp3",
+                  sampleRateHz: 44100,
+                  channels: 2,
+                  width: null,
+                  height: null,
+                },
+              })),
               {
                 kind: "audio",
                 userTag: "pirate-audio-v1",
@@ -476,6 +499,7 @@ describe("Qencode media transform", () => {
         binding,
         source,
         extractionPolicyVersion: MEDIA_TRANSFORM_VIDEO_AUDIO_POLICY_V1,
+        sourceDurationMs: 180_000,
         attempt: acceptedAttempt("started"),
       }),
     );
@@ -752,11 +776,17 @@ test("recovers sealed audio and frames after temporary outputs and the runtime w
       head: async (key) => ({
         key,
         size: 100,
-        httpMetadata: { contentType: key.endsWith("m4a") ? "audio/mp4" : "image/jpeg" },
+        httpMetadata: {
+          contentType: key.endsWith("m4a")
+            ? "audio/mp4"
+            : key.endsWith("mp3")
+              ? "audio/mpeg"
+              : "image/jpeg",
+        },
         customMetadata: {
           sha256: "c".repeat(64),
           sourceSha256: SOURCE_SHA256,
-          policyRevision: key.endsWith("m4a")
+          policyRevision: !key.endsWith("jpg")
             ? MEDIA_TRANSFORM_VIDEO_AUDIO_POLICY_V1
             : String(VIDEO_POSTER_POLICY_V1.policyRevision),
         },
@@ -781,6 +811,7 @@ test("recovers sealed audio and frames after temporary outputs and the runtime w
       binding,
       source,
       extractionPolicyVersion: MEDIA_TRANSFORM_VIDEO_AUDIO_POLICY_V1,
+      sourceDurationMs: 180_000,
       attempt: acceptedAttempt("started"),
     }),
   );
@@ -868,4 +899,68 @@ test("operator observation reads expired token without allocate, grant or start"
     ),
   ).rejects.toThrow();
   expect(calls).toBe(1);
+});
+
+test("MP3 artifact validation accepts ID3 or MPEG layer-three sync and rejects other bytes", async () => {
+  for (const [bytes, valid] of [
+    [new Uint8Array([255, 251, 144, 0]), true],
+    [new Uint8Array([73, 68, 51, 4, 0, 0, 0, 0, 0, 0]), true],
+    [new Uint8Array([255, 241, 144, 0]), false],
+    [new Uint8Array([0, 0, 0, 12, 102, 116, 121, 112, 0, 0, 0, 0]), false],
+  ] as const) {
+    let writes = 0;
+    const store = makeR2QencodeArtifactStore(
+      {
+        head: async () => null,
+        put: async (key, value, options) => {
+          writes++;
+          return { key, size: value.byteLength, ...options };
+        },
+      },
+      async () => new Response(bytes, { headers: { "content-type": "audio/mpeg" } }),
+    );
+    const result = store.seal({
+      sourceUrl: "https://cdn.qencode.com/primary.mp3",
+      artifactKey: "video-analysis/test/primary.mp3",
+      artifactRef: "media://derived/video-analysis/test/primary.mp3",
+      mediaType: "audio/mpeg",
+      maximumBytes: 4_000_000,
+      sourceSha256: SOURCE_SHA256,
+      policyRevision: MEDIA_TRANSFORM_VIDEO_AUDIO_POLICY_V1,
+    });
+    if (valid) expect((await result).byteLength).toBe(bytes.byteLength);
+    else await expect(result).rejects.toThrow();
+    expect(writes).toBe(valid ? 1 : 0);
+  }
+});
+
+test("audio recovery refuses a partial three-artifact set", async () => {
+  let statusCalls = 0;
+  const service = makeQencodeMediaTransform(
+    options(fakeTransport({ status: { state: "not_found" }, onStatus: () => statusCalls++ }), {
+      artifacts: {
+        ...fakeArtifacts(),
+        recover: async (identity) =>
+          identity.artifactKey.endsWith("alternate.mp3")
+            ? null
+            : {
+                artifactRef: identity.artifactRef,
+                canonicalSha256: SOURCE_SHA256,
+                byteLength: 100,
+              },
+      },
+    }),
+  );
+  const result = await Effect.runPromise(
+    service.observe({
+      version: "media-transform-video-audio-input-v1",
+      binding,
+      source,
+      sourceDurationMs: 180_000,
+      extractionPolicyVersion: MEDIA_TRANSFORM_VIDEO_AUDIO_POLICY_V1,
+      attempt: acceptedAttempt("started"),
+    }),
+  );
+  expect(result.status).toBe("not_found");
+  expect(statusCalls).toBe(1);
 });

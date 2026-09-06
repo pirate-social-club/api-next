@@ -159,6 +159,7 @@ export async function runVideoAnalysisWorkflow(
         ...common,
         version: "media-transform-video-audio-input-v1",
         extractionPolicyVersion: MEDIA_TRANSFORM_VIDEO_AUDIO_POLICY_V1,
+        sourceDurationMs: (await requiredFact(record, "probe")).snapshot.durationMs,
       };
     const probe = (await requiredFact(record, "probe")).snapshot;
     return {
@@ -332,7 +333,10 @@ export async function runVideoAnalysisWorkflow(
                     : outcome.extraction;
               const refs =
                 "artifact" in outcome
-                  ? [outcome.artifact.artifactRef]
+                  ? [
+                      outcome.artifact.artifactRef,
+                      ...outcome.artifact.clips.map((clip) => clip.artifactRef),
+                    ]
                   : "extraction" in outcome
                     ? outcome.extraction.frames.map((frame) => frame.artifactRef)
                     : [];
@@ -393,8 +397,9 @@ export async function runVideoAnalysisWorkflow(
         const audio = (await requiredFact(record, "audio")).snapshot;
         const snapshot = await services.analysisProviders.identifySoundtrack({
           operationId: record.state.operationId,
-          extractedAudioRef: audio.artifactRef,
-          extractedAudioSha256: audio.canonicalSha256,
+          videoRevision: record.state.videoRevision,
+          creationRevision: record.state.creationRevision,
+          clips: audio.clips,
         });
         await services.stageFacts.write({
           submission: record.state,
