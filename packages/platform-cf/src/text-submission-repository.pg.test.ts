@@ -43,6 +43,23 @@ const testCount = 11;
 let completedTestCount = 0;
 const migrations = await loadPostgresMigrations();
 type LoadedPostgresMigration = (typeof migrations)[number];
+// Historical rows are read-only fixtures. Fresh writes always use the full migration set.
+const cutoverIndex = migrations.findIndex(
+  (migration) => migration.version === "0061_openai_moderation_driver_cutover.sql",
+);
+if (cutoverIndex < 1) throw new Error("missing moderation cutover");
+const historicalReplayMigrations = [
+  ...migrations.slice(0, cutoverIndex),
+  ...[
+    "0103_public_post_slug_aliases.sql",
+    "0104_text_held_revision_visibility.sql",
+    "0110_persona_community_bindings.sql",
+  ].map((version) => {
+    const migration = migrations.find((candidate) => candidate.version === version);
+    if (migration === undefined) throw new Error(`missing historical fixture support: ${version}`);
+    return migration;
+  }),
+];
 afterEach(() => {
   completedTestCount += 1;
 });
@@ -807,6 +824,71 @@ suite("Postgres 17 terminal text submission repository", () => {
       );
       expect(count.rows).toEqual([{ count: 1 }]);
     });
+    await withSchema(async (admin, connection) => {
+      const historical: TextPostSubmissionDocument = {
+        submission_id: "submission-historical-v1",
+        href: "/text-content-submissions/submission-historical-v1",
+        surface: "text_post",
+        status: "blocked",
+        result: { decision: "blocked", reason_code: "policy_violation" },
+        published_resource: null,
+        review_ref: null,
+        created_at: "2026-08-21T12:00:00.000Z",
+        updated_at: "2026-08-21T12:00:00.000Z",
+      };
+      const bytes = snapshotBytes(historical);
+      const requestHash = "a".repeat(64);
+      await admin.query(
+        `INSERT INTO text_content_submissions (
+        community_id, submission_id, operation_id, actor_user_id, author_persona_id,
+        surface, idempotency_key, request_hash, status, moderation_decision, public_reason_code,
+        policy_revision_id, policy_hash, input_sha256, internal_reason_codes,
+        created_at, updated_at, response_snapshot_bytes, response_snapshot_sha256
+      ) VALUES ('text-community', $1, 'operation-historical-v1', $2, $3, 'text_post',
+        'historical-v1-key', $4, 'blocked', 'blocked', 'policy_violation',
+        'text-moderation-policy-v1', $5, $6, '["hate"]'::jsonb, $7, $7, $8, $9)`,
+        [
+          historical.submission_id,
+          actor.userId,
+          actorPersonaId,
+          requestHash,
+          policyHash,
+          inputSha,
+          historical.created_at,
+          bytes,
+          sha256(bytes),
+        ],
+      );
+      const replay = await runStore(connection, (store) =>
+        store.replay({
+          communityId: "text-community",
+          actor,
+          personaId: actorPersonaId,
+          idempotencyKey: "historical-v1-key",
+          requestHash,
+          surface: "text_post",
+        }),
+      );
+      if (replay.kind !== "replay") throw new Error("expected historical V1 replay");
+      expect(snapshotBytes(replay.snapshot)).toEqual(bytes);
+      expect(sha256(snapshotBytes(replay.snapshot))).toBe(sha256(bytes));
+      const current = await runStore(connection, (store) =>
+        store.getForAuthor({ submissionId: historical.submission_id, actor }),
+      );
+      expect(current).toEqual(historical);
+      expect(
+        await runStore(connection, (store) =>
+          store.getForAuthor({ submissionId: historical.submission_id, actor: otherActor }),
+        ),
+      ).toBeNull();
+      const persisted = await admin.query(
+        "SELECT policy_revision_id, response_snapshot_bytes, response_snapshot_sha256 FROM text_content_submissions",
+      );
+      expect(persisted.rows).toHaveLength(1);
+      expect(persisted.rows[0].policy_revision_id).toBe("text-moderation-policy-v1");
+      expect(databaseBytes(persisted.rows[0].response_snapshot_bytes)).toEqual(bytes);
+      expect(persisted.rows[0].response_snapshot_sha256).toBe(sha256(bytes));
+    }, historicalReplayMigrations);
   }, 30_000);
 
   test("returns the current GET state while replaying the original held POST response", async () => {
