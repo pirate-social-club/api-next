@@ -747,6 +747,36 @@ const workflowPayload = (store: FakeStore) => ({
 });
 
 describe("media processing workflow", () => {
+  test("treats a provider-returned cancellation as an ordinary retryable failure", async () => {
+    const store = new FakeStore(authority({ lyrics: null }));
+    const providerEvents: string[] = [];
+    const base = providers(providerEvents);
+    const provider: MediaProcessingProviders = {
+      ...base,
+      transform: {
+        ...base.transform,
+        probe: ((input: MediaTransformProbeInput) =>
+          Effect.succeed({
+            status: "retryable_failure",
+            reason: "cancelled",
+            attempt: input.attempt,
+          })) as MediaTransformService["probe"],
+      },
+    };
+
+    expect(
+      await runMediaProcessingWorkflow(
+        workflowPayload(store),
+        "analysis_launch",
+        dependencies(store, provider),
+      ),
+    ).toEqual({ outcome: "waiting_for_provider" });
+    expect(store.events).toContain("fail:probe");
+    expect(store.providerReviews).toBe(0);
+    expect(store.current.analysis).toBeNull();
+    expect(providerEvents).toEqual([]);
+  });
+
   test("persists and resumes a submitted provider job before downstream effects", async () => {
     const store = new FakeStore(authority({ lyrics: null }));
     const providerEvents: string[] = [];
@@ -790,6 +820,51 @@ describe("media processing workflow", () => {
       ),
     ).toEqual({ outcome: "published_without_alignment" });
     expect(polls).toBe(2);
+  });
+
+  test("replays a completed probe attempt when a later stage retries", async () => {
+    const store = new FakeStore(authority({ lyrics: null }));
+    const providerEvents: string[] = [];
+    const base = providers(providerEvents);
+    let sampleCalls = 0;
+    const provider: MediaProcessingProviders = {
+      ...base,
+      transform: {
+        ...base.transform,
+        extractAudioSample: (input) => {
+          sampleCalls += 1;
+          if (sampleCalls === 1) {
+            return Effect.succeed({
+              status: "retryable_failure",
+              reason: "provider",
+              attempt: input.attempt,
+            });
+          }
+          return base.transform.extractAudioSample(input);
+        },
+      },
+    };
+
+    expect(
+      await runMediaProcessingWorkflow(
+        workflowPayload(store),
+        "analysis_launch",
+        dependencies(store, provider),
+      ),
+    ).toEqual({ outcome: "waiting_for_provider" });
+    expect(providerEvents.filter((event) => event.startsWith("effect:probe"))).toHaveLength(1);
+    expect(store.events.filter((event) => event === "complete:probe")).toHaveLength(1);
+
+    expect(
+      await runMediaProcessingWorkflow(
+        workflowPayload(store),
+        "analysis_launch",
+        dependencies(store, provider),
+      ),
+    ).toEqual({ outcome: "published_without_alignment" });
+    expect(sampleCalls).toBe(2);
+    expect(providerEvents.filter((event) => event.startsWith("effect:probe"))).toHaveLength(1);
+    expect(store.events.filter((event) => event === "complete:probe")).toHaveLength(1);
   });
 
   test("runs the terms-first fake-transport golden vertical and consumes the sealed hash", async () => {
