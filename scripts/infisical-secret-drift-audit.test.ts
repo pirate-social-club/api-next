@@ -16,8 +16,12 @@ import { CLOUDFLARE_WORKERS, parseJsonc } from "./secret-drift-audit";
 const emptySnapshot = (environment: InfisicalSnapshot["environment"]): InfisicalSnapshot => ({
   environment,
   folders:
-    environment === "dev" ? [] : ["/services", "/services/api-next", "/services/api-next/operator"],
+    environment === "dev"
+      ? ["/agents", "/agents/codex"]
+      : ["/services", "/services/api-next", "/services/api-next/operator"],
   secrets: {
+    "/agents": [],
+    "/agents/codex": environment === "dev" ? ["GITHUB_PAT"] : [],
     "/": [],
     "/services/api-next": [],
     "/services/api-next/operator": [],
@@ -115,6 +119,8 @@ describe("Infisical secret drift audit", () => {
       ...emptySnapshot("staging"),
       folders: ["/services", "/services/api-next"],
       secrets: {
+        "/agents": [],
+        "/agents/codex": [],
         "/": [],
         "/services/api-next": [
           "PIRATE_APP_JWT_PRIVATE_KEY",
@@ -332,6 +338,140 @@ describe("Infisical secret drift audit", () => {
         );
       }
     }
+  });
+
+  test("keeps persona fixture custody optional and restricted to the staging operator path", () => {
+    const names = ["PERSONA_WALLET_E2E_EMAIL", "PERSONA_WALLET_E2E_OTP"];
+    for (const environment of ["dev", "staging", "prod"] as const) {
+      const base = emptySnapshot(environment);
+      expect(
+        auditInfisicalSnapshots([base]).violations.filter(({ name }) => names.includes(name ?? "")),
+      ).toEqual([]);
+      for (const path of [
+        "/",
+        "/agents",
+        "/agents/codex",
+        "/services/api-next",
+        "/services/api-next/operator",
+      ] as const) {
+        const report = auditInfisicalSnapshots([
+          { ...base, secrets: { ...base.secrets, [path]: names } },
+        ]);
+        expect(
+          report.violations.filter(
+            ({ kind, name }) => kind === "unexpected-secret" && names.includes(name ?? ""),
+          ),
+        ).toEqual(
+          environment === "staging" && path === "/services/api-next/operator"
+            ? []
+            : names.map((name) => ({ environment, path, kind: "unexpected-secret", name })),
+        );
+      }
+    }
+  });
+
+  test("requires the exact development proxy credential and rejects other names and folders", () => {
+    const base = emptySnapshot("dev");
+    expect(auditInfisicalSnapshots([base]).violations).toEqual([]);
+    expect(
+      auditInfisicalSnapshots([{ ...base, secrets: { ...base.secrets, "/agents/codex": [] } }])
+        .violations,
+    ).toEqual([
+      {
+        environment: "dev",
+        path: "/agents/codex",
+        kind: "missing-required-secret",
+        name: "GITHUB_PAT",
+      },
+    ]);
+    const report = auditInfisicalSnapshots([
+      {
+        ...base,
+        folders: [...base.folders, "/agents/other"],
+        secrets: {
+          ...base.secrets,
+          "/agents": ["GITHUB_PAT"],
+          "/agents/codex": ["GITHUB_PAT", "UNOWNED_SECRET"],
+        },
+      },
+    ]);
+    expect(report.violations).toEqual([
+      { environment: "dev", path: "/agents/other", kind: "unexpected-folder" },
+      { environment: "dev", path: "/agents", kind: "unexpected-secret", name: "GITHUB_PAT" },
+      {
+        environment: "dev",
+        path: "/agents/codex",
+        kind: "unexpected-secret",
+        name: "UNOWNED_SECRET",
+      },
+    ]);
+    for (const environment of ["staging", "prod"] as const) {
+      const snapshot = emptySnapshot(environment);
+      const report = auditInfisicalSnapshots([
+        {
+          ...snapshot,
+          folders: [...snapshot.folders, "/agents", "/agents/codex"],
+          secrets: { ...snapshot.secrets, "/agents/codex": ["GITHUB_PAT"] },
+        },
+      ]);
+      expect(report.violations).toContainEqual({
+        environment,
+        path: "/agents/codex",
+        kind: "unexpected-folder",
+      });
+      expect(report.violations).toContainEqual({
+        environment,
+        path: "/agents/codex",
+        kind: "unexpected-secret",
+        name: "GITHUB_PAT",
+      });
+    }
+  });
+
+  test("fetches both admitted agent folders without values or reference expansion", async () => {
+    const queriedPaths: string[] = [];
+    const snapshots = await fetchInfisicalSnapshots({
+      baseUrl: "https://infisical.example/api",
+      projectId: "project",
+      token: "test-token",
+      request: async (url) => {
+        const parsed = new URL(url);
+        if (parsed.pathname.endsWith("/folders"))
+          return new Response(
+            JSON.stringify({
+              folders:
+                parsed.searchParams.get("environment") === "dev"
+                  ? [{ relativePath: "/agents" }, { relativePath: "/agents/codex" }]
+                  : [],
+            }),
+          );
+        expect(parsed.searchParams.get("viewSecretValue")).toBe("false");
+        expect(parsed.searchParams.get("expandSecretReferences")).toBe("false");
+        expect(parsed.searchParams.get("recursive")).toBe("false");
+        const path = parsed.searchParams.get("secretPath");
+        if (parsed.searchParams.get("environment") === "dev") queriedPaths.push(path ?? "");
+        return new Response(
+          JSON.stringify({
+            secrets:
+              path === "/agents/codex"
+                ? [{ secretKey: "GITHUB_PAT" }, { secretKey: "UNOWNED_SECRET" }]
+                : [],
+          }),
+        );
+      },
+    });
+    expect(queriedPaths).toEqual(["/", "/agents", "/agents/codex"]);
+    expect(
+      auditInfisicalSnapshots(snapshots.filter(({ environment }) => environment === "dev"))
+        .violations,
+    ).toEqual([
+      {
+        environment: "dev",
+        path: "/agents/codex",
+        kind: "unexpected-secret",
+        name: "UNOWNED_SECRET",
+      },
+    ]);
   });
 
   test("forces the REST query to hide values", async () => {
