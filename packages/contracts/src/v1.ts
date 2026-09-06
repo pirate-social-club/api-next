@@ -1242,6 +1242,8 @@ export const VideoPostSubmissionV1 = Schema.Union([
       "hash_failed",
       "transform_failed",
       "publication_failed",
+      "membership_required",
+      "provider_submission_unconfirmed",
       "upload_seal_conflict",
       "poster_undecodable",
       "poster_timestamp_out_of_range",

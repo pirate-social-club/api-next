@@ -7,6 +7,7 @@ import {
   withReusablePostgresTestSchema,
 } from "../../../scripts/postgres-test-baseline.ts";
 import {
+  acceptTrustedVideoAnalysis,
   createVideoSubmission,
   projectVideoSubmission,
   renewVideoUploadParts,
@@ -78,6 +79,73 @@ async function fixture<A>(use: (admin: Client, connection: string) => Promise<A>
 }
 
 suite("video publication PostgreSQL", () => {
+  test("drill 5: membership loss retains analysis, refuses ineligible retry, and publishes after rejoin", async () => {
+    await fixture(async (admin, connection) => {
+      const { store } = await finalizedFixture(connection);
+      await admin.query(
+        "UPDATE community_memberships SET status='left',left_at=clock_timestamp() WHERE community_id=$1 AND user_id=$2",
+        [community, actor],
+      );
+      const services = {
+        store,
+        nowIso: () => new Date().toISOString(),
+        randomUuid: () => crypto.randomUUID(),
+      };
+      expect(
+        await acceptTrustedVideoAnalysis({ submissionId, analysis: trustedAnalysis() }, services),
+      ).toMatchObject({
+        status: "processing_failed",
+        reason_code: "membership_required",
+        retryable: true,
+      });
+      const failed = await store.getSubmissionByOperation({ submissionId, operationId });
+      if (!failed) throw new Error("missing failed submission");
+      expect(failed.state.reconciliationRequired).toBe(false);
+      expect(failed.state.analysis).not.toBeNull();
+      expect(failed.state.decision?.outcome.kind).toBe("publish");
+      const retry = {
+        submission: failed.state,
+        endpointTemplate: "/media-post-submissions/:submissionId/retry",
+        idempotencyKey: "membership-retry",
+        requestHash: "a".repeat(64),
+        responseBytes,
+        responseSha256,
+      };
+      expect(await store.retryTechnical(retry)).toEqual({ kind: "membership_required" });
+      expect(await store.getSubmissionByOperation({ submissionId, operationId })).toEqual(failed);
+      expect(
+        (await admin.query("SELECT count(*)::int AS n FROM posts WHERE post_type='video'")).rows[0]
+          .n,
+      ).toBe(0);
+      await admin.query(
+        "UPDATE community_memberships SET status='member',left_at=NULL WHERE community_id=$1 AND user_id=$2",
+        [community, actor],
+      );
+      expect(await store.retryTechnical(retry)).toEqual({ kind: "none" });
+      const resumed = await store.getSubmissionByOperation({ submissionId, operationId });
+      expect(resumed?.state).toMatchObject({
+        status: "processing",
+        phase: "publish",
+        creationRevision: failed.state.creationRevision + 1,
+        retryCount: 1,
+        analysis: failed.state.analysis,
+      });
+      expect(
+        await acceptTrustedVideoAnalysis({ submissionId, analysis: trustedAnalysis() }, services),
+      ).toMatchObject({ status: "published" });
+      expect(
+        await acceptTrustedVideoAnalysis({ submissionId, analysis: trustedAnalysis() }, services),
+      ).toMatchObject({ status: "published" });
+      expect(
+        (await admin.query("SELECT count(*)::int AS n FROM posts WHERE post_type='video'")).rows[0]
+          .n,
+      ).toBe(1);
+      expect(
+        (await admin.query("SELECT count(*)::int AS n FROM media_video_transform_attempts")).rows[0]
+          .n,
+      ).toBe(0);
+    });
+  });
   test("drill 3 launch fence: sweep converges an accepted instance after the launch lease expires", async () => {
     await fixture(async (admin, connection) => {
       const { layer, store } = await finalizedFixture(connection);
@@ -818,6 +886,7 @@ suite("video publication PostgreSQL", () => {
       const publication = publishOriginalVideo(ready.state, "post-video-publication");
       if (ready.state.decision === null) throw new Error("approved video decision missing");
       const bundle = {
+        observedEventSequence: ready.eventSequence,
         state: publication.state,
         decision: ready.state.decision,
         originalSound: publication.originalSound,
@@ -838,6 +907,9 @@ suite("video publication PostgreSQL", () => {
           })),
         ],
       };
+      await expect(
+        store.publish({ ...bundle, observedEventSequence: ready.eventSequence - 1 }),
+      ).rejects.toThrow("video publication fence rejected");
       await store.publish(bundle);
       await store.publish(bundle);
 
@@ -990,7 +1062,10 @@ suite("video publication PostgreSQL", () => {
       expect(reconciled.state.reconciliationRequired).toBe(true);
       const projection = projectVideoSubmission(reconciled);
       expect(projection.status).toBe("processing_failed");
-      expect(projection).toMatchObject({ retryable: false });
+      expect(projection).toMatchObject({
+        reason_code: "provider_submission_unconfirmed",
+        retryable: false,
+      });
       const attempt = await admin.query(
         "SELECT reconciliation_state,reconciliation_evidence_ref FROM media_video_transform_attempts WHERE request_id='uncertain-task'",
       );
@@ -1090,6 +1165,10 @@ suite("video publication PostgreSQL", () => {
         );
         expect(resolved.state.phase).toBe(outcome === "completed" ? "analysis" : null);
         expect(resolved.state.retryCount).toBe(0);
+        if (outcome === "completed") {
+          expect(resolved.state.failureCode).toBeNull();
+          expect(projectVideoSubmission(resolved)).not.toHaveProperty("reason_code");
+        }
         if (outcome !== "completed")
           expect(projectVideoSubmission(resolved)).toMatchObject({
             retryable: outcome === "failed",

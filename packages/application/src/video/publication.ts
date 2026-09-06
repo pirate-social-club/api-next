@@ -146,6 +146,7 @@ type StoredReplay =
   | Readonly<{ kind: "conflict"; entityId: string }>;
 
 export type VideoPublishBundle = Readonly<{
+  observedEventSequence: number;
   state: VideoSubmissionState;
   decision: VideoPublicationDecision;
   originalSound: OriginalSoundReference;
@@ -159,7 +160,11 @@ export type VideoPublishBundle = Readonly<{
 
 export type VideoTechnicalFailureCode = Exclude<
   NonNullable<VideoSubmissionState["failureCode"]>,
-  "poster_undecodable" | "poster_timestamp_out_of_range" | "upload_seal_conflict"
+  | "poster_undecodable"
+  | "poster_timestamp_out_of_range"
+  | "upload_seal_conflict"
+  | "membership_required"
+  | "provider_submission_unconfirmed"
 >;
 
 /** PostgreSQL owns replay, revisions, membership rechecks, and atomic publication effects. */
@@ -327,7 +332,11 @@ export interface VideoPublicationStore {
     failureCode: VideoTechnicalFailureCode | "poster_undecodable" | "poster_timestamp_out_of_range";
     evidenceRef: string;
   }) => Promise<VideoSubmissionRecord>;
-  readonly publish: (input: VideoPublishBundle) => Promise<VideoSubmissionRecord>;
+  readonly publish: (
+    input: VideoPublishBundle,
+  ) => Promise<
+    VideoSubmissionRecord | Readonly<{ kind: "membership_required"; record: VideoSubmissionRecord }>
+  >;
   readonly retryPoster: (input: {
     submission: VideoSubmissionState;
     posterTimestampMs: number;
@@ -344,7 +353,7 @@ export interface VideoPublicationStore {
     requestHash: string;
     responseBytes: Uint8Array;
     responseSha256: string;
-  }) => Promise<StoredReplay>;
+  }) => Promise<StoredReplay | Readonly<{ kind: "membership_required" }>>;
   readonly cancel: (input: {
     submission: VideoSubmissionState;
     endpointTemplate: string;
@@ -511,10 +520,13 @@ export function projectVideoSubmission(record: VideoSubmissionRecord): VideoPost
       return {
         ...common,
         status: "processing_failed",
-        reason_code: state.failureCode,
+        reason_code: state.reconciliationRequired
+          ? "provider_submission_unconfirmed"
+          : state.failureCode,
         retry_count: state.retryCount as 0 | 1 | 2 | 3,
         retryable:
           !state.reconciliationRequired &&
+          state.failureCode !== "provider_submission_unconfirmed" &&
           state.retryCount < 3 &&
           state.failureCode !== "upload_seal_conflict",
       };
@@ -1089,7 +1101,8 @@ async function publishPreparedVideo(
   const published = publishOriginalVideo(record.state, postId);
   const poster = analysis.frames.extracted[0];
   const soundtrack = analysis.audio.soundtrack;
-  return services.store.publish({
+  const outcome = await services.store.publish({
+    observedEventSequence: record.eventSequence,
     state: published.state,
     decision,
     originalSound: published.originalSound,
@@ -1107,6 +1120,7 @@ async function publishPreparedVideo(
       })),
     ],
   });
+  return "kind" in outcome ? outcome.record : outcome;
 }
 
 export async function retryVideoPoster(
@@ -1128,6 +1142,7 @@ export async function retryVideoPoster(
       record.state.failureCode ?? "",
     ) ||
     record.state.reconciliationRequired ||
+    record.state.failureCode === "provider_submission_unconfirmed" ||
     record.state.retryCount >= 3
   )
     throw new Conflict({
@@ -1186,6 +1201,7 @@ export async function retryVideoSubmission(
   if (
     record.state.status !== "processing_failed" ||
     record.state.reconciliationRequired ||
+    record.state.failureCode === "provider_submission_unconfirmed" ||
     record.state.retryCount >= 3 ||
     record.state.failureCode === "upload_seal_conflict"
   ) {
@@ -1195,7 +1211,9 @@ export async function retryVideoSubmission(
     });
   }
   const requestHash = await mediaRequestHash({ submission_id: input.submissionId }, body);
-  const publicationOnly = record.state.failureCode === "publication_failed";
+  const publicationOnly =
+    record.state.failureCode === "publication_failed" ||
+    record.state.failureCode === "membership_required";
   const nextState: VideoSubmissionState = {
     ...record.state,
     creationRevision: record.state.creationRevision + 1,
@@ -1216,6 +1234,11 @@ export async function retryVideoSubmission(
     responseBytes: response.bytes,
     responseSha256: response.sha256,
   });
+  if (outcome.kind === "membership_required")
+    throw new Conflict({
+      message: "Community membership is required to retry publication",
+      details: { reason_code: "membership_required" },
+    });
   return replaySubmission(outcome) ?? response.document;
 }
 
