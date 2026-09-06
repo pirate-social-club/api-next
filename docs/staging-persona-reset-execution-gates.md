@@ -299,3 +299,14 @@ alarm is running; null alone is not proof that no finalization is active.
 Temporary-class deployment, event admission and pre-reset rollback still need
 independent review. Do not delete business storage, infer cancellation from
 HTTP denial, or alter the approved normal API sources as a silent workaround.
+
+Independent source review confirms that expiry is a finalization trigger, not
+a write denial. Old objects can mutate their SQLite state and complete R2 work
+before a fresh-schema foreign key rejects their PostgreSQL transaction.
+Consequently the maintenance snapshot primitive cannot authorize restoring
+the unchanged normal class and lifting the fence. A durable per-object
+maintenance marker must be respected before constructor mutations and every
+producer entrypoint, including alarm, RPC and WebSocket callbacks. Introducing
+that guard requires a reviewed release-pin amendment. Until that amendment is
+implemented and reviewed, the live reset remains blocked; no temporary class
+has been deployed and no object has been invoked or changed by this lane.

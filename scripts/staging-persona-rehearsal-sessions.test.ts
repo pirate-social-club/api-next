@@ -32,9 +32,17 @@ test("failure observations retain hashes and owned PIDs without role strings", (
     owned: false,
     role_sha256: null,
     application_sha256: null,
+    user_oid: null,
+    backend_type_sha256: null,
   });
   expect(JSON.stringify(described)).not.toContain("operator");
   expect(JSON.stringify(described)).not.toContain("usename");
+  expect(
+    describeRehearsalSessions(
+      [{ pid: 5, usename: null, user_oid: "12345", application_sha256: null }],
+      [3],
+    )[0]?.user_oid,
+  ).toBe("12345");
 });
 
 test("accepts the observed provider baseline plus only the known operator connections", () => {
@@ -69,6 +77,27 @@ test("allows known provider applications to stop, reconnect or have several inst
     [...provider, { ...provider[0], pid: 5 }, operator],
   ]) {
     expect(assertRehearsalSessions(sessions, "operator", [3]).total_sessions).toBe(sessions.length);
+  }
+});
+
+test("refuses unattributed sessions even with an absent user OID and empty label", () => {
+  const internal = {
+    pid: 6,
+    usename: null,
+    user_oid: null,
+    application_sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  };
+  expect(() => assertRehearsalSessions([...provider, operator, internal], "operator", [3])).toThrow(
+    "unexpected_session",
+  );
+  for (const change of [
+    { user_oid: "12345" },
+    { application_sha256: null },
+    { application_sha256: "a".repeat(64) },
+  ]) {
+    expect(() =>
+      assertRehearsalSessions([...provider, operator, { ...internal, ...change }], "operator", [3]),
+    ).toThrow("unexpected_session");
   }
 });
 

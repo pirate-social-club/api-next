@@ -371,3 +371,40 @@ failed marker. Only the fifth isolated copy remains billed by this lane.
 The fifth attempt was launched from 3f3a6c0a8d837d38d4f6f2b7868b797db3709661,
 with the unchanged strict session guard and redacted failed-observation
 capture. No successful provider execution is claimed while it is running.
+
+The fifth attempt stopped after 307 committed removal batches. The exact
+refused observation now shows PID 2575 with null role and an empty application
+fingerprint, alongside both expected operator PIDs and the two provider-role
+sessions. Backend type and user OID were not in that observation. This is not
+proof of an autovacuum worker or any other particular internal process. The
+guard remains strict; a null display name alone is not accepted as authority.
+Failure SQLSTATE was null, observer failure was null, and 6510 lock samples
+reached own/shared maxima 736/737. The retained marker is failed, run
+4a496c4c-12b7-4bfb-b9a5-d3df00d49d6f, completedBatches 307. Its log is retained
+as execution-3f3a6c0.log in the branch-specific evidence directory. No resume
+or replacement branch was started at this checkpoint.
+
+A follow-up read at 2026-09-06T07:28:17.737Z no longer saw that PID. Provider
+backend types, start times and addresses were hidden from the operator, while
+its own client details were visible. Further diagnostics now retain user OID
+and a backend-type hash, to distinguish a missing display name from a backend
+with no database user. No broader session admission has been implemented.
+
+The all-files PostgreSQL run ended at its 900000-ms general-suite timeout,
+exit 143, after the isolated namespace suite passed 35 tests. The first two
+existing CI shards then passed serially: 75 tests/890 assertions/15 files and
+98 tests/532 assertions/14 files. Shard three reported 102 passing tests and
+one fingerprint-fixture timeout at 30000 ms. Its fixture includes database
+creation and teardown; the rerun with a 120000-ms test-only limit completed
+that test in 48106 ms. The fingerprint SQL timeout is unchanged. Remaining
+shard results are not yet claimed. No live staging or production action ran.
+
+The third shard rerun completed with 103 passing tests, zero failures and
+1068 assertions across 16 files in 438.87 seconds. The fourth shard is running
+serially. A separate read-only provider sampler completed 210 observations
+without reproducing an unattributed session. This does not classify the
+earlier PID. Independent review rejected admitting a null-user-OID session
+solely from its empty application label while backend type is hidden. The
+unexecuted admission prototype was removed; the strict guard and expanded
+redacted diagnostics remain. Its focused suite passes nine tests and 43
+assertions. No replacement branch or destructive rerun has been started.

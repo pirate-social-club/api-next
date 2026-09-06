@@ -3,7 +3,13 @@ import type { Client } from "pg";
 
 // Owner-dispositioned substrate identity. Application labels and process counts
 // are observations, not an exhaustive identity list. Observe verifies the role.
-type Session = { pid: number; usename: string | null; application_sha256: string | null };
+type Session = {
+  pid: number;
+  usename: string | null;
+  application_sha256: string | null;
+  user_oid?: string | null;
+  backend_type_sha256?: string | null;
+};
 
 export function describeRehearsalSessions(
   sessions: readonly Session[],
@@ -15,6 +21,8 @@ export function describeRehearsalSessions(
     role_sha256:
       session.usename === null ? null : createHash("sha256").update(session.usename).digest("hex"),
     application_sha256: session.application_sha256,
+    user_oid: session.user_oid ?? null,
+    backend_type_sha256: session.backend_type_sha256 ?? null,
   }));
 }
 
@@ -95,12 +103,18 @@ export async function observeRehearsalSessions(
     throw new Error("rehearsal_operator_changed");
   await admin.query("SELECT pg_catalog.pg_stat_clear_snapshot()");
   const sessions = (
-    await admin.query(`SELECT pid,usename,application_name FROM pg_catalog.pg_stat_activity
+    await admin.query(`SELECT pid,usesysid::text AS user_oid,usename,application_name,backend_type
+      FROM pg_catalog.pg_stat_activity
       WHERE datid=(SELECT oid FROM pg_catalog.pg_database WHERE datname=current_database())`)
   ).rows;
   const mapped = sessions.map((session) => ({
     pid: session.pid,
     usename: session.usename,
+    user_oid: session.user_oid,
+    backend_type_sha256:
+      session.backend_type === null
+        ? null
+        : createHash("sha256").update(session.backend_type).digest("hex"),
     application_sha256:
       session.application_name === null
         ? null

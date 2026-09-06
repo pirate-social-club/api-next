@@ -125,7 +125,9 @@ suite("composed reset transaction on disposable PostgreSQL 17", () => {
       await admin.query("SELECT nextval('api_next.fingerprint_sequence')");
       expect((await fingerprintRehearsalData(admin)).sequences).not.toEqual(first.sequences);
     });
-  }, 30_000);
+    // Includes provider-like database creation and cleanup on the constrained
+    // one-CPU fixture; this is not the fingerprint SQL statement timeout.
+  }, 120_000);
   test("in-place authority requires schema CREATE, not database CREATE", async () => {
     await fixture(async (admin, url) => {
       const identity = (
