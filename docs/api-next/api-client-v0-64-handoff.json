@@ -23,13 +23,14 @@
     "clientSha256": "9edec95f4843c7b2907a87e3670e77453d47f75cb29a8be9c971fc1e06853eba"
   },
   "verification": {
-    "checkBreaking": "Exact ten-operation waivers against 76a95f57872a93fd87c9a1c72ea0c7267d02a546 pass.",
+    "checkBreaking": "Ten exact operation-scoped waivers pass against refreshed main 3727028d3cf1ad0b8e84401c64f4ba330395bba0.",
     "focusedSuites": "23 domain/application/workflow tests and 18 breaking-policy tests passed.",
     "fullUnitSuite": "3073 Bun and 20 Node passed; 80 ordinary Workerd passed before the HTTP pool was interrupted under host memory pressure. Serial continuation passed 51 HTTP, 2 Self, 9 HNS verifier and 14 source-gateway tests. The monolithic ordinary command exited 143; these split results cover all configured pools.",
     "postgres17Full": "isolated: 35 passed, exit 0; shard-0: 97 passed, exit 0; shard-1: 97 passed, exit 0; shard-2: 99 passed, exit 0; shard-3: 94 passed, exit 0. All configured partitions completed. The initial general-shard inventory refusal was resolved by registering the new migration test in the suite manifest; it ran in the successful gate.",
     "repositoryCheck": "Passed with immutable 0.64.0 verifier and 125 migrations; earlier untracked-migration checkpoint refusal was resolved by staging the migration and checksum together.",
     "remoteCI": "required before merge",
     "postgres17Focused": "29 tests passed, 241 assertions, including guarded migration and membership-loss/rejoin publication recovery.",
-    "composedWorkflow": "23 Workerd tests passed through the real exported Workflow class; includes membership loss, publication-only retry with no new encode, and revocation committed before the publication transaction. Initial run hit the 120-second wrapper timeout under host memory pressure; unchanged rerun passed in 53.45 seconds."
+    "composedWorkflow": "23 Workerd tests passed through the real exported Workflow class; includes membership loss, publication-only retry with no new encode, and revocation committed before the publication transaction. Initial run hit the 120-second wrapper timeout under host memory pressure; unchanged rerun passed in 53.45 seconds.",
+    "baseRefresh": "HNS PR 287 merged 0126 during initial green CI. Merged main in place, retained reasons 0125, refreshed checksums and waivers; 13 incoming unit tests and 17 focused PostgreSQL tests (236 assertions) passed. Original full partitions ran before this main update. Delivery now renumbers to 0127."
   }
 }

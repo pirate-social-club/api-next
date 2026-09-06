@@ -145,7 +145,11 @@ export const INFISICAL_POLICIES: readonly InfisicalPolicy[] = [
     environment: "prod",
     path: "/services/api-next/operator",
     requiredNames: [...OPERATOR_SECRET_NAMES],
-    allowedNames: [...OPERATOR_SECRET_NAMES],
+    allowedNames: [
+      ...OPERATOR_SECRET_NAMES,
+      "HNS_OPERATOR_MONITOR_POSTGRES_URL",
+      "HNS_OPERATOR_ALERT_WEBHOOK_URL",
+    ],
   },
 ];
 

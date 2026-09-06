@@ -101,3 +101,46 @@ scripts and static DNSSEC/DANE probes remain distinct installation repairs.
 This command does not make those old scripts valid or reactivate the disabled
 HTTP status page. Do not retire them as repaired solely because this command's
 dry-run is healthy.
+
+## Database execution boundary
+
+Apply migration 0126 before installing a reader credential. It removes PUBLIC
+execution from the four SECURITY DEFINER renewal functions. Existing explicit
+grants and owner execution remain. A SELECT-only table grant is insufficient
+while PUBLIC can invoke these writers.
+
+Before applying the migration, resolve the actual connection roles from the
+jobs Worker and provisioner protected configuration. Admit the jobs role only
+to schedule_hns_root_health_renewals_v1(integer,integer,integer), and the
+provisioner role to claim_hns_root_health_renewal_job_v1(text,integer),
+prepare_hns_root_inventory_renewal_v1(text,text,bigint,text,text,bytea,text,text)
+and finalize_hns_root_health_renewal_job_v1 with the same eight argument types.
+Use explicit schema-qualified GRANT EXECUTE statements for those verified roles
+in the controlled migration window; do not infer role names or grant execution
+to a monitor or gateway authority reader. Retain grants before revocation to
+avoid interrupting an existing executor that relied on PUBLIC. Verify effective
+privileges after migration, then read back a natural scheduler heartbeat.
+
+The monitor credential requires schema USAGE and SELECT only on the eight
+tables used by snapshot.ts. It must not inherit an administrator or writer role.
+Verify actual denied execution as well as table grants before enabling its unit.
+The privilege test applies the forward migration ledger on PostgreSQL; the
+structural test baseline strips environment-specific ACLs and is not permission
+acceptance evidence.
+
+If the environment ledger is behind unrelated product migrations, do not apply
+those migrations merely to install a reader. The operator may execute the exact
+reviewed 0126 SQL bytes in the same transaction as the explicit executor grants,
+retaining the source commit, file digest, effective ACL read-back and unchanged
+ledger. This is an ACL installation receipt, not an assertion that migration
+0126 was recorded. Never insert a migration ledger row out of order. A later
+ordinary full-prefix migration run re-executes these idempotent revocations and
+preserves the explicit grants; the PostgreSQL test covers repeat application.
+
+Store the dedicated reader URL as HNS_OPERATOR_MONITOR_POSTGRES_URL in the
+production operator path. Map only that value to the command's existing
+CONTROL_PLANE_POSTGRES_ADMIN_URL environment name in the private service file;
+the variable name does not confer administrative privilege. Never install the
+actual operator administrator URL in the monitor unit. The reader URL and
+HNS_OPERATOR_ALERT_WEBHOOK_URL are optional admitted operator secrets, not
+Worker runtime secrets. Dry-run installation does not require a destination.

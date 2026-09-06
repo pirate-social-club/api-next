@@ -100,3 +100,21 @@ or immutable release artifact was weakened to bypass these failures.
 
 Required remote checks, PR and merge receipt are recorded after publication.
 No deployment, credentials, live provider call or video enablement is included.
+
+## Main update during remote checks
+
+All required remote checks passed on 4661087c, but main advanced to 3727028d3cf1ad0b8e84401c64f4ba330395bba0
+through HNS PR 287 before merge. It owns immutable migration 0126. The execution
+branch merged that main update in place, preserving the single earlier rebase.
+The checksum conflict was resolved by retaining both 0125 and 0126, and all ten
+waivers were refreshed against the new baseline. Baseline generation remained
+byte-identical. The incoming unit suites passed 13 tests; focused PostgreSQL
+validation passed 17 tests and 236 assertions, including foundation and the new
+reason migration. The original full PostgreSQL partition gate predates this
+main update; renewed remote checks cover the combined tip.
+
+Delivery must now use 0127, not 0126, because HNS merged the latter while reasons
+CI was running. Reasons retain 0125 and client 0.64.0. Delivery still makes the
+next immutable cut, expected 0.65.0, for the single Solid adoption. No artifact
+was overwritten. The first green source and its checks remain captured alongside
+the refreshed source rather than being relabelled as the final tip.

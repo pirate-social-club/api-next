@@ -1,7 +1,7 @@
 {
   "breakingChangeWaivers": [
     {
-      "baselineSha": "76a95f57872a93fd87c9a1c72ea0c7267d02a546",
+      "baselineSha": "3727028d3cf1ad0b8e84401c64f4ba330395bba0",
       "operationId": "post_communitiesCommunityIdMediaPostSubmissions",
       "kind": "clean-break",
       "reason": "Owner ratification 2026-09-06: truthful video membership_required publication-only recovery and provider_submission_unconfirmed reconciliation; combined delivery client adoption.",
@@ -10,7 +10,7 @@
       ]
     },
     {
-      "baselineSha": "76a95f57872a93fd87c9a1c72ea0c7267d02a546",
+      "baselineSha": "3727028d3cf1ad0b8e84401c64f4ba330395bba0",
       "operationId": "post_mediaPostSubmissionsSubmissionIdTerms",
       "kind": "clean-break",
       "reason": "Owner ratification 2026-09-06: truthful video membership_required publication-only recovery and provider_submission_unconfirmed reconciliation; combined delivery client adoption.",
@@ -19,7 +19,7 @@
       ]
     },
     {
-      "baselineSha": "76a95f57872a93fd87c9a1c72ea0c7267d02a546",
+      "baselineSha": "3727028d3cf1ad0b8e84401c64f4ba330395bba0",
       "operationId": "post_mediaPostSubmissionsSubmissionIdLyrics",
       "kind": "clean-break",
       "reason": "Owner ratification 2026-09-06: truthful video membership_required publication-only recovery and provider_submission_unconfirmed reconciliation; combined delivery client adoption.",
@@ -28,7 +28,7 @@
       ]
     },
     {
-      "baselineSha": "76a95f57872a93fd87c9a1c72ea0c7267d02a546",
+      "baselineSha": "3727028d3cf1ad0b8e84401c64f4ba330395bba0",
       "operationId": "post_mediaPostSubmissionsSubmissionIdFinalize",
       "kind": "clean-break",
       "reason": "Owner ratification 2026-09-06: truthful video membership_required publication-only recovery and provider_submission_unconfirmed reconciliation; combined delivery client adoption.",
@@ -37,7 +37,7 @@
       ]
     },
     {
-      "baselineSha": "76a95f57872a93fd87c9a1c72ea0c7267d02a546",
+      "baselineSha": "3727028d3cf1ad0b8e84401c64f4ba330395bba0",
       "operationId": "get_mediaPostSubmissionsSubmissionId",
       "kind": "clean-break",
       "reason": "Owner ratification 2026-09-06: truthful video membership_required publication-only recovery and provider_submission_unconfirmed reconciliation; combined delivery client adoption.",
@@ -46,7 +46,7 @@
       ]
     },
     {
-      "baselineSha": "76a95f57872a93fd87c9a1c72ea0c7267d02a546",
+      "baselineSha": "3727028d3cf1ad0b8e84401c64f4ba330395bba0",
       "operationId": "post_mediaPostSubmissionsSubmissionIdReference",
       "kind": "clean-break",
       "reason": "Owner ratification 2026-09-06: truthful video membership_required publication-only recovery and provider_submission_unconfirmed reconciliation; combined delivery client adoption.",
@@ -55,7 +55,7 @@
       ]
     },
     {
-      "baselineSha": "76a95f57872a93fd87c9a1c72ea0c7267d02a546",
+      "baselineSha": "3727028d3cf1ad0b8e84401c64f4ba330395bba0",
       "operationId": "post_mediaPostSubmissionsSubmissionIdRetry",
       "kind": "clean-break",
       "reason": "Owner ratification 2026-09-06: truthful video membership_required publication-only recovery and provider_submission_unconfirmed reconciliation; combined delivery client adoption.",
@@ -64,7 +64,7 @@
       ]
     },
     {
-      "baselineSha": "76a95f57872a93fd87c9a1c72ea0c7267d02a546",
+      "baselineSha": "3727028d3cf1ad0b8e84401c64f4ba330395bba0",
       "operationId": "post_mediaPostSubmissionsSubmissionIdPosterRetry",
       "kind": "clean-break",
       "reason": "Owner ratification 2026-09-06: truthful video membership_required publication-only recovery and provider_submission_unconfirmed reconciliation; combined delivery client adoption.",
@@ -73,7 +73,7 @@
       ]
     },
     {
-      "baselineSha": "76a95f57872a93fd87c9a1c72ea0c7267d02a546",
+      "baselineSha": "3727028d3cf1ad0b8e84401c64f4ba330395bba0",
       "operationId": "post_mediaPostSubmissionsSubmissionIdCancel",
       "kind": "clean-break",
       "reason": "Owner ratification 2026-09-06: truthful video membership_required publication-only recovery and provider_submission_unconfirmed reconciliation; combined delivery client adoption.",
@@ -82,7 +82,7 @@
       ]
     },
     {
-      "baselineSha": "76a95f57872a93fd87c9a1c72ea0c7267d02a546",
+      "baselineSha": "3727028d3cf1ad0b8e84401c64f4ba330395bba0",
       "operationId": "post_moderationMediaPostSubmissionsSubmissionIdActions",
       "kind": "clean-break",
       "reason": "Owner ratification 2026-09-06: truthful video membership_required publication-only recovery and provider_submission_unconfirmed reconciliation; combined delivery client adoption.",

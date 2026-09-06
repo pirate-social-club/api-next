@@ -222,7 +222,7 @@ describe("Infisical secret drift audit", () => {
     ]);
   });
 
-  test("allows production song-runtime provisioning names without requiring them before ceremony", () => {
+  test("admits optional production provisioning secrets only in their owned paths", () => {
     const prodBase = emptySnapshot("prod");
     const requiredRuntimeNames = [
       "PIRATE_APP_JWT_PRIVATE_KEY",
@@ -263,6 +263,40 @@ describe("Infisical secret drift audit", () => {
       },
     };
     expect(auditInfisicalSnapshots([withSigner]).violations).toEqual([]);
+
+    const monitorNames = ["HNS_OPERATOR_ALERT_WEBHOOK_URL", "HNS_OPERATOR_MONITOR_POSTGRES_URL"];
+    expect(
+      auditInfisicalSnapshots([
+        {
+          ...withoutSigner,
+          secrets: {
+            ...withoutSigner.secrets,
+            "/services/api-next/operator": [
+              ...withoutSigner.secrets["/services/api-next/operator"],
+              ...monitorNames,
+            ],
+          },
+        },
+      ]).violations,
+    ).toEqual([]);
+    expect(
+      auditInfisicalSnapshots([
+        {
+          ...withoutSigner,
+          secrets: {
+            ...withoutSigner.secrets,
+            "/services/api-next": [...requiredRuntimeNames, ...monitorNames],
+          },
+        },
+      ]).violations,
+    ).toEqual(
+      monitorNames.map((name) => ({
+        environment: "prod",
+        path: "/services/api-next",
+        kind: "unexpected-secret",
+        name,
+      })),
+    );
   });
 
   test("forces the REST query to hide values", async () => {
