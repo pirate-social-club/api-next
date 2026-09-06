@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.63.0",
+  "releaseType": "coordinated-video-delivery",
+  "sourceCommit": "4ad8ca0af5dd09055cfd2c781891638383427587",
+  "wireContract": "Authorized JPEG/304 poster and anonymous-eligible playback grant endpoints; truthful unavailable delivery states; includes the merged execution membership-loss disposition. Opaque feed/Post references remain non-URL identifiers.",
+  "supersedes": "0.62.0; adopt only after the delivery integration merges",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.63.0.tgz",
+    "sha256": "8d18f388cf89343709b1fa73230afcdf189672f733d0119b78498389481b5f74",
+    "contents": ["package/package.json", "package/src/generated/client.ts", "package/src/generated/provenance.json", "package/src/index.ts"]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@c890ae932141aed5fb9909d4b0a14f6f2dceb177793b09d04ca5b063002a6efa",
+    "openapiSha256": "c890ae932141aed5fb9909d4b0a14f6f2dceb177793b09d04ca5b063002a6efa",
+    "clientSha256": "be2f86d56ddfb29c42c97cf1e68b79d8ce97252839bbe5eb43adfb607805cbea"
+  },
+  "verification": { "releaseGates": "Pending on the final integrated source; not live provider acceptance or deployment authorization" }
+}
