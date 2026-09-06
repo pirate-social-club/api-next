@@ -91,13 +91,13 @@ describe("video Post projection row mapping", () => {
         caption: null,
         caption_dir: null,
         playback: { status: "pending" },
-        thumbnail: { status: "pending" },
+        thumbnail: { status: "unavailable" },
         data_registration: "registration_pending",
       });
     },
   );
 
-  test.each(["not_started", "sending", "manual_review"])("maps Stream %s to pending", (state) => {
+  test.each(["not_started", "sending"])("maps Stream %s to pending", (state) => {
     expect(
       videoPostProjectionFromRow(
         projectionRow({ video_stream_state: state, video_playback_ref: null }),
@@ -105,7 +105,7 @@ describe("video Post projection row mapping", () => {
     ).toEqual({ status: "pending" });
   });
 
-  test.each(["pending", "running", "failed"])("maps thumbnail %s to pending", (state) => {
+  test.each(["pending", "running"])("maps thumbnail %s to pending", (state) => {
     expect(
       videoPostProjectionFromRow(projectionRow({ video_thumbnail_state: state }))?.thumbnail,
     ).toEqual({ status: "pending" });
@@ -116,6 +116,32 @@ describe("video Post projection row mapping", () => {
       videoPostProjectionFromRow(projectionRow({ video_data_registration_state: "failed" })),
     ).toMatchObject({ data_registration: "failed", playback: { status: "pending" } });
   });
+
+  test("ready exposes only opaque access references", () => {
+    expect(
+      videoPostProjectionFromRow(projectionRow({ video_stream_state: "ready" }))?.playback,
+    ).toEqual({ status: "ready", provider: "stream", playback_ref: "stream-video-1" });
+  });
+
+  test.each(["failed", "reconciliation_required"])(
+    "terminal %s remains visible without private failure evidence",
+    (state) => {
+      const projection = videoPostProjectionFromRow(
+        projectionRow({
+          video_stream_state: state,
+          video_playback_ref: state === "failed" ? "stream-video-1" : null,
+          video_thumbnail_state: "failed",
+          failure_reason: "private-reconciliation-evidence",
+        }),
+      );
+      expect(projection).toMatchObject({
+        playback: { status: "unavailable" },
+        thumbnail: { status: "unavailable" },
+      });
+      expect(JSON.stringify(projection)).not.toContain("private-reconciliation-evidence");
+      expect(JSON.stringify(projection)).not.toContain("stream-video-1");
+    },
+  );
 
   test.each(["", " ", " stream-video-1 "])("rejects malformed bound playback ref %j", (ref) => {
     expect(videoPostProjectionFromRow(projectionRow({ video_playback_ref: ref }))).toBeNull();

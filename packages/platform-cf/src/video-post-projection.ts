@@ -37,6 +37,8 @@ export const videoPostProjectionJoins = `LEFT JOIN media_publication_projections
     ON stream_ingest.operation_id = video_projection.operation_id
   LEFT JOIN media_video_enrichment_outbox AS thumbnail_enrichment
     ON thumbnail_enrichment.submission_id = video_projection.submission_id
+   AND thumbnail_enrichment.operation_id = video_projection.operation_id
+   AND thumbnail_enrichment.post_id = video_projection.post_id
    AND thumbnail_enrichment.enrichment_kind = 'thumbnail'
   LEFT JOIN data_registration_operations AS video_data_registration
     ON video_data_registration.submission_id = video_projection.submission_id
@@ -102,23 +104,28 @@ export const videoPostProjectionFromRow = (row: Row): PublicVideoPostProjection 
   }
 
   const playback: PublicVideoPostProjection["playback"] | null =
-    streamState === "bound"
+    streamState === "bound" || streamState === "ready" || streamState === "failed"
       ? playbackRef === null || requiredText(row, "video_playback_ref") === null
         ? null
-        : // Binding proves source identity only. A later delivery observation
-          // must establish encoding and signed-access readiness before ready.
-          { status: "pending" }
-      : (streamState === null ||
-            ["not_started", "sending", "manual_review"].includes(streamState)) &&
-          playbackRef === null
-        ? { status: "pending" }
-        : null;
+        : streamState === "ready"
+          ? { status: "ready", provider: "stream", playback_ref: playbackRef }
+          : streamState === "failed"
+            ? { status: "unavailable" }
+            : { status: "pending" }
+      : streamState === "reconciliation_required" && playbackRef === null
+        ? { status: "unavailable" }
+        : (streamState === null || ["not_started", "sending"].includes(streamState)) &&
+            playbackRef === null
+          ? { status: "pending" }
+          : null;
   const thumbnail: PublicVideoPostProjection["thumbnail"] | null =
     thumbnailState === "ready"
       ? { status: "ready", artifact_ref: thumbnailArtifactRef }
-      : ["pending", "running", "failed"].includes(thumbnailState)
-        ? { status: "pending" }
-        : null;
+      : thumbnailState === "failed"
+        ? { status: "unavailable" }
+        : ["pending", "running"].includes(thumbnailState)
+          ? { status: "pending" }
+          : null;
   if (playback === null || thumbnail === null) return null;
 
   return {

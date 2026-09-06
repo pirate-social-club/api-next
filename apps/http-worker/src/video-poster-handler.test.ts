@@ -77,9 +77,9 @@ function fixture(allowed = true, missing = false) {
   return { calls, handler, request };
 }
 
-describe("prepared poster handler and serializer, not registered-router acceptance", () => {
-  test("does not register an endpoint or change the client release early", () => {
-    expect(registry).not.toHaveProperty("GetVideoPoster");
+describe("poster handler and serializer", () => {
+  test("registers the existing JPEG contract without a parallel transport", () => {
+    expect(registry.GetVideoPoster).toBe(GetVideoPoster);
   });
   test("anonymous authorized access yields only JPEG bytes and private headers", async () => {
     const f = fixture();

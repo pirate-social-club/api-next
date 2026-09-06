@@ -6,7 +6,7 @@ import {
 import { Effect, Schema } from "effect";
 import { type DecodedRequest, withEndpointResult } from "./transport.ts";
 
-/** Prepared handler, installed only with the coordinated registry/client release. */
+/** Authorization and byte streaming remain behind the shared contract transport. */
 export function makeVideoPosterHandler(services: VideoPosterStreamServices) {
   return async (request: DecodedRequest) => {
     const principal = request.principal;

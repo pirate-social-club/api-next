@@ -2,6 +2,18 @@ import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
 
 const alias = {
+  "@pirate/application/video/playback-access": new URL(
+    "../../packages/application/src/video/playback-access.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/application/video/poster-access": new URL(
+    "../../packages/application/src/video/poster-access.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/video-poster-stream": new URL(
+    "../../packages/platform-cf/src/video-poster-stream.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/platform-cf/hns-authority-diagnostics": new URL(
     "../../packages/platform-cf/src/hns-authority-diagnostics.ts",
     import.meta.url,

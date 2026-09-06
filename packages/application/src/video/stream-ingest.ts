@@ -1,4 +1,5 @@
 import {
+  expireVideoStreamIngest,
   observeVideoStreamIngest,
   prepareVideoStreamCopy,
   type VideoStreamIdentity,
@@ -14,6 +15,8 @@ export type VideoStreamClaim = Readonly<{
   revision: number;
   identity: VideoStreamIdentity;
   sealedSourceRef: string;
+  sourceByteLength: number;
+  sourceMediaType: "video/mp4" | "video/quicktime";
   authority: Readonly<{
     submissionId: string;
     postId: string;
@@ -46,6 +49,9 @@ interface VideoStreamIngestTransport {
     input: Readonly<{
       identity: VideoStreamIdentity;
       sealedSourceRef: string;
+      sourceByteLength: number;
+      sourceMediaType: "video/mp4" | "video/quicktime";
+      acceptanceDeadlineMs: number;
       requireSignedURLs: true;
       downloadsEnabled: false;
     }>,
@@ -83,10 +89,14 @@ export async function consumeVideoStreamIngest(
   if (prepared.copyAllowed) {
     claim = await services.store.transition(claim, prepared.next, false);
     if (claim === null) return "stale";
+    if (claim.state.state !== "sending") throw new Error("Stream copy requires persisted intent");
     try {
       await services.transport.copy({
         identity: claim.identity,
         sealedSourceRef: claim.sealedSourceRef,
+        sourceByteLength: claim.sourceByteLength,
+        sourceMediaType: claim.sourceMediaType,
+        acceptanceDeadlineMs: claim.state.acceptanceDeadlineMs,
         requireSignedURLs: true,
         downloadsEnabled: false,
       });
@@ -98,14 +108,17 @@ export async function consumeVideoStreamIngest(
   }
   let next = claim.state;
   if (!["ready", "failed", "reconciliation_required"].includes(next.state)) {
-    let matches: readonly VideoStreamObservation[];
+    let matches: readonly VideoStreamObservation[] | null = null;
     try {
       matches = await services.transport.observe(claim.identity);
     } catch {
-      // Unavailable evidence is not an empty lookup or a terminal encoding failure.
-      return "retry";
+      // Unavailable is not an empty lookup. Expire only against persisted deadlines;
+      // timeout/unknown acceptance is not a claim that the provider rejected the asset.
+      next = expireVideoStreamIngest(next, services.nowMs());
+      if (next.state !== "failed" && next.state !== "reconciliation_required") return "retry";
     }
-    next = observeVideoStreamIngest({ current: next, matches, nowMs: services.nowMs() });
+    if (matches !== null)
+      next = observeVideoStreamIngest({ current: next, matches, nowMs: services.nowMs() });
   }
   if ((await services.store.transition(claim, next, true)) === null) return "stale";
   if (next.state === "ready") return "ready";

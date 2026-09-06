@@ -37,6 +37,19 @@ export type VideoStreamObservation = Readonly<{
   downloadsEnabled: boolean;
 }>;
 
+/** Missing provider evidence never resets a durable attempt's wall-clock bound. */
+export function expireVideoStreamIngest(
+  current: VideoStreamIngestState,
+  nowMs: number,
+): VideoStreamIngestState {
+  if (!Number.isSafeInteger(nowMs) || nowMs < 0) throw new Error("Invalid observation time");
+  if (current.state === "sending" && nowMs >= current.acceptanceDeadlineMs)
+    return { ...current, state: "reconciliation_required", reason: "acceptance_unknown" };
+  if (current.state === "bound" && nowMs >= current.encodingDeadlineMs)
+    return { ...current, state: "failed", reason: "encoding_timeout" };
+  return current;
+}
+
 const sameIdentity = (left: VideoStreamIdentity, right: VideoStreamIdentity): boolean =>
   left.operationId === right.operationId &&
   left.creator === right.creator &&
@@ -103,7 +116,12 @@ export function observeVideoStreamIngest(
   if (!Number.isSafeInteger(input.nowMs) || input.nowMs < 0)
     throw new Error("Invalid observation time");
   if (current.state === "not_started") throw new Error("Persist Stream intent before observation");
-  if (current.state === "failed" || current.state === "reconciliation_required") return current;
+  if (
+    current.state === "ready" ||
+    current.state === "failed" ||
+    current.state === "reconciliation_required"
+  )
+    return current;
   const pending: PendingAttempt = {
     identity: current.identity,
     acceptanceDeadlineMs: current.acceptanceDeadlineMs,

@@ -18,6 +18,8 @@ function fixture() {
       sourceSha256: "a".repeat(64),
     },
     sealedSourceRef: "media://immutable/fixture-original",
+    sourceByteLength: 1234,
+    sourceMediaType: "video/mp4",
     authority: {
       submissionId: "submission-1",
       postId: "post-1",
@@ -62,6 +64,9 @@ function fixture() {
         expect(input).toEqual({
           identity: row.identity,
           sealedSourceRef: row.sealedSourceRef,
+          sourceByteLength: row.sourceByteLength,
+          sourceMediaType: row.sourceMediaType,
+          acceptanceDeadlineMs: 100,
           requireSignedURLs: true,
           downloadsEnabled: false,
         });
@@ -181,13 +186,32 @@ test("missing acceptance expires instead of recopying or resetting its deadline"
   expect(f.copies()).toBe(1);
 });
 
-test("provider lookup failure is retryable evidence absence, not terminal failure", async () => {
+test("provider lookup failure retries only until the original acceptance deadline", async () => {
   const f = fixture();
   f.observationThrows();
   expect(await f.run()).toBe("retry");
   f.time(2_000);
+  expect(await f.run()).toBe("failed");
+  expect(f.row().state).toMatchObject({
+    state: "reconciliation_required",
+    reason: "acceptance_unknown",
+  });
+  expect(f.copies()).toBe(1);
+});
+
+test("bound lookup failure expires truthfully without claiming provider rejection", async () => {
+  const f = fixture();
+  expect(await f.run()).toBe("pending");
+  f.observationThrows();
+  f.time(999);
   expect(await f.run()).toBe("retry");
-  expect(f.row().state.state).toBe("sending");
+  f.time(1000);
+  expect(await f.run()).toBe("failed");
+  expect(f.row().state).toMatchObject({
+    state: "failed",
+    reason: "encoding_timeout",
+    providerVideoId: "provider-1",
+  });
   expect(f.copies()).toBe(1);
 });
 

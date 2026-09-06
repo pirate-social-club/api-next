@@ -1,9 +1,9 @@
 import { Schema } from "effect";
 import { Auth } from "./auth.ts";
 import { endpoint } from "./endpoint.ts";
-import { AuthError, BadRequest, InternalError, NotFound } from "./errors.ts";
+import { AuthError, BadRequest, InternalError, NotFound, RateLimited } from "./errors.ts";
 
-/** Prepared for the coordinated access/client release; not in the live registry yet. */
+/** Poster and playback access share the coordinated registry/client release. */
 export const GetVideoPoster = endpoint({
   method: "GET",
   path: "/posts/:postId/video/poster",
@@ -21,4 +21,17 @@ export const GetVideoPoster = endpoint({
   },
   successStatus: [200, 304],
   errors: [AuthError, BadRequest, NotFound, InternalError],
+});
+
+export const CreateVideoPlaybackAccess = endpoint({
+  method: "POST",
+  path: "/posts/:postId/video/playback-access",
+  auth: Auth.user({ optionalUser: true }),
+  request: { path: Schema.Struct({ postId: Schema.String }) },
+  response: Schema.Struct({
+    playback_url: Schema.String,
+    expires_at: Schema.Number,
+    renew_after: Schema.Number,
+  }),
+  errors: [AuthError, BadRequest, InternalError, NotFound, RateLimited],
 });

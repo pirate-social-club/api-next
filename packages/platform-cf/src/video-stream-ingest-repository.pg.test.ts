@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { Effect } from "effect";
 import type { Client } from "pg";
 import {
   applyPostgresTestBaselineConnection,
@@ -14,7 +15,10 @@ import {
   decideOriginalAudioVideo,
   publishOriginalVideo,
 } from "../../domain/src/video-submission.ts";
+import { makeVideoEnrichmentDispatchSource } from "./video-enrichment-dispatch-source.ts";
+import { makeVideoPlaybackAuthority } from "./video-playback-authority.ts";
 import {
+  community,
   finalizedFixture,
   operationId,
   seedVideoActors,
@@ -131,6 +135,10 @@ suite("video Stream ingest durable PostgreSQL", () => {
   });
   test("concurrent ownership, revision CAS, expiry recovery and immutable deadlines", async () => {
     await fixture(async ({ layer, ingest }, admin) => {
+      const dispatch = makeVideoEnrichmentDispatchSource(layer);
+      expect((await dispatch.listEligible(25)).map((row) => row.effectIdentity)).toContain(
+        effectIdentity,
+      );
       const other = makeVideoStreamIngestStore(layer, {
         leaseOwner: "delivery-other",
         leaseMs: 60_000,
@@ -142,6 +150,9 @@ suite("video Stream ingest durable PostgreSQL", () => {
       expect([first, second].filter(Boolean)).toHaveLength(1);
       const winner = first ?? second;
       if (!winner) throw new Error("claim missing");
+      expect((await dispatch.listEligible(25)).map((row) => row.effectIdentity)).not.toContain(
+        effectIdentity,
+      );
       const owner = first ? ingest : other;
       expect(winner.identity.creator).toMatch(/^[a-f0-9]{64}$/u);
       const nowMs = Date.now();
@@ -173,8 +184,14 @@ suite("video Stream ingest durable PostgreSQL", () => {
   });
 
   test("lost copy and lost completion responses converge on one encode and durable ready", async () => {
-    await fixture(async ({ ingest }, admin) => {
+    await fixture(async ({ layer, ingest }, admin) => {
       let copies = 0;
+      const playbackAuthority = makeVideoPlaybackAuthority(layer);
+      const resolve = (
+        postId = "post-video-ingest",
+        communityId = community,
+        playbackRef = "c".repeat(32),
+      ) => Effect.runPromise(playbackAuthority({ postId, communityId, playbackRef }));
       let ready = false;
       const services = {
         store: ingest,
@@ -188,7 +205,7 @@ suite("video Stream ingest durable PostgreSQL", () => {
           observe: async (identity: { creator: string; sourceSha256: string }) => [
             {
               ...identity,
-              providerVideoId: "stream-fixture",
+              providerVideoId: "c".repeat(32),
               encoding: ready ? ("ready" as const) : ("pending" as const),
               requireSignedURLs: true,
               downloadsEnabled: false,
@@ -206,6 +223,7 @@ suite("video Stream ingest durable PostgreSQL", () => {
           ])
         ).rows[0].state,
       ).toBe("bound");
+      expect(await resolve()).toBeNull();
       ready = true;
       const complete = ingest.transition;
       services.store = {
@@ -221,6 +239,17 @@ suite("video Stream ingest durable PostgreSQL", () => {
       );
       expect(await consumeVideoStreamIngest(effectIdentity, services)).toBe("unclaimed");
       expect(copies).toBe(1);
+      const publication = await admin.query(
+        "SELECT community_id FROM media_publication_projections WHERE operation_id=$1",
+        [operationId],
+      );
+      const communityId = String(publication.rows[0].community_id);
+      expect(await resolve("post-video-ingest", communityId)).toEqual({
+        providerVideoId: "c".repeat(32),
+      });
+      expect(await resolve("foreign", communityId)).toBeNull();
+      expect(await resolve("post-video-ingest", "foreign")).toBeNull();
+      expect(await resolve("post-video-ingest", communityId, "d".repeat(32))).toBeNull();
       expect(
         (
           await admin.query(
@@ -236,7 +265,7 @@ suite("video Stream ingest durable PostgreSQL", () => {
             [operationId],
           )
         ).rows[0],
-      ).toEqual({ state: "ready", provider_video_id: "stream-fixture" });
+      ).toEqual({ state: "ready", provider_video_id: "c".repeat(32) });
       expect(
         (
           await admin.query(
@@ -256,6 +285,8 @@ suite("video Stream ingest durable PostgreSQL", () => {
           JSON.stringify({
             source_ref: "https://attacker.invalid",
             canonical_video_sha256: "f".repeat(64),
+            size_bytes: 999999,
+            content_type: "text/html",
           }),
         ],
       );
@@ -263,6 +294,12 @@ suite("video Stream ingest durable PostgreSQL", () => {
       if (!claim) throw new Error("claim missing");
       expect(claim.sealedSourceRef).toBe(`media://immutable/${operationId}/video/1`);
       expect(claim.identity.sourceSha256).toBe("a".repeat(64));
+      const sealed = await admin.query(
+        "SELECT size_bytes::text,content_type FROM media_immutable_objects WHERE immutable_ref=$1",
+        [claim.sealedSourceRef],
+      );
+      expect(claim.sourceByteLength).toBe(Number(sealed.rows[0].size_bytes));
+      expect(claim.sourceMediaType).toBe(sealed.rows[0].content_type);
       await expect(
         admin.query(
           "UPDATE media_publication_projections SET creation_revision=creation_revision+1 WHERE operation_id=$1",
@@ -276,6 +313,16 @@ suite("video Stream ingest durable PostgreSQL", () => {
         nowMs,
         ...deadlines(nowMs),
       }).next;
+      expect(
+        await ingest.transition(
+          { ...claim, sourceByteLength: claim.sourceByteLength + 1 },
+          next,
+          false,
+        ),
+      ).toBeNull();
+      expect(
+        await ingest.transition({ ...claim, sourceMediaType: "video/quicktime" }, next, false),
+      ).toBeNull();
       expect(
         await ingest.transition(
           {

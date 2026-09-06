@@ -23,6 +23,8 @@ const Row = Schema.Struct({
   analysis_revision: Integer,
   immutable_ref: Text,
   canonical_sha256: Digest,
+  size_bytes: Integer.check(Schema.isGreaterThan(0)),
+  content_type: Schema.Literals(["video/mp4", "video/quicktime"]),
   claim_fence: Integer,
   ingest_revision: Integer,
   state: Schema.Literals([
@@ -45,7 +47,7 @@ const Row = Schema.Struct({
 // transaction as the claim/write, including the exact immutable-object identity.
 const AUTHORITY = `SELECT o.effect_identity,o.operation_id,o.submission_id,o.post_id,
   p.creation_revision::text,p.video_revision::text,p.analysis_revision::text,
-  v.immutable_ref,v.canonical_sha256,s.claim_fence::text,s.ingest_revision::text,
+  v.immutable_ref,v.canonical_sha256,i.size_bytes::text,i.content_type,s.claim_fence::text,s.ingest_revision::text,
   s.state,s.creator_marker,s.source_sha256,s.provider_video_id,s.failure_reason,
   s.acceptance_deadline_ms::text,s.encoding_deadline_ms::text
   FROM media_video_enrichment_outbox o
@@ -126,6 +128,8 @@ const decodeClaim = Effect.fn("decodeVideoStreamClaim")(function* (raw: unknown,
     revision: row.ingest_revision,
     identity,
     sealedSourceRef: row.immutable_ref,
+    sourceByteLength: row.size_bytes,
+    sourceMediaType: row.content_type,
     state,
     authority: {
       submissionId: row.submission_id,
@@ -143,6 +147,8 @@ function sameAuthority(a: VideoStreamClaim, b: VideoStreamClaim): boolean {
     a.identity.creator === b.identity.creator &&
     a.identity.sourceSha256 === b.identity.sourceSha256 &&
     a.sealedSourceRef === b.sealedSourceRef &&
+    a.sourceByteLength === b.sourceByteLength &&
+    a.sourceMediaType === b.sourceMediaType &&
     a.authority.submissionId === b.authority.submissionId &&
     a.authority.postId === b.authority.postId &&
     a.authority.creationRevision === b.authority.creationRevision &&
