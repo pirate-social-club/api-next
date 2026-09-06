@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { MODERATION_POLICY_CATEGORIES_V1 } from "@pirate/contracts";
 import { canonicalTextModerationInput } from "@pirate/domain";
-import { Effect } from "effect";
+import { Effect, Scheduler } from "effect";
 import { hostileCorrectedLyrics } from "../../../../tests/fixtures/media-processing/hostile-classifier-inputs.ts";
 import type {
   MediaTransformAudioSampleInput,
@@ -21,6 +21,9 @@ import type {
   MediaProcessingStore,
 } from "./processing-contracts.ts";
 import { runMediaProcessingWorkflow } from "./processing-workflow.ts";
+
+const runWorkflow = (...args: Parameters<typeof runMediaProcessingWorkflow>) =>
+  Effect.runPromise(runMediaProcessingWorkflow(...args));
 
 const hash = "a".repeat(64);
 
@@ -609,7 +612,7 @@ function providers(
 test("song moderation raises the durable rating for an adult category", async () => {
   const store = new FakeStore(authority({ lyrics: null }));
   store.communityDecisions.set("sexual", "permit");
-  const result = await runMediaProcessingWorkflow(
+  const result = await runWorkflow(
     workflowPayload(store),
     "analysis_launch",
     dependencies(store, providers([], { matchedCategories: ["sexual"] })),
@@ -625,7 +628,7 @@ test("song moderation raises the durable rating for an adult category", async ()
 
 test("publishes a song with OpenAI-cleared general-audience artwork", async () => {
   const store = new FakeStore(authority({ lyrics: null }));
-  const result = await runMediaProcessingWorkflow(
+  const result = await runWorkflow(
     workflowPayload(store),
     "analysis_launch",
     dependencies(
@@ -657,7 +660,7 @@ test("publishes a song with OpenAI-cleared general-audience artwork", async () =
 
 test("withholds flagged artwork without blocking the song", async () => {
   const store = new FakeStore(authority({ lyrics: null }));
-  const result = await runMediaProcessingWorkflow(
+  const result = await runWorkflow(
     workflowPayload(store),
     "analysis_launch",
     dependencies(
@@ -690,7 +693,7 @@ test("withholds flagged artwork without blocking the song", async () => {
 
 test("withholds artwork on provider failure without blocking the song", async () => {
   const store = new FakeStore(authority({ lyrics: null }));
-  const result = await runMediaProcessingWorkflow(
+  const result = await runWorkflow(
     workflowPayload(store),
     "analysis_launch",
     dependencies(
@@ -747,6 +750,32 @@ const workflowPayload = (store: FakeStore) => ({
 });
 
 describe("media processing workflow", () => {
+  test("treats a provider-returned cancellation as an ordinary retryable failure", async () => {
+    const store = new FakeStore(authority({ lyrics: null }));
+    const providerEvents: string[] = [];
+    const base = providers(providerEvents);
+    const provider: MediaProcessingProviders = {
+      ...base,
+      transform: {
+        ...base.transform,
+        probe: ((input: MediaTransformProbeInput) =>
+          Effect.succeed({
+            status: "retryable_failure",
+            reason: "cancelled",
+            attempt: input.attempt,
+          })) as unknown as MediaTransformService["probe"],
+      },
+    };
+
+    expect(
+      await runWorkflow(workflowPayload(store), "analysis_launch", dependencies(store, provider)),
+    ).toEqual({ outcome: "waiting_for_provider" });
+    expect(store.events).toContain("fail:probe");
+    expect(store.providerReviews).toBe(0);
+    expect(store.current.analysis).toBeNull();
+    expect(providerEvents).toEqual([]);
+  });
+
   test("persists and resumes a submitted provider job before downstream effects", async () => {
     const store = new FakeStore(authority({ lyrics: null }));
     const providerEvents: string[] = [];
@@ -775,28 +804,57 @@ describe("media processing workflow", () => {
     };
 
     expect(
-      await runMediaProcessingWorkflow(
-        workflowPayload(store),
-        "analysis_launch",
-        dependencies(store, provider),
-      ),
+      await runWorkflow(workflowPayload(store), "analysis_launch", dependencies(store, provider)),
     ).toEqual({ outcome: "waiting_for_provider" });
     expect(store.events).toContain("defer:probe");
     expect(
-      await runMediaProcessingWorkflow(
-        workflowPayload(store),
-        "analysis_launch",
-        dependencies(store, provider),
-      ),
+      await runWorkflow(workflowPayload(store), "analysis_launch", dependencies(store, provider)),
     ).toEqual({ outcome: "published_without_alignment" });
     expect(polls).toBe(2);
+  });
+
+  test("replays a completed probe attempt when a later stage retries", async () => {
+    const store = new FakeStore(authority({ lyrics: null }));
+    const providerEvents: string[] = [];
+    const base = providers(providerEvents);
+    let sampleCalls = 0;
+    const provider: MediaProcessingProviders = {
+      ...base,
+      transform: {
+        ...base.transform,
+        extractAudioSample: (input) => {
+          sampleCalls += 1;
+          if (sampleCalls === 1) {
+            return Effect.succeed({
+              status: "retryable_failure",
+              reason: "provider",
+              attempt: input.attempt,
+            });
+          }
+          return base.transform.extractAudioSample(input);
+        },
+      },
+    };
+
+    expect(
+      await runWorkflow(workflowPayload(store), "analysis_launch", dependencies(store, provider)),
+    ).toEqual({ outcome: "waiting_for_provider" });
+    expect(providerEvents.filter((event) => event.startsWith("effect:probe"))).toHaveLength(1);
+    expect(store.events.filter((event) => event === "complete:probe")).toHaveLength(1);
+
+    expect(
+      await runWorkflow(workflowPayload(store), "analysis_launch", dependencies(store, provider)),
+    ).toEqual({ outcome: "published_without_alignment" });
+    expect(sampleCalls).toBe(2);
+    expect(providerEvents.filter((event) => event.startsWith("effect:probe"))).toHaveLength(1);
+    expect(store.events.filter((event) => event === "complete:probe")).toHaveLength(1);
   });
 
   test("runs the terms-first fake-transport golden vertical and consumes the sealed hash", async () => {
     const store = new FakeStore();
     const providerEvents = store.events;
     const classifierInputs: MediaExplicitnessClassifierInput[] = [];
-    const result = await runMediaProcessingWorkflow(
+    const result = await runWorkflow(
       workflowPayload(store),
       "analysis_launch",
       dependencies(
@@ -829,7 +887,7 @@ describe("media processing workflow", () => {
     const store = new FakeStore(authority({ termsRevision: null, lyrics: null }));
     const providerEvents: string[] = [];
     const provider = providers(providerEvents);
-    const first = await runMediaProcessingWorkflow(
+    const first = await runWorkflow(
       workflowPayload(store),
       "analysis_launch",
       dependencies(store, provider),
@@ -854,12 +912,12 @@ describe("media processing workflow", () => {
       ...decisionOutbox,
       eventType: "decision_wakeup",
     });
-    const second = await runMediaProcessingWorkflow(
+    const second = await runWorkflow(
       workflowPayload(store),
       "decision_wakeup",
       dependencies(store, provider),
     );
-    const replay = await runMediaProcessingWorkflow(
+    const replay = await runWorkflow(
       workflowPayload(store),
       "decision_wakeup",
       dependencies(store, provider),
@@ -875,11 +933,7 @@ describe("media processing workflow", () => {
     const store = new FakeStore();
     const providerEvents: string[] = [];
     const provider = providers(providerEvents);
-    await runMediaProcessingWorkflow(
-      workflowPayload(store),
-      "analysis_launch",
-      dependencies(store, provider),
-    );
+    await runWorkflow(workflowPayload(store), "analysis_launch", dependencies(store, provider));
     store.current = {
       ...store.current,
       status: "processing",
@@ -897,11 +951,7 @@ describe("media processing workflow", () => {
     if (prior === undefined) throw new TypeError("lyrics wakeup outbox fixture is missing");
     store.outboxes.set("outbox-1", { ...prior, eventType: "decision_wakeup" });
 
-    await runMediaProcessingWorkflow(
-      workflowPayload(store),
-      "decision_wakeup",
-      dependencies(store, provider),
-    );
+    await runWorkflow(workflowPayload(store), "decision_wakeup", dependencies(store, provider));
     expect(store.current.analysis?.lyricsAnalysis).toMatchObject({
       status: "ready",
       lyricsRevision: 2,
@@ -923,7 +973,7 @@ describe("media processing workflow", () => {
     );
     const providerEvents: string[] = [];
     expect(
-      await runMediaProcessingWorkflow(
+      await runWorkflow(
         workflowPayload(store),
         "analysis_launch",
         dependencies(store, providers(providerEvents)),
@@ -936,7 +986,7 @@ describe("media processing workflow", () => {
   test("missing lyrics bypass classification and alignment but still publishes", async () => {
     const store = new FakeStore(authority({ lyrics: null }));
     const providerEvents: string[] = [];
-    const result = await runMediaProcessingWorkflow(
+    const result = await runWorkflow(
       workflowPayload(store),
       "analysis_launch",
       dependencies(store, providers(providerEvents)),
@@ -951,7 +1001,7 @@ describe("media processing workflow", () => {
   test("duration rejection stops before sample, ACR, classification, and publication", async () => {
     const store = new FakeStore();
     const providerEvents: string[] = [];
-    const result = await runMediaProcessingWorkflow(
+    const result = await runWorkflow(
       workflowPayload(store),
       "analysis_launch",
       dependencies(store, providers(providerEvents, { durationMs: 3_600_001 })),
@@ -987,7 +1037,7 @@ describe("media processing workflow", () => {
           )) as MediaTransformService["probe"],
       },
     };
-    const result = await runMediaProcessingWorkflow(
+    const result = await runWorkflow(
       workflowPayload(store),
       "analysis_launch",
       dependencies(store, provider),
@@ -1000,7 +1050,7 @@ describe("media processing workflow", () => {
   test("one alternate fingerprint attempt ends inconclusive in manual review", async () => {
     const store = new FakeStore();
     const providerEvents: string[] = [];
-    const result = await runMediaProcessingWorkflow(
+    const result = await runWorkflow(
       workflowPayload(store),
       "analysis_launch",
       dependencies(store, providers(providerEvents, { acr: ["fingerprint", "fingerprint"] })),
@@ -1019,7 +1069,7 @@ describe("media processing workflow", () => {
       ["remix", ["no_match", "no_match"]],
     ] as const) {
       const store = new FakeStore(authority({ songType }));
-      const result = await runMediaProcessingWorkflow(
+      const result = await runWorkflow(
         workflowPayload(store),
         "analysis_launch",
         dependencies(store, providers([], { acr: [...acr] })),
@@ -1032,7 +1082,7 @@ describe("media processing workflow", () => {
   test("explicit lyrics publish truthfully while uncertain classification enters review", async () => {
     const explicitStore = new FakeStore();
     expect(
-      await runMediaProcessingWorkflow(
+      await runWorkflow(
         workflowPayload(explicitStore),
         "analysis_launch",
         dependencies(explicitStore, providers([], { explicitness: "explicit" })),
@@ -1045,7 +1095,7 @@ describe("media processing workflow", () => {
 
     const mismatchStore = new FakeStore();
     expect(
-      await runMediaProcessingWorkflow(
+      await runWorkflow(
         workflowPayload(mismatchStore),
         "analysis_launch",
         dependencies(mismatchStore, providers([], { explicitness: "uncertain" })),
@@ -1058,11 +1108,7 @@ describe("media processing workflow", () => {
     const store = new FakeStore();
     const provider = providers([], { explicitness: "uncertain" });
     expect(
-      await runMediaProcessingWorkflow(
-        workflowPayload(store),
-        "analysis_launch",
-        dependencies(store, provider),
-      ),
+      await runWorkflow(workflowPayload(store), "analysis_launch", dependencies(store, provider)),
     ).toEqual({ outcome: "manual_review" });
     store.current = { ...store.current, status: "processing", phase: "publish" };
     const outbox = store.outboxes.get("outbox-1");
@@ -1070,18 +1116,10 @@ describe("media processing workflow", () => {
     store.outboxes.set("outbox-1", { ...outbox, eventType: "publication" });
 
     expect(
-      await runMediaProcessingWorkflow(
-        workflowPayload(store),
-        "publication",
-        dependencies(store, provider),
-      ),
+      await runWorkflow(workflowPayload(store), "publication", dependencies(store, provider)),
     ).toEqual({ outcome: "published" });
     expect(
-      await runMediaProcessingWorkflow(
-        workflowPayload(store),
-        "publication",
-        dependencies(store, provider),
-      ),
+      await runWorkflow(workflowPayload(store), "publication", dependencies(store, provider)),
     ).toEqual({ outcome: "published" });
     expect(store.publications).toBe(1);
     expect(store.alignmentLaunches).toBe(1);
@@ -1090,11 +1128,7 @@ describe("media processing workflow", () => {
   test("disabled or missing provider composition fails closed without effects", async () => {
     const store = new FakeStore();
     const deps = dependencies(store, null);
-    const result = await runMediaProcessingWorkflow(
-      workflowPayload(store),
-      "analysis_launch",
-      deps,
-    );
+    const result = await runWorkflow(workflowPayload(store), "analysis_launch", deps);
     expect(result).toEqual({ outcome: "manual_review" });
     expect(store.providerReviews).toBe(1);
     expect(store.attempts.size).toBe(0);
@@ -1109,7 +1143,7 @@ describe("media processing workflow", () => {
       eventType: "decision_wakeup",
     });
     expect(
-      await runMediaProcessingWorkflow(
+      await runWorkflow(
         workflowPayload(store),
         "decision_wakeup",
         dependencies(store, providers([])),
@@ -1119,7 +1153,7 @@ describe("media processing workflow", () => {
 
     store.current = { ...store.current, workflowRevision: 2 };
     expect(
-      await runMediaProcessingWorkflow(
+      await runWorkflow(
         { ...workflowPayload(store), workflowRevision: 1 },
         "decision_wakeup",
         dependencies(store, providers([])),
@@ -1131,23 +1165,19 @@ describe("media processing workflow", () => {
     const store = new FakeStore();
     const providerEvents: string[] = [];
     const provider = providers(providerEvents);
-    await runMediaProcessingWorkflow(
-      workflowPayload(store),
-      "analysis_launch",
-      dependencies(store, provider),
-    );
+    await runWorkflow(workflowPayload(store), "analysis_launch", dependencies(store, provider));
     const alignmentOutbox = store.outboxes.get("outbox-1");
     if (alignmentOutbox === undefined) throw new TypeError("alignment outbox fixture is missing");
     store.outboxes.set("outbox-1", {
       ...alignmentOutbox,
       eventType: "alignment",
     });
-    const aligned = await runMediaProcessingWorkflow(
+    const aligned = await runWorkflow(
       workflowPayload(store),
       "alignment",
       dependencies(store, provider),
     );
-    const replay = await runMediaProcessingWorkflow(
+    const replay = await runWorkflow(
       workflowPayload(store),
       "alignment",
       dependencies(store, provider),
@@ -1177,11 +1207,7 @@ describe("media processing workflow", () => {
     };
 
     expect(
-      await runMediaProcessingWorkflow(
-        workflowPayload(store),
-        "alignment",
-        dependencies(store, provider),
-      ),
+      await runWorkflow(workflowPayload(store), "alignment", dependencies(store, provider)),
     ).toEqual({ outcome: "waiting_for_provider" });
     expect(store.events).toContain("fail:alignment");
     expect(store.current.status).toBe("published");
@@ -1208,11 +1234,7 @@ describe("media processing workflow", () => {
     };
 
     expect(
-      await runMediaProcessingWorkflow(
-        workflowPayload(store),
-        "alignment",
-        dependencies(store, provider),
-      ),
+      await runWorkflow(workflowPayload(store), "alignment", dependencies(store, provider)),
     ).toEqual({ outcome: "waiting_for_provider" });
     expect(store.events).toContain("fail:alignment");
     expect(store.current.status).toBe("published");
@@ -1237,11 +1259,7 @@ describe("media processing workflow", () => {
     );
 
     expect(
-      await runMediaProcessingWorkflow(
-        workflowPayload(store),
-        "alignment",
-        dependencies(store, providers([])),
-      ),
+      await runWorkflow(workflowPayload(store), "alignment", dependencies(store, providers([]))),
     ).toEqual({ outcome: "alignment_recorded" });
     expect(store.alignmentResults).toEqual([
       { kind: "alignment", status: "unavailable", failureCode: "provider_unavailable" },
@@ -1281,4 +1299,389 @@ describe("media processing workflow", () => {
       }),
     ).toBe(false);
   });
+});
+
+// These specifications intentionally fail against the preserved Promise baseline.
+// Provider self-interruption exercises catch handling independently of parent propagation.
+describe("media interruption specifications", () => {
+  for (const stage of [
+    "probe",
+    "sample_primary",
+    "sample_alternate",
+    "acr_primary",
+    "acr_alternate",
+    "classifier",
+    "text",
+    "cover",
+  ] as const) {
+    test(`does not persist failure or fallback after ${stage} interrupts`, async () => {
+      const store = new FakeStore(authority());
+      let finalized = 0;
+      const interrupted = Effect.ensuring(
+        Effect.interrupt,
+        Effect.sync(() => {
+          finalized += 1;
+        }),
+      );
+      const base = providers([], {
+        acr: ["fingerprint", "no_match"],
+        cover: {
+          status: "ready",
+          artifactRef: "interruption-cover",
+          artifactSha256: "b".repeat(64),
+          mediaType: "image/jpeg",
+          width: 1200,
+          height: 1200,
+          normalizationRevision: "cover-normalization-v1",
+          safetyPolicyRevision: "visual-provider-pending-v1",
+        },
+      });
+      let identificationCalls = 0;
+      const provider: MediaProcessingProviders = {
+        ...base,
+        transform: {
+          ...base.transform,
+          probe: stage === "probe" ? () => interrupted : base.transform.probe,
+          extractAudioSample: (input) =>
+            stage === `sample_${input.variant}`
+              ? interrupted
+              : base.transform.extractAudioSample(input),
+        },
+        identification: {
+          identify: (input) => {
+            identificationCalls += 1;
+            return stage === (identificationCalls === 1 ? "acr_primary" : "acr_alternate")
+              ? interrupted
+              : base.identification.identify(input);
+          },
+        },
+        classifier: {
+          classify: stage === "classifier" ? () => interrupted : base.classifier.classify,
+        },
+        textModeration: {
+          evaluate: stage === "text" ? () => interrupted : base.textModeration.evaluate,
+        },
+        imageModeration: {
+          evaluateImage: stage === "cover" ? () => interrupted : base.imageModeration.evaluateImage,
+        },
+      };
+      const outcome = await Effect.runPromise(
+        runMediaProcessingWorkflow(
+          workflowPayload(store),
+          "analysis_launch",
+          dependencies(store, provider),
+        ),
+      ).then(
+        (value) => ({ kind: "success", value }),
+        () => ({ kind: "interrupted" }),
+      );
+      expect(finalized).toBe(1);
+      expect(
+        store.events.filter((event) => event.startsWith("fail:") || event.startsWith("defer:")),
+      ).toEqual([]);
+      expect(store.current.analysis).toBeNull();
+      expect(store.providerReviews).toBe(0);
+      expect(store.publications).toBe(0);
+      expect(outcome.kind).toBe("interrupted");
+    });
+  }
+
+  test("parent interruption finalizes an in-flight probe before returning", async () => {
+    const store = new FakeStore(authority());
+    const base = providers([]);
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let finalized = 0;
+    const provider: MediaProcessingProviders = {
+      ...base,
+      transform: {
+        ...base.transform,
+        probe: ((input: MediaTransformProbeInput) =>
+          Effect.gen(function* () {
+            entered.resolve();
+            yield* Effect.promise(() => release.promise);
+            return yield* base.transform.probe(input);
+          }).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                finalized += 1;
+              }),
+            ),
+          )) as unknown as MediaTransformService["probe"],
+      },
+    };
+    const controller = new AbortController();
+    const workflow = runMediaProcessingWorkflow(
+      workflowPayload(store),
+      "analysis_launch",
+      dependencies(store, provider),
+    );
+    const parent = Effect.runPromiseExit(workflow, { signal: controller.signal });
+    try {
+      await entered.promise;
+      controller.abort();
+      expect((await parent)._tag).toBe("Failure");
+      expect(finalized).toBe(1);
+      expect(
+        store.events.some((event) => event.startsWith("complete:") || event.startsWith("fail:")),
+      ).toBe(false);
+    } finally {
+      release.resolve();
+      await parent;
+    }
+  });
+});
+
+describe("media interruption store checkpoints", () => {
+  for (const operation of [
+    "startAttempt",
+    "completeAttempt",
+    "commitAnalysis",
+    "commitDecision",
+    "commitPublication",
+    "deferAttempt",
+    "failAttempt",
+    "commitAlignment",
+    "commitProcessingFailure",
+    "commitProviderUnavailableReview",
+  ] as const) {
+    test(`finishes an in-flight ${operation} and starts no subsequent operation`, async () => {
+      const isAlignment = operation === "commitAlignment";
+      const store = isAlignment
+        ? new FakeStore(
+            authority({
+              status: "published",
+              phase: null,
+              postId: "media-post-operation-1",
+              publishedLyricsRevision: 1,
+            }),
+            "alignment",
+          )
+        : new FakeStore(authority({ lyrics: null }));
+      const base = providers(
+        [],
+        operation === "commitProcessingFailure" ? { durationMs: 99_000_000 } : {},
+      );
+      const provider: MediaProcessingProviders | null =
+        operation === "commitProviderUnavailableReview"
+          ? null
+          : {
+              ...base,
+              transform: {
+                ...base.transform,
+                probe:
+                  operation === "failAttempt"
+                    ? () => Effect.die(new Error("ordinary provider failure"))
+                    : operation === "deferAttempt"
+                      ? (((input: MediaTransformProbeInput) =>
+                          Effect.succeed({
+                            status: "submitted",
+                            attempt: { ...input.attempt, providerJobId: "submitted-job" },
+                          })) as unknown as MediaTransformService["probe"])
+                      : base.transform.probe,
+              },
+            };
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const original = store[operation].bind(store);
+      let started = false;
+      let settled = false;
+      let afterWrite: string[] = [];
+      // A test-only barrier surrounds the existing logical operation, not its individual queries.
+      Object.assign(store, {
+        [operation]: async (...args: Parameters<typeof original>) => {
+          if (!started) {
+            started = true;
+            entered.resolve();
+            await release.promise;
+            const result = await Reflect.apply(original, store, args);
+            settled = true;
+            afterWrite = [...store.events];
+            return result;
+          }
+          return Reflect.apply(original, store, args);
+        },
+      });
+      const controller = new AbortController();
+      const workflow = runMediaProcessingWorkflow(
+        workflowPayload(store),
+        isAlignment ? "alignment" : "analysis_launch",
+        dependencies(store, provider),
+      );
+      const dispatcher = new Scheduler.MixedScheduler("sync").makeDispatcher();
+      const scheduler: Scheduler.Scheduler = {
+        executionMode: "sync",
+        shouldYield: () => false,
+        makeDispatcher: () => dispatcher,
+      };
+      let settledAtExit = false;
+      const parent = Effect.runPromiseExit(
+        Effect.ensuring(
+          workflow,
+          Effect.sync(() => {
+            settledAtExit = settled;
+          }),
+        ),
+        { signal: controller.signal, scheduler },
+      );
+      const completed = parent.then(
+        () => "completed",
+        () => "rejected",
+      );
+      try {
+        expect(await Promise.race([entered.promise.then(() => "entered"), completed])).toBe(
+          "entered",
+        );
+        controller.abort();
+        // Drain the interrupt while the write barrier is still held.
+        dispatcher.flush();
+        release.resolve();
+        const outcome = await parent;
+        await completed;
+        expect(settled).toBe(true);
+        expect(outcome._tag).toBe("Failure");
+        expect(settledAtExit).toBe(true);
+        expect(store.events).toEqual(afterWrite);
+      } finally {
+        controller.abort();
+        release.resolve();
+        await completed;
+      }
+    });
+  }
+});
+
+describe("media interruption Promise adapters", () => {
+  for (const stage of ["audio", "cover", "metadata", "alignment"] as const) {
+    test(`signals the ${stage} adapter on parent interruption without starting a failure write`, async () => {
+      const store =
+        stage === "alignment"
+          ? new FakeStore(
+              authority({
+                status: "published",
+                phase: null,
+                postId: "media-post-operation-1",
+                publishedLyricsRevision: 1,
+              }),
+              "alignment",
+            )
+          : new FakeStore(authority());
+      const base = providers([], {
+        cover: {
+          status: "ready",
+          artifactRef: "interruption-cover",
+          artifactSha256: "b".repeat(64),
+          mediaType: "image/jpeg",
+          width: 1200,
+          height: 1200,
+          normalizationRevision: "fixture-v1",
+          safetyPolicyRevision: "fixture-v1",
+        },
+      });
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      let aborts = 0;
+      const pause = async (signal: AbortSignal) => {
+        const onAbort = () => {
+          aborts += 1;
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+        entered.resolve();
+        try {
+          await release.promise;
+        } finally {
+          signal.removeEventListener("abort", onAbort);
+        }
+      };
+      const provider: MediaProcessingProviders = {
+        ...base,
+        artifactReader: {
+          readAudioSample: async (artifact, maxBytes, signal) => {
+            if (stage === "audio") await pause(signal);
+            return base.artifactReader.readAudioSample(artifact, maxBytes, signal);
+          },
+          readCoverArtifact: async (artifact, maxBytes, signal) => {
+            if (stage === "cover") await pause(signal);
+            return base.artifactReader.readCoverArtifact(artifact, maxBytes, signal);
+          },
+        },
+        metadata: {
+          extract: async (input, signal) => {
+            if (stage === "metadata") await pause(signal);
+            return base.metadata.extract(input, signal);
+          },
+        },
+        alignment: {
+          align: async (input) => {
+            if (stage === "alignment") await pause(input.signal);
+            return base.alignment.align(input);
+          },
+        },
+      };
+      const controller = new AbortController();
+      const workflow = runMediaProcessingWorkflow(
+        workflowPayload(store),
+        stage === "alignment" ? "alignment" : "analysis_launch",
+        dependencies(store, provider),
+      );
+      const parent = Effect.runPromiseExit(workflow, { signal: controller.signal });
+      const completed = parent.then(
+        () => "completed",
+        () => "rejected",
+      );
+      try {
+        expect(await Promise.race([entered.promise.then(() => "entered"), completed])).toBe(
+          "entered",
+        );
+        const before = [...store.events];
+        controller.abort();
+        expect((await parent)._tag).toBe("Failure");
+        const signalledBeforeRelease = aborts;
+        release.resolve();
+        await completed;
+        expect(signalledBeforeRelease).toBe(1);
+        expect(store.events).toEqual(before);
+      } finally {
+        controller.abort();
+        release.resolve();
+        await completed;
+      }
+    });
+  }
+});
+
+test("discards prepared probe output when interruption precedes its write", async () => {
+  const store = new FakeStore(authority());
+  const base = providers([]);
+  const controller = new AbortController();
+  let obtained = false;
+  const provider: MediaProcessingProviders = {
+    ...base,
+    transform: {
+      ...base.transform,
+      probe: ((input: MediaTransformProbeInput) =>
+        Effect.gen(function* () {
+          const result = yield* base.transform.probe(input);
+          obtained = true;
+          controller.abort();
+          return result;
+        })) as unknown as MediaTransformService["probe"],
+    },
+  };
+  const workflow = runMediaProcessingWorkflow(
+    workflowPayload(store),
+    "analysis_launch",
+    dependencies(store, provider),
+  );
+  const parent = Effect.runPromiseExit(workflow, { signal: controller.signal });
+  expect((await parent)._tag).toBe("Failure");
+  await parent;
+  expect(obtained).toBe(true);
+  expect(
+    store.events.filter(
+      (event) =>
+        event.startsWith("complete:") || event.startsWith("fail:") || event.startsWith("defer:"),
+    ),
+  ).toEqual([]);
+  expect(store.current.analysis).toBeNull();
 });
