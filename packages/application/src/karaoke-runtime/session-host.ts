@@ -113,6 +113,8 @@ export interface KaraokeTransportGuardDiagnostic {
 
 export interface KaraokeSessionHostOptions {
   restore?: KaraokeSessionHostRestoreOptions;
+  /** Registers serialized work at enqueue time, including time spent waiting on its predecessor. */
+  runCommitTask?: (task: () => Promise<void>) => Promise<void>;
   /**
    * Invoked once per rejected transport envelope. The host supplies only what it
    * owns; the embedder enriches with runtime-level context (host lifecycle, socket
@@ -221,6 +223,7 @@ export class KaraokeSessionHost {
   private readonly onReconnectBufferDrop: (() => void | Promise<void>) | undefined;
   private readonly onCommitSettled: ((latencyMs: number) => void | Promise<void>) | undefined;
   private readonly commitAckTimeoutMs: number;
+  private readonly runCommitTask: (task: () => Promise<void>) => Promise<void>;
 
   constructor(
     initialState: KaraokeSessionState,
@@ -240,6 +243,7 @@ export class KaraokeSessionHost {
     this.onReconnectBufferDrop = options.onReconnectBufferDrop;
     this.onCommitSettled = options.onCommitSettled;
     this.commitAckTimeoutMs = options.commitAckTimeoutMs ?? DEFAULT_COMMIT_ACK_TIMEOUT_MS;
+    this.runCommitTask = options.runCommitTask ?? ((task) => task());
   }
 
   /** Awaits the serialized commit chain to settle — for deterministic tests. */
@@ -253,7 +257,9 @@ export class KaraokeSessionHost {
   }
 
   private enqueueCommitTask(task: () => Promise<void>): void {
-    this.commitChain = this.commitChain.then(task).catch(() => undefined);
+    const preceding = this.commitChain;
+    // Register now, not inside .then: a runtime drain must see queued work too.
+    this.commitChain = this.runCommitTask(() => preceding.then(task)).catch(() => undefined);
   }
 
   /**

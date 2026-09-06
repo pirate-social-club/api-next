@@ -12,6 +12,7 @@ import { createProductionHttpWorker, type HttpWorkerBindings } from "./compositi
 
 export { HnsForwarderReplayStoreDO } from "@pirate/platform-cf/hns-forwarder-replay-store-do";
 export { KaraokeAttemptDO } from "@pirate/platform-cf/karaoke-attempt-do";
+export { KaraokeResetOperatorEntrypoint } from "@pirate/platform-cf/karaoke-reset-operator-entrypoint";
 export {
   RegistrationApplicationRateLimiterDO,
   RegistrationIpRateLimiterDO,
