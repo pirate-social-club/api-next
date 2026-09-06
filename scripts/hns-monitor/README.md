@@ -101,3 +101,29 @@ scripts and static DNSSEC/DANE probes remain distinct installation repairs.
 This command does not make those old scripts valid or reactivate the disabled
 HTTP status page. Do not retire them as repaired solely because this command's
 dry-run is healthy.
+
+## Database execution boundary
+
+Apply migration 0126 before installing a reader credential. It removes PUBLIC
+execution from the four SECURITY DEFINER renewal functions. Existing explicit
+grants and owner execution remain. A SELECT-only table grant is insufficient
+while PUBLIC can invoke these writers.
+
+Before applying the migration, resolve the actual connection roles from the
+jobs Worker and provisioner protected configuration. Admit the jobs role only
+to schedule_hns_root_health_renewals_v1(integer,integer,integer), and the
+provisioner role to claim_hns_root_health_renewal_job_v1(text,integer),
+prepare_hns_root_inventory_renewal_v1(text,text,bigint,text,text,bytea,text,text)
+and finalize_hns_root_health_renewal_job_v1 with the same eight argument types.
+Use explicit schema-qualified GRANT EXECUTE statements for those verified roles
+in the controlled migration window; do not infer role names or grant execution
+to a monitor or gateway authority reader. Retain grants before revocation to
+avoid interrupting an existing executor that relied on PUBLIC. Verify effective
+privileges after migration, then read back a natural scheduler heartbeat.
+
+The monitor credential requires schema USAGE and SELECT only on the eight
+tables used by snapshot.ts. It must not inherit an administrator or writer role.
+Verify actual denied execution as well as table grants before enabling its unit.
+The privilege test applies the forward migration ledger on PostgreSQL; the
+structural test baseline strips environment-specific ACLs and is not permission
+acceptance evidence.
