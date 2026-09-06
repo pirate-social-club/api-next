@@ -2,6 +2,7 @@ import { env } from "cloudflare:test";
 import { MODERATION_POLICY_CATEGORIES_V1 } from "@pirate/contracts";
 import { Client } from "pg";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { createHttpWorker } from "../../apps/http-worker/src/transport.ts";
 import type {
   MediaProcessorRuntimeAdapters,
   MediaProcessorRuntimeEnv,
@@ -15,6 +16,7 @@ import type {
   VideoSafetyFact,
   VideoSoundtrackFact,
 } from "../../packages/application/src/video/analysis.ts";
+import { moderateVideoSubmission } from "../../packages/application/src/video/publication.ts";
 import { dispatchVideoPublicationWakeups } from "../../packages/application/src/video/publication-wakeup.ts";
 import { recoverVideoWorkflowLaunches } from "../../packages/application/src/video/workflow-recovery.ts";
 import { OPENAI_MODERATION_MODEL } from "../../packages/platform-cf/src/openai-text-moderation.ts";
@@ -67,7 +69,12 @@ afterEach(async () => {
   await admin?.end();
 });
 
-function harness(durableGrants = false, safety?: "clean" | "minors" | "caption" | "unavailable") {
+function harness(
+  durableGrants = false,
+  safety?: "clean" | "minors" | "caption" | "unavailable",
+  recognition?: "no_match" | "alternate_match" | "throttled",
+) {
+  const recognitionCalls: string[] = [];
   const moderationCalls: string[] = [];
   const objects = new Map<
     string,
@@ -287,6 +294,46 @@ function harness(durableGrants = false, safety?: "clean" | "minors" | "caption" 
       },
     };
   }
+  if (recognition !== undefined) {
+    const video = injected.adapters.videoAnalysis;
+    if (!video) throw new Error("missing adapters");
+    injected.adapters = {
+      videoAnalysis: {
+        ...video,
+        providers: {},
+        recognitionFetch: async (_url, init) => {
+          if (!(init?.body instanceof FormData)) throw new Error("expected ACR multipart");
+          const sample = init.body.get("sample");
+          if (!(sample instanceof File)) throw new Error("expected ACR sample");
+          expect(sample.type).toBe("audio/mpeg");
+          expect(new Uint8Array(await sample.arrayBuffer())).toEqual(
+            new Uint8Array([255, 251, 144, 0]),
+          );
+          recognitionCalls.push(sample.name);
+          if (recognition === "throttled") return new Response(null, { status: 429 });
+          if (recognition === "alternate_match")
+            return Response.json(
+              sample.name === "primary.mp3"
+                ? { status: { code: 2004 } }
+                : {
+                    status: { code: 0 },
+                    metadata: {
+                      music: [
+                        {
+                          acrid: "external-fixture",
+                          title: "Private title",
+                          artists: [{ name: "Private artist" }],
+                          score: 98,
+                        },
+                      ],
+                    },
+                  },
+            );
+          return Response.json({ status: { code: 1001 } });
+        },
+      },
+    };
+  }
   const runtimeEnv: MediaProcessorRuntimeEnv = {
     CONTROL_PLANE: { connectionString: bindings.VIDEO_TEST_DATABASE },
     MEDIA_PROCESSING_ENABLED: "false",
@@ -305,6 +352,9 @@ function harness(durableGrants = false, safety?: "clean" | "minors" | "caption" 
     MEDIA_DERIVED_ARTIFACTS: bucket as unknown as R2Bucket,
     VIDEO_ANALYSIS_ENABLED: "true",
     QENCODE_API_KEY: "fixture-key",
+    ACRCLOUD_IDENTIFY_HOST: "identify-eu-west-1.acrcloud.com",
+    ACRCLOUD_ACCESS_KEY: "fixture-key",
+    ACRCLOUD_ACCESS_SECRET: "fixture-secret",
     OPENAI_MODERATION_ENABLED: "true",
     OPENAI_API_KEY: "fixture-openai",
     VIDEO_SOURCE_GATEWAY_ORIGIN: "https://video-source.example",
@@ -419,8 +469,64 @@ function harness(durableGrants = false, safety?: "clean" | "minors" | "caption" 
       launcher,
     });
   };
+  const approveEndpoint = async (hold: "safety" | "soundtrack", evidence = true) => {
+    const record = await fixture.store.getSubmissionByOperation({ submissionId, operationId });
+    if (!record) throw new Error("missing submission");
+    const app = createHttpWorker({
+      authenticate: async () => ({ kind: "user", subject: actor }),
+      authorize: async () => {},
+      handlers: {
+        ModerateMediaPostSubmission: (request) =>
+          moderateVideoSubmission(
+            {
+              submissionId: (request.params as { submissionId: string }).submissionId,
+              actor: { kind: "user", userId: request.principal?.subject ?? "" },
+              body: request.body,
+            },
+            {
+              store: fixture.store,
+              nowIso: () => new Date().toISOString(),
+              get multipart(): never {
+                throw new Error("unexpected ingress call");
+              },
+              get sealer(): never {
+                throw new Error("unexpected seal call");
+              },
+              get personaServices(): never {
+                throw new Error("unexpected persona call");
+              },
+            },
+          ),
+      },
+    });
+    const response = await app.request(
+      `https://api.example/moderation/media-post-submissions/${submissionId}/actions`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer fixture" },
+        body: JSON.stringify({
+          idempotency_key: `approve-${hold}-${evidence}`,
+          expected_creation_revision: record.state.creationRevision,
+          action: "approve",
+          approval_kind: hold === "safety" ? "standard" : "soundtrack_override",
+          hold,
+          ...(hold === "soundtrack"
+            ? {
+                reason_code: record.state.reviewReasons.find((r) => r.startsWith("soundtrack_")),
+                ...(evidence ? { evidence_ref: `evidence_${"7".repeat(64)}` } : {}),
+              }
+            : {}),
+        }),
+      },
+    );
+    if (response.ok)
+      await dispatchVideoPublicationWakeups({ wakeups, outbox, store: fixture.store, launcher });
+    return response;
+  };
   return {
     runtimeEnv,
+    recognitionCalls,
+    approveEndpoint,
     moderationCalls,
     composition,
     outbox,
@@ -690,7 +796,7 @@ test("drill 7: terminal provider job failure then technical retry creates a fres
   expect(new Set(h.starts).size).toBe(6);
 });
 
-test("sealed audio survives a failed fact write and expired provider output", async () => {
+test("recognition recovery: all three sealed audio artifacts survive a failed fact write and expired outputs", async () => {
   const h = harness();
   await admin.query(`CREATE FUNCTION reject_audio_fact_fixture() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.stage='audio' THEN RAISE EXCEPTION 'injected fact write failure'; END IF; RETURN NEW; END $$;
     CREATE TRIGGER reject_audio_fact_fixture BEFORE INSERT ON media_video_stage_facts FOR EACH ROW EXECUTE FUNCTION reject_audio_fact_fixture()`);
@@ -706,6 +812,19 @@ test("sealed audio survives a failed fact write and expired provider output", as
   expect(await h.run(event)).toEqual({ status: "published" });
   await assertPublished();
   expect(h.starts).toHaveLength(3);
+  const audio = (
+    await admin.query("SELECT fact_snapshot FROM media_video_stage_facts WHERE stage='audio'")
+  ).rows[0].fact_snapshot;
+  expect(audio.artifacts).toHaveLength(3);
+  expect(audio.snapshot.clips.map((clip: { variant: string }) => clip.variant)).toEqual([
+    "primary",
+    "alternate",
+  ]);
+  expect(audio.artifacts.map((artifact: { contentType: string }) => artifact.contentType)).toEqual([
+    "audio/mp4",
+    "audio/mpeg",
+    "audio/mpeg",
+  ]);
 });
 
 test("durable source grant composition: submit replay preserves one grant and start per capability", async () => {
@@ -784,3 +903,50 @@ for (const mode of ["clean", "minors", "caption", "unavailable"] as const) {
     expect((await admin.query("SELECT count(*)::int AS n FROM posts")).rows[0].n).toBe(0);
   });
 }
+
+test("recognition: both MP3 clips no-match publish after safety approval through the moderation endpoint", async () => {
+  const h = harness(false, "clean", "no_match");
+  h.beforeWait(async () => {
+    expect((await h.approveEndpoint("safety")).status).toBe(200);
+  });
+  expect(await h.run(await h.launch())).toEqual({ status: "published" });
+  await assertPublished();
+  expect(h.recognitionCalls).toEqual(["primary.mp3", "alternate.mp3"]);
+  const fact = (
+    await admin.query("SELECT fact_snapshot FROM media_video_stage_facts WHERE stage='recognition'")
+  ).rows[0];
+  expect(fact.fact_snapshot.snapshot.privateEvidence).toHaveLength(2);
+});
+
+test("recognition: primary inconclusive and alternate external match require soundtrack evidence approval", async () => {
+  const h = harness(false, "clean", "alternate_match");
+  h.beforeWait(async () => {
+    let record = await fixture.store.getSubmissionByOperation({ submissionId, operationId });
+    expect(record?.state.reviewReasons).toContain("soundtrack_known_recording");
+    expect((await h.approveEndpoint("safety")).status).toBe(200);
+    record = await fixture.store.getSubmissionByOperation({ submissionId, operationId });
+    expect(record?.state.status).toBe("manual_review");
+    expect((await h.approveEndpoint("soundtrack", false)).status).toBe(400);
+    expect((await admin.query("SELECT count(*)::int AS n FROM posts")).rows[0].n).toBe(0);
+    expect((await h.approveEndpoint("soundtrack")).status).toBe(200);
+  });
+  expect(await h.run(await h.launch())).toEqual({ status: "published" });
+  await assertPublished();
+  expect(h.recognitionCalls).toEqual(["primary.mp3", "alternate.mp3"]);
+  const fact = (
+    await admin.query("SELECT fact_snapshot FROM media_video_stage_facts WHERE stage='recognition'")
+  ).rows[0].fact_snapshot;
+  expect(fact.snapshot.privateEvidence[0].outcome).toBe("inconclusive_fingerprint");
+  expect(fact.snapshot.privateEvidence[1].match.title).toBe("Private title");
+});
+
+test("recognition: throttling exhausts into a soundtrack hold", async () => {
+  const h = harness(false, "clean", "throttled");
+  const event = await h.launch();
+  await expect(h.run(event)).rejects.toThrow("publication event was not delivered");
+  const record = await fixture.store.getSubmissionByOperation({ submissionId, operationId });
+  expect(record?.state.status).toBe("manual_review");
+  expect(record?.state.reviewReasons).toContain("soundtrack_exhausted");
+  expect(h.recognitionCalls).toEqual(["primary.mp3", "primary.mp3", "primary.mp3"]);
+  expect((await admin.query("SELECT count(*)::int AS n FROM posts")).rows[0].n).toBe(0);
+});

@@ -18,7 +18,7 @@ const audio: VideoStageFact = {
     clips: [
       {
         variant: "primary",
-        artifactRef: ref + ".primary.mp3",
+        artifactRef: `${ref}.primary.mp3`,
         canonicalSha256: digest,
         sizeBytes: 42,
         mediaType: "audio/mpeg",
@@ -27,7 +27,7 @@ const audio: VideoStageFact = {
       },
       {
         variant: "alternate",
-        artifactRef: ref + ".alternate.mp3",
+        artifactRef: `${ref}.alternate.mp3`,
         canonicalSha256: digest,
         sizeBytes: 42,
         mediaType: "audio/mpeg",
@@ -45,7 +45,7 @@ const audio: VideoStageFact = {
   },
   artifacts: [
     ...(["primary", "alternate"] as const).map((variant) => ({
-      artifactRef: ref + `.${variant}.mp3`,
+      artifactRef: `${ref}.${variant}.mp3`,
       canonicalSha256: digest,
       sizeBytes: 42,
       contentType: "audio/mpeg" as const,
@@ -116,4 +116,16 @@ describe("sealed video stage recovery", () => {
       await expect(head(invalid)).rejects.toThrow("invalid derived artifact reference");
     expect(calls).toBe(0);
   });
+});
+
+test("audio stage refuses missing clips, wrong windows, role swaps and receipt size drift", () => {
+  if (audio.stage !== "audio") throw new Error("fixture audio missing");
+  const [primary, alternate] = audio.snapshot.clips;
+  for (const snapshot of [
+    { ...audio.snapshot, clips: [primary] },
+    { ...audio.snapshot, clips: [alternate, primary] },
+    { ...audio.snapshot, clips: [{ ...primary, offsetMs: 1 }, alternate] },
+    { ...audio.snapshot, clips: [{ ...primary, sizeBytes: 43 }, alternate] },
+  ])
+    expect(() => validateVideoStageFact({ ...audio, snapshot })).toThrow();
 });

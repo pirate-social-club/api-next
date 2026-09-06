@@ -230,7 +230,7 @@ suite("video publication PostgreSQL", () => {
                 clips: [
                   {
                     variant: "primary",
-                    artifactRef: soundtrack.extractedAudioRef + ".primary.mp3",
+                    artifactRef: `${soundtrack.extractedAudioRef}.primary.mp3`,
                     canonicalSha256: soundtrack.extractedAudioSha256,
                     sizeBytes: 42,
                     mediaType: "audio/mpeg",
@@ -239,7 +239,7 @@ suite("video publication PostgreSQL", () => {
                   },
                   {
                     variant: "alternate",
-                    artifactRef: soundtrack.extractedAudioRef + ".alternate.mp3",
+                    artifactRef: `${soundtrack.extractedAudioRef}.alternate.mp3`,
                     canonicalSha256: soundtrack.extractedAudioSha256,
                     sizeBytes: 42,
                     mediaType: "audio/mpeg",
@@ -257,7 +257,7 @@ suite("video publication PostgreSQL", () => {
               },
               artifacts: [
                 ...(["primary", "alternate"] as const).map((variant) => ({
-                  artifactRef: soundtrack.extractedAudioRef + `.${variant}.mp3`,
+                  artifactRef: `${soundtrack.extractedAudioRef}.${variant}.mp3`,
                   canonicalSha256: soundtrack.extractedAudioSha256,
                   sizeBytes: 42,
                   contentType: "audio/mpeg" as const,

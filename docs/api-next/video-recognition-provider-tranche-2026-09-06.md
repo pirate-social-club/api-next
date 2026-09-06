@@ -56,3 +56,55 @@ acr_skipped. Qencode, gateway and Workflow bindings still require valid
 configuration. VIDEO_ANALYSIS_ENABLED remains false in every environment.
 Composition/provider suites passed 12 tests, 98 assertions, exit 0, and bun run
 check exited 0. Live credentials and provider acceptance remain unproven.
+
+## Composed acceptance
+
+The queue worker and exported Workflow class run with real application commands
+and PostgreSQL stores. Qencode and OpenAI transports are fixture boundaries;
+ACR uses the shared concrete adapter with a fixture fetch. The moderation
+endpoint uses the real HTTP transport, contract decode, application command and
+moderator store with fixture authentication. This is not a hosted Workflow or
+a browser/session acceptance claim, and no test calls the publication store.
+
+The composed suite passed all 22 cases, exit 0, including these named cases:
+
+| Test | Result |
+| --- | --- |
+| recognition: both MP3 clips no-match publish after safety approval through the moderation endpoint | passed |
+| recognition: primary inconclusive and alternate external match require soundtrack evidence approval | passed |
+| recognition: throttling exhausts into a soundtrack hold | passed |
+| recognition recovery: all three sealed audio artifacts survive a failed fact write and expired outputs | passed |
+
+The matching case rejects soundtrack approval without evidence with HTTP 400
+and observes no Post before valid approval. It proves ACR code 2004 followed by
+an external match, with normalized title retained only in private stage evidence.
+The recovery case checks three sealed receipts and only three total encode
+starts: probe, audio and frames. Existing drills 1, 3, 4, 5 and 7 remain green.
+
+The first composed run passed 21 cases and failed one test-side query for a
+nonexistent snapshot column, after publication had succeeded. It was corrected
+to fact_snapshot. The alternate-match fixture was also tightened from an empty
+success response to the explicit inconclusive status 2004 before the green run.
+No runtime workaround, timeout increase or publication shortcut was introduced.
+
+The Workerd source-gateway suite passed 14 cases, exit 0, including video
+recognition reads sealed clips and uses the real Workerd ACR fetch path. It
+exercises conditional R2 reads, multipart MP3 samples, signed requests and
+manual redirect handling without following Location. The affected publication
+and reconciliation PostgreSQL suites passed 33 cases, 253 assertions, exit 0.
+The owned database harness is stopped. Full PostgreSQL and remote required
+checks are still owed at pull-request preparation; these focused results do
+not substitute for them.
+
+Final local gate: bun run check and bun run test both exited 0. Ordinary coverage
+is 3,066 Bun, 20 Node and 156 Workerd tests. The pre-existing Workerd pump-canceled
+diagnostic remains visible with passing assertions. No migration, wire contract,
+client release, deployment, credential mutation or live provider call occurred.
+
+After integration, execution's remaining scope is reservation lifetime/cleanup
+and the cross-store platform-hold tooling follow-up. Staging still requires the
+configured gateway to be deployed, the read token and authorized Infisical
+mutation, Qencode/ACR fixture acceptance, the combined reason-code waiver and
+delivery's ingest/thumbnail path. The hostname targets are already recorded;
+DNS/deployment readiness is separate. Clean video remains manually reviewed
+until a separately accepted visual minor-safety provider and gate exist.
