@@ -30,6 +30,9 @@ paths, the local private driver's `driver_port` and `driver_reference`, and the
 reviewed `primary_authority_address`. The script is the release's adjacent
 `zone-freshness.py`; Python uses an isolated virtual environment installed from
 `scripts/hns-continuity/requirements.txt` with `pip --require-hashes`.
+Python 3.10 or newer and its distribution's venv/ensurepip support are required.
+The lock includes cryptography's conditional typing-extensions dependency on
+Python 3.10, and CI installs and tests the helper on that production version.
 Authority addresses come from each activation's exact pinned inventory, not a
 root list. This topology requires two distinct active authority addresses,
 including the configured primary. A topology change requires reviewed config.
