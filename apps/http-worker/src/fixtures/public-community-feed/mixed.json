@@ -1,0 +1,75 @@
+{
+  "status": 200,
+  "headers": {
+    "cache-control": "no-store",
+    "content-type": "application/json; charset=UTF-8"
+  },
+  "body": {
+    "community": {
+      "id": "feed-fixture",
+      "object": "community_preview",
+      "route_slug": "feed-fixture",
+      "display_name": "Feed fixture",
+      "membership_mode": "open",
+      "human_verification_lane": null,
+      "member_count": 0,
+      "follower_count": 0,
+      "moderators": [],
+      "membership_gate_summaries": [],
+      "rules": [],
+      "created": 1788220800
+    },
+    "items": [
+      {
+        "post": {
+          "id": "public-post",
+          "object": "post",
+          "community": "feed-fixture",
+          "author_persona": {
+            "persona_id": "persona_4c15ea8c1b52443c826ecfe39f5ff3ef",
+            "object": "persona",
+            "display_name": null,
+            "avatar_ref": null,
+            "primary_public_handle": null
+          },
+          "author_public_handle": null,
+          "authorship_mode": "human_direct",
+          "agent": null,
+          "agent_ownership_record": null,
+          "identity_mode": "public",
+          "anonymous_scope": null,
+          "anonymous_label": null,
+          "post_type": "text",
+          "status": "published",
+          "visibility": "public",
+          "title": "public-post",
+          "body": "public-post",
+          "analysis_state": "allow",
+          "content_safety_state": "safe",
+          "age_gate_policy": "none",
+          "created": 1788220800
+        },
+        "thread_snapshot": null,
+        "upvote_count": 0,
+        "downvote_count": 0,
+        "like_count": 0,
+        "comment_count": 0,
+        "viewer_vote": null,
+        "viewer_reaction_kinds": [],
+        "resolved_locale": "en",
+        "translation_state": "policy_blocked",
+        "machine_translated": false,
+        "source_hash": null
+      },
+      {
+        "kind": "age_locked",
+        "content_rating": "adult_18",
+        "next_action": {
+          "kind": "verify_minimum_age",
+          "minimum_age": 18
+        }
+      }
+    ],
+    "next_cursor": null
+  }
+}

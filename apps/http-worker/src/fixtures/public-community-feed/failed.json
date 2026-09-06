@@ -1,0 +1,15 @@
+{
+  "status": 500,
+  "headers": {
+    "cache-control": "no-store",
+    "content-type": "application/json; charset=UTF-8"
+  },
+  "body": {
+    "error": {
+      "code": "internal_error",
+      "message": "Public community threads lookup failed",
+      "retryable": false
+    },
+    "request_id": "00000000-0000-4000-8000-000000000000"
+  }
+}
