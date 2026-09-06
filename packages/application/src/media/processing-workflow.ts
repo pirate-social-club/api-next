@@ -1,10 +1,13 @@
 import { canonicalTextModerationInput, resolveCommunityModerationPolicy } from "@pirate/domain";
-import { Effect } from "effect";
+import { Cause, Effect } from "effect";
 import {
   MEDIA_TRANSFORM_MAX_AUDIO_DURATION_MS,
   type MediaTransformAttempt,
+  type MediaTransformAudioSampleOutcome,
+  type MediaTransformProbeOutcome,
   type MediaTransformSampleArtifact,
 } from "../media/transform.ts";
+import type { MediaIdentificationOutcome } from "../media-identification-provider.ts";
 import {
   isMediaClassifierResultBoundToInputs,
   type MediaAcceptedLyrics,
@@ -79,7 +82,54 @@ class DeferredAttempt extends Error {
   }
 }
 
+class CoverReadFailure extends Error {}
+
 const TRANSFORM_POLL_DELAY_MS = 10_000;
+
+type WorkflowEffect<A> = Effect.Effect<A, unknown>;
+type ClassifierResult = Extract<
+  MediaProcessingAttemptResult,
+  { readonly kind: "classifier" }
+>["value"];
+type MetadataResult = Extract<MediaProcessingAttemptResult, { readonly kind: "metadata" }>["value"];
+
+const promiseEffect = <A>(run: () => Promise<A>): WorkflowEffect<A> =>
+  Effect.tryPromise({ try: run, catch: (error) => error });
+
+const storeWrite = <A>(run: () => Promise<A>): WorkflowEffect<A> =>
+  Effect.yieldNow.pipe(Effect.andThen(Effect.uninterruptible(promiseEffect(run))));
+
+const abortablePromise = <A>(run: (signal: AbortSignal) => Promise<A>): WorkflowEffect<A> =>
+  Effect.acquireUseRelease(
+    Effect.sync(() => new AbortController()),
+    (controller) => promiseEffect(() => run(controller.signal)),
+    (controller) => Effect.sync(() => controller.abort()),
+  );
+
+const deferredAttemptFromCause = (cause: Cause.Cause<unknown>): DeferredAttempt | undefined => {
+  const error = Cause.findErrorOption(cause);
+  return error._tag === "Some" && error.value instanceof DeferredAttempt ? error.value : undefined;
+};
+
+const catchStageFailure = <A>(
+  effect: WorkflowEffect<A>,
+  authority: MediaProcessingAuthority,
+  lease: MediaProcessingAttemptLease,
+  dependencies: MediaProcessingWorkflowDependencies,
+  mapFailure?: () => unknown,
+): WorkflowEffect<A> =>
+  effect.pipe(
+    Effect.catchCause((cause) => {
+      if (Cause.hasInterrupts(cause) || deferredAttemptFromCause(cause) !== undefined) {
+        return Effect.failCause(cause);
+      }
+      return failAttempt(authority, lease, dependencies).pipe(
+        Effect.andThen(() =>
+          mapFailure === undefined ? Effect.failCause(cause) : Effect.fail(mapFailure()),
+        ),
+      );
+    }),
+  );
 
 const attemptId = (
   authority: MediaProcessingAuthority,
@@ -104,85 +154,103 @@ const observation = (
   ...(stage === undefined ? {} : { stage }),
 });
 
-async function startAttempt(
+function startAttempt(
   authority: MediaProcessingAuthority,
   stage: MediaProcessingAttemptStage,
   inputRevision: number,
   adapterRevision: string,
   dependencies: MediaProcessingWorkflowDependencies,
-): Promise<
+): WorkflowEffect<
   | Readonly<{ readonly kind: "run"; readonly lease: MediaProcessingAttemptLease }>
   | Readonly<{ readonly kind: "replay"; readonly result: MediaProcessingAttemptResult }>
 > {
-  if (authority.audio === null) throw new TypeError("attempt requires authoritative audio");
-  const started = await dependencies.store.startAttempt({
-    authority,
-    stage,
-    attemptId: attemptId(authority, stage),
-    workerId: dependencies.options.workerId,
-    inputRevision,
-    inputHash: authority.audio.canonicalSha256,
-    policyRevision: dependencies.options.policyRevision,
-    adapterRevision,
+  return Effect.gen(function* () {
+    if (authority.audio === null)
+      return yield* Effect.die(new TypeError("attempt requires authoritative audio"));
+    const audio = authority.audio;
+    const started = yield* storeWrite(() =>
+      dependencies.store.startAttempt({
+        authority,
+        stage,
+        attemptId: attemptId(authority, stage),
+        workerId: dependencies.options.workerId,
+        inputRevision,
+        inputHash: audio.canonicalSha256,
+        policyRevision: dependencies.options.policyRevision,
+        adapterRevision,
+      }),
+    );
+    if (started.kind === "run") {
+      dependencies.options.observe?.(observation(authority, "attempt_started", stage));
+      return started;
+    }
+    if (started.kind === "replay") {
+      dependencies.options.observe?.(observation(authority, "attempt_replayed", stage));
+      return started;
+    }
+    return yield* Effect.fail(new DeferredAttempt(started.kind));
   });
-  if (started.kind === "run") {
-    dependencies.options.observe?.(observation(authority, "attempt_started", stage));
-    return started;
-  }
-  if (started.kind === "replay") {
-    dependencies.options.observe?.(observation(authority, "attempt_replayed", stage));
-    return started;
-  }
-  throw new DeferredAttempt(started.kind);
 }
 
-async function completeAttempt(
+function completeAttempt(
   authority: MediaProcessingAuthority,
   lease: MediaProcessingAttemptLease,
   result: MediaProcessingAttemptResult,
   dependencies: MediaProcessingWorkflowDependencies,
-): Promise<void> {
-  if (!(await dependencies.store.completeAttempt(lease, result))) {
-    throw new DeferredAttempt("stale_fence");
-  }
-  dependencies.options.observe?.(observation(authority, "attempt_completed", lease.stage));
+): WorkflowEffect<void> {
+  return Effect.gen(function* () {
+    if (!(yield* storeWrite(() => dependencies.store.completeAttempt(lease, result)))) {
+      return yield* Effect.fail(new DeferredAttempt("stale_fence"));
+    }
+    dependencies.options.observe?.(observation(authority, "attempt_completed", lease.stage));
+  });
 }
 
-async function deferAttempt(
+function deferAttempt(
   authority: MediaProcessingAuthority,
   lease: MediaProcessingAttemptLease,
   result: MediaProcessingAttemptResult,
   retryAfterMs: number,
   dependencies: MediaProcessingWorkflowDependencies,
-): Promise<never> {
-  if (!(await dependencies.store.deferAttempt(lease, result, retryAfterMs))) {
-    throw new DeferredAttempt("stale_fence");
-  }
-  dependencies.options.observe?.(observation(authority, "attempt_completed", lease.stage));
-  throw new DeferredAttempt("provider_progress");
+): WorkflowEffect<never> {
+  return Effect.gen(function* () {
+    if (!(yield* storeWrite(() => dependencies.store.deferAttempt(lease, result, retryAfterMs)))) {
+      return yield* Effect.fail(new DeferredAttempt("stale_fence"));
+    }
+    dependencies.options.observe?.(observation(authority, "attempt_completed", lease.stage));
+    return yield* Effect.fail(new DeferredAttempt("provider_progress"));
+  });
 }
 
-async function failAttempt(
+function failAttempt(
   authority: MediaProcessingAuthority,
   lease: MediaProcessingAttemptLease,
   dependencies: MediaProcessingWorkflowDependencies,
-): Promise<void> {
-  if (!(await dependencies.store.failAttempt(lease, "provider_unavailable", true))) {
-    throw new DeferredAttempt("stale_fence");
-  }
-  dependencies.options.observe?.(observation(authority, "attempt_failed", lease.stage));
+): WorkflowEffect<void> {
+  return Effect.gen(function* () {
+    if (
+      !(yield* storeWrite(() =>
+        dependencies.store.failAttempt(lease, "provider_unavailable", true),
+      ))
+    ) {
+      return yield* Effect.fail(new DeferredAttempt("stale_fence"));
+    }
+    dependencies.options.observe?.(observation(authority, "attempt_failed", lease.stage));
+  });
 }
 
-async function authoritativeReload(
+function authoritativeReload(
   authority: Pick<MediaProcessingAuthority, "submissionId" | "operationId">,
   dependencies: MediaProcessingWorkflowDependencies,
-): Promise<MediaProcessingAuthority> {
-  const current = await dependencies.store.loadAuthority(
-    authority.submissionId,
-    authority.operationId,
-  );
-  if (current === null) throw new TypeError("authoritative media operation is missing");
-  return current;
+): WorkflowEffect<MediaProcessingAuthority> {
+  return Effect.gen(function* () {
+    const current = yield* promiseEffect(() =>
+      dependencies.store.loadAuthority(authority.submissionId, authority.operationId),
+    );
+    if (current === null)
+      return yield* Effect.die(new TypeError("authoritative media operation is missing"));
+    return current;
+  });
 }
 
 function requireAttemptKind<K extends MediaProcessingAttemptResult["kind"]>(
@@ -193,281 +261,333 @@ function requireAttemptKind<K extends MediaProcessingAttemptResult["kind"]>(
   return result as Extract<MediaProcessingAttemptResult, { readonly kind: K }>;
 }
 
-async function runProbe(
+function runProbe(
   authority: MediaProcessingAuthority,
   providers: MediaProcessingProviders,
   dependencies: MediaProcessingWorkflowDependencies,
-) {
-  if (authority.audio === null) throw new TypeError("probe requires authoritative audio");
-  const started = await startAttempt(
-    authority,
-    "probe",
-    authority.audioRevision,
-    dependencies.options.transformAdapterRevision,
-    dependencies,
-  );
-  if (started.kind === "replay") return requireAttemptKind(started.result, "probe").value;
-  const prior = started.lease.priorResult;
-  const submittedAtMs = dependencies.options.now();
-  const attempt: MediaTransformAttempt =
-    prior === undefined
-      ? {
-          version: "media-transform-attempt-v1",
-          runtimeFence: {
-            submittedAtMs,
-            runtimeDeadlineMs: submittedAtMs + dependencies.options.transformRuntimeMs,
-          },
-        }
-      : requireAttemptKind(prior, "probe").value.attempt;
-  try {
-    const value = await Effect.runPromise(
-      providers.transform.probe({
-        version: "media-transform-probe-input-v1",
-        binding: {
-          operationId: authority.operationId,
-          audioRevision: authority.audioRevision,
-          analysisRevision: authority.analysisRevision,
-          canonicalAudioSha256: authority.audio.canonicalSha256,
-          requestId: started.lease.attemptId,
-        },
-        source: { objectKey: authority.audio.immutableRef },
-        attempt,
-      }),
+): WorkflowEffect<MediaTransformProbeOutcome> {
+  return Effect.gen(function* () {
+    if (authority.audio === null)
+      return yield* Effect.die(new TypeError("probe requires authoritative audio"));
+    const audio = authority.audio;
+    const started = yield* startAttempt(
+      authority,
+      "probe",
+      authority.audioRevision,
+      dependencies.options.transformAdapterRevision,
+      dependencies,
     );
-    if (value.status === "submitted" || value.status === "processing") {
-      return await deferAttempt(
-        authority,
-        started.lease,
-        { kind: "probe", value },
-        TRANSFORM_POLL_DELAY_MS,
-        dependencies,
-      );
-    }
-    if (value.status === "retryable_failure") {
-      await failAttempt(authority, started.lease, dependencies);
-      throw new DeferredAttempt("provider_progress");
-    }
-    await completeAttempt(authority, started.lease, { kind: "probe", value }, dependencies);
-    return value;
-  } catch (error) {
-    if (error instanceof DeferredAttempt) throw error;
-    await failAttempt(authority, started.lease, dependencies);
-    throw error;
-  }
+    if (started.kind === "replay") return requireAttemptKind(started.result, "probe").value;
+    const prior = started.lease.priorResult;
+    const submittedAtMs = dependencies.options.now();
+    const attempt: MediaTransformAttempt =
+      prior === undefined
+        ? {
+            version: "media-transform-attempt-v1",
+            runtimeFence: {
+              submittedAtMs,
+              runtimeDeadlineMs: submittedAtMs + dependencies.options.transformRuntimeMs,
+            },
+          }
+        : requireAttemptKind(prior, "probe").value.attempt;
+    return yield* catchStageFailure(
+      Effect.gen(function* () {
+        const value = yield* Effect.suspend(() =>
+          providers.transform.probe({
+            version: "media-transform-probe-input-v1",
+            binding: {
+              operationId: authority.operationId,
+              audioRevision: authority.audioRevision,
+              analysisRevision: authority.analysisRevision,
+              canonicalAudioSha256: audio.canonicalSha256,
+              requestId: started.lease.attemptId,
+            },
+            source: { objectKey: audio.immutableRef },
+            attempt,
+          }),
+        );
+        if (value.status === "submitted" || value.status === "processing") {
+          return yield* deferAttempt(
+            authority,
+            started.lease,
+            { kind: "probe", value },
+            TRANSFORM_POLL_DELAY_MS,
+            dependencies,
+          );
+        }
+        if (value.status === "retryable_failure") {
+          yield* failAttempt(authority, started.lease, dependencies);
+          return yield* Effect.fail(new DeferredAttempt("provider_progress"));
+        }
+        yield* completeAttempt(authority, started.lease, { kind: "probe", value }, dependencies);
+        return value;
+      }),
+      authority,
+      started.lease,
+      dependencies,
+    );
+  });
 }
 
-async function runSample(
+function runSample(
   authority: MediaProcessingAuthority,
   providers: MediaProcessingProviders,
   durationMs: number,
   variant: "primary" | "alternate",
   dependencies: MediaProcessingWorkflowDependencies,
-) {
-  if (authority.audio === null) throw new TypeError("sample requires authoritative audio");
-  const stage = variant === "primary" ? "sample_primary" : "sample_alternate";
-  const started = await startAttempt(
-    authority,
-    stage,
-    authority.audioRevision,
-    dependencies.options.transformAdapterRevision,
-    dependencies,
-  );
-  if (started.kind === "replay") return requireAttemptKind(started.result, "sample").value;
-  const prior = started.lease.priorResult;
-  const submittedAtMs = dependencies.options.now();
-  const attempt: MediaTransformAttempt =
-    prior === undefined
-      ? {
-          version: "media-transform-attempt-v1",
-          runtimeFence: {
-            submittedAtMs,
-            runtimeDeadlineMs: submittedAtMs + dependencies.options.transformRuntimeMs,
-          },
-        }
-      : requireAttemptKind(prior, "sample").value.attempt;
-  try {
-    const value = await Effect.runPromise(
-      providers.transform.extractAudioSample({
-        version: "media-transform-audio-sample-input-v1",
-        binding: {
-          operationId: authority.operationId,
-          audioRevision: authority.audioRevision,
-          analysisRevision: authority.analysisRevision,
-          canonicalAudioSha256: authority.audio.canonicalSha256,
-          requestId: started.lease.attemptId,
-        },
-        source: { objectKey: authority.audio.immutableRef },
-        sourceDurationMs: durationMs,
-        variant,
-        attempt,
-      }),
+): WorkflowEffect<MediaTransformAudioSampleOutcome> {
+  return Effect.gen(function* () {
+    if (authority.audio === null)
+      return yield* Effect.die(new TypeError("sample requires authoritative audio"));
+    const audio = authority.audio;
+    const stage = variant === "primary" ? "sample_primary" : "sample_alternate";
+    const started = yield* startAttempt(
+      authority,
+      stage,
+      authority.audioRevision,
+      dependencies.options.transformAdapterRevision,
+      dependencies,
     );
-    if (value.status === "submitted" || value.status === "processing") {
-      return await deferAttempt(
-        authority,
-        started.lease,
-        { kind: "sample", value },
-        TRANSFORM_POLL_DELAY_MS,
-        dependencies,
-      );
-    }
-    if (value.status === "retryable_failure") {
-      await failAttempt(authority, started.lease, dependencies);
-      throw new DeferredAttempt("provider_progress");
-    }
-    await completeAttempt(authority, started.lease, { kind: "sample", value }, dependencies);
-    return value;
-  } catch (error) {
-    if (error instanceof DeferredAttempt) throw error;
-    await failAttempt(authority, started.lease, dependencies);
-    throw error;
-  }
+    if (started.kind === "replay") return requireAttemptKind(started.result, "sample").value;
+    const prior = started.lease.priorResult;
+    const submittedAtMs = dependencies.options.now();
+    const attempt: MediaTransformAttempt =
+      prior === undefined
+        ? {
+            version: "media-transform-attempt-v1",
+            runtimeFence: {
+              submittedAtMs,
+              runtimeDeadlineMs: submittedAtMs + dependencies.options.transformRuntimeMs,
+            },
+          }
+        : requireAttemptKind(prior, "sample").value.attempt;
+    return yield* catchStageFailure(
+      Effect.gen(function* () {
+        const value = yield* Effect.suspend(() =>
+          providers.transform.extractAudioSample({
+            version: "media-transform-audio-sample-input-v1",
+            binding: {
+              operationId: authority.operationId,
+              audioRevision: authority.audioRevision,
+              analysisRevision: authority.analysisRevision,
+              canonicalAudioSha256: audio.canonicalSha256,
+              requestId: started.lease.attemptId,
+            },
+            source: { objectKey: audio.immutableRef },
+            sourceDurationMs: durationMs,
+            variant,
+            attempt,
+          }),
+        );
+        if (value.status === "submitted" || value.status === "processing") {
+          return yield* deferAttempt(
+            authority,
+            started.lease,
+            { kind: "sample", value },
+            TRANSFORM_POLL_DELAY_MS,
+            dependencies,
+          );
+        }
+        if (value.status === "retryable_failure") {
+          yield* failAttempt(authority, started.lease, dependencies);
+          return yield* Effect.fail(new DeferredAttempt("provider_progress"));
+        }
+        yield* completeAttempt(authority, started.lease, { kind: "sample", value }, dependencies);
+        return value;
+      }),
+      authority,
+      started.lease,
+      dependencies,
+    );
+  });
 }
 
-async function runAcr(
+function runAcr(
   authority: MediaProcessingAuthority,
   providers: MediaProcessingProviders,
   artifact: MediaTransformSampleArtifact,
   variant: "primary" | "alternate",
   dependencies: MediaProcessingWorkflowDependencies,
-) {
-  if (authority.audio === null) throw new TypeError("identification requires authoritative audio");
-  const stage = variant === "primary" ? "acr_primary" : "acr_alternate";
-  const started = await startAttempt(
-    authority,
-    stage,
-    authority.audioRevision,
-    "identification-port-v1",
-    dependencies,
-  );
-  if (started.kind === "replay") return requireAttemptKind(started.result, "acr").value;
-  const abort = new AbortController();
-  try {
-    const bytes = await providers.artifactReader.readAudioSample(
-      artifact,
-      dependencies.options.maximumSampleBytes,
-      abort.signal,
-    );
-    const value = await Effect.runPromise(
-      providers.identification.identify({
-        version: "media-identification-request-v1",
-        operationId: authority.operationId,
-        audioRevision: authority.audioRevision,
-        analysisRevision: authority.analysisRevision,
-        canonicalAudioSha256: authority.audio.canonicalSha256,
-        requestId: started.lease.attemptId,
-        signal: abort.signal,
-        sample: {
-          bytes,
-          filename: `${variant}.${artifact.contentType === "audio/mpeg" ? "mp3" : "wav"}`,
-          contentType: artifact.contentType,
-        },
-      }),
-    );
-    if (value.outcome === "retryable_failure") {
-      await failAttempt(authority, started.lease, dependencies);
-      throw new DeferredAttempt(
-        value.reason === "transport"
-          ? "acr_transport"
-          : value.reason === "throttled"
-            ? "acr_throttled"
-            : "acr_provider",
-      );
+): WorkflowEffect<MediaIdentificationOutcome> {
+  return Effect.gen(function* () {
+    if (authority.audio === null) {
+      return yield* Effect.die(new TypeError("identification requires authoritative audio"));
     }
-    await completeAttempt(authority, started.lease, { kind: "acr", value }, dependencies);
-    return value;
-  } catch (error) {
-    if (error instanceof DeferredAttempt) throw error;
-    abort.abort();
-    await failAttempt(authority, started.lease, dependencies);
-    throw new DeferredAttempt("acr_preflight");
-  }
+    const audio = authority.audio;
+    const stage = variant === "primary" ? "acr_primary" : "acr_alternate";
+    const started = yield* startAttempt(
+      authority,
+      stage,
+      authority.audioRevision,
+      "identification-port-v1",
+      dependencies,
+    );
+    if (started.kind === "replay") return requireAttemptKind(started.result, "acr").value;
+    return yield* catchStageFailure(
+      Effect.acquireUseRelease(
+        Effect.sync(() => new AbortController()),
+        (abort) =>
+          Effect.gen(function* () {
+            const bytes = yield* promiseEffect(() =>
+              providers.artifactReader.readAudioSample(
+                artifact,
+                dependencies.options.maximumSampleBytes,
+                abort.signal,
+              ),
+            );
+            const value = yield* Effect.suspend(() =>
+              providers.identification.identify({
+                version: "media-identification-request-v1",
+                operationId: authority.operationId,
+                audioRevision: authority.audioRevision,
+                analysisRevision: authority.analysisRevision,
+                canonicalAudioSha256: audio.canonicalSha256,
+                requestId: started.lease.attemptId,
+                signal: abort.signal,
+                sample: {
+                  bytes,
+                  filename: `${variant}.${artifact.contentType === "audio/mpeg" ? "mp3" : "wav"}`,
+                  contentType: artifact.contentType,
+                },
+              }),
+            );
+            if (value.outcome === "retryable_failure") {
+              yield* failAttempt(authority, started.lease, dependencies);
+              return yield* Effect.fail(
+                new DeferredAttempt(
+                  value.reason === "transport"
+                    ? "acr_transport"
+                    : value.reason === "throttled"
+                      ? "acr_throttled"
+                      : "acr_provider",
+                ),
+              );
+            }
+            yield* completeAttempt(authority, started.lease, { kind: "acr", value }, dependencies);
+            return value;
+          }),
+        (abort) => Effect.sync(() => abort.abort()),
+      ),
+      authority,
+      started.lease,
+      dependencies,
+      () => new DeferredAttempt("acr_preflight"),
+    );
+  });
 }
 
-async function runClassifier(
+function runClassifier(
   authority: MediaProcessingAuthority,
   providers: MediaProcessingProviders,
   dependencies: MediaProcessingWorkflowDependencies,
-) {
-  if (authority.audio === null || authority.lyrics === null) {
-    throw new TypeError("classifier requires current accepted lyrics");
-  }
-  const started = await startAttempt(
-    authority,
-    "classifier",
-    authority.lyrics.lyricsRevision,
-    "classifier-port-v1",
-    dependencies,
-  );
-  if (started.kind === "replay") {
-    return requireAttemptKind(started.result, "classifier").value;
-  }
-  const abort = new AbortController();
-  const acceptedLyrics: MediaAcceptedLyrics = {
-    version: "media-accepted-lyrics-v1",
-    operation_id: authority.operationId,
-    audio_revision: authority.audioRevision,
-    lyrics_revision: authority.lyrics.lyricsRevision,
-    canonical_audio_sha256: authority.audio.canonicalSha256,
-    lyrics: authority.lyrics.text,
-  };
-  const input: MediaExplicitnessClassifierInput = {
-    version: "media-explicitness-classifier-input-v1",
-    accepted_lyrics: acceptedLyrics,
-    attempt: {
-      version: "media-provider-attempt-v1",
-      attempt_id: started.lease.attemptId,
-      attempt_number: started.lease.attemptNumber,
-      request_id: started.lease.attemptId,
-      timeout_ms: dependencies.options.classifierTimeoutMs,
-    },
-  };
-  try {
-    const value = await Effect.runPromise(
-      providers.classifier.classify(input, { signal: abort.signal }),
-    );
-    if (!isMediaClassifierResultBoundToInputs(input, value)) {
-      throw new TypeError("classifier result crossed accepted lyrics lineage");
+): WorkflowEffect<ClassifierResult> {
+  return Effect.gen(function* () {
+    if (authority.audio === null || authority.lyrics === null) {
+      return yield* Effect.die(new TypeError("classifier requires current accepted lyrics"));
     }
-    await completeAttempt(authority, started.lease, { kind: "classifier", value }, dependencies);
-    return value;
-  } catch (error) {
-    if (error instanceof DeferredAttempt) throw error;
-    abort.abort();
-    await failAttempt(authority, started.lease, dependencies);
-    throw error;
-  }
+    const audio = authority.audio;
+    const lyrics = authority.lyrics;
+    const started = yield* startAttempt(
+      authority,
+      "classifier",
+      lyrics.lyricsRevision,
+      "classifier-port-v1",
+      dependencies,
+    );
+    if (started.kind === "replay") {
+      return requireAttemptKind(started.result, "classifier").value;
+    }
+    const acceptedLyrics: MediaAcceptedLyrics = {
+      version: "media-accepted-lyrics-v1",
+      operation_id: authority.operationId,
+      audio_revision: authority.audioRevision,
+      lyrics_revision: lyrics.lyricsRevision,
+      canonical_audio_sha256: audio.canonicalSha256,
+      lyrics: lyrics.text,
+    };
+    const input: MediaExplicitnessClassifierInput = {
+      version: "media-explicitness-classifier-input-v1",
+      accepted_lyrics: acceptedLyrics,
+      attempt: {
+        version: "media-provider-attempt-v1",
+        attempt_id: started.lease.attemptId,
+        attempt_number: started.lease.attemptNumber,
+        request_id: started.lease.attemptId,
+        timeout_ms: dependencies.options.classifierTimeoutMs,
+      },
+    };
+    return yield* catchStageFailure(
+      Effect.acquireUseRelease(
+        Effect.sync(() => new AbortController()),
+        (abort) =>
+          Effect.gen(function* () {
+            const value = yield* Effect.suspend(() =>
+              providers.classifier.classify(input, { signal: abort.signal }),
+            );
+            if (!isMediaClassifierResultBoundToInputs(input, value)) {
+              return yield* Effect.die(
+                new TypeError("classifier result crossed accepted lyrics lineage"),
+              );
+            }
+            yield* completeAttempt(
+              authority,
+              started.lease,
+              { kind: "classifier", value },
+              dependencies,
+            );
+            return value;
+          }),
+        (abort) => Effect.sync(() => abort.abort()),
+      ),
+      authority,
+      started.lease,
+      dependencies,
+    );
+  });
 }
 
-async function runMetadata(
+function runMetadata(
   authority: MediaProcessingAuthority,
   providers: MediaProcessingProviders,
   dependencies: MediaProcessingWorkflowDependencies,
-) {
-  const started = await startAttempt(
-    authority,
-    "metadata",
-    authority.audioRevision,
-    dependencies.options.metadataAdapterRevision,
-    dependencies,
-  );
-  if (started.kind === "replay") return requireAttemptKind(started.result, "metadata").value;
-  const abort = new AbortController();
-  try {
-    const value = await providers.metadata.extract(authority, abort.signal);
-    await completeAttempt(authority, started.lease, { kind: "metadata", value }, dependencies);
-    return value;
-  } catch (error) {
-    if (error instanceof DeferredAttempt) throw error;
-    abort.abort();
-    await failAttempt(authority, started.lease, dependencies);
-    throw error;
-  }
+): WorkflowEffect<MetadataResult> {
+  return Effect.gen(function* () {
+    const started = yield* startAttempt(
+      authority,
+      "metadata",
+      authority.audioRevision,
+      dependencies.options.metadataAdapterRevision,
+      dependencies,
+    );
+    if (started.kind === "replay") return requireAttemptKind(started.result, "metadata").value;
+    return yield* catchStageFailure(
+      Effect.acquireUseRelease(
+        Effect.sync(() => new AbortController()),
+        (abort) =>
+          Effect.gen(function* () {
+            const value = yield* promiseEffect(() =>
+              providers.metadata.extract(authority, abort.signal),
+            );
+            yield* completeAttempt(
+              authority,
+              started.lease,
+              { kind: "metadata", value },
+              dependencies,
+            );
+            return value;
+          }),
+        (abort) => Effect.sync(() => abort.abort()),
+      ),
+      authority,
+      started.lease,
+      dependencies,
+    );
+  });
 }
 
 function acrDecision(
   authority: MediaProcessingAuthority,
-  outcome: Awaited<ReturnType<typeof runAcr>>,
+  outcome: MediaIdentificationOutcome,
 ): MediaProcessingAnalysis["acr"] {
   const decision =
     outcome.outcome === "retained_reference_match"
@@ -490,11 +610,11 @@ function acrDecision(
   };
 }
 
-async function moderateSongText(
+function moderateSongText(
   authority: MediaProcessingAuthority,
   providers: MediaProcessingProviders,
   dependencies: MediaProcessingWorkflowDependencies,
-): Promise<MediaProcessingAnalysis["contentModeration"]> {
+): WorkflowEffect<MediaProcessingAnalysis["contentModeration"]> {
   const moderationInput = {
     version: "text-moderation-input-v1" as const,
     surface: "text_post" as const,
@@ -503,90 +623,89 @@ async function moderateSongText(
     body: authority.lyrics?.text ?? null,
   };
   const canonical = canonicalTextModerationInput(moderationInput);
-  const policy = await dependencies.store.readModerationPolicy(authority.communityId);
-  if (canonical.kind !== "accepted") {
-    return {
-      decision: "manual_review",
-      resultingContentRating: authority.authorDeclaredRating,
-      inputSha256: "invalid",
-      matchedCategories: [],
-      policyRevision: policy.policy_revision,
-      platformPolicyRevision: policy.platform_policy_revision,
-      communityPolicyRevision: policy.community_policy_revision,
-      evidenceRef: null,
-      providerEvidence: null,
-    };
-  }
-  try {
-    const provider = await Effect.runPromise(providers.textModeration.evaluate(moderationInput));
-    if (provider.input_sha256 !== canonical.sha256)
-      throw new TypeError("moderation input mismatch");
-    const resolution = resolveCommunityModerationPolicy({
-      platform_floor: policy.platform_policy,
-      community_policy: policy.community_policy,
-      matched_categories: provider.matched_categories,
-      author_declared_rating: authority.authorDeclaredRating,
-    });
-    const evidencePreimage = JSON.stringify([
-      "song-text-moderation-evidence-v1",
-      authority.communityId,
-      authority.submissionId,
-      canonical.sha256,
-      policy.policy_revision,
-      policy.platform_policy_revision,
-      policy.community_policy_revision,
-      provider.inputs,
-    ]);
-    const digest = await crypto.subtle.digest(
-      "SHA-256",
-      new TextEncoder().encode(evidencePreimage),
+  return Effect.gen(function* () {
+    const policy = yield* promiseEffect(() =>
+      dependencies.store.readModerationPolicy(authority.communityId),
     );
-    const evidenceHash = Array.from(new Uint8Array(digest), (byte) =>
-      byte.toString(16).padStart(2, "0"),
-    ).join("");
-    return {
-      decision:
-        resolution.effective_policy_decision === "permit"
-          ? "allow"
-          : resolution.effective_policy_decision === "review"
-            ? "manual_review"
-            : "blocked",
-      resultingContentRating: resolution.resulting_content_rating,
-      inputSha256: canonical.sha256,
-      matchedCategories: resolution.matched_categories,
-      policyRevision: policy.policy_revision,
-      platformPolicyRevision: policy.platform_policy_revision,
-      communityPolicyRevision: policy.community_policy_revision,
-      evidenceRef: `evidence_${evidenceHash}`,
-      providerEvidence: {
-        providerId: provider.provider_id,
-        requestedModel: provider.requested_model,
-        returnedModel: provider.returned_model,
-        inputs: provider.inputs,
-      },
-    };
-  } catch {
-    return {
-      decision: "manual_review",
+    const fallback = (inputSha256: string) => ({
+      decision: "manual_review" as const,
       resultingContentRating: authority.authorDeclaredRating,
-      inputSha256: canonical.sha256,
+      inputSha256,
       matchedCategories: [],
       policyRevision: policy.policy_revision,
       platformPolicyRevision: policy.platform_policy_revision,
       communityPolicyRevision: policy.community_policy_revision,
       evidenceRef: null,
       providerEvidence: null,
-    };
-  }
+    });
+    if (canonical.kind !== "accepted") return fallback("invalid");
+    return yield* Effect.gen(function* () {
+      const provider = yield* Effect.suspend(() =>
+        providers.textModeration.evaluate(moderationInput),
+      );
+      if (provider.input_sha256 !== canonical.sha256) {
+        return yield* Effect.die(new TypeError("moderation input mismatch"));
+      }
+      const resolution = resolveCommunityModerationPolicy({
+        platform_floor: policy.platform_policy,
+        community_policy: policy.community_policy,
+        matched_categories: provider.matched_categories,
+        author_declared_rating: authority.authorDeclaredRating,
+      });
+      const evidencePreimage = JSON.stringify([
+        "song-text-moderation-evidence-v1",
+        authority.communityId,
+        authority.submissionId,
+        canonical.sha256,
+        policy.policy_revision,
+        policy.platform_policy_revision,
+        policy.community_policy_revision,
+        provider.inputs,
+      ]);
+      const digest = yield* promiseEffect(() =>
+        crypto.subtle.digest("SHA-256", new TextEncoder().encode(evidencePreimage)),
+      );
+      const evidenceHash = Array.from(new Uint8Array(digest), (byte) =>
+        byte.toString(16).padStart(2, "0"),
+      ).join("");
+      return {
+        decision:
+          resolution.effective_policy_decision === "permit"
+            ? ("allow" as const)
+            : resolution.effective_policy_decision === "review"
+              ? ("manual_review" as const)
+              : ("blocked" as const),
+        resultingContentRating: resolution.resulting_content_rating,
+        inputSha256: canonical.sha256,
+        matchedCategories: resolution.matched_categories,
+        policyRevision: policy.policy_revision,
+        platformPolicyRevision: policy.platform_policy_revision,
+        communityPolicyRevision: policy.community_policy_revision,
+        evidenceRef: `evidence_${evidenceHash}`,
+        providerEvidence: {
+          providerId: provider.provider_id,
+          requestedModel: provider.requested_model,
+          returnedModel: provider.returned_model,
+          inputs: provider.inputs,
+        },
+      };
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Cause.hasInterrupts(cause)
+          ? Effect.failCause(cause)
+          : Effect.succeed(fallback(canonical.sha256)),
+      ),
+    );
+  });
 }
 
-async function moderateCover(
+function moderateCover(
   metadata: MediaProcessingAnalysis["embeddedMetadata"],
   providers: MediaProcessingProviders,
-): Promise<MediaProcessingAnalysis["coverModeration"]> {
+): WorkflowEffect<MediaProcessingAnalysis["coverModeration"]> {
   const cover = metadata.cover;
   if (cover.status === "absent") {
-    return {
+    return Effect.succeed({
       decision: "not_applicable",
       reason: "not_embedded",
       providerId: null,
@@ -596,10 +715,10 @@ async function moderateCover(
       matchedCategories: [],
       evidenceRef: null,
       evidence: null,
-    };
+    });
   }
   if (cover.status === "rejected") {
-    return {
+    return Effect.succeed({
       decision: "withheld",
       reason: cover.reasonCode === "limits_exceeded" ? "limits_exceeded" : "invalid_image",
       providerId: null,
@@ -609,206 +728,236 @@ async function moderateCover(
       matchedCategories: [],
       evidenceRef: metadata.evidenceRef,
       evidence: null,
-    };
+    });
   }
-  let bytes: Uint8Array;
-  try {
-    bytes = await providers.artifactReader.readCoverArtifact(
-      cover,
-      700_000,
-      new AbortController().signal,
+  const invalidImage = {
+    decision: "withheld",
+    reason: "invalid_image",
+    providerId: null,
+    requestedModel: null,
+    returnedModel: null,
+    inputSha256: cover.artifactSha256,
+    matchedCategories: [],
+    evidenceRef: metadata.evidenceRef,
+    evidence: null,
+  } as const;
+  const providerUnavailable = {
+    decision: "withheld",
+    reason: "provider_unavailable",
+    providerId: "openai",
+    requestedModel: "omni-moderation-2024-09-26",
+    returnedModel: null,
+    inputSha256: cover.artifactSha256,
+    matchedCategories: [],
+    evidenceRef: metadata.evidenceRef,
+    evidence: null,
+  } as const;
+  return Effect.gen(function* () {
+    const bytes = yield* abortablePromise((signal) =>
+      providers.artifactReader.readCoverArtifact(cover, 700_000, signal),
+    ).pipe(
+      Effect.catchCause((cause) =>
+        Cause.hasInterrupts(cause) ? Effect.failCause(cause) : Effect.fail(new CoverReadFailure()),
+      ),
     );
-  } catch {
-    return {
-      decision: "withheld",
-      reason: "invalid_image",
-      providerId: null,
-      requestedModel: null,
-      returnedModel: null,
-      inputSha256: cover.artifactSha256,
-      matchedCategories: [],
-      evidenceRef: metadata.evidenceRef,
-      evidence: null,
-    };
-  }
-  try {
-    const result = await Effect.runPromise(
-      providers.imageModeration.evaluateImage({
-        bytes,
-        mediaType: cover.mediaType,
-        sha256: cover.artifactSha256,
-      }),
+    return yield* Effect.gen(function* () {
+      const result = yield* Effect.suspend(() =>
+        providers.imageModeration.evaluateImage({
+          bytes,
+          mediaType: cover.mediaType,
+          sha256: cover.artifactSha256,
+        }),
+      );
+      const preimage = JSON.stringify([
+        "song-cover-moderation-evidence-v1",
+        result.provider_id,
+        result.requested_model,
+        result.returned_model,
+        result.input_sha256,
+        result.evidence,
+      ]);
+      const digest = yield* promiseEffect(() =>
+        crypto.subtle.digest("SHA-256", new TextEncoder().encode(preimage)),
+      );
+      const evidenceHash = Array.from(new Uint8Array(digest), (byte) =>
+        byte.toString(16).padStart(2, "0"),
+      ).join("");
+      return {
+        decision:
+          result.matched_categories.length === 0 ? ("allow" as const) : ("withheld" as const),
+        reason:
+          result.matched_categories.length === 0
+            ? ("clean" as const)
+            : ("matched_category" as const),
+        providerId: result.provider_id,
+        requestedModel: result.requested_model,
+        returnedModel: result.returned_model,
+        inputSha256: result.input_sha256,
+        matchedCategories: result.matched_categories,
+        evidenceRef: `evidence_${evidenceHash}`,
+        evidence: result.evidence,
+      };
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Cause.hasInterrupts(cause) ? Effect.failCause(cause) : Effect.succeed(providerUnavailable),
+      ),
     );
-    const preimage = JSON.stringify([
-      "song-cover-moderation-evidence-v1",
-      result.provider_id,
-      result.requested_model,
-      result.returned_model,
-      result.input_sha256,
-      result.evidence,
-    ]);
-    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(preimage));
-    const evidenceHash = Array.from(new Uint8Array(digest), (byte) =>
-      byte.toString(16).padStart(2, "0"),
-    ).join("");
-    return {
-      decision: result.matched_categories.length === 0 ? "allow" : "withheld",
-      reason: result.matched_categories.length === 0 ? "clean" : "matched_category",
-      providerId: result.provider_id,
-      requestedModel: result.requested_model,
-      returnedModel: result.returned_model,
-      inputSha256: result.input_sha256,
-      matchedCategories: result.matched_categories,
-      evidenceRef: `evidence_${evidenceHash}`,
-      evidence: result.evidence,
-    };
-  } catch {
-    return {
-      decision: "withheld",
-      reason: "provider_unavailable",
-      providerId: "openai",
-      requestedModel: "omni-moderation-2024-09-26",
-      returnedModel: null,
-      inputSha256: cover.artifactSha256,
-      matchedCategories: [],
-      evidenceRef: metadata.evidenceRef,
-      evidence: null,
-    };
-  }
+  }).pipe(
+    Effect.catchCause((cause) => {
+      const error = Cause.findErrorOption(cause);
+      return Cause.hasInterrupts(cause)
+        ? Effect.failCause(cause)
+        : error._tag === "Some" && error.value instanceof CoverReadFailure
+          ? Effect.succeed(invalidImage)
+          : Effect.failCause(cause);
+    }),
+  );
 }
 
-async function buildAnalysis(
+function buildAnalysis(
   firstAuthority: MediaProcessingAuthority,
   providers: MediaProcessingProviders,
   dependencies: MediaProcessingWorkflowDependencies,
-): Promise<MediaProcessingAnalysis | "processing_failed"> {
-  let authority = await authoritativeReload(firstAuthority, dependencies);
-  if (authority.audio === null) return "processing_failed";
-  const sealedHash = authority.audio.canonicalSha256;
+): WorkflowEffect<MediaProcessingAnalysis | "processing_failed"> {
+  return Effect.gen(function* () {
+    let authority = yield* authoritativeReload(firstAuthority, dependencies);
+    if (authority.audio === null) return "processing_failed" as const;
+    const sealedHash = authority.audio.canonicalSha256;
 
-  const probeOutcome = await runProbe(authority, providers, dependencies);
-  if (probeOutcome.status !== "completed") {
-    await dependencies.store.commitProcessingFailure(authority, "probe_failed");
-    return "processing_failed";
-  }
-  if (probeOutcome.probe.durationMs > MEDIA_TRANSFORM_MAX_AUDIO_DURATION_MS) {
-    await dependencies.store.commitProcessingFailure(authority, "invalid_media");
-    return "processing_failed";
-  }
-  if (
-    probeOutcome.probe.container !== "mp3" ||
-    probeOutcome.probe.mimeType !== "audio/mpeg" ||
-    probeOutcome.probe.tracks[0].codec !== "mp3"
-  ) {
-    await dependencies.store.commitProcessingFailure(authority, "invalid_media");
-    return "processing_failed";
-  }
+    const probeOutcome = yield* runProbe(authority, providers, dependencies);
+    if (probeOutcome.status !== "completed") {
+      yield* storeWrite(() =>
+        dependencies.store.commitProcessingFailure(authority, "probe_failed"),
+      );
+      return "processing_failed" as const;
+    }
+    if (probeOutcome.probe.durationMs > MEDIA_TRANSFORM_MAX_AUDIO_DURATION_MS) {
+      yield* storeWrite(() =>
+        dependencies.store.commitProcessingFailure(authority, "invalid_media"),
+      );
+      return "processing_failed" as const;
+    }
+    if (
+      probeOutcome.probe.container !== "mp3" ||
+      probeOutcome.probe.mimeType !== "audio/mpeg" ||
+      probeOutcome.probe.tracks[0].codec !== "mp3"
+    ) {
+      yield* storeWrite(() =>
+        dependencies.store.commitProcessingFailure(authority, "invalid_media"),
+      );
+      return "processing_failed" as const;
+    }
 
-  authority = await authoritativeReload(authority, dependencies);
-  if (authority.audio?.canonicalSha256 !== sealedHash) return "processing_failed";
-  const primarySample = await runSample(
-    authority,
-    providers,
-    probeOutcome.probe.durationMs,
-    "primary",
-    dependencies,
-  );
-  if (primarySample.status !== "completed") {
-    await dependencies.store.commitProcessingFailure(authority, "transform_failed");
-    return "processing_failed";
-  }
-  let acrOutcome = await runAcr(
-    authority,
-    providers,
-    primarySample.artifact,
-    "primary",
-    dependencies,
-  );
-  if (acrOutcome.outcome === "inconclusive_fingerprint") {
-    authority = await authoritativeReload(authority, dependencies);
-    if (authority.audio?.canonicalSha256 !== sealedHash) return "processing_failed";
-    const alternate = await runSample(
+    authority = yield* authoritativeReload(authority, dependencies);
+    if (authority.audio?.canonicalSha256 !== sealedHash) return "processing_failed" as const;
+    const primarySample = yield* runSample(
       authority,
       providers,
       probeOutcome.probe.durationMs,
-      "alternate",
+      "primary",
       dependencies,
     );
-    if (alternate.status !== "completed") {
-      await dependencies.store.commitProcessingFailure(authority, "transform_failed");
-      return "processing_failed";
+    if (primarySample.status !== "completed") {
+      yield* storeWrite(() =>
+        dependencies.store.commitProcessingFailure(authority, "transform_failed"),
+      );
+      return "processing_failed" as const;
     }
-    acrOutcome = await runAcr(authority, providers, alternate.artifact, "alternate", dependencies);
+    let acrOutcome = yield* runAcr(
+      authority,
+      providers,
+      primarySample.artifact,
+      "primary",
+      dependencies,
+    );
     if (acrOutcome.outcome === "inconclusive_fingerprint") {
-      acrOutcome = {
-        ...acrOutcome,
-        outcome: "inconclusive_fingerprint",
-      };
+      authority = yield* authoritativeReload(authority, dependencies);
+      if (authority.audio?.canonicalSha256 !== sealedHash) return "processing_failed" as const;
+      const alternate = yield* runSample(
+        authority,
+        providers,
+        probeOutcome.probe.durationMs,
+        "alternate",
+        dependencies,
+      );
+      if (alternate.status !== "completed") {
+        yield* storeWrite(() =>
+          dependencies.store.commitProcessingFailure(authority, "transform_failed"),
+        );
+        return "processing_failed" as const;
+      }
+      acrOutcome = yield* runAcr(
+        authority,
+        providers,
+        alternate.artifact,
+        "alternate",
+        dependencies,
+      );
     }
-  }
 
-  authority = await authoritativeReload(authority, dependencies);
-  const metadata = await runMetadata(authority, providers, dependencies);
-  const contentModeration = await moderateSongText(authority, providers, dependencies);
-  const coverModeration = await moderateCover(metadata, providers);
-  authority = await authoritativeReload(authority, dependencies);
-  const mediaSafety: MediaProcessingAnalysis["mediaSafety"] =
-    coverModeration.decision === "not_applicable"
-      ? "not_applicable"
-      : coverModeration.decision === "allow"
-        ? "allow"
-        : "cover_withheld";
-  if (authority.audio?.canonicalSha256 !== sealedHash) return "processing_failed";
+    authority = yield* authoritativeReload(authority, dependencies);
+    const metadata = yield* runMetadata(authority, providers, dependencies);
+    const contentModeration = yield* moderateSongText(authority, providers, dependencies);
+    const coverModeration = yield* moderateCover(metadata, providers);
+    authority = yield* authoritativeReload(authority, dependencies);
+    const mediaSafety: MediaProcessingAnalysis["mediaSafety"] =
+      coverModeration.decision === "not_applicable"
+        ? "not_applicable"
+        : coverModeration.decision === "allow"
+          ? "allow"
+          : "cover_withheld";
+    if (authority.audio?.canonicalSha256 !== sealedHash) return "processing_failed" as const;
 
-  let lyricsAnalysis: MediaProcessingAnalysis["lyricsAnalysis"];
-  let lyricsSafety: MediaProcessingAnalysis["lyricsSafety"];
-  if (authority.lyrics === null) {
-    lyricsAnalysis = { status: "not_applicable" };
-    lyricsSafety = "not_applicable";
-  } else {
-    if (
-      authority.lyrics.audioRevision !== authority.audioRevision ||
-      authority.lyrics.canonicalAudioSha256 !== sealedHash
-    )
-      return "processing_failed";
-    const classified = await runClassifier(authority, providers, dependencies);
-    if (classified.status === "classified") {
-      lyricsAnalysis = {
-        status: "ready",
-        lyricsRevision: authority.lyrics.lyricsRevision,
-        explicitness: classified.explicitness,
-        primaryLanguageBcp47: classified.primary_language_bcp47,
-        secondaryLanguageBcp47: classified.secondary_language_bcp47,
-        evidenceRef: `classifier-evidence-${authority.operationId}-l${authority.lyrics.lyricsRevision}`,
-        policyRevision: classified.policy_revision,
-        adapterRevision: classified.adapter_revision,
-      };
-      lyricsSafety = classified.explicitness === "uncertain" ? "review_required" : "allow";
+    let lyricsAnalysis: MediaProcessingAnalysis["lyricsAnalysis"];
+    let lyricsSafety: MediaProcessingAnalysis["lyricsSafety"];
+    if (authority.lyrics === null) {
+      lyricsAnalysis = { status: "not_applicable" };
+      lyricsSafety = "not_applicable";
     } else {
-      lyricsAnalysis = {
-        status: "unavailable",
-        lyricsRevision: authority.lyrics.lyricsRevision,
-        evidenceRef: `classifier-unavailable-${authority.operationId}`,
-        policyRevision: classified.policy_revision,
-        adapterRevision: classified.adapter_revision,
-      };
-      lyricsSafety = "review_required";
+      if (
+        authority.lyrics.audioRevision !== authority.audioRevision ||
+        authority.lyrics.canonicalAudioSha256 !== sealedHash
+      )
+        return "processing_failed" as const;
+      const classified = yield* runClassifier(authority, providers, dependencies);
+      if (classified.status === "classified") {
+        lyricsAnalysis = {
+          status: "ready",
+          lyricsRevision: authority.lyrics.lyricsRevision,
+          explicitness: classified.explicitness,
+          primaryLanguageBcp47: classified.primary_language_bcp47,
+          secondaryLanguageBcp47: classified.secondary_language_bcp47,
+          evidenceRef: `classifier-evidence-${authority.operationId}-l${authority.lyrics.lyricsRevision}`,
+          policyRevision: classified.policy_revision,
+          adapterRevision: classified.adapter_revision,
+        };
+        lyricsSafety = classified.explicitness === "uncertain" ? "review_required" : "allow";
+      } else {
+        lyricsAnalysis = {
+          status: "unavailable",
+          lyricsRevision: authority.lyrics.lyricsRevision,
+          evidenceRef: `classifier-unavailable-${authority.operationId}`,
+          policyRevision: classified.policy_revision,
+          adapterRevision: classified.adapter_revision,
+        };
+        lyricsSafety = "review_required";
+      }
     }
-  }
 
-  return {
-    audioRevision: authority.audioRevision,
-    analysisRevision: authority.analysisRevision,
-    canonicalAudioSha256: sealedHash,
-    probeEvidenceRef: `probe-evidence-${authority.operationId}-a${authority.analysisRevision}`,
-    embeddedMetadata: metadata,
-    lyricsAnalysis,
-    acr: acrDecision(authority, acrOutcome),
-    lyricsSafety,
-    mediaSafety,
-    coverModeration,
-    contentModeration,
-  };
+    return {
+      audioRevision: authority.audioRevision,
+      analysisRevision: authority.analysisRevision,
+      canonicalAudioSha256: sealedHash,
+      probeEvidenceRef: `probe-evidence-${authority.operationId}-a${authority.analysisRevision}`,
+      embeddedMetadata: metadata,
+      lyricsAnalysis,
+      acr: acrDecision(authority, acrOutcome),
+      lyricsSafety,
+      mediaSafety,
+      coverModeration,
+      contentModeration,
+    };
+  });
 }
 
 function decideMediaPublication(
@@ -850,150 +999,176 @@ function decideMediaPublication(
   };
 }
 
-async function refreshLyricsClassification(
+function refreshLyricsClassification(
   authority: MediaProcessingAuthority,
   providers: MediaProcessingProviders,
   dependencies: MediaProcessingWorkflowDependencies,
-): Promise<MediaProcessingAnalysis | null> {
-  const analysis = authority.analysis;
-  const lyrics = authority.lyrics;
-  if (
-    analysis === null ||
-    lyrics === null ||
-    (analysis.lyricsAnalysis.status !== "not_applicable" &&
-      analysis.lyricsAnalysis.lyricsRevision === lyrics.lyricsRevision)
-  ) {
-    return null;
-  }
-  const classified = await runClassifier(authority, providers, dependencies);
-  const lyricsAnalysis: MediaProcessingAnalysis["lyricsAnalysis"] =
-    classified.status === "classified"
-      ? {
-          status: "ready",
-          lyricsRevision: lyrics.lyricsRevision,
-          explicitness: classified.explicitness,
-          primaryLanguageBcp47: classified.primary_language_bcp47,
-          secondaryLanguageBcp47: classified.secondary_language_bcp47,
-          evidenceRef: `classifier-evidence-${authority.operationId}-l${lyrics.lyricsRevision}`,
-          policyRevision: classified.policy_revision,
-          adapterRevision: classified.adapter_revision,
-        }
-      : {
-          status: "unavailable",
-          lyricsRevision: lyrics.lyricsRevision,
-          evidenceRef: `classifier-unavailable-${authority.operationId}-l${lyrics.lyricsRevision}`,
-          policyRevision: classified.policy_revision,
-          adapterRevision: classified.adapter_revision,
-        };
-  const lyricsSafety =
-    classified.status !== "classified" || classified.explicitness === "uncertain"
-      ? "review_required"
-      : "allow";
-  const contentModeration = await moderateSongText(authority, providers, dependencies);
-  return { ...analysis, lyricsAnalysis, lyricsSafety, contentModeration };
+): WorkflowEffect<MediaProcessingAnalysis | null> {
+  return Effect.gen(function* () {
+    const analysis = authority.analysis;
+    const lyrics = authority.lyrics;
+    if (
+      analysis === null ||
+      lyrics === null ||
+      (analysis.lyricsAnalysis.status !== "not_applicable" &&
+        analysis.lyricsAnalysis.lyricsRevision === lyrics.lyricsRevision)
+    ) {
+      return null;
+    }
+    const classified = yield* runClassifier(authority, providers, dependencies);
+    const lyricsAnalysis: MediaProcessingAnalysis["lyricsAnalysis"] =
+      classified.status === "classified"
+        ? {
+            status: "ready",
+            lyricsRevision: lyrics.lyricsRevision,
+            explicitness: classified.explicitness,
+            primaryLanguageBcp47: classified.primary_language_bcp47,
+            secondaryLanguageBcp47: classified.secondary_language_bcp47,
+            evidenceRef: `classifier-evidence-${authority.operationId}-l${lyrics.lyricsRevision}`,
+            policyRevision: classified.policy_revision,
+            adapterRevision: classified.adapter_revision,
+          }
+        : {
+            status: "unavailable",
+            lyricsRevision: lyrics.lyricsRevision,
+            evidenceRef: `classifier-unavailable-${authority.operationId}-l${lyrics.lyricsRevision}`,
+            policyRevision: classified.policy_revision,
+            adapterRevision: classified.adapter_revision,
+          };
+    const lyricsSafety =
+      classified.status !== "classified" || classified.explicitness === "uncertain"
+        ? ("review_required" as const)
+        : ("allow" as const);
+    const contentModeration = yield* moderateSongText(authority, providers, dependencies);
+    return { ...analysis, lyricsAnalysis, lyricsSafety, contentModeration };
+  });
 }
 
-async function publish(
+function publish(
   authority: MediaProcessingAuthority,
   dependencies: MediaProcessingWorkflowDependencies,
-): Promise<MediaProcessingWorkflowResult> {
-  const current = await authoritativeReload(authority, dependencies);
-  if (current.status === "published") {
+): WorkflowEffect<MediaProcessingWorkflowResult> {
+  return Effect.gen(function* () {
+    const current = yield* authoritativeReload(authority, dependencies);
+    if (current.status === "published") {
+      return {
+        outcome:
+          current.publishedLyricsRevision === null ? "published_without_alignment" : "published",
+      } as const;
+    }
+    if (current.status !== "processing" || current.phase !== "publish" || current.audio === null) {
+      return { outcome: "inert" } as const;
+    }
+    const started = yield* startAttempt(
+      current,
+      "publication",
+      current.decisionRevision,
+      "postgres-publication-v1",
+      dependencies,
+    );
+    if (started.kind === "replay") return { outcome: "published" } as const;
+    const committed = yield* storeWrite(() => dependencies.store.commitPublication(current));
+    if (committed === "stale") return yield* Effect.fail(new DeferredAttempt("stale_fence"));
+    const after = yield* authoritativeReload(current, dependencies);
+    if (after.status !== "published" || after.postId === null) {
+      return yield* Effect.fail(new DeferredAttempt("stale_fence"));
+    }
+    yield* completeAttempt(
+      after,
+      started.lease,
+      { kind: "publication", postId: after.postId },
+      dependencies,
+    );
     return {
-      outcome:
-        current.publishedLyricsRevision === null ? "published_without_alignment" : "published",
-    };
-  }
-  if (current.status !== "processing" || current.phase !== "publish" || current.audio === null) {
-    return { outcome: "inert" };
-  }
-  const started = await startAttempt(
-    current,
-    "publication",
-    current.decisionRevision,
-    "postgres-publication-v1",
-    dependencies,
-  );
-  if (started.kind === "replay") return { outcome: "published" };
-  const committed = await dependencies.store.commitPublication(current);
-  if (committed === "stale") throw new DeferredAttempt("stale_fence");
-  const after = await authoritativeReload(current, dependencies);
-  if (after.status !== "published" || after.postId === null) {
-    throw new DeferredAttempt("stale_fence");
-  }
-  await completeAttempt(
-    after,
-    started.lease,
-    { kind: "publication", postId: after.postId },
-    dependencies,
-  );
-  return {
-    outcome: after.publishedLyricsRevision === null ? "published_without_alignment" : "published",
-  };
+      outcome: after.publishedLyricsRevision === null ? "published_without_alignment" : "published",
+    } as const;
+  });
 }
 
-async function align(
+function align(
   authority: MediaProcessingAuthority,
   dependencies: MediaProcessingWorkflowDependencies,
-): Promise<MediaProcessingWorkflowResult> {
-  const current = await authoritativeReload(authority, dependencies);
-  if (current.status !== "published" || current.postId === null || current.audio === null) {
-    return { outcome: "inert" };
-  }
-  if (current.publishedLyricsRevision !== (current.lyrics?.lyricsRevision ?? null)) {
-    return { outcome: "inert" };
-  }
-  let started: Awaited<ReturnType<typeof startAttempt>>;
-  try {
-    started = await startAttempt(
+): WorkflowEffect<MediaProcessingWorkflowResult> {
+  return Effect.gen(function* () {
+    const current = yield* authoritativeReload(authority, dependencies);
+    if (current.status !== "published" || current.postId === null || current.audio === null) {
+      return { outcome: "inert" } as const;
+    }
+    if (current.publishedLyricsRevision !== (current.lyrics?.lyricsRevision ?? null)) {
+      return { outcome: "inert" } as const;
+    }
+    const started = yield* startAttempt(
       current,
       "alignment",
       current.publishedLyricsRevision ?? current.analysisRevision,
       "alignment-port-v1",
       dependencies,
+    ).pipe(
+      Effect.catchCause((cause) => {
+        if (Cause.hasInterrupts(cause)) return Effect.failCause(cause);
+        const deferred = deferredAttemptFromCause(cause);
+        if (deferred?.reason === "exhausted") return Effect.succeed({ kind: "exhausted" } as const);
+        return Effect.failCause(cause);
+      }),
     );
-  } catch (error) {
-    if (!(error instanceof DeferredAttempt) || error.reason !== "exhausted") throw error;
-    const exhaustedResult = {
-      kind: "alignment",
-      status: "unavailable",
-      failureCode: "provider_unavailable",
-    } as const;
-    const committed = await dependencies.store.commitAlignment(current, exhaustedResult);
-    if (committed === "stale") throw new DeferredAttempt("stale_fence");
-    return { outcome: "alignment_recorded" };
-  }
-  if (started.kind === "replay") return { outcome: "alignment_recorded" };
-  let result: Extract<MediaProcessingAttemptResult, { readonly kind: "alignment" }>;
-  if (current.lyrics === null) {
-    result = { kind: "alignment", status: "unavailable", failureCode: "lyrics_missing" };
-  } else if (dependencies.providers === null || !dependencies.options.enabled) {
-    result = {
-      kind: "alignment",
-      status: "unavailable",
-      failureCode: "provider_unavailable",
-    };
-  } else {
-    const abort = new AbortController();
-    try {
-      const aligned = await dependencies.providers.alignment.align({
-        operationId: current.operationId,
-        postId: current.postId,
-        audioRevision: current.audioRevision,
-        analysisRevision: current.analysisRevision,
-        lyricsRevision: current.lyrics.lyricsRevision,
-        canonicalAudioSha256: current.audio.canonicalSha256,
-        audioArtifactRef: current.audio.immutableRef,
-        lyrics: current.lyrics.text,
-        signal: abort.signal,
-      });
-      if (
-        aligned.status === "unavailable" &&
-        ["rate_limited", "provider_unavailable", "timeout"].includes(aligned.failureCode)
-      ) {
-        await failAttempt(current, started.lease, dependencies);
-        throw new DeferredAttempt("provider_progress");
-      }
+    if (started.kind === "exhausted") {
+      const exhaustedResult = {
+        kind: "alignment",
+        status: "unavailable",
+        failureCode: "provider_unavailable",
+      } as const;
+      const committed = yield* storeWrite(() =>
+        dependencies.store.commitAlignment(current, exhaustedResult),
+      );
+      if (committed === "stale") return yield* Effect.fail(new DeferredAttempt("stale_fence"));
+      return { outcome: "alignment_recorded" } as const;
+    }
+    if (started.kind === "replay") return { outcome: "alignment_recorded" } as const;
+    let result: Extract<MediaProcessingAttemptResult, { readonly kind: "alignment" }>;
+    if (current.lyrics === null) {
+      result = { kind: "alignment", status: "unavailable", failureCode: "lyrics_missing" };
+    } else if (dependencies.providers === null || !dependencies.options.enabled) {
+      result = {
+        kind: "alignment",
+        status: "unavailable",
+        failureCode: "provider_unavailable",
+      };
+    } else {
+      const provider = dependencies.providers;
+      const audio = current.audio;
+      const lyrics = current.lyrics;
+      const postId = current.postId;
+      const aligned = yield* catchStageFailure(
+        abortablePromise((signal) =>
+          provider.alignment.align({
+            operationId: current.operationId,
+            postId,
+            audioRevision: current.audioRevision,
+            analysisRevision: current.analysisRevision,
+            lyricsRevision: lyrics.lyricsRevision,
+            canonicalAudioSha256: audio.canonicalSha256,
+            audioArtifactRef: audio.immutableRef,
+            lyrics: lyrics.text,
+            signal,
+          }),
+        ).pipe(
+          Effect.andThen((value) => {
+            if (
+              value.status === "unavailable" &&
+              ["rate_limited", "provider_unavailable", "timeout"].includes(value.failureCode)
+            ) {
+              return failAttempt(current, started.lease, dependencies).pipe(
+                Effect.andThen(Effect.fail(new DeferredAttempt("provider_progress"))),
+              );
+            }
+            return Effect.succeed(value);
+          }),
+        ),
+        current,
+        started.lease,
+        dependencies,
+        () => new DeferredAttempt("provider_progress"),
+      );
       result =
         aligned.status === "ready"
           ? {
@@ -1008,143 +1183,164 @@ async function align(
               status: "unavailable",
               failureCode: aligned.failureCode,
             };
-    } catch (error) {
-      if (error instanceof DeferredAttempt) throw error;
-      abort.abort();
-      await failAttempt(current, started.lease, dependencies);
-      throw new DeferredAttempt("provider_progress");
     }
-  }
-  const committed = await dependencies.store.commitAlignment(current, result);
-  if (committed === "stale") throw new DeferredAttempt("stale_fence");
-  await completeAttempt(current, started.lease, result, dependencies);
-  return { outcome: "alignment_recorded" };
+    const committed = yield* storeWrite(() => dependencies.store.commitAlignment(current, result));
+    if (committed === "stale") return yield* Effect.fail(new DeferredAttempt("stale_fence"));
+    yield* completeAttempt(current, started.lease, result, dependencies);
+    return { outcome: "alignment_recorded" } as const;
+  });
 }
 
 /** Durable interpreter. Every effectful phase begins from a fresh authority reload. */
-async function runMediaProcessingWorkflowOnce(
+function runMediaProcessingWorkflowOnce(
   rawPayload: unknown,
   eventType: MediaProcessingEventType,
   dependencies: MediaProcessingWorkflowDependencies,
-): Promise<MediaProcessingWorkflowResult> {
-  const payload = decodeMediaProcessingWorkflowPayload(rawPayload);
-  const outbox = await dependencies.store.getOutbox(payload.outboxId);
-  if (
-    outbox === null ||
-    outbox.eventType !== eventType ||
-    outbox.submissionId !== payload.submissionId ||
-    outbox.operationId !== payload.operationId ||
-    outbox.workflowRevision !== payload.workflowRevision
-  ) {
-    return { outcome: "inert" };
-  }
-  let authority = await dependencies.store.loadAuthority(payload.submissionId, payload.operationId);
-  if (authority === null || authority.workflowRevision !== payload.workflowRevision) {
-    return { outcome: "inert" };
-  }
-  if (["blocked", "processing_failed", "abandoned"].includes(authority.status)) {
-    dependencies.options.observe?.(observation(authority, "workflow_terminal"));
-    return {
-      outcome:
-        authority.status === "blocked"
-          ? "blocked"
-          : authority.status === "processing_failed"
-            ? "processing_failed"
-            : "inert",
-    };
-  }
-  if (eventType === "alignment") return align(authority, dependencies);
-  if (eventType === "publication") return publish(authority, dependencies);
-  if (authority.status === "published") {
-    return {
-      outcome:
-        eventType !== "analysis_launch"
-          ? "inert"
-          : authority.publishedLyricsRevision === null
-            ? "published_without_alignment"
-            : "published",
-    };
-  }
-
-  if (!dependencies.options.enabled || dependencies.providers === null) {
-    await dependencies.store.commitProviderUnavailableReview(
-      authority,
-      dependencies.options.enabled ? "missing_provider" : "disabled",
+): WorkflowEffect<MediaProcessingWorkflowResult> {
+  return Effect.gen(function* () {
+    const payload = decodeMediaProcessingWorkflowPayload(rawPayload);
+    const outbox = yield* promiseEffect(() => dependencies.store.getOutbox(payload.outboxId));
+    if (
+      outbox === null ||
+      outbox.eventType !== eventType ||
+      outbox.submissionId !== payload.submissionId ||
+      outbox.operationId !== payload.operationId ||
+      outbox.workflowRevision !== payload.workflowRevision
+    ) {
+      return { outcome: "inert" } as const;
+    }
+    const loadedAuthority = yield* promiseEffect(() =>
+      dependencies.store.loadAuthority(payload.submissionId, payload.operationId),
     );
-    return { outcome: "manual_review" };
-  }
+    if (loadedAuthority === null || loadedAuthority.workflowRevision !== payload.workflowRevision) {
+      return { outcome: "inert" } as const;
+    }
+    let authority = loadedAuthority;
+    if (["blocked", "processing_failed", "abandoned"].includes(authority.status)) {
+      dependencies.options.observe?.(observation(authority, "workflow_terminal"));
+      return {
+        outcome:
+          authority.status === "blocked"
+            ? "blocked"
+            : authority.status === "processing_failed"
+              ? "processing_failed"
+              : "inert",
+      } as const;
+    }
+    if (eventType === "alignment") return yield* align(authority, dependencies);
+    if (eventType === "publication") return yield* publish(authority, dependencies);
+    if (authority.status === "published") {
+      return {
+        outcome:
+          eventType !== "analysis_launch"
+            ? "inert"
+            : authority.publishedLyricsRevision === null
+              ? "published_without_alignment"
+              : "published",
+      } as const;
+    }
 
-  if (authority.analysis === null) {
-    const built = await buildAnalysis(authority, dependencies.providers, dependencies);
-    if (built === "processing_failed") return { outcome: "processing_failed" };
-    authority = await authoritativeReload(authority, dependencies);
+    if (!dependencies.options.enabled || dependencies.providers === null) {
+      yield* storeWrite(() =>
+        dependencies.store.commitProviderUnavailableReview(
+          authority,
+          dependencies.options.enabled ? "missing_provider" : "disabled",
+        ),
+      );
+      return { outcome: "manual_review" } as const;
+    }
+
     if (authority.analysis === null) {
-      const committed = await dependencies.store.commitAnalysis(authority, built);
-      if (committed === "stale") throw new DeferredAttempt("stale_fence");
+      const built = yield* buildAnalysis(authority, dependencies.providers, dependencies);
+      if (built === "processing_failed") return { outcome: "processing_failed" } as const;
+      authority = yield* authoritativeReload(authority, dependencies);
+      if (authority.analysis === null) {
+        const commitAuthority = authority;
+        const committed = yield* storeWrite(() =>
+          dependencies.store.commitAnalysis(commitAuthority, built),
+        );
+        if (committed === "stale") return yield* Effect.fail(new DeferredAttempt("stale_fence"));
+      }
+    } else {
+      const refreshed = yield* refreshLyricsClassification(
+        authority,
+        dependencies.providers,
+        dependencies,
+      );
+      if (refreshed !== null) {
+        authority = yield* authoritativeReload(authority, dependencies);
+        const commitAuthority = authority;
+        const committed = yield* storeWrite(() =>
+          dependencies.store.commitAnalysis(commitAuthority, refreshed),
+        );
+        if (committed === "stale") return yield* Effect.fail(new DeferredAttempt("stale_fence"));
+      }
     }
-  } else {
-    const refreshed = await refreshLyricsClassification(
-      authority,
-      dependencies.providers,
-      dependencies,
-    );
-    if (refreshed !== null) {
-      authority = await authoritativeReload(authority, dependencies);
-      const committed = await dependencies.store.commitAnalysis(authority, refreshed);
-      if (committed === "stale") throw new DeferredAttempt("stale_fence");
-    }
-  }
 
-  authority = await authoritativeReload(authority, dependencies);
-  if (authority.analysis === null) throw new DeferredAttempt("stale_fence");
-  if (
-    authority.lyrics !== null &&
-    (authority.lyrics.audioRevision !== authority.audioRevision ||
-      authority.lyrics.canonicalAudioSha256 !== authority.audio?.canonicalSha256)
-  ) {
-    throw new TypeError("accepted lyrics crossed immutable audio lineage");
-  }
-  const decision = decideMediaPublication(authority);
-  if (decision === "waiting_for_terms") {
-    dependencies.options.observe?.(observation(authority, "workflow_waiting"));
-    return { outcome: decision };
-  }
-  const decisionCommit = await dependencies.store.commitDecision(authority, decision);
-  if (decisionCommit === "stale") throw new DeferredAttempt("stale_fence");
-  authority = await authoritativeReload(authority, dependencies);
-  if (decision.outcome === "manual_review") return { outcome: "manual_review" };
-  if (decision.outcome === "block") return { outcome: "blocked" };
-  if (decision.outcome === "reference_required") return { outcome: "action_required" };
-  return publish(authority, dependencies);
+    authority = yield* authoritativeReload(authority, dependencies);
+    if (authority.analysis === null) return yield* Effect.fail(new DeferredAttempt("stale_fence"));
+    if (
+      authority.lyrics !== null &&
+      (authority.lyrics.audioRevision !== authority.audioRevision ||
+        authority.lyrics.canonicalAudioSha256 !== authority.audio?.canonicalSha256)
+    ) {
+      return yield* Effect.die(new TypeError("accepted lyrics crossed immutable audio lineage"));
+    }
+    const decision = decideMediaPublication(authority);
+    if (decision === "waiting_for_terms") {
+      dependencies.options.observe?.(observation(authority, "workflow_waiting"));
+      return { outcome: decision } as const;
+    }
+    const commitAuthority = authority;
+    const decisionCommit = yield* storeWrite(() =>
+      dependencies.store.commitDecision(commitAuthority, decision),
+    );
+    if (decisionCommit === "stale") return yield* Effect.fail(new DeferredAttempt("stale_fence"));
+    authority = yield* authoritativeReload(authority, dependencies);
+    if (decision.outcome === "manual_review") return { outcome: "manual_review" } as const;
+    if (decision.outcome === "block") return { outcome: "blocked" } as const;
+    if (decision.outcome === "reference_required") return { outcome: "action_required" } as const;
+    return yield* publish(authority, dependencies);
+  });
 }
 
-export async function runMediaProcessingWorkflow(
+export function runMediaProcessingWorkflow(
   rawPayload: unknown,
   eventType: MediaProcessingEventType,
   dependencies: MediaProcessingWorkflowDependencies,
-): Promise<MediaProcessingWorkflowResult> {
-  try {
-    return await runMediaProcessingWorkflowOnce(rawPayload, eventType, dependencies);
-  } catch (error) {
-    if (!(error instanceof DeferredAttempt)) throw error;
-    if (error.reason === "exhausted") {
-      const payload = decodeMediaProcessingWorkflowPayload(rawPayload);
-      const authority = await dependencies.store.loadAuthority(
-        payload.submissionId,
-        payload.operationId,
-      );
-      if (authority !== null) {
-        await dependencies.store.commitProviderUnavailableReview(authority, "provider_exhausted");
+): WorkflowEffect<MediaProcessingWorkflowResult> {
+  return runMediaProcessingWorkflowOnce(rawPayload, eventType, dependencies).pipe(
+    Effect.catchCause((cause): WorkflowEffect<MediaProcessingWorkflowResult> => {
+      if (Cause.hasInterrupts(cause)) return Effect.failCause(cause);
+      const error = deferredAttemptFromCause(cause);
+      if (error === undefined) return Effect.failCause(cause);
+      if (error.reason === "exhausted") {
+        return Effect.gen(function* () {
+          const payload = decodeMediaProcessingWorkflowPayload(rawPayload);
+          const authority = yield* promiseEffect(() =>
+            dependencies.store.loadAuthority(payload.submissionId, payload.operationId),
+          );
+          if (authority !== null) {
+            yield* storeWrite(() =>
+              dependencies.store.commitProviderUnavailableReview(authority, "provider_exhausted"),
+            );
+          }
+          return { outcome: "manual_review" } as const;
+        });
       }
-      return { outcome: "manual_review" };
-    }
-    return error.reason.startsWith("acr_")
-      ? {
-          outcome: "waiting_for_provider",
-          reason: error.reason as NonNullable<
-            Extract<MediaProcessingWorkflowResult, { outcome: "waiting_for_provider" }>["reason"]
-          >,
-        }
-      : { outcome: "waiting_for_provider" };
-  }
+      return Effect.succeed(
+        error.reason.startsWith("acr_")
+          ? {
+              outcome: "waiting_for_provider" as const,
+              reason: error.reason as NonNullable<
+                Extract<
+                  MediaProcessingWorkflowResult,
+                  { outcome: "waiting_for_provider" }
+                >["reason"]
+              >,
+            }
+          : { outcome: "waiting_for_provider" as const },
+      );
+    }),
+  );
 }
