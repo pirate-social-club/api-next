@@ -136,3 +136,11 @@ ledger. This is an ACL installation receipt, not an assertion that migration
 0126 was recorded. Never insert a migration ledger row out of order. A later
 ordinary full-prefix migration run re-executes these idempotent revocations and
 preserves the explicit grants; the PostgreSQL test covers repeat application.
+
+Store the dedicated reader URL as HNS_OPERATOR_MONITOR_POSTGRES_URL in the
+production operator path. Map only that value to the command's existing
+CONTROL_PLANE_POSTGRES_ADMIN_URL environment name in the private service file;
+the variable name does not confer administrative privilege. Never install the
+actual operator administrator URL in the monitor unit. The reader URL and
+HNS_OPERATOR_ALERT_WEBHOOK_URL are optional admitted operator secrets, not
+Worker runtime secrets. Dry-run installation does not require a destination.
