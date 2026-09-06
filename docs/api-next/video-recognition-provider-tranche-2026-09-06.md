@@ -108,3 +108,43 @@ mutation, Qencode/ACR fixture acceptance, the combined reason-code waiver and
 delivery's ingest/thumbnail path. The hostname targets are already recorded;
 DNS/deployment readiness is separate. Clean video remains manually reviewed
 until a separately accepted visual minor-safety provider and gate exist.
+
+## Integration review clarifications
+
+The shared ACR context overloads song-era field names: audioRevision contains
+the video revision and analysisRevision contains the creation revision. The
+returned-context check verifies both alongside operation, request id and clip
+digest. Interpret these private observations as video attempts using their
+creation-bound stage-fact identity, never as song analysis revisions.
+
+A failed clip digest check currently resolves to acr_exhausted with private
+artifact_unavailable evidence. This fail-closed integrity/infrastructure-to-
+provider classification asymmetry belongs on the same follow-up as safety
+availability classification; this integration changes no public reason codes.
+
+
+## Pull-request preparation gate
+
+The authorized rebase against fetched origin/main at
+ca492404588d73c08bc5b21eb80c6a79cdc9bf6b was a no-op. No migration or runtime
+change followed the reviewed source 515cc016. This preparation adds only these
+evidence clarifications and validation results.
+
+The host-network PostgreSQL 17 run used the repository's isolated partition and
+all four general shards, serially. The isolated suite passed 35 tests, exit 0;
+general shards 1, 2 and 3 passed 79, 89 and 124 tests respectively, all exit 0.
+The initial isolated invocation failed all 35 tests with connection refusal
+while the database was starting. The successful rerun followed pg_isready.
+
+General shard 4 passed 89 tests and failed the composed wrapper at its unchanged
+120-second timeout, exit 1. The direct composed continuation passed all 22 drills
+in 52.65 seconds, exit 0. A rerun of the exact PostgreSQL wrapper then passed,
+including all 22 drills, in 51.06 seconds, exit 0. No timeout, assertion or runtime
+was changed. This is complete partitioned coverage with an explicit continuation,
+not a clean unsplit invocation. The cause of the one wrapper timeout is not
+established. Both failed logs remain part of the integration capture.
+
+The earlier check and ordinary suites remain green on this exact runtime.
+Required remote check, postgres17 and secret-boundary results are still required
+before merge and will be recorded with the merge receipt in the execution record.
+No deployment, enablement, credential mutation or live provider call occurred.
