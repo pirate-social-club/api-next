@@ -9,6 +9,7 @@ import {
   HnsAuthoritySuccessorPromotionRefusal,
   promoteHnsAuthoritySuccessorInTransaction,
 } from "../../packages/platform-cf/src/hns-authority-successor-promotion.ts";
+import { requireHnsGatewayRotationFence } from "../../packages/platform-cf/src/hns-gateway-rotation.ts";
 import {
   hnsAppHostTransitionStatementFromReviewedDocument,
   hnsDnsHealthStatementFromReviewedDocument,
@@ -228,6 +229,7 @@ export async function promoteContinuity({
         zone_bytes_digest: dns.zone_bytes_digest,
         dnskey_keyset_version: dns.dnssec_keyset_version,
         gateway_deployment_reference: dns.gateway_deployment_reference,
+        gateway_rotation: candidate.gateway_rotation ?? null,
         gateway_certificate_spki_sha256: dns.gateway_certificate_spki_sha256,
         operation_labels: [
           "hns.authority-inventory.insert",
@@ -239,7 +241,22 @@ export async function promoteContinuity({
           "hns.authority-successor.verify",
         ],
       };
+    const gatewayRotation =
+      candidate.gateway_rotation === undefined
+        ? undefined
+        : {
+            reviewed: candidate.gateway_rotation,
+            previousHealthGeneration: candidate.predecessor_health_generation,
+          };
     if (mode === "--preflight") {
+      await requireHnsGatewayRotationFence({
+        client,
+        dnsActivationId: dns.dns_zone_activation_id,
+        successorGeneration: candidate.generations.dns_activation_generation,
+        successorGatewayReference: dns.gateway_deployment_reference,
+        certificateSpki: dns.gateway_certificate_spki_sha256,
+        rotation: gatewayRotation,
+      });
       await client.query("ROLLBACK");
       transactionOpen = false;
       return { ...outcome, committed: false };
@@ -252,6 +269,7 @@ export async function promoteContinuity({
         appActivationBytes: artifact("app_host_activation"),
         healthObservationBytes: artifact("health_observation"),
         successorId: expectedCandidateSha256,
+        gatewayRotation,
         rootLabel: candidate.root_label,
         generations: candidate.generations,
         sale: state.sale,

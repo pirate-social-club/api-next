@@ -8,7 +8,7 @@ import { promoteContinuity } from "./hns-continuity/promotion.mjs";
 import { ContinuityRefusal, continuityFailureMessage } from "./hns-continuity/refusal.mjs";
 
 const usage =
-  "hns-continuity.ts observe --root ROOT --ssh-host USER@HOST --directory ABSOLUTE_PATH | dry-run|rehearse|commit --directory ABSOLUTE_PATH --confirm-sha256 SHA256";
+  "hns-continuity.ts observe --root ROOT --ssh-host USER@HOST --directory ABSOLUTE_PATH [--gateway-rotation ABSOLUTE_JSON_PATH] | dry-run|rehearse|commit --directory ABSOLUTE_PATH --confirm-sha256 SHA256";
 
 async function readBounded(path: string): Promise<Uint8Array> {
   const file = await open(path, "r");
@@ -33,7 +33,7 @@ export function parseContinuityArguments(args: readonly string[]) {
   const values = new Map<string, string>();
   const allowed =
     mode === "observe"
-      ? ["--directory", "--root", "--ssh-host"]
+      ? ["--directory", "--root", "--ssh-host", "--gateway-rotation"]
       : ["--directory", "--confirm-sha256"];
   for (let index = 1; index < args.length; index += 2) {
     const flag = args[index];
@@ -55,7 +55,10 @@ export function parseContinuityArguments(args: readonly string[]) {
       !/^[a-z_][a-z0-9_-]*@[a-z0-9][a-z0-9.-]*$/u.test(sshHost)
     )
       throw new ContinuityRefusal(usage);
-    return { mode, directory, root, sshHost } as const;
+    const gatewayRotationPath = values.get("--gateway-rotation");
+    if (gatewayRotationPath !== undefined && !isAbsolute(gatewayRotationPath))
+      throw new ContinuityRefusal(usage);
+    return { mode, directory, root, sshHost, gatewayRotationPath } as const;
   }
   const confirmedSha256 = values.get("--confirm-sha256");
   if (confirmedSha256 === undefined || !/^[0-9a-f]{64}$/u.test(confirmedSha256))
@@ -95,6 +98,11 @@ export async function main(args = Bun.argv.slice(2)) {
       }
       await Bun.write(`${directory}/state.json`, JSON.stringify(state));
       await Bun.write(`${directory}/source.json`, JSON.stringify(currentSource));
+      if (options.gatewayRotationPath !== undefined)
+        await Bun.write(
+          `${directory}/gateway-rotation.json`,
+          await readBounded(options.gatewayRotationPath),
+        );
       await acquireContinuityEvidence({ directory, state, sshHost: options.sshHost });
     }
     await verifyAuthorityProof(directory, true);
@@ -112,6 +120,9 @@ export async function main(args = Bun.argv.slice(2)) {
       secondary,
       verification,
       sourceCommit: currentSource,
+      gatewayRotation: (await Bun.file(`${directory}/gateway-rotation.json`).exists())
+        ? await readJson(`${directory}/gateway-rotation.json`)
+        : undefined,
     });
     if (options.mode === "observe") {
       await Bun.write(`${directory}/candidate.json`, prepared.candidate_bytes);

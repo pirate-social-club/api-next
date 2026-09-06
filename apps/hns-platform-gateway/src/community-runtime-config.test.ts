@@ -61,7 +61,7 @@ async function manifest(
     maximum_buffered_response_bytes: 16777216,
     gateway_upstream_deadline_milliseconds: 15000,
     maximum_private_authority_bytes: 4096,
-    private_authority_deadline_milliseconds: 2000,
+    private_authority_deadline_milliseconds: 4000,
     api_next_source_commit: sourceCommit,
     bundle_sha256: await sha256(bundleBytes),
   };
@@ -238,6 +238,7 @@ describe("community gateway deployment configuration", () => {
       { routing_contract: "community-only-v1" },
       { handle_profile_utf8_bytes: 446 },
       { handle_profile_sha256: "0".repeat(64) },
+      { private_authority_deadline_milliseconds: 2000 },
       { handle_profile_version: "other" },
     ]) {
       await expect(loadCombined(overrides)).rejects.toThrow(

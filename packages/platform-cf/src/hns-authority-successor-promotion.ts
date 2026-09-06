@@ -8,6 +8,7 @@ import {
   type ControlPlaneTransaction,
 } from "../../application/src/ports.ts";
 import { makeControlPlaneHandleSalesRepository } from "./handle-sales-repository.ts";
+import { requireHnsGatewayRotationFence } from "./hns-gateway-rotation.ts";
 import {
   hnsAppHostTransitionStatementFromReviewedDocument,
   hnsDnsHealthStatementFromReviewedDocument,
@@ -38,6 +39,10 @@ export async function promoteHnsAuthoritySuccessorInTransaction(input: {
   readonly appActivationBytes: Uint8Array;
   readonly healthObservationBytes: Uint8Array;
   readonly successorId: string;
+  readonly gatewayRotation?: {
+    readonly reviewed: unknown;
+    readonly previousHealthGeneration: number;
+  };
   readonly rootLabel: string;
   readonly generations: {
     readonly dns_activation_generation: number;
@@ -57,6 +62,14 @@ export async function promoteHnsAuthoritySuccessorInTransaction(input: {
   const { client, inventoryRegistryReference } = input;
   const inventory = await decodeHnsAuthorityInventoryBytes(input.authorityInventoryBytes);
   const dns = await decodeHnsDnsZonePersistenceDocumentV1(input.dnsActivationBytes);
+  await requireHnsGatewayRotationFence({
+    client,
+    dnsActivationId: dns.dns_zone_activation_id,
+    successorGeneration: input.generations.dns_activation_generation,
+    successorGatewayReference: dns.gateway_deployment_reference,
+    certificateSpki: dns.gateway_certificate_spki_sha256,
+    rotation: input.gatewayRotation,
+  });
   const reservationStatement = await hnsDnsZoneReservationStatementFromReviewedDocument(
     input.dnsActivationBytes,
     60,
