@@ -88,3 +88,52 @@ Python dependencies and runs the DNSSEC replay test.
 These checks do not establish authenticated new-root onboarding, new handle
 claims, backup restoration, clean-device DANE browsing, or automatic renewal.
 Those remain separate acceptance work.
+
+## Reviewed gateway-reference rotation
+
+The September 10 checkpoint uses ordinary `observe` with no rotation input.
+Do not put a first rotation on that checkpoint's deadline. Rotation begins only
+after that checkpoint and the reviewed source lane have completed.
+
+For a later rotation, pass `--gateway-rotation /absolute/rotation.json` to
+`observe`. This is a separate reviewed operator attestation with these exact
+members: `version` equal to `hns-reviewed-gateway-rotation-v1`,
+`previous_gateway_reference`, `gateway_reference`, `profile_sha256`,
+`handle_profile_sha256`, `manifest_json`, `observed_at` and `readiness` equal to
+`operator_attested_shadow_ready`. The manifest is the exact canonical JSON
+string of the combined gateway deployment, without a trailing newline. Its
+SHA-256 must derive the supplied gateway reference, both supplied profile
+digests must match it, and its certificate SPKI must equal the retained pin.
+The attestation time must fit the fresh observation window and remain current
+at promotion. The candidate retains this attestation and the predecessor's
+health generation; its confirmed digest covers both.
+
+Before attesting readiness, the operator must validate the complete manifest
+with the target gateway runtime, prove bundle and source provenance, start the
+shadow bundle with its actual credentials, and retain the startup event and
+readiness probe. Compare both startup profile digests and gateway reference to
+the reviewed manifest. The rotation validator checks identity binding; it does
+not replace the runtime's full manifest validation or independently authenticate
+an operator's readiness claim. Shadow readiness is not end-to-end serving
+acceptance because the existing root still pins its predecessor. Keep the
+shadow evidence alongside the candidate for review.
+
+The ordinary authority observation still proves chain, DNSSEC, certificate and
+current app serving. The shared successor transaction admits the changed gateway
+only with the reviewed manifest binding, rechecks predecessor reference and
+health generation, then advances DNS, app, health and sale together. `dry-run`
+checks the same rotation fences; `rehearse` executes then rolls back. Removing
+or changing the rotation file after candidate review changes the recomputed
+digest and is refused. No DNS, TLSA or certificate key changes are included.
+
+The production cutover requires one coordinated runtime and evidence ceremony.
+Retain prior manifests, references and Worker versions before it starts. A
+restoring promotion uses a new observation and a new rotation attestation whose
+target is the prior exact manifest; it advances all generations again. Never
+replay the earlier candidate or rewind database selectors. A failed or ambiguous
+commit requires database read-back before deciding which runtime set matches the
+retained reference. Continuous probes and an explicit sustained-failure threshold
+belong to the deployment receipt, not to this source command.
+
+The primary SSH prerequisite includes passwordless `sudo docker exec`, which is
+root-equivalent operator access. No secret belongs in rotation input or receipts.

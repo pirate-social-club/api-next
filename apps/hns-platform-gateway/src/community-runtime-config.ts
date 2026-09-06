@@ -114,7 +114,9 @@ const commonDeploymentManifestFields = {
   maximum_buffered_response_bytes: Schema.Literal(16_777_216),
   gateway_upstream_deadline_milliseconds: Schema.Literal(15_000),
   maximum_private_authority_bytes: Schema.Literal(4_096),
-  private_authority_deadline_milliseconds: Schema.Literal(2_000),
+  private_authority_deadline_milliseconds: Schema.Literal(
+    HNS_COMMUNITY_APP_INTERACTIVE_GATEWAY_PROFILE[16],
+  ),
   api_next_source_commit: Commit,
   bundle_sha256: Sha256,
 } as const;

@@ -3,6 +3,7 @@ import * as host from "../../packages/application/src/hns-host-persistence.ts";
 import * as inv from "../../packages/application/src/namespace-ownership/hns-authority-inventory.ts";
 import * as control from "../../packages/application/src/namespace-ownership/hns-control-observer.ts";
 import { deriveCanonicalHnsAuthorityZoneBytesV1 } from "../../packages/hns-dns-runtime/src/dns-axfr-zone.ts";
+import { requireHnsReviewedGatewayRotation } from "../../packages/platform-cf/src/hns-gateway-rotation.ts";
 import { ContinuityRefusal } from "./refusal.mjs";
 
 /** Build solely from an operator's captured, independently verified observation. */
@@ -13,8 +14,18 @@ export async function buildContinuityCandidate({
   secondary,
   verification,
   sourceCommit,
+  gatewayRotation,
 }) {
   const root = state.dns.canonical_root;
+  const rotation =
+    gatewayRotation === undefined
+      ? undefined
+      : await requireHnsReviewedGatewayRotation({
+          rotation: gatewayRotation,
+          previousGatewayReference: state.dns.gateway_deployment_reference,
+          certificateSpki: state.dns.gateway_certificate_spki_sha256,
+          observedAt: state.database_time,
+        });
   const bytes = (s) => new TextEncoder().encode(s);
   const hex = (s) => new Uint8Array(Buffer.from(s, "hex"));
   const sha = (s) => createHash("sha256").update(s).digest("hex");
@@ -106,7 +117,13 @@ export async function buildContinuityCandidate({
     app_host_current_generation: Number(state.app.app_host_activation_generation),
     successor_dns_latest_health_generation: Number(state.successor_health_generation),
   };
-  const ceremonyId = sha(encode([state.database_time, snapshot]));
+  const ceremonyId = sha(
+    encode(
+      rotation === undefined
+        ? [state.database_time, snapshot]
+        : [state.database_time, snapshot, rotation],
+    ),
+  );
   const evidenceReference = `hns-detached-observation:continuity-${ceremonyId}`;
   const transcript = chain.rows.map((r) => ({
     exchange_kind: "hns_rpc",
@@ -199,7 +216,10 @@ export async function buildContinuityCandidate({
       ],
       zone_revision: dnsGeneration,
       dnssec_keyset: [state.dns.dnssec_keyset_reference, state.dns.dnssec_keyset_version],
-      gateway: [state.dns.gateway_deployment_reference, state.dns.gateway_certificate_spki_sha256],
+      gateway: [
+        rotation?.gateway_reference ?? state.dns.gateway_deployment_reference,
+        state.dns.gateway_certificate_spki_sha256,
+      ],
       stable_chain_delegation_snapshot: [evidenceReference, childDigest],
     },
     zone_bytes: hex(primary.canonical_zone_bytes_hex),
@@ -284,5 +304,12 @@ export async function buildContinuityCandidate({
       observer_evidence: evidence,
     },
   });
-  return prepared;
+  if (rotation === undefined) return prepared;
+  const candidate = {
+    ...prepared.candidate,
+    gateway_rotation: rotation,
+    predecessor_health_generation: Number(state.health.health_generation),
+  };
+  const candidate_bytes = encode(candidate);
+  return { candidate, candidate_bytes, candidate_sha256: sha(candidate_bytes) };
 }
