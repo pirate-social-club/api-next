@@ -50,9 +50,15 @@ staging_branch_suffix=false. The configured SQL hostname hash is
 5f3cee527863bf06e3d8ed075b31d2cd978893d0e989098f1c1190fecb876fc4;
 the independently bound staging operator/runtime hostname hash is
 e4bbc875b3bf38a54f0f7c65aaef800553cb9a298e31bd28bd5e992bb650d9c3.
-These observations distinguish the configured destination from staging;
-complete provider/deployed-process binding before treating it as excluded.
-Do not stop a production provisioner under staging-only authority.
+These observations distinguish the configured destination from staging.
+A later live-process read bound MainPID to this exact systemd unit through
+its cgroup and confirmed MainPID was unchanged after inspection. Its actual
+process environment reports the same production assertion and hostname digest,
+with neither the staging nor rehearsal branch suffix. The only PostgreSQL URL
+parameter names are options and sslmode. Values were not emitted.
+Disposition: exclude this observed running provisioner from the staging and
+rehearsal writer sets; revalidate that process/target binding when establishing
+the live fence. Do not stop this production service under staging-only authority.
 
 The other installed units comprise community-app-gateway and its shadow,
 platform-gateway and its disabled shadow, disabled public-gateway,
