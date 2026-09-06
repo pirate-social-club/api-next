@@ -1,0 +1,10 @@
+bun test v1.4.0 (34cbb9a40)
+
+packages/platform-cf/src/postgres-foundation.pg.test.ts:
+(pass) Postgres 17 product and gates v2 foundation > matches migration and normalized-baseline catalogs and HNS resolver behavior [4942.75ms]
+
+ 1 pass
+ 13 filtered out
+ 0 fail
+ 93 expect() calls
+Ran 1 test across 1 file. [5.66s]

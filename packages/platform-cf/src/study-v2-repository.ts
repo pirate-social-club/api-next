@@ -100,7 +100,9 @@ const readSession = Effect.fn("readStudyV2Session")(function* (
                   , current_session_item_id, current_presented_at, presentation_count,
                   completion_reason
              FROM study_sessions_v2
-            WHERE session_id=$1 AND account_id=$2 AND community_id=$3`,
+            WHERE session_id=$1 AND account_id=$2 AND community_id=$3
+              AND active_activity_persona(account_id,persona_id,community_id)
+              AND can_account_access_activity_song(account_id,community_id,post_id)`,
     values: [input.sessionId, input.accountId, input.communityId],
     readonly: true,
   });
@@ -410,8 +412,9 @@ export const makeControlPlaneStudyV2Repository = () => ({
               label: "study-v2.start.authority",
               text: `SELECT active_owned_persona($1,$2) AS persona_eligible,
                             active_owned_community_persona($1,$2,$3) AS binding_eligible,
-                            active_community_effect($3,$1) AS community_eligible`,
-              values: [input.accountId, input.personaId, input.communityId],
+                            active_activity_persona($1,$2,$3) AS community_eligible,
+                            can_account_access_activity_song($1,$3,$4) AS resource_eligible`,
+              values: [input.accountId, input.personaId, input.communityId, input.postId],
               readonly: false,
             });
             const authorityRow = authority.rows[0];
@@ -420,7 +423,8 @@ export const makeControlPlaneStudyV2Repository = () => ({
               authorityRow === undefined ||
               authorityRow.persona_eligible !== true ||
               authorityRow.binding_eligible !== true ||
-              authorityRow.community_eligible !== true
+              authorityRow.community_eligible !== true ||
+              authorityRow.resource_eligible !== true
             ) {
               return yield* rejected("not-found");
             }
@@ -597,7 +601,9 @@ export const makeControlPlaneStudyV2Repository = () => ({
                     AND profile.language_profile_revision=s.language_profile_revision
                     AND profile.study_unit_id=e.study_unit_id
                   WHERE i.session_item_id=$1 AND i.session_id=$2 AND i.account_id=$3
-                    AND s.community_id=$4 AND (
+                    AND s.community_id=$4
+                    AND active_activity_persona(s.account_id,s.persona_id,s.community_id)
+                    AND can_account_access_activity_song(s.account_id,s.community_id,s.post_id) AND (
                       (s.status='active' AND s.expires_at > clock_timestamp()
                         AND s.current_session_item_id=i.session_item_id)
                       OR EXISTS (
@@ -699,6 +705,8 @@ export const makeControlPlaneStudyV2Repository = () => ({
                        JOIN study_lesson_item_state_v2 state
                          ON state.session_item_id=i.session_item_id
                       WHERE i.session_item_id=$1 AND i.session_id=$2 AND i.account_id=$3
+                        AND active_activity_persona(s.account_id,s.persona_id,s.community_id)
+                        AND can_account_access_activity_song(s.account_id,s.community_id,s.post_id)
                         AND s.status='active' AND s.expires_at > clock_timestamp()
                         AND s.current_session_item_id=i.session_item_id FOR UPDATE OF i, s`,
               values: [input.sessionItemId, input.sessionId, input.accountId],
@@ -942,8 +950,14 @@ export const makeControlPlaneStudyV2Repository = () => ({
               text: `SELECT request_hash, state, result_snapshot, lease_token,
                             lease_expires_at > clock_timestamp() AS lease_live
                        FROM study_spoken_answer_commands
-                      WHERE command_id=$1 AND account_id=$2 FOR UPDATE`,
-              values: [input.commandId, input.accountId],
+                      WHERE command_id=$1 AND account_id=$2
+                        AND EXISTS (SELECT 1 FROM study_sessions_v2 s
+                          WHERE s.session_id=study_spoken_answer_commands.session_id
+                            AND s.account_id=$2 AND s.session_id=$3 AND s.community_id=$4
+                            AND active_activity_persona(s.account_id,s.persona_id,s.community_id)
+                            AND can_account_access_activity_song(s.account_id,s.community_id,s.post_id))
+                        FOR UPDATE`,
+              values: [input.commandId, input.accountId, input.sessionId, input.communityId],
               readonly: false,
             });
             if (command.rows.length !== 1) return yield* rejected("not-found");
@@ -977,7 +991,10 @@ export const makeControlPlaneStudyV2Repository = () => ({
                          ON state.session_item_id=i.session_item_id
                        JOIN study_review_items review ON review.review_item_id=i.review_item_id
                       WHERE i.session_item_id=$1 AND i.session_id=$2 AND i.account_id=$3
-                        AND s.community_id=$4 AND s.status='active' FOR UPDATE OF i, s`,
+                        AND s.community_id=$4
+                        AND active_activity_persona(s.account_id,s.persona_id,s.community_id)
+                        AND can_account_access_activity_song(s.account_id,s.community_id,s.post_id)
+                        AND s.status='active' FOR UPDATE OF i, s`,
               values: [input.sessionItemId, input.sessionId, input.accountId, input.communityId],
               readonly: false,
             });
@@ -1375,7 +1392,10 @@ export const makeControlPlaneStudyV2Repository = () => ({
                          ON state.session_item_id=i.session_item_id
                        JOIN study_review_items review ON review.review_item_id=i.review_item_id
                       WHERE i.session_item_id=$1 AND i.session_id=$2 AND i.account_id=$3
-                        AND s.community_id=$4 AND s.status='active' FOR UPDATE OF i, s`,
+                        AND s.community_id=$4
+                        AND active_activity_persona(s.account_id,s.persona_id,s.community_id)
+                        AND can_account_access_activity_song(s.account_id,s.community_id,s.post_id)
+                        AND s.status='active' FOR UPDATE OF i, s`,
               values: [input.sessionItemId, input.sessionId, input.accountId, input.communityId],
               readonly: false,
             });

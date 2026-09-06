@@ -242,17 +242,22 @@ export const makeControlPlaneKaraokeRepository = () => ({
               label: "karaoke.session.identity",
               text: `SELECT persona.persona_id,
                             active_owned_community_persona($1,$2,$3) AS binding_eligible,
-                            active_community_effect($3,$1) AS community_eligible
+                            active_activity_persona($1,$2,$3) AS community_eligible,
+                            can_account_access_activity_song($1,$3,$4) AS resource_eligible
                        FROM personas AS persona
                       WHERE persona.account_id=$1
                         AND persona.persona_id=$2
                         AND persona.status='active'`,
-              values: [input.accountId, input.personaId, input.communityId],
+              values: [input.accountId, input.personaId, input.communityId, input.postId],
               readonly: false,
             });
             if (identity.rows.length !== 1) return yield* rejected("invalid-input");
             const identityRow = identity.rows[0] as Row;
-            if (identityRow.binding_eligible !== true || identityRow.community_eligible !== true) {
+            if (
+              identityRow.binding_eligible !== true ||
+              identityRow.community_eligible !== true ||
+              identityRow.resource_eligible !== true
+            ) {
               return yield* rejected("invalid-input");
             }
             const personaId = text(identityRow, "persona_id");
@@ -369,7 +374,9 @@ export const makeControlPlaneKaraokeRepository = () => ({
           label: "karaoke.attempt.read",
           text: `${ATTEMPT_SELECT}
                   WHERE attempt.attempt_id=$1 AND session.account_id=$2
-                    AND session.community_id=$3`,
+                    AND session.community_id=$3
+                    AND active_activity_persona(session.account_id,session.persona_id,session.community_id)
+                    AND can_account_access_activity_song(session.account_id,session.community_id,session.post_id)`,
           values: [input.attemptId, input.accountId, input.communityId],
           readonly: true,
         });
@@ -387,6 +394,24 @@ export const makeControlPlaneKaraokeRepository = () => ({
         const db = yield* ControlPlaneDb;
         return yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
+            const currentAuthority = yield* transaction.execute<Row>({
+              label: "karaoke.attempt.current-authority",
+              text: `SELECT session_id FROM karaoke_sessions
+                      WHERE session_id=$1 AND attempt_id=$2 AND account_id=$3
+                        AND persona_id=$4 AND community_id=$5 AND post_id=$6
+                        AND active_activity_persona(account_id,persona_id,community_id)
+                        AND can_account_access_activity_song(account_id,community_id,post_id)`,
+              values: [
+                input.authority.sessionId,
+                input.authority.attemptId,
+                input.authority.accountId,
+                input.authority.personaId,
+                input.authority.communityId,
+                input.authority.postId,
+              ],
+              readonly: false,
+            });
+            if (currentAuthority.rows.length !== 1) return yield* rejected("invalid-input");
             const replay = yield* transaction.execute<Row>({
               label: "karaoke.attempt.replay",
               text: `${ATTEMPT_SELECT} WHERE attempt.attempt_id=$1 FOR UPDATE OF attempt`,

@@ -1,0 +1,43 @@
+bun test v1.4.0 (34cbb9a40)
+
+packages/platform-cf/src/karaoke-persona-boundary.pg.test.ts:
+665 |   return (input, options) => {
+666 |     return fromIssueEffect(parser(input, options));
+667 |   };
+668 | }
+669 | function fromIssueEffect(self) {
+670 |   return Effect.catchCause(self, cause => Effect.failCauseSync(() => Cause_.map(cause, issue => new SchemaError(issue))));
+                                                                                                      ^
+error: Expected { readonly "schema_version": 1, ... } | null
+  at ["scoring_diagnostics"]
+      issue: Composite {
+  "~effect/SchemaIssue/Issue": "~effect/SchemaIssue/Issue",
+  _tag: "Composite",
+  ast: [Object ...],
+  issues: [
+    [Object ...]
+  ],
+},
+       _tag: "SchemaError",
+ ~effect/SchemaError/SchemaError: "~effect/SchemaError/SchemaError",
+
+      at <anonymous> (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/Schema.js:670:97)
+      at <anonymous> (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:146:23)
+      at map (1:11)
+      at <anonymous> (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:143:33)
+      at ~effect/Utils/internal (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/Utils.js:85:16)
+      at <anonymous> (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:716:66)
+      at runLoop (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:461:98)
+      at evaluate (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:421:23)
+      at <anonymous> (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:2256:9)
+      at <anonymous> (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:2334:19)
+(fail) Karaoke persona boundary > requires an explicitly bound persona at session start with no fallback [3331.96ms]
+
+packages/platform-cf/src/postgres-foundation.pg.test.ts:
+(pass) Postgres 17 product and gates v2 foundation > matches migration and normalized-baseline catalogs and HNS resolver behavior [4335.61ms]
+
+ 1 pass
+ 14 filtered out
+ 1 fail
+ 104 expect() calls
+Ran 2 tests across 2 files. [8.32s]

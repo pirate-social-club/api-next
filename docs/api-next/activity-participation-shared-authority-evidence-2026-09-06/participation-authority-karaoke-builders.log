@@ -1,0 +1,10 @@
+bun test v1.4.0 (34cbb9a40)
+
+packages/platform-cf/src/karaoke-persona-boundary.pg.test.ts:
+(pass) Karaoke persona boundary > requires an explicitly bound persona at session start with no fallback [4224.21ms]
+
+ 1 pass
+ 1 filtered out
+ 0 fail
+ 19 expect() calls
+Ran 1 test across 1 file. [4.96s]

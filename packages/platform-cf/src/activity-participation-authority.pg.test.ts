@@ -12,11 +12,10 @@ if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && connectionString
 }
 const suite = connectionString === undefined ? describe.skip : describe;
 
-// These are current-runtime characterizations, not acceptance of the ratified
-// participation boundary. Replace the denial expectations when the shared
-// authority and independent monetary admission implementation lands together.
+// The original tests-only denial checkpoint is preserved at c2c663de.
+// This fixture isolates shared authority and presentation; it has no Study source set.
 suite("Activity participation authority implementation baseline", () => {
-  test("owned exact-community identity survives leaving but practice start and presentation reject it", async () => {
+  test("owned exact-community identity survives leaving and presentation is ungated", async () => {
     if (connectionString === undefined) throw new Error("test URL was not configured");
     const schema = `api_next_participation_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const separator = connectionString.includes("?") ? "&" : "?";
@@ -50,6 +49,9 @@ suite("Activity participation authority implementation baseline", () => {
           (community_id,post_id,author_user_id,author_persona_id,post_type,status,visibility,created_at,updated_at)
           VALUES ('practice-community','practice-song','participant','participant-persona','song',
             'published','public',clock_timestamp(),clock_timestamp())`);
+        await admin.query(
+          "UPDATE posts SET content_rating='general' WHERE post_id='practice-song'",
+        );
       } finally {
         await admin.query("SET session_replication_role = origin");
       }
@@ -58,14 +60,18 @@ suite("Activity participation authority implementation baseline", () => {
         active_owned_persona('participant','participant-persona') AS owned,
         active_owned_community_persona('participant','participant-persona','practice-community') AS bound,
         active_community_effect('practice-community','participant') AS posting,
-        active_owned_community_persona('participant','foreign-persona','practice-community') AS foreign_persona,
-        active_owned_community_persona('participant','unbound-persona','practice-community') AS unbound_persona,
-        active_owned_community_persona('participant','participant-persona','other-community') AS wrong_community`);
+        active_activity_persona('participant','participant-persona','practice-community') AS activity,
+        can_account_access_activity_song('participant','practice-community','practice-song') AS resource,
+        active_activity_persona('participant','foreign-persona','practice-community') AS foreign_persona,
+        active_activity_persona('participant','unbound-persona','practice-community') AS unbound_persona,
+        active_activity_persona('participant','participant-persona','other-community') AS wrong_community`);
       expect((await authority()).rows).toEqual([
         {
           owned: true,
           bound: true,
           posting: true,
+          activity: true,
+          resource: true,
           foreign_persona: false,
           unbound_persona: false,
           wrong_community: false,
@@ -78,6 +84,8 @@ suite("Activity participation authority implementation baseline", () => {
           owned: true,
           bound: true,
           posting: false,
+          activity: true,
+          resource: true,
           foreign_persona: false,
           unbound_persona: false,
           wrong_community: false,
@@ -107,11 +115,12 @@ suite("Activity participation authority implementation baseline", () => {
         ),
       );
       expect(Result.isFailure(study)).toBe(true);
-      if (!Result.isFailure(study)) throw new Error("Expected current membership refusal");
+      if (!Result.isFailure(study))
+        throw new Error("Expected missing Study source to remain unavailable");
       expect(study.failure._tag).toBe("StudyV2CommandRejected");
       if (study.failure._tag !== "StudyV2CommandRejected")
         throw new Error("Unexpected storage failure");
-      expect(study.failure.reason).toBe("not-found");
+      expect(study.failure.reason).toBe("insufficient-exercises");
       const presentation = await Effect.runPromise(
         Effect.scoped(
           makeControlPlaneActivityQualificationRepository()
@@ -122,12 +131,72 @@ suite("Activity participation authority implementation baseline", () => {
             .pipe(Effect.result, Effect.provide(runtime)),
         ),
       );
-      expect(Result.isFailure(presentation)).toBe(true);
-      if (!Result.isFailure(presentation)) throw new Error("Expected current membership refusal");
-      expect(presentation.failure._tag).toBe("ActivityQualificationRejected");
-      if (presentation.failure._tag !== "ActivityQualificationRejected")
-        throw new Error("Unexpected storage failure");
-      expect(presentation.failure.reason).toBe("persona-ineligible");
+      expect(Result.isSuccess(presentation)).toBe(true);
+      if (!Result.isSuccess(presentation)) throw new Error("Expected nonmember presentation");
+      expect(presentation.success.persona_id).toBe("participant-persona");
+      const replayPresentation = () =>
+        Effect.runPromise(
+          Effect.scoped(
+            makeControlPlaneActivityQualificationRepository()
+              .setPresentationPersona({
+                ...base,
+                updatedAt: base.createdAt,
+              })
+              .pipe(Effect.provide(runtime)),
+          ),
+        );
+      expect(await replayPresentation()).toEqual(presentation.success);
+      // Existing command replay does not grant access after an identity sanction.
+      await admin.query("UPDATE users SET status='deleted' WHERE user_id='participant'");
+      expect((await authority()).rows[0]?.activity).toBe(false);
+      await expect(replayPresentation()).rejects.toMatchObject({
+        _tag: "ActivityQualificationRejected",
+        reason: "persona-ineligible",
+      });
+      await admin.query("UPDATE users SET status='active' WHERE user_id='participant'");
+      // Use test fixture state changes only; the calls under test retain all guards.
+      await admin.query("SET session_replication_role = replica");
+      try {
+        await admin.query(
+          "UPDATE posts SET content_rating='adult_18' WHERE post_id='practice-song'",
+        );
+      } finally {
+        await admin.query("SET session_replication_role = origin");
+      }
+      expect((await authority()).rows[0]?.resource).toBe(false);
+      await admin.query("SET session_replication_role = replica");
+      try {
+        await admin.query(
+          "UPDATE posts SET content_rating='general',visibility='members_only' WHERE post_id='practice-song'",
+        );
+      } finally {
+        await admin.query("SET session_replication_role = origin");
+      }
+      expect((await authority()).rows[0]?.resource).toBe(false);
+      await admin.query(
+        "UPDATE communities SET status='hidden' WHERE community_id='practice-community'",
+      );
+      expect((await authority()).rows[0]?.activity).toBe(false);
+      await expect(replayPresentation()).rejects.toMatchObject({
+        _tag: "ActivityQualificationRejected",
+        reason: "persona-ineligible",
+      });
+      await admin.query(
+        "UPDATE communities SET status='active' WHERE community_id='practice-community'",
+      );
+      await admin.query("SET session_replication_role = replica");
+      try {
+        await admin.query(
+          "UPDATE personas SET status='suspended' WHERE persona_id='participant-persona'",
+        );
+      } finally {
+        await admin.query("SET session_replication_role = origin");
+      }
+      expect((await authority()).rows[0]?.activity).toBe(false);
+      await expect(replayPresentation()).rejects.toMatchObject({
+        _tag: "ActivityQualificationRejected",
+        reason: "persona-ineligible",
+      });
       const writes = await admin.query(`SELECT
         (SELECT count(*)::integer FROM karaoke_sessions) AS karaoke,
         (SELECT count(*)::integer FROM study_sessions_v2) AS study,
@@ -139,7 +208,7 @@ suite("Activity participation authority implementation baseline", () => {
         {
           karaoke: 0,
           study: 0,
-          presentations: 0,
+          presentations: 1,
           posts: 1,
           reward_decisions: 0,
           pool_shares: 0,

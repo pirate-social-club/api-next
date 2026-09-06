@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { aggregateKaraokeSession, buildKaraokeScoringDiagnostics } from "@pirate/application";
 import { Effect } from "effect";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
@@ -155,6 +156,7 @@ suite("Karaoke persona boundary", () => {
            ) VALUES ('karaoke-community','karaoke-post','karaoke-author','karaoke-author-persona',
              'song','published','public','Karaoke song',clock_timestamp(),clock_timestamp())`,
         );
+        await admin.query("UPDATE posts SET content_rating='general' WHERE post_id='karaoke-post'");
         await admin.query(
           `INSERT INTO media_post_submissions (
              submission_id, community_id, actor_user_id, operation_id, idempotency_key,
@@ -198,6 +200,7 @@ suite("Karaoke persona boundary", () => {
                 ...base,
                 ...overrides,
                 attemptId: `karaoke-attempt-${idempotencyKey}`,
+                artifactId: `karaoke-artifact-${idempotencyKey}`,
                 idempotencyKey,
                 sessionId: `karaoke-session-${idempotencyKey}`,
               })
@@ -227,8 +230,7 @@ suite("Karaoke persona boundary", () => {
           reserve(overrides, `karaoke-reject-${label.replace(/\s+/gu, "-")}`),
         ).rejects.toMatchObject({ _tag: "KaraokeCommandRejected", reason: "invalid-input" });
       }
-      // Characterize the ratified-boundary gap with a fully playable fixture:
-      // current membership loss wrongly blocks both replay and a new practice.
+      // Posting membership loss preserves replay and new private practice.
       await admin.query(
         "UPDATE community_memberships SET status='left', updated_at=clock_timestamp() WHERE membership_id='karaoke-membership'",
       );
@@ -236,18 +238,88 @@ suite("Karaoke persona boundary", () => {
         "SELECT active_owned_community_persona('karaoke-account','karaoke-persona-bound','karaoke-community') AS bound",
       );
       expect(retainedIdentity.rows).toEqual([{ bound: true }]);
+      expect(await reserve()).toEqual(authority);
+      expect(await reserve({}, "karaoke-after-leaving")).toMatchObject({
+        personaId: "karaoke-persona-bound",
+        postId: "karaoke-post",
+      });
+      const summary = {
+        ...aggregateKaraokeSession({ lineScores: [] }),
+        lineCount: authority.lines.length,
+      };
+      const finish = () =>
+        Effect.runPromise(
+          Effect.scoped(
+            repository
+              .finalizeAttempt({
+                authority,
+                completedAt: new Date(Date.parse(authority.createdAt) + 60_000).toISOString(),
+                completionReason: "completed",
+                qualificationId: "karaoke-no-match-qualification",
+                diagnostics: buildKaraokeScoringDiagnostics(authority, summary),
+                summary,
+                transportFacts: {
+                  schema_version: 1,
+                  reconnect_count: 0,
+                  pause_count: 0,
+                  seek_count: 0,
+                  epoch_count: 1,
+                  dropped_frame_count: 0,
+                  late_frame_count: 0,
+                  mic_sample_rate: 16000,
+                  provider_commit_latency_p50_ms: null,
+                  provider_commit_latency_p95_ms: null,
+                },
+              })
+              .pipe(Effect.provide(runtime)),
+          ),
+        );
+      const completed = await finish();
+      expect(await finish()).toEqual(completed);
+      const readAttempt = () =>
+        Effect.runPromise(
+          Effect.scoped(
+            repository
+              .getAttempt({
+                accountId: authority.accountId,
+                communityId: authority.communityId,
+                attemptId: authority.attemptId,
+              })
+              .pipe(Effect.provide(runtime)),
+          ),
+        );
+      expect(await readAttempt()).toEqual(completed);
+      expect(
+        (
+          await admin.query("SELECT status FROM karaoke_sessions WHERE session_id=$1", [
+            authority.sessionId,
+          ])
+        ).rows,
+      ).toEqual([{ status: "completed" }]);
+      await admin.query("SET session_replication_role = replica");
+      try {
+        await admin.query(
+          "UPDATE posts SET content_rating='adult_18' WHERE post_id='karaoke-post'",
+        );
+      } finally {
+        await admin.query("SET session_replication_role = origin");
+      }
       await expect(reserve()).rejects.toMatchObject({
         _tag: "KaraokeCommandRejected",
         reason: "invalid-input",
       });
-      await expect(reserve({}, "karaoke-after-leaving")).rejects.toMatchObject({
+      expect(await readAttempt()).toBeNull();
+      await expect(finish()).rejects.toMatchObject({
         _tag: "KaraokeCommandRejected",
         reason: "invalid-input",
       });
       const sessions = await admin.query(
         "SELECT persona_id FROM karaoke_sessions ORDER BY created_at, session_id",
       );
-      expect(sessions.rows.map((row) => row.persona_id)).toEqual(["karaoke-persona-bound"]);
+      expect(sessions.rows.map((row) => row.persona_id)).toEqual([
+        "karaoke-persona-bound",
+        "karaoke-persona-bound",
+      ]);
     } finally {
       await admin.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(schema)} CASCADE`);
       await admin.end();

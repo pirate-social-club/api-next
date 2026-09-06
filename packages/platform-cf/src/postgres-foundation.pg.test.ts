@@ -1087,6 +1087,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       expect(currentMigrations.map((entry) => entry.version)).toContain(
         "0127_video_delivery_ingest.sql",
       );
+      expect(currentMigrations.map((entry) => entry.version)).toContain(
+        "0128_activity_participation_authority.sql",
+      );
       expect(currentMigrations.map((entry) => entry.version)).not.toContain(
         "0125_video_delivery_ingest.sql",
       );

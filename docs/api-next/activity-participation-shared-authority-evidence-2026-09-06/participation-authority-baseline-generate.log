@@ -1,0 +1,1 @@
+$ bun scripts/generate-postgres-baseline.ts

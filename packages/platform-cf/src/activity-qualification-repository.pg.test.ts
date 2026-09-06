@@ -165,6 +165,7 @@ async function seedParticipant(
   admin: Client,
   identity: Readonly<{ readonly communityId: string; readonly postId: string }>,
   suffix: string,
+  member = true,
 ): Promise<{
   readonly accountId: string;
   readonly communityId: string;
@@ -184,13 +185,21 @@ async function seedParticipant(
   );
   const personaId = firstPersona.rows[0]?.persona_id;
   if (personaId === undefined) throw new Error("first persona was not provisioned");
-  await insertActiveCommunityMembershipFixture(admin, {
-    communityId: identity.communityId,
-    membershipId: `membership-${suffix}`,
-    userId: accountId,
-    joinedAt: "2026-08-03T00:00:00.000Z",
-  });
-  await bindPersonaToCommunity(admin, { ...identity, accountId, personaId });
+  if (member)
+    await insertActiveCommunityMembershipFixture(admin, {
+      communityId: identity.communityId,
+      membershipId: `membership-${suffix}`,
+      userId: accountId,
+      joinedAt: "2026-08-03T00:00:00.000Z",
+    });
+  if (member) await bindPersonaToCommunity(admin, { ...identity, accountId, personaId });
+  else
+    await admin.query(
+      `INSERT INTO persona_community_bindings
+    (persona_id,account_id,community_id,binding_source)
+    VALUES ($1,$2,$3,'activity_participation')`,
+      [personaId, accountId, identity.communityId],
+    );
   return { ...identity, accountId, personaId };
 }
 
@@ -1529,6 +1538,108 @@ suite("Postgres 17 activity qualification repository", () => {
       });
     });
   }
+
+  test("never-joined unverified account completes Study and appears in standings without monetary or posting effects", async () => {
+    await withSchema(async ({ admin, scopedConnection }) => {
+      const owner = await seedAccountSong(admin, "never-joined-owner");
+      const actor = await seedParticipant(admin, owner, "never-joined", false);
+      const { legId } = await seedOpenMegapotPool(admin, owner, "never-joined");
+      const source = sourceFor(owner);
+      const service = makeActivityQualificationService(
+        makeControlPlaneActivityQualificationStore(
+          makeDirectPostgresControlPlaneLayer(scopedConnection),
+        ),
+      );
+      const start = () =>
+        Effect.runPromise(
+          provideServices(
+            ["never-joined-session", "never-joined-item"],
+            source,
+            "2026-08-25T15:00:00.000Z",
+          )(
+            service.startStudySession({
+              accountId: actor.accountId,
+              personaId: actor.personaId,
+              communityId: owner.communityId,
+              postId: owner.postId,
+              idempotencyKey: "never-joined-start",
+              requestedTimezone: "UTC",
+            }),
+          ),
+        );
+      const session = await start();
+      expect(await start()).toEqual(session);
+      const answer = await Effect.runPromise(
+        provideServices(
+          ["never-joined-answer", "never-joined-qualification"],
+          source,
+          "2026-08-25T15:01:00.000Z",
+        )(
+          service.submitStudyAnswer({
+            accountId: actor.accountId,
+            communityId: owner.communityId,
+            answer: { kind: "text_response", text: "Sail away" },
+            attemptNumber: 1,
+            idempotencyKey: "never-joined-answer",
+            sessionId: session.session_id,
+            sessionItemId: session.items[0]?.session_item_id ?? "missing",
+          }),
+        ),
+      );
+      expect(answer.session.status).toBe("completed");
+      expect(answer.session.qualification).not.toBeNull();
+      const leaderboard = await Effect.runPromise(
+        provideServices(
+          [],
+          source,
+          "2026-08-25T15:02:00.000Z",
+        )(
+          service.getSongLeaderboard({
+            accountId: actor.accountId,
+            communityId: owner.communityId,
+            postId: owner.postId,
+          }),
+        ),
+      );
+      expect(leaderboard.entries).toHaveLength(1);
+      expect(leaderboard.entries[0]?.persona.persona_id).toBe(actor.personaId);
+      expect(
+        (
+          await admin.query(
+            `SELECT
+        (SELECT count(*)::integer FROM community_memberships WHERE user_id=$1) AS memberships,
+        (SELECT count(*)::integer FROM community_follows WHERE user_id=$1) AS follows,
+        (SELECT count(*)::integer FROM posts WHERE author_user_id=$1) AS posts,
+        (SELECT count(*)::integer FROM megapot_pool_shares WHERE account_id=$1) AS shares,
+        (SELECT count(*)::integer FROM reward_ledger_credits WHERE account_id=$1) AS credits`,
+            [actor.accountId],
+          )
+        ).rows,
+      ).toEqual([{ memberships: 0, follows: 0, posts: 0, shares: 0, credits: 0 }]);
+      expect(
+        (
+          await admin.query(
+            `SELECT outcome,reason FROM reward_eligibility_decisions
+        WHERE leg_id=$1 AND account_id=$2`,
+            [legId, actor.accountId],
+          )
+        ).rows,
+      ).toEqual([{ outcome: "ineligible", reason: "verification_missing" }]);
+      // The same command key cannot replay protected song content after rating changes.
+      await admin.query("SET session_replication_role = replica");
+      try {
+        await admin.query("UPDATE posts SET content_rating='adult_18' WHERE post_id=$1", [
+          owner.postId,
+        ]);
+      } finally {
+        await admin.query("SET session_replication_role = origin");
+      }
+      await expect(start()).rejects.toMatchObject({
+        _tag: "ActivityQualificationRejected",
+        reason: "not-found",
+      });
+    });
+  });
 
   test("ratified participation keeps completion after membership loss and admits money only from independent evidence", async () => {
     await withSchema(async ({ admin, scopedConnection }) => {

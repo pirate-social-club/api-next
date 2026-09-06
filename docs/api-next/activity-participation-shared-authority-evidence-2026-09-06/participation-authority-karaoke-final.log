@@ -1,0 +1,31 @@
+bun test v1.4.0 (34cbb9a40)
+
+packages/platform-cf/src/karaoke-persona-boundary.pg.test.ts:
+20 | import { buildKaraokePayloadLines } from "./karaoke-readiness-repository.ts";
+21 | import { lockLearnerAudioAccount } from "./learner-audio-account-lock.ts";
+22 |
+23 | type Row = Readonly<Record<string, unknown>>;
+24 |
+25 | const failed = (reason: KaraokeStoreFailed["reason"]) => new KaraokeStoreFailed({ reason });
+                                                              ^
+Error:
+ reason: "constraint",
+   _tag: "KaraokeStoreFailed",
+
+      at failed (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/packages/platform-cf/src/karaoke-repository.ts:25:58)
+      at ~effect/Utils/internal (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/Utils.js:85:16)
+      at <anonymous> (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:720:53)
+      at runLoop (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:461:98)
+      at evaluate (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:421:23)
+      at <anonymous> (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:780:15)
+      at onExit (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:1010:5)
+      at <anonymous> (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:1021:7)
+      at evaluate (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:434:23)
+      at <anonymous> (/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-activity-participation-authority/node_modules/.bun/effect@4.0.0-rc.109/node_modules/effect/dist/internal/effect.js:780:15)
+(fail) Karaoke persona boundary > requires an explicitly bound persona at session start with no fallback [3577.14ms]
+
+ 0 pass
+ 1 filtered out
+ 1 fail
+ 12 expect() calls
+Ran 1 test across 1 file. [5.31s]
