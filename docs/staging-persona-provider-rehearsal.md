@@ -264,3 +264,48 @@ mvydkmmwh5x4 and restore source syu03e00w3ux defined the authorized targets;
 the provider metadata production flag was true even on these isolated staging
 restore branches and was not treated as the product environment identity.
 The remaining third branch keeps the 2026-09-07T04:00:00Z review/delete deadline.
+
+## Third refusal and fourth restored target
+
+The 5f2efc58 attempt on un1u2oawdweg committed five removal batches before
+rehearsal_provider_application_changed refused continuation. SQLSTATE was null;
+the message fingerprint was
+0ffc8508d81bfba185be8faf68c5207f5a08ebcbfd19d517a2f5d2960bd249f7.
+The observer reported no failure, 326 samples and maximum sampled own/shared
+locks of 389. This was a provider application-label classification failure,
+not evidence of lock exhaustion. The failed marker and execution log remain
+under the branch-specific staging-reset-rehearsal evidence directory. Never
+resume this branch.
+
+The revised guard verifies the exact pscale_admin role and its superuser,
+replication, create-role, create-database and login flags on every observation.
+Application labels are evidence rather than authority; changed or null labels
+do not make a verified provider session into an application producer. Unknown
+roles and unowned operator sessions still refuse, both runner PIDs remain
+required, and observed session counts continue to reduce the lock budget.
+Read-only catalog checks on the failed branch and staging main confirmed all
+five role flags. Sixty subsequent read-only observations passed; they did not
+observe a label rotation, which is covered by unit tests instead.
+
+The fixed admission lifetime is two hours, determined before execution and
+never extended during a run. About 700 removal roots at the measured batch
+duration plus 119 replay batches can exceed the previous one-hour window.
+Backup retention must cover the full admission lifetime.
+
+Fourth target pxo3svqjoxvn, persona-reset-rehearsal-r4-20260906, was restored
+from backup xvvo8r6tcaa5 at 2026-09-06T06:08:16.557Z. At 06:12:15.600Z its
+109 ledger entries, 329 tables, 34520 rows, two sequences, ownership, ACLs,
+default ACLs and extensions matched the original capture fingerprints above.
+The separate rolled-back evidence check reproduced 2/3/1 and the original
+digest, with all 109 ledger checksums unchanged. Default-role metadata was
+initialized only on this branch and returned credential values were discarded.
+This remains an unfenced rehearsal capture, not live-reset recovery evidence.
+The review/delete deadline remains 2026-09-07T04:00:00Z.
+
+After the role-classification correction, the full check passed with 41 baseline
+warnings and all 3042 unit tests passed with 13014 assertions across 474 files.
+Before that operations-only correction, the four Worker configurations passed
+serially: 11 files/73 tests, 15 files/48 tests, one file/two tests and six
+files/nine tests. Node tests passed 20. No fresh full PostgreSQL or
+secret-boundary suite result is claimed. Successful full provider replay and
+the deliberate between-replay-batches recovery exercise remain outstanding.

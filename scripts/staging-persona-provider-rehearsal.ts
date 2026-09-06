@@ -21,7 +21,7 @@ import {
   validateStagingResetArtifacts,
 } from "./staging-persona-reset-plan";
 
-const branchId = "un1u2oawdweg";
+const branchId = "pxo3svqjoxvn";
 const backupId = "xvvo8r6tcaa5";
 const originalData = "0b1c97ef5efa0d32eee31cf220e9d5a41f74c7cfecbe782c03f16caaf2628bf8";
 const originalDefaults = "f0973701f1b93a794190b0a16ab24126ff6bda647a0d4476f6a00f9d75b2329d";
@@ -37,7 +37,9 @@ export async function rehearseProviderReset(execute: boolean) {
   const reference = await measureRehearsalReference();
   const hyperdrive = await assertRehearsalHyperdriveExclusion();
   const backup = await observeStagingProviderBackup(backupId);
-  const validUntilMs = Date.now() + 3_600_000;
+  // About 700 initial roots at measured 6–7 seconds per committed batch,
+  // plus 119 replay batches, can exceed one hour. Never extend during a run.
+  const validUntilMs = Date.now() + 2 * 3_600_000;
   if (backup.expires_at <= validUntilMs || !backup.restored_branch_ids.includes(branchId))
     throw new Error("rehearsal_backup_retention_unproven");
   return withProviderRehearsalOperator(async (admin, operator, runtime) =>
@@ -153,7 +155,7 @@ export async function rehearseProviderReset(execute: boolean) {
           assertFreshFence: fresh,
           markerDirectory: resolve(
             import.meta.dir,
-            "../../../../.state/staging-reset-rehearsal/un1u2oawdweg",
+            "../../../../.state/staging-reset-rehearsal/pxo3svqjoxvn",
           ),
           recoveryDigest: hash({ backup, data: data.sha256 }),
           targetAndFenceDigest: hash({ branchId, hyperdrive, sessions }),

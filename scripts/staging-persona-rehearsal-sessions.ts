@@ -1,12 +1,8 @@
 import { createHash } from "node:crypto";
 import type { Client } from "pg";
 
-// Owner-dispositioned provider baseline, compared on main and the isolated
-// branch on 2026-09-06. Hidden activity fields are not treated as empty values.
-const providerApplications = [
-  "4d610df279c4c8ef752e6ce9ba073967a3ea23cc7d09024922ac9da4f17cf930",
-  "a2f5ec7abc29f65a8dfc0527aaca0fe6140718ccec2828d243c8ada40c5fe7e3",
-];
+// Owner-dispositioned substrate identity. Application labels and process counts
+// are observations, not an exhaustive identity list. Observe verifies the role.
 type Session = { pid: number; usename: string | null; application_sha256: string | null };
 
 /** Pure baseline comparison; it neither proves branch identity nor prevents
@@ -27,26 +23,21 @@ export function assertRehearsalSessions(
     new Set(sessions.map((session) => session.pid)).size !== sessions.length
   )
     throw new Error("rehearsal_session_input_unproven");
-  const applications: string[] = [];
+  const applications: (string | null)[] = [];
   const observedOwned: number[] = [];
   for (const session of sessions) {
     if (session.usename === operator && ownedPids.includes(session.pid)) {
       observedOwned.push(session.pid);
-    } else if (session.usename === "pscale_admin" && session.application_sha256 !== null) {
+    } else if (session.usename === "pscale_admin") {
       applications.push(session.application_sha256);
     } else throw new Error("rehearsal_unexpected_session");
   }
-  // Provider workers can reconnect, disappear or run more than one instance.
-  // Classify identities, not a momentary process count. Unknown applications
-  // still require a disposition; caller budgets use the current session count.
-  if (applications.some((application) => !providerApplications.includes(application)))
-    throw new Error("rehearsal_provider_application_changed");
   if (observedOwned.length !== ownedPids.length) throw new Error("rehearsal_owned_session_missing");
   return {
     provider_sessions: applications.length,
     operator_sessions: observedOwned.length,
     total_sessions: sessions.length,
-    application_fingerprints: applications.sort(),
+    application_fingerprints: applications.sort((a, b) => (a ?? "").localeCompare(b ?? "")),
     execution_authorized: false as const,
   };
 }
@@ -61,6 +52,19 @@ export function assertRehearsalSessionHeadroom(totalSessions: number, clusterBud
     clusterBudget > 64 * (25 - totalSessions - 2)
   )
     throw new Error("rehearsal_session_headroom_insufficient");
+}
+
+export function assertRehearsalProviderRole(value: unknown) {
+  if (typeof value !== "object" || value === null)
+    throw new Error("rehearsal_provider_role_changed");
+  const role = value as Record<string, unknown>;
+  if (
+    role.rolname !== "pscale_admin" ||
+    ["rolsuper", "rolreplication", "rolcreaterole", "rolcreatedb", "rolcanlogin"].some(
+      (key) => role[key] !== true,
+    )
+  )
+    throw new Error("rehearsal_provider_role_changed");
 }
 
 /** Uses only visible session columns. Caller may be inside a reset transaction;
@@ -99,8 +103,13 @@ export async function observeRehearsalSessions(
       (SELECT count(*)::int FROM pg_catalog.pg_locks WHERE NOT fastpath) AS shared_locks,
       current_setting('max_locks_per_transaction')::int AS locks_per_transaction,
       current_setting('max_connections')::int AS max_connections,
-      current_setting('max_prepared_transactions')::int AS max_prepared_transactions`)
+      current_setting('max_prepared_transactions')::int AS max_prepared_transactions,
+      (SELECT json_build_object('rolname',rolname,'rolsuper',rolsuper,
+        'rolreplication',rolreplication,'rolcreaterole',rolcreaterole,
+        'rolcreatedb',rolcreatedb,'rolcanlogin',rolcanlogin)
+       FROM pg_catalog.pg_roles WHERE rolname='pscale_admin') AS provider_role`)
   ).rows[0];
+  assertRehearsalProviderRole(row?.provider_role);
   if (
     row?.prepared !== 0 ||
     row.locks_per_transaction !== 64 ||

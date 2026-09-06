@@ -212,8 +212,8 @@ does not make one list page proof of complete enumeration. Termination cannot
 undo an already-started external provider effect.
 
 Check Hyperdrive caching read-only and record whether it is disabled. Session
-counts are observations, not the decisive lock probe. The reset locks all
-supported relation roots before DROP, rejects prepared transactions, and fails
+counts are observations, not the decisive lock probe. The phased reset locks
+the current relation root before its DROP, rejects prepared transactions, and fails
 on a short lock timeout rather than retrying into an uncertain fence. Locks do
 not prevent new producers, sequence calls or new DDL; Worker-level maintenance
 is still essential. Every failure leaves that fence in place.
@@ -224,7 +224,9 @@ Before destruction, independently bind provider, SQL, credential and Hyperdrive
 identities; make and retain a fresh data-bearing capture inside the maintained
 fence; restore to an isolated branch; verify extensions, data, ACLs and ledger;
 then run the completed reconstruction there with measured capacity and wall time.
-Repeat the populated rollback injection there. Local tests do not replace it.
+Exercise interruption between committed replay batches and actual restoration
+from capture there. Transaction rollback is not the phased recovery guarantee.
+Local tests do not replace it.
 
 Only after all admission gates and independent review pass may the parent
 rollout execute staging reconstruction, read the committed evidence through a
@@ -232,3 +234,26 @@ fresh connection, deploy the pinned API and Solid pair, and lift the fence.
 Require authenticated product proofs and fresh posts/idempotency keys. No live
 reset, queue purge, Workflow termination, deployment or recovery resource was
 performed while writing this handoff.
+
+## Version-independent HTTP fence candidate
+
+Cloudflare's [Worker-level Access documentation](https://developers.cloudflare.com/workers/configuration/cloudflare-access/)
+now describes a single-Worker destination covering custom domains, workers.dev
+and previews. This is a candidate for the persistent fence; it is not installed
+or verified. Scope only the resolved pirate-http-worker-staging Worker ID with
+an inline deny-everyone policy. Never choose an account-wide destination.
+Inventory more-specific hostname/path Access applications first, since they
+override Worker-level Access. Existing applications must not be overwritten.
+Record the newly created application ID for exact reversal and prove denial
+on every public ingress before capture and after each normal-code deployment.
+
+The current Wrangler OAuth permissions have no Access application scope. A
+working deployment login does not establish authority to install this control.
+The account/API permission check, exact Worker-ID resolution, precedence
+inventory and executable receipts remain outstanding. The reviewed fence must
+also account for any service-binding callers separately.
+
+A deny-all control blocks health too. Do not silently weaken it with a health
+bypass: either review the denial itself as the ingress probe and use independent
+deployment evidence, or explicitly review a strictly read-only health exception.
+Neither alternative changes the queue, Workflow, cron, helper or recovery gates.

@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import {
+  assertRehearsalProviderRole,
   assertRehearsalSessionHeadroom,
   assertRehearsalSessions,
 } from "./staging-persona-rehearsal-sessions";
@@ -53,24 +54,45 @@ test("allows known provider applications to stop, reconnect or have several inst
   }
 });
 
-test("refuses changed provider applications and missing owned sessions", () => {
-  expect(() =>
+test("records changed or hidden provider labels as observations", () => {
+  expect(
     assertRehearsalSessions(
       [{ ...provider[0], application_sha256: "0".repeat(64) }, provider[1], operator],
       "operator",
       [3],
-    ),
-  ).toThrow("provider_application_changed");
-  expect(() => assertRehearsalSessions([...provider, operator], "operator", [3, 4])).toThrow(
-    "owned_session_missing",
-  );
-  expect(() =>
+    ).provider_sessions,
+  ).toBe(2);
+  expect(
     assertRehearsalSessions(
       [{ ...provider[0], application_sha256: null }, provider[1], operator],
       "operator",
       [3],
-    ),
-  ).toThrow("unexpected_session");
+    ).application_fingerprints,
+  ).toContain(null);
+});
+
+test("refuses missing runner sessions and changed provider role flags", () => {
+  expect(() => assertRehearsalSessions([...provider, operator], "operator", [3, 4])).toThrow(
+    "owned_session_missing",
+  );
+  const role = {
+    rolname: "pscale_admin",
+    rolsuper: true,
+    rolreplication: true,
+    rolcreaterole: true,
+    rolcreatedb: true,
+    rolcanlogin: true,
+  };
+  expect(() => assertRehearsalProviderRole(role)).not.toThrow();
+  for (const key of Object.keys(role)) {
+    expect(() =>
+      assertRehearsalProviderRole({ ...role, [key]: key === "rolname" ? "operator" : false }),
+    ).toThrow("provider_role_changed");
+    expect(() => assertRehearsalProviderRole({ ...role, [key]: undefined })).toThrow(
+      "provider_role_changed",
+    );
+  }
+  expect(() => assertRehearsalProviderRole(null)).toThrow("provider_role_changed");
 });
 
 test("rechecks headroom against changing provider session counts", () => {
