@@ -127,3 +127,12 @@ Verify actual denied execution as well as table grants before enabling its unit.
 The privilege test applies the forward migration ledger on PostgreSQL; the
 structural test baseline strips environment-specific ACLs and is not permission
 acceptance evidence.
+
+If the environment ledger is behind unrelated product migrations, do not apply
+those migrations merely to install a reader. The operator may execute the exact
+reviewed 0126 SQL bytes in the same transaction as the explicit executor grants,
+retaining the source commit, file digest, effective ACL read-back and unchanged
+ledger. This is an ACL installation receipt, not an assertion that migration
+0126 was recorded. Never insert a migration ledger row out of order. A later
+ordinary full-prefix migration run re-executes these idempotent revocations and
+preserves the explicit grants; the PostgreSQL test covers repeat application.
