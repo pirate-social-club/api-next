@@ -107,3 +107,22 @@ resolved the inventory failure. A final boundary review added a 12 KiB cap per
 normalized provider result, tested with an oversized but schema-valid response.
 Such input becomes safety-unavailable before it can exceed the private row's
 64 KiB ceiling. All final checks ran after that correction.
+
+
+## Integration ordinal supersession — 2026-09-06
+
+Control-plane commit c2c8111b records execution first as 0124 and delivery
+renumbering its own migration to 0125 at rebase. Fetched origin f1a548a3 ends
+at 0123. The earlier 0125 safety filename records historical checkpoint order;
+the unmerged safety migration now becomes 0124 before integration. This changes
+no table semantics. Checksums, baseline and reset SQL regenerate with the rename.
+Sampling is now directed to two independent MP3 clips using the song windows;
+recognition is not implemented in this safety integration. The staging proof
+uses authorized coordinator API approvals, with no Solid approval action.
+
+The ordinal preparation passed baseline regeneration, bun run check and the
+focused migration/foundation PostgreSQL gate (17 tests, 215 assertions), all
+exit 0. Normalized schema.sql and test-reset.sql regenerated without a content
+diff, since the table semantics are unchanged. The foundation inventory now
+asserts the 0124 safety filename and rejects the former 0125 filename.
+Script-check reported zero findings. Integration rebase and its full gates follow.

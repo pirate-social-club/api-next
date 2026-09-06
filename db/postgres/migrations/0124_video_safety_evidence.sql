@@ -1,4 +1,4 @@
--- Reserved in api-video-execution-completion; delivery owns ordinal 0124.
+-- Reserved in api-video-execution-completion; execution lands first, delivery follows as 0125.
 -- Private normalized evidence and automatic hold share one immutable row.
 CREATE TABLE media_video_safety_evidence (
   submission_id TEXT NOT NULL,
