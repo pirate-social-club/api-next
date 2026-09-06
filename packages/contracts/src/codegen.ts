@@ -628,7 +628,13 @@ export type ${registryTypeName}Error = ${operationTypeName}Error;`,
   const binaryRepresentations = Object.fromEntries(
     methods
       .filter(({ responseRepresentation }) => responseRepresentation !== undefined)
-      .map(({ operationId, responseRepresentation }) => [operationId, responseRepresentation]),
+      .map(({ operationId, responseRepresentation }) => [
+        operationId,
+        {
+          contentType: responseRepresentation?.contentType,
+          cacheControl: responseRepresentation?.cacheControl,
+        },
+      ]),
   );
   const binaryDispatch =
     Object.keys(binaryRepresentations).length === 0

@@ -46,7 +46,12 @@ export async function seedVideoActors(admin: Client): Promise<void> {
   );
 }
 
-export async function finalizedFixture(connection: string, caption: string | null = null) {
+export async function finalizedFixture(
+  connection: string,
+  caption: string | null = null,
+  identity = { reservationId, submissionId, operationId },
+) {
+  const { reservationId, submissionId, operationId } = identity;
   const layer = makeDirectPostgresControlPlaneLayer(connection);
   const store = makeControlPlaneVideoPublicationStore(layer);
   const reservationResponse = new TextEncoder().encode('{"reservation_id":"fixture"}');
@@ -73,7 +78,7 @@ export async function finalizedFixture(connection: string, caption: string | nul
       responseBytes: reservationResponse,
       updatedAt: "2026-09-04T00:00:00.000Z",
     },
-    idempotencyKey: "reserve-fixture",
+    idempotencyKey: `reserve-fixture-${reservationId}`,
     responseSha256: reservationResponseSha,
     parts: [
       {
@@ -95,7 +100,7 @@ export async function finalizedFixture(connection: string, caption: string | nul
   });
   await store.createSubmission({
     state: initial,
-    idempotencyKey: "create-fixture",
+    idempotencyKey: `create-fixture-${submissionId}`,
     requestHash: "d".repeat(64),
     startInput: { version: "video-start-input-v1", video_reservation_id: reservationId },
     responseBytes,
@@ -126,7 +131,7 @@ export async function finalizedFixture(connection: string, caption: string | nul
     responseBytes,
     responseSha256,
     endpointTemplate: "/media-post-submissions/:submissionId/finalize",
-    idempotencyKey: "finalize-fixture",
+    idempotencyKey: `finalize-fixture-${submissionId}`,
     requestHash: "e".repeat(64),
   });
   const finalized = await store.getSubmissionByOperation({ submissionId, operationId });

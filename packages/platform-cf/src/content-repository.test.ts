@@ -89,75 +89,78 @@ const validCounts = [
 
 describe("M2 content repository row and lock defenses", () => {
   const requestHash = "a".repeat(64);
-  test("projects phase-one video facts on a guarded single-Post read", async () => {
-    const videoPost = {
-      ...validPost,
-      post_type: "video",
-      body: "A video caption",
-      video_media_kind: "video",
-      video_intent: "original_audio",
-      video_caption: "A video caption",
-      video_original_sound_id: "original-sound-1",
-      video_origin_post_id: "post_1",
-      video_origin_author_persona_id: "persona_alice",
-      video_stream_state: "not_started",
-      video_playback_ref: null,
-      video_thumbnail_state: "pending",
-      video_thumbnail_artifact_ref: "media://thumbnail/post-1",
-      video_data_registration_state: "confirming",
-      fingerprint: "private-fingerprint",
-      rights_review: "private-review",
-      ownership: "private-owner",
-      moderator: "private-moderator",
-      override: "private-override",
-      extracted_audio_ref: "private-extraction",
-      canonical_sha256: "f".repeat(64),
-      retention_policy_revision: 1,
-    };
-    const fake = fakeDb([[resolvedPost], [videoPost], validCounts, []]);
-    const result = await runWith(
-      makeControlPlaneContentRepository().getPost({
-        communityId: "community_1",
-        postId: "post_1",
-        viewerUserId: "usr_alice",
-      }),
-      fake.db,
-    );
+  test.each([null, "not_started", "bound"])(
+    "projects guarded pending video with ingest state %j",
+    async (streamState) => {
+      const videoPost = {
+        ...validPost,
+        post_type: "video",
+        body: "A video caption",
+        video_media_kind: "video",
+        video_intent: "original_audio",
+        video_caption: "A video caption",
+        video_original_sound_id: "original-sound-1",
+        video_origin_post_id: "post_1",
+        video_origin_author_persona_id: "persona_alice",
+        video_stream_state: streamState,
+        video_playback_ref: streamState === "bound" ? "stream-video-1" : null,
+        video_thumbnail_state: "pending",
+        video_thumbnail_artifact_ref: "media://thumbnail/post-1",
+        video_data_registration_state: "confirming",
+        fingerprint: "private-fingerprint",
+        rights_review: "private-review",
+        ownership: "private-owner",
+        moderator: "private-moderator",
+        override: "private-override",
+        extracted_audio_ref: "private-extraction",
+        canonical_sha256: "f".repeat(64),
+        retention_policy_revision: 1,
+      };
+      const fake = fakeDb([[resolvedPost], [videoPost], validCounts, []]);
+      const result = await runWith(
+        makeControlPlaneContentRepository().getPost({
+          communityId: "community_1",
+          postId: "post_1",
+          viewerUserId: "usr_alice",
+        }),
+        fake.db,
+      );
 
-    expect(result).toMatchObject({
-      _tag: "Success",
-      value: {
-        post: { post_type: "video", body: null, caption: "A video caption" },
-        video: {
-          track: "video",
-          caption: "A video caption",
-          soundtrack: {
-            kind: "original_audio",
-            original_sound_id: "original-sound-1",
-            origin_video_post_id: "post_1",
-            origin_author_persona_id: "persona_alice",
+      expect(result).toMatchObject({
+        _tag: "Success",
+        value: {
+          post: { post_type: "video", body: null, caption: "A video caption" },
+          video: {
+            track: "video",
+            caption: "A video caption",
+            soundtrack: {
+              kind: "original_audio",
+              original_sound_id: "original-sound-1",
+              origin_video_post_id: "post_1",
+              origin_author_persona_id: "persona_alice",
+            },
+            playback: { status: "pending" },
+            thumbnail: { status: "pending" },
+            data_registration: "registration_pending",
           },
-          playback: { status: "pending" },
-          thumbnail: { status: "pending" },
-          data_registration: "registration_pending",
         },
-      },
-    });
-    const encoded = JSON.stringify(result);
-    expect(encoded).not.toContain("retention_policy_revision");
-    for (const privateValue of [
-      "private-fingerprint",
-      "private-review",
-      "private-owner",
-      "private-moderator",
-      "private-override",
-      "private-extraction",
-      "f".repeat(64),
-    ]) {
-      expect(encoded).not.toContain(privateValue);
-    }
-    expect(fake.calls[1]?.text).not.toContain("extracted_audio_ref");
-  });
+      });
+      const encoded = JSON.stringify(result);
+      expect(encoded).not.toContain("retention_policy_revision");
+      for (const privateValue of [
+        "private-fingerprint",
+        "private-review",
+        "private-owner",
+        "private-moderator",
+        "private-override",
+        "private-extraction",
+        "f".repeat(64),
+      ]) {
+        expect(encoded).not.toContain(privateValue);
+      }
+      expect(fake.calls[1]?.text).not.toContain("extracted_audio_ref");
+    },
+  );
 
   test("age-locks video before returning playback, thumbnail, or attribution", async () => {
     const fake = fakeDb([

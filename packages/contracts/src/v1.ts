@@ -640,10 +640,12 @@ export const VideoPostProjectionV1 = Schema.Struct({
       playback_ref: Schema.String,
     }),
     Schema.Struct({ status: Schema.Literal("pending") }),
+    Schema.Struct({ status: Schema.Literal("unavailable") }),
   ]),
   thumbnail: Schema.Union([
     Schema.Struct({ status: Schema.Literal("ready"), artifact_ref: Schema.String }),
     Schema.Struct({ status: Schema.Literal("pending") }),
+    Schema.Struct({ status: Schema.Literal("unavailable") }),
   ]),
   data_registration: Schema.Literals(["registration_pending", "registered", "failed"]),
   capabilities: Schema.Struct({ can_post_with_song: Schema.Boolean }),

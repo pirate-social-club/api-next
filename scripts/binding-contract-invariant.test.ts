@@ -13,6 +13,13 @@ type BindingManifest<T extends object> = { [K in keyof T]-?: BindingKind };
 // `satisfies` requires every source binding to be classified. The runtime audit
 // checks that these classifications agree with both Wrangler configs.
 const HTTP_BINDING_KINDS = {
+  VIDEO_DELIVERY_ENABLED: "var",
+  VIDEO_STREAM_CUSTOMER_HOST: "var",
+  VIDEO_STREAM_SIGNING_KEY_ID: "var",
+  VIDEO_STREAM_SIGNING_JWK_BASE64: "secret",
+  VIDEO_PLAYBACK_SOURCE_HMAC_BASE64: "secret",
+  VIDEO_PLAYBACK_RATE_LIMITER: "platform",
+  MEDIA_DERIVED: "platform",
   CF_VERSION_METADATA: "platform",
   CONTROL_PLANE: "platform",
   HNS_OWNER_VERIFIER: "platform",
@@ -156,6 +163,7 @@ const JOBS_BINDING_KINDS = {
   HNS_REVALIDATION_FORCE_EXPECTED_GENERATION: "var",
   MEDIA_PROCESSING_ENABLED: "var",
   VIDEO_ANALYSIS_ENABLED: "var",
+  VIDEO_DELIVERY_ENABLED: "var",
   MEDIA_PROCESSING_QUEUE: "platform",
   MEDIA_PROCESSING_WORKFLOW: "platform",
   VIDEO_ANALYSIS_WORKFLOW: "platform",

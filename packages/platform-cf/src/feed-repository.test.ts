@@ -69,79 +69,82 @@ function failureOf<A, E>(exit: Exit.Exit<A, E>): E {
 }
 
 describe("home feed Postgres repository", () => {
-  test("returns the phase-one video projection without private analysis evidence", async () => {
-    const calls: ControlPlaneStatement[] = [];
-    const repository = makeControlPlaneFeedRepository();
-    const output = await Effect.runPromise(
-      repository.listHome({ query: {}, viewerUserId: "usr_viewer" }).pipe(
-        Effect.provideService(
-          ControlPlaneDb,
-          fakeDb(
-            () => [
-              feedRow(0, {
-                post_type: "video",
-                body: "must use typed caption",
-                video_media_kind: "video",
-                video_intent: "original_audio",
-                video_caption: "A video caption",
-                video_original_sound_id: "original-sound-1",
-                video_origin_post_id: "post_0",
-                video_origin_author_persona_id: "persona_author",
-                video_stream_state: "bound",
-                video_playback_ref: "stream-video-1",
-                video_thumbnail_state: "ready",
-                video_thumbnail_artifact_ref: "media://thumbnail/video-1",
-                video_data_registration_state: "registered",
-                fingerprint: "private-fingerprint",
-                rights_review: "private-review",
-                ownership: "private-owner",
-                moderator: "private-moderator",
-                override: "private-override",
-                extracted_audio_ref: "private-extraction",
-                canonical_sha256: "f".repeat(64),
-                retention_policy_revision: 1,
-              }),
-            ],
-            calls,
+  test.each([null, "not_started", "bound"])(
+    "returns private-evidence-free pending video with ingest state %j",
+    async (streamState) => {
+      const calls: ControlPlaneStatement[] = [];
+      const repository = makeControlPlaneFeedRepository();
+      const output = await Effect.runPromise(
+        repository.listHome({ query: {}, viewerUserId: "usr_viewer" }).pipe(
+          Effect.provideService(
+            ControlPlaneDb,
+            fakeDb(
+              () => [
+                feedRow(0, {
+                  post_type: "video",
+                  body: "must use typed caption",
+                  video_media_kind: "video",
+                  video_intent: "original_audio",
+                  video_caption: "A video caption",
+                  video_original_sound_id: "original-sound-1",
+                  video_origin_post_id: "post_0",
+                  video_origin_author_persona_id: "persona_author",
+                  video_stream_state: streamState,
+                  video_playback_ref: streamState === "bound" ? "stream-video-1" : null,
+                  video_thumbnail_state: "ready",
+                  video_thumbnail_artifact_ref: "media://thumbnail/video-1",
+                  video_data_registration_state: "registered",
+                  fingerprint: "private-fingerprint",
+                  rights_review: "private-review",
+                  ownership: "private-owner",
+                  moderator: "private-moderator",
+                  override: "private-override",
+                  extracted_audio_ref: "private-extraction",
+                  canonical_sha256: "f".repeat(64),
+                  retention_policy_revision: 1,
+                }),
+              ],
+              calls,
+            ),
           ),
         ),
-      ),
-    );
+      );
 
-    expect(output.items[0]).toMatchObject({
-      post: {
-        post: { post_type: "video", body: null, caption: "A video caption" },
-        video: {
-          track: "video",
-          soundtrack: {
-            kind: "original_audio",
-            original_sound_id: "original-sound-1",
-            origin_video_post_id: "post_0",
-            origin_author_persona_id: "persona_author",
+      expect(output.items[0]).toMatchObject({
+        post: {
+          post: { post_type: "video", body: null, caption: "A video caption" },
+          video: {
+            track: "video",
+            soundtrack: {
+              kind: "original_audio",
+              original_sound_id: "original-sound-1",
+              origin_video_post_id: "post_0",
+              origin_author_persona_id: "persona_author",
+            },
+            playback: { status: "pending" },
+            thumbnail: { status: "ready", artifact_ref: "media://thumbnail/video-1" },
+            data_registration: "registered",
           },
-          playback: { status: "ready", provider: "stream", playback_ref: "stream-video-1" },
-          thumbnail: { status: "ready", artifact_ref: "media://thumbnail/video-1" },
-          data_registration: "registered",
         },
-      },
-    });
-    const encoded = JSON.stringify(output.items[0]);
-    expect(encoded).not.toContain("retention_policy_revision");
-    for (const privateValue of [
-      "private-fingerprint",
-      "private-review",
-      "private-owner",
-      "private-moderator",
-      "private-override",
-      "private-extraction",
-      "f".repeat(64),
-    ]) {
-      expect(encoded).not.toContain(privateValue);
-    }
-    expect(calls[0]?.text).toContain("video_projection.media_kind");
-    expect(calls[0]?.text).not.toContain("extracted_audio_ref");
-    expect(() => Schema.decodeUnknownSync(GetPublicHomeFeed.response)(output)).not.toThrow();
-  });
+      });
+      const encoded = JSON.stringify(output.items[0]);
+      expect(encoded).not.toContain("retention_policy_revision");
+      for (const privateValue of [
+        "private-fingerprint",
+        "private-review",
+        "private-owner",
+        "private-moderator",
+        "private-override",
+        "private-extraction",
+        "f".repeat(64),
+      ]) {
+        expect(encoded).not.toContain(privateValue);
+      }
+      expect(calls[0]?.text).toContain("video_projection.media_kind");
+      expect(calls[0]?.text).not.toContain("extracted_audio_ref");
+      expect(() => Schema.decodeUnknownSync(GetPublicHomeFeed.response)(output)).not.toThrow();
+    },
+  );
 
   test("age-locks an adult video before projecting media or attribution", async () => {
     const repository = makeControlPlaneFeedRepository();

@@ -1084,6 +1084,12 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       expect(currentMigrations.map((entry) => entry.version)).not.toContain(
         "0125_video_safety_evidence.sql",
       );
+      expect(currentMigrations.map((entry) => entry.version)).toContain(
+        "0127_video_delivery_ingest.sql",
+      );
+      expect(currentMigrations.map((entry) => entry.version)).not.toContain(
+        "0125_video_delivery_ingest.sql",
+      );
       await applyMigrations(scopedConnectionString, currentMigrations);
       const migratedCatalog = await catalogForSchema(admin, schema);
       const baselineSchema = schemaIdentifier();

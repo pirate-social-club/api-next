@@ -66,6 +66,7 @@
     "OPENAI_MODERATION_ENABLED": "false",
     "MEDIA_PROCESSING_ENABLED": "false",
     "VIDEO_ANALYSIS_ENABLED": "false",
+        "VIDEO_DELIVERY_ENABLED": "false",
       "VIDEO_SOURCE_GATEWAY_ORIGIN": "",
     "DATA_REGISTRATION_ENABLED": "false",
     "DATA_REGISTRATION_CHAIN_ID": "1315",
@@ -142,6 +143,7 @@
         "OPENAI_MODERATION_ENABLED": "false",
     "MEDIA_PROCESSING_ENABLED": "true",
         "VIDEO_ANALYSIS_ENABLED": "false",
+        "VIDEO_DELIVERY_ENABLED": "false",
       "VIDEO_SOURCE_GATEWAY_ORIGIN": "",
         "VIDEO_WORKFLOW_ACCOUNT_ID": "08a4c22cf52e2ecae883e36f80a33f4a",
         "VIDEO_WORKFLOW_NAME": "pirate-video-analysis-staging",
@@ -153,6 +155,7 @@
       "secrets": {
         "required": [
           "VIDEO_WORKFLOW_READ_TOKEN",
+          "VIDEO_STREAM_API_TOKEN",
           "ACRCLOUD_ACCESS_KEY",
           "ACRCLOUD_ACCESS_SECRET",
           "ELEVENLABS_API_KEY",
@@ -226,6 +229,7 @@
         "OPENAI_MODERATION_ENABLED": "false",
     "MEDIA_PROCESSING_ENABLED": "false",
         "VIDEO_ANALYSIS_ENABLED": "false",
+        "VIDEO_DELIVERY_ENABLED": "false",
       "VIDEO_SOURCE_GATEWAY_ORIGIN": "",
         "DATA_REGISTRATION_ENABLED": "false",
         "DATA_REGISTRATION_CHAIN_ID": "1315",

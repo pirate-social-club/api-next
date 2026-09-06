@@ -12,6 +12,10 @@ import {
   consumeVideoAnalysisQueueMessage,
   type VideoAnalysisQueueDependencies,
 } from "../../../packages/application/src/video/analysis-queue.ts";
+import {
+  launchVideoEnrichment,
+  type VideoEnrichmentServices,
+} from "../../../packages/application/src/video/enrichment-workflow.ts";
 import type { VideoWorkflowServices } from "../../../packages/application/src/video/workflow.ts";
 import {
   type CloudflareWorkflowStepDo,
@@ -30,6 +34,8 @@ export type MediaProcessorComposition = Readonly<{
   readonly queue: MediaProcessingQueueDependencies;
   readonly videoAnalysis?: VideoAnalysisQueueDependencies;
   readonly videoWorkflow?: VideoWorkflowServices;
+  readonly videoEnrichment?: Parameters<typeof launchVideoEnrichment>[1];
+  readonly videoEnrichmentWorkflow?: VideoEnrichmentServices;
   readonly workflow: MediaProcessingWorkflowDependencies;
 }>;
 
@@ -65,6 +71,19 @@ export function makeMediaProcessorQueueWorker<Env extends MediaProcessorWorkerEn
       const songMessages: (typeof batch.messages)[number][] = [];
       const videoMessages: (typeof batch.messages)[number][] = [];
       for (const message of batch.messages) {
+        if (
+          typeof message.body === "object" &&
+          message.body !== null &&
+          (message.body as { kind?: unknown }).kind === "video_enrichment"
+        ) {
+          const disposition =
+            composition.videoEnrichment === undefined
+              ? "retry"
+              : await launchVideoEnrichment(message.body, composition.videoEnrichment);
+          if (disposition === "ack") message.ack();
+          else message.retry({ delaySeconds: 30 });
+          continue;
+        }
         if (
           typeof message.body === "object" &&
           message.body !== null &&

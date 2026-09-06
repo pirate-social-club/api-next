@@ -58,6 +58,7 @@ import { makeControlPlaneVideoStageFactStore } from "@pirate/platform-cf/video-s
 import { Effect } from "effect";
 import type { MediaProcessorComposition, MediaProcessorWorkerEnv } from "./index.ts";
 import { isMediaProcessingEnabled } from "./posture.ts";
+import { makeVideoDeliveryComposition } from "./video-delivery-composition.ts";
 
 export { mediaProcessingPhysicalObjectKey } from "@pirate/platform-cf/media-immutable-object-key";
 
@@ -82,6 +83,8 @@ export type MediaProcessorRuntimeEnv = MediaProcessorWorkerEnv &
     readonly DATA_REGISTRATION_ENABLED?: string;
     readonly DATA_REGISTRATION_CHAIN_ID?: string;
     readonly VIDEO_ANALYSIS_ENABLED?: string;
+    readonly VIDEO_DELIVERY_ENABLED?: string;
+    readonly VIDEO_STREAM_API_TOKEN?: string;
     readonly VIDEO_ANALYSIS_WORKFLOW?: VideoAnalysisWorkflowBinding;
     readonly VIDEO_WORKFLOW_ACCOUNT_ID?: string;
     readonly VIDEO_WORKFLOW_NAME?: string;
@@ -419,6 +422,7 @@ export function makeMediaProcessorComposition(
 
   return {
     queue: { store, workflow, workerId },
+    ...makeVideoDeliveryComposition(env, runtime),
     ...(videoAnalysisRepository !== undefined &&
     enabledVideoTransform !== undefined &&
     videoProviders !== undefined &&

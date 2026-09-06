@@ -37,6 +37,7 @@ import {
   submissionId,
 } from "../../packages/platform-cf/src/video-publication.pg-fixture.ts";
 import { makeVideoPublicationWakeupStore } from "../../packages/platform-cf/src/video-publication-wakeup-repository.ts";
+import { exerciseComposedEnrichment } from "./enrichment-drill.ts";
 
 const injected = vi.hoisted(() => ({ adapters: {} as MediaProcessorRuntimeAdapters }));
 vi.mock("../../apps/media-processor-worker/src/composition.ts", async (original) => {
@@ -527,6 +528,7 @@ function harness(
     runtimeEnv,
     recognitionCalls,
     approveEndpoint,
+    instances,
     moderationCalls,
     composition,
     outbox,
@@ -593,6 +595,18 @@ test("composed success: queue and exported Workflow class reach one Post without
   expect(
     (await admin.query("SELECT count(*)::int AS n FROM data_registration_outbox")).rows[0].n,
   ).toBe(1);
+});
+
+test("composed enrichment: scheduled dispatch and exported Workflow survive lost copy and completion", async () => {
+  const h = harness();
+  expect(await h.run(await h.launch())).toEqual({ status: "published" });
+  await exerciseComposedEnrichment({
+    admin,
+    layer: fixture.layer,
+    runtimeEnv: h.runtimeEnv,
+    instances: h.instances,
+  });
+  await assertPublished();
 });
 
 test("drill 1: accepted start and lost response survive Workflow replay with one start per capability", async () => {
