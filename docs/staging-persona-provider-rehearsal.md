@@ -408,3 +408,19 @@ solely from its empty application label while backend type is hidden. The
 unexecuted admission prototype was removed; the strict guard and expanded
 redacted diagnostics remain. Its focused suite passes nine tests and 43
 assertions. No replacement branch or destructive rerun has been started.
+
+The fourth PostgreSQL shard completed: 94 tests, zero failures, 872 assertions
+across 16 files in 618.56 seconds. Together the four general shards passed
+370 tests; the separate namespace suite passed 35. The one-CPU/512-MiB local
+verification container was stopped afterwards. At checkpoint 8380b3ae, the
+repository check passed, including TypeScript, binding contracts, dependency
+boundaries, migration consistency and client verification, with the existing
+41 lint warnings. The fresh unit suite passed 3052 tests and 13060 assertions;
+Node tests passed 20. All Worker suites completed: base 73, HTTP 48, self 2,
+and HNS verifier 9 tests, totalling 132 across 33 files. The standard HTTP
+invocation was stopped with exit 143 because its parallel Worker instances
+caused memory pressure; it was rerun successfully with maxWorkers=1 and file
+parallelism disabled. The two remaining suites used those same bounded flags.
+No full-command success is claimed for the interrupted invocation; every
+constituent suite has an explicit successful result. All task-owned database
+test containers are stopped and no test process remains from this gate run.

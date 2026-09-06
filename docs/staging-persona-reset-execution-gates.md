@@ -310,3 +310,28 @@ producer entrypoint, including alarm, RPC and WebSocket callbacks. Introducing
 that guard requires a reviewed release-pin amendment. Until that amendment is
 implemented and reviewed, the live reset remains blocked; no temporary class
 has been deployed and no object has been invoked or changed by this lane.
+
+The reviewed implementation boundary is a separate runtime change, not an
+expansion of this tooling lane. Keep the existing class and namespace. Store
+a versioned marker outside the object's business SQL tables, before cancelling
+alarms or closing sockets. Both active and permanently retired markers deny
+constructor business initialization, alarm work, RPCs, WebSocket callbacks,
+Hyperdrive and R2 effects. Malformed markers also deny work. Retirement is
+monotonic and has no implicit clear or delete operation. If any of the six
+objects cannot be marked and verified, the external producer fence stays held.
+
+Keep migration artifacts pinned to ba0fd445. Both normal API release lines
+need reviewed descendants carrying the same guard protocol; record their
+exact SHAs separately from the migration-source SHA. Do not substitute a newer
+migration chain. After successful reset and release verification, permanently
+retire the six discarded-session objects before lifting the global fence.
+Recovery after failure restores the database capture while retaining the
+object markers. It does not promise restoration of discarded session behavior:
+the provider database capture does not include Durable Object or R2 state.
+
+Required runtime tests include marked constructor and all producer entrypoint
+denial, queued alarms after deployment, malformed-marker denial, generation
+and object mismatch, failed cancellation retaining the marker, monotonic
+retirement, and both amended releases preserving the same marker protocol.
+An authenticated operator entrypoint and its staging-only admission need
+independent review; this document does not introduce a public control route.
