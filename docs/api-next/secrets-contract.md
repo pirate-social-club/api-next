@@ -709,6 +709,14 @@ enabled and keep the real staging RPC requirement. Any production rewards
 activation must add a reviewed mainnet RPC credential declaration and provision
 the corresponding value in the same authorized ceremony.
 
+The Infisical production service policy likewise permits this RPC name without
+requiring it while rewards are disabled. Activation must also make the name
+required in that policy; an invariant checks both HTTP and jobs configurations.
+Staging continues to require the RPC. The secret-drift workflow runs both
+name-only audits after successful dependency installation, even when the first
+audit fails. Either audit failure keeps the job failed; cancellation or failed
+setup prevents the second audit from running.
+
 The schema also notes that `secrets` is **not** inherited from the top-level
 environment and must be repeated in every named environment. Both configs do
 repeat it, so no defect there — but it means the jobs Worker's omission of the
