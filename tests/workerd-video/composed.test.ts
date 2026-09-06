@@ -724,19 +724,88 @@ test("event-sequence change during status inspection fences recovery while the r
   expect(h.starts).toHaveLength(3);
 });
 
-test("drill 5 fail closed: membership loss before publication cannot create a Post", async () => {
+test("drill 5: membership loss stops with a recoverable reason and no continuation", async () => {
   const h = harness();
   await admin.query(
     "UPDATE community_memberships SET status='left',left_at=clock_timestamp(),updated_at=clock_timestamp() WHERE community_id=$1 AND user_id=$2",
     [community, actor],
   );
-  await expect(h.run(await h.launch())).rejects.toMatchObject({
-    name: "NonRetryableError",
-    message: "video Workflow terminal: membership_rejected",
+  expect(await h.run(await h.launch())).toEqual({ status: "stopped" });
+  const failed = await fixture.store.getSubmissionByOperation({ submissionId, operationId });
+  expect(failed?.state).toMatchObject({
+    status: "processing_failed",
+    failureCode: "membership_required",
+    reconciliationRequired: false,
   });
+  expect(failed?.state.analysis).not.toBeNull();
+  const recovered = await recoverVideoWorkflowLaunches({
+    outbox: h.outbox,
+    store: fixture.store,
+    launcher: {
+      instanceId: async () => "unused",
+      inspect: async () => {
+        throw new Error("membership failure must not inspect or continue");
+      },
+    },
+  });
+  expect(recovered).toMatchObject({ recovered: 0, failed: 0 });
   expect(
     (await admin.query("SELECT count(*)::int AS n FROM posts WHERE post_type='video'")).rows[0].n,
   ).toBe(0);
+  if (!failed) throw new Error("membership failure missing");
+  const retry = {
+    submission: failed.state,
+    endpointTemplate: "/media-post-submissions/:submissionId/retry",
+    idempotencyKey: "membership-publication-only",
+    requestHash: "a".repeat(64),
+    responseBytes,
+    responseSha256,
+  };
+  expect(await fixture.store.retryTechnical(retry)).toEqual({ kind: "membership_required" });
+  expect(await fixture.store.getSubmissionByOperation({ submissionId, operationId })).toEqual(
+    failed,
+  );
+  await admin.query(
+    "UPDATE community_memberships SET status='member',left_at=NULL WHERE community_id=$1 AND user_id=$2",
+    [community, actor],
+  );
+  expect(await fixture.store.retryTechnical(retry)).toEqual({ kind: "none" });
+  h.memo.clear();
+  expect(await h.run(await h.launch(2))).toEqual({ status: "published" });
+  await assertPublished();
+  expect(h.starts).toHaveLength(3);
+});
+
+test("drill 5 race: revocation committed with the decision is rechecked by the publication transaction", async () => {
+  const h = harness();
+  await admin.query(`CREATE FUNCTION revoke_before_video_publish_fixture() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      IF NEW.media_kind='video' AND NEW.phase='publish' AND OLD.phase IS DISTINCT FROM 'publish' THEN
+        UPDATE community_memberships SET status='left',left_at=clock_timestamp()
+        WHERE community_id=NEW.community_id AND user_id=NEW.actor_user_id;
+      END IF;
+      RETURN NEW;
+    END $$;
+    CREATE TRIGGER revoke_before_video_publish_fixture AFTER UPDATE ON media_post_submissions
+      FOR EACH ROW EXECUTE FUNCTION revoke_before_video_publish_fixture()`);
+  try {
+    expect(await h.run(await h.launch())).toEqual({ status: "stopped" });
+    expect(
+      (await fixture.store.getSubmissionByOperation({ submissionId, operationId }))?.state,
+    ).toMatchObject({
+      status: "processing_failed",
+      failureCode: "membership_required",
+      reconciliationRequired: false,
+    });
+    expect(
+      (await admin.query("SELECT count(*)::int AS n FROM posts WHERE post_type='video'")).rows[0].n,
+    ).toBe(0);
+    expect(h.starts).toHaveLength(3);
+  } finally {
+    await admin.query(
+      "DROP TRIGGER revoke_before_video_publish_fixture ON media_post_submissions; DROP FUNCTION revoke_before_video_publish_fixture()",
+    );
+  }
 });
 
 for (const boundary of ["probe-allocate", "probe-submit", "safety"] as const) {

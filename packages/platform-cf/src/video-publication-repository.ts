@@ -11,7 +11,6 @@ import type {
   VideoSubmissionRecord,
 } from "@pirate/application/video/publication";
 import { Effect, type Layer } from "effect";
-import { VideoWorkflowTerminalError } from "../../application/src/video/workflow-errors.ts";
 import {
   attachImmutableVideo,
   VIDEO_DERIVED_ARTIFACT_RETENTION_POLICY_V1,
@@ -1532,6 +1531,9 @@ export function makeControlPlaneVideoPublicationStore(
                 current === null ||
                 current.state.status !== "processing_failed" ||
                 current.state.reconciliationRequired ||
+                current.state.failureCode === "provider_submission_unconfirmed" ||
+                current.state.creationRevision !== input.submission.creationRevision ||
+                current.state.videoRevision !== input.submission.videoRevision ||
                 current.state.retryCount >= 3 ||
                 current.state.video === null ||
                 current.state.failureCode === null ||
@@ -1543,7 +1545,18 @@ export function makeControlPlaneVideoPublicationStore(
               ) {
                 throw new Error("video technical retry rejected");
               }
-              const publicationOnly = current.state.failureCode === "publication_failed";
+              const publicationOnly =
+                current.state.failureCode === "publication_failed" ||
+                current.state.failureCode === "membership_required";
+              if (publicationOnly) {
+                const active = yield* tx.execute({
+                  label: "video-publication.retry-membership-recheck",
+                  text: "SELECT 1 WHERE active_community_effect($1,$2)",
+                  values: [current.state.communityId, current.state.actorAccountId],
+                  readonly: true,
+                });
+                if (active.rowCount !== 1) return { kind: "membership_required" as const };
+              }
               const next: VideoSubmissionState = {
                 ...current.state,
                 creationRevision: current.state.creationRevision + 1,
@@ -1831,6 +1844,8 @@ function publishTransaction(input: VideoPublishBundle) {
           return current;
         if (
           current === null ||
+          current.eventSequence !== input.observedEventSequence ||
+          current.state.creationRevision !== input.state.creationRevision ||
           current.state.phase !== "publish" ||
           current.state.video === null ||
           current.state.analysis === null ||
@@ -1843,7 +1858,38 @@ function publishTransaction(input: VideoPublishBundle) {
           values: [current.state.communityId, current.state.actorAccountId],
           readonly: true,
         });
-        if (active.rowCount !== 1) throw new VideoWorkflowTerminalError("membership_rejected");
+        if (active.rowCount !== 1) {
+          const next: VideoSubmissionState = {
+            ...current.state,
+            status: "processing_failed",
+            phase: null,
+            failureCode: "membership_required",
+            reconciliationRequired: false,
+          };
+          const updated = yield* updateSubmissionSnapshot(tx, {
+            prior: current.state,
+            next,
+            observedEventSequence: input.observedEventSequence,
+            extraSql:
+              ",failure_evidence_ref=$10,failure_retry_count=$11,retryable=$12,last_safe_phase=$13",
+            extraValues: [
+              `video-publication-membership:${current.state.operationId}:c${current.state.creationRevision}`,
+              current.state.retryCount,
+              current.state.retryCount < 3,
+              "publish",
+            ],
+          });
+          if (updated.rows.length !== 1) throw new Error("video membership failure fence rejected");
+          return {
+            kind: "membership_required" as const,
+            record: {
+              ...current,
+              state: next,
+              eventSequence: current.eventSequence + 1,
+              updatedAt: new Date().toISOString(),
+            },
+          };
+        }
         const postId = input.state.postId;
         if (postId === null) throw new Error("video publication post missing");
         yield* tx.execute({
