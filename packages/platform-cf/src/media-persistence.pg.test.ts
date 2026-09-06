@@ -634,7 +634,11 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
                 await pause(`sample_${input.variant}`);
                 return {
                   status: "completed" as const,
-                  attempt: input.attempt,
+                  attempt: {
+                    ...input.attempt,
+                    providerJobId:
+                      input.attempt.providerJobId ?? `fixture-${input.binding.requestId}`,
+                  },
                   context: {
                     ...context(input.binding, "media-transform-attempt-context-v1"),
                     version: "media-transform-attempt-context-v1" as const,
@@ -743,7 +747,9 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
                     scores: Object.fromEntries(
                       MODERATION_POLICY_CATEGORIES_V1.map((category) => [category, 0]),
                     ) as Record<(typeof MODERATION_POLICY_CATEGORIES_V1)[number], number>,
-                    applied_input_types: {},
+                    applied_input_types: Object.fromEntries(
+                      MODERATION_POLICY_CATEGORIES_V1.map((category) => [category, []]),
+                    ) as Record<(typeof MODERATION_POLICY_CATEGORIES_V1)[number], readonly never[]>,
                   },
                 };
               }),
@@ -789,7 +795,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           },
         };
         const controller = new AbortController();
-        const runWorkflow = (activeStore: MediaProcessingStore = observedStore) =>
+        const runWorkflowEffect = (activeStore: MediaProcessingStore = observedStore) =>
           runMediaProcessingWorkflow(
             {
               outboxId:
@@ -823,18 +829,22 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
               },
             },
           );
-        const workflow = runWorkflow();
+        const runWorkflow = (activeStore: MediaProcessingStore = observedStore) =>
+          Effect.runPromise(runWorkflowEffect(activeStore));
+        const workflow = runWorkflowEffect();
+        const parent = Effect.runPromiseExit(workflow, { signal: controller.signal });
         let workflowFailure: unknown;
-        const completed = workflow.then(
-          () => "completed",
+        let parentSettled = false;
+        const completed = parent.then(
+          () => {
+            parentSettled = true;
+            return "completed";
+          },
           (error: unknown) => {
+            parentSettled = true;
             workflowFailure = error;
             return "rejected";
           },
-        );
-        const parent = Effect.runPromiseExit(
-          Effect.promise(() => workflow),
-          { signal: controller.signal },
         );
         try {
           const reached = await Promise.race([entered.promise.then(() => "entered"), completed]);
@@ -863,7 +873,8 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
 
           if (hasClaim) {
             if (claimed === undefined) throw new Error("target claim did not succeed");
-            const targetRows = before.filter((row) => row.attempt_id === claimed.lease.attemptId);
+            const targetAttemptId = claimed.lease.attemptId;
+            const targetRows = before.filter((row) => row.attempt_id === targetAttemptId);
             expect(targetRows).toHaveLength(1);
             expect(targetRows[0]).toMatchObject({
               state: "running",
@@ -876,6 +887,14 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
             });
           }
           controller.abort();
+          // The database mutation has already settled; release the harness's
+          // post-commit observation barrier so the interrupted Effect can
+          // reach its next checkpoint without holding the test open.
+          if (stage === "publication_commit" || stage === "alignment_commit") {
+            await new Promise<void>((resolve) => setTimeout(resolve, 0));
+            expect(parentSettled).toBe(false);
+            release.resolve();
+          }
           expect((await parent)._tag).toBe("Failure");
           if (selectedInput !== undefined)
             expect(
@@ -903,6 +922,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
               "SELECT pg_sleep(GREATEST(0,EXTRACT(EPOCH FROM (lease_expires_at-clock_timestamp())))) FROM media_processing_attempts WHERE attempt_id=$1",
               [claimed.lease.attemptId],
             );
+            const recoveredAttemptId = claimed.lease.attemptId;
             const recovery = await runWorkflow(store);
             expect(recovery).toEqual({ outcome: "published" });
             const recoveredRows = await rows();
@@ -914,7 +934,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
             });
             expect(recoveredAuthority?.analysis).not.toBeNull();
             expect(
-              recoveredRows.filter((row) => row.attempt_id === claimed.lease.attemptId),
+              recoveredRows.filter((row) => row.attempt_id === recoveredAttemptId),
             ).toMatchObject([
               {
                 state: "succeeded",

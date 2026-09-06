@@ -1,3 +1,4 @@
+import { Effect } from "effect";
 import type {
   MediaProcessingEventType,
   MediaProcessingWorkflowPayload,
@@ -193,10 +194,8 @@ export function makeMediaProcessingWorkflowRunner<Env extends MediaProcessorWork
           }
           return {
             eventType: resolvedEventType,
-            result: await runMediaProcessingWorkflow(
-              payload,
-              resolvedEventType,
-              composition.workflow,
+            result: await Effect.runPromise(
+              runMediaProcessingWorkflow(payload, resolvedEventType, composition.workflow),
             ),
           };
         },
