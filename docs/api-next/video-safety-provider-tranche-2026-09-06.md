@@ -155,3 +155,19 @@ postgres17 and secret-boundary are still owed on the published source. Video
 and moderation flags remain false; no provider, credential or deployment action
 was performed. The post-merge task remains active for recognition and the
 remaining execution obligations.
+
+
+## Strict-base refresh — 2026-09-06
+
+All required remote checks passed on 07623133, but HNS PR 280 advanced main
+to 290ea68d during CI. The repository's strict required-status policy requires
+a current base. A merge from origin/main, rather than a second rebase, produced
+86f8f460 without conflict. It changes no video diff or migration ordinal.
+
+Refreshed check and ordinary tests exited 0: 3,057 Bun, 20 Node, 155 Workerd.
+The changed HNS continuity PostgreSQL suite passed both cases and 38 assertions.
+Complete local PostgreSQL partitions were not repeated after this refresh; their
+prior results remain distinct. Successor remote full coverage is required on
+the new published source and is not inferred from the previous green checks.
+The earlier source capture stays immutable; register a successor capture before
+retirement. No runtime flag, provider, credential or deployment action occurred.
