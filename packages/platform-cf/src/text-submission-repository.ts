@@ -1,6 +1,4 @@
 import {
-  type CommentReportOutcome,
-  type CommentReportReasonCode,
   ControlPlaneDb,
   type ControlPlaneError,
   type ControlPlaneTransaction,
@@ -24,8 +22,6 @@ import {
 import type {
   RestrictedTextModerationEvidenceV1,
   TextModerationPolicySnapshotV2,
-  TextPostCommitInputV2,
-  TextPostStoreServiceV2,
 } from "@pirate/application/text-moderation-runtime";
 import {
   MODERATION_POLICY_CATEGORIES_V1,
@@ -49,7 +45,7 @@ type Row = Readonly<Record<string, unknown>>;
 type Transaction = ControlPlaneTransaction;
 type StoreFailure = TextPostRepositoryFailure | ControlPlaneError;
 type ReplayInput = Parameters<TextPostStore["Service"]["replay"]>[0];
-type CommitInput = TextPostCommitInputV2;
+type CommitInput = Parameters<TextPostStore["Service"]["commitTerminal"]>[0];
 type GetInput = Parameters<TextPostStore["Service"]["getForAuthor"]>[0];
 type AuthorityInput = Parameters<TextPostStore["Service"]["checkAuthority"]>[0];
 type RepositoryService = {
@@ -76,13 +72,6 @@ type RepositoryService = {
     readonly surface: "comment" | "reply";
     readonly targetId: string;
   }) => Effect.Effect<TextCommentTargetResolution, StoreFailure, ControlPlaneDb>;
-  readonly reportComment: (input: {
-    readonly commentId: string;
-    readonly actor: M2Actor;
-    readonly idempotencyKey: string;
-    readonly reasonCode: CommentReportReasonCode;
-    readonly requestHash: string;
-  }) => Effect.Effect<CommentReportOutcome, StoreFailure, ControlPlaneDb>;
 };
 
 const HASH = /^[0-9a-f]{64}$/u;
@@ -97,17 +86,6 @@ const failure = (
     | "constraint"
     | "invalid-row",
 ) => new TextPostRepositoryError({ operation, reason });
-const failureWithSubmission = (
-  operation: "report",
-  reason:
-    | "not-found"
-    | "membership-required"
-    | "idempotency-conflict"
-    | "constraint"
-    | "invalid-row",
-  submissionId: string,
-) => new TextPostRepositoryError({ operation, reason, submissionId });
-
 const stringValue = (row: Row, key: string): string | null => {
   const value = row[key];
   return typeof value === "string" ? value : null;
@@ -561,6 +539,7 @@ const restrictedEvidenceValid = (
   validId(evidence.evidence_ref) &&
   validHash(evidence.evidence_hash) &&
   evidence.evidence_ref === evaluation.evidence_ref &&
+  evidence.evidence_ref === `evidence_${evidence.evidence_hash}` &&
   evidence.input_sha256 === evaluation.input_sha256 &&
   validId(evidence.community_id) &&
   evidence.policy_revision === evaluation.policy_revision &&
@@ -690,17 +669,14 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
       )
         return yield* Effect.fail(failure("commit", "constraint"));
       const providerFailure = isProviderFailure(input.evaluation);
-      const emptyPolicy =
-        input.evaluation.policy_revision === "" && input.evaluation.policy_hash === "";
       if (
-        (textModerationEvaluationInvariant(input.evaluation) !== null &&
-          !(input.evaluation.version === "text-moderation-v1" && providerFailure && emptyPolicy)) ||
-        (input.evaluation.version === "text-moderation-v2" &&
-          (providerFailure
-            ? input.restrictedEvidence !== undefined || input.evaluation.evidence_ref !== null
-            : input.restrictedEvidence === undefined ||
-              input.restrictedEvidence.community_id !== input.communityId ||
-              !restrictedEvidenceValid(input.restrictedEvidence, input.evaluation)))
+        input.evaluation.version !== "text-moderation-v2" ||
+        textModerationEvaluationInvariant(input.evaluation) !== null ||
+        (providerFailure
+          ? input.restrictedEvidence !== undefined || input.evaluation.evidence_ref !== null
+          : input.restrictedEvidence === undefined ||
+            input.restrictedEvidence.community_id !== input.communityId ||
+            !restrictedEvidenceValid(input.restrictedEvidence, input.evaluation))
       )
         return yield* Effect.fail(failure("commit", "constraint"));
       const db = yield* ControlPlaneDb;
@@ -748,25 +724,14 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
             target.surface === "text_post"
               ? { parentDepth: -1 }
               : yield* lockCommentTarget(transaction, target);
-          const evaluation =
-            input.evaluation.version === "text-moderation-v1" &&
-            providerFailure &&
-            input.evaluation.policy_revision === "" &&
-            input.evaluation.policy_hash === ""
-              ? {
-                  ...input.evaluation,
-                  policy_revision: current.policy_revision,
-                  policy_hash: current.policy_hash,
-                }
-              : input.evaluation;
+          const evaluation = input.evaluation;
           if (
             evaluation.policy_revision !== current.policy_revision ||
             evaluation.policy_hash !== current.policy_hash ||
-            (evaluation.version === "text-moderation-v2" &&
-              (evaluation.platform_policy_revision !== current.platform_policy_revision ||
-                evaluation.platform_policy_hash !== current.platform_policy_hash ||
-                evaluation.community_policy_revision !== current.community_policy_revision ||
-                evaluation.community_policy_hash !== current.community_policy_hash))
+            evaluation.platform_policy_revision !== current.platform_policy_revision ||
+            evaluation.platform_policy_hash !== current.platform_policy_hash ||
+            evaluation.community_policy_revision !== current.community_policy_revision ||
+            evaluation.community_policy_hash !== current.community_policy_hash
           )
             return {
               kind: "policy-stale" as const,
@@ -810,10 +775,7 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
             return yield* Effect.fail(failure("commit", "invalid-row"));
           const bytes = new TextEncoder().encode(JSON.stringify(snapshot));
 
-          if (
-            evaluation.version === "text-moderation-v2" &&
-            input.restrictedEvidence !== undefined
-          ) {
+          if (input.restrictedEvidence !== undefined) {
             const evidence = input.restrictedEvidence;
             const categories = Object.fromEntries(
               evidence.inputs.map((entry, index) => [
@@ -918,20 +880,13 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
             const visibility = body.visibility ?? "public";
             yield* transaction.execute({
               label: "text-post.commit.post",
-              text:
-                evaluation.version === "text-moderation-v2"
-                  ? `INSERT INTO posts
+              text: `INSERT INTO posts
                 (community_id, post_id, author_user_id, author_persona_id,
                  post_type, status, visibility,
                  title, body, created_at, updated_at, idempotency_key, idempotency_body_hash,
                  author_declared_rating, content_rating)
                VALUES ($1, $2, $3, $4, 'text', 'published', $5, $6, $7, $8, $8, $9, $10,
-                 $11, $12)`
-                  : `INSERT INTO posts
-                (community_id, post_id, author_user_id, author_persona_id,
-                 post_type, status, visibility,
-                 title, body, created_at, updated_at, idempotency_key, idempotency_body_hash)
-               VALUES ($1, $2, $3, $4, 'text', 'published', $5, $6, $7, $8, $8, $9, $10)`,
+                 $11, $12)`,
               values: [
                 input.communityId,
                 postId,
@@ -943,16 +898,12 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
                 at,
                 input.idempotencyKey,
                 input.requestHash,
-                ...(evaluation.version === "text-moderation-v2"
-                  ? [evaluation.author_declared_rating, evaluation.resulting_content_rating]
-                  : []),
+                evaluation.author_declared_rating,
+                evaluation.resulting_content_rating,
               ],
               readonly: false,
             });
-            const contentRating =
-              evaluation.version === "text-moderation-v2"
-                ? evaluation.resulting_content_rating
-                : "general";
+            const contentRating = evaluation.resulting_content_rating;
             const candidate =
               visibility === "public" && contentRating === "general"
                 ? createPostSlugCandidate({
@@ -980,21 +931,13 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
             const depth = surface === "comment" ? 0 : targetState.parentDepth + 1;
             yield* transaction.execute({
               label: "text-submission.commit.comment",
-              text:
-                evaluation.version === "text-moderation-v2"
-                  ? `INSERT INTO comments (
+              text: `INSERT INTO comments (
                   community_id, comment_id, post_id, parent_comment_id,
                   author_user_id, author_persona_id,
                   status, body, created_at, updated_at, idempotency_key, idempotency_body_hash,
                   depth, reply_count, author_declared_rating, content_rating
                 ) VALUES ($1, $2, $3, $4, $5, $6, 'published', $7, $8, $8, $9, $10, $11, 0,
-                  $12, $13)`
-                  : `INSERT INTO comments (
-                  community_id, comment_id, post_id, parent_comment_id,
-                  author_user_id, author_persona_id,
-                  status, body, created_at, updated_at, idempotency_key, idempotency_body_hash,
-                  depth, reply_count
-                ) VALUES ($1, $2, $3, $4, $5, $6, 'published', $7, $8, $8, $9, $10, $11, 0)`,
+                  $12, $13)`,
               values: [
                 input.communityId,
                 commentId,
@@ -1007,9 +950,8 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
                 input.idempotencyKey,
                 input.requestHash,
                 depth,
-                ...(evaluation.version === "text-moderation-v2"
-                  ? [evaluation.author_declared_rating, evaluation.resulting_content_rating]
-                  : []),
+                evaluation.author_declared_rating,
+                evaluation.resulting_content_rating,
               ],
               readonly: false,
             });
@@ -1033,18 +975,11 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
             }
             yield* transaction.execute({
               label: "text-submission.commit.comment-projection",
-              text:
-                evaluation.version === "text-moderation-v2"
-                  ? `INSERT INTO comment_publication_projection (
+              text: `INSERT INTO comment_publication_projection (
                   community_id, comment_id, post_id, parent_comment_id,
                   author_user_id, author_persona_id,
                   body, depth, status, projected_at, updated_at, content_rating
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'published', $9, $9, $10)`
-                  : `INSERT INTO comment_publication_projection (
-                  community_id, comment_id, post_id, parent_comment_id,
-                  author_user_id, author_persona_id,
-                  body, depth, status, projected_at, updated_at
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'published', $9, $9)`,
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'published', $9, $9, $10)`,
               values: [
                 input.communityId,
                 commentId,
@@ -1055,18 +990,14 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
                 input.moderationInput.body,
                 depth,
                 at,
-                ...(evaluation.version === "text-moderation-v2"
-                  ? [evaluation.resulting_content_rating]
-                  : []),
+                evaluation.resulting_content_rating,
               ],
               readonly: false,
             });
           }
           yield* transaction.execute({
             label: "text-post.commit.submission",
-            text:
-              evaluation.version === "text-moderation-v2"
-                ? `INSERT INTO text_content_submissions (
+            text: `INSERT INTO text_content_submissions (
                     community_id, submission_id, operation_id, actor_user_id, surface, idempotency_key,
                     request_hash, status, moderation_decision, public_reason_code,
                     policy_revision_id, policy_hash,
@@ -1081,86 +1012,41 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
                   ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
                     $13, $14, $15, $16, $17, $18::jsonb, $19, $20, $21, $22, $23, $24,
                     $25, $25, $26, encode(sha256($26), 'hex'), $27, $28, $29,
-                    $30::jsonb, $31::jsonb, $32)`
-                : `INSERT INTO text_content_submissions (
-                    community_id, submission_id, operation_id, actor_user_id, surface, idempotency_key,
-                    request_hash, status, moderation_decision, public_reason_code,
-                    policy_revision_id, policy_hash,
-                    platform_policy_revision_id, platform_policy_hash,
-                    community_policy_revision_id, community_policy_hash,
-                    input_sha256, internal_reason_codes,
-                    evidence_ref, published_post_id, published_comment_id, review_ref,
-                    target_post_id, target_parent_comment_id,
-                    created_at, updated_at, response_snapshot_bytes, response_snapshot_sha256,
-                    author_persona_id
-                  ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                    $13, $14, $15, $16, $17, $18::jsonb, $19, $20, $21, $22, $23, $24,
-                    $25, $25, $26, encode(sha256($26), 'hex'), $27)`,
-            values:
-              evaluation.version === "text-moderation-v2"
-                ? [
-                    input.communityId,
-                    submissionId,
-                    input.operationId,
-                    input.actor.userId,
-                    surface,
-                    input.idempotencyKey,
-                    input.requestHash,
-                    status,
-                    evaluation.decision,
-                    publicResult.reason_code,
-                    current.policy_revision,
-                    current.policy_hash,
-                    evaluation.platform_policy_revision,
-                    evaluation.platform_policy_hash,
-                    evaluation.community_policy_revision,
-                    evaluation.community_policy_hash,
-                    canonical.sha256,
-                    JSON.stringify(evaluation.reason_codes),
-                    evaluation.evidence_ref,
-                    postId,
-                    commentId,
-                    reviewRef,
-                    targetPostId,
-                    targetParentCommentId,
-                    at,
-                    bytes,
-                    input.personaId,
-                    evaluation.author_declared_rating,
-                    evaluation.resulting_content_rating,
-                    JSON.stringify(evaluation.matched_categories),
-                    JSON.stringify(evaluation.category_decisions),
-                    evaluation.effective_policy_decision,
-                  ]
-                : [
-                    input.communityId,
-                    submissionId,
-                    input.operationId,
-                    input.actor.userId,
-                    surface,
-                    input.idempotencyKey,
-                    input.requestHash,
-                    status,
-                    evaluation.decision,
-                    publicResult.reason_code,
-                    current.policy_revision,
-                    current.policy_hash,
-                    null,
-                    null,
-                    null,
-                    null,
-                    canonical.sha256,
-                    JSON.stringify(evaluation.reason_codes),
-                    evaluation.evidence_ref,
-                    postId,
-                    commentId,
-                    reviewRef,
-                    targetPostId,
-                    targetParentCommentId,
-                    at,
-                    bytes,
-                    input.personaId,
-                  ],
+                    $30::jsonb, $31::jsonb, $32)`,
+            values: [
+              input.communityId,
+              submissionId,
+              input.operationId,
+              input.actor.userId,
+              surface,
+              input.idempotencyKey,
+              input.requestHash,
+              status,
+              evaluation.decision,
+              publicResult.reason_code,
+              current.policy_revision,
+              current.policy_hash,
+              evaluation.platform_policy_revision,
+              evaluation.platform_policy_hash,
+              evaluation.community_policy_revision,
+              evaluation.community_policy_hash,
+              canonical.sha256,
+              JSON.stringify(evaluation.reason_codes),
+              evaluation.evidence_ref,
+              postId,
+              commentId,
+              reviewRef,
+              targetPostId,
+              targetParentCommentId,
+              at,
+              bytes,
+              input.personaId,
+              evaluation.author_declared_rating,
+              evaluation.resulting_content_rating,
+              JSON.stringify(evaluation.matched_categories),
+              JSON.stringify(evaluation.category_decisions),
+              evaluation.effective_policy_decision,
+            ],
             readonly: false,
           });
           if (commentId !== null) {
@@ -1244,18 +1130,10 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
                 input.communityId,
                 reviewRef,
                 submissionId,
-                evaluation.version === "text-moderation-v2"
-                  ? evaluation.platform_policy_revision
-                  : null,
-                evaluation.version === "text-moderation-v2"
-                  ? evaluation.platform_policy_hash
-                  : null,
-                evaluation.version === "text-moderation-v2"
-                  ? evaluation.community_policy_revision
-                  : null,
-                evaluation.version === "text-moderation-v2"
-                  ? evaluation.community_policy_hash
-                  : null,
+                evaluation.platform_policy_revision,
+                evaluation.platform_policy_hash,
+                evaluation.community_policy_revision,
+                evaluation.community_policy_hash,
                 at,
               ],
               readonly: false,
@@ -1270,25 +1148,19 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
                 readonly: false,
               });
             }
-            if (evaluation.version === "text-moderation-v2") {
-              yield* transaction.execute({
-                label: "text-post.commit.owner-moderation-case-v2",
-                text: `INSERT INTO community_moderation_cases_v2 (
+            yield* transaction.execute({
+              label: "text-post.commit.owner-moderation-case-v2",
+              text: `INSERT INTO community_moderation_cases_v2 (
                     case_ref, community_id, submission_id, target_type,
                     target_resource_id, source, visibility, view_state,
                     target_status, case_revision, created_at, updated_at
                   ) VALUES ($1, $2, $3, $4, NULL, 'automatic', 'owner',
                     'open', 'held', 1, $5, $5)`,
-                values: [reviewRef, input.communityId, submissionId, surface, at],
-                readonly: false,
-              });
-            }
+              values: [reviewRef, input.communityId, submissionId, surface, at],
+              readonly: false,
+            });
           }
-          if (
-            evaluation.version === "text-moderation-v2" &&
-            status === "blocked" &&
-            evaluation.reason_codes.includes("sexual_minors")
-          ) {
+          if (status === "blocked" && evaluation.reason_codes.includes("sexual_minors")) {
             yield* transaction.execute({
               label: "text-post.commit.platform-hold-v2",
               text: `INSERT INTO community_moderation_cases_v2 (
@@ -1364,180 +1236,6 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
       return { kind: "ready" as const, communityId, postId, parentCommentId, parentDepth: depth };
     });
 
-  const reportComment: RepositoryService["reportComment"] = (input) =>
-    Effect.gen(function* () {
-      if (
-        input.actor.kind === "agent" ||
-        !validId(input.actor.userId) ||
-        !validId(input.commentId) ||
-        !validId(input.idempotencyKey) ||
-        !validHash(input.requestHash)
-      )
-        return yield* Effect.fail(failure("report", "constraint"));
-      const db = yield* ControlPlaneDb;
-      return yield* db.withTransaction((transaction) =>
-        Effect.gen(function* () {
-          const comment = yield* transaction.execute<Row>({
-            label: "comment-report.lock-comment",
-            text: `SELECT community_id, comment_id, status
-                     FROM comments
-                    WHERE comment_id = $1
-                    FOR UPDATE`,
-            values: [input.commentId],
-            readonly: false,
-          });
-          const commentRow = comment.rows[0] as Row | undefined;
-          const communityId =
-            commentRow === undefined ? null : stringValue(commentRow, "community_id");
-          if (
-            comment.rows.length !== 1 ||
-            commentRow === undefined ||
-            communityId === null ||
-            !["published", "hidden", "removed"].includes(stringValue(commentRow, "status") ?? "")
-          )
-            return yield* Effect.fail(
-              failureWithSubmission("report", "not-found", input.commentId),
-            );
-          const submission = yield* transaction.execute<Row>({
-            label: "comment-report.lock-submission",
-            text: `SELECT submission_id
-                     FROM text_content_submissions
-                    WHERE community_id = $1 AND published_comment_id = $2
-                    FOR UPDATE`,
-            values: [communityId, input.commentId],
-            readonly: false,
-          });
-          const submissionId =
-            submission.rows.length === 1
-              ? stringValue(submission.rows[0] as Row, "submission_id")
-              : null;
-          if (submissionId === null)
-            return yield* Effect.fail(
-              failureWithSubmission("report", "not-found", input.commentId),
-            );
-          const membership = yield* transaction.execute<Row>({
-            label: "comment-report.check-membership",
-            text: "SELECT status FROM community_memberships WHERE community_id = $1 AND user_id = $2",
-            values: [communityId, input.actor.userId],
-            readonly: true,
-          });
-          if (
-            membership.rows.length !== 1 ||
-            stringValue(membership.rows[0] as Row, "status") !== "member"
-          )
-            return yield* Effect.fail(
-              failureWithSubmission("report", "membership-required", submissionId),
-            );
-          const existing = yield* transaction.execute<Row>({
-            label: "comment-report.replay",
-            text: `SELECT report_id, case_ref, status, request_hash
-                      FROM comment_reports
-                     WHERE reporter_user_id = $1 AND comment_id = $2 AND idempotency_key = $3
-                     FOR UPDATE`,
-            values: [input.actor.userId, input.commentId, input.idempotencyKey],
-            readonly: false,
-          });
-          if (existing.rows.length > 1)
-            return yield* Effect.fail(failureWithSubmission("report", "invalid-row", submissionId));
-          if (existing.rows.length === 1) {
-            const row = existing.rows[0] as Row;
-            const reportId = stringValue(row, "report_id");
-            const caseRef = stringValue(row, "case_ref");
-            const status = stringValue(row, "status");
-            if (
-              reportId === null ||
-              caseRef === null ||
-              !["open", "coalesced"].includes(status ?? "")
-            )
-              return yield* Effect.fail(
-                failureWithSubmission("report", "invalid-row", submissionId),
-              );
-            if (stringValue(row, "request_hash") !== input.requestHash)
-              return yield* Effect.fail(
-                failureWithSubmission("report", "idempotency-conflict", reportId),
-              );
-            return { reportId, caseRef, status: status as "open" | "coalesced" };
-          }
-          const openCase = yield* transaction.execute<Row>({
-            label: "comment-report.find-case",
-            text: `SELECT case_ref, status
-                     FROM comment_moderation_cases
-                    WHERE community_id = $1
-                      AND submission_id = $2
-                      AND source = 'report'
-                      AND status = 'open'
-                    FOR UPDATE`,
-            values: [communityId, submissionId],
-            readonly: false,
-          });
-          let caseRef: string;
-          let reportStatus: "open" | "coalesced";
-          if (openCase.rows.length === 0) {
-            caseRef = makeId("case");
-            const now = yield* transaction.execute<Row>({
-              label: "comment-report.database-clock",
-              text: "SELECT clock_timestamp() AS now",
-              values: [],
-              readonly: true,
-            });
-            const at = iso(now.rows[0] as Row, "now");
-            if (at === null)
-              return yield* Effect.fail(
-                failureWithSubmission("report", "invalid-row", submissionId),
-              );
-            yield* transaction.execute({
-              label: "comment-report.case",
-              text: `INSERT INTO comment_moderation_cases
-                (case_ref, community_id, submission_id, comment_id, source, status, created_at, updated_at)
-               VALUES ($1, $2, $3, $4, 'report', 'open', $5, $5)`,
-              values: [caseRef, communityId, submissionId, input.commentId, at],
-              readonly: false,
-            });
-            reportStatus = "open";
-          } else {
-            const row = openCase.rows[0] as Row;
-            caseRef = stringValue(row, "case_ref") ?? "";
-            if (!validId(caseRef))
-              return yield* Effect.fail(
-                failureWithSubmission("report", "invalid-row", submissionId),
-              );
-            reportStatus = "coalesced";
-          }
-          const now = yield* transaction.execute<Row>({
-            label: "comment-report.created-at",
-            text: "SELECT clock_timestamp() AS now",
-            values: [],
-            readonly: true,
-          });
-          const at = iso(now.rows[0] as Row, "now");
-          if (at === null)
-            return yield* Effect.fail(failureWithSubmission("report", "invalid-row", submissionId));
-          const reportId = makeId("report");
-          yield* transaction.execute({
-            label: "comment-report.insert",
-            text: `INSERT INTO comment_reports
-              (report_id, community_id, comment_id, case_ref, reporter_user_id,
-               idempotency_key, request_hash, reason_code, status, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-            values: [
-              reportId,
-              communityId,
-              input.commentId,
-              caseRef,
-              input.actor.userId,
-              input.idempotencyKey,
-              input.requestHash,
-              input.reasonCode,
-              reportStatus,
-              at,
-            ],
-            readonly: false,
-          });
-          return { reportId, caseRef, status: reportStatus };
-        }),
-      );
-    });
-
   const getForAuthor: RepositoryService["getForAuthor"] = (input) =>
     Effect.gen(function* () {
       if (
@@ -1561,7 +1259,6 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
     commitTerminal,
     getForAuthor,
     resolveCommentTarget,
-    reportComment,
   };
 }
 
@@ -1571,7 +1268,7 @@ export function makeControlPlaneTextSubmissionRepository(): RepositoryService {
 
 export function makeControlPlaneTextSubmissionStore(
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
-): TextPostStore["Service"] & TextPostStoreServiceV2 {
+): TextPostStore["Service"] {
   const repository = makeControlPlaneTextPostRepository();
   const provide = <A, E>(effect: Effect.Effect<A, E, ControlPlaneDb>) =>
     Effect.provide(runtime)(effect);
@@ -1582,8 +1279,7 @@ export function makeControlPlaneTextSubmissionStore(
     commitTerminal: (input) => provide(repository.commitTerminal(input)),
     getForAuthor: (input) => provide(repository.getForAuthor(input)),
     resolveCommentTarget: (input) => provide(repository.resolveCommentTarget(input)),
-    reportComment: (input) => provide(repository.reportComment(input)),
   };
 }
 
-export type TextSubmissionRepository = TextPostStore["Service"] & TextPostStoreServiceV2;
+export type TextSubmissionRepository = TextPostStore["Service"];

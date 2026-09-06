@@ -7,10 +7,7 @@ import {
   startNamespaceOwnership,
   startRouteAttachmentOwnership,
 } from "@pirate/application/namespace-ownership";
-import {
-  type TextModeration,
-  TextModerationProviderError,
-} from "@pirate/application/use-cases/content/text-post";
+import { TextModerationProviderError } from "@pirate/application/use-cases/content/text-post";
 import type {
   DanceAttemptSessionAuthorityResolver,
   DanceAttemptUploadAuthority,
@@ -794,9 +791,6 @@ export async function createProductionHttpWorker(
   });
   // The runtime is installed even when no provider credentials are enabled.
   // Unavailability is a durable manual-review result, never an allow fallback.
-  const textModeration: TextModeration["Service"] = {
-    evaluate: () => Effect.fail(new TextModerationProviderError({ reason: "unavailable" })),
-  };
   const textModerationProvider = config.OPENAI_MODERATION_ENABLED
     ? makeOpenAiTextModerationProvider({
         apiKey: Redacted.value(config.OPENAI_API_KEY),
@@ -945,8 +939,6 @@ export async function createProductionHttpWorker(
     communityStore,
     contentStore,
     textPostStore,
-    textModeration,
-    textPostStoreV2: textPostStore,
     textModerationProvider,
     personaStore,
     feedStore,
