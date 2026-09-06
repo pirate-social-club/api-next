@@ -10,16 +10,12 @@ suite("composed video Workflow PostgreSQL and Workerd gate", () => {
     const child = Bun.spawn([process.execPath, "run", "test:video-workflow:postgres"], {
       cwd: new URL("../../../", import.meta.url).pathname,
       env: { ...process.env, CONTROL_PLANE_POSTGRES_TEST_URL: connection },
-      stdout: "pipe",
-      stderr: "pipe",
+      stdout: "inherit",
+      stderr: "inherit",
     });
-    const [exitCode, stdout, stderr] = await Promise.all([
-      child.exited,
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-    ]);
-    if (exitCode !== 0)
-      throw new Error(`Composed video Workerd gate exited ${exitCode}\n${stdout}\n${stderr}`);
-    console.info(stdout.trim());
-  }, 120_000);
+    const exitCode = await child.exited;
+    if (exitCode !== 0) throw new Error(`Composed video Workerd gate exited ${exitCode}`);
+    // This wraps 30 serial drills and scale fixtures plus Workerd startup;
+    // individual tests retain the 60-second bound in the Vitest configuration.
+  }, 300_000);
 });
