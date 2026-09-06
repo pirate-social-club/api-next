@@ -358,3 +358,16 @@ default-role metadata was initialized at 06:44:23.599Z with returned
 credentials discarded. The fixed entrypoint and marker path now name this
 branch only. Read-only fidelity remains required before execution. The
 review/delete deadline remains 2026-09-07T04:00:00Z; no deadline was extended.
+
+At 2026-09-06T06:46:30.870Z, the fifth restore matched every original data,
+ledger, ownership, ACL/default-ACL and extension fingerprint. The rolled-back
+evidence check at 06:47:12.464Z matched 2/3/1 and its original digest, then
+confirmed all 109 ledger checksums unchanged. Failed branches un1u2oawdweg
+and pxo3svqjoxvn were deleted at 06:47:42.862Z and 06:47:45.914Z respectively.
+Their markers/logs and backup xvvo8r6tcaa5 remain retained. This cleanup is
+recoverable through the verified original backup, not by resuming either
+failed marker. Only the fifth isolated copy remains billed by this lane.
+
+The fifth attempt was launched from 3f3a6c0a8d837d38d4f6f2b7868b797db3709661,
+with the unchanged strict session guard and redacted failed-observation
+capture. No successful provider execution is claimed while it is running.
