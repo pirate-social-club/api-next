@@ -3,7 +3,6 @@ import type {
   ModerationPolicyCategoryV1,
   ModerationPolicyDecisionV1,
   ModerationPolicyTableV1,
-  TextModerationEvaluation,
   TextModerationEvaluationV2,
   TextModerationInputV1,
   TextModerationReasonCode,
@@ -69,24 +68,6 @@ export type RestrictedTextModerationEvidenceV1 = Readonly<{
   readonly community_policy_hash: string;
   readonly inputs: readonly NormalizedModerationInputEvidenceV1[];
 }>;
-
-type LegacyCommitInput = Parameters<TextPostStoreService["commitTerminal"]>[0];
-
-export type TextPostCommitInputV2 = Omit<LegacyCommitInput, "evaluation"> &
-  Readonly<{
-    readonly evaluation: TextModerationEvaluation;
-    readonly restrictedEvidence?: RestrictedTextModerationEvidenceV1;
-  }>;
-
-export type TextPostStoreServiceV2 = Omit<TextPostStoreService, "commitTerminal"> &
-  Readonly<{
-    readonly readModerationPolicy: (input: {
-      readonly communityId: string;
-    }) => Effect.Effect<TextModerationPolicySnapshotV2, TextPostRepositoryFailure>;
-    readonly commitTerminal: (
-      input: TextPostCommitInputV2,
-    ) => ReturnType<TextPostStoreService["commitTerminal"]>;
-  }>;
 
 export type TextModerationRuntimeResultV2 = Readonly<{
   readonly evaluation: TextModerationEvaluationV2;
@@ -206,10 +187,21 @@ export const evaluateTextModerationV2 = Effect.fn("evaluateTextModerationV2")(fu
   readonly moderationInput: TextModerationInputV1;
   readonly inputSha256: string;
   readonly authorDeclaredRating?: ContentRatingV1;
-  readonly store: Pick<TextPostStoreServiceV2, "readModerationPolicy">;
-  readonly provider: TextModerationProviderServiceV1;
+  readonly store: Pick<TextPostStoreService, "readModerationPolicy">;
+  readonly provider: TextModerationProviderServiceV1 | undefined;
 }): Effect.fn.Return<TextModerationRuntimeResultV2, TextPostRepositoryFailure> {
   const policy = yield* input.store.readModerationPolicy({ communityId: input.communityId });
+  if (input.provider === undefined) {
+    return {
+      evaluation: unavailableEvaluation(
+        input.moderationInput,
+        input.inputSha256,
+        policy,
+        "unavailable",
+        input.authorDeclaredRating ?? "general",
+      ),
+    };
+  }
   const provider = yield* input.provider.evaluate(input.moderationInput).pipe(
     Effect.map((evaluation) => ({ kind: "evaluated" as const, evaluation })),
     Effect.catchTag("TextModerationProviderError", (failure) =>

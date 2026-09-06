@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { InternalError } from "@pirate/contracts";
+import {
+  InternalError,
+  MODERATION_POLICY_CATEGORIES_V1,
+  type ModerationPolicyTableV1,
+} from "@pirate/contracts";
 import { Cause, Effect, Exit, Result } from "effect";
 import {
   ContentRepositoryError,
@@ -12,7 +16,22 @@ import { clearPostVote } from "./clear-post-vote.ts";
 import { createPost } from "./create-post.ts";
 import { getPost } from "./get-post.ts";
 
-const actor = { userId: "usr_alice", kind: "user" as const };
+const policy = {
+  policy_revision: "text-policy-1",
+  policy_hash: "a".repeat(64),
+  platform_policy_revision: "platform-1",
+  platform_policy_hash: "b".repeat(64),
+  community_policy_revision: "community-1",
+  community_policy_hash: "c".repeat(64),
+  platform_policy: Object.fromEntries(
+    MODERATION_POLICY_CATEGORIES_V1.map((category) => [category, "permit"]),
+  ) as ModerationPolicyTableV1,
+  community_policy: Object.fromEntries(
+    MODERATION_POLICY_CATEGORIES_V1.map((category) => [category, "permit"]),
+  ) as ModerationPolicyTableV1,
+};
+
+const actor = { userId: "usr_author", kind: "user" as const };
 const personaId = "persona-content-author";
 const personaStore = {
   findOwned: () =>
@@ -83,6 +102,7 @@ const textSubmission = {
 const textPostStore = (
   overrides: Partial<TextPostStore["Service"]> = {},
 ): TextPostStore["Service"] => ({
+  readModerationPolicy: () => Effect.succeed(policy),
   checkAuthority: () => Effect.succeed(undefined),
   replay: () => Effect.succeed({ kind: "none" as const }),
   commitTerminal: () => Effect.succeed({ kind: "created" as const, snapshot: textSubmission }),
@@ -94,7 +114,7 @@ const textRuntime = () => ({
   contentStore: fakeStore(),
   personaStore,
   textPostStore: textPostStore(),
-  textModeration: {
+  textModerationProvider: {
     evaluate: () => Effect.fail(new TextModerationProviderError({ reason: "unavailable" })),
   },
 });
@@ -338,7 +358,7 @@ describe("M2 content use cases", () => {
         },
         {
           contentStore: store,
-          textModeration: {
+          textModerationProvider: {
             evaluate: () => {
               moderationCalls += 1;
               return Effect.die("vote moderation must stay disconnected");
