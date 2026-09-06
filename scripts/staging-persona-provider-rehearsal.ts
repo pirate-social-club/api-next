@@ -11,14 +11,17 @@ import {
   withProviderRehearsalOperator,
 } from "./staging-persona-rehearsal-inventory";
 import { measureRehearsalReference } from "./staging-persona-rehearsal-reference";
-import { observeRehearsalSessions } from "./staging-persona-rehearsal-sessions";
+import {
+  assertRehearsalSessionHeadroom,
+  observeRehearsalSessions,
+} from "./staging-persona-rehearsal-sessions";
 import {
   assertStagingResetLedger,
   loadStagingResetArtifacts,
   validateStagingResetArtifacts,
 } from "./staging-persona-reset-plan";
 
-const branchId = "k1d9pj5znk6t";
+const branchId = "un1u2oawdweg";
 const backupId = "xvvo8r6tcaa5";
 const originalData = "0b1c97ef5efa0d32eee31cf220e9d5a41f74c7cfecbe782c03f16caaf2628bf8";
 const originalDefaults = "f0973701f1b93a794190b0a16ab24126ff6bda647a0d4476f6a00f9d75b2329d";
@@ -66,7 +69,8 @@ export async function rehearseProviderReset(execute: boolean) {
       // Retain at least one settings-sized allowance per observed connection,
       // plus two additional sessions, and never exceed the reviewed 1,200 cap.
       const clusterBudget = Math.min(1_200, 64 * (25 - sessions.total_sessions - 2));
-      if (clusterBudget < 1_200 || sessions.shared_locks >= clusterBudget - 1_000)
+      assertRehearsalSessionHeadroom(sessions.total_sessions, clusterBudget);
+      if (clusterBudget <= 1_000 || sessions.shared_locks >= clusterBudget - 1_000)
         throw new Error("rehearsal_lock_headroom_insufficient");
       const admissionEvidence = {
         mode: execute ? "execute-isolated-rehearsal" : "read-only-provider-plan",
@@ -89,6 +93,7 @@ export async function rehearseProviderReset(execute: boolean) {
       let samples = 0;
       let maximumOwn = 0;
       let maximumCluster = 0;
+      let currentClusterBudget = clusterBudget;
       let batchOwn = 0;
       let batchCluster = 0;
       const sample = async () => {
@@ -103,7 +108,7 @@ export async function rehearseProviderReset(execute: boolean) {
         maximumCluster = Math.max(maximumCluster, row.cluster);
         batchOwn = Math.max(batchOwn, row.own);
         batchCluster = Math.max(batchCluster, row.cluster);
-        if (row.own > 1_000 || row.cluster > clusterBudget) observerFailed = true;
+        if (row.own > 1_000 || row.cluster > currentClusterBudget) observerFailed = true;
       };
       const polling = (async () => {
         while (!stopped) {
@@ -119,7 +124,14 @@ export async function rehearseProviderReset(execute: boolean) {
       })();
       const fresh = async () => {
         if (observerFailed) throw new Error("rehearsal_lock_observer_failed");
-        await observeRehearsalSessions(admin, operator, observerPid);
+        const currentSessions = await observeRehearsalSessions(admin, operator, observerPid);
+        assertRehearsalSessionHeadroom(currentSessions.total_sessions, 1_000);
+        currentClusterBudget = Math.min(
+          clusterBudget,
+          64 * (25 - currentSessions.total_sessions - 2),
+        );
+        if (currentSessions.shared_locks > currentClusterBudget)
+          throw new Error("rehearsal_session_headroom_insufficient");
       };
       const started = performance.now();
       let previous = started;
@@ -141,7 +153,7 @@ export async function rehearseProviderReset(execute: boolean) {
           assertFreshFence: fresh,
           markerDirectory: resolve(
             import.meta.dir,
-            "../../../../.state/staging-reset-rehearsal/k1d9pj5znk6t",
+            "../../../../.state/staging-reset-rehearsal/un1u2oawdweg",
           ),
           recoveryDigest: hash({ backup, data: data.sha256 }),
           targetAndFenceDigest: hash({ branchId, hyperdrive, sessions }),

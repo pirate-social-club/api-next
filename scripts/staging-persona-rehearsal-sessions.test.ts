@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
-import { assertRehearsalSessions } from "./staging-persona-rehearsal-sessions";
+import {
+  assertRehearsalSessionHeadroom,
+  assertRehearsalSessions,
+} from "./staging-persona-rehearsal-sessions";
 
 const provider = [
   {
@@ -40,19 +43,26 @@ test("refuses unexpected runtime and operator connections, not just other role n
   }
 });
 
-test("refuses missing or changed provider applications and missing owned sessions", () => {
-  expect(() => assertRehearsalSessions([provider[0], operator], "operator", [3])).toThrow(
-    "baseline_changed",
-  );
+test("allows known provider applications to stop, reconnect or have several instances", () => {
+  for (const sessions of [
+    [operator],
+    [provider[0], operator],
+    [...provider, { ...provider[0], pid: 5 }, operator],
+  ]) {
+    expect(assertRehearsalSessions(sessions, "operator", [3]).total_sessions).toBe(sessions.length);
+  }
+});
+
+test("refuses changed provider applications and missing owned sessions", () => {
   expect(() =>
     assertRehearsalSessions(
       [{ ...provider[0], application_sha256: "0".repeat(64) }, provider[1], operator],
       "operator",
       [3],
     ),
-  ).toThrow("baseline_changed");
+  ).toThrow("provider_application_changed");
   expect(() => assertRehearsalSessions([...provider, operator], "operator", [3, 4])).toThrow(
-    "baseline_changed",
+    "owned_session_missing",
   );
   expect(() =>
     assertRehearsalSessions(
@@ -61,6 +71,14 @@ test("refuses missing or changed provider applications and missing owned session
       [3],
     ),
   ).toThrow("unexpected_session");
+});
+
+test("rechecks headroom against changing provider session counts", () => {
+  expect(() => assertRehearsalSessionHeadroom(4, 1200)).not.toThrow();
+  expect(() => assertRehearsalSessionHeadroom(5, 1200)).toThrow("headroom_insufficient");
+  expect(() => assertRehearsalSessionHeadroom(5, 1100)).not.toThrow();
+  expect(() => assertRehearsalSessionHeadroom(4, 1201)).toThrow("headroom_insufficient");
+  expect(() => assertRehearsalSessionHeadroom(0, 1200)).toThrow("headroom_insufficient");
 });
 
 test("refuses duplicate or invalid connection identities", () => {

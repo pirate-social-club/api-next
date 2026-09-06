@@ -36,18 +36,31 @@ export function assertRehearsalSessions(
       applications.push(session.application_sha256);
     } else throw new Error("rehearsal_unexpected_session");
   }
-  if (
-    JSON.stringify(applications.sort()) !== JSON.stringify(providerApplications) ||
-    observedOwned.length !== ownedPids.length
-  )
-    throw new Error("rehearsal_session_baseline_changed");
+  // Provider workers can reconnect, disappear or run more than one instance.
+  // Classify identities, not a momentary process count. Unknown applications
+  // still require a disposition; caller budgets use the current session count.
+  if (applications.some((application) => !providerApplications.includes(application)))
+    throw new Error("rehearsal_provider_application_changed");
+  if (observedOwned.length !== ownedPids.length) throw new Error("rehearsal_owned_session_missing");
   return {
     provider_sessions: applications.length,
     operator_sessions: observedOwned.length,
     total_sessions: sessions.length,
-    application_fingerprints: applications,
+    application_fingerprints: applications.sort(),
     execution_authorized: false as const,
   };
+}
+
+export function assertRehearsalSessionHeadroom(totalSessions: number, clusterBudget: number) {
+  if (
+    !Number.isSafeInteger(totalSessions) ||
+    totalSessions < 1 ||
+    !Number.isSafeInteger(clusterBudget) ||
+    clusterBudget < 1 ||
+    clusterBudget > 1_200 ||
+    clusterBudget > 64 * (25 - totalSessions - 2)
+  )
+    throw new Error("rehearsal_session_headroom_insufficient");
 }
 
 /** Uses only visible session columns. Caller may be inside a reset transaction;

@@ -227,3 +227,40 @@ The next isolated attempt is fixed to this replacement branch and a new marker
 directory with its exact branch id. The old failed marker is retained. No
 retry rule, lock-budget change, reset artifact pin or live-staging authority
 changed with this target update.
+
+## Second refusal and provider-session classification correction
+
+The b77411a9 attempt on k1d9pj5znk6t committed seven removal batches and then
+refused with SQLSTATE null and message fingerprint
+b0eb3cf8cba5a4d1666aa09a5f0b8f81da1a4e01f0ae2cd513b8067f9fe96ef0.
+This maps exactly to rehearsal_session_baseline_changed. The old combined
+guard does not identify the particular session-list difference. Observer
+failure was null, with 347 samples and peak sampled own/shared locks 389.
+No SQL lock exhaustion, lock timeout or dependency failure is established.
+
+The corrected guard classifies known provider application fingerprints rather
+than requiring exactly two processes. Unknown roles/applications and missing
+runner PIDs still refuse, with distinct diagnostics. The current session count
+recomputes the sampled cluster limit before/after each batch; the 1000 own-lock
+ceiling must still fit with the reserved session headroom. Initial admission
+also requires observed shared locks plus that ceiling to fit. No retry is added.
+Focused tests passed seven tests with 24 assertions and independent review
+found no unsafe weakening. Full check passed after correcting an import-order
+error; unit tests passed 3041 with 13000 assertions across 474 files, and Node
+tests passed 20. The general Worker pipeline was interrupted to enforce serial
+execution; the explicit one-worker base suite then passed 11 files/73 tests.
+Other Worker suites remain in progress and no new full PostgreSQL result is claimed.
+
+Third restored branch un1u2oawdweg, persona-reset-rehearsal-r3-20260906, is the
+new fixed target. At 05:53:46Z its data/ledger/ACL/extensions matched the
+original capture; the subsequent rolled-back evidence check matched 2/3/1
+and the original digest with all 109 checksums unchanged. Its default metadata
+credential initialization was branch-local, with returned secrets discarded.
+
+After that verification, failed branch 0ny029b910ob was deleted at
+2026-09-06T05:56:06.141Z and k1d9pj5znk6t at 05:56:08.726Z. Their marker/log
+directories and backup xvvo8r6tcaa5 are retained. Exact provider IDs, database
+mvydkmmwh5x4 and restore source syu03e00w3ux defined the authorized targets;
+the provider metadata production flag was true even on these isolated staging
+restore branches and was not treated as the product environment identity.
+The remaining third branch keeps the 2026-09-07T04:00:00Z review/delete deadline.
