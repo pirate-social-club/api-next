@@ -65,3 +65,28 @@ After persistence, cancellation and bounded waiting occur outside the barrier
 so earlier work can settle. Timeout is incomplete evidence, not quiescence.
 Resumption checks stop subsequent effects; a newly returned multipart upload
 identifier is retained for cleanup even when creation straddled installation.
+
+## Internal installation protocol checkpoint
+
+`karaoke-reset-installation.ts` now defines and unit-tests the internal
+adapter protocol. It pins the six IDs and their inventory digest, calls an
+operator admission dependency before object observation, and validates the
+exact staging target and generation. It preserves the original observation
+on replay, persists before cancellation, and performs the bounded drain
+outside the storage barrier. Cancellation or drain failure produces incomplete
+evidence while retaining the marker. A final marker read rejects a receipt
+superseded by concurrent retirement.
+
+The producer tracker prevents new admission after closure and waits for all
+registered promises, with a maximum ten-second wait and timer cleanup. A
+timeout does not cancel earlier effects. The receipt verifier requires all
+six distinct matching-state complete receipts, but is not a fresh live
+readback or R2-key authorization mechanism.
+
+These are internal adapter tests, not runtime integration. The actual Worker
+authenticator, Durable Object storage adapter, producer-tracker wiring, and
+operator transport remain absent. The fixture script's active-user lookup
+does not authenticate an RPC and is not adopted as reset authority. Generation
+`staging-reset-v1` is the implementation candidate; the release review must
+pin it with the operator admission and inventory. No new capability is exposed
+by this module.
