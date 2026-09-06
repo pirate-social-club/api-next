@@ -747,9 +747,21 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
                     scores: Object.fromEntries(
                       MODERATION_POLICY_CATEGORIES_V1.map((category) => [category, 0]),
                     ) as Record<(typeof MODERATION_POLICY_CATEGORIES_V1)[number], number>,
-                    applied_input_types: Object.fromEntries(
-                      MODERATION_POLICY_CATEGORIES_V1.map((category) => [category, []]),
-                    ) as Record<(typeof MODERATION_POLICY_CATEGORIES_V1)[number], readonly never[]>,
+                    applied_input_types: {
+                      harassment: [],
+                      "harassment/threatening": [],
+                      hate: [],
+                      "hate/threatening": [],
+                      illicit: [],
+                      "illicit/violent": [],
+                      "self-harm": [],
+                      "self-harm/instructions": [],
+                      "self-harm/intent": [],
+                      sexual: [],
+                      "sexual/minors": [],
+                      violence: [],
+                      "violence/graphic": [],
+                    },
                   },
                 };
               }),
