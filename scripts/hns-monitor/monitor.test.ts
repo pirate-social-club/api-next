@@ -63,31 +63,27 @@ test("retained roots have a five-day checkpoint plus an explicit generation-boun
   expect(evaluateMonitorSnapshot(snapshot(), [checkpoint])).toEqual([]);
 });
 
-test("certificate renewal changes validity without weakening the retained SPKI or hostname checks", async () => {
+test("DANE-EE certificate identity uses the retained SPKI without a WebPKI hostname requirement", async () => {
   const bytes = new Uint8Array(
     await Bun.file(
       new URL("../hns-continuity/fixtures/gateway-certificate.der", import.meta.url),
     ).arrayBuffer(),
   );
   const cert = new X509Certificate(bytes);
-  const hostname = cert.subjectAltName
-    ?.split(", ")
-    .find((entry) => entry.startsWith("DNS:app."))
-    ?.slice(4);
-  if (hostname === undefined) throw new Error("Fixture lacks app hostname");
+  expect(cert.checkHost("app.other-fixture.invalid")).toBeUndefined();
   const pin = createHash("sha256")
     .update(cert.publicKey.export({ type: "spki", format: "der" }))
     .digest("hex");
   const expiry = Date.parse(cert.validTo) / 1000;
-  expect(inspectPinnedCertificate(bytes, hostname, pin, expiry - 14 * 86400)).toBeNull();
-  expect(inspectPinnedCertificate(bytes, hostname, pin, expiry - 14 * 86400 + 1)).toBe(
+  expect(inspectPinnedCertificate(bytes, pin, expiry - 14 * 86400)).toBeNull();
+  expect(inspectPinnedCertificate(bytes, pin, expiry - 14 * 86400 + 1)).toBe(
     "certificate_validity_low",
   );
-  expect(inspectPinnedCertificate(bytes, hostname, "0".repeat(64), expiry - 86400)).toBe(
+  expect(inspectPinnedCertificate(bytes, "0".repeat(64), expiry - 86400)).toBe(
     "certificate_identity_mismatch",
   );
-  expect(inspectPinnedCertificate(bytes, "app.invalid", pin, expiry - 86400)).toBe(
-    "certificate_identity_mismatch",
+  expect(inspectPinnedCertificate(bytes, pin, Date.parse(cert.validFrom) / 1000 - 1)).toBe(
+    "certificate_invalid",
   );
 });
 
