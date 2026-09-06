@@ -35,7 +35,6 @@ const PRODUCTION_RUNTIME_SECRET_NAMES = [
   "PIRATE_APP_JWT_PRIVATE_KEY",
   "PRIVY_APP_SECRET",
   "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
-  "MEGAPOT_V2_RPC_URL",
   "HNS_EDGE_ALERT_TOKEN",
 ] as const;
 
@@ -146,6 +145,8 @@ export const INFISICAL_POLICIES: readonly InfisicalPolicy[] = [
     requiredNames: requiredWhenRuntimeEnabled("prod", PRODUCTION_RUNTIME_SECRET_NAMES),
     allowedNames: [
       ...PRODUCTION_RUNTIME_SECRET_NAMES,
+      // Optional while production rewards are disabled; activation is guarded in the tests.
+      "MEGAPOT_V2_RPC_URL",
       ...PRODUCTION_PROVISIONABLE_DATA_RUNTIME_SECRET_NAMES,
       ...PRODUCTION_PROVISIONABLE_MEDIA_RUNTIME_SECRET_NAMES,
       ...PRODUCTION_PROVISIONABLE_HTTP_RUNTIME_SECRET_NAMES,
