@@ -55,7 +55,7 @@ function configuration(): HnsCommunityAppGatewayRuntimeConfigurationV1 {
   return {
     manifest: {
       solid_origin: "https://hns-solid-staging.pirate.sc",
-      private_authority_deadline_milliseconds: 2_000,
+      private_authority_deadline_milliseconds: 4_000,
     } as HnsCommunityAppGatewayRuntimeConfigurationV1["manifest"],
     gateway_deployment_reference: deploymentReference,
     authority_database_url: "postgresql://gateway:private@db.example/api_next?sslmode=verify-full",

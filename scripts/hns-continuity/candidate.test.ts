@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { gunzipSync } from "node:zlib";
 import { parseContinuityArguments } from "../hns-continuity.ts";
 import { buildContinuityCandidate } from "./candidate.mjs";
+import { rotationFixture } from "./gateway-rotation.fixture.ts";
 import { promoteContinuity } from "./promotion.mjs";
 
 async function fixture() {
@@ -122,4 +123,28 @@ test("requires an explicit valid mode, directory, root and digest without ambigu
       "a".repeat(64),
     ]).mode,
   ).toBe("dry-run");
+});
+
+test("rotation binds both profiles, the canonical manifest, unchanged SPKI and predecessor", async () => {
+  const input = await fixture();
+  const gatewayRotation = rotationFixture(input.state);
+  const original = await buildContinuityCandidate(input);
+  const rotated = await buildContinuityCandidate({ ...input, gatewayRotation });
+  expect(rotated.candidate_sha256).not.toBe(original.candidate_sha256);
+  expect(rotated.candidate.gateway_rotation).toEqual(gatewayRotation);
+  expect(rotated.candidate.predecessor_health_generation).toBe(
+    Number(input.state.health.health_generation),
+  );
+  for (const patch of [
+    { profile_sha256: "0".repeat(64) },
+    { handle_profile_sha256: "0".repeat(64) },
+    { gateway_reference: input.state.dns.gateway_deployment_reference },
+    { previous_gateway_reference: "wrong" },
+    { observed_at: "2000-01-01T00:00:00Z" },
+    { readiness: "not_ready" },
+    { manifest_json: `${gatewayRotation.manifest_json}\n` },
+  ])
+    await expect(
+      buildContinuityCandidate({ ...input, gatewayRotation: { ...gatewayRotation, ...patch } }),
+    ).rejects.toThrow();
 });
