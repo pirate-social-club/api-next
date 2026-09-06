@@ -9,11 +9,7 @@ export function makeVideoStageArtifactHead(
   }>,
 ) {
   return async (artifactRef: string) => {
-    const prefix = "media://derived/";
-    if (!artifactRef.startsWith(prefix)) throw new Error("invalid derived artifact reference");
-    const key = artifactRef.slice(prefix.length);
-    if (!/^[A-Za-z0-9_./:-]+$/u.test(key) || key.split("/").includes("..") || key.startsWith("/"))
-      throw new Error("invalid derived artifact reference");
+    const key = videoDerivedArtifactKey(artifactRef);
     const object = await bucket.head(key);
     if (object === null) return null;
     return {
@@ -22,4 +18,13 @@ export function makeVideoStageArtifactHead(
       contentType: object.httpMetadata?.contentType ?? "",
     };
   };
+}
+
+export function videoDerivedArtifactKey(artifactRef: string): string {
+  const prefix = "media://derived/";
+  if (!artifactRef.startsWith(prefix)) throw new Error("invalid derived artifact reference");
+  const key = artifactRef.slice(prefix.length);
+  if (!/^[A-Za-z0-9_./:-]+$/u.test(key) || key.split("/").includes("..") || key.startsWith("/"))
+    throw new Error("invalid derived artifact reference");
+  return key;
 }

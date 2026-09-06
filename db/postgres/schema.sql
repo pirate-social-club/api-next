@@ -24446,6 +24446,27 @@ CREATE TABLE media_video_rights (
     CONSTRAINT media_video_rights_royalty_allocations_check CHECK (((royalty_allocations @> '[{"share_bps": 10000}]'::jsonb) AND (jsonb_array_length(royalty_allocations) = 1)))
 );
 
+CREATE TABLE media_video_safety_evidence (
+    submission_id text NOT NULL,
+    video_revision bigint NOT NULL,
+    creation_revision bigint NOT NULL,
+    request_id text NOT NULL,
+    input_sha256 text NOT NULL,
+    evidence_ref text NOT NULL,
+    evidence_snapshot jsonb NOT NULL,
+    platform_held boolean NOT NULL,
+    accepted_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT media_video_safety_evidence_creation_revision_check CHECK ((creation_revision > 0)),
+    CONSTRAINT media_video_safety_evidence_evidence_ref_check CHECK ((evidence_ref ~ '^evidence_[a-f0-9]{64}$'::text)),
+    CONSTRAINT media_video_safety_evidence_evidence_snapshot_check CHECK (((jsonb_typeof(evidence_snapshot) = 'object'::text) AND (octet_length((evidence_snapshot)::text) <= 65536))),
+    CONSTRAINT media_video_safety_evidence_input_sha256_check CHECK ((input_sha256 ~ '^[a-f0-9]{64}$'::text)),
+    CONSTRAINT media_video_safety_evidence_request_id_check CHECK ((btrim(request_id) <> ''::text)),
+    CONSTRAINT media_video_safety_evidence_video_revision_check CHECK ((video_revision > 0)),
+    CONSTRAINT video_safety_evidence_identity CHECK (COALESCE((((evidence_snapshot ->> 'requestId'::text) = request_id) AND ((evidence_snapshot ->> 'inputDigest'::text) = input_sha256) AND (((evidence_snapshot -> 'fact'::text) ->> 'evidenceRef'::text) = evidence_ref) AND (((evidence_snapshot ->> 'platformHeld'::text))::boolean = platform_held)), false)),
+    CONSTRAINT video_safety_hold_blocked CHECK (((NOT platform_held) OR (((evidence_snapshot -> 'fact'::text) ->> 'mediaSafety'::text) = 'blocked'::text) OR (((evidence_snapshot -> 'fact'::text) ->> 'captionSafety'::text) = 'blocked'::text))),
+    CONSTRAINT video_safety_no_visual_allow CHECK (COALESCE(((((evidence_snapshot -> 'fact'::text) ->> 'mediaSafety'::text) = ANY (ARRAY['review_required'::text, 'blocked'::text])) AND (((evidence_snapshot -> 'fact'::text) -> 'minorSafetyEvidenceRef'::text) = 'null'::jsonb)), false))
+);
+
 CREATE TABLE media_video_source_grants (
     capability_sha256 text NOT NULL,
     request_id text NOT NULL,
@@ -28756,6 +28777,12 @@ ALTER TABLE ONLY media_video_revisions
 ALTER TABLE ONLY media_video_rights
     ADD CONSTRAINT media_video_rights_pkey PRIMARY KEY (submission_id);
 
+ALTER TABLE ONLY media_video_safety_evidence
+    ADD CONSTRAINT media_video_safety_evidence_pkey PRIMARY KEY (submission_id, video_revision, creation_revision);
+
+ALTER TABLE ONLY media_video_safety_evidence
+    ADD CONSTRAINT media_video_safety_evidence_request_id_key UNIQUE (request_id);
+
 ALTER TABLE ONLY media_video_source_grants
     ADD CONSTRAINT media_video_source_grants_pkey PRIMARY KEY (capability_sha256);
 
@@ -29809,6 +29836,8 @@ CREATE INDEX media_video_analysis_outbox_eligible_idx ON media_video_analysis_ou
 
 CREATE INDEX media_video_publication_wakeups_pending_idx ON media_video_publication_wakeups USING btree (last_attempt_at NULLS FIRST, created_at, wakeup_identity) WHERE (delivered_at IS NULL);
 
+CREATE INDEX media_video_safety_platform_hold_idx ON media_video_safety_evidence USING btree (accepted_at, submission_id) WHERE platform_held;
+
 CREATE INDEX media_video_source_grants_expiry_idx ON media_video_source_grants USING btree (expires_at) WHERE (revoked_at IS NULL);
 
 CREATE INDEX media_video_source_grants_request_idx ON media_video_source_grants USING btree (request_id);
@@ -30626,6 +30655,8 @@ CREATE TRIGGER media_transcript_artifacts_append_only BEFORE DELETE OR UPDATE ON
 CREATE TRIGGER media_upload_reservations_active_persona BEFORE INSERT ON media_upload_reservations FOR EACH ROW EXECUTE FUNCTION require_active_author_persona();
 
 CREATE TRIGGER media_video_reservation_update_guard BEFORE UPDATE ON media_upload_reservations FOR EACH ROW WHEN ((old.media_kind = 'video'::text)) EXECUTE FUNCTION guard_media_video_reservation_update();
+
+CREATE TRIGGER media_video_safety_evidence_immutable BEFORE UPDATE ON media_video_safety_evidence FOR EACH ROW EXECUTE FUNCTION media_video_stage_fact_immutable();
 
 CREATE TRIGGER media_video_stage_fact_immutable BEFORE UPDATE ON media_video_stage_facts FOR EACH ROW EXECUTE FUNCTION media_video_stage_fact_immutable();
 
@@ -32451,6 +32482,9 @@ ALTER TABLE ONLY media_video_revisions
 
 ALTER TABLE ONLY media_video_rights
     ADD CONSTRAINT media_video_rights_submission_id_fkey FOREIGN KEY (submission_id) REFERENCES media_post_submissions(submission_id);
+
+ALTER TABLE ONLY media_video_safety_evidence
+    ADD CONSTRAINT media_video_safety_evidence_submission_id_video_revision_fkey FOREIGN KEY (submission_id, video_revision) REFERENCES media_video_revisions(submission_id, video_revision);
 
 ALTER TABLE ONLY media_video_source_grants
     ADD CONSTRAINT media_video_source_grants_immutable_ref_fkey FOREIGN KEY (immutable_ref) REFERENCES media_immutable_objects(immutable_ref) ON DELETE CASCADE;

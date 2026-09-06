@@ -1,4 +1,5 @@
 import { env } from "cloudflare:test";
+import { MODERATION_POLICY_CATEGORIES_V1 } from "@pirate/contracts";
 import { Client } from "pg";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type {
@@ -16,6 +17,7 @@ import type {
 } from "../../packages/application/src/video/analysis.ts";
 import { dispatchVideoPublicationWakeups } from "../../packages/application/src/video/publication-wakeup.ts";
 import { recoverVideoWorkflowLaunches } from "../../packages/application/src/video/workflow-recovery.ts";
+import { OPENAI_MODERATION_MODEL } from "../../packages/platform-cf/src/openai-text-moderation.ts";
 import {
   makeR2QencodeArtifactStore,
   type QencodeTaskQuery,
@@ -48,7 +50,7 @@ vi.mock("../../apps/media-processor-worker/src/composition.ts", async (original)
 const bindings = env as unknown as { VIDEO_TEST_DATABASE: string; VIDEO_TEST_RESET: string };
 let admin: Client;
 let fixture: Awaited<ReturnType<typeof finalizedFixture>>;
-beforeEach(async () => {
+beforeEach(async (context) => {
   admin = new Client({ connectionString: bindings.VIDEO_TEST_DATABASE });
   await admin.connect();
   await admin.query("SET search_path TO api_next,pg_catalog");
@@ -56,17 +58,22 @@ beforeEach(async () => {
   await seedVideoActors(admin);
   const url = new URL(bindings.VIDEO_TEST_DATABASE);
   url.searchParams.set("options", "-c search_path=api_next,pg_catalog");
-  fixture = await finalizedFixture(url.toString());
+  fixture = await finalizedFixture(
+    url.toString(),
+    context.task.name.includes("safety caption") ? "Review this caption" : null,
+  );
 });
 afterEach(async () => {
   await admin?.end();
 });
 
-function harness(durableGrants = false) {
+function harness(durableGrants = false, safety?: "clean" | "minors" | "caption" | "unavailable") {
+  const moderationCalls: string[] = [];
   const objects = new Map<
     string,
     {
       key: string;
+      bytes: Uint8Array;
       size: number;
       httpMetadata: { contentType: string };
       customMetadata: Record<string, string>;
@@ -74,6 +81,10 @@ function harness(durableGrants = false) {
   >();
   const bucket = {
     head: async (key: string) => objects.get(key) ?? null,
+    get: async (key: string) => {
+      const object = objects.get(key);
+      return object === undefined ? null : { ...object, body: new Response(object.bytes).body };
+    },
     put: async (
       key: string,
       value: Uint8Array,
@@ -82,6 +93,7 @@ function harness(durableGrants = false) {
       if (objects.has(key)) return null;
       const object = {
         key,
+        bytes: value,
         size: value.byteLength,
         httpMetadata: options.httpMetadata,
         customMetadata: options.customMetadata,
@@ -149,9 +161,6 @@ function harness(durableGrants = false) {
   injected.adapters = {
     videoAnalysis: {
       providers: {
-        hash: async () => {
-          throw new Error("unexpected source body hash");
-        },
         identifySoundtrack: async () =>
           (
             await providerFetch("https://fixture.invalid/recognition")
@@ -230,6 +239,52 @@ function harness(durableGrants = false) {
       },
     },
   };
+  if (safety !== undefined && injected.adapters.videoAnalysis?.providers) {
+    const video = injected.adapters.videoAnalysis;
+    const recognition = video.providers?.identifySoundtrack;
+    if (recognition === undefined) throw new Error("fixture recognition missing");
+    injected.adapters = {
+      videoAnalysis: {
+        ...video,
+        providers: { identifySoundtrack: recognition },
+        moderationTransport: async (request) => {
+          const body = (await request.json()) as { input: ({ type?: string } | string)[] };
+          const type =
+            typeof body.input[0] === "string"
+              ? "text"
+              : body.input[0]?.type === "image_url"
+                ? "image"
+                : "text";
+          moderationCalls.push(type);
+          if (safety === "unavailable") return new Response(null, { status: 503 });
+          const category =
+            safety === "minors" && type === "image"
+              ? "sexual/minors"
+              : safety === "caption" && type === "text"
+                ? "hate"
+                : null;
+          return Response.json({
+            id: "modr_video",
+            model: OPENAI_MODERATION_MODEL,
+            results: [
+              {
+                flagged: category !== null,
+                categories: Object.fromEntries(
+                  MODERATION_POLICY_CATEGORIES_V1.map((c) => [c, c === category]),
+                ),
+                category_scores: Object.fromEntries(
+                  MODERATION_POLICY_CATEGORIES_V1.map((c) => [c, c === category ? 0.99 : 0.01]),
+                ),
+                category_applied_input_types: Object.fromEntries(
+                  MODERATION_POLICY_CATEGORIES_V1.map((c) => [c, [type]]),
+                ),
+              },
+            ],
+          });
+        },
+      },
+    };
+  }
   const runtimeEnv: MediaProcessorRuntimeEnv = {
     CONTROL_PLANE: { connectionString: bindings.VIDEO_TEST_DATABASE },
     MEDIA_PROCESSING_ENABLED: "false",
@@ -248,6 +303,8 @@ function harness(durableGrants = false) {
     MEDIA_DERIVED_ARTIFACTS: bucket as unknown as R2Bucket,
     VIDEO_ANALYSIS_ENABLED: "true",
     QENCODE_API_KEY: "fixture-key",
+    OPENAI_MODERATION_ENABLED: "true",
+    OPENAI_API_KEY: "fixture-openai",
     VIDEO_SOURCE_GATEWAY_ORIGIN: "https://video-source.example",
     VIDEO_WORKFLOW_ACCOUNT_ID: "a".repeat(32),
     VIDEO_WORKFLOW_NAME: "video-fixture",
@@ -362,6 +419,7 @@ function harness(durableGrants = false) {
   };
   return {
     runtimeEnv,
+    moderationCalls,
     composition,
     outbox,
     starts,
@@ -696,3 +754,31 @@ test("durable source grant composition: submit replay preserves one grant and st
     expect(JSON.stringify(rows)).not.toContain(source.pathname.split("/").at(-1));
   }
 });
+
+for (const mode of ["clean", "minors", "caption", "unavailable"] as const) {
+  test(`composed safety ${mode}: real moderation composition retains evidence and fails closed`, async () => {
+    const h = harness(false, mode);
+    const event = await h.launch();
+    if (mode === "minors") await h.run(event);
+    else await expect(h.run(event)).rejects.toThrow("publication event was not delivered");
+    const record = await fixture.store.getSubmissionByOperation({ submissionId, operationId });
+    expect(record?.state.status).toBe(mode === "minors" ? "blocked" : "manual_review");
+    if (mode === "clean") expect(record?.state.reviewReasons).toContain("media_review_required");
+    if (mode === "caption")
+      expect(record?.state.reviewReasons).toContain("caption_review_required");
+    if (mode === "unavailable")
+      expect(record?.state.reviewReasons).toContain("safety_adapter_unavailable");
+    const rows = (
+      await admin.query("SELECT platform_held,evidence_snapshot FROM media_video_safety_evidence")
+    ).rows;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].platform_held).toBe(mode === "minors");
+    expect(rows[0].evidence_snapshot.fact.minorSafetyEvidenceRef).toBeNull();
+    expect(rows[0].evidence_snapshot.fact.mediaSafety).not.toBe("allow");
+    expect(rows[0].evidence_snapshot.inputs).toHaveLength(mode === "caption" ? 4 : 3);
+    expect(h.moderationCalls).toEqual(
+      mode === "caption" ? ["image", "image", "image", "text"] : ["image", "image", "image"],
+    );
+    expect((await admin.query("SELECT count(*)::int AS n FROM posts")).rows[0].n).toBe(0);
+  });
+}

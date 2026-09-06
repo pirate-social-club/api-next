@@ -1074,7 +1074,14 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
-      await applyMigrations(scopedConnectionString, await loadPostgresMigrations());
+      const currentMigrations = await loadPostgresMigrations();
+      expect(currentMigrations.map((entry) => entry.version)).toContain(
+        "0124_video_safety_evidence.sql",
+      );
+      expect(currentMigrations.map((entry) => entry.version)).not.toContain(
+        "0125_video_safety_evidence.sql",
+      );
+      await applyMigrations(scopedConnectionString, currentMigrations);
       const migratedCatalog = await catalogForSchema(admin, schema);
       const baselineSchema = schemaIdentifier();
       await admin.query(`CREATE SCHEMA ${quoteIdentifier(baselineSchema)}`);
@@ -1388,6 +1395,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "media_video_review_holds",
         "media_video_revisions",
         "media_video_rights",
+        "media_video_safety_evidence",
         "media_video_source_grants",
         "media_video_stage_facts",
         "media_video_stream_ingests",

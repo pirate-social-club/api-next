@@ -912,16 +912,19 @@ function observeJob(
   input: MediaTransformVideoProbeInput,
   options: Extract<QencodeMediaTransformOptions, { enabled: true }>,
   adapterRevision: string,
+  operatorObservation?: boolean,
 ): Promise<MediaTransformVideoProbeOutcome>;
 function observeJob(
   input: MediaTransformVideoAudioInput,
   options: Extract<QencodeMediaTransformOptions, { enabled: true }>,
   adapterRevision: string,
+  operatorObservation?: boolean,
 ): Promise<MediaTransformVideoAudioOutcome>;
 function observeJob(
   input: MediaTransformVideoFramesInput,
   options: Extract<QencodeMediaTransformOptions, { enabled: true }>,
   adapterRevision: string,
+  operatorObservation?: boolean,
 ): Promise<MediaTransformVideoFramesOutcome>;
 async function observeJob(
   input:
@@ -930,6 +933,7 @@ async function observeJob(
     | MediaTransformVideoFramesInput,
   options: Extract<QencodeMediaTransformOptions, { enabled: true }>,
   adapterRevision: string,
+  operatorObservation?: boolean,
 ): Promise<
   | MediaTransformVideoProbeOutcome
   | MediaTransformVideoAudioOutcome
@@ -952,11 +956,13 @@ async function observeJob(
   const fence = input.attempt.runtimeFence;
   const observationDeadlineMs =
     fence.runtimeDeadlineMs + (fence.runtimeDeadlineMs - fence.submittedAtMs);
-  if (now >= observationDeadlineMs) {
+  if (!operatorObservation && now >= observationDeadlineMs) {
     return { status: "rejected", reason: "runtime_exceeded", attempt: input.attempt };
   }
   const timeoutSignal = AbortSignal.timeout(
-    Math.min(QENCODE_REQUEST_TIMEOUT_MS, observationDeadlineMs - now),
+    operatorObservation
+      ? QENCODE_REQUEST_TIMEOUT_MS
+      : Math.min(QENCODE_REQUEST_TIMEOUT_MS, observationDeadlineMs - now),
   );
   const signal =
     input.signal === undefined ? timeoutSignal : AbortSignal.any([input.signal, timeoutSignal]);
@@ -1198,5 +1204,45 @@ export function makeQencodeMediaTransform(
     alignVideoSoundtrackToSong: (input) =>
       Effect.succeed({ status: "unavailable", reason: "disabled", binding: input.binding }),
     cancelJob,
+  };
+}
+
+/** Operator-only status read after automatic windows; no grant, allocate or start capability. */
+export function makeQencodeReconciliationObserver(
+  options: Readonly<{
+    transport: Pick<QencodeTaskTransport, "getStatus">;
+    artifacts: QencodeArtifactStore;
+  }>,
+): Pick<MediaTransformVideoJobs, "observe"> {
+  const forbidden = async (): Promise<never> => {
+    throw new Error("operator submission forbidden");
+  };
+  const config = {
+    enabled: true as const,
+    apiKey: "unused",
+    transport: {
+      getStatus: options.transport.getStatus,
+      createTask: forbidden,
+      startTask: forbidden,
+    },
+    sourceGateway: { issue: forbidden },
+    artifacts: options.artifacts,
+  };
+  return {
+    observe: ((input: MediaTransformVideoJobInput) => {
+      const invalid = invalidVideoInput(input);
+      if (invalid !== null) return Effect.fail(invalid);
+      return Effect.promise<
+        | MediaTransformVideoProbeOutcome
+        | MediaTransformVideoAudioOutcome
+        | MediaTransformVideoFramesOutcome
+      >(() =>
+        input.version === "media-transform-video-probe-input-v1"
+          ? observeJob(input, config, QENCODE_ADAPTER_REVISION, true)
+          : input.version === "media-transform-video-audio-input-v1"
+            ? observeJob(input, config, QENCODE_ADAPTER_REVISION, true)
+            : observeJob(input, config, QENCODE_ADAPTER_REVISION, true),
+      );
+    }) as MediaTransformVideoJobs["observe"],
   };
 }

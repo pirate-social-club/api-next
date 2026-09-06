@@ -46,7 +46,7 @@ export async function seedVideoActors(admin: Client): Promise<void> {
   );
 }
 
-export async function finalizedFixture(connection: string) {
+export async function finalizedFixture(connection: string, caption: string | null = null) {
   const layer = makeDirectPostgresControlPlaneLayer(connection);
   const store = makeControlPlaneVideoPublicationStore(layer);
   const reservationResponse = new TextEncoder().encode('{"reservation_id":"fixture"}');
@@ -90,7 +90,7 @@ export async function finalizedFixture(connection: string) {
     actorAccountId: actor,
     authorPersonaId: persona,
     reservationId,
-    caption: null,
+    caption,
     authorDeclaredRating: "general",
   });
   await store.createSubmission({

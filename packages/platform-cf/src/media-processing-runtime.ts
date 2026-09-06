@@ -327,7 +327,7 @@ async function selectVerifiedObject(
   return { object: expected, body: selected.body };
 }
 
-async function readBoundedStream(
+export async function readBoundedStream(
   stream: ReadableStream<Uint8Array>,
   maximumBytes: number,
   signal: AbortSignal,
