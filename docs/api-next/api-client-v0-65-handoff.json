@@ -4,7 +4,7 @@
   "package": "@pirate/api-client",
   "version": "0.65.0",
   "releaseType": "coordinated-video-delivery",
-  "sourceCommit": "pending-source-checkpoint",
+  "sourceCommit": "160c96e98828b0840e1a7624406b0f526ffb0253",
   "wireContract": "One Solid adoption carries membership_required publication recovery and provider_submission_unconfirmed retry prohibition, playback/thumbnail unavailable states, authorized JPEG/304 poster and playback-access endpoints. Opaque feed/Post references remain identifiers; access is acquired at use time.",
   "supersedes": "0.62.0 for Solid adoption; 0.63.0 and 0.64.0 remain immutable intermediate releases and are not adopted by Solid.",
   "artifact": {
@@ -23,6 +23,6 @@
     "clientSha256": "bc4e4c29bbdbaf2f4c0d2db263f4b29d33f2aa6be3316fc910139ed5c13cae29"
   },
   "verification": {
-    "releaseGates": "Pending focused/check/full PostgreSQL on the rebased source. Owner full review required before PR; no deployment or hosted-provider proof."
+    "releaseGates": "Focused unit 205 and delivery PostgreSQL 10 passed after correcting two publication fixtures; full unit 3202, Node 20 and ordinary Workerd 160 passed. Full PostgreSQL 433 passed across isolated and four shards, with the affected final shard rerun after the aggregate composed-wrapper budget/streaming correction; nested Workerd 30 passed. Original failed runs retained. Final check passed with 127 migrations and package verification; owner full clean-branch review required before delivery PR update."
   }
 }
