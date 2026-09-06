@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Effect } from "effect";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
@@ -56,6 +56,101 @@ const binding = {
 };
 
 suite("community HNS root-import repositories", () => {
+  test("refuses provisional import of the retained operator root without admitting work", async () => {
+    await withSchema(async (connection, admin) => {
+      const root = "retainedroot";
+      const registryRef = "retained-operator-root-test";
+      const registryBytes = new TextEncoder().encode(
+        JSON.stringify([
+          "pirate-operator-managed-root-registry-v1",
+          registryRef,
+          1,
+          [["hns", root, "active"]],
+        ]),
+      );
+      const registryDigest = createHash("sha256").update(registryBytes).digest("hex");
+      await admin.query("INSERT INTO users (user_id,status,account) VALUES ($1,'active','{}')", [
+        actorId,
+      ]);
+      await admin.query(
+        `INSERT INTO communities (community_id,display_name,status,created_by_user_id,
+         route_authority_version,created_at,updated_at)
+         VALUES ($1,'Retained root refusal','active',$2,'optional_route_v2',clock_timestamp(),clock_timestamp())`,
+        [communityId, actorId],
+      );
+      await admin.query(
+        `INSERT INTO community_route_authority_grants
+         (grant_id,community_id,principal_user_id,authority,source_kind,status,granted_at,granted_by_user_id)
+         VALUES ('retained-root-import-grant',$1,$2,'manage_routes','creator_owner','active',clock_timestamp(),$2)`,
+        [communityId, actorId],
+      );
+      await admin.query(
+        `INSERT INTO operator_managed_root_registry_versions
+         (registry_reference,registry_version,registry_digest,registry_bytes,published_at,published_by_operator_principal_id)
+         VALUES ($1,1,$2,$3,clock_timestamp(),'test-operator')`,
+        [registryRef, registryDigest, registryBytes],
+      );
+      await admin.query(
+        `INSERT INTO operator_managed_root_registry_current
+         (registry_kind,registry_reference,registry_version,registry_digest,activated_at,activated_by_operator_principal_id)
+         VALUES ('pirate-operator-managed-root-registry-v1',$1,1,$2,clock_timestamp(),'test-operator')`,
+        [registryRef, registryDigest],
+      );
+      const store = makeControlPlaneHnsCommunityRootImportRepository({
+        environment: "test",
+        provider_binding: binding,
+      });
+      const layer = makeDirectPostgresControlPlaneLayer(connection);
+      const input = {
+        request: {
+          actor_id: actorId,
+          community_id: communityId,
+          root_label: root,
+          idempotency_key: "retained-root-start",
+        },
+        attachment_intent_id: "retained-root-attachment",
+        ceremony_intent_id: "retained-root-ceremony",
+        root_import_session_id: "retained-root-import",
+        provision_job_id: "retained-root-provision",
+        request_sha256: "a".repeat(64),
+      };
+      expect(
+        await Effect.runPromise(Effect.scoped(store.prepare(input).pipe(Effect.provide(layer)))),
+      ).toEqual({ kind: "conflict" });
+      expect(
+        (
+          await admin.query(`SELECT
+        (SELECT count(*)::integer FROM hns_community_root_import_preparations) AS reservations,
+        (SELECT count(*)::integer FROM hns_root_import_sessions) AS sessions,
+        (SELECT count(*)::integer FROM hns_authority_provision_jobs) AS provision_jobs,
+        (SELECT count(*)::integer FROM community_route_attachment_intents) AS attachments`)
+        ).rows,
+      ).toEqual([{ reservations: 0, sessions: 0, provision_jobs: 0, attachments: 0 }]);
+      expect(
+        (
+          await admin.query(`SELECT registry_reference,registry_version,registry_digest
+        FROM operator_managed_root_registry_current`)
+        ).rows,
+      ).toEqual([
+        { registry_reference: registryRef, registry_version: "1", registry_digest: registryDigest },
+      ]);
+      // The refusal is root protection, not missing community authority or quota.
+      expect(
+        (
+          await Effect.runPromise(
+            Effect.scoped(
+              store
+                .prepare({
+                  ...input,
+                  request: { ...input.request, root_label: "availabletestroot" },
+                })
+                .pipe(Effect.provide(layer)),
+            ),
+          )
+        ).kind,
+      ).toBe("created");
+    });
+  });
   test("persists preparation, provider session, root-import session, and exact replay", async () => {
     await withSchema(async (connection, admin) => {
       expect(
@@ -145,7 +240,7 @@ suite("community HNS root-import repositories", () => {
       ).text();
       const forwardMigration = await Bun.file(
         new URL(
-          "../../../db/postgres/migrations/0129_hns_provisional_community_import.sql",
+          "../../../db/postgres/migrations/0128_hns_provisional_community_import.sql",
           import.meta.url,
         ),
       ).text();
