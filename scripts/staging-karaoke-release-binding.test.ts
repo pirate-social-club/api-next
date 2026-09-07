@@ -169,20 +169,81 @@ test("interruption between surfaces recovers from retained receipts without re-e
   expect(reconciled).toEqual({ disposition: "unresolved" });
 });
 
-test("all surfaces still fenced reconciles as not-executed", async () => {
+test("fenced surfaces without positive non-execution evidence stay unresolved; only a pre-execution cancellation proves not-executed", async () => {
   const f = await ceremony();
   const base = f.base;
+  const make = () =>
+    makeKaraokeReleaseBinding({
+      plan,
+      surfaces: surfaces({ fail: null, calls: [] }, base.now),
+      observeRestored: {
+        ingress: async () => "fenced" as const,
+        producers: async () => "fenced" as const,
+        database: async () => "fenced" as const,
+      },
+      evidence: evidence(f),
+      readers: base.readers,
+      now: f.now,
+    });
+  // No receipts and no cancellation: unresolved, never a fresh execution.
+  expect(await make().reconcileReleasedFence({})).toEqual({ disposition: "unresolved" });
+  // A durable pre-execution cancellation positively establishes not-executed.
+  const cancelled = make();
+  cancelled.cancelBeforeExecution();
+  expect(await cancelled.reconcileReleasedFence({})).toEqual({ disposition: "not-executed" });
+});
+
+test("mutation success with lost receipt persistence then re-fencing never re-executes", async () => {
+  const f = await ceremony();
+  const base = f.base;
+  const state = {
+    fail: null as KaraokeReleaseSurface | null,
+    calls: [] as KaraokeReleaseSurface[],
+  };
+  const full = evidence(f);
+  const lossy: typeof full = {
+    put: (record) => {
+      if ((record as { phase?: string }).phase === "released")
+        throw new Error("receipt persistence failed");
+      full.put(record);
+    },
+    list: () => full.list(),
+  };
+  let reFenced = false;
   const binding = makeKaraokeReleaseBinding({
     plan,
-    surfaces: surfaces({ fail: null, calls: [] }, base.now),
+    surfaces: surfaces(state, base.now),
     observeRestored: {
-      ingress: async () => "fenced" as const,
-      producers: async () => "fenced" as const,
-      database: async () => "fenced" as const,
+      ingress: async () => (reFenced ? ("fenced" as const) : ("restored" as const)),
+      producers: async () => (reFenced ? ("fenced" as const) : ("restored" as const)),
+      database: async () => (reFenced ? ("fenced" as const) : ("restored" as const)),
     },
-    evidence: evidence(f),
+    evidence: lossy,
     readers: base.readers,
     now: f.now,
   });
-  expect(await binding.reconcileReleasedFence({})).toEqual({ disposition: "not-executed" });
+  // Through the origin: the ingress mutation succeeds but its receipt
+  // persistence fails, so the run stops unresolved after one confirmed,
+  // unreceipted mutation, with the signed intent retained.
+  await expect(
+    recordKaraokeFenceRelease({
+      ...base,
+      verifyFenceRelease: binding.verifyFenceRelease,
+      reconcileReleasedFence: binding.reconcileReleasedFence,
+    }),
+  ).rejects.toThrow("karaoke_release_operation_unresolved");
+  expect(state.calls).toEqual(["ingress"]);
+  // The surfaces are subsequently re-fenced; the retry must be unresolved
+  // with zero additional mutations.
+  reFenced = true;
+  const callsAfterRetry = state.calls.length;
+  await expect(
+    recordKaraokeFenceRelease({
+      ...base,
+      verifyFenceRelease: binding.verifyFenceRelease,
+      reconcileReleasedFence: binding.reconcileReleasedFence,
+    }),
+  ).rejects.toThrow();
+  expect(state.calls.length).toBe(callsAfterRetry);
+  expect(await binding.reconcileReleasedFence({})).toEqual({ disposition: "unresolved" });
 });

@@ -27,7 +27,13 @@ import type { KaraokeSigningReaders } from "./staging-karaoke-signing-collector.
  * unsigned or foreign. */
 export interface KaraokeReleaseEvidenceStore {
   put(record: unknown): void;
-  list(): { surface: KaraokeReleaseSurface; phase: string; releasedAt?: string }[];
+  list(): {
+    surface?: KaraokeReleaseSurface;
+    phase: string;
+    releasedAt?: string;
+    recordedAt?: string;
+    planDigest?: string;
+  }[];
 }
 
 export function makeKaraokeReleaseEvidenceStore(
@@ -47,7 +53,13 @@ export function makeKaraokeReleaseEvidenceStore(
       );
     },
     list() {
-      const found: { surface: KaraokeReleaseSurface; phase: string; releasedAt?: string }[] = [];
+      const found: {
+        surface?: KaraokeReleaseSurface;
+        phase: string;
+        releasedAt?: string;
+        recordedAt?: string;
+        planDigest?: string;
+      }[] = [];
       for (const name of names()) {
         const bytes = read(name);
         if (reconciliationDigest(bytes) !== name.replace(/\.json$/u, "")) continue;
@@ -57,12 +69,16 @@ export function makeKaraokeReleaseEvidenceStore(
             surface?: KaraokeReleaseSurface;
             phase?: string;
             releasedAt?: string;
+            recordedAt?: string;
+            planDigest?: string;
           };
-          if (payload.scope === "staging-karaoke-release-surface" && payload.surface)
+          if (payload.scope === "staging-karaoke-release-surface")
             found.push({
-              surface: payload.surface,
+              ...(payload.surface === undefined ? {} : { surface: payload.surface }),
               phase: payload.phase ?? "unknown",
               ...(payload.releasedAt === undefined ? {} : { releasedAt: payload.releasedAt }),
+              ...(payload.recordedAt === undefined ? {} : { recordedAt: payload.recordedAt }),
+              ...(payload.planDigest === undefined ? {} : { planDigest: payload.planDigest }),
             });
         } catch {
           // Unsigned or wrongly keyed records are not evidence.
@@ -80,6 +96,10 @@ export function makeKaraokeReleaseEvidenceStore(
  * reads only authenticated retained receipts, and a release time is never
  * reconstructed from current state. */
 export function makeKaraokeReleaseBinding(input: {
+  /** Reviewed plan; its digest is cryptographically bound into every retained
+   * attempt record and cancellation, and recovery refuses evidence bound to
+   * a different plan. Shape completeness does not establish approval; the
+   * recorded owner approval must match this exact digest. */
   readonly plan: KaraokeReleasePlan;
   readonly surfaces: Parameters<typeof executeKaraokeFenceRelease>[0]["surfaces"];
   readonly observeRestored: Record<
@@ -90,6 +110,7 @@ export function makeKaraokeReleaseBinding(input: {
   readonly readers: KaraokeSigningReaders;
   readonly now?: () => string;
 }) {
+  const planDigest = reconciliationDigest(JSON.stringify(input.plan));
   const allSixRetired = async () => {
     for (const objectId of KARAOKE_RESET_OBJECT_IDS) {
       const snapshot = decodeReconciliation(
@@ -106,6 +127,14 @@ export function makeKaraokeReleaseBinding(input: {
     return true;
   };
   return {
+    /** Durable pre-execution cancellation. Callable only before any attempt
+     * has been retained for this plan; the signed record's existence and
+     * ordering are what later positively establish execution never started. */
+    cancelBeforeExecution(): void {
+      if (input.evidence.list().some((record) => record.planDigest === planDigest))
+        throw new Error("karaoke_release_cancel_after_attempt");
+      input.evidence.put({ planDigest, phase: "cancelled", recordedAt: new Date().toISOString() });
+    },
     async verifyFenceRelease(): Promise<{ releasedAt: string; allSixRetired: boolean }> {
       const result: KaraokeReleaseResult = await executeKaraokeFenceRelease({
         plan: input.plan,
@@ -113,6 +142,7 @@ export function makeKaraokeReleaseBinding(input: {
         ...(input.now === undefined ? {} : { now: input.now }),
         onAttempt: (record) =>
           input.evidence.put({
+            planDigest,
             surface: record.surface,
             phase: record.phase,
             ...(record.receipt === undefined
@@ -150,13 +180,30 @@ export function makeKaraokeReleaseBinding(input: {
           (record) =>
             record.phase === "released" &&
             record.releasedAt !== undefined &&
+            record.planDigest === planDigest &&
             (intent.recordedAt === undefined || record.releasedAt >= intent.recordedAt),
         )
         .sort((left, right) => (left.releasedAt ?? "").localeCompare(right.releasedAt ?? ""));
-      if (observations.every((observation) => observation === "fenced"))
-        return receipts.length > 0
+      if (observations.every((observation) => observation === "fenced")) {
+        // Absence of receipts is NOT proof of non-execution: a mutation may
+        // have succeeded while its receipt persistence failed, with the
+        // surface later re-fenced. Only a durable pre-execution cancellation,
+        // recorded before any attempt could start and bound to this plan,
+        // positively establishes execution never began.
+        const cancelled = input.evidence
+          .list()
+          .some(
+            (record) =>
+              record.phase === "cancelled" &&
+              record.planDigest === planDigest &&
+              (intent.recordedAt === undefined ||
+                record.recordedAt === undefined ||
+                record.recordedAt >= intent.recordedAt),
+          );
+        return receipts.length > 0 || !cancelled
           ? { disposition: "unresolved" }
           : { disposition: "not-executed" };
+      }
       // Some surface restored: every surface independently observed restored
       // plus one authenticated receipt per surface; missing or contradictory
       // evidence stays unresolved, and the time is the last receipt's
