@@ -177,6 +177,9 @@ jobs:
           --health-retries 20
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          # Reset tests verify immutable approved Git artifacts, not HEAD's schema.
+          fetch-depth: 0
       - name: Start warn-only egress audit
         uses: ironsh/iron-proxy-action@fa1fd82ec32396d044deba7040a6db576bec927a # v0.1.4
         with:
