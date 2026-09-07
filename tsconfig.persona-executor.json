@@ -5,6 +5,8 @@
     "apps",
     "scripts/staging-persona-phased-reset.pg.test.ts",
     "scripts/staging-persona-session-drain.pg.test.ts",
-    "scripts/staging-persona-rehearsal-failure.test.ts"
+    "scripts/staging-persona-rehearsal-failure.test.ts",
+    "scripts/staging-karaoke-reset-binding.test.ts",
+    "scripts/staging-karaoke-reset-binding.ts"
   ]
 }

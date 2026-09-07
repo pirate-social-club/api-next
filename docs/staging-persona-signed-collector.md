@@ -578,3 +578,19 @@ the drain suite therefore exercised its prepared-transactions-disabled case,
 not a newly enabled two-phase transaction case. The temporary containers and
 their scratch volumes were removed after fixture databases were dropped.
 No PostgreSQL 18.6, remote CI or live end-to-end acceptance is claimed.
+
+
+Reset-binding checkpoint — 2026-09-07. The concrete reset binding exists as
+source: scripts/staging-karaoke-reset-binding.ts binds the journal origin's
+completion port to readCompletedStagingReset, so only an execution object
+this process actually completed can supply completion evidence — submitted
+JSON, a matching literal or a foreign execution refuses inside the executor.
+The origin-level refusal is tested with the journal unchanged; the executor
+pg suite already proves the owned readback (server version, pinned terminal
+migration, zero persona counts, ledger) and the spread-copy refusal. The
+binding lives in the executor type environment, which is why it is checked by
+the executor project rather than the collector's smaller one. The concrete
+release OPERATION — performing and independently verifying the approved fence
+release across ingress, producers and database writes — remains unfinished
+source work; the origin's intent/execution/recovery contract and its explicit
+dispositions are the interface it must satisfy.
