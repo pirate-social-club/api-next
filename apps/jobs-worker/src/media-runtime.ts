@@ -18,6 +18,10 @@ import type { Layer } from "effect";
 import { dispatchVideoEnrichment } from "../../../packages/application/src/video/enrichment-dispatch.ts";
 import { makeVideoEnrichmentDispatchSource } from "../../../packages/platform-cf/src/video-enrichment-dispatch-source.ts";
 import {
+  makeVideoReservationCleanup,
+  type VideoIngressAbortBucket,
+} from "../../../packages/platform-cf/src/video-reservation-cleanup.ts";
+import {
   dispatchEligibleMediaOutbox,
   type MediaOutboxDispatchQueue,
   type MediaOutboxDispatchResult,
@@ -33,6 +37,7 @@ import {
 } from "./video-analysis-outbox-dispatch.ts";
 
 export type MediaJobsBindings = Readonly<{
+  readonly MEDIA_INGRESS?: VideoIngressAbortBucket;
   readonly MEDIA_PROCESSING_ENABLED?: string;
   readonly VIDEO_ANALYSIS_ENABLED?: string;
   readonly VIDEO_DELIVERY_ENABLED?: string;
@@ -98,6 +103,12 @@ export function makeMediaMaintenance(
           ),
         }
       : null;
+  if (env.VIDEO_ANALYSIS_ENABLED === "true" && env.MEDIA_INGRESS === undefined)
+    throw new Error("video ingress binding is required for expired-upload cleanup");
+  const cleanup =
+    env.MEDIA_INGRESS === undefined
+      ? null
+      : makeVideoReservationCleanup(runtime, env.MEDIA_INGRESS);
   const source = makeMediaOutboxDispatchSource(runtime);
   const enrichmentSource =
     env.VIDEO_DELIVERY_ENABLED === "true" ? makeVideoEnrichmentDispatchSource(runtime) : null;
@@ -111,6 +122,11 @@ export function makeMediaMaintenance(
   return () =>
     runMediaMaintenance({
       dispatch: async () => {
+        if (cleanup !== null) {
+          const result = await cleanup();
+          if (result.selected > 0)
+            console.log(JSON.stringify({ event: "video-reservation-cleanup", ...result }));
+        }
         if (videoRecovery !== null) {
           await recoverVideoWorkflowLaunches(videoRecovery);
           await dispatchVideoPublicationWakeups({

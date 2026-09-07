@@ -57,6 +57,11 @@ const sha256Pattern = /^[0-9a-f]{64}$/u;
 
 export const VIDEO_MULTIPART_PART_SIZE_BYTES = 10 * 1024 * 1024;
 export const VIDEO_MULTIPART_URL_TTL_SECONDS = 60 * 60;
+export const videoReservationLifetimeSeconds = (declaredBytes: number): number => {
+  if (!Number.isSafeInteger(declaredBytes) || declaredBytes < 1)
+    throw new Error("Invalid video reservation size");
+  return Math.min(6 * 60 * 60, 60 * 60 + Math.ceil(declaredBytes / 32768));
+};
 
 export const videoIngressObjectKey = (reservationId: string): string =>
   `reservations/${reservationId}/source`;
@@ -597,6 +602,10 @@ export async function reserveVideoUpload(
   if (body.intent === "song_reference") throw capabilityUnavailable("song_reference");
 
   const reservationId = `media-reservation-${uuid(services)}`;
+  const reservationExpiresAt = new Date(
+    Date.parse(services.nowIso()) +
+      videoReservationLifetimeSeconds(body.expected_size_bytes) * 1_000,
+  ).toISOString();
   const partCount = Math.ceil(body.expected_size_bytes / VIDEO_MULTIPART_PART_SIZE_BYTES);
   let upload: VideoMultipartSession;
   try {
@@ -634,7 +643,7 @@ export async function reserveVideoUpload(
     uploadId: upload.uploadId,
     partSizeBytes: upload.partSizeBytes,
     partCount: upload.partCount,
-    expiresAt: upload.expiresAt,
+    expiresAt: reservationExpiresAt,
   } as const;
   const response = await snapshot(reservationDocument(base, upload.parts));
   const record: VideoReservationRecord = {
@@ -802,6 +811,15 @@ export async function createVideoSubmission(
       details: { reason_code: "reservation_persona_required" },
     });
   }
+  if (
+    reservation.state === "expired" ||
+    Date.parse(reservation.expiresAt) <= Date.parse(services.nowIso())
+  ) {
+    throw new Conflict({
+      message: "Video upload action expired",
+      details: { reason_code: "action_expired" },
+    });
+  }
   if (reservation.communityId !== input.communityId || reservation.state !== "issued") {
     throw new Conflict({ message: "Video reservation cannot be claimed" });
   }
@@ -874,6 +892,16 @@ export async function finalizeVideoSubmission(
     authorPersonaId: body.persona_id,
   });
   if (reservation === null) throw new NotFound({ message: "Video reservation not found" });
+  if (
+    reservation.state === "expired" ||
+    (reservation.manifest === null &&
+      Date.parse(reservation.expiresAt) <= Date.parse(services.nowIso()))
+  ) {
+    throw new Conflict({
+      message: "Video upload action expired",
+      details: { reason_code: "action_expired" },
+    });
+  }
   const manifest = normalizeVideoMultipartManifest(body.parts, reservation.partCount);
   if (manifest === null) {
     await services.multipart
