@@ -141,9 +141,9 @@ export function makeKaraokeReleaseBinding(input: {
       );
       if (observations.some((observation) => observation === "uncertain"))
         return { disposition: "unresolved" };
-      if (observations.every((observation) => observation === "fenced"))
-        return { disposition: "not-executed" };
-      // Restored surfaces need an authenticated retained release time.
+      // Retained, signed release receipts inside this intent's window are the
+      // only positive execution evidence. Current state alone never proves
+      // not-executed: a partial release followed by re-fencing is identical.
       const receipts = input.evidence
         .list()
         .filter(
@@ -153,8 +153,18 @@ export function makeKaraokeReleaseBinding(input: {
             (intent.recordedAt === undefined || record.releasedAt >= intent.recordedAt),
         )
         .sort((left, right) => (left.releasedAt ?? "").localeCompare(right.releasedAt ?? ""));
-      if (receipts.length < 3 || new Set(receipts.map((r) => r.surface)).size < 3)
+      if (observations.every((observation) => observation === "fenced"))
+        return receipts.length > 0
+          ? { disposition: "unresolved" }
+          : { disposition: "not-executed" };
+      // Some surface restored: every surface independently observed restored
+      // plus one authenticated receipt per surface; missing or contradictory
+      // evidence stays unresolved, and the time is the last receipt's
+      // confirmation time — never an observation-time substitute.
+      if (!observations.every((observation) => observation === "restored"))
         return { disposition: "unresolved" };
+      const receiptSurfaces = new Set(receipts.map((receipt) => receipt.surface));
+      if (receipts.length < 3 || receiptSurfaces.size < 3) return { disposition: "unresolved" };
       const releasedAt = receipts.at(-1)?.releasedAt;
       if (releasedAt === undefined) return { disposition: "unresolved" };
       return {

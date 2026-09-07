@@ -24,6 +24,10 @@ export const KaraokeReleasePlan = Schema.Struct({
     Schema.isMaxLength(16),
   ),
   reviewedGrantDigest: ReconciliationDigest,
+  surfaceOrder: Schema.Array(Schema.Literals(["ingress", "producers", "database"] as const)).check(
+    Schema.isMinLength(3),
+    Schema.isMaxLength(3),
+  ),
 });
 export type KaraokeReleasePlan = typeof KaraokeReleasePlan.Type;
 
@@ -58,16 +62,26 @@ function missingDecision(plan: Partial<KaraokeReleasePlan>): string | null {
   if (!plan.resumeQueues?.length) return "approved queue resume list";
   if (!plan.servingWorkers?.length) return "approved serving worker versions";
   if (plan.reviewedGrantDigest === undefined) return "reviewed runtime grant digest";
+  const order = plan.surfaceOrder;
+  if (
+    order === undefined ||
+    new Set(order).size !== 3 ||
+    !["ingress", "producers", "database"].every((surface) => order.includes(surface as never))
+  )
+    return "approved release surface order";
   return null;
 }
 
-/** The concrete release operation. Surfaces restore in fixed order — ingress,
- * producers, database — and every attempt reports through `onAttempt` before
- * and after so the caller retains authenticated, intent-bound evidence
- * durably. A failed or uncertain surface leaves the result unresolved with
- * the receipts that did complete; this operation never retries, never
- * re-executes a completed surface, and never fabricates a release time: the
- * release time is the moment the last surface's restoration was confirmed. */
+/** The concrete release operation. Surfaces restore in the reviewed
+ * `surfaceOrder` (an approved plan decision, never a code default, because
+ * restoring ingress before writers would admit requests into a still-fenced
+ * system). Every attempt reports through `onAttempt` before and after so the
+ * caller retains authenticated, intent-bound evidence durably. A failed or
+ * uncertain surface leaves the result unresolved with the receipts that did
+ * complete; this operation never retries and never re-executes a completed
+ * surface. The returned time is the last surface restoration *confirmation*
+ * — a lower bound only for surfaces whose response was lost (those produce
+ * no receipt), never a substitute for an unknown execution time. */
 export async function executeKaraokeFenceRelease(input: {
   readonly plan: unknown;
   readonly surfaces: KaraokeReleaseSurfaces;
@@ -82,11 +96,14 @@ export async function executeKaraokeFenceRelease(input: {
   const decision = missingDecision(input.plan as Partial<KaraokeReleasePlan>);
   if (decision !== null) throw new Error(`karaoke_release_plan_incomplete:${decision}`);
   const plan = input.plan as KaraokeReleasePlan;
-  const order: readonly [KaraokeReleaseSurface, unknown][] = [
-    ["ingress", { applicationId: plan.ingressApplicationId }],
-    ["producers", { resumeQueues: plan.resumeQueues, servingWorkers: plan.servingWorkers }],
-    ["database", { reviewedGrantDigest: plan.reviewedGrantDigest }],
-  ];
+  const directives: Record<KaraokeReleaseSurface, unknown> = {
+    ingress: { applicationId: plan.ingressApplicationId },
+    producers: { resumeQueues: plan.resumeQueues, servingWorkers: plan.servingWorkers },
+    database: { reviewedGrantDigest: plan.reviewedGrantDigest },
+  };
+  const order = plan.surfaceOrder.map(
+    (surface) => [surface, directives[surface]] as [KaraokeReleaseSurface, unknown],
+  );
   const receipts: KaraokeSurfaceReceipt[] = [];
   for (const [surface, directive] of order) {
     input.onAttempt?.({ surface, phase: "intent" });

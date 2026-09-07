@@ -21,6 +21,9 @@ const plan: KaraokeReleasePlan = {
   resumeQueues: [{ name: "staging-events", id: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }],
   servingWorkers: [{ worker: "http-worker", versionId: "cccccccccccccccccccccccccccccccc" }],
   reviewedGrantDigest: "d".repeat(64),
+  // The approved surface order is an owner decision; tests exercise the
+  // executor logic with one explicit order, not an approved one.
+  surfaceOrder: ["ingress", "producers", "database"] as const,
 };
 
 function surfaces(
