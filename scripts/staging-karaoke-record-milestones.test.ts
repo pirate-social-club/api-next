@@ -610,7 +610,10 @@ test("uncertain execution reconciles read-only from a signed intent without exec
     verifyFenceRelease: async () => {
       throw new Error("must not execute again");
     },
-    reconcileReleasedFence: async () => ({ releasedAt: actualReleasedAt, allSixRetired: true }),
+    reconcileReleasedFence: async () => ({
+      disposition: "released",
+      release: { releasedAt: actualReleasedAt, allSixRetired: true },
+    }),
   });
   expect(recovered.executionAuthorized).toBe(false);
   const after = readKaraokeMaintenanceJournal(journal, now());
@@ -651,7 +654,10 @@ test("uncertain execution recovers even when the concrete fence reader throws", 
     reconcileReleasedFence: async (pendingIntent) => {
       receivedIntent =
         (pendingIntent as { fence?: { ingress?: boolean } } | undefined)?.fence?.ingress === true;
-      return { releasedAt: actualReleasedAt, allSixRetired: true };
+      return {
+        disposition: "released",
+        release: { releasedAt: actualReleasedAt, allSixRetired: true },
+      };
     },
   });
   expect(recovered.executionAuthorized).toBe(false);
@@ -694,7 +700,10 @@ test("lost response, a later journal append and read-only reconciliation recover
     verifyFenceRelease: async () => {
       throw new Error("must not execute again");
     },
-    reconcileReleasedFence: async () => ({ releasedAt: actualReleasedAt, allSixRetired: true }),
+    reconcileReleasedFence: async () => ({
+      disposition: "released",
+      release: { releasedAt: actualReleasedAt, allSixRetired: true },
+    }),
   });
   expect(recovered.executionAuthorized).toBe(false);
   const final = readKaraokeMaintenanceJournal(journal, now());
@@ -714,8 +723,86 @@ test("lost response, a later journal append and read-only reconciliation recover
   void advance;
 });
 
+async function zeroExecutionCase(failure: "timeout" | "invalid-evidence" | "write-failure") {
+  const { base, journal, now } = await releaseCeremony();
+  let actualReleasedAt = "";
+  const lost = recordKaraokeFenceRelease({
+    ...base,
+    verifyFenceRelease: async () => {
+      actualReleasedAt = now();
+      throw new Error("lost response");
+    },
+  });
+  await expect(lost).rejects.toThrow("lost response");
+  let executions = 0;
+  const attempt = recordKaraokeFenceRelease({
+    ...base,
+    verifyFenceRelease: async () => {
+      executions++;
+      throw new Error("must not execute again");
+    },
+    reconcileReleasedFence: async () => {
+      if (failure === "timeout") throw new Error("reconciliation timeout");
+      if (failure === "invalid-evidence")
+        return { disposition: "released", release: { allSixRetired: false } };
+      return {
+        disposition: "released",
+        release: { releasedAt: actualReleasedAt, allSixRetired: true },
+      };
+    },
+  });
+  if (failure === "write-failure") {
+    const { chmodSync } = await import("node:fs");
+    chmodSync(journal.directory, 0o500);
+    await expect(attempt).rejects.toThrow();
+    chmodSync(journal.directory, 0o700);
+  } else {
+    await expect(attempt).rejects.toThrow();
+  }
+  expect(executions).toBe(0);
+  expect(readKaraokeMaintenanceJournal(journal, now()).state).toBe("retired");
+}
+
+test("a reconciliation timeout never enables another execution while the fence reads held", async () => {
+  await zeroExecutionCase("timeout");
+});
+
+test("invalid reconciliation evidence never enables another execution while the fence reads held", async () => {
+  await zeroExecutionCase("invalid-evidence");
+});
+
+test("an artifact-write failure after released reconciliation never enables another execution", async () => {
+  await zeroExecutionCase("write-failure");
+});
+
+test("a positively verified not-executed disposition permits fresh execution once", async () => {
+  const { base, pass, resetOrigin, retirementOrigin, state, journal, now } = fixture();
+  await pass("post-fence");
+  await pass("pre-reset");
+  state.identityPresent = false;
+  await resetOrigin();
+  state.markers = "retired";
+  await pass("retirement");
+  await retirementOrigin();
+  const lost = recordKaraokeFenceRelease({
+    ...base,
+    verifyFenceRelease: async () => {
+      throw new Error("binding failed before executing");
+    },
+  });
+  await expect(lost).rejects.toThrow("binding failed before executing");
+  const recovered = await recordKaraokeFenceRelease({
+    ...base,
+    verifyFenceRelease: async () => ({ releasedAt: now(), allSixRetired: true }),
+    reconcileReleasedFence: async () => ({ disposition: "not-executed" }),
+  });
+  expect(recovered.executionAuthorized).toBe(false);
+  expect(readKaraokeMaintenanceJournal(journal, now()).state).toBe("released");
+});
+
 test("retirement and release origins refuse wrong state or unretired markers", async () => {
-  const { pass, resetOrigin, retirementOrigin, releaseOrigin, state, release, now } = fixture();
+  const { base, pass, resetOrigin, retirementOrigin, releaseOrigin, state, release, now } =
+    fixture();
   await expect(retirementOrigin()).rejects.toThrow("karaoke_retirement_origin_state_denied");
   // While the journal is still held, retirement passes refuse regardless of
   // what the markers claim.
@@ -739,5 +826,13 @@ test("retirement and release origins refuse wrong state or unretired markers", a
   await expect(releaseOrigin(release(now(), false))).rejects.toThrow(
     "karaoke_release_origin_release_unproven",
   );
-  await expect(releaseOrigin()).resolves.toHaveProperty("executionAuthorized", false);
+  // The failed attempt leaves a pending intent; without a reconciliation
+  // binding the state refuses before any fence reader runs.
+  await expect(releaseOrigin()).rejects.toThrow("karaoke_release_origin_uncertain_denied");
+  const resolved = await recordKaraokeFenceRelease({
+    ...base,
+    verifyFenceRelease: async () => ({ releasedAt: now(), allSixRetired: true }),
+    reconcileReleasedFence: async () => ({ disposition: "not-executed" }),
+  });
+  expect(resolved.executionAuthorized).toBe(false);
 });

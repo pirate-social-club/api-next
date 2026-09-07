@@ -461,3 +461,17 @@ release time, and conflicting earlier evidence times cannot satisfy the
 comparison. Concrete reset/release bindings remain unfinished source work;
 automated cleanup-sidecar reconciliation also remains unfinished and
 unclaimed.
+
+
+Fourth review-fix checkpoint — 2026-09-07. A fourth inspection found that a
+failed reconciliation could fall through to another execution. Corrected: the
+reconciliation port now returns explicit intent-bound dispositions (released,
+positively verified not-executed, unresolved). Only a durable signed
+not-executed disposition closes a pending intent and permits one fresh
+execution under full admission; a held fence alone never does. Timeouts,
+malformed evidence and artifact-persistence failures remain unresolved —
+signing and persistence sit outside any outcome handling — and each of the
+three cases is tested to invoke the executing binding zero times while the
+fence reads held. A pending intent without a reconciliation binding is
+rejected before any fence reader runs. Concrete reset/release bindings and
+automated cleanup-sidecar reconciliation remain unfinished.

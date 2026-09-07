@@ -248,8 +248,13 @@ release. Recovery is selected from an authenticated pending intent before any
 fence observation — the concrete collectors throw when fencing is absent, and
 an observation error is never proof of release — and the pending intent is
 passed explicitly to the read-only reconciliation port
-(`reconcileReleasedFence`), which never executes again; a refuted
-reconciliation falls through to the normal held-fence path. A sidecar must
+(`reconcileReleasedFence`), which never executes again. The port returns an
+explicit intent-bound disposition — released, positively verified
+not-executed, or unresolved — and only a durable, signed not-executed
+disposition permits one fresh execution under full admission checks; a held
+fence alone is never such a disposition. Timeouts, malformed evidence and
+persistence failures remain unresolved and never re-execute, because signing
+and artifact persistence stay outside any outcome handling. A sidecar must
 hash to its content-addressed filename, carry the pinned key's signature, and
 reference a predecessor inside this journal, so fabricated, modified and
 cross-ceremony records refuse. The actual release time postdates the
