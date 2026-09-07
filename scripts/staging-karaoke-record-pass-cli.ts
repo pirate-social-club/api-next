@@ -9,6 +9,7 @@ import {
 import {
   decodeReconciliation,
   ReconciliationReceiptSchema,
+  ReconciliationTime,
   reconciliationMillis,
 } from "../packages/platform-cf/src/karaoke-reconciliation-schema.ts";
 import { KARAOKE_RESET_OBJECT_IDS } from "../packages/platform-cf/src/karaoke-reset-installation.ts";
@@ -25,6 +26,28 @@ import type { KaraokePassPhase } from "./staging-karaoke-observation-pass.ts";
 import { prepareKaraokeRecording } from "./staging-karaoke-recording-context.ts";
 
 const Envelope = Schema.Struct({ scope: ReconciliationScope, data: Schema.Unknown });
+
+/** The operational release time is the authenticated release evidence inside
+ * the released entry, never that entry's recording timestamp. */
+function journalReleaseEvidenceTime(
+  journal: ReturnType<typeof readKaraokeMaintenanceJournal>,
+): string | null {
+  const released = journal.entries.find(({ entry }) => entry.event.kind === "released");
+  if (released?.entry.event.kind !== "released") return null;
+  for (const id of released.entry.event.evidenceIds) {
+    const artifact = JSON.parse(journal.readArtifact(id)) as {
+      kind?: string;
+      release?: { releasedAt?: unknown };
+    };
+    if (artifact.kind === "release-evidence") {
+      const releasedAt = artifact.release?.releasedAt;
+      if (typeof releasedAt !== "string") throw new Error("karaoke_pass_release_evidence_denied");
+      decodeReconciliation(ReconciliationTime, releasedAt);
+      return releasedAt;
+    }
+  }
+  throw new Error("karaoke_pass_release_evidence_denied");
+}
 /** Explicit authenticated read-only provider pass. Only signed challenge-bound
  * journal artifacts establish the result; stdout and exit status cannot do so. */
 export async function runKaraokePassRecordingCli(
@@ -118,9 +141,7 @@ export async function verifyRecordedKaraokePass(input: {
         currentFenceEpoch: journal.entries.some(({ entry }) => entry.event.kind === "released")
           ? null
           : config.epoch,
-        releasedAt:
-          journal.entries.find(({ entry }) => entry.event.kind === "released")?.entry.observedAt ??
-          null,
+        releasedAt: journalReleaseEvidenceTime(journal),
         entries: [...entries.values()],
         targets: KARAOKE_RESET_OBJECT_IDS.map((objectId) => ({
           objectId,

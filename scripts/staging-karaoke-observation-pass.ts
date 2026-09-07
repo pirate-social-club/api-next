@@ -287,7 +287,7 @@ export async function recordKaraokeObservationPass(input: {
     bucket: trust.bucket,
     residualDispositionId: trust.residualDispositionId,
     currentFenceEpoch: releaseEvidence === undefined ? trust.epoch : null,
-    releasedAt: releasedEntry?.entry.observedAt ?? null,
+    releasedAt: releaseEvidence === undefined ? null : releaseEvidence.releasedAt,
     targets,
     entries: [...entries.values()],
   });

@@ -80,6 +80,22 @@ export async function collectSignedKaraokeReconciliation(input: {
     if (journal.state === "unestablished" || journal.state === "broken")
       throw new Error("karaoke_collector_journal_unproven");
     const released = journal.entries.find(({ entry }) => entry.event.kind === "released");
+    let releaseTime: string | null = null;
+    if (released?.entry.event.kind === "released") {
+      for (const id of released.entry.event.evidenceIds) {
+        const artifact = JSON.parse(journal.readArtifact(id)) as {
+          kind?: string;
+          release?: { releasedAt?: unknown };
+        };
+        if (artifact.kind === "release-evidence") {
+          if (typeof artifact.release?.releasedAt !== "string")
+            throw new Error("karaoke_collector_release_evidence_denied");
+          releaseTime = artifact.release.releasedAt;
+          break;
+        }
+      }
+      if (releaseTime === null) throw new Error("karaoke_collector_release_evidence_denied");
+    }
     const reset = journal.entries.some(({ entry }) => entry.event.kind === "reset-verified");
     const freshArtifacts = new Map<string, string>();
     let freshFence: { readonly fence: unknown; readonly supporting: unknown } | undefined;
@@ -184,7 +200,7 @@ export async function collectSignedKaraokeReconciliation(input: {
       bucket: trust.bucket,
       residualDispositionId: trust.residualDispositionId,
       currentFenceEpoch: released === undefined ? trust.epoch : null,
-      releasedAt: released?.entry.observedAt ?? null,
+      releasedAt: releaseTime,
       targets,
       entries: [...entries.values()],
     });

@@ -183,7 +183,9 @@ export async function recordKaraokeFenceRelease(input: {
   readonly challenge: KaraokeCollectorChallenge;
   readonly readers: KaraokeSigningReaders;
   readonly verifyFenceRelease: () => Promise<unknown>;
-  readonly reconcileReleasedFence?: () => Promise<unknown>;
+  readonly reconcileReleasedFence?: (
+    pendingIntent: typeof IntentRecord.Type | undefined,
+  ) => Promise<unknown>;
   readonly now?: () => string;
   readonly authenticationFetch?: CloudflareAccessJwtFetch;
 }) {
@@ -216,8 +218,8 @@ export async function recordKaraokeFenceRelease(input: {
   if (lastEntry === undefined) throw new Error("karaoke_release_origin_release_unproven");
   const journalEntryIds = new Set(journal.entries.map(({ id }) => id));
   const retained = findRetainedRelease(input.journal.directory, trust, journalEntryIds);
-  let heldFence: typeof FenceEvidence.Type;
-  let release: typeof ReleaseEvidence.Type;
+  let heldFence: typeof FenceEvidence.Type | undefined;
+  let release: typeof ReleaseEvidence.Type | undefined;
   const sidecar = openKaraokePrivateWriter(input.journal.directory);
   try {
     const writeIntent = (fence: typeof FenceEvidence.Type) =>
@@ -264,23 +266,107 @@ export async function recordKaraokeFenceRelease(input: {
       )
         throw new Error("karaoke_release_origin_recovery_unproven");
     } else {
-      const observed = decodeReconciliation(
-        FenceEvidence,
-        (await input.readers.observeMaintainedFence()).fence,
-      );
+      // Recovery selection precedes any fence observation: the concrete
+      // collectors throw when fencing is absent, and an observation error is
+      // never proof of release. A pending signed intent is the only
+      // uncertain-execution trigger, and it is passed to the read-only
+      // reconciliation port explicitly.
+      const pending = [...scanSignedSidecars(input.journal.directory, trust, journalEntryIds)]
+        .filter(([, sidecar]) => sidecar?.kind === "release-intent")
+        .map(([id, sidecar]) => ({
+          id,
+          record: decodeReconciliation(IntentRecord, sidecar.payload),
+        }))
+        .sort(
+          (left, right) =>
+            reconciliationMillis(left.record.recordedAt) -
+            reconciliationMillis(right.record.recordedAt),
+        );
+      const validIntent = (intent: typeof IntentRecord.Type | undefined) =>
+        intent?.fence.ingress !== undefined &&
+        intent.fence.ingress &&
+        intent.fence.producers &&
+        intent.fence.databaseWrites &&
+        intent.fence.reconnectDenied &&
+        intent.fence.runtimeSessions === 0 &&
+        intent.fence.residualDispositionId === trust.residualDispositionId;
+      let reconciled = false;
+      const intent = pending.at(-1)?.record;
+      const intentId = pending.at(-1)?.id;
       if (
-        observed.ingress &&
-        observed.producers &&
-        observed.databaseWrites &&
-        observed.reconnectDenied &&
-        observed.runtimeSessions === 0 &&
-        observed.residualDispositionId === trust.residualDispositionId
+        input.reconcileReleasedFence !== undefined &&
+        intent !== undefined &&
+        validIntent(intent)
       ) {
+        // Read-only reconciliation from the authenticated pending intent. A
+        // refuted or failing observation is not proof of release: fall
+        // through to the normal held-fence path instead.
+        try {
+          release = decodeReconciliation(
+            ReleaseEvidence,
+            await input.reconcileReleasedFence(intent),
+          );
+          heldFence = intent.fence;
+          // The actual release postdates the retirement milestone and the
+          // intent's held-fence proof — not entries a concurrent writer may
+          // have signed after the release while recording was interrupted.
+          const milestone = journal.entries
+            .filter(({ entry }) => entry.event.kind === "all-retired")
+            .at(-1)?.entry.observedAt;
+          if (
+            !release.allSixRetired ||
+            milestone === undefined ||
+            reconciliationMillis(release.releasedAt) < reconciliationMillis(milestone) ||
+            reconciliationMillis(release.releasedAt) <
+              reconciliationMillis(intent.fence.verifiedAt) ||
+            reconciliationMillis(release.releasedAt) > reconciliationMillis(now())
+          )
+            throw new Error("unproven");
+          sidecar.putArtifact(
+            signedBytes(
+              {
+                kind: "release-executed",
+                epoch: trust.epoch,
+                bucket: trust.bucket,
+                residualDispositionId: trust.residualDispositionId,
+                expectedHead: {
+                  entryId: journal.head.entryId,
+                  sequence: journal.head.sequence,
+                },
+                ...(intentId === undefined ? {} : { intentId }),
+                release,
+                source: "reconciliation",
+                recordedAt: now(),
+              },
+              input.privateKeyPem,
+            ),
+          );
+          reconciled = true;
+        } catch {
+          reconciled = false;
+        }
+      }
+      if (!reconciled) {
+        const observed = decodeReconciliation(
+          FenceEvidence,
+          (await input.readers.observeMaintainedFence()).fence,
+        );
         if (
           reconciliationMillis(observed.verifiedAt) < started ||
-          reconciliationMillis(observed.verifiedAt) > reconciliationMillis(now())
-        )
+          reconciliationMillis(observed.verifiedAt) > reconciliationMillis(now()) ||
+          !observed.ingress ||
+          !observed.producers ||
+          !observed.databaseWrites ||
+          !observed.reconnectDenied ||
+          observed.runtimeSessions !== 0 ||
+          observed.residualDispositionId !== trust.residualDispositionId
+        ) {
+          // A pending intent with no reconciliation binding leaves uncertain
+          // execution explicitly unresolved rather than a bare fence failure.
+          if (pending.length > 0 && input.reconcileReleasedFence === undefined)
+            throw new Error("karaoke_release_origin_uncertain_denied");
           throw new Error("karaoke_release_origin_fence_unproven");
+        }
         heldFence = observed;
         const intentId = writeIntent(heldFence);
         release = decodeReconciliation(ReleaseEvidence, await input.verifyFenceRelease());
@@ -310,64 +396,10 @@ export async function recordKaraokeFenceRelease(input: {
             input.privateKeyPem,
           ),
         );
-      } else {
-        // Uncertain execution: a signed intent may exist whose release
-        // completed without its result becoming durable. Reconcile read-only
-        // against the trusted release-state observation; never execute again.
-        const intents = [...scanSignedSidecars(input.journal.directory, trust, journalEntryIds)]
-          .filter(([, sidecar]) => sidecar?.kind === "release-intent")
-          .map(([id, sidecar]) => ({
-            id,
-            record: decodeReconciliation(IntentRecord, sidecar.payload),
-          }))
-          .sort(
-            (left, right) =>
-              reconciliationMillis(left.record.recordedAt) -
-              reconciliationMillis(right.record.recordedAt),
-          );
-        const intent = intents.at(-1)?.record;
-        const intentId = intents.at(-1)?.id;
-        if (
-          input.reconcileReleasedFence === undefined ||
-          intent === undefined ||
-          !intent.fence.ingress ||
-          !intent.fence.producers ||
-          !intent.fence.databaseWrites ||
-          !intent.fence.reconnectDenied ||
-          intent.fence.runtimeSessions !== 0 ||
-          intent.fence.residualDispositionId !== trust.residualDispositionId
-        )
-          throw new Error("karaoke_release_origin_uncertain_denied");
-        release = decodeReconciliation(ReleaseEvidence, await input.reconcileReleasedFence());
-        heldFence = intent.fence;
-        if (
-          !release.allSixRetired ||
-          reconciliationMillis(release.releasedAt) < reconciliationMillis(lastEntry) ||
-          reconciliationMillis(release.releasedAt) < reconciliationMillis(heldFence.verifiedAt) ||
-          reconciliationMillis(release.releasedAt) > reconciliationMillis(now())
-        )
-          throw new Error("karaoke_release_origin_recovery_unproven");
-        sidecar.putArtifact(
-          signedBytes(
-            {
-              kind: "release-executed",
-              epoch: trust.epoch,
-              bucket: trust.bucket,
-              residualDispositionId: trust.residualDispositionId,
-              expectedHead: {
-                entryId: journal.head.entryId,
-                sequence: journal.head.sequence,
-              },
-              ...(intentId === undefined ? {} : { intentId }),
-              release,
-              source: "reconciliation",
-              recordedAt: now(),
-            },
-            input.privateKeyPem,
-          ),
-        );
       }
     }
+    if (heldFence === undefined || release === undefined)
+      throw new Error("karaoke_release_origin_unresolved");
     const artifacts = [
       JSON.stringify({ kind: "release-challenge", challenge }),
       JSON.stringify({ kind: "release-held-fence", fence: heldFence }),

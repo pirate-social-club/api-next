@@ -244,17 +244,22 @@ every stage an Ed25519-signed sidecar bound to this ceremony's epoch, bucket,
 residual disposition and journal predecessor. Intent observes the last held
 fence and retains that proof before the trusted binding runs. Execution
 evidence is retained immediately after the binding performs or verifies the
-release. Recovery readback completes the journal entry from authenticated
-retained records: a sidecar must hash to its content-addressed filename,
-carry the pinned key's signature, and reference a predecessor inside this
-journal, so fabricated, modified and cross-ceremony records refuse. Uncertain
-execution — the release may have completed without its result becoming
-durable — reconciles read-only against an intent-bound observation
-(`reconcileReleasedFence`) and never executes again. The journal entry
-records when the release was recorded; the signed release evidence preserves
-the actual release time, which may precede it, and the verifier accepts an
-evidence time at or before the recorded release. The release port has no live
-binding yet; recording cannot perform a release.
+release. Recovery is selected from an authenticated pending intent before any
+fence observation — the concrete collectors throw when fencing is absent, and
+an observation error is never proof of release — and the pending intent is
+passed explicitly to the read-only reconciliation port
+(`reconcileReleasedFence`), which never executes again; a refuted
+reconciliation falls through to the normal held-fence path. A sidecar must
+hash to its content-addressed filename, carry the pinned key's signature, and
+reference a predecessor inside this journal, so fabricated, modified and
+cross-ceremony records refuse. The actual release time postdates the
+retirement milestone and the intent's held-fence proof — not entries a
+concurrent writer may have signed after the release — so lost responses,
+later appends and read-only reconciliation recover together. Journal entries
+keep monotonic recording timestamps while every manifest derives its
+operational `releasedAt` from the authenticated release evidence, and the
+verifier requires exact agreement with that time. The release port has no
+live binding yet; recording cannot perform a release.
 
 ## Retirement and follow-up passes
 

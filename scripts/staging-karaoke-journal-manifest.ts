@@ -3,6 +3,7 @@ import { verifyKaraokeReconciliation } from "../packages/platform-cf/src/karaoke
 import {
   ReconciliationManifest,
   ReconciliationScope,
+  ReleaseEvidence,
 } from "../packages/platform-cf/src/karaoke-reconciliation-evidence.ts";
 import {
   decodeReconciliation,
@@ -38,7 +39,22 @@ export async function verifyKaraokeJournalState(input: {
 }) {
   const { journal, trust } = input;
   const releasedEntry = journal.entries.find(({ entry }) => entry.event.kind === "released");
-  const releasedAt = releasedEntry?.entry.observedAt ?? null;
+  // The operational release time comes from the authenticated release
+  // evidence inside the released entry, never from its recording timestamp.
+  let releasedAt: string | null = null;
+  if (releasedEntry !== undefined && releasedEntry.entry.event.kind === "released") {
+    for (const id of releasedEntry.entry.event.evidenceIds) {
+      const artifact = JSON.parse(journal.readArtifact(id)) as {
+        kind?: string;
+        release?: unknown;
+      };
+      if (artifact.kind === "release-evidence") {
+        releasedAt = decodeReconciliation(ReleaseEvidence, artifact.release ?? null).releasedAt;
+        break;
+      }
+    }
+    if (releasedAt === null) throw new Error("karaoke_milestone_release_evidence_missing");
+  }
   const entries = new Map<string, { id: string; scope: typeof ReconciliationScope.Type }>();
   for (const { entry } of journal.entries) {
     if (entry.event.kind !== "pass") continue;

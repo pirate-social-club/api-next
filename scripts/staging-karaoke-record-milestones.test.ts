@@ -12,6 +12,7 @@ import {
   signedBytes,
 } from "./karaoke-maintenance-journal.ts";
 import { openKaraokePrivateWriter } from "./karaoke-private-writer.ts";
+import { verifyKaraokeJournalState } from "./staging-karaoke-journal-manifest.ts";
 import { recordKaraokeObservationPass } from "./staging-karaoke-observation-pass.ts";
 import {
   makeStagingKaraokeR2Observer,
@@ -615,6 +616,102 @@ test("uncertain execution reconciles read-only from a signed intent without exec
   const after = readKaraokeMaintenanceJournal(journal, now());
   expect(after.state).toBe("released");
   expect(releaseEvidenceTime(after)).toBe(actualReleasedAt);
+});
+
+test("uncertain execution recovers even when the concrete fence reader throws", async () => {
+  const { base, pass, resetOrigin, retirementOrigin, state, journal, now } = fixture();
+  await pass("post-fence");
+  await pass("pre-reset");
+  state.identityPresent = false;
+  await resetOrigin();
+  state.markers = "retired";
+  await pass("retirement");
+  await retirementOrigin();
+  let actualReleasedAt = "";
+  const lost = recordKaraokeFenceRelease({
+    ...base,
+    verifyFenceRelease: async () => {
+      actualReleasedAt = now();
+      throw new Error("lost response");
+    },
+  });
+  await expect(lost).rejects.toThrow("lost response");
+  // The real collectors throw when fencing is absent; recovery must select
+  // from the pending signed intent without any fence observation.
+  const throwing = { ...base, readers: { ...base.readers } };
+  throwing.readers.observeMaintainedFence = async () => {
+    throw new Error("karaoke_collector_fence_absent");
+  };
+  let receivedIntent = false;
+  const recovered = await recordKaraokeFenceRelease({
+    ...throwing,
+    verifyFenceRelease: async () => {
+      throw new Error("must not execute again");
+    },
+    reconcileReleasedFence: async (pendingIntent) => {
+      receivedIntent =
+        (pendingIntent as { fence?: { ingress?: boolean } } | undefined)?.fence?.ingress === true;
+      return { releasedAt: actualReleasedAt, allSixRetired: true };
+    },
+  });
+  expect(recovered.executionAuthorized).toBe(false);
+  expect(receivedIntent).toBe(true);
+  const after = readKaraokeMaintenanceJournal(journal, now());
+  expect(after.state).toBe("released");
+  expect(releaseEvidenceTime(after)).toBe(actualReleasedAt);
+});
+
+test("lost response, a later journal append and read-only reconciliation recover together", async () => {
+  const { base, pass, resetOrigin, retirementOrigin, state, journal, now, append } = fixture();
+  await pass("post-fence");
+  await pass("pre-reset");
+  state.identityPresent = false;
+  await resetOrigin();
+  state.markers = "retired";
+  await pass("retirement");
+  await retirementOrigin();
+  let actualReleasedAt = "";
+  const lost = recordKaraokeFenceRelease({
+    ...base,
+    verifyFenceRelease: async () => {
+      actualReleasedAt = now();
+      state.fenceHeld = false;
+      throw new Error("lost response");
+    },
+  });
+  await expect(lost).rejects.toThrow("lost response");
+  // Another writer signs after the actual release, before recording recovers.
+  append("fence-observed", now());
+  const after = readKaraokeMaintenanceJournal(journal, now());
+  const admission = await verifyKaraokeJournalState({
+    journal: after,
+    trust: base.trust,
+    nowUtc: now(),
+  });
+  expect(admission.releasedAt).toBe(null);
+  const recovered = await recordKaraokeFenceRelease({
+    ...base,
+    verifyFenceRelease: async () => {
+      throw new Error("must not execute again");
+    },
+    reconcileReleasedFence: async () => ({ releasedAt: actualReleasedAt, allSixRetired: true }),
+  });
+  expect(recovered.executionAuthorized).toBe(false);
+  const final = readKaraokeMaintenanceJournal(journal, now());
+  expect(final.state).toBe("released");
+  expect(releaseEvidenceTime(final)).toBe(actualReleasedAt);
+  // The operational release time derives from the authenticated evidence,
+  // not the later recording entry, and history stays monotonic.
+  const verified = await verifyKaraokeJournalState({
+    journal: final,
+    trust: base.trust,
+    nowUtc: now(),
+  });
+  expect(verified.releasedAt).toBe(actualReleasedAt);
+  const times = final.entries.map(({ entry }) => Date.parse(entry.observedAt));
+  expect([...times].sort((left, right) => left - right)).toEqual(times);
+  const advance = 86_400_000;
+  void advance;
 });
 
 test("retirement and release origins refuse wrong state or unretired markers", async () => {

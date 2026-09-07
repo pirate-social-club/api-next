@@ -434,3 +434,30 @@ intent artifact digest and an attemptedAt timestamp, and the stale
 immediate-append function comment is corrected. Automated reconciliation of
 retained cleanup sidecars into later passes remains unfinished and is not
 claimed. Concrete reset/release bindings also remain unfinished source work.
+
+
+Third review-fix checkpoint — 2026-09-07. A third inspection found the
+uncertain path unreachable with the concrete fence readers, the uncertain
+branch still bounded by the last journal entry, and the verifier still using
+recording time as the operational release boundary. All three are corrected.
+
+Recovery selection now precedes any fence observation: an authenticated
+pending signed intent is the only uncertain-execution trigger, it is passed
+explicitly to the read-only reconciliation port, and a throwing fence reader
+no longer blocks recovery (tested). A refuted reconciliation falls through to
+the normal held-fence path, and a pending intent without a reconciliation
+binding surfaces a distinct unresolved error. The uncertain branch's lower
+time boundary is now the retirement milestone, matching retained-execution
+recovery, so a lost response plus a later concurrent append plus read-only
+reconciliation recover together (tested, with monotonic history).
+
+The manifest's operational releasedAt now derives from the authenticated
+release evidence inside the released entry — in the journal-state helper, the
+observation pass, the signing collector and the pass verifier — never from
+the entry's recording timestamp, and the shared verifier again requires exact
+agreement with that time. A missing release-evidence artifact in a released
+entry refuses. Delayed recording therefore classifies receipts by the actual
+release time, and conflicting earlier evidence times cannot satisfy the
+comparison. Concrete reset/release bindings remain unfinished source work;
+automated cleanup-sidecar reconciliation also remains unfinished and
+unclaimed.

@@ -228,10 +228,10 @@ async function verifyPass(
   if (released !== null && start >= released) {
     requireEvidence(retiredPhase && receipt.releaseEvidenceId !== null);
     const release = await read(receipt.releaseEvidenceId ?? "", scope, ReleaseEvidence);
-    // Recording time and actual release time are distinct: the release may
-    // have executed before its journal entry could be recorded, so the
-    // evidence time can precede but never postdate the recorded release.
-    requireEvidence(release.allSixRetired && reconciliationMillis(release.releasedAt) <= released);
+    // The manifest's releasedAt is the actual authenticated release time, not
+    // the journal entry's recording time; receipts and manifest must agree on
+    // exactly that operational boundary.
+    requireEvidence(release.allSixRetired && release.releasedAt === manifest.releasedAt);
   } else {
     requireEvidence(receipt.releaseEvidenceId === null && receipt.phase !== "follow-up");
   }
