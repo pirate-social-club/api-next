@@ -169,3 +169,40 @@ both R2 reads, the original installation receipt, SQL non-reuse observation,
 fence readbacks and challenge. Each journal append checks the exact current
 head; the parent verifies the six-entry extension and challenge, then runs the
 real reconciliation verifier. This does not add a reset or release command.
+
+## Cleanup pass
+
+The default stdin program also accepts `record-karaoke-cleanup
+--run-directory <private-directory>` through the verified-stdin boundary, with
+the dedicated `scripts/staging-karaoke-record-cleanup-cli.ts` as its explicit
+parent. Cleanup runs only in the post-fence phase: it is the authorized way to
+remove exact-key remnants that an observation pass recorded as incomplete, and
+the pre-reset pass must still observe empty afterward.
+
+The child reuses the admission, fence, marker, non-reuse and history checks of
+an observation pass, then for each of the six frozen objects observes the bucket,
+cleans, and observes again. Actions derive from the verified before-observation
+only: the cleaner aborts exactly the observed uploads of the exact
+`karaoke/<account>/<attempt>.pcm` key and deletes that key only when its head
+was present. Adjacent keys sharing the prefix are never removal authority. Each
+action retains its provider response receipt, including status and request ID.
+A failed or unexpected provider response records a `failed` action and an
+`incomplete` receipt rather than a silent retry; a response lacking a request
+receipt aborts the command because the evidence cannot be constructed
+truthfully.
+
+Cleanup requires two separately scoped credential pairs in the child
+environment: the observer's read pair (`KARAOKE_COLLECTOR_R2_ACCESS_KEY_ID` /
+`KARAOKE_COLLECTOR_R2_SECRET_ACCESS_KEY`) for before/after evidence, and a
+cleanup pair (`KARAOKE_CLEANUP_R2_ACCESS_KEY_ID` /
+`KARAOKE_CLEANUP_R2_SECRET_ACCESS_KEY`) that signs only the delete-side
+requests. A read-scoped pair cannot clean, and the cleanup pair never signs an
+observation.
+
+An interruption boundary remains: provider actions that complete before a lost
+final fence, a concurrent journal advance or process death leaves real provider
+effects without a receipt. The journal never records them. Recovery is a fresh
+pass that re-observes actual state; an upload already gone at abort time is
+retained as a `not-found` action. The parent verifies the six signed pass
+entries and challenge exactly as for an observation pass, and every result still
+denies reset execution authority.

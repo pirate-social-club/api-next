@@ -286,3 +286,42 @@ stream-cancellation diagnostics were retained in the logs; no test failure was
 reclassified as success. No owned test process remains. Other lanes' existing
 development servers were neither stopped nor claimed as this task's cleanup.
 Script-check and whitespace verification passed with zero findings.
+
+
+Cleanup-pass checkpoint — 2026-09-07. The default stdin program accepts
+record-karaoke-cleanup through the same verified-stdin boundary and challenge
+protocol; scripts/staging-karaoke-record-cleanup-cli.ts is its explicit parent.
+Cleanup runs only in the post-fence phase. For each frozen object it observes,
+cleans and re-observes. The cleaner (scripts/staging-karaoke-r2-cleaner.ts)
+derives every action from the verified before-observation: it aborts exactly
+the observed uploads of the exact karaoke key and deletes that key only when
+its head was present. Adjacent keys sharing the prefix are never removal
+authority, and the action list is empty when nothing was observed.
+
+Each action retains its provider response receipt with status and request ID.
+A non-2xx/404 delete-side response records a failed action and an incomplete
+receipt instead of a silent retry. A response without a request receipt aborts
+the command because truthful evidence cannot be constructed; the same boundary
+exists in the read-only observer. The pass preserves the initial and final
+maintained-fence checks, challenge retention, exact-head append guards and the
+real reconciliation verifier, and its result still denies execution authority.
+The parent reuses the pass attestation verifier with the fixed post-fence
+phase.
+
+The child requires the observer's read credential pair plus a separate cleanup
+pair (KARAOKE_CLEANUP_R2_ACCESS_KEY_ID / KARAOKE_CLEANUP_R2_SECRET_ACCESS_KEY)
+that signs only delete-side requests. Neither value is provisioned here, and a
+read-scoped pair cannot clean.
+
+Focused tests passed through the real signed journal, real observer and
+cleaner with a fake delete-capable transport, and fixture Access keys. They
+cover cleaned-to-empty progression with retained neighbor uploads, not-found
+abort recovery, mismatched observation refusal, wrong operator and absent
+authority refusal before any bucket action, a lost final fence after
+successful actions with recovery from actual provider state, preserved failed
+attempts followed by a completing retry, a concurrent journal advance refusing
+appends without discarding history, and a broken fence refusing cleanup. No
+actual R2 request was sent by these tests. The collector type-check and
+touched-file Biome checks passed. Reset, retirement and release journal-origin
+commands, post-retirement and next-day passes, actual rehearsal and live
+fencing remain unfinished; no live provider operation occurred.

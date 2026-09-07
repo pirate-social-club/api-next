@@ -1,8 +1,10 @@
+import { recordKaraokeCleanupPass } from "./staging-karaoke-cleanup-pass.ts";
 import {
   type KaraokeCollectorInput,
   loadKaraokeCollectorConfiguration,
 } from "./staging-karaoke-collector-config.ts";
 import { recordKaraokeObservationPass } from "./staging-karaoke-observation-pass.ts";
+import { makeStagingKaraokeR2Cleaner } from "./staging-karaoke-r2-cleaner.ts";
 import { makeStagingKaraokeR2Observer } from "./staging-karaoke-r2-observer.ts";
 import { collectSignedKaraokeReconciliation } from "./staging-karaoke-signing-collector.ts";
 import { makeStagingKaraokeSigningReaders } from "./staging-karaoke-signing-readers.ts";
@@ -42,6 +44,38 @@ export async function runStagingKaraokeObservationPass(
     phase,
     readers: makeStagingKaraokeSigningReaders(context, input.apiToken),
     r2: makeStagingKaraokeR2Observer({
+      accountId: context.config.pins.accountId,
+      credentials: { accessKeyId, secretAccessKey },
+    }),
+  });
+}
+
+/** The only exact-key cleanup entrypoint. It runs in the post-fence phase and
+ * needs two separately scoped credential pairs: the observer's read pair for
+ * before/after evidence and a cleanup pair whose actions are the delete-side
+ * receipts. A read-scoped pair cannot clean. */
+export async function runStagingKaraokeCleanupPass(input: KaraokeCollectorInput) {
+  const readAccessKeyId = process.env.KARAOKE_COLLECTOR_R2_ACCESS_KEY_ID;
+  const readSecretAccessKey = process.env.KARAOKE_COLLECTOR_R2_SECRET_ACCESS_KEY;
+  const accessKeyId = process.env.KARAOKE_CLEANUP_R2_ACCESS_KEY_ID;
+  const secretAccessKey = process.env.KARAOKE_CLEANUP_R2_SECRET_ACCESS_KEY;
+  if (!readAccessKeyId || !readSecretAccessKey)
+    throw new Error("karaoke_pass_r2_credentials_missing");
+  if (!accessKeyId || !secretAccessKey) throw new Error("karaoke_cleanup_r2_credentials_missing");
+  const context = loadKaraokeCollectorConfiguration(input);
+  const { operator, challenge, assertion, privateKeyPem, journalTrust } = context;
+  return recordKaraokeCleanupPass({
+    trust: operator,
+    journal: journalTrust,
+    privateKeyPem,
+    assertion,
+    challenge,
+    readers: makeStagingKaraokeSigningReaders(context, input.apiToken),
+    r2: makeStagingKaraokeR2Observer({
+      accountId: context.config.pins.accountId,
+      credentials: { accessKeyId: readAccessKeyId, secretAccessKey: readSecretAccessKey },
+    }),
+    cleaner: makeStagingKaraokeR2Cleaner({
       accountId: context.config.pins.accountId,
       credentials: { accessKeyId, secretAccessKey },
     }),

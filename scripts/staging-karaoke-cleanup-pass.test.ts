@@ -1,0 +1,395 @@
+import { afterEach, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { reconciliationDigest } from "../packages/platform-cf/src/karaoke-reconciliation-evidence.ts";
+import { KARAOKE_RESET_OBJECT_IDS } from "../packages/platform-cf/src/karaoke-reset-installation.ts";
+import { makeKaraokeCollectorFixture } from "../packages/testing/src/karaoke-collector-fixture.ts";
+import {
+  appendKaraokeMaintenanceEvent,
+  type KaraokeJournalTrust,
+  readKaraokeMaintenanceJournal,
+} from "./karaoke-maintenance-journal.ts";
+import { recordKaraokeCleanupPass } from "./staging-karaoke-cleanup-pass.ts";
+import { recordKaraokeObservationPass } from "./staging-karaoke-observation-pass.ts";
+import { makeStagingKaraokeR2Cleaner } from "./staging-karaoke-r2-cleaner.ts";
+import {
+  makeStagingKaraokeR2Observer,
+  STAGING_KARAOKE_BUCKET,
+} from "./staging-karaoke-r2-observer.ts";
+import { verifyRecordedKaraokePass } from "./staging-karaoke-record-pass-cli.ts";
+import type { KaraokeSigningReaders } from "./staging-karaoke-signing-collector.ts";
+
+const disposals: (() => void)[] = [];
+afterEach(() => {
+  for (const dispose of disposals.splice(0)) dispose();
+});
+function fixture() {
+  const f = makeKaraokeCollectorFixture(KARAOKE_RESET_OBJECT_IDS, reconciliationDigest);
+  const directory = mkdtempSync(join(tmpdir(), "karaoke-cleanup-pass-test-"));
+  disposals.push(f.dispose, () => rmSync(directory, { recursive: true, force: true }));
+  const oldDisposition = f.evidence.artifacts.get(f.trust.residualDispositionId);
+  if (!oldDisposition) throw new Error("missing fixture");
+  const residual = JSON.stringify({
+    ...JSON.parse(oldDisposition),
+    bucket: STAGING_KARAOKE_BUCKET,
+  });
+  const trust = {
+    ...f.trust,
+    bucket: STAGING_KARAOKE_BUCKET,
+    residualDispositionId: reconciliationDigest(residual),
+    expectedHistory: Object.fromEntries(KARAOKE_RESET_OBJECT_IDS.map((id) => [id, [] as string[]])),
+  };
+  const privateKeyPem = f.signing.privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+  const journal: KaraokeJournalTrust = {
+    directory,
+    publicKeyPem: trust.collectorPublicKeyPem,
+    epoch: trust.epoch,
+    collectorSourceDigest: trust.collectorSourceDigest,
+    expectedHead: null,
+  };
+  let time = Date.now();
+  const now = () => new Date(++time).toISOString();
+  const append = (kind: "begin" | "fence-observed" | "fence-broken") =>
+    appendKaraokeMaintenanceEvent({
+      trust: journal,
+      privateKeyPem,
+      observedAt: now(),
+      event: { kind, evidenceIds: [trust.residualDispositionId] },
+      artifacts: [residual],
+    });
+  append("begin");
+  const held = append("fence-observed");
+  const reads = { fence: 0, inspection: 0, sql: 0, r2: 0, delete: 0 };
+  const readers: KaraokeSigningReaders = {
+    inspect: async (target) => {
+      reads.inspection++;
+      const observation = {
+        alarm: null,
+        sockets: 0,
+        scoreState: null,
+        recordingState: null,
+        archiveKey: null,
+        uploadId: null,
+      };
+      return {
+        version: "staging-karaoke-reset-inspection-v1",
+        ...target,
+        observedAt: now(),
+        markerState: "active",
+        initial: observation,
+        current: observation,
+        authority: { accountId: "fixture-account", attemptId: target.objectId },
+        installationReceipt: {
+          ...target,
+          state: "active",
+          initial: observation,
+          current: observation,
+          cancellationSucceeded: true,
+          quiescenceEstablished: false,
+        },
+      };
+    },
+    verifyNonReuse: async (_snapshot, phase) => {
+      reads.sql++;
+      expect(phase).toBe("before-reset");
+      return { keyNotReused: true, observedAt: now() };
+    },
+    observeMaintainedFence: async () => {
+      reads.fence++;
+      return {
+        supporting: { fixture: true },
+        fence: {
+          verifiedAt: now(),
+          ingress: true,
+          producers: true,
+          databaseWrites: true,
+          reconnectDenied: true,
+          runtimeSessions: 0,
+          residualDispositionId: trust.residualDispositionId,
+        },
+      };
+    },
+  };
+  const state = {
+    present: false,
+    multipart: false,
+    concurrent: false,
+    failAbort: false,
+    gone: false,
+    deletes: [] as string[],
+  };
+  // Per-key provider state; the booleans seed every untouched exact key so a
+  // cleanup of one object never mutates another object's remnants.
+  const bucketState = new Map<string, { present: boolean; multipart: boolean }>();
+  const forKey = (key: string) => {
+    let entry = bucketState.get(key);
+    if (entry === undefined) {
+      entry = { present: state.present, multipart: state.multipart };
+      bucketState.set(key, entry);
+    }
+    return entry;
+  };
+  const transport = async (input: string, init: RequestInit) => {
+    expect(["GET", "HEAD", "DELETE"]).toContain(init.method ?? "");
+    reads.r2++;
+    if (init.method === "DELETE") reads.delete++;
+    if (state.concurrent) {
+      state.concurrent = false;
+      append("fence-observed");
+    }
+    const url = new URL(String(input));
+    const prefix = url.searchParams.get("prefix");
+    const headers = { "x-amz-request-id": `fixture-${reads.r2}` };
+    if (prefix !== null) {
+      const exact = forKey(prefix).multipart
+        ? `<Upload><Key>${prefix}</Key><UploadId>fixture-upload</UploadId></Upload>`
+        : "";
+      return new Response(
+        `<ListMultipartUploadsResult><Bucket>${STAGING_KARAOKE_BUCKET}</Bucket><Prefix>${prefix}</Prefix><IsTruncated>false</IsTruncated>${exact}<Upload><Key>${prefix}.neighbor</Key><UploadId>neighbor</UploadId></Upload></ListMultipartUploadsResult>`,
+        { headers },
+      );
+    }
+    const key = url.pathname.slice(`/${STAGING_KARAOKE_BUCKET}/`.length);
+    if (init.method === "DELETE") {
+      const uploadId = url.searchParams.get("uploadId");
+      expect(url.pathname).toMatch(
+        /^\/pirate-learner-audio-staging\/karaoke\/fixture-account\/[^/]+\.pcm$/u,
+      );
+      state.deletes.push(`${url.pathname}${uploadId === null ? "" : `?uploadId=${uploadId}`}`);
+      if (uploadId === null) {
+        const entry = forKey(key);
+        if (!entry.present) return new Response(null, { status: 404, headers });
+        entry.present = false;
+        return new Response(null, { status: 204, headers });
+      }
+      if (uploadId === "fixture-upload" && state.failAbort)
+        return new Response(null, { status: 503, headers });
+      if (uploadId === "fixture-upload") {
+        forKey(key).multipart = false;
+        return new Response(null, { status: state.gone ? 404 : 204, headers });
+      }
+      expect(uploadId).not.toBe("neighbor");
+      return new Response(null, { status: 204, headers });
+    }
+    return new Response(null, {
+      status: url.pathname === `/${STAGING_KARAOKE_BUCKET}` || forKey(key).present ? 200 : 404,
+      headers,
+    });
+  };
+  const credentials = { accessKeyId: "fixture", secretAccessKey: "fixture" };
+  const input = {
+    trust,
+    journal: { ...journal, expectedHead: held.head },
+    privateKeyPem,
+    assertion: f.assertion(),
+    challenge: {
+      version: "staging-karaoke-collector-challenge-v1" as const,
+      challenge: "c".repeat(64),
+      operatorSubjectDigest: reconciliationDigest(trust.operator.KARAOKE_RESET_ACCESS_SUBJECT),
+      epoch: trust.epoch,
+      bucket: trust.bucket,
+    },
+    readers,
+    r2: makeStagingKaraokeR2Observer({
+      accountId: "a".repeat(32),
+      credentials,
+      fetch: transport,
+    }),
+    cleaner: makeStagingKaraokeR2Cleaner({
+      accountId: "a".repeat(32),
+      credentials,
+      fetch: transport,
+    }),
+    now,
+    authenticationFetch: f.authenticationFetch,
+  };
+  return { input, reads, state, now, journal, held, append, transport, credentials };
+}
+
+test("exact-key remnants are aborted and deleted with receipts; neighbors survive and pre-reset becomes eligible", async () => {
+  const { input, reads, state, journal, now, held } = fixture();
+  state.present = true;
+  state.multipart = true;
+  const started = Date.parse(now());
+  const cleaned = await recordKaraokeCleanupPass(input);
+  expect(cleaned.executionAuthorized).toBe(false);
+  expect(cleaned.resetAdmission).toBe("blocked");
+  expect(
+    cleaned.latestPasses.every(
+      (pass) => pass.outcome === "cleaned-to-empty" && !pass.quiescenceEstablished,
+    ),
+  ).toBe(true);
+  expect(state.deletes.length).toBe(12);
+  expect(
+    state.deletes.every((entry) => !entry.includes("neighbor") && !entry.includes(".pcm.")),
+  ).toBe(true);
+  const retained = readKaraokeMaintenanceJournal({ ...journal, expectedHead: cleaned.head }, now());
+  expect(retained.head.sequence).toBe(7);
+  const proof = await verifyRecordedKaraokePass({
+    config: input.trust,
+    journalTrust: input.journal,
+    priorHead: held.head,
+    challenge: input.challenge,
+    phase: "post-fence",
+    started,
+    nowUtc: now(),
+  });
+  expect(proof.journalHead).toEqual(cleaned.head);
+  expect(proof.executionAuthorized).toBe(false);
+  const observed = await recordKaraokeObservationPass({ ...input, phase: "pre-reset" });
+  expect(observed.resetAdmission).toBe("eligible");
+  expect(observed.latestPasses.every((pass) => pass.outcome === "observed-empty")).toBe(true);
+  expect(reads.delete).toBe(12);
+});
+
+test("uploads already gone at abort time record not-found actions and still complete", async () => {
+  const { input, state, journal, now } = fixture();
+  state.multipart = true;
+  state.gone = true;
+  const cleaned = await recordKaraokeCleanupPass(input);
+  expect(cleaned.latestPasses.every((pass) => pass.outcome === "cleaned-to-empty")).toBe(true);
+  const firstPass = readKaraokeMaintenanceJournal(journal, now());
+  const receiptId = firstPass.history[KARAOKE_RESET_OBJECT_IDS[0]]?.at(-1);
+  if (!receiptId) throw new Error("missing receipt");
+  const receipt = (JSON.parse(firstPass.readArtifact(receiptId)) as { data: unknown }).data as {
+    actionsEvidenceId: string;
+  };
+  const actions = JSON.parse(firstPass.readArtifact(receipt.actionsEvidenceId)) as {
+    data: { outcome: string; response: { status: number } }[];
+  };
+  expect(actions.data[0]?.outcome).toBe("not-found");
+  expect(actions.data[0]?.response.status).toBe(404);
+});
+
+test("cleaner refuses mismatched observations and never issues actions for neighbors or absent heads", async () => {
+  const { transport, credentials } = fixture();
+  const cleaner = makeStagingKaraokeR2Cleaner({
+    accountId: "a".repeat(32),
+    credentials,
+    fetch: transport,
+  });
+  const authority = { accountId: "fixture-account", attemptId: "fixture-object" };
+  const observation = (key: string) => ({
+    uploads: {
+      key,
+      pages: [
+        {
+          marker: null,
+          nextMarker: null,
+          succeeded: true,
+          response: {
+            endpointKind: "staging-bucket-s3" as const,
+            bucket: STAGING_KARAOKE_BUCKET,
+            requestId: "fixture",
+            status: 200,
+          },
+          prefix: key,
+          uploads: [{ key: `${key}.neighbor`, uploadId: "neighbor" }],
+        },
+      ],
+    },
+    head: {
+      key,
+      bucketVerified: true,
+      response: {
+        endpointKind: "staging-bucket-s3" as const,
+        bucket: STAGING_KARAOKE_BUCKET,
+        requestId: "fixture",
+        status: 404,
+      },
+      state: "absent" as const,
+    },
+  });
+  await expect(
+    cleaner.clean(authority, observation("karaoke/fixture-account/other.pcm")),
+  ).rejects.toThrow("karaoke_r2_cleaner_observation_denied");
+  const actions = await cleaner.clean(
+    authority,
+    observation(`karaoke/${authority.accountId}/${authority.attemptId}.pcm`),
+  );
+  expect(actions).toEqual([]);
+});
+
+test("wrong operator or absent authority refuses before any bucket action", async () => {
+  for (const failure of ["auth", "authority"] as const) {
+    const { input, reads, state, journal, now, held } = fixture();
+    state.present = true;
+    state.multipart = true;
+    if (failure === "auth") input.assertion = "invalid";
+    else {
+      const inspect = input.readers.inspect;
+      input.readers.inspect = async (target) => ({
+        ...((await inspect(target)) as object),
+        authority: null,
+      });
+    }
+    await expect(recordKaraokeCleanupPass(input)).rejects.toThrow();
+    expect(reads.r2).toBe(0);
+    expect(state.deletes).toEqual([]);
+    expect(readKaraokeMaintenanceJournal(journal, now()).head).toEqual(held.head);
+  }
+});
+
+test("lost final fence after successful actions leaves no receipt; a fresh pass recovers from actual state", async () => {
+  const { input, state, journal, now, held } = fixture();
+  state.present = true;
+  state.multipart = true;
+  const observe = input.readers.observeMaintainedFence;
+  let seen = 0;
+  input.readers.observeMaintainedFence = async () => {
+    if (++seen === 2) throw new Error("fixture lost fence");
+    return observe();
+  };
+  await expect(recordKaraokeCleanupPass(input)).rejects.toThrow("fixture lost fence");
+  expect(state.deletes.length).toBe(12);
+  expect(readKaraokeMaintenanceJournal(journal, now()).head).toEqual(held.head);
+  const recovered = await recordKaraokeCleanupPass(input);
+  expect(recovered.latestPasses.every((pass) => pass.outcome === "observed-empty")).toBe(true);
+  const observed = await recordKaraokeObservationPass({ ...input, phase: "pre-reset" });
+  expect(observed.resetAdmission).toBe("eligible");
+});
+
+test("failed aborts record incomplete receipts that are preserved, then a retry completes cleanup", async () => {
+  const { input, state, journal, now } = fixture();
+  state.multipart = true;
+  state.failAbort = true;
+  const failed = await recordKaraokeCleanupPass(input);
+  expect(failed.latestPasses.every((pass) => pass.outcome === "incomplete")).toBe(true);
+  const firstPass = readKaraokeMaintenanceJournal(journal, now());
+  const receiptId = firstPass.history[KARAOKE_RESET_OBJECT_IDS[0]]?.at(-1);
+  if (!receiptId) throw new Error("missing receipt");
+  const raw: { data: unknown } = JSON.parse(firstPass.readArtifact(receiptId));
+  const receipt = raw.data as { actionsEvidenceId: string };
+  const actions = JSON.parse(firstPass.readArtifact(receipt.actionsEvidenceId)) as {
+    data: { outcome: string; response: { status: number } }[];
+  };
+  expect(actions.data[0]?.outcome).toBe("failed");
+  expect(actions.data[0]?.response.status).toBe(503);
+  state.failAbort = false;
+  const retried = await recordKaraokeCleanupPass(input);
+  expect(retried.latestPasses.every((pass) => pass.outcome === "cleaned-to-empty")).toBe(true);
+  expect(
+    Object.values(readKaraokeMaintenanceJournal(journal, now()).history).every(
+      (history) => history.length === 2,
+    ),
+  ).toBe(true);
+  const observed = await recordKaraokeObservationPass({ ...input, phase: "pre-reset" });
+  expect(observed.resetAdmission).toBe("eligible");
+});
+
+test("concurrent journal advance or a broken fence refuses cleanup appends without discarding history", async () => {
+  const { input, state, journal, now, held, append } = fixture();
+  state.concurrent = true;
+  state.multipart = true;
+  await expect(recordKaraokeCleanupPass(input)).rejects.toThrow("karaoke_journal_head_changed");
+  const raced = readKaraokeMaintenanceJournal(journal, now());
+  expect(Object.values(raced.history).every((history) => history.length === 0)).toBe(true);
+  expect(raced.head.sequence).toBe(held.head.sequence + 1);
+  // The raced run already aborted every upload but recorded no receipt; the
+  // recovery pass re-observes actual provider state and records it empty.
+  const recovered = await recordKaraokeCleanupPass(input);
+  expect(recovered.latestPasses.every((pass) => pass.outcome === "observed-empty")).toBe(true);
+  append("fence-broken");
+  await expect(recordKaraokeCleanupPass(input)).rejects.toThrow("karaoke_cleanup_fence_not_held");
+});
