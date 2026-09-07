@@ -37,6 +37,7 @@ const activePersona: PersonaRecord = {
 };
 
 const storeWith = (overrides: Partial<PersonaStoreService> = {}): PersonaStoreService => ({
+  listPendingWallets: () => Effect.succeed([]),
   listByAccount: () => Effect.succeed([activePersona]),
   findOwned: ({ accountId, personaId }) =>
     Effect.succeed(

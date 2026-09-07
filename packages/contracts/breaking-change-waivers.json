@@ -1,3 +1,42 @@
 {
-  "breakingChangeWaivers": []
+  "breakingChangeWaivers": [
+    {
+      "baselineSha": "5ea53c5983fd80574db20e1f00f070cd4db204ac",
+      "expectedViolations": [
+        "response GET /community-creation-intents/{intentId}: enum value added: \"activate_profile\""
+      ],
+      "kind": "clean-break",
+      "operationId": "get_communityCreationIntentsIntentId",
+      "reason": "The workspace_owner authorized named fresh owner setup with publication deferred until activation. Client 0.66.0 handles activate_profile and the account-private pending wallet endpoint. Deploy API before adopting the client; no public pending profile is exposed."
+    },
+    {
+      "baselineSha": "5ea53c5983fd80574db20e1f00f070cd4db204ac",
+      "expectedViolations": [
+        "response PATCH /community-creation-intents/{intentId}: enum value added: \"activate_profile\""
+      ],
+      "kind": "clean-break",
+      "operationId": "patch_communityCreationIntentsIntentId",
+      "reason": "The workspace_owner authorized named fresh owner setup with publication deferred until activation. Client 0.66.0 handles activate_profile and the account-private pending wallet endpoint. Deploy API before adopting the client; no public pending profile is exposed."
+    },
+    {
+      "baselineSha": "5ea53c5983fd80574db20e1f00f070cd4db204ac",
+      "expectedViolations": [
+        "response POST /community-creation-intents status 201: enum value added: \"activate_profile\"",
+        "response POST /community-creation-intents: enum value added: \"activate_profile\""
+      ],
+      "kind": "clean-break",
+      "operationId": "post_communityCreationIntents",
+      "reason": "The workspace_owner authorized named fresh owner setup with publication deferred until activation. Client 0.66.0 handles activate_profile and the account-private pending wallet endpoint. Deploy API before adopting the client; no public pending profile is exposed."
+    },
+    {
+      "baselineSha": "5ea53c5983fd80574db20e1f00f070cd4db204ac",
+      "expectedViolations": [
+        "response POST /community-creation-intents/{intentId}/commit status 201: enum value added: \"activate_profile\"",
+        "response POST /community-creation-intents/{intentId}/commit: enum value added: \"activate_profile\""
+      ],
+      "kind": "clean-break",
+      "operationId": "post_communityCreationIntentsIntentIdCommit",
+      "reason": "The workspace_owner authorized named fresh owner setup with publication deferred until activation. Client 0.66.0 handles activate_profile and the account-private pending wallet endpoint. Deploy API before adopting the client; no public pending profile is exposed."
+    }
+  ]
 }

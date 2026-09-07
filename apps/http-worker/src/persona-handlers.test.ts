@@ -35,6 +35,10 @@ const request = (overrides: Partial<DecodedRequest> = {}): DecodedRequest => ({
 
 function services(observed: unknown[]): PersonaHandlerServices {
   const store = {
+    listPendingWallets: (accountId: string) => {
+      observed.push({ pending: accountId });
+      return Effect.succeed([]);
+    },
     listByAccount: (accountId: string) => {
       observed.push({ list: accountId });
       return Effect.succeed([persona]);
@@ -117,10 +121,22 @@ function services(observed: unknown[]): PersonaHandlerServices {
 }
 
 describe("persona HTTP handlers", () => {
+  test("private pending wallet discovery derives authority from the current account", async () => {
+    const observed: unknown[] = [];
+    const handlers = makePersonaHandlers(services(observed));
+    await expect(handlers.ListMyPendingPersonaWallets(request())).resolves.toEqual({ wallets: [] });
+    expect(observed).toEqual([{ pending: "account_handler" }]);
+    await expect(
+      handlers.ListMyPendingPersonaWallets(request({ principal: null })),
+    ).rejects.toMatchObject({ _tag: "AuthError" });
+  });
+
   test("derives list and create authority only from the authenticated account", async () => {
     const observed: unknown[] = [];
     const handlers = makePersonaHandlers(services(observed));
-    await expect(handlers.ListMyPersonas(request())).resolves.toEqual({ personas: [persona] });
+    await expect(handlers.ListMyPersonas(request())).resolves.toEqual({
+      personas: [persona],
+    });
     const created = await handlers.CreatePersona(
       request({
         body: {

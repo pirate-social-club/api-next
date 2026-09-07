@@ -19,6 +19,7 @@ import {
   PersonaUnavailable,
   requireActiveOwnedPersona,
 } from "../personas.ts";
+import { CommunityOwnerSetupError } from "./owner-setup-error.ts";
 
 export interface CommunityCreationServices {
   readonly communityCreationStore: CommunityCreationStore["Service"];
@@ -87,6 +88,8 @@ const requestHash = (value: unknown) =>
   });
 
 const mapFailure = (failure: CommunityCreationRepositoryFailure) => {
+  if (failure instanceof CommunityOwnerSetupError)
+    return new Conflict({ message: failure.explanation });
   if (!(failure instanceof CommunityCreationRepositoryError)) {
     return new InternalError({ message: "Community creation operation failed" });
   }
@@ -126,6 +129,11 @@ export const createCommunityCreationIntent = Effect.fn("createCommunityCreationI
     // there is no persona to select or validate while the intent is a draft.
     yield* requireSelectedPersona(input.actor.userId, body.draft.persona.persona_id, services);
   }
+  if (body.draft.persona.kind === "create_new" && body.draft.public_name === undefined) {
+    return yield* new BadRequest({
+      message: "Enter a public name for your profile in this community",
+    });
+  }
   const hash = yield* requestHash(body);
   return yield* services.communityCreationStore
     .create({ actor: input.actor, body, requestHash: hash })
@@ -160,6 +168,11 @@ export const updateCommunityCreationIntent = Effect.fn("updateCommunityCreationI
   const body = yield* decodeBody(UpdateCommunityCreationIntent.request.body, input.body);
   if (body.draft.persona.kind === "existing") {
     yield* requireSelectedPersona(input.actor.userId, body.draft.persona.persona_id, services);
+  }
+  if (body.draft.persona.kind === "create_new" && body.draft.public_name === undefined) {
+    return yield* new BadRequest({
+      message: "Enter a public name for your profile in this community",
+    });
   }
   const hash = yield* requestHash(body);
   return yield* services.communityCreationStore

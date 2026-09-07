@@ -62,6 +62,7 @@ import { PollNamespaceOwnership, StartNamespaceOwnership } from "./namespace-own
 import {
   ConfirmPersonaEvmWallet,
   CreatePersona,
+  ListMyPendingPersonaWallets,
   ListMyPersonas,
   PreparePersonaEvmWallet,
   RetirePersona,
@@ -135,6 +136,7 @@ export const registry = {
   ActivateHnsCommunityRootImport,
   ...handleSalesRegistry,
   ListMyPersonas,
+  ListMyPendingPersonaWallets,
   CreatePersona,
   PreparePersonaEvmWallet,
   ConfirmPersonaEvmWallet,
