@@ -13,6 +13,7 @@ import { KaraokeResetSnapshotSchema } from "../packages/platform-cf/src/karaoke-
 import {
   KARAOKE_RESET_GENERATION,
   KARAOKE_RESET_INVENTORY_DIGEST,
+  KARAOKE_RESET_NAMESPACE_ID,
   KARAOKE_RESET_OBJECT_IDS,
   KaraokeResetTarget,
 } from "../packages/platform-cf/src/karaoke-reset-installation.ts";
@@ -95,7 +96,7 @@ export async function recordStagingKaraokeFence(
   try {
     for (const objectId of KARAOKE_RESET_OBJECT_IDS) {
       const target = decodeReconciliation(KaraokeResetTarget, {
-        namespaceId: "d692b9d32ecc4cb4825510bde88cf97a",
+        namespaceId: KARAOKE_RESET_NAMESPACE_ID,
         objectId,
         generation: KARAOKE_RESET_GENERATION,
         inventoryDigest: KARAOKE_RESET_INVENTORY_DIGEST,
@@ -172,6 +173,7 @@ export async function recordStagingKaraokeFence(
     },
     privateKeyPem,
     observedAt,
+    expectedCurrentHead: begin.head,
     event: { kind: "fence-observed", evidenceIds: [reconciliationDigest(fenceBytes)] },
     artifacts: [fenceBytes],
   });

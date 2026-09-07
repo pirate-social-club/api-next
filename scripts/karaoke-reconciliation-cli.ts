@@ -19,7 +19,9 @@ export function collectKaraokeEvidence(
   assertionPath: string,
   command:
     | "collect-karaoke-reconciliation"
+    | "record-karaoke-pass"
     | "record-karaoke-fence" = "collect-karaoke-reconciliation",
+  phase?: "post-fence" | "pre-reset",
 ): Promise<void> {
   const bundle = readKaraokePrivateFile(config.collectorPath, 16_777_216);
   if (reconciliationDigest(bundle) !== config.collectorSourceDigest)
@@ -36,6 +38,7 @@ export function collectKaraokeEvidence(
         stdio: ["pipe", "ignore", "ignore"],
         env: {
           ...process.env,
+          ...(phase === undefined ? {} : { KARAOKE_COLLECTOR_PASS_PHASE: phase }),
           KARAOKE_COLLECTOR_CHALLENGE: JSON.stringify(challenge),
           KARAOKE_COLLECTOR_SOURCE_DIGEST: reconciliationDigest(bundle),
           KARAOKE_COLLECTOR_ACCESS_ASSERTION_FILE: assertionPath,

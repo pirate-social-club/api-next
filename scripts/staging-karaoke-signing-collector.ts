@@ -14,6 +14,9 @@ import {
 } from "../packages/platform-cf/src/karaoke-reconciliation-schema.ts";
 import { KaraokeResetSnapshotSchema } from "../packages/platform-cf/src/karaoke-reset-inspection.ts";
 import {
+  KARAOKE_RESET_GENERATION,
+  KARAOKE_RESET_INVENTORY_DIGEST,
+  KARAOKE_RESET_NAMESPACE_ID,
   KARAOKE_RESET_OBJECT_IDS,
   KaraokeResetTarget,
 } from "../packages/platform-cf/src/karaoke-reset-installation.ts";
@@ -116,10 +119,10 @@ export async function collectSignedKaraokeReconciliation(input: {
     // Serial database authority reads avoid overlapping transactions on a connection.
     for (const objectId of KARAOKE_RESET_OBJECT_IDS) {
       const target = decodeReconciliation(KaraokeResetTarget, {
-        namespaceId: "d692b9d32ecc4cb4825510bde88cf97a",
+        namespaceId: KARAOKE_RESET_NAMESPACE_ID,
         objectId,
-        generation: "staging-reset-v1",
-        inventoryDigest: "a909a00a14555f0152ce5bc9deb986eef0c4ffb2c50a8a7d6cf25343c26b05db",
+        generation: KARAOKE_RESET_GENERATION,
+        inventoryDigest: KARAOKE_RESET_INVENTORY_DIGEST,
       });
       const snapshot = decodeReconciliation(
         KaraokeResetSnapshotSchema,

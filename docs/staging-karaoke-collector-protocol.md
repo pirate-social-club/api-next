@@ -156,3 +156,16 @@ validates the signed resulting head and challenge, then returns the six baseline
 IDs for independent retention. Initialization refuses an existing journal.
 The collector checkpoint document records the two-write interruption boundary
 and the still-unimplemented pass/reset/release command integration.
+
+
+## Observation passes
+
+The default stdin program accepts `record-karaoke-pass` under the same private
+configuration and authenticated challenge protocol. The dedicated pass CLI
+supplies only the closed phase post-fence or pre-reset. R2 credentials remain in
+the child environment and must be separately scoped to the learner-audio staging
+bucket. The child observes rather than cleans. Signed scoped artifacts retain
+both R2 reads, the original installation receipt, SQL non-reuse observation,
+fence readbacks and challenge. Each journal append checks the exact current
+head; the parent verifies the six-entry extension and challenge, then runs the
+real reconciliation verifier. This does not add a reset or release command.

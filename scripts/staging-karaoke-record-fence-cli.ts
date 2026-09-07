@@ -1,4 +1,3 @@
-import { randomBytes } from "node:crypto";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { reconciliationDigest } from "../packages/platform-cf/src/karaoke-reconciliation-evidence.ts";
@@ -6,48 +5,18 @@ import {
   decodeReconciliation,
   reconciliationMillis,
 } from "../packages/platform-cf/src/karaoke-reconciliation-schema.ts";
-import { admitKaraokeResetOperator } from "../packages/platform-cf/src/karaoke-reset-operator-auth.ts";
 import { readKaraokeMaintenanceJournal } from "./karaoke-maintenance-journal.ts";
-import { KaraokeOperatorConfig } from "./karaoke-operator-config.ts";
-import { outsideKaraokeEvidence, readKaraokePrivateFile } from "./karaoke-private-trust.ts";
-import type { KaraokeCollectorChallenge } from "./karaoke-reconciliation-adapter.ts";
 import { collectKaraokeEvidence } from "./karaoke-reconciliation-cli.ts";
-import {
-  KaraokeAuthorityBaseline,
-  loadKaraokeCollectorConfiguration,
-} from "./staging-karaoke-collector-config.ts";
+import { KaraokeAuthorityBaseline } from "./staging-karaoke-collector-config.ts";
+import { prepareKaraokeRecording } from "./staging-karaoke-recording-context.ts";
 /** Explicit local recording, never reset execution. The child's signed result,
  * not its exit code or stdout, establishes what the default observer retained.
  */
 export async function runKaraokeFenceRecordingCli(configPath: string, assertionPath: string) {
-  const config = decodeReconciliation(
-    KaraokeOperatorConfig,
-    JSON.parse(readKaraokePrivateFile(configPath, 262_144)),
-  );
-  for (const path of [configPath, assertionPath, config.collectorPath])
-    if (!outsideKaraokeEvidence(config.directory, path))
-      throw new Error("operator_trust_inside_evidence");
-  const assertion = readKaraokePrivateFile(assertionPath, 16_384).trim();
-  await admitKaraokeResetOperator(config.operator, assertion);
-  const started = Date.now();
-  const challenge: KaraokeCollectorChallenge = {
-    version: "staging-karaoke-collector-challenge-v1",
-    challenge: randomBytes(32).toString("hex"),
-    operatorSubjectDigest: reconciliationDigest(config.operator.KARAOKE_RESET_ACCESS_SUBJECT),
-    epoch: config.epoch,
-    bucket: config.bucket,
-  };
-  const livePath = process.env.KARAOKE_LIVE_COLLECTOR_CONFIG;
-  const apiToken = process.env.CLOUDFLARE_API_TOKEN;
-  if (!livePath || !apiToken) throw new Error("collector_configuration_missing");
-  const live = loadKaraokeCollectorConfiguration({
-    configPath: livePath,
+  const { config, live, challenge, started } = await prepareKaraokeRecording(
+    configPath,
     assertionPath,
-    runDirectory: config.directory,
-    sourceDigest: config.collectorSourceDigest,
-    challengeJson: JSON.stringify(challenge),
-    apiToken,
-  });
+  );
   if (live.config.operatorConfigPath !== configPath || live.config.expectedJournalHead !== null)
     throw new Error("collector_initialization_scope_denied");
   await collectKaraokeEvidence(config, challenge, assertionPath, "record-karaoke-fence");

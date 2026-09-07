@@ -5,7 +5,11 @@ import { buildKaraokeCollector } from "./build-karaoke-collector.ts";
 test("self-contained stdin bundle denies missing live configuration without running imported diagnostic mains", async () => {
   const result = await buildKaraokeCollector();
   expect(result.digest).toMatch(/^[a-f0-9]{64}$/u);
-  for (const command of ["collect-karaoke-reconciliation", "record-karaoke-fence"]) {
+  for (const command of [
+    "collect-karaoke-reconciliation",
+    "record-karaoke-fence",
+    "record-karaoke-pass",
+  ]) {
     const child = spawnSync(
       process.execPath,
       ["run", "-", command, "--run-directory", "/nonexistent-fixture"],

@@ -68,7 +68,7 @@ async function boundedXml(response: Response) {
       bytes.set(next.value, length);
       length += next.value.byteLength;
     }
-    return new TextDecoder("utf8", { fatal: true }).decode(bytes.subarray(0, length));
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, length));
   } finally {
     void reader.cancel().catch(() => undefined);
   }
@@ -78,7 +78,7 @@ async function boundedXml(response: Response) {
 export function makeStagingKaraokeR2Observer(input: {
   readonly accountId: string;
   readonly credentials: StagingCredentials;
-  readonly fetch?: typeof globalThis.fetch;
+  readonly fetch?: (input: string, init: RequestInit) => Promise<Response>;
   readonly now?: () => Date;
 }) {
   if (

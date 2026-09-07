@@ -203,3 +203,86 @@ expected negative-path exception diagnostics while all 73 tests passed. No
 fresh PostgreSQL baseline, remote CI, default live recorder, restore or reset
 result is claimed. The source remains an implementation checkpoint, not the
 rehearsal gate requested for video.
+
+
+## Observation-pass integration and database-version boundary
+
+The explicit `scripts/staging-karaoke-record-pass-cli.ts` accepts post-fence or
+pre-reset observation passes. It reuses the authenticated recording context
+and verified-stdin launcher. The child obtains fresh maintained-fence, six
+object inspections and SQL non-reuse observations through the same concrete
+readers as the signer. Its R2 reader makes only bucket HEAD, multipart GET and
+exact-key HEAD requests. It verifies the fence again after the reads and calls
+the existing reconciliation verifier before recording any pass. A present
+object or exact-key upload produces incomplete, never an invented cleanup
+receipt. Adjacent-prefix objects are retained as evidence but are not counted
+as the target or authorized for deletion.
+
+The journal append now supports an exact-current-head compare-and-set under
+its existing writer lock. Pass recording uses it for every appended entry, and
+the initial fence's second entry uses it as well. The independently retained
+prefix remains the rollback boundary; it is no longer confused with the exact
+head required for a write. Partial pass recording retains any accepted prefix
+and grants no reset authority. The parent requires exactly six new signed
+entries, the same challenge and requested phase, fresh timestamps and the real
+verifier's acceptance of the complete chain. An exit code alone is insufficient.
+Original false quiescence remains unchanged, including when pre-reset becomes
+eligible. The result still carries executionAuthorized=false.
+
+The private child additionally needs KARAOKE_COLLECTOR_R2_ACCESS_KEY_ID and
+KARAOKE_COLLECTOR_R2_SECRET_ACCESS_KEY with read access to the fixed staging
+learner-audio bucket. These are prerequisites, not newly provisioned values or
+authorization to reuse the ingress-bucket credential. No credential enters a
+journal artifact or command argument. The command does not abort uploads,
+delete objects, install or retire markers, execute the reset, or release a
+producer. Cleanup, reset/release-origin integration and post-retirement passes
+remain to be connected before this runner is complete.
+
+The namespace identifier, generation and frozen inventory digest now come from
+the installation module in both fence recording and signing. No namespace,
+inventory or runtime pin changed. The dedicated collector type-check now also
+covers the pass recorder and its parent verifier. This exposed previously
+untyped R2 helper uses of a DOM-only BufferSource name and TextDecoder alias;
+the byte-input type now comes from the actual crypto API signature, without
+copying potentially large request bodies, and decoding uses utf-8. The R2
+fetch port describes only its invoked request operation rather than requiring
+Bun's unrelated preconnect extension.
+
+Staging was observed running PostgreSQL 18.6 on September 7. The video migration
+and composed PostgreSQL evidence retained so far is from PostgreSQL 17. This
+is an explicit compatibility validation gap, not proof of incompatibility and
+not evidence of an observed upgrade event. The authorized rehearsal and video
+window must record the actual server version with the release SHAs, applied
+migration ledger and query/fixture results. A PostgreSQL 17 local pass does not
+close the 18.6 staging obligation. Neither database privileges nor Access
+configuration has been supplied, and no live provider operation or rehearsal
+was performed for this checkpoint.
+
+
+The observation-pass focused suites passed through the real signed journal,
+real R2 observer with a fake HTTP transport, Access verification with fixture
+keys, and both child and parent reconciliation verification. They prove clean
+post-fence to pre-reset progression, retained false quiescence, incomplete
+object/multipart remnants, adjacent-prefix exclusion, a changed journal, a lost
+final fence, missing authority, wrong operator, wrong challenge and expired
+parent evidence. The exact-head journal test proves that a stale writer cannot
+replace a concurrent advance. No actual R2 request was sent by these tests.
+
+The expanded TypeScript check initially rejected DOM-only crypto types,
+inferred target literals and the test transport's missing Bun preconnect
+extension, then an optional method in a test assertion. Those were corrected;
+the collector type-check and repository check passed afterward. No broadening
+of runtime input acceptance was used to silence them. The final repository
+check retained 41 existing warnings and two informational diagnostics. The
+ordinary unit suite passed 3,466 tests and 16,010 assertions, exit 0. This
+checkpoint changes no SQL statement or migration, and claims no new PostgreSQL
+17/18 provider acceptance or remote CI run.
+
+
+The serial Node and Workerd constituents also passed: 20 Node tests and 179
+Workerd tests, exit 0. Every Vitest invocation explicitly used one worker and
+disabled file parallelism at nice level 10. Expected negative-path HTTP and
+stream-cancellation diagnostics were retained in the logs; no test failure was
+reclassified as success. No owned test process remains. Other lanes' existing
+development servers were neither stopped nor claimed as this task's cleanup.
+Script-check and whitespace verification passed with zero findings.

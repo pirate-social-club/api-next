@@ -1,10 +1,15 @@
-import { runStagingKaraokeCollector } from "./staging-karaoke-collector-runtime.ts";
+import {
+  runStagingKaraokeCollector,
+  runStagingKaraokeObservationPass,
+} from "./staging-karaoke-collector-runtime.ts";
 import { recordStagingKaraokeFence } from "./staging-karaoke-record-fence.ts";
 
 // Build with import.meta.main=false for imported diagnostic CLI modules. The
 // verified stdin entrypoint uses this exact argument protocol instead.
 if (
-  ["collect-karaoke-reconciliation", "record-karaoke-fence"].includes(process.argv.at(-3) ?? "") &&
+  ["collect-karaoke-reconciliation", "record-karaoke-fence", "record-karaoke-pass"].includes(
+    process.argv.at(-3) ?? "",
+  ) &&
   process.argv.at(-2) === "--run-directory"
 ) {
   try {
@@ -27,14 +32,17 @@ if (
       process.argv.at(-3) === "record-karaoke-fence"
         ? recordStagingKaraokeFence
         : runStagingKaraokeCollector;
-    await execute({
+    const input = {
       configPath,
       assertionPath,
       sourceDigest,
       challengeJson,
       apiToken,
       runDirectory,
-    });
+    };
+    if (process.argv.at(-3) === "record-karaoke-pass")
+      await runStagingKaraokeObservationPass(input, process.env.KARAOKE_COLLECTOR_PASS_PHASE);
+    else await execute(input);
   } catch {
     console.error("staging_karaoke_collection_denied");
     process.exitCode = 1;

@@ -16,9 +16,10 @@ export const KARAOKE_RESET_OBJECT_IDS = Object.freeze([
 ] as const);
 export const KARAOKE_RESET_INVENTORY_DIGEST =
   "a909a00a14555f0152ce5bc9deb986eef0c4ffb2c50a8a7d6cf25343c26b05db";
+export const KARAOKE_RESET_NAMESPACE_ID = "d692b9d32ecc4cb4825510bde88cf97a";
 export const KARAOKE_RESET_GENERATION = "staging-reset-v1";
 export const KaraokeResetTarget = Schema.Struct({
-  namespaceId: Schema.Literal("d692b9d32ecc4cb4825510bde88cf97a"),
+  namespaceId: Schema.Literal(KARAOKE_RESET_NAMESPACE_ID),
   objectId: Schema.Literals(KARAOKE_RESET_OBJECT_IDS),
   generation: Schema.Literal(KARAOKE_RESET_GENERATION),
   inventoryDigest: Schema.Literal(KARAOKE_RESET_INVENTORY_DIGEST),

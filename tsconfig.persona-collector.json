@@ -3,6 +3,8 @@
   "include": [
     "scripts/staging-karaoke-collector-main.ts",
     "scripts/staging-karaoke-record-fence-cli.ts",
+    "scripts/staging-karaoke-record-pass-cli.ts",
+    "scripts/staging-karaoke-observation-pass.test.ts",
     "scripts/staging-karaoke-record-fence.test.ts",
     "scripts/staging-karaoke-signing-collector.test.ts"
   ],

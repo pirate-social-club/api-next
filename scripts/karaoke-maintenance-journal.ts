@@ -197,6 +197,7 @@ export function appendKaraokeMaintenanceEvent(input: {
   readonly privateKeyPem: string;
   readonly observedAt: string;
   readonly event: typeof Event.Type;
+  readonly expectedCurrentHead?: { readonly entryId: string; readonly sequence: number };
   readonly artifacts: readonly string[];
 }) {
   const writer = openKaraokePrivateWriter(input.trust.directory);
@@ -208,6 +209,12 @@ export function appendKaraokeMaintenanceEvent(input: {
         ? null
         : readKaraokeMaintenanceJournal(input.trust, input.observedAt);
     if (previous?.state === "broken") throw new Error("karaoke_journal_broken");
+    if (
+      input.expectedCurrentHead !== undefined &&
+      (previous?.head.entryId !== input.expectedCurrentHead.entryId ||
+        previous.head.sequence !== input.expectedCurrentHead.sequence)
+    )
+      throw new Error("karaoke_journal_head_changed");
     const event = decodeReconciliation(Event, input.event);
     const supplied = new Set(input.artifacts.map((bytes) => writer.putArtifact(bytes)));
     if (event.evidenceIds.some((id) => !supplied.has(id)))

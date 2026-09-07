@@ -124,3 +124,20 @@ test("a broken fence cannot silently become held again", () => {
     "journal_broken",
   );
 });
+
+test("exact-head append refuses a concurrent advance without replacing its head", () => {
+  const f = fixture();
+  const first = f.append({ kind: "begin", evidenceIds: [f.evidenceId] });
+  const latest = f.append({ kind: "fence-observed", evidenceIds: [f.evidenceId] });
+  expect(() =>
+    appendKaraokeMaintenanceEvent({
+      trust: f.trust,
+      privateKeyPem: f.privateKeyPem,
+      observedAt: f.time,
+      expectedCurrentHead: first.head,
+      event: { kind: "fence-observed", evidenceIds: [f.evidenceId] },
+      artifacts: [f.artifact],
+    }),
+  ).toThrow("head_changed");
+  expect(readKaraokeMaintenanceJournal(f.trust, f.time).head).toEqual(latest.head);
+});

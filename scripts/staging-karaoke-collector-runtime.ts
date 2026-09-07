@@ -1,100 +1,49 @@
-import { Client } from "pg";
-import { decodeReconciliation } from "../packages/platform-cf/src/karaoke-reconciliation-schema.ts";
-import { KARAOKE_RESET_OBJECT_IDS } from "../packages/platform-cf/src/karaoke-reset-installation.ts";
-import { readKaraokeMaintenanceJournal } from "./karaoke-maintenance-journal.ts";
-import { normalizePostgresConnectionString } from "./postgres-connection-string.ts";
 import {
-  KaraokeAuthorityBaseline,
   type KaraokeCollectorInput,
   loadKaraokeCollectorConfiguration,
 } from "./staging-karaoke-collector-config.ts";
-import { inspectStagingKaraokeObject } from "./staging-karaoke-inspection-client.ts";
-import { observeKaraokeSqlIdentity, verifyKaraokeSqlNonReuse } from "./staging-karaoke-nonreuse.ts";
+import { recordKaraokeObservationPass } from "./staging-karaoke-observation-pass.ts";
+import { makeStagingKaraokeR2Observer } from "./staging-karaoke-r2-observer.ts";
 import { collectSignedKaraokeReconciliation } from "./staging-karaoke-signing-collector.ts";
-import { collectStagingMaintenanceFence } from "./staging-persona-maintenance-fence.ts";
-import { collectStagingProviderBinding } from "./staging-persona-target-binding.ts";
+import { makeStagingKaraokeSigningReaders } from "./staging-karaoke-signing-readers.ts";
 
-/** Default child entrypoint: credentials stay in memory/private files. Every
- * observation is made by concrete HTTP, SSH or PostgreSQL readers, not fixtures.
- */
+/** Default child entrypoint. Credentials remain in private files or memory. */
 export async function runStagingKaraokeCollector(input: KaraokeCollectorInput) {
-  const { config, operator, challenge, assertion, privateKeyPem, journalTrust } =
-    loadKaraokeCollectorConfiguration(input);
-  if (config.expectedJournalHead === null || config.baselineIds.length !== 6)
-    throw new Error("collector_journal_not_initialized");
-  const journal = readKaraokeMaintenanceJournal(journalTrust, new Date().toISOString());
-  const baselines = config.baselineIds.map((id) =>
-    decodeReconciliation(KaraokeAuthorityBaseline, JSON.parse(journal.readArtifact(id))),
-  );
-  if (
-    new Set(baselines.map((value) => value.target.objectId)).size !== 6 ||
-    baselines.some((value) => value.epoch !== operator.epoch) ||
-    KARAOKE_RESET_OBJECT_IDS.some((id) => !baselines.some((value) => value.target.objectId === id))
-  )
-    throw new Error("collector_baseline_inventory_denied");
-  let bindingRead: ReturnType<typeof collectStagingProviderBinding> | undefined;
+  const context = loadKaraokeCollectorConfiguration(input);
+  const { operator, challenge, assertion, privateKeyPem, journalTrust } = context;
   return collectSignedKaraokeReconciliation({
     trust: operator,
     journal: journalTrust,
     privateKeyPem,
     assertion,
     challenge,
-    readers: {
-      inspect: (target) =>
-        inspectStagingKaraokeObject({ origin: config.inspectionOrigin, assertion, target }),
-      observeMaintainedFence: async () =>
-        await collectStagingMaintenanceFence({
-          pins: config.pins,
-          apiToken: input.apiToken,
-          residualDispositionId: operator.residualDispositionId,
-        }),
-      async verifyNonReuse(snapshot, phase) {
-        const baseline = baselines.find((value) => value.target.objectId === snapshot.objectId);
-        if (!baseline) throw new Error("collector_baseline_missing");
-        if (baseline.sqlIdentity === null) {
-          if (
-            snapshot.authority !== null ||
-            snapshot.initial === null ||
-            snapshot.initial.archiveKey !== null ||
-            snapshot.current.archiveKey !== null ||
-            baseline.absentHistory?.storageNeverDeleted !== true ||
-            baseline.absentHistory.namespaceUnchanged !== true
-          )
-            throw new Error("collector_negative_history_unproven");
-          return { keyNotReused: true, observedAt: new Date().toISOString() };
-        }
-        if (
-          snapshot.authority?.accountId !== baseline.sqlIdentity.accountId ||
-          snapshot.authority.attemptId !== baseline.sqlIdentity.attemptId ||
-          baseline.absentHistory !== null
-        )
-          throw new Error("collector_authority_changed");
-        bindingRead ??= collectStagingProviderBinding();
-        const binding = await bindingRead;
-        const admin = new Client({
-          connectionString: normalizePostgresConnectionString(binding.adminRaw),
-          connectionTimeoutMillis: 3000,
-          query_timeout: 5000,
-          application_name: "staging-key-nonreuse-observer",
-        });
-        try {
-          await admin.connect();
-          const identity = (
-            await admin.query("SELECT session_user::text AS login,current_user::text AS effective")
-          ).rows[0];
-          if (
-            identity?.login !== binding.admin.sqlRole ||
-            identity.effective !== binding.admin.sqlRole
-          )
-            throw new Error("collector_sql_identity_denied");
-          const observed = await observeKaraokeSqlIdentity(admin, snapshot.authority);
-          return verifyKaraokeSqlNonReuse(baseline.sqlIdentity, observed, phase);
-        } catch {
-          throw new Error("collector_nonreuse_unproven");
-        } finally {
-          await admin.end().catch(() => undefined);
-        }
-      },
-    },
+    readers: makeStagingKaraokeSigningReaders(context, input.apiToken),
+  });
+}
+
+/** Read-only bucket observations, never abort/delete. R2 credentials are
+ * separately supplied for the fixed learner-audio staging bucket. */
+export async function runStagingKaraokeObservationPass(
+  input: KaraokeCollectorInput,
+  phase: string | undefined,
+) {
+  if (phase !== "post-fence" && phase !== "pre-reset") throw new Error("karaoke_pass_phase_denied");
+  const accessKeyId = process.env.KARAOKE_COLLECTOR_R2_ACCESS_KEY_ID;
+  const secretAccessKey = process.env.KARAOKE_COLLECTOR_R2_SECRET_ACCESS_KEY;
+  if (!accessKeyId || !secretAccessKey) throw new Error("karaoke_pass_r2_credentials_missing");
+  const context = loadKaraokeCollectorConfiguration(input);
+  const { operator, challenge, assertion, privateKeyPem, journalTrust } = context;
+  return recordKaraokeObservationPass({
+    trust: operator,
+    journal: journalTrust,
+    privateKeyPem,
+    assertion,
+    challenge,
+    phase,
+    readers: makeStagingKaraokeSigningReaders(context, input.apiToken),
+    r2: makeStagingKaraokeR2Observer({
+      accountId: context.config.pins.accountId,
+      credentials: { accessKeyId, secretAccessKey },
+    }),
   });
 }
