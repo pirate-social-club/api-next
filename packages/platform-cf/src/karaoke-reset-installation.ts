@@ -17,13 +17,16 @@ export const KARAOKE_RESET_OBJECT_IDS = Object.freeze([
 export const KARAOKE_RESET_INVENTORY_DIGEST =
   "a909a00a14555f0152ce5bc9deb986eef0c4ffb2c50a8a7d6cf25343c26b05db";
 export const KARAOKE_RESET_GENERATION = "staging-reset-v1";
-const Target = Schema.Struct({
+export const KaraokeResetTarget = Schema.Struct({
   namespaceId: Schema.Literal("d692b9d32ecc4cb4825510bde88cf97a"),
   objectId: Schema.Literals(KARAOKE_RESET_OBJECT_IDS),
   generation: Schema.Literal(KARAOKE_RESET_GENERATION),
   inventoryDigest: Schema.Literal(KARAOKE_RESET_INVENTORY_DIGEST),
 });
-const Command = Schema.Struct({ ...Target.fields, state: Schema.Literals(["active", "retired"]) });
+const Command = Schema.Struct({
+  ...KaraokeResetTarget.fields,
+  state: Schema.Literals(["active", "retired"]),
+});
 const Count = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0));
 const Axis = Schema.NullOr(Schema.Literals(["pending", "stored", "exhausted"]));
 const Observation = Schema.Struct({
@@ -34,7 +37,7 @@ const Observation = Schema.Struct({
   archiveKey: Schema.NullOr(Schema.String),
   uploadId: Schema.NullOr(Schema.String),
 });
-const Receipt = Schema.Struct({
+export const KaraokeResetReceiptSchema = Schema.Struct({
   ...Command.fields,
   initial: Observation,
   current: Observation,
@@ -42,7 +45,7 @@ const Receipt = Schema.Struct({
   quiescenceEstablished: Schema.Boolean,
 });
 export type KaraokeResetObservation = typeof Observation.Type;
-export type KaraokeResetReceipt = typeof Receipt.Type;
+export type KaraokeResetReceipt = typeof KaraokeResetReceiptSchema.Type;
 
 /** Internal adapter contract, not an authenticated RPC or a deployed capability. */
 export interface KaraokeResetInstallationPort {
@@ -148,7 +151,7 @@ export function verifyKaraokeResetReceipts(
   input: readonly unknown[],
   state: "active" | "retired",
 ): void {
-  const receipts = input.map((value) => decode(Receipt, value));
+  const receipts = input.map((value) => decode(KaraokeResetReceiptSchema, value));
   if (
     receipts.length !== KARAOKE_RESET_OBJECT_IDS.length ||
     new Set(receipts.map((receipt) => receipt.objectId)).size !== receipts.length ||
