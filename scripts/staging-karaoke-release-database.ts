@@ -28,6 +28,16 @@ export async function readKaraokeRuntimeGrantDigest(admin: Pick<Client, "query">
   return reconciliationDigest(JSON.stringify({ roles: [...names].sort(), grants }));
 }
 
+export async function assertKaraokeRuntimeGrantDigest(
+  admin: Pick<Client, "query">,
+  role: string,
+  reviewedDigest: string,
+) {
+  const digest = await readKaraokeRuntimeGrantDigest(admin, role);
+  if (digest !== reviewedDigest) throw new Error("karaoke_release_grants_changed");
+  return digest;
+}
+
 /** Fixed provider/Hyperdrive target binding before opening SQL. No URL, role,
  * or SQL is taken from a submitted completion receipt. A fresh connection
  * after COMMIT proves the grants rather than trusting the executor result. */
@@ -82,9 +92,11 @@ export function makeKaraokeDatabaseRelease(configuration: {
       await admin.query("BEGIN READ ONLY");
       const serverVersion = await identity(admin, binding.admin.sqlRole);
       await verifyApprovedStagingRuntime(admin, binding.runtime.sqlRole, repositoryRoot);
-      const grantDigest = await readKaraokeRuntimeGrantDigest(admin, binding.runtime.sqlRole);
-      if (grantDigest !== input.reviewedGrantDigest)
-        throw new Error("karaoke_release_grants_changed");
+      const grantDigest = await assertKaraokeRuntimeGrantDigest(
+        admin,
+        binding.runtime.sqlRole,
+        input.reviewedGrantDigest,
+      );
       const allowed = (
         await admin.query(
           "SELECT has_database_privilege($1,current_database(),'CONNECT') AS allowed",
@@ -146,11 +158,11 @@ export function makeKaraokeDatabaseRelease(configuration: {
           approved.policy,
         );
         await verifyApprovedStagingRuntime(admin, binding.runtime.sqlRole, repositoryRoot);
-        if (
-          (await readKaraokeRuntimeGrantDigest(admin, binding.runtime.sqlRole)) !==
-          input.reviewedGrantDigest
-        )
-          throw new Error("karaoke_release_grants_changed");
+        await assertKaraokeRuntimeGrantDigest(
+          admin,
+          binding.runtime.sqlRole,
+          input.reviewedGrantDigest,
+        );
         const sql = (
           await admin.query(
             "SELECT format('GRANT CONNECT ON DATABASE %I TO %I',current_database(),$1::text) AS statement",

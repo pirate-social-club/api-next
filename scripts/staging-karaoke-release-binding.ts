@@ -380,7 +380,11 @@ export function makeKaraokeReleaseBinding(input: {
             record.planDigest === planDigest &&
             (intent.recordedAt === undefined || record.releasedAt >= intent.recordedAt),
         )
-        .sort((left, right) => (left.releasedAt ?? "").localeCompare(right.releasedAt ?? ""));
+        .sort(
+          (left, right) =>
+            (left.surface === undefined ? -1 : plan.surfaceOrder.indexOf(left.surface)) -
+            (right.surface === undefined ? -1 : plan.surfaceOrder.indexOf(right.surface)),
+        );
       if (observations.every((observation) => observation === "fenced")) {
         // Absence of receipts is NOT proof of non-execution: a mutation may
         // have succeeded while its receipt persistence failed, with the
@@ -416,7 +420,14 @@ export function makeKaraokeReleaseBinding(input: {
       )
         return { disposition: "unresolved" };
       const releasedAt = receipts.at(-1)?.releasedAt;
-      if (releasedAt === undefined) return { disposition: "unresolved" };
+      if (
+        releasedAt === undefined ||
+        receipts.some(
+          (receipt, index) =>
+            index > 0 && (receipt.releasedAt ?? "") < (receipts[index - 1]?.releasedAt ?? ""),
+        )
+      )
+        return { disposition: "unresolved" };
       return {
         disposition: "released",
         release: { releasedAt, allSixRetired: await allSixRetired() },

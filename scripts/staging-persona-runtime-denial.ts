@@ -1,4 +1,17 @@
+import { Schema } from "effect";
 import type { Client } from "pg";
+
+// Shared unchanged expectation for the maintained fence and reset completion.
+export const RuntimeDeniedCatalog = Schema.Struct({
+  schema_count: Schema.Literal(1),
+  elevated: Schema.Literal(false),
+  database_create: Schema.Literal(false),
+  owns_objects: Schema.Literal(false),
+  schema_access: Schema.Literal(false),
+  table_access: Schema.Literal(false),
+  sequence_access: Schema.Literal(false),
+  definer_access: Schema.Literal(false),
+});
 
 export const RUNTIME_DENIAL_CATALOG_SQL = `
       WITH roles AS (

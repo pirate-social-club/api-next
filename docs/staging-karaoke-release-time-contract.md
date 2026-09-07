@@ -25,6 +25,13 @@ it retains their final confirmation time instead of replacing it with the
 recovery clock. Missing receipts stay unresolved. A successful current-state
 observation cannot recreate a lost receipt or its timestamp.
 
+Confirmations must also be monotonic in the reviewed surface order. A start
+clock earlier than the preceding confirmation refuses before invoking the next
+surface. Recovery orders receipts by the reviewed plan, rejects backward
+confirmations, and selects that plan's final surface; it never silently sorts
+by time and substitutes a maximum. This makes normal and recovered boundaries
+identical even when the host wall clock regresses.
+
 The released journal entry's observedAt is recording time. It may be later
 than the confirmation boundary after interruption. It must remain monotonic
 with the signed journal, including intervening entries. The manifest's

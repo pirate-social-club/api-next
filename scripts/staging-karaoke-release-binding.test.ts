@@ -467,3 +467,38 @@ test("changing the plan during recovery refuses instead of hiding history", asyn
   );
   expect(state.calls).toEqual([]);
 });
+
+test("recovery refuses signed confirmations that run backward in reviewed surface order", async () => {
+  const f = await ceremony();
+  const current = await pendingIntent(f);
+  const store = evidence(f);
+  store.claim("executing", current.planDigest, current.intentId);
+  const start = Date.parse(current.recordedAt);
+  for (const [index, surface] of plan.surfaceOrder.entries()) {
+    store.put({
+      scope: "staging-karaoke-release-surface",
+      planDigest: current.planDigest,
+      intentId: current.intentId,
+      surface,
+      phase: "released",
+      receipt: "retained-proof",
+      releasedAt: new Date(start + ([100, 90, 95][index] ?? 0)).toISOString(),
+    });
+  }
+  f.advance(1000);
+  const state = { fail: null, calls: [] as KaraokeReleaseSurface[] };
+  const binding = makeKaraokeReleaseBinding({
+    plan,
+    surfaces: surfaces(state, f.now),
+    observeRestored: {
+      ingress: async () => "restored",
+      producers: async () => "restored",
+      database: async () => "restored",
+    },
+    evidence: store,
+    readers: f.base.readers,
+    now: f.now,
+  });
+  expect(await binding.reconcileReleasedFence(current)).toEqual({ disposition: "unresolved" });
+  expect(state.calls).toHaveLength(0);
+});

@@ -8,6 +8,7 @@ import { outsideKaraokeEvidence, readKaraokePrivateFile } from "./karaoke-privat
 import type { loadKaraokeCollectorConfiguration } from "./staging-karaoke-collector-config.ts";
 import { KaraokeIngressRestoration } from "./staging-karaoke-release-ingress.ts";
 import { KaraokeReleasePlan } from "./staging-karaoke-release-operation.ts";
+import { KaraokeReleasedSchedules } from "./staging-karaoke-release-producers.ts";
 
 export const KaraokeLiveReleaseConfiguration = Schema.Struct({
   version: Schema.Literal("staging-karaoke-live-release-v1"),
@@ -19,6 +20,7 @@ export const KaraokeLiveReleaseConfiguration = Schema.Struct({
       targetBindingDigest: ReconciliationDigest,
       restoreRuntimeConnect: Schema.Literal(true),
     }),
+    producers: Schema.Struct({ schedules: KaraokeReleasedSchedules }),
   }),
 });
 

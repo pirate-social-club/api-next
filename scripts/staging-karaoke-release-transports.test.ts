@@ -31,6 +31,7 @@ const plan: KaraokeReleasePlan = {
   surfaceOrder: ["database", "producers", "ingress"],
 };
 const now = () => new Date().toISOString();
+const schedules = STAGING_PRODUCER_WORKERS.map((worker) => ({ worker, crons: ["*/5 * * * *"] }));
 
 function producerFixture() {
   const state = {
@@ -39,6 +40,8 @@ function producerFixture() {
     lost: false,
     stale: false,
     wrongQueue: false,
+    schedules: new Map<string, { cron: string }[]>(),
+    staleSchedules: false,
   };
   const fetch = (async (raw: string | URL | Request, init?: RequestInit) => {
     const url = String(raw);
@@ -54,7 +57,12 @@ function producerFixture() {
     }
     const queue = plan.resumeQueues.find((q) => url.endsWith(`/queues/${q.id}`));
     let result: unknown;
-    if (queue) {
+    if (url.endsWith("/schedules")) {
+      if (method === "PUT") state.schedules.set(url, JSON.parse(String(init?.body)));
+      result = {
+        schedules: state.staleSchedules && method === "GET" ? [] : (state.schedules.get(url) ?? []),
+      };
+    } else if (queue) {
       if (method === "PATCH") {
         expect(JSON.parse(String(init?.body))).toEqual({ settings: { delivery_paused: false } });
         state.paused.delete(queue.id);
@@ -84,7 +92,13 @@ function producerFixture() {
     }
     return Response.json({ success: true, result });
   }) as typeof globalThis.fetch;
-  const producer = makeKaraokeProducerRelease({ plan, accountId, apiToken: "fixture", fetch });
+  const producer = makeKaraokeProducerRelease({
+    plan,
+    schedules,
+    accountId,
+    apiToken: "fixture",
+    fetch,
+  });
   const directive = { resumeQueues: plan.resumeQueues, servingWorkers: plan.servingWorkers };
   return { state, producer, directive };
 }
@@ -92,7 +106,7 @@ function producerFixture() {
 test("producer release proves deployment IDs and queue readbacks and retains provider evidence", async () => {
   const f = producerFixture();
   const receipt = await f.producer.execute(f.directive, now);
-  expect(f.state.writes).toHaveLength(8);
+  expect(f.state.writes).toHaveLength(12);
   expect(f.state.writes.slice(0, 4).every((url) => url.endsWith("/deployments"))).toBe(true);
   expect(receipt.receipt).toBe(reconciliationDigest(receipt.providerEvidence ?? ""));
   expect(await f.producer.observeRestored()).toBe("restored");
@@ -103,6 +117,31 @@ test("a provider acknowledgement with stale deployed versions produces no receip
   f.state.stale = true;
   await expect(f.producer.execute(f.directive, now)).rejects.toThrow();
   expect(await f.producer.observeRestored()).toBe("uncertain");
+});
+
+test("a schedule acknowledgement without matching readback never completes the producer surface", async () => {
+  const f = producerFixture();
+  f.state.staleSchedules = true;
+  await expect(f.producer.execute(f.directive, now)).rejects.toThrow("producers_not_restored");
+  expect(await f.producer.observeRestored()).toBe("uncertain");
+  expect(f.state.writes.filter((url) => url.endsWith("/schedules"))).toHaveLength(4);
+});
+
+test("incomplete reviewed schedule identities refuse before any provider call", () => {
+  let calls = 0;
+  expect(() =>
+    makeKaraokeProducerRelease({
+      plan,
+      accountId,
+      apiToken: "fixture",
+      schedules: [],
+      fetch: (async () => {
+        calls++;
+        throw new Error();
+      }) as unknown as typeof globalThis.fetch,
+    }),
+  ).toThrow();
+  expect(calls).toBe(0);
 });
 
 test("wrong queue identity refuses before any producer write", async () => {
@@ -123,6 +162,7 @@ test("foreign producer pins refuse at construction", () => {
   expect(() =>
     makeKaraokeProducerRelease({
       plan: { ...plan, servingWorkers: [] },
+      schedules,
       accountId,
       apiToken: "fixture",
     }),
@@ -144,6 +184,7 @@ test("complete restoration directives are bound into the plan digest", () => {
   const restoration = {
     ingress: { kind: "remove-fence-application", remainingApplicationsDigest: "b".repeat(64) },
     database: { targetBindingDigest: "c".repeat(64), restoreRuntimeConnect: true },
+    producers: { schedules },
   };
   const boundPlan = Schema.decodeUnknownSync(KaraokeReleasePlan)({
     ...plan,

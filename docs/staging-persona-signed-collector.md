@@ -720,7 +720,7 @@ rehearsal. The concrete private values, verified Access pointer and
 session-visible database connection remain live prerequisites. No live command
 or provider mutation is authorized by these implementation notes.
 
-## Reset-to-release integration hold
+## Reset-to-release integration hold at 59c62959
 
 Concrete transport wiring exposed an existing incompatible grant contract.
 `executePhasedStagingReset` calls `verifyFinal(true)` in its final replay batch,
@@ -755,3 +755,52 @@ Publication, remote checks and independent review remain pending. The local
 test database was stopped; no live provider mutation or rehearsal occurred.
 The control-plane record update was deferred because unrelated records in
 that checkout were being edited by another writer.
+
+## Ratified handoff amendment — 2026-09-08
+
+The workspace_owner approved resolving the preceding contradiction by keeping
+runtime grants denied throughout reset and retirement, and restoring them only
+at release. Mid-reset grant restoration contradicted the maintained fence's
+purpose. The database release surface already owns the reviewed grant plan;
+its approved position before producers and ingress restores storage authority
+before traffic admission. This supersedes the prior reset-completion grant
+restoration requirement, not the immutable reset artifacts or migration pins.
+
+The executor no longer restores grants or switches to verified-reset mode.
+privilegeMode has a single revoked expectation. Its effective ACL proof uses
+the same unchanged denial schema and query as the maintained database fence,
+before and after every owned batch and during owned completion readback.
+Reconnect, full-session drain and the other fence surfaces remain mandatory.
+
+Reviewed default ACLs stay byte-for-byte unchanged. Table and sequence rights
+materialized by migration replay are revoked from runtime, PUBLIC and every
+available membership/SET ROLE path inside that migration's transaction, before
+commit. Schema ACLs, routine/type defaults, memberships and outside objects
+are not silently repaired. Their unexpected effective authority refuses the
+batch. In particular, baseline routine EXECUTE rights are not blanket-revoked:
+schema denial prevents their use while fenced, and the existing global
+security-definer denial check remains intact. Unsupported column grants refuse.
+
+Release still verifies the complete resulting runtime-reachable grant digest
+against reviewedGrantDigest before commit and through independent committed
+readback. An unresolved release never compensates or re-grants: it retains
+stage/SQLSTATE and whatever effect evidence was actually obtained, leaving
+committed state for the signed intent's read-only recovery protocol. Transaction
+rollback before commit is not a compensating restoration. Independent review
+and publication gates are required before rehearsal; private live configuration
+and exact restoration values remain owner-held prerequisites.
+
+Independent source review also identified that Cron Triggers are separate from
+Worker version deployments. Live configuration now requires
+restoration.producers.schedules: one explicit worker/crons entry for each of
+the four pinned producer Workers, including an explicit empty list when that
+is the reviewed released state. This configuration is inside restorationDigest
+and therefore the signed intent's plan digest. No schedule or scheduler
+enablement is inferred from a version identifier. After deploying versions and
+resuming the reviewed queues, the producer executor applies exactly those
+schedule lists and requires matching provider responses plus two independent
+schedule readbacks. Missing pins, active schedules at admission, changed
+readbacks and transport failures refuse a surface receipt. Exact schedule values
+join the owner-held restoration configuration; this adds no live permission.
+The API contract was checked against the Cloudflare
+[Cron Triggers update reference](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/schedules/methods/update/).

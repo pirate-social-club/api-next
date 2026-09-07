@@ -125,6 +125,9 @@ export async function executeKaraokeFenceRelease(input: {
     input.onAttempt?.({ surface, phase: "intent" });
     try {
       const startedAt = decodeReconciliation(ReconciliationTime, now());
+      const priorConfirmation = receipts.at(-1)?.releasedAt;
+      if (priorConfirmation !== undefined && startedAt < priorConfirmation)
+        throw new Error("karaoke_release_clock_regressed");
       const receipt = decodeReconciliation(
         Schema.Struct({
           surface: Schema.Literal(surface),

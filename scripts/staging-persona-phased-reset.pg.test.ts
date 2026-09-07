@@ -13,6 +13,10 @@ import {
 } from "./staging-persona-phased-reset";
 import { localRecoveryTestUrl } from "./staging-persona-recovery-test-target";
 import {
+  denyReplayedRuntimeGrants,
+  verifyResetRuntimeDenied,
+} from "./staging-persona-reset-denied-grants";
+import {
   loadStagingResetArtifacts,
   validateStagingResetArtifacts,
 } from "./staging-persona-reset-plan";
@@ -86,6 +90,12 @@ async function expected(
   runtime: string,
 ) {
   const approved = await compileApprovedStagingPrivileges(admin, runtime);
+  // Model the admitted ACL fence, retaining defaults so every replay tests
+  // removal of newly materialized grants before its commit boundary.
+  await admin.query("BEGIN");
+  await admin.query(`REVOKE ALL ON SCHEMA api_next FROM "${runtime}"`);
+  await denyReplayedRuntimeGrants(admin, runtime);
+  await admin.query("COMMIT");
   const row = (
     await admin.query(
       "SELECT current_database() AS database,session_user AS role,'api_next'::regnamespace::oid AS oid",
@@ -185,22 +195,18 @@ suite("phased reset in disposable PostgreSQL 17", () => {
       const admission = await expected(admin, directory, baseline, runtime);
       let removals = 0;
       let replays = 0;
-      let verifiedFenceObservations = 0;
+      let deniedFenceObservations = 0;
       const result = await reconstructStagingInPhases(admin, artifacts, {
         ...admission,
         assertFreshFence: async ({ transactionId, privilegeMode }) => {
-          // This is the executor handoff test, not live session admission.
-          // The dedicated drain suite proves the strict observer separately.
+          // Actual ACL denial, including in-transaction replay grants. The
+          // separate drain suite still owns live session admission coverage.
           expect(
             (await admin.query("SELECT pg_current_xact_id_if_assigned()::text AS xid")).rows[0].xid,
           ).toBe(transactionId);
-          if (privilegeMode === "verified-reset") {
-            verifiedFenceObservations++;
-            expect(
-              (await admin.query("SELECT count(*)::int AS n FROM api_next.schema_migrations"))
-                .rows[0].n,
-            ).toBe(119);
-          }
+          expect(privilegeMode).toBe("revoked");
+          await verifyResetRuntimeDenied(admin, runtime);
+          deniedFenceObservations++;
         },
         afterBatch: async (phase) => {
           if (phase === "removing") removals++;
@@ -228,7 +234,9 @@ suite("phased reset in disposable PostgreSQL 17", () => {
       );
       expect<string>(result.executionEvidence.sourceSha).toBe(plan.sourceSha);
       expect(result.executionEvidence.schemaOid).toBe(admission.schemaOid);
-      expect(verifiedFenceObservations).toBeGreaterThan(0);
+      expect(deniedFenceObservations).toBeGreaterThan(2 * result.batches);
+      await verifyResetRuntimeDenied(admin, runtime);
+      expect((await readResetGrantCatalog(admin)).defaults_sha256).toBe(admission.defaultsDigest);
       await expect(readCompletedStagingReset({ ...result })).rejects.toThrow(
         "reset_executor_completion_not_owned",
       );
@@ -286,6 +294,45 @@ suite("phased reset in disposable PostgreSQL 17", () => {
       // Whole-dataset restore is a separate required rehearsal, not asserted here.
     });
   }, 60_000);
+
+  test("owned completion refuses grant drift and retains the failed marker without restoring grants", async () => {
+    let baseline = "";
+    await fixture(async (admin, url) => {
+      await localResetRecoveryTool(
+        url,
+        "psql",
+        ["--set", "ON_ERROR_STOP=1"],
+        new TextEncoder().encode(artifacts.baseline),
+      );
+      await admin.query("SET search_path=pg_catalog");
+      baseline = (await readResetSchemaShape(admin)).sha256;
+    });
+    await fixture(async (admin, url, directory, runtime) => {
+      await seed(url);
+      const admission = await expected(admin, directory, baseline, runtime);
+      const result = await reconstructStagingInPhases(admin, artifacts, admission);
+      await verifyResetRuntimeDenied(admin, runtime);
+      await admin.query(`GRANT SELECT ON api_next.users TO "${runtime}"`);
+      await expect(readCompletedStagingReset(result)).rejects.toThrow();
+      expect(
+        JSON.parse(
+          await readFile(join(directory, "pirate-staging-api-next.reset-in-progress.json"), "utf8"),
+        ).phase,
+      ).toBe("failed");
+      // Refusal neither hides the drift nor restores the rest of the grants.
+      expect(
+        (
+          await admin.query(
+            "SELECT has_table_privilege($1,'api_next.users','SELECT') AS selected, has_table_privilege($1,'api_next.users','INSERT') AS inserted",
+            [runtime],
+          )
+        ).rows[0],
+      ).toEqual({ selected: true, inserted: false });
+      await expect(readCompletedStagingReset(result)).rejects.toThrow(
+        "reset_completion_release_already_attempted",
+      );
+    });
+  }, 600_000);
 
   test("failure between replay batches keeps its partial ledger and refuses rerun", async () => {
     await fixture(async (admin, url, directory, runtime) => {

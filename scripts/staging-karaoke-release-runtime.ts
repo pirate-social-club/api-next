@@ -31,7 +31,11 @@ export async function runStagingKaraokeRelease(input: KaraokeCollectorInput) {
     ...config.restoration.database,
     reviewedGrantDigest: config.plan.reviewedGrantDigest,
   });
-  const producers = makeKaraokeProducerRelease({ ...transport, plan: config.plan });
+  const producers = makeKaraokeProducerRelease({
+    ...transport,
+    plan: config.plan,
+    schedules: config.restoration.producers.schedules,
+  });
   const ingress = makeKaraokeIngressRelease({
     ...transport,
     applicationId: config.plan.ingressApplicationId,

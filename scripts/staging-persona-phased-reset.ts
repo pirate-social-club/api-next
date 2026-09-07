@@ -1,15 +1,10 @@
 import type { Client } from "pg";
 import {
   compileApprovedStagingPrivileges,
-  verifyApprovedStagingRuntime,
   verifyStagingRuntimeIdentity,
 } from "./staging-persona-approved-privileges";
 import { readPhasedResetCompletionEvidence } from "./staging-persona-completion-evidence.ts";
-import {
-  readResetGrantCatalog,
-  restoreReviewedResetGrants,
-  verifyResetForbiddenGrants,
-} from "./staging-persona-grant-catalog";
+import { readResetGrantCatalog, verifyResetForbiddenGrants } from "./staging-persona-grant-catalog";
 import {
   type ResetGrant,
   type ResetGrantPolicy,
@@ -19,6 +14,10 @@ import { snapshotOutsideResetCatalog } from "./staging-persona-outside-catalog";
 import { type RemovalBatchBudget, removeStagingRootBatch } from "./staging-persona-phased-removal";
 import { replayStagingMigrationBatch } from "./staging-persona-phased-replay";
 import { inspectStagingRemovalPlan } from "./staging-persona-removal-plan";
+import {
+  denyReplayedRuntimeGrants,
+  verifyResetRuntimeDenied,
+} from "./staging-persona-reset-denied-grants";
 import { assertResetMarkerAbsent, createResetMarker } from "./staging-persona-reset-marker";
 import {
   assertStagingResetLedger,
@@ -46,7 +45,7 @@ type PhasedAdmission = Readonly<{
   assertBaselineReference(sourceSha: string, digest: string): Promise<void>;
   assertFreshFence(context: {
     readonly transactionId: string | null;
-    readonly privilegeMode: "revoked" | "verified-reset";
+    readonly privilegeMode: "revoked";
   }): Promise<void>;
   markerDirectory: string;
   recoveryDigest: string;
@@ -142,16 +141,16 @@ export async function reconstructStagingInPhases(
   let maxOwnLocks = 0;
   let maxClusterLocks = 0;
   let maxClosureObjects = 0;
-  let resetVerified = false;
   const assertFreshFence = (transactionId: string | null) =>
     admission.assertFreshFence({
       transactionId,
-      privilegeMode: resetVerified ? "verified-reset" : "revoked",
+      privilegeMode: "revoked",
     });
   const transaction = async <T>(body: (transactionId: string) => Promise<T>): Promise<T> => {
     if (Date.now() >= admission.validUntilMs)
       throw new Error("reset_admission_expired_restore_required");
     await assertFreshFence(null);
+    await verifyResetRuntimeDenied(admin, admission.runtimeRole);
     await admin.query("BEGIN ISOLATION LEVEL READ COMMITTED");
     try {
       await admin.query("SET LOCAL search_path=pg_catalog");
@@ -192,6 +191,7 @@ export async function reconstructStagingInPhases(
       )
         throw new Error("reset_final_batch_lock_budget_exceeded_restore_required");
       await assertFreshFence(row.xid);
+      await verifyResetRuntimeDenied(admin, admission.runtimeRole);
       if (Date.now() >= admission.validUntilMs)
         throw new Error("reset_admission_expired_restore_required");
       await admin.query("COMMIT");
@@ -242,7 +242,7 @@ export async function reconstructStagingInPhases(
     // The fence/marker holds while batches commit. Detect any out-of-scope
     // change before replay could hide it; every failure requires full restore.
     await transaction(verifyOutside);
-    const verifyFinal = async (restoreGrants = false) => {
+    const verifyFinal = async () => {
       await admin.query("SET LOCAL search_path=pg_catalog");
       const schema = (
         await admin.query("SELECT oid,nspowner,nspacl FROM pg_namespace WHERE nspname='api_next'")
@@ -251,23 +251,8 @@ export async function reconstructStagingInPhases(
         throw new Error("reset_schema_identity_changed");
       if ((await readResetSchemaShape(admin)).sha256 !== admission.baselineDigest)
         throw new Error("reset_baseline_shape_mismatch");
-      if (restoreGrants)
-        await restoreReviewedResetGrants(
-          admin,
-          original.grants.grants,
-          admission.reviewedGrants,
-          admission.grantPolicy,
-        );
-      else if (
-        reconcileResetGrants({
-          before: [],
-          replay: (await readResetGrantCatalog(admin)).grants,
-          reviewed: admission.reviewedGrants,
-        }).unfulfilledReviewed.length
-      )
-        throw new Error("reset_final_grants_changed");
       await verifyResetForbiddenGrants(admin, admission.grantPolicy.forbidden);
-      await verifyApprovedStagingRuntime(admin, admission.runtimeRole);
+      await verifyResetRuntimeDenied(admin, admission.runtimeRole);
       if ((await readResetGrantCatalog(admin)).defaults_sha256 !== admission.defaultsDigest)
         throw new Error("reset_defaults_changed");
       await verifyOutside();
@@ -310,9 +295,9 @@ export async function reconstructStagingInPhases(
           completed,
           ...admission.replayBudget,
         });
+        await denyReplayedRuntimeGrants(admin, admission.runtimeRole);
         if (completed === plan.migrations.length - 1) {
-          await verifyFinal(true);
-          resetVerified = true;
+          await verifyFinal();
         }
       });
       await marker.advance("replaying", ++batches);

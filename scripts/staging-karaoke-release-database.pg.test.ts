@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { Client } from "pg";
-import { readKaraokeRuntimeGrantDigest } from "./staging-karaoke-release-database.ts";
+import {
+  assertKaraokeRuntimeGrantDigest,
+  readKaraokeRuntimeGrantDigest,
+} from "./staging-karaoke-release-database.ts";
 import { restoreReviewedResetGrants } from "./staging-persona-grant-catalog.ts";
 import type { ResetGrant } from "./staging-persona-grant-reconciliation.ts";
 import { localRecoveryTestUrl } from "./staging-persona-recovery-test-target.ts";
@@ -46,7 +49,20 @@ suite("release runtime grant readback", () => {
       const expected = await readKaraokeRuntimeGrantDigest(admin, name);
       expect(expected).not.toBe(before);
       expect(await readKaraokeRuntimeGrantDigest(observer, name)).toBe(before);
+      await expect(assertKaraokeRuntimeGrantDigest(admin, name, before)).rejects.toThrow(
+        "grants_changed",
+      );
+      await admin.query("ROLLBACK");
+      expect(await readKaraokeRuntimeGrantDigest(observer, name)).toBe(before);
+      await admin.query("BEGIN");
+      await restoreReviewedResetGrants(admin, reviewed, reviewed);
+      expect(await assertKaraokeRuntimeGrantDigest(admin, name, expected)).toBe(expected);
       await admin.query("COMMIT");
+      expect(await readKaraokeRuntimeGrantDigest(observer, name)).toBe(expected);
+      // A later unproven readback must not compensate committed restoration.
+      await expect(assertKaraokeRuntimeGrantDigest(observer, name, before)).rejects.toThrow(
+        "grants_changed",
+      );
       expect(await readKaraokeRuntimeGrantDigest(observer, name)).toBe(expected);
       await admin.query("GRANT INSERT ON api_next.release_probe TO PUBLIC");
       expect(await readKaraokeRuntimeGrantDigest(observer, name)).not.toBe(expected);

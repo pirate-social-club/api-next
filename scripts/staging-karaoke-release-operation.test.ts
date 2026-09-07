@@ -97,3 +97,24 @@ test("changed provider evidence cannot produce a receipt", async () => {
   expect(result.disposition).toBe("unresolved");
   expect(result.receipts).toHaveLength(0);
 });
+
+test("a backward clock step between surfaces refuses before the next executor starts", async () => {
+  let clock = "2026-09-07T10:00:10.000Z";
+  let reads = 0;
+  let mutations = 0;
+  const execute = async () => {
+    mutations++;
+    return { surface: "database" as const, releasedAt: clock, receipt: "provider-proof" };
+  };
+  const result = await executeKaraokeFenceRelease({
+    plan,
+    now: () => {
+      if (++reads === 3) clock = "2026-09-07T10:00:09.000Z";
+      return clock;
+    },
+    surfaces: { database: execute, producers: execute, ingress: execute },
+  });
+  expect(result.disposition).toBe("unresolved");
+  expect(result.receipts).toHaveLength(1);
+  expect(mutations).toBe(1);
+});

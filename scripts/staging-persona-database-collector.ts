@@ -2,23 +2,16 @@ import { createHash } from "node:crypto";
 import { Schema } from "effect";
 import { Client } from "pg";
 import { normalizePostgresConnectionString } from "./postgres-connection-string.ts";
-import { RUNTIME_DENIAL_CATALOG_SQL } from "./staging-persona-runtime-denial.ts";
+import {
+  RUNTIME_DENIAL_CATALOG_SQL,
+  RuntimeDeniedCatalog,
+} from "./staging-persona-runtime-denial.ts";
 import { observeSessionDrain } from "./staging-persona-session-drain.ts";
 import { collectStagingProviderBinding } from "./staging-persona-target-binding.ts";
 
 const Runtime = Schema.Struct({
   role: Schema.String.check(Schema.isPattern(/^[a-z_][a-z0-9_]{0,62}$/u)),
   connectionString: Schema.String,
-});
-const Scan = Schema.Struct({
-  schema_count: Schema.Literal(1),
-  elevated: Schema.Literal(false),
-  database_create: Schema.Literal(false),
-  owns_objects: Schema.Literal(false),
-  schema_access: Schema.Literal(false),
-  table_access: Schema.Literal(false),
-  sequence_access: Schema.Literal(false),
-  definer_access: Schema.Literal(false),
 });
 const decode = <S extends Schema.ConstraintDecoder<unknown>>(
   schema: S,
@@ -91,7 +84,7 @@ export async function observeMaintainedDatabaseFence(input: {
         "api_next",
         runtime.role,
       ]);
-      decode(Scan, result.rows[0]);
+      decode(RuntimeDeniedCatalog, result.rows[0]);
       // Includes PUBLIC grants and every available SET ROLE path, not only the login role.
       const connect = await input.admin.query(
         `SELECT count(*)::int AS roles,

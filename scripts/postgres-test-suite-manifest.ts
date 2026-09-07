@@ -55,6 +55,7 @@ export const freshSchemaPostgresTestSuites = [
 
 export const noBaselinePostgresTestSuites = [
   "scripts/staging-karaoke-release-database.pg.test.ts",
+  "scripts/staging-persona-reset-denied-grants.pg.test.ts",
   "scripts/staging-persona-recovery.pg.test.ts",
   "scripts/staging-persona-dependency-scan.pg.test.ts",
   "scripts/staging-persona-schema-authority.pg.test.ts",

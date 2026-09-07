@@ -31,6 +31,21 @@ const key = (grant: ResetGrant) =>
     grant.grantOption,
   ]);
 
+/** Exact catalog-owned revocation. No CASCADE, supplied SQL or grantor switch. */
+export async function revokeResetCatalogGrant(admin: Pick<Client, "query">, grant: ResetGrant) {
+  reconcileResetGrants({ before: [grant], replay: [], reviewed: [] });
+  const result = await admin.query(
+    `${objects} SELECT pg_catalog.format(
+    'REVOKE %s ON %s %s FROM %s', $3::text, o.keyword, o.identity,
+    CASE WHEN $4='PUBLIC' THEN 'PUBLIC' ELSE pg_catalog.quote_ident($4) END) AS statement
+    FROM objects o WHERE kind=$1 AND identity=$2 AND pg_catalog.pg_has_role(o.owner,'USAGE')
+    AND ($4='PUBLIC' OR EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname=$4))`,
+    [grant.objectKind, grant.objectIdentity, grant.privilege, grant.grantee],
+  );
+  if (result.rows.length !== 1) throw new Error("reset_revoke_authority_unproven");
+  await admin.query(result.rows[0].statement);
+}
+
 /** Catalog facts, never approval. Explicit column ACLs are unsupported and refused. */
 export async function readResetGrantCatalog(admin: Pick<Client, "query">) {
   const columns = await admin.query(`SELECT count(*)::int AS count FROM pg_catalog.pg_attribute a
@@ -93,16 +108,7 @@ export async function restoreReviewedResetGrants(
   }
   // REVOKE without CASCADE refuses an unexpected downstream grant graph.
   for (const grant of policy?.forbidden ?? []) {
-    const result = await admin.query(
-      `${objects} SELECT pg_catalog.format(
-      'REVOKE %s ON %s %s FROM %s', $3::text, o.keyword, o.identity,
-      CASE WHEN $4='PUBLIC' THEN 'PUBLIC' ELSE pg_catalog.quote_ident($4) END) AS statement
-      FROM objects o WHERE kind=$1 AND identity=$2 AND pg_catalog.pg_has_role(o.owner,'USAGE')
-      AND ($4='PUBLIC' OR EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname=$4))`,
-      [grant.objectKind, grant.objectIdentity, grant.privilege, grant.grantee],
-    );
-    if (result.rows.length !== 1) throw new Error("reset_revoke_authority_unproven");
-    await admin.query(result.rows[0].statement);
+    await revokeResetCatalogGrant(admin, grant);
   }
   const after = await readResetGrantCatalog(admin);
   const actual = new Set(after.grants.map(key));
