@@ -241,6 +241,9 @@
       "queues": { "producers": [{ "binding": "TELEGRAM_QUEUE", "queue": "pirate-community-telegram-staging" }] },
       "vars": {
         "TELEGRAM_ENABLED": "false",
+        "TELEGRAM_PUBLIC_ORIGIN": "https://web-next-staging.pirate.sc",
+        "TELEGRAM_WEBHOOK_ORIGIN": "https://api-next-staging.pirate.sc",
+        "TELEGRAM_CREDENTIAL_ACTIVE_VERSION": "v1",
         "API_NEXT_ENV": "staging",
     "VIDEO_DELIVERY_ENABLED": "false",
     "VIDEO_STREAM_CUSTOMER_HOST": "",
