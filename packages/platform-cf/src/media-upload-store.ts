@@ -574,3 +574,5 @@ export function makeMediaUploadStore(
       run(repository.moderate(input as Parameters<typeof repository.moderate>[0])),
   };
 }
+
+export { makeMediaReferenceResolver } from "./media-reference-resolver.ts";

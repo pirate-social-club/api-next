@@ -17344,7 +17344,7 @@ BEGIN
     OR NEW.payload->'analysis_revision' IS DISTINCT FROM to_jsonb(NEW.analysis_revision)
   ) THEN RAISE EXCEPTION 'analysis launch payload is not exact'; END IF;
   IF NEW.event_type = 'decision_wakeup' AND (
-    NEW.payload->>'trigger' NOT IN ('terms','lyrics')
+    NEW.payload->>'trigger' NOT IN ('terms','lyrics','reference')
     OR NEW.payload->'creation_revision' IS DISTINCT FROM to_jsonb(NEW.creation_revision)
     OR NEW.payload->'lyrics_revision' IS DISTINCT FROM jsonb_build_object('value', NEW.lyrics_revision)->'value'
   ) THEN RAISE EXCEPTION 'decision wakeup payload is not exact'; END IF;

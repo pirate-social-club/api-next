@@ -108,6 +108,7 @@ import {
   makeR2MediaSealer,
 } from "@pirate/platform-cf/media-sealing-adapter";
 import {
+  makeMediaReferenceResolver,
   makeMediaUploadApplicationCommands,
   makeMediaUploadStore,
   type VideoPublicationServices,
@@ -363,6 +364,43 @@ export interface HttpWorkerCompositionDependencies {
   readonly dance_attempt_upload_authority?: DanceAttemptUploadAuthority;
   /** Fake transport for provider-free composition and request-path tests. */
   readonly openai_moderation_transport?: OpenAiModerationTransport;
+}
+
+export function makeProductionMediaSubmissionServices(
+  bindings: HttpWorkerBindings,
+  controlPlane: ReturnType<typeof makeHyperdriveControlPlaneLayer>,
+  personaStore: MediaSubmissionServices["personaStore"],
+): MediaSubmissionServices | null {
+  if (bindings.MEDIA_UPLOADS_ENABLED !== "true") return null;
+  const accountId = bindings.MEDIA_INGRESS_R2_ACCOUNT_ID;
+  const bucket = bindings.MEDIA_INGRESS_R2_BUCKET_NAME;
+  const accessKeyId = bindings.MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID;
+  const secretAccessKey = bindings.MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY;
+  const ingress = bindings.MEDIA_INGRESS;
+  const immutableOriginals = bindings.MEDIA_IMMUTABLE_ORIGINALS;
+  if (
+    accountId === undefined ||
+    bucket === undefined ||
+    accessKeyId === undefined ||
+    secretAccessKey === undefined ||
+    ingress === undefined ||
+    immutableOriginals === undefined
+  ) {
+    throw new Error("HTTP worker configuration is incomplete or invalid");
+  }
+  return {
+    store: makeMediaUploadStore(controlPlane),
+    referenceResolver: makeMediaReferenceResolver(controlPlane),
+    personaStore,
+    presigner: makeR2MediaIngressPresigner({
+      accountId,
+      bucket,
+      accessKeyId,
+      secretAccessKey,
+    }),
+    sealer: makeR2MediaSealer({ ingress, immutableOriginals }),
+    nowIso: () => new Date().toISOString(),
+  } satisfies MediaSubmissionServices;
 }
 
 type WorkerConfig = HttpWorkerConfigValue;
@@ -718,38 +756,9 @@ export async function createProductionHttpWorker(
   const communityStore = makeControlPlaneCommunityStore(controlPlane);
   const communityCreationStore = makeControlPlaneCommunityCreationStore(controlPlane);
   const personaStore = makeControlPlanePersonaStore(controlPlane);
-  const mediaServices = (() => {
-    if (dependencies.media_services !== undefined) return dependencies.media_services;
-    if (bindings.MEDIA_UPLOADS_ENABLED !== "true") return null;
-    const accountId = bindings.MEDIA_INGRESS_R2_ACCOUNT_ID;
-    const bucket = bindings.MEDIA_INGRESS_R2_BUCKET_NAME;
-    const accessKeyId = bindings.MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID;
-    const secretAccessKey = bindings.MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY;
-    const ingress = bindings.MEDIA_INGRESS;
-    const immutableOriginals = bindings.MEDIA_IMMUTABLE_ORIGINALS;
-    if (
-      accountId === undefined ||
-      bucket === undefined ||
-      accessKeyId === undefined ||
-      secretAccessKey === undefined ||
-      ingress === undefined ||
-      immutableOriginals === undefined
-    ) {
-      throw new Error("HTTP worker configuration is incomplete or invalid");
-    }
-    return {
-      store: makeMediaUploadStore(controlPlane),
-      personaStore,
-      presigner: makeR2MediaIngressPresigner({
-        accountId,
-        bucket,
-        accessKeyId,
-        secretAccessKey,
-      }),
-      sealer: makeR2MediaSealer({ ingress, immutableOriginals }),
-      nowIso: () => new Date().toISOString(),
-    } satisfies MediaSubmissionServices;
-  })();
+  const mediaServices =
+    dependencies.media_services ??
+    makeProductionMediaSubmissionServices(bindings, controlPlane, personaStore);
   const videoServices = (() => {
     if (dependencies.video_publication_services !== undefined) {
       return dependencies.video_publication_services;

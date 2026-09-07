@@ -14,6 +14,7 @@ import type {
   MediaProcessingStore,
 } from "../../application/src/media/processing-contracts.ts";
 import { runMediaProcessingWorkflow } from "../../application/src/media/processing-workflow.ts";
+import { bindMediaReference } from "../../application/src/media/submission-service.ts";
 import type {
   MediaTransformProbeInput,
   MediaTransformService,
@@ -27,8 +28,10 @@ import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fi
 import { makeControlPlaneKaraokeReadinessStore } from "./karaoke-readiness-repository";
 import { makeControlPlaneMediaOutboxRepository } from "./media-outbox-repository";
 import { makeMediaProcessingStore } from "./media-processing-store";
+import { makeMediaReferenceResolver } from "./media-reference-resolver";
 import { makeControlPlaneMediaSubmissionRepository } from "./media-submission-repository";
 import { makeMediaUploadApplicationCommands, makeMediaUploadStore } from "./media-upload-store";
+import { makeControlPlanePersonaStore } from "./persona-repository";
 import {
   activatePendingPersonaFixtures,
   createActivePersonaFixture,
@@ -44,7 +47,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-media-persistence-suite-complete\n";
-const testCount = 41;
+const testCount = 42;
 let completedTestCount = 0;
 const actor = "media_pg_actor",
   moderator = "media_pg_moderator",
@@ -274,14 +277,28 @@ async function createThroughDecision(
   skipDecision = false,
   initialLyrics?: string,
   stopBeforeAnalysis = false,
+  fixture = { submission, operation, reservation },
 ): Promise<void> {
+  const { submission, operation, reservation } = fixture;
+  const key = (value: string) =>
+    submission === "media_pg_submission" ? value : `${submission}-${value}`;
+  const selectedCommand = (connection: string, endpoint: string, idempotencyKey: string) => ({
+    ...command(connection, endpoint, key(idempotencyKey)),
+    submissionId: submission,
+  });
+  const fence = {
+    ...finalizeFence(connection),
+    submissionId: submission,
+    reservationId: reservation,
+    idempotencyKey: key("finalize-key"),
+  };
   expect(
     await run(connection, (store) =>
       store.reserve({
         communityId: community,
         actorUserId: actor,
         personaId: personaFor(connection),
-        idempotencyKey: "reserve-key",
+        idempotencyKey: key("reserve-key"),
         requestHash,
         expectedContentType: "audio/mpeg",
         expectedSizeBytes: audioBytes.byteLength,
@@ -300,7 +317,7 @@ async function createThroughDecision(
         communityId: community,
         actorUserId: actor,
         personaId: personaFor(connection),
-        idempotencyKey: "create-key",
+        idempotencyKey: key("create-key"),
         requestHash,
         title: "Fixture song",
         songType: "original",
@@ -315,28 +332,39 @@ async function createThroughDecision(
   expect(
     await run(connection, (store) =>
       store.bindTerms({
-        ...command(connection, "/media-post-submissions/:submissionId/terms", "terms-key"),
+        ...selectedCommand(connection, "/media-post-submissions/:submissionId/terms", "terms-key"),
         expectedCreationRevision: 1,
         terms: termsFor(personaFor(connection)),
       }),
     ),
   ).toEqual({ kind: "committed", submissionId: submission });
-  expect(
-    await run(connection, (store) => store.beginFinalize(finalizeFence(connection))),
-  ).toMatchObject({ kind: "begun", submissionId: submission, operationId: operation });
-  expect(
-    await run(connection, (store) => store.beginFinalize(finalizeFence(connection))),
-  ).toMatchObject({ kind: "resumed", submissionId: submission, operationId: operation });
+  expect(await run(connection, (store) => store.beginFinalize(fence))).toMatchObject({
+    kind: "begun",
+    submissionId: submission,
+    operationId: operation,
+  });
+  expect(await run(connection, (store) => store.beginFinalize(fence))).toMatchObject({
+    kind: "resumed",
+    submissionId: submission,
+    operationId: operation,
+  });
   expect(
     await run(connection, (store) =>
       store.finalizeSealed({
-        ...command(connection, "/media-post-submissions/:submissionId/finalize", "finalize-key"),
+        ...selectedCommand(
+          connection,
+          "/media-post-submissions/:submissionId/finalize",
+          "finalize-key",
+        ),
         expectedCreationRevision: 2,
         expectedAudioRevision: 0,
         reservationId: reservation,
         immutableObject: {
-          immutableRef: analysis.finalizedAudioRef,
-          destinationRef: "media://immutable/fixture",
+          immutableRef: selectedAnalysis.finalizedAudioRef,
+          destinationRef:
+            submission === "media_pg_submission"
+              ? "media://immutable/fixture"
+              : selectedAnalysis.finalizedAudioRef,
           etag: "etag-1",
           objectVersion: "version-1",
           sizeBytes: audioBytes.byteLength,
@@ -344,8 +372,8 @@ async function createThroughDecision(
           canonicalSha256: audioSha256,
         },
         outbox: {
-          outboxEventId: "media_pg_analysis_outbox",
-          effectIdentity: "media_pg_analysis_effect",
+          outboxEventId: key("media_pg_analysis_outbox"),
+          effectIdentity: key("media_pg_analysis_effect"),
           payload: {
             kind: "analysis_launch",
             submission_id: submission,
@@ -363,7 +391,11 @@ async function createThroughDecision(
     expect(
       await run(connection, (store) =>
         store.bindLyrics({
-          ...command(connection, "/media-post-submissions/:submissionId/lyrics", "lyrics-key"),
+          ...selectedCommand(
+            connection,
+            "/media-post-submissions/:submissionId/lyrics",
+            "lyrics-key",
+          ),
           expectedCreationRevision: 2,
           expectedAudioRevision: 1,
           lyrics: initialLyrics,
@@ -389,7 +421,11 @@ async function createThroughDecision(
   expect(
     await run(connection, (store) =>
       store.acceptAnalysis({
-        ...command(connection, "/media-post-submissions/:submissionId/analysis", "analysis-key"),
+        ...selectedCommand(
+          connection,
+          "/media-post-submissions/:submissionId/analysis",
+          "analysis-key",
+        ),
         expectedAudioRevision: 1,
         expectedCanonicalAudioSha256: audioSha256,
         analysis: selectedAnalysis,
@@ -400,7 +436,11 @@ async function createThroughDecision(
   expect(
     await run(connection, (store) =>
       store.recordDecision({
-        ...command(connection, "/media-post-submissions/:submissionId/decision", "decision-key"),
+        ...selectedCommand(
+          connection,
+          "/media-post-submissions/:submissionId/decision",
+          "decision-key",
+        ),
         expectedCreationRevision: selectedDecision.creationRevision,
         expectedAudioRevision: selectedDecision.audioRevision,
         expectedAnalysisRevision: selectedDecision.analysisRevision,
@@ -2287,6 +2327,185 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     });
     completedTestCount += 1;
   }, 40_000);
+  test("resolves a published source using retained database evidence and rejects inaccessible sources", async () => {
+    await withCurrentSchema(async (admin, connection) => {
+      await createThroughDecision(connection);
+      const runtime = makeDirectPostgresControlPlaneLayer(connection);
+      const processing = makeMediaProcessingStore(runtime);
+      const retainMatch = async (submissionId: string, operationId: string) => {
+        const authority = await processing.loadAuthority(submissionId, operationId);
+        if (authority === null) throw new Error("missing reference fixture");
+        const claim = await processing.startAttempt({
+          authority,
+          stage: "acr_primary",
+          attemptId: `match-${submissionId}`,
+          workerId: "reference-test",
+          inputRevision: 1,
+          inputHash: audioSha256,
+          policyRevision: "acr_policy_1",
+          adapterRevision: "identification-port-v1",
+        });
+        if (claim.kind !== "run") throw new Error("reference fixture did not claim");
+        expect(
+          await processing.completeAttempt(claim.lease, {
+            kind: "acr",
+            value: {
+              outcome: "retained_reference_match",
+              context: {
+                version: "media-identification-attempt-context-v1",
+                operationId,
+                audioRevision: 1,
+                analysisRevision: 1,
+                canonicalAudioSha256: audioSha256,
+                requestId: `request-${submissionId}`,
+                adapterRevision: "acr_adapter_1",
+              },
+              evidence: {
+                version: "media-identification-match-evidence-v1",
+                provider: "acrcloud",
+                matchKind: "music",
+                providerMatchId: "same-recording",
+                title: "Fixture",
+                artists: ["Fixture artist"],
+                score: 99,
+              },
+            },
+          }),
+        ).toBe(true);
+        return authority;
+      };
+      // This fixture exercises persisted resolver facts, not source establishment:
+      // current ACR policy cannot bootstrap an allowed source from a retained match.
+      const sourceAuthority = await retainMatch(submission, operation);
+      expect(await processing.commitPublication(sourceAuthority)).toBe("committed");
+      const derivative = {
+        submission: "reference_derivative",
+        operation: "reference_derivative_operation",
+        reservation: "reference_derivative_reservation",
+      };
+      const derivativeAnalysis: TrustedSongAnalysis = {
+        ...analysis,
+        operationId: derivative.operation,
+        finalizedAudioRef: "media://immutable/derivative",
+        acr: { ...analysis.acr, decision: "requires_reference" },
+      };
+      await createThroughDecision(
+        connection,
+        decision,
+        derivativeAnalysis,
+        true,
+        undefined,
+        false,
+        derivative,
+      );
+      await retainMatch(derivative.submission, derivative.operation);
+      await run(connection, (store) =>
+        store.requireReference({
+          ...command(
+            connection,
+            "/media-post-submissions/:submissionId/reference",
+            "derivative-reference-required",
+          ),
+          submissionId: derivative.submission,
+          expectedCreationRevision: 2,
+          expectedAudioRevision: 1,
+          expectedAnalysisRevision: 1,
+          referenceRequestRef: "derivative-request",
+          actionExpiresAt: new Date(Date.now() + 3600000).toISOString(),
+        }),
+      );
+      const state = await run(connection, (store) =>
+        store.getForAuthor({
+          communityId: community,
+          actorUserId: actor,
+          personaId: personaFor(connection),
+          submissionId: derivative.submission,
+        }),
+      );
+      if (state === null) throw new Error("missing derivative state");
+      const resolver = makeMediaReferenceResolver(runtime);
+      const input = {
+        actorUserId: actor,
+        submission: state,
+        referenceRequestRef: "derivative-request",
+        upstreamAssetId: `media-post-${operation}`,
+      };
+      expect(await resolver.resolve(input)).toMatchObject({
+        assetId: `media-post-${operation}`,
+        inheritedLicensePreset: "non-commercial",
+        upstreamCommercialRevShareBps: null,
+        evidenceAudioSha256: audioSha256,
+      });
+      await expect(
+        resolver.resolve({ ...input, upstreamAssetId: "off-platform" }),
+      ).rejects.toMatchObject({ details: { reason_code: "reference_source_unavailable" } });
+      await admin.query("UPDATE posts SET visibility='members_only' WHERE post_id=$1", [
+        `media-post-${operation}`,
+      ]);
+      await expect(
+        resolver.resolve({
+          ...input,
+          actorUserId: "reference-outsider",
+          submission: { ...state, actorId: "reference-outsider" },
+        }),
+      ).rejects.toMatchObject({ details: { reason_code: "reference_source_unavailable" } });
+      let resolutions = 0;
+      const unused = async (): Promise<never> => {
+        throw new Error("reference must not upload");
+      };
+      const services = {
+        store: makeMediaUploadStore(runtime),
+        personaStore: makeControlPlanePersonaStore(runtime),
+        referenceResolver: {
+          resolve: async (request: Parameters<typeof resolver.resolve>[0]) => {
+            resolutions += 1;
+            return resolver.resolve(request);
+          },
+        },
+        presigner: { presign: () => Effect.die("reference must not presign") },
+        sealer: { inspect: unused, seal: unused },
+        nowIso: () => new Date().toISOString(),
+      };
+      const request = {
+        submissionId: derivative.submission,
+        actor: { kind: "user" as const, userId: actor },
+        body: {
+          persona_id: personaFor(connection),
+          idempotency_key: "bind-verified-source",
+          expected_creation_revision: 2,
+          reference_request_ref: "derivative-request",
+          upstream_asset_id: `media-post-${operation}`,
+        },
+      };
+      await expect(
+        bindMediaReference(
+          { ...request, body: { ...request.body, persona_id: personaFor(connection, moderator) } },
+          services,
+        ),
+      ).rejects.toThrow();
+      expect(resolutions).toBe(0);
+      await expect(
+        bindMediaReference(
+          { ...request, body: { ...request.body, expected_creation_revision: 1 } },
+          services,
+        ),
+      ).rejects.toThrow();
+      const response = await bindMediaReference(request, services);
+      expect(response.status).toBe("processing");
+      const beforeReplay = resolutions;
+      expect(await bindMediaReference(request, services)).toEqual(response);
+      expect(resolutions).toBe(beforeReplay);
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::integer AS count FROM media_submission_outbox WHERE submission_id=$1 AND event_type='decision_wakeup'",
+            [derivative.submission],
+          )
+        ).rows,
+      ).toEqual([{ count: 1 }]);
+    });
+    completedTestCount += 1;
+  }, 40_000);
   test("binds reference evidence atomically while reusing immutable analysis", async () => {
     await withCurrentSchema(async (admin, connection) => {
       const requiresReference = {
@@ -2311,26 +2530,81 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         ),
       ).toMatchObject({ kind: "committed" });
       await expectHostileLyricsProjectionLeakRejected(admin, true);
-      expect(
-        await run(connection, (store) =>
+      const binding = {
+        ...command(
+          connection,
+          "/media-post-submissions/:submissionId/reference",
+          "reference-bound",
+        ),
+        expectedCreationRevision: 2,
+        reference: {
+          assetId: "upstream-asset",
+          evidenceAudioRevision: 1,
+          evidenceAnalysisRevision: 1,
+          evidenceAudioSha256: audioSha256,
+          upstreamCommercialRevShareBps: 1000,
+          evidenceRef: "upstream-evidence",
+        },
+        outbox: {
+          outboxEventId: "media_pg_reference_outbox",
+          effectIdentity: "media_pg_reference_effect",
+          payload: {
+            kind: "decision_wakeup" as const,
+            trigger: "reference" as const,
+            submission_id: submission,
+            operation_id: operation,
+            creation_revision: 3,
+            lyrics_revision: null,
+            workflow_revision: 1,
+            workflow_instance_id: `media-${operation}-r1`,
+          },
+        },
+      };
+      const { outbox: _wakeup, ...missingWakeup } = binding;
+      await expect(
+        run(connection, (store) => store.bindReference(missingWakeup)),
+      ).rejects.toThrow();
+      await expect(
+        run(connection, (store) =>
           store.bindReference({
-            ...command(
-              connection,
-              "/media-post-submissions/:submissionId/reference",
-              "reference-bound",
-            ),
-            expectedCreationRevision: 2,
-            reference: {
-              assetId: "upstream-asset",
-              evidenceAudioRevision: 1,
-              evidenceAnalysisRevision: 1,
-              evidenceAudioSha256: audioSha256,
-              upstreamCommercialRevShareBps: 1000,
-              evidenceRef: "upstream-evidence",
+            ...binding,
+            outbox: {
+              ...binding.outbox,
+              payload: { ...binding.outbox.payload, creation_revision: 999 },
             },
           }),
         ),
-      ).toMatchObject({ kind: "committed" });
+      ).rejects.toThrow();
+      expect(
+        (
+          await admin.query(
+            "SELECT status,creation_revision::integer FROM media_post_submissions WHERE submission_id=$1",
+            [submission],
+          )
+        ).rows,
+      ).toEqual([{ status: "action_required", creation_revision: 2 }]);
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::integer AS count FROM media_reference_evidence WHERE submission_id=$1",
+            [submission],
+          )
+        ).rows,
+      ).toEqual([{ count: 0 }]);
+      expect(await run(connection, (store) => store.bindReference(binding))).toMatchObject({
+        kind: "committed",
+      });
+      expect(await run(connection, (store) => store.bindReference(binding))).toMatchObject({
+        kind: "replay",
+      });
+      expect(
+        (
+          await admin.query(
+            "SELECT payload,creation_revision::integer FROM media_submission_outbox WHERE submission_id=$1 AND event_type='decision_wakeup'",
+            [submission],
+          )
+        ).rows,
+      ).toEqual([{ payload: binding.outbox.payload, creation_revision: 3 }]);
       expect(
         await run(connection, (store) =>
           store.getForAuthor({

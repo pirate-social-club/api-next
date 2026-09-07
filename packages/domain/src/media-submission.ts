@@ -272,7 +272,7 @@ export type MediaOutboxPayload =
     }>
   | Readonly<{
       kind: "decision_wakeup";
-      trigger: "terms" | "lyrics";
+      trigger: "terms" | "lyrics" | "reference";
       submission_id: string;
       operation_id: string;
       creation_revision: number;

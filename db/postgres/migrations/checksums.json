@@ -131,6 +131,7 @@
     "0128_hns_provisional_community_import.sql": "933ae29b72c704b5bc046e357b7b7bb156e115d11e4a52ce17a81002034897a2",
     "0129_community_owner_activation.sql": "1ea84e5253c85487a6200876cae1bd3caaf19da521afba8ab2a09f0677255424",
     "0130_hns_publication_continuation.sql": "3fef5b0a9a29ffa126a46e5e27108c573501287c9cbad448af126c373c6ddc48",
-    "0131_community_telegram.sql": "a0609b08f195fa61681893db007f2b88ba3d750a57d36806f2c27988237dcd77"
+    "0131_community_telegram.sql": "a0609b08f195fa61681893db007f2b88ba3d750a57d36806f2c27988237dcd77",
+    "0132_song_reference_decision_wakeup.sql": "87616f9efad291b5c18475b0d472427616028ceaa8d8ede709ed2cad9b7c406e"
   }
 }

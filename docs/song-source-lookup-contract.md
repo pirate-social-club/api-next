@@ -2,7 +2,7 @@
 
 Status: proposal, not an accepted endpoint. Source baseline: api-next a1803de3.
 This document supports solid-song-source-picker without making that picker a
-prerequisite for current song-flow acceptance. No runtime behavior changes.
+prerequisite for current song-flow acceptance. The lookup remains a proposal; the separately authorized narrow resolver repair is described below.
 
 ## Existing contract and newly identified gap
 
@@ -108,7 +108,7 @@ contract approval. The API successor owns resolver/persistence/schema work.
 Neither this proposal nor a green picker test closes ordinary song publication,
 manual review, policy block, enrichment or canary acceptance obligations.
 
-## Narrow binding investigation — 2026-09-08
+## Narrow binding investigation — superseded on 2026-09-08
 
 The existing-id repair is independent of the proposed lookup operation, but
 existing source does not supply all its authority. acrcloud-response.ts retains
@@ -140,3 +140,58 @@ source visibility/referenceability and immutable inherited terms; construct
 BoundReference from those server facts; wire default HTTP composition; and
 verify real composition, exact replay and PostgreSQL race boundaries. No new
 lookup endpoint is needed. No runtime repair is claimed by this checkpoint.
+
+## Authorized narrow repair — 2026-09-08
+
+The workspace_owner clarified that author selection supplies only a candidate.
+The server must compare the current recording with the selected source using
+retained analysis evidence and inherit only server-held terms. This supersedes
+the mapping decision above for explicit candidates; it does not ratify a lookup
+endpoint, off-platform manual review or an author-declared no-match reference.
+
+The resolver identifies a candidate by the existing publication projection's
+post_id, matching data registration's asset_id = post_id invariant. It requires one published source, an active community,
+public visibility or active membership, and the existing account rating gate.
+It reads that source's immutable accepted analysis and current terms revision.
+Neither an audio artifact reference, provider ID nor title is an alternative identifier.
+
+For both recordings, successful ACR attempts must match the submission,
+operation, audio revision, analysis revision, canonical hash and accepted provider
+adapter revision. The attempt adapter is identification-port-v1; the provider
+adapter is carried by the retained result context. The resolver accepts only one
+unambiguous provider/match-kind/recording identity shared by both recordings.
+It never compares titles or invents provider evidence. Existing source terms
+supply the license and exact commercial-remix share, including zero; other
+license presets inherit null under the existing domain contract.
+
+BoundReference's audio/hash fields fence the current submission, as required by
+the domain and SQL guards. The source's revisions and evidence are checked
+separately. Its deterministic evidence reference hashes both sets of immutable
+server evidence and the reference request. No provider identifiers are returned
+to the browser. Absent and inaccessible sources share reference_source_unavailable;
+missing or contradictory recording evidence returns reference_recording_unverified;
+unusable source terms return reference_source_terms_unavailable. These fail
+closed without creating manual review or changing the provider's decision.
+
+Default HTTP composition supplies the real resolver. Successful binding also
+writes a reference-triggered decision_wakeup in the same transaction. Migration
+0131 admits that trigger in the closed outbox payload union. Missing or invalid
+wakeups roll back binding, and command replay returns the saved response without
+creating another event. Deploy the migration before the Worker repair.
+
+This repair deliberately cannot bind a source whose accepted analysis has no
+retained matching recording identity, including an original with only no-match
+evidence. It cannot publish an off-platform cover. These remain explicit policy
+and evidence limitations, not successful acceptance cases. Live derivative
+recovery still requires an eligible fixture and the deployed reviewed API/Solid
+pair; local database tests are not staging or production evidence.
+
+Source establishment remains a separate prerequisite. The current ACR policy
+requires a reference for every retained match, while no-match originals can
+publish without retaining a recording identity. This repair does not establish
+the first eligible source or attach new recognition evidence to an already
+published original. A local fixture with an allowed source analysis and retained
+match tests resolver/persistence behavior only; it cannot prove that the current
+production workflow can create that source. Never manufacture that combination
+for live acceptance. The real source-evidence acquisition path must be specified
+before claiming general cover/remix recovery.
