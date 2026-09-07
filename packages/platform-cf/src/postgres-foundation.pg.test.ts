@@ -1337,6 +1337,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "hns_community_app_host_activation_current",
         "hns_community_app_host_activation_revisions",
         "hns_community_app_host_operations",
+        "hns_community_publication_jobs",
         "hns_community_root_import_preparations",
         "hns_control_observer_configurations",
         "hns_control_observer_operations",
