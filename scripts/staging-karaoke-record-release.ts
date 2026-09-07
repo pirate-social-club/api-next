@@ -130,7 +130,7 @@ function readSignedSidecar(
     expectedHead?: typeof Head.Type;
   };
   const kind = record.kind;
-  if (kind !== "release-intent" && kind !== "release-executed") return undefined;
+  if (kind === undefined || !claimsReleaseRecord(record)) return undefined;
   if (
     record.epoch !== trust.epoch ||
     record.bucket !== trust.bucket ||
@@ -315,13 +315,12 @@ export async function recordKaraokeFenceRelease(input: {
         intent.fence.reconnectDenied &&
         intent.fence.runtimeSessions === 0 &&
         intent.fence.residualDispositionId === trust.residualDispositionId;
-      let reconcileDisposition: "released" | "not-executed" | "unresolved" | "fresh";
+      let reconcileDisposition: "released" | "not-executed" | "fresh";
       const intent = pending.at(-1)?.record;
       const intentId = pending.at(-1)?.id;
       if (intent !== undefined && !validIntent(intent)) {
-        // A malformed pending intent is not a recovery trigger; the fence
-        // observation governs as usual.
-        reconcileDisposition = "unresolved";
+        // Current fencing cannot resolve an invalid retained intent.
+        throw new Error("karaoke_release_origin_unresolved");
       } else if (intent === undefined) {
         reconcileDisposition = "fresh";
       } else if (input.reconcileReleasedFence === undefined) {
@@ -382,7 +381,7 @@ export async function recordKaraokeFenceRelease(input: {
             input.privateKeyPem,
           ),
         );
-      } else {
+      } else if (reconcileDisposition === "fresh" || reconcileDisposition === "not-executed") {
         if (reconcileDisposition === "not-executed") {
           if (intentId === undefined) throw new Error("karaoke_release_origin_unresolved");
           // A durable, authenticated not-executed disposition is the only
@@ -450,6 +449,8 @@ export async function recordKaraokeFenceRelease(input: {
             input.privateKeyPem,
           ),
         );
+      } else {
+        throw new Error("karaoke_release_origin_unresolved");
       }
     }
     if (heldFence === undefined || release === undefined)

@@ -475,3 +475,32 @@ three cases is tested to invoke the executing binding zero times while the
 fence reads held. A pending intent without a reconciliation binding is
 rejected before any fence reader runs. Concrete reset/release bindings and
 automated cleanup-sidecar reconciliation remain unfinished.
+
+Release disposition correction — 2026-09-07. Invalid signed pending intents
+now refuse before any current fence read or release execution. Fresh execution
+explicitly accepts only fresh or positively resolved not-executed state.
+The scanner uses one record-kind check for both discovery and admission, so
+signed not-executed records undergo the same scope and lineage checks and
+remain effective after restart. Interruption after the disposition is durable
+but before fresh admission no longer reopens the closed intent.
+
+Three regressions failed against 6b05edad before the correction: invalid
+intent execution, lost closure on restart, and ignored foreign-lineage
+not-executed evidence. All three pass after the correction. The shared
+milestone fixture and recovery refusal tests were extracted so the original
+milestone suite is below 600 lines. The adjacent five-suite run passed 38
+tests with 4,654 assertions before the final test-only extraction.
+
+Final repository check passed with the existing 41 warnings and two
+informational diagnostics. The ordinary test constituents passed serially
+at nice 10: 3,495 unit tests with 20,115 assertions, 20 Node tests and
+80/73/2/9/15 Workerd tests. Every Vitest invocation used one worker with
+file parallelism disabled. The harness retained its missing-RPC-secret
+warnings, HTTP denial diagnostics and video stream-cancellation diagnostic;
+all suites exited zero. Collector type-check, touched-file Biome,
+changed-script enforcement and whitespace checks passed.
+
+This corrects the two reviewed source defects. Concrete live reset/release
+bindings and automated cleanup-sidecar reconciliation remain unfinished.
+No new PostgreSQL 17/18.6 or remote CI acceptance, provider mutation,
+rehearsal, reset or release is claimed.

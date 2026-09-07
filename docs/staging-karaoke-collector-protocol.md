@@ -266,6 +266,14 @@ operational `releasedAt` from the authenticated release evidence, and the
 verifier requires exact agreement with that time. The release port has no
 live binding yet; recording cannot perform a release.
 
+Invalid pending-intent fence facts refuse before any current fence read.
+Fresh execution accepts only a new ceremony or an authenticated not-executed
+disposition. The recovery scanner admits not-executed records through the same
+signature, digest, scope and lineage checks as intents and execution records.
+Their intent closures survive interruption before fresh admission; restarting
+does not require reconciling an already closed intent again. Original intent
+and disposition files remain retained after recovery.
+
 ## Retirement and follow-up passes
 
 The observation pass accepts the closed phases `retirement` and `follow-up` in
