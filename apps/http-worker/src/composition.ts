@@ -4,6 +4,7 @@ import { makeCommunityPurchaseFundingObservationUseCase } from "@pirate/applicat
 import {
   completeNamespaceOwnership,
   completeRouteAttachmentOwnership,
+  continueHnsCommunityPublication,
   startNamespaceOwnership,
   startRouteAttachmentOwnership,
 } from "@pirate/application/namespace-ownership";
@@ -76,6 +77,7 @@ import { makeDanceReferenceStore } from "@pirate/platform-cf/dance-reference-aut
 import { makeControlPlaneFeedStore } from "@pirate/platform-cf/feed-repository";
 import { makeHandleRecipientTokenVault } from "@pirate/platform-cf/handle-recipient-token-vault";
 import { makeControlPlaneHandleSalesStore } from "@pirate/platform-cf/handle-sales-repository";
+import { makeHnsCommunityPublicationQueue } from "@pirate/platform-cf/hns-community-publication-queue";
 import { makeControlPlaneHnsCommunityRootImportStartStore } from "@pirate/platform-cf/hns-community-root-import-repository";
 import type { HnsEdgeStatusKvNamespace } from "@pirate/platform-cf/hns-edge-status-kv";
 import type { HnsForwarderReplayStoreNamespace } from "@pirate/platform-cf/hns-forwarder-replay-store";
@@ -995,10 +997,13 @@ export async function createProductionHttpWorker(
   const communityHnsBinding = namespaceBindings.find(
     (binding) => binding.requirement === "namespace_ownership" && binding.family === "hns",
   );
-  const hnsCommunityRootImportHandlers =
+  const publicationQueue = makeHnsCommunityPublicationQueue(controlPlane);
+  const hnsCommunityServices:
+    | Omit<Parameters<typeof makeHnsCommunityRootImportHandlers>[0], "publicationQueue">
+    | undefined =
     communityHnsBinding === undefined || bindings.HNS_OWNER_VERIFIER === undefined
-      ? {}
-      : makeHnsCommunityRootImportHandlers({
+      ? undefined
+      : {
           ownership: {
             start: (input) =>
               startRouteAttachmentOwnership(input, {
@@ -1021,7 +1026,23 @@ export async function createProductionHttpWorker(
             environment: config.API_NEXT_ENV,
             provider_binding: communityHnsBinding,
           }),
-        });
+        };
+  const hnsCommunityRootImportHandlers =
+    hnsCommunityServices === undefined
+      ? {}
+      : makeHnsCommunityRootImportHandlers({ ...hnsCommunityServices, publicationQueue });
+  const continuePublicationChecks = async () => {
+    if (hnsCommunityServices === undefined) return;
+    // Bounded work, leased in PostgreSQL; overlapping invocations are fenced.
+    for (let count = 0; count < 8; count++) {
+      if (
+        !(await Effect.runPromise(
+          continueHnsCommunityPublication(hnsCommunityServices, publicationQueue),
+        ))
+      )
+        break;
+    }
+  };
   const sessionCrypto = await makeSessionCrypto({
     privateKeyPem: Redacted.value(config.PIRATE_APP_JWT_PRIVATE_KEY),
     publicKeyPem: Redacted.value(config.PIRATE_APP_JWT_PUBLIC_KEY),
@@ -1296,7 +1317,7 @@ export async function createProductionHttpWorker(
     Effect.runPromise(getMyProfile({ userId: session?.subject ?? "" }, { identityStore }));
   const publicProfile = makePublicProfileHandler({ publicProfileStore });
 
-  return createHttpWorker({
+  const worker = createHttpWorker({
     config: { corsOrigin: config.CORS_ORIGIN },
     hnsCommunityAppApi,
     hnsHandleHostApi,
@@ -1383,4 +1404,5 @@ export async function createProductionHttpWorker(
         }),
       ),
   });
+  return { ...worker, continuePublicationChecks };
 }

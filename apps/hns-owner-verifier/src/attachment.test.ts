@@ -1,19 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import {
-  type HnsControlObservationRequestV1,
-  hnsChainAuthorityDigest,
-  hnsControlIdentityDigest,
-  hnsControlObservationRequestHash,
-  type RouteAttachmentOwnershipProviderStartInput,
-} from "@pirate/application/namespace-ownership";
+import type { RouteAttachmentOwnershipProviderStartInput } from "@pirate/application/namespace-ownership";
 import { Effect } from "effect";
 import { makeHnsOwnerServiceBindingTransport } from "../../../packages/platform-cf/src/namespace-ownership/hns-owner-service-binding.ts";
+import { attachmentObserverFixture } from "./attachment-observer.fixture.ts";
 import { type Env, handleRequest } from "./index.ts";
 import type { HnsTargetObserverRuntime } from "./target-observer.ts";
 
-const encoder = new TextEncoder();
-const genesisHash = "2".repeat(64);
-const anchorHash = "3".repeat(64);
 const env: Env = {
   HNS_OWNERSHIP_SOURCE: "hns_parent_chain_txt",
   HNS_CHALLENGE_TTL_SECONDS: "3600",
@@ -49,132 +41,6 @@ const input: RouteAttachmentOwnershipProviderStartInput = {
   },
 };
 const context = { namespace_session_id: "namespace-session-1", observation_id: "observation-1" };
-function runtime(
-  status: "verified" | "pending" | "rejected" | "unavailable",
-  observe = () => {},
-): HnsTargetObserverRuntime {
-  return {
-    configuration: {
-      provider_id: "hns.owner.v1",
-      provider_configuration_reference: "hns-owner-staging",
-      provider_configuration_version: "hns-owner-config-v1",
-      provider_configuration_digest: "1".repeat(64),
-      environment: "staging",
-      ownership_source: "hns_parent_chain_txt",
-      observer_deadline_ms: 12000,
-      lease_policy: {
-        expected_block_interval_seconds: 600,
-        minimum_safe_remaining_blocks: 144,
-        expiry_safety_blocks: 144,
-        evidence_lease_seconds: 2592000,
-      },
-    },
-    observer: {
-      observe: async ({ request }) => {
-        observe();
-        expect(request.root_label).toBe("harbor");
-        return innerResult(request, status);
-      },
-    },
-  };
-}
-async function innerResult(
-  requestValue: HnsControlObservationRequestV1,
-  status: "verified" | "pending" | "rejected" | "unavailable",
-): Promise<Uint8Array> {
-  const requestHash = await hnsControlObservationRequestHash(requestValue);
-  const base = {
-    version: "pirate-hns-control-observation-result-v1",
-    observation_id: requestValue.observation_id,
-    request_sha256: requestHash,
-  } as const;
-  if (status === "unavailable") {
-    return encoder.encode(
-      JSON.stringify({
-        ...base,
-        status: "unavailable",
-        reason_code: "chain_transport_unavailable",
-        retry_after_seconds: 5,
-        diagnostic_ref: "hns-observer:staging:attachment-unavailable",
-      }),
-    );
-  }
-  const chainAuthorityDigest = await hnsChainAuthorityDigest({
-    chain_network: "regtest",
-    chain_genesis_block_hash: genesisHash,
-    root_label: requestValue.root_label,
-    ownership_source: requestValue.ownership_source,
-    authority_records: [],
-  });
-  const expectedTxtValueSha256 = Array.from(
-    new Uint8Array(
-      await crypto.subtle.digest("SHA-256", encoder.encode(requestValue.expected_txt_value)),
-    ),
-    (byte) => byte.toString(16).padStart(2, "0"),
-  ).join("");
-  if (status !== "verified") {
-    return encoder.encode(
-      JSON.stringify({
-        ...base,
-        status: "rejected",
-        reason_code: status === "pending" ? "txt_absent" : "root_absent",
-        provider_id: requestValue.provider_id,
-        provider_configuration_reference: requestValue.provider_configuration_reference,
-        provider_configuration_version: requestValue.provider_configuration_version,
-        provider_configuration_digest: requestValue.provider_configuration_digest,
-        environment: requestValue.environment,
-        ownership_source: requestValue.ownership_source,
-        root_label: requestValue.root_label,
-        txt_name: requestValue.txt_name,
-        expected_txt_value_sha256: expectedTxtValueSha256,
-        observed_txt_values_digest: null,
-        chain_authority_digest: chainAuthorityDigest,
-        chain_network: "regtest",
-        chain_genesis_block_hash: genesisHash,
-        chain_anchor_height: 123_500,
-        chain_anchor_block_hash: anchorHash,
-        chain_anchor_median_time: 1_787_486_400,
-        expiry_height: status === "pending" ? 200_000 : null,
-        provider_evidence_ref: `hns-observer:regtest:attachment-${status}`,
-      }),
-    );
-  }
-  const controlIdentityDigest = await hnsControlIdentityDigest({
-    ownership_source: requestValue.ownership_source,
-    txt_name: requestValue.txt_name,
-    expected_txt_value: requestValue.expected_txt_value,
-    root_label: requestValue.root_label,
-    chain_authority_digest: chainAuthorityDigest,
-  });
-  return encoder.encode(
-    JSON.stringify({
-      ...base,
-      status: "verified",
-      provider_id: requestValue.provider_id,
-      provider_configuration_reference: requestValue.provider_configuration_reference,
-      provider_configuration_version: requestValue.provider_configuration_version,
-      provider_configuration_digest: requestValue.provider_configuration_digest,
-      environment: requestValue.environment,
-      ownership_source: requestValue.ownership_source,
-      root_label: requestValue.root_label,
-      txt_name: requestValue.txt_name,
-      expected_txt_value_sha256: expectedTxtValueSha256,
-      control_identity_digest: controlIdentityDigest,
-      chain_authority_digest: chainAuthorityDigest,
-      root_exists: true,
-      root_control_verified: true,
-      expiry_horizon_sufficient: true,
-      chain_network: "regtest",
-      chain_genesis_block_hash: genesisHash,
-      chain_anchor_height: 123_500,
-      chain_anchor_block_hash: anchorHash,
-      chain_anchor_median_time: 1_787_486_400,
-      expiry_height: 200_000,
-      provider_evidence_ref: "hns-observer:regtest:attachment-verified",
-    }),
-  );
-}
-
 function transport(targetObserver: HnsTargetObserverRuntime) {
   const wire = makeHnsOwnerServiceBindingTransport({
     fetch: (url, init) => handleRequest(new Request(String(url), init), env, { targetObserver }),
@@ -203,7 +69,7 @@ function request(body: unknown, poll = false) {
 }
 describe("community attachment transport and verifier contract", () => {
   test("decodes the actual transport start bytes without a creation intent", async () => {
-    const wire = transport(runtime("pending"));
+    const wire = transport(attachmentObserverFixture("pending"));
     const bytes = await Effect.runPromise(wire.startRouteAttachment({ input, context }));
     const result = JSON.parse(new TextDecoder().decode(bytes));
     expect(result.presentation.payload.challenge_name).toBe("harbor");
@@ -214,7 +80,7 @@ describe("community attachment transport and verifier contract", () => {
   for (const status of ["pending", "verified"] as const)
     test(`observes attachment ${status} through the real transport and handler`, async () => {
       let observations = 0;
-      const wire = transport(runtime(status, () => observations++));
+      const wire = transport(attachmentObserverFixture(status, () => observations++));
       const started = JSON.parse(
         new TextDecoder().decode(
           await Effect.runPromise(wire.startRouteAttachment({ input, context })),
@@ -244,7 +110,7 @@ describe("community attachment transport and verifier contract", () => {
       const response = await handleRequest(request(body), env, {
         resolveTargetObserver: async () => {
           resolutions++;
-          return runtime("pending");
+          return attachmentObserverFixture("pending");
         },
       });
       expect(response.status).toBe(400);
@@ -253,7 +119,7 @@ describe("community attachment transport and verifier contract", () => {
   });
   test("rejects expired, mixed-operation, extra-field and wrong-configuration polls without observation", async () => {
     let observations = 0;
-    const targetObserver = runtime("verified", () => observations++);
+    const targetObserver = attachmentObserverFixture("verified", () => observations++);
     const session = {
       ...input,
       provider_id: "hns.owner.v1",

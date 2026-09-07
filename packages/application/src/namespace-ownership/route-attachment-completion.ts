@@ -96,6 +96,7 @@ export interface RouteAttachmentCompletionStore {
     readonly request: CompleteRouteAttachmentOwnershipInput;
     readonly completion_request_sha256: string;
     readonly reservation: RouteAttachmentCompletionReservation;
+    readonly retryable_observation?: boolean;
   }) => Effect.Effect<"released" | "lease_lost", RouteAttachmentCompletionStorageFailed>;
   readonly finalize: (input: {
     readonly request: CompleteRouteAttachmentOwnershipInput;
@@ -260,7 +261,12 @@ export const completeRouteAttachmentOwnership = Effect.fn("completeRouteAttachme
         { session: stored.session, submission: { channel: "poll_result", payload: {} } },
         {
           namespace_session_id: stored.namespace_session_id,
-          observation_id: reservation.completion_attempt_id,
+          observation_id: yield* Effect.promise(() =>
+            sha256({
+              attempt: reservation.completion_attempt_id,
+              fence: reservation.fence_token,
+            }),
+          ),
         },
       )
       .pipe(
@@ -292,6 +298,7 @@ export const completeRouteAttachmentOwnership = Effect.fn("completeRouteAttachme
       );
     if (providerResult.status === "pending" || providerResult.status === "unavailable") {
       yield* services.store.release({
+        retryable_observation: true,
         request: input,
         completion_request_sha256: completionRequestSha256,
         reservation,

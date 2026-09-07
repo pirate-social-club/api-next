@@ -129,6 +129,7 @@
     "0126_hns_renewal_execution_privileges.sql": "79096935d3a49b8fb3b178065264ceca37b167fc488ec1ac905610a091987e36",
     "0127_video_delivery_ingest.sql": "3b154f8d9ce7aa90d743f719ad6c43033ed9fa8b1875d4b24f59a261d2045bf8",
     "0128_hns_provisional_community_import.sql": "933ae29b72c704b5bc046e357b7b7bb156e115d11e4a52ce17a81002034897a2",
-    "0129_community_owner_activation.sql": "1ea84e5253c85487a6200876cae1bd3caaf19da521afba8ab2a09f0677255424"
+    "0129_community_owner_activation.sql": "1ea84e5253c85487a6200876cae1bd3caaf19da521afba8ab2a09f0677255424",
+    "0130_hns_publication_continuation.sql": "3fef5b0a9a29ffa126a46e5e27108c573501287c9cbad448af126c373c6ddc48"
   }
 }

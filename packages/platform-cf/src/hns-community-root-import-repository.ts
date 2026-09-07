@@ -100,14 +100,15 @@ const sessionReadColumns = `session.*,
   CASE WHEN session.status NOT IN ('activated','failed','expired')
          AND (session.expires_at <= clock_timestamp() OR ownership.status='expired')
        THEN 'expired'
+       WHEN session.status='awaiting_owner_update' AND EXISTS (SELECT 1 FROM hns_community_publication_jobs job WHERE job.root_import_session_id=session.root_import_session_id AND job.state='failed') THEN 'failed'
        WHEN session.status NOT IN ('activated','failed','expired') AND ownership.status='failed'
        THEN 'failed' ELSE session.status END AS status,
-  EXISTS (SELECT 1 FROM community_route_attachment_completion_attempts AS attempt
+  (EXISTS (SELECT 1 FROM hns_community_publication_jobs job WHERE job.root_import_session_id=session.root_import_session_id AND job.state IN ('pending','leased')) OR EXISTS (SELECT 1 FROM community_route_attachment_completion_attempts AS attempt
            WHERE attempt.namespace_session_id=session.namespace_session_id
              AND attempt.actor_id=session.actor_id AND attempt.community_id=session.community_id
              AND attempt.attachment_intent_id=session.attachment_intent_id
              AND attempt.expected_revision=session.ownership_expected_revision
-  ) AS publication_check_pending`;
+  )) AS publication_check_pending`;
 
 const ownershipReadJoin = `LEFT JOIN community_route_attachment_namespace_sessions AS ownership
   ON ownership.namespace_session_id=session.namespace_session_id

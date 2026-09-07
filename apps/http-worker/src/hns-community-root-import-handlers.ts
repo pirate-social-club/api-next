@@ -2,12 +2,13 @@ import {
   activateHnsCommunityRootImport,
   getCurrentHnsCommunityRootImport,
   getHnsCommunityRootImport,
+  type HnsCommunityPublicationQueue,
   type HnsCommunityRootImportActivationServices,
   type HnsCommunityRootImportDiscoveryStore,
   type HnsCommunityRootImportPollServices,
   type HnsCommunityRootImportReadStore,
   type HnsCommunityRootImportStartServices,
-  pollHnsCommunityRootImport,
+  requestHnsCommunityPublicationCheck,
   startHnsCommunityRootImport,
 } from "@pirate/application/namespace-ownership";
 import {
@@ -44,6 +45,7 @@ export function makeHnsCommunityRootImportHandlers(
     HnsCommunityRootImportPollServices &
     HnsCommunityRootImportActivationServices &
     Readonly<{
+      readonly publicationQueue: HnsCommunityPublicationQueue;
       readonly store: HnsCommunityRootImportStartServices["store"] &
         HnsCommunityRootImportDiscoveryStore &
         HnsCommunityRootImportReadStore;
@@ -134,7 +136,7 @@ export function makeHnsCommunityRootImportHandlers(
         provisioning_name_signature?: string;
       }>;
       return Effect.runPromise(
-        pollHnsCommunityRootImport(
+        requestHnsCommunityPublicationCheck(
           {
             actor_id: request.principal.subject,
             community_id: params.communityId,
@@ -146,6 +148,7 @@ export function makeHnsCommunityRootImportHandlers(
               : { provisioning_name_signature: body.provisioning_name_signature }),
           },
           services,
+          services.publicationQueue,
         ).pipe(
           Effect.map((result) =>
             withEndpointResult(

@@ -330,7 +330,7 @@ function ownershipFailure(error: unknown) {
       error instanceof NamespaceOwnershipProviderInvalidResponse ||
       error instanceof NamespaceOwnershipProviderMisconfigured ||
       (error instanceof RouteAttachmentCompletionRejected &&
-        error.reason === "provider_misconfigured")
+        (error.reason === "provider_misconfigured" || error.reason === "attempt_budget_exhausted"))
         ? "ownership_misconfigured"
         : "ownership_unavailable",
   });

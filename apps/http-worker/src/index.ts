@@ -6,7 +6,7 @@
  * fetch receives them.
  */
 
-import type { ExecutionContext } from "@cloudflare/workers-types";
+import type { ExecutionContext, ScheduledController } from "@cloudflare/workers-types";
 import { httpRequestDiagnostics } from "@pirate/platform-cf/worker-request-diagnostics";
 import { createProductionHttpWorker, type HttpWorkerBindings } from "./composition.ts";
 
@@ -62,6 +62,15 @@ let cachedProductionApp: ReturnType<typeof createProductionHttpWorker> | undefin
  * configuration fails that health-check request before any route is served.
  */
 export const app = {
+  async scheduled(
+    _event: ScheduledController,
+    bindings: HttpWorkerBindings,
+    _ctx: ExecutionContext,
+  ) {
+    cachedProductionApp ??= createProductionHttpWorker(bindings);
+    const worker = await cachedProductionApp;
+    await worker.continuePublicationChecks();
+  },
   async fetch(request: Request, bindings: HttpWorkerBindings, ctx: ExecutionContext) {
     return httpRequestDiagnostics.run(bindings.CF_VERSION_METADATA?.id ?? null, async () => {
       const realtimeMatch = new URL(request.url).pathname.match(/^\/karaoke\/realtime\/([^/]+)$/u);

@@ -240,6 +240,30 @@ export function makeControlPlaneRouteAttachmentCompletionStore(
                 if (value.state === "leased" && lease !== null && Date.parse(lease) > Date.now())
                   return { kind: "in_flight", retry_after_seconds: retryAfter(lease) } as const;
               }
+              const waiting = prior.rows.find(
+                (value) =>
+                  value.state === "released" &&
+                  value.retryable_observation === true &&
+                  value.idempotency_key === input.request.idempotency_key &&
+                  value.completion_request_sha256 === input.completion_request_sha256,
+              );
+              if (waiting !== undefined) {
+                const renewed = yield* tx.execute<Row>({
+                  label: "route-attachment.completion.renew-pending",
+                  text: `UPDATE community_route_attachment_completion_attempts
+                    SET state='leased',retryable_observation=false,fence_token=fence_token+1,
+                        lease_expires_at=clock_timestamp()+($2::bigint*interval '1 millisecond'),
+                        updated_at=clock_timestamp()
+                    WHERE completion_attempt_id=$1 RETURNING *`,
+                  values: [waiting.completion_attempt_id, input.lease_ms],
+                  readonly: false,
+                });
+                const row = one(renewed);
+                const reservation = row == null ? null : attempt(row);
+                return reservation === null
+                  ? yield* Effect.fail(failed())
+                  : ({ kind: "acquired", reservation } as const);
+              }
               if (prior.rows.length >= Math.min(3, input.max_attempts))
                 return { kind: "budget_exhausted" } as const;
               const inserted = yield* tx.execute<Row>({
@@ -281,7 +305,7 @@ export function makeControlPlaneRouteAttachmentCompletionStore(
           const db = yield* ControlPlaneDb;
           const result = yield* db.execute({
             label: "route-attachment.completion.release",
-            text: `UPDATE community_route_attachment_completion_attempts SET state='released',updated_at=clock_timestamp()
+            text: `UPDATE community_route_attachment_completion_attempts SET state='released',retryable_observation=$7,updated_at=clock_timestamp()
                 WHERE completion_attempt_id=$1 AND namespace_session_id=$2 AND actor_id=$3
                   AND idempotency_key=$4 AND completion_request_sha256=$5 AND fence_token=$6 AND state='leased'`,
             values: [
@@ -291,6 +315,7 @@ export function makeControlPlaneRouteAttachmentCompletionStore(
               input.request.idempotency_key,
               input.completion_request_sha256,
               input.reservation.fence_token,
+              input.retryable_observation === true,
             ],
             readonly: false,
           });

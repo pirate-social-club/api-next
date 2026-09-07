@@ -20938,6 +20938,7 @@ CREATE TABLE community_route_attachment_completion_attempts (
     terminal_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    retryable_observation boolean DEFAULT false NOT NULL,
     CONSTRAINT community_route_attachment_comp_completion_request_sha256_check CHECK ((completion_request_sha256 ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT community_route_attachment_completion_a_expected_revision_check CHECK ((expected_revision > 0)),
     CONSTRAINT community_route_attachment_completion_att_terminal_status_check CHECK ((terminal_status = ANY (ARRAY['verified'::text, 'rejected'::text, 'expired'::text]))),
@@ -22911,6 +22912,25 @@ CREATE TABLE hns_community_app_host_operations (
     result_activation_generation bigint NOT NULL,
     committed_at timestamp with time zone NOT NULL,
     CONSTRAINT hns_community_app_host_operations_identity_check CHECK ((is_hns_host_persistence_identity(operation_id, 256) AND (operation_kind = ANY (ARRAY['activate'::text, 'transition'::text])) AND is_hns_host_persistence_identity(idempotency_key, 512) AND (request_hash ~ '^[0-9a-f]{64}$'::text) AND is_hns_host_persistence_identity(app_host_activation_id, 256) AND ((expected_activation_generation >= 0) AND (expected_activation_generation <= '9007199254740990'::bigint)) AND (target_status = ANY (ARRAY['active'::text, 'suspended'::text, 'revoked'::text])) AND (result_activation_generation = (expected_activation_generation + 1)) AND (((operation_kind = 'activate'::text) AND (expected_activation_generation = 0) AND (target_status = 'active'::text)) OR (operation_kind = 'transition'::text))))
+);
+
+CREATE TABLE hns_community_publication_jobs (
+    root_import_session_id text NOT NULL,
+    actor_id text NOT NULL,
+    community_id text NOT NULL,
+    expected_revision bigint NOT NULL,
+    idempotency_key text NOT NULL,
+    state text DEFAULT 'pending'::text NOT NULL,
+    fence_token bigint DEFAULT 0 NOT NULL,
+    next_attempt_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    lease_expires_at timestamp with time zone,
+    failure_code text,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT hns_community_publication_jobs_expected_revision_check CHECK ((expected_revision > 0)),
+    CONSTRAINT hns_community_publication_jobs_fence_token_check CHECK ((fence_token >= 0)),
+    CONSTRAINT hns_community_publication_jobs_idempotency_key_check CHECK (is_hns_host_persistence_identity(idempotency_key, 256)),
+    CONSTRAINT hns_community_publication_jobs_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'leased'::text, 'completed'::text, 'failed'::text])))
 );
 
 CREATE TABLE hns_community_root_import_preparations (
@@ -28518,6 +28538,12 @@ ALTER TABLE ONLY hns_community_app_host_operations
 ALTER TABLE ONLY hns_community_app_host_operations
     ADD CONSTRAINT hns_community_app_host_operations_pkey PRIMARY KEY (operation_id);
 
+ALTER TABLE ONLY hns_community_publication_jobs
+    ADD CONSTRAINT hns_community_publication_jobs_actor_id_idempotency_key_key UNIQUE (actor_id, idempotency_key);
+
+ALTER TABLE ONLY hns_community_publication_jobs
+    ADD CONSTRAINT hns_community_publication_jobs_pkey PRIMARY KEY (root_import_session_id);
+
 ALTER TABLE ONLY hns_community_root_import_preparations
     ADD CONSTRAINT hns_community_root_import_pre_actor_id_community_id_start_i_key UNIQUE (actor_id, community_id, start_idempotency_key);
 
@@ -29958,6 +29984,8 @@ CREATE INDEX handle_sale_activation_current_community_idx ON community_handle_sa
 CREATE INDEX hns_authority_inventories_current_idx ON hns_authority_inventories USING btree (registry_reference, published_at DESC, expires_at);
 
 CREATE INDEX hns_authority_provision_jobs_claim_idx ON hns_authority_provision_jobs USING btree (state, created_at, provision_job_id);
+
+CREATE INDEX hns_community_publication_due_idx ON hns_community_publication_jobs USING btree (next_attempt_at) WHERE (state = ANY (ARRAY['pending'::text, 'leased'::text]));
 
 CREATE INDEX hns_community_root_import_admission_actor_idx ON hns_community_root_import_preparations USING btree (actor_id, created_at) WHERE (admission_kind = 'community_provisional'::text);
 
@@ -32199,6 +32227,15 @@ ALTER TABLE ONLY hns_community_app_host_activation_revisions
 
 ALTER TABLE ONLY hns_community_app_host_activation_revisions
     ADD CONSTRAINT hns_community_app_host_activation_revisions_route_fk FOREIGN KEY (community_id, route_binding_id) REFERENCES community_canonical_route_bindings(community_id, route_binding_id);
+
+ALTER TABLE ONLY hns_community_publication_jobs
+    ADD CONSTRAINT hns_community_publication_jobs_actor_id_fkey FOREIGN KEY (actor_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY hns_community_publication_jobs
+    ADD CONSTRAINT hns_community_publication_jobs_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY hns_community_publication_jobs
+    ADD CONSTRAINT hns_community_publication_jobs_root_import_session_id_fkey FOREIGN KEY (root_import_session_id) REFERENCES hns_root_import_sessions(root_import_session_id);
 
 ALTER TABLE ONLY hns_community_root_import_preparations
     ADD CONSTRAINT hns_community_root_import_preparation_attachment_intent_id_fkey FOREIGN KEY (attachment_intent_id) REFERENCES community_route_attachment_intents(attachment_intent_id);
