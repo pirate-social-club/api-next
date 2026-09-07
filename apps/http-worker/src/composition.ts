@@ -191,6 +191,10 @@ import { makeControlPlaneVerificationSessionStartStore } from "@pirate/platform-
 import { makeR2VideoMultipartGateway } from "@pirate/platform-cf/video-multipart-r2";
 import { makeControlPlaneVideoPublicationStore } from "@pirate/platform-cf/video-publication-repository";
 import { Effect, Redacted, Schema } from "effect";
+import {
+  makeTelegramServices,
+  type TelegramBindings,
+} from "../../../packages/platform-cf/src/telegram-runtime.ts";
 import { makeActivityQualificationHandlers } from "./activity-qualification-handlers.ts";
 import { makeCanonicalCommunityRouteHandlers } from "./canonical-community-route-handlers.ts";
 import { makeCommunityCreationHandlers } from "./community-creation-handlers.ts";
@@ -227,12 +231,12 @@ import { makeStudyGenerationHandlers } from "./study-generation-handlers.ts";
 import type { StudyGenerationWorkflowPayload } from "./study-generation-workflow.ts";
 import { makeProductionStudySpokenServices } from "./study-spoken-production-composition.ts";
 import { makeStudyV2Handlers } from "./study-v2-handlers.ts";
+import { makeTelegramHandlers } from "./telegram-handlers.ts";
 import { createHttpWorker, type EndpointHandler, type Principal } from "./transport.ts";
 import { makeVerificationHandlers } from "./verification-handlers.ts";
-
 import { makeVideoAccessHandlers, type VideoAccessBindings } from "./video-access-composition.ts";
 
-export interface HttpWorkerBindings extends VideoAccessBindings {
+export interface HttpWorkerBindings extends VideoAccessBindings, TelegramBindings {
   readonly CF_VERSION_METADATA?: { readonly id: string };
   readonly CONTROL_PLANE?: unknown;
   readonly STUDY_GENERATION_ENABLED?: string;
@@ -675,6 +679,7 @@ export async function createProductionHttpWorker(
     throw new Error("HTTP worker configuration is incomplete or invalid");
   }
   const controlPlane = makeHyperdriveControlPlaneLayer(loadHyperdrive(bindings));
+  const telegramHandlers = makeTelegramHandlers(await makeTelegramServices(bindings, controlPlane));
   const danceReferenceHandlers = makeDanceReferenceHandlers(
     makeProductionDanceReferenceServices(
       makeDanceReferenceStore(controlPlane),
@@ -1324,6 +1329,7 @@ export async function createProductionHttpWorker(
     hnsEdgeStatus,
     handlers: {
       ...productHandlers,
+      ...telegramHandlers,
       GetPublicCommunityThreads: makePublicCommunityThreadsHandler({
         publicCommunityThreadsStore: makeControlPlanePublicCommunityThreadsStore(controlPlane),
       }),

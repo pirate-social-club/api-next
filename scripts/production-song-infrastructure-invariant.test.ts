@@ -120,6 +120,7 @@ describe("disabled production song infrastructure", () => {
   test("pins queue, DLQ, and Workflow names", () => {
     const jobsQueues = configs.jobs.queues as JsonRecord;
     expect(resourceNames(jobsQueues.producers, "queue")).toEqual([
+      "pirate-community-telegram-production",
       "pirate-media-processing-production",
       "pirate-data-registration-production",
     ]);

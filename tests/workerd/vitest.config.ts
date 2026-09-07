@@ -5,6 +5,12 @@ import { unstable_readConfig } from "wrangler";
 // Workspace packages resolve to source so the workerd pool bundles one
 // program for both the worker main and the test modules.
 const alias = {
+  "@pirate/application/telegram": new URL(
+    "../../packages/application/src/telegram/index.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/domain/telegram": new URL("../../packages/domain/src/telegram.ts", import.meta.url)
+    .pathname,
   "@pirate/application/video/publication-wakeup": new URL(
     "../../packages/application/src/video/publication-wakeup.ts",
     import.meta.url,

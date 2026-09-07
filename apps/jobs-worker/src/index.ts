@@ -157,12 +157,20 @@ export {
   STUDY_SPOKEN_ANSWER_RECOVERY_WRITES,
 } from "./study-spoken-answer-recovery";
 
+import {
+  consumeTelegramWork,
+  makeTelegramServices,
+  runTelegramMaintenance,
+  type TelegramBindings,
+} from "../../../packages/platform-cf/src/telegram-runtime.ts";
+
 export interface JobsWorkerEnv
   extends AlertSinkBindings,
     DataRegistrationJobsBindings,
     DanceReferenceJobsBindings,
     HnsRouteRevalidationBindings,
-    MediaJobsBindings {
+    MediaJobsBindings,
+    TelegramBindings {
   readonly CF_VERSION_METADATA: MegapotRewardsJobOptions["workerVersion"];
   readonly CRON_LOCK: DurableObjectNamespace<ScheduledCronLockDO>;
   readonly KARAOKE_ATTEMPT?: import("@pirate/platform-cf").KaraokeFinalizationRecoveryNamespace;
@@ -770,6 +778,25 @@ export default {
     if (env.CONTROL_PLANE === undefined) {
       throw new Error("CONTROL_PLANE Hyperdrive binding is required for jobs-worker");
     }
+    if (batch.queue.startsWith("pirate-community-telegram-")) {
+      const services = await makeTelegramServices(
+        env,
+        makeHyperdriveControlPlaneLayer(env.CONTROL_PLANE),
+      );
+      if (services === null) {
+        batch.retryAll({ delaySeconds: 300 });
+        return;
+      }
+      for (const message of batch.messages) {
+        try {
+          await consumeTelegramWork(services, message.body);
+          message.ack();
+        } catch {
+          message.retry({ delaySeconds: 60 });
+        }
+      }
+      return;
+    }
     await handleSongPipelineDlqBatch(batch, {
       runtime: makeHyperdriveControlPlaneLayer(env.CONTROL_PLANE),
       sink: makeJobsAlertSink(env),
@@ -818,6 +845,8 @@ export default {
     const scheduledWork: Promise<unknown>[] = Array.from(dueByLane, ([lane, laneJobs]) =>
       handleScheduled(env, lane, laneJobs, event.scheduledTime, { runtime }),
     );
+    const telegram = await makeTelegramServices(env, runtime);
+    if (telegram !== null) scheduledWork.push(runTelegramMaintenance(telegram));
     if (mediaMaintenance !== null) scheduledWork.push(mediaMaintenance());
     if (dataRegistrationMaintenance !== null) {
       scheduledWork.push(dataRegistrationMaintenance());

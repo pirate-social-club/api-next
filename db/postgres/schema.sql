@@ -21533,6 +21533,117 @@ CREATE TABLE community_streaks (
     CONSTRAINT community_streaks_day_order CHECK ((last_day >= started_day))
 );
 
+CREATE TABLE community_telegram_commands (
+    community_id text NOT NULL,
+    command_key text NOT NULL,
+    command_hash text NOT NULL,
+    result jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL
+);
+
+CREATE TABLE community_telegram_conversations (
+    community_id text NOT NULL,
+    telegram_user_id text NOT NULL,
+    input_id text NOT NULL,
+    prompt text NOT NULL,
+    answer text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT community_telegram_conversations_answer_check CHECK ((length(answer) <= 4000)),
+    CONSTRAINT community_telegram_conversations_prompt_check CHECK ((length(prompt) <= 4000))
+);
+
+CREATE TABLE community_telegram_deliveries (
+    delivery_id text NOT NULL,
+    community_id text NOT NULL,
+    bot_epoch text NOT NULL,
+    chat_id text NOT NULL,
+    kind text NOT NULL,
+    post_id text,
+    state text DEFAULT 'pending'::text NOT NULL,
+    desired jsonb,
+    desired_hash text,
+    confirmed jsonb,
+    confirmed_hash text,
+    message_id bigint,
+    attempt text,
+    attempt_count integer DEFAULT 0 NOT NULL,
+    next_attempt_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    lease_expires_at timestamp with time zone,
+    last_error text,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT community_telegram_deliveries_attempt_count_check CHECK ((attempt_count >= 0)),
+    CONSTRAINT community_telegram_deliveries_check CHECK (((desired IS NULL) = (desired_hash IS NULL))),
+    CONSTRAINT community_telegram_deliveries_check1 CHECK (((confirmed IS NULL) = (confirmed_hash IS NULL))),
+    CONSTRAINT community_telegram_deliveries_kind_check CHECK ((kind = ANY (ARRAY['publication'::text, 'reply'::text, 'voice'::text, 'setup'::text]))),
+    CONSTRAINT community_telegram_deliveries_message_id_check CHECK ((message_id > 0)),
+    CONSTRAINT community_telegram_deliveries_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'sending'::text, 'delivered'::text, 'failed'::text, 'uncertain'::text, 'withdrawn'::text, 'cancelled'::text])))
+);
+
+CREATE TABLE community_telegram_inbox (
+    inbox_id text NOT NULL,
+    community_id text NOT NULL,
+    bot_epoch text NOT NULL,
+    update_id bigint NOT NULL,
+    payload jsonb,
+    state text DEFAULT 'pending'::text NOT NULL,
+    attempt text,
+    attempts integer DEFAULT 0 NOT NULL,
+    next_attempt_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    lease_expires_at timestamp with time zone,
+    last_error text,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT community_telegram_inbox_attempts_check CHECK ((attempts >= 0)),
+    CONSTRAINT community_telegram_inbox_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'processing'::text, 'completed'::text, 'failed'::text, 'cancelled'::text]))),
+    CONSTRAINT community_telegram_inbox_update_id_check CHECK ((update_id >= 0))
+);
+
+CREATE TABLE community_telegram_integrations (
+    community_id text NOT NULL,
+    revision bigint NOT NULL,
+    bot_epoch text NOT NULL,
+    bot_id text,
+    webhook_id text,
+    record jsonb NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT community_telegram_integrations_record_check CHECK ((jsonb_typeof(record) = 'object'::text)),
+    CONSTRAINT community_telegram_integrations_revision_check CHECK ((revision > 0))
+);
+
+CREATE TABLE community_telegram_private_chats (
+    community_id text NOT NULL,
+    bot_epoch text NOT NULL,
+    telegram_user_id text NOT NULL,
+    started_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL
+);
+
+CREATE TABLE community_telegram_setups (
+    setup_id text NOT NULL,
+    community_id text NOT NULL,
+    bot_epoch text NOT NULL,
+    token_hash text NOT NULL,
+    record jsonb NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    CONSTRAINT community_telegram_setups_record_check CHECK ((jsonb_typeof(record) = 'object'::text))
+);
+
+CREATE TABLE community_telegram_usage (
+    community_id text NOT NULL,
+    usage_day date NOT NULL,
+    subject text NOT NULL,
+    messages integer DEFAULT 0 NOT NULL,
+    speech_characters integer DEFAULT 0 NOT NULL,
+    CONSTRAINT community_telegram_usage_messages_check CHECK ((messages >= 0)),
+    CONSTRAINT community_telegram_usage_speech_characters_check CHECK ((speech_characters >= 0))
+);
+
+CREATE TABLE community_telegram_usage_reservations (
+    community_id text NOT NULL,
+    bot_epoch text NOT NULL,
+    reservation_key text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL
+);
+
 CREATE TABLE content_publication_outbox (
     outbox_event_id text NOT NULL,
     community_id text NOT NULL,
@@ -28157,6 +28268,45 @@ ALTER TABLE ONLY community_streak_days
 ALTER TABLE ONLY community_streaks
     ADD CONSTRAINT community_streaks_pkey PRIMARY KEY (account_id, community_id);
 
+ALTER TABLE ONLY community_telegram_commands
+    ADD CONSTRAINT community_telegram_commands_pkey PRIMARY KEY (community_id, command_key);
+
+ALTER TABLE ONLY community_telegram_conversations
+    ADD CONSTRAINT community_telegram_conversations_pkey PRIMARY KEY (community_id, input_id);
+
+ALTER TABLE ONLY community_telegram_deliveries
+    ADD CONSTRAINT community_telegram_deliveries_pkey PRIMARY KEY (delivery_id);
+
+ALTER TABLE ONLY community_telegram_inbox
+    ADD CONSTRAINT community_telegram_inbox_community_id_bot_epoch_update_id_key UNIQUE (community_id, bot_epoch, update_id);
+
+ALTER TABLE ONLY community_telegram_inbox
+    ADD CONSTRAINT community_telegram_inbox_pkey PRIMARY KEY (inbox_id);
+
+ALTER TABLE ONLY community_telegram_integrations
+    ADD CONSTRAINT community_telegram_integrations_bot_id_key UNIQUE (bot_id);
+
+ALTER TABLE ONLY community_telegram_integrations
+    ADD CONSTRAINT community_telegram_integrations_pkey PRIMARY KEY (community_id);
+
+ALTER TABLE ONLY community_telegram_integrations
+    ADD CONSTRAINT community_telegram_integrations_webhook_id_key UNIQUE (webhook_id);
+
+ALTER TABLE ONLY community_telegram_private_chats
+    ADD CONSTRAINT community_telegram_private_chats_pkey PRIMARY KEY (community_id, bot_epoch, telegram_user_id);
+
+ALTER TABLE ONLY community_telegram_setups
+    ADD CONSTRAINT community_telegram_setups_pkey PRIMARY KEY (setup_id);
+
+ALTER TABLE ONLY community_telegram_setups
+    ADD CONSTRAINT community_telegram_setups_token_hash_key UNIQUE (token_hash);
+
+ALTER TABLE ONLY community_telegram_usage
+    ADD CONSTRAINT community_telegram_usage_pkey PRIMARY KEY (community_id, usage_day, subject);
+
+ALTER TABLE ONLY community_telegram_usage_reservations
+    ADD CONSTRAINT community_telegram_usage_reservations_pkey PRIMARY KEY (community_id, bot_epoch, reservation_key);
+
 ALTER TABLE ONLY content_publication_outbox
     ADD CONSTRAINT content_publication_outbox_effect_key_unique UNIQUE (effect_key);
 
@@ -29920,6 +30070,14 @@ CREATE INDEX community_route_revalidation_start_lease_idx ON community_route_rev
 CREATE INDEX community_streak_days_recompute_idx ON community_streak_days USING btree (account_id, community_id, streak_day);
 
 CREATE INDEX community_streaks_live_leaderboard_idx ON community_streaks USING btree (community_id, current_count DESC, best_count DESC, started_day, account_id, active_until_at);
+
+CREATE INDEX community_telegram_conversation_recent ON community_telegram_conversations USING btree (community_id, telegram_user_id, created_at DESC);
+
+CREATE INDEX community_telegram_delivery_due ON community_telegram_deliveries USING btree (next_attempt_at) WHERE (state = ANY (ARRAY['pending'::text, 'failed'::text, 'sending'::text]));
+
+CREATE INDEX community_telegram_inbox_due ON community_telegram_inbox USING btree (next_attempt_at) WHERE (state = ANY (ARRAY['pending'::text, 'processing'::text]));
+
+CREATE UNIQUE INDEX community_telegram_publication_destination ON community_telegram_deliveries USING btree (community_id, bot_epoch, chat_id, post_id) WHERE (kind = 'publication'::text);
 
 CREATE INDEX content_publication_outbox_pending_idx ON content_publication_outbox USING btree (state, created_at, outbox_event_id) WHERE (state = ANY (ARRAY['pending'::text, 'failed'::text]));
 
@@ -31894,6 +32052,36 @@ ALTER TABLE ONLY community_streaks
 
 ALTER TABLE ONLY community_streaks
     ADD CONSTRAINT community_streaks_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY community_telegram_commands
+    ADD CONSTRAINT community_telegram_commands_community_id_fkey FOREIGN KEY (community_id) REFERENCES community_telegram_integrations(community_id);
+
+ALTER TABLE ONLY community_telegram_conversations
+    ADD CONSTRAINT community_telegram_conversations_community_id_fkey FOREIGN KEY (community_id) REFERENCES community_telegram_integrations(community_id);
+
+ALTER TABLE ONLY community_telegram_deliveries
+    ADD CONSTRAINT community_telegram_deliveries_community_id_fkey FOREIGN KEY (community_id) REFERENCES community_telegram_integrations(community_id);
+
+ALTER TABLE ONLY community_telegram_deliveries
+    ADD CONSTRAINT community_telegram_deliveries_post_id_fkey FOREIGN KEY (post_id) REFERENCES posts(post_id);
+
+ALTER TABLE ONLY community_telegram_inbox
+    ADD CONSTRAINT community_telegram_inbox_community_id_fkey FOREIGN KEY (community_id) REFERENCES community_telegram_integrations(community_id);
+
+ALTER TABLE ONLY community_telegram_integrations
+    ADD CONSTRAINT community_telegram_integrations_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY community_telegram_private_chats
+    ADD CONSTRAINT community_telegram_private_chats_community_id_fkey FOREIGN KEY (community_id) REFERENCES community_telegram_integrations(community_id);
+
+ALTER TABLE ONLY community_telegram_setups
+    ADD CONSTRAINT community_telegram_setups_community_id_fkey FOREIGN KEY (community_id) REFERENCES community_telegram_integrations(community_id);
+
+ALTER TABLE ONLY community_telegram_usage
+    ADD CONSTRAINT community_telegram_usage_community_id_fkey FOREIGN KEY (community_id) REFERENCES community_telegram_integrations(community_id);
+
+ALTER TABLE ONLY community_telegram_usage_reservations
+    ADD CONSTRAINT community_telegram_usage_reservations_community_id_fkey FOREIGN KEY (community_id) REFERENCES community_telegram_integrations(community_id);
 
 ALTER TABLE ONLY content_publication_outbox
     ADD CONSTRAINT content_publication_outbox_comment_fk FOREIGN KEY (community_id, comment_id) REFERENCES comments(community_id, comment_id);
