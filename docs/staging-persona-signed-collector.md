@@ -814,3 +814,34 @@ general-shard egress auditing is unchanged. The aggregate postgres17 gate
 requires recovery success as well as namespace and general success. Discovery
 tests prove exact, exhaustive, non-overlapping CI coverage. Local all/general
 partitions still include the recovery suites, so a full local run skips none.
+
+### Local publication verification — 2026-09-08
+
+The complete PostgreSQL 17.11 run passed serially at nice 10: 507 Bun tests
+with 7,769 assertions across the namespace suite and all four general shards,
+plus 30 nested composed Workerd tests. All 31 completion sentinels passed.
+The approved artifact history, database durability settings and PostgreSQL
+test deadlines were unchanged. This is not PostgreSQL 18.6 acceptance.
+
+Earlier attempts failed and remain retained in
+/tmp/karaoke-handoff-gates.1Rxgai. Read-only diagnostics identified DROP DATABASE
+waiting on CheckpointStart/CheckpointDone, including a 142.487-second checkpoint,
+and severe shared-host I/O pressure. Complete affected shards passed using
+fresh, identically configured fixtures, matching CI isolation. No timed-out run
+is counted as passing. All task-owned PostgreSQL containers were stopped.
+
+The final full unit run passed 3,553 tests with 23,359 assertions. Earlier unit
+runs exposed one stale CI-partition assertion, now corrected to require the
+recovery job, and filesystem-heavy journal integration timeouts. Those integration
+suites now explicitly allow 15 seconds of wall-clock time for signed, fsynced
+evidence. Pure unit tests retain their default limit. Assertions, injected
+ceremony clocks, authorization freshness, runtime deadlines and durability are
+unchanged. Independent review accepted this scoped test-harness correction.
+
+The repository check passed with its existing 41 warnings and two infos,
+including both persona type-check projects. Serial Node tests passed 20 cases;
+the other Workerd constituents passed 80, 73, 2, 9 and 15 cases. Production
+source through fe201797ee8996a72e1ada5864a5bfd00843db43 received independent review
+with no remaining blocking findings in either binding. Final commit review and
+remote publication checks are separate gates and are not implied by this local
+receipt. The live configuration and rehearsal boundary remain unchanged.

@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,6 +10,7 @@ import {
   type KaraokeJournalTrust,
   readKaraokeMaintenanceJournal,
 } from "./karaoke-maintenance-journal.ts";
+import { karaokeJournalIntegrationTest as test } from "./staging-karaoke-journal-test.ts";
 import { recordKaraokeObservationPass } from "./staging-karaoke-observation-pass.ts";
 import {
   makeStagingKaraokeR2Observer,

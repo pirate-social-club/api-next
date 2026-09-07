@@ -12,6 +12,13 @@ not the recovery, target, privilege, fence or provider-rehearsal gates. No live
 execution follows merely from accepting this amendment. The old atomic helper
 remains a local comparison/test primitive, not an alternative live reset path.
 
+The owner ratified a further grant-handoff amendment on 2026-09-08: runtime
+grants remain provably denied through reset and retirement and are restored
+only during release. This supersedes mid-reset restoration without weakening
+the maintenance fence. The reasoning, denied completion readback and independent
+release grant-digest verification are recorded in the
+[ratified handoff amendment](staging-persona-signed-collector.md#ratified-handoff-amendment--2026-09-08).
+
 ## Phases and refusal
 
 The trusted coordinator creates a durable exclusive marker outside the database

@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect } from "bun:test";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,6 +6,7 @@ import { reconciliationDigest } from "../packages/platform-cf/src/karaoke-reconc
 import { KARAOKE_RESET_OBJECT_IDS } from "../packages/platform-cf/src/karaoke-reset-installation.ts";
 import { makeKaraokeCollectorFixture } from "../packages/testing/src/karaoke-collector-fixture.ts";
 import { readKaraokeMaintenanceJournal } from "./karaoke-maintenance-journal.ts";
+import { karaokeJournalIntegrationTest as test } from "./staging-karaoke-journal-test.ts";
 import { recordStagingKaraokeFence } from "./staging-karaoke-record-fence.ts";
 
 const disposals: (() => void)[] = [];

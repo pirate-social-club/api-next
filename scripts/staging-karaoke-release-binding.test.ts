@@ -1,7 +1,8 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, test as unit } from "bun:test";
 import { reconciliationDigest } from "../packages/platform-cf/src/karaoke-reconciliation-evidence.ts";
 import { readKaraokeMaintenanceJournal, signedBytes } from "./karaoke-maintenance-journal.ts";
 import { openKaraokePrivateWriter } from "./karaoke-private-writer.ts";
+import { karaokeJournalIntegrationTest as test } from "./staging-karaoke-journal-test.ts";
 import {
   disposeMilestoneFixtures,
   makeKaraokeMilestoneFixture,
@@ -19,7 +20,7 @@ import type {
 afterEach(disposeMilestoneFixtures);
 const fixture = makeKaraokeMilestoneFixture;
 
-test("even a signed malformed surface record cannot stand for a required receipt", () => {
+unit("even a signed malformed surface record cannot stand for a required receipt", () => {
   const f = fixture();
   const writer = openKaraokePrivateWriter(f.journal.directory);
   try {

@@ -1,5 +1,6 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect } from "bun:test";
 import { readKaraokeMaintenanceJournal } from "./karaoke-maintenance-journal.ts";
+import { karaokeJournalIntegrationTest as test } from "./staging-karaoke-journal-test.ts";
 import {
   disposeMilestoneFixtures,
   makeKaraokeMilestoneFixture,

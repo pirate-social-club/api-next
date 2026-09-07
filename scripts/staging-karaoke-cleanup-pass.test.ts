@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, test as unit } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,6 +15,7 @@ import {
 import { openKaraokePrivateArtifacts } from "./karaoke-private-artifacts.ts";
 import { openKaraokePrivateWriter } from "./karaoke-private-writer.ts";
 import { recordKaraokeCleanupPass } from "./staging-karaoke-cleanup-pass.ts";
+import { karaokeJournalIntegrationTest as test } from "./staging-karaoke-journal-test.ts";
 import { recordKaraokeObservationPass } from "./staging-karaoke-observation-pass.ts";
 import { makeStagingKaraokeR2Cleaner } from "./staging-karaoke-r2-cleaner.ts";
 import {
@@ -271,54 +272,57 @@ test("uploads already gone at abort time record not-found actions and still comp
   expect(actions.data[0]?.response.status).toBe(404);
 });
 
-test("cleaner refuses mismatched observations and never issues actions for neighbors or absent heads", async () => {
-  const { transport, credentials } = fixture();
-  const cleaner = makeStagingKaraokeR2Cleaner({
-    accountId: "a".repeat(32),
-    credentials,
-    fetch: transport,
-  });
-  const authority = { accountId: "fixture-account", attemptId: "fixture-object" };
-  const observation = (key: string) => ({
-    uploads: {
-      key,
-      pages: [
-        {
-          marker: null,
-          nextMarker: null,
-          succeeded: true,
-          response: {
-            endpointKind: "staging-bucket-s3" as const,
-            bucket: STAGING_KARAOKE_BUCKET,
-            requestId: "fixture",
-            status: 200,
+unit(
+  "cleaner refuses mismatched observations and never issues actions for neighbors or absent heads",
+  async () => {
+    const { transport, credentials } = fixture();
+    const cleaner = makeStagingKaraokeR2Cleaner({
+      accountId: "a".repeat(32),
+      credentials,
+      fetch: transport,
+    });
+    const authority = { accountId: "fixture-account", attemptId: "fixture-object" };
+    const observation = (key: string) => ({
+      uploads: {
+        key,
+        pages: [
+          {
+            marker: null,
+            nextMarker: null,
+            succeeded: true,
+            response: {
+              endpointKind: "staging-bucket-s3" as const,
+              bucket: STAGING_KARAOKE_BUCKET,
+              requestId: "fixture",
+              status: 200,
+            },
+            prefix: key,
+            uploads: [{ key: `${key}.neighbor`, uploadId: "neighbor" }],
           },
-          prefix: key,
-          uploads: [{ key: `${key}.neighbor`, uploadId: "neighbor" }],
-        },
-      ],
-    },
-    head: {
-      key,
-      bucketVerified: true,
-      response: {
-        endpointKind: "staging-bucket-s3" as const,
-        bucket: STAGING_KARAOKE_BUCKET,
-        requestId: "fixture",
-        status: 404,
+        ],
       },
-      state: "absent" as const,
-    },
-  });
-  await expect(
-    cleaner.clean(authority, observation("karaoke/fixture-account/other.pcm")),
-  ).rejects.toThrow("karaoke_r2_cleaner_observation_denied");
-  const actions = await cleaner.clean(
-    authority,
-    observation(`karaoke/${authority.accountId}/${authority.attemptId}.pcm`),
-  );
-  expect(actions).toEqual([]);
-});
+      head: {
+        key,
+        bucketVerified: true,
+        response: {
+          endpointKind: "staging-bucket-s3" as const,
+          bucket: STAGING_KARAOKE_BUCKET,
+          requestId: "fixture",
+          status: 404,
+        },
+        state: "absent" as const,
+      },
+    });
+    await expect(
+      cleaner.clean(authority, observation("karaoke/fixture-account/other.pcm")),
+    ).rejects.toThrow("karaoke_r2_cleaner_observation_denied");
+    const actions = await cleaner.clean(
+      authority,
+      observation(`karaoke/${authority.accountId}/${authority.attemptId}.pcm`),
+    );
+    expect(actions).toEqual([]);
+  },
+);
 
 test("wrong operator or absent authority refuses before any bucket action", async () => {
   for (const failure of ["auth", "authority"] as const) {
