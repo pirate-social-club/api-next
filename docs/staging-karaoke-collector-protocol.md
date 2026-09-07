@@ -141,3 +141,18 @@ history and key non-reuse. Observation-normalization helpers are not those
 collectors. The operator lane implements read-only inspection and the private
 store adapter/CLI. No reset admission, release descendant or live window is
 claimed until those implementations and fresh proofs are reviewed.
+
+
+## Initial journal command
+
+The runner's default collector also accepts `record-karaoke-fence
+--run-directory <private-directory>` through the same verified-stdin boundary.
+The dedicated `scripts/staging-karaoke-record-fence-cli.ts` selects it only with
+`--record-fence`. It records fresh,
+authenticated provider and SQL observations locally and returns no reset
+execution authority. Its private configuration begins with a null retained
+journal head, empty baseline IDs and empty six-object pass history. The parent
+validates the signed resulting head and challenge, then returns the six baseline
+IDs for independent retention. Initialization refuses an existing journal.
+The collector checkpoint document records the two-write interruption boundary
+and the still-unimplemented pass/reset/release command integration.

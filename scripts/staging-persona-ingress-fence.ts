@@ -117,7 +117,7 @@ export function planPersistentIngressFence(input: {
   if (workerApplications.length > 1) throw new Error("ingress_worker_policy_ambiguous");
   const workerApplication = workerApplications[0] ?? null;
   if (workerApplication !== null) assertWorkerApplication(workerApplication);
-  return Object.freeze({
+  return Object.freeze<PersistentIngressFencePlan>({
     workerId: STAGING_HTTP_WORKER_ID,
     hosts,
     runtimePins: {

@@ -29,7 +29,7 @@ export async function inspectStagingKaraokeObject(input: {
   const started = clock();
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let reader: Pick<ReadableStreamDefaultReader<Uint8Array>, "read" | "cancel"> | undefined;
   try {
     return await Promise.race([
       (async () => {

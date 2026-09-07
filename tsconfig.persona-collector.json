@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "scripts/staging-karaoke-collector-main.ts",
+    "scripts/staging-karaoke-record-fence-cli.ts",
+    "scripts/staging-karaoke-record-fence.test.ts",
+    "scripts/staging-karaoke-signing-collector.test.ts"
+  ],
+  "exclude": []
+}

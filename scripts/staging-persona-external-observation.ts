@@ -163,7 +163,7 @@ export async function readStagingExternalSnapshot(
       if (failed || code !== 0) reject(new Error("external_snapshot_unproven"));
       else {
         try {
-          resolve(new TextDecoder("utf8", { fatal: true }).decode(output).trim());
+          resolve(new TextDecoder("utf-8", { fatal: true }).decode(output).trim());
         } catch {
           reject(new Error("external_snapshot_unproven"));
         }

@@ -18,9 +18,9 @@ stdin, authenticates Access and invokes the real reconciliation verifier.
 
 The child receives its private configuration path through
 KARAOKE_LIVE_COLLECTOR_CONFIG. Its strict schema is in
-scripts/staging-karaoke-collector-runtime.ts. It references the private operator
+scripts/staging-karaoke-collector-config.ts. It references the private operator
 configuration, signing-key file, inspection origin, journal directory, retained
-journal head, six baseline artifact IDs and independently reviewed maintenance
+journal head, residual-disposition file, six baseline artifact IDs and independently reviewed maintenance
 pins. Configuration, assertion, bundle and signing key must remain outside both
 evidence directories. The child rereads the private files and verifies the
 bundle digest. It independently authenticates Access before provider reads.
@@ -127,9 +127,9 @@ configuration/assertion path remains pending.
 
 ## Remaining runner work
 
-The default signer is implemented, but the authenticated commands which
-originate the real baseline, reconciliation-pass, reset and release journal
-entries still need integration with the maintained-fence runner. Do not seed
+The default signer and authenticated initial fence/baseline recorder are
+implemented. The commands which originate reconciliation-pass, reset and
+release journal entries still need integration with the maintained-fence runner. Do not seed
 those entries from fixtures or re-sign submitted booleans. External source and
 destination classification must finish before its pins can be provisioned.
 The operator identity, private signing configuration, reviewed runtime versions
@@ -142,3 +142,64 @@ interrupted replay/recovery, reviewed live fencing/reset and the at-least-24-hou
 retention follow-up remain gates. Synthetic and real video publications follow
 the completed reset; they cannot be interleaved with it. This checkpoint does
 not waive any of those gates or close the execution task.
+
+
+## Initial fence recording
+
+The explicit `--record-fence` command in
+`scripts/staging-karaoke-record-fence-cli.ts` reuses the operator CLI launcher and invokes the
+verified stdin bundle's `record-karaoke-fence` command. It authenticates Access
+in both parent and child, requires an initial configuration with no journal head
+and no baseline or pass history, and verifies the separately retained owner
+residual disposition. The default composition reads the actual ingress-first
+maintenance fence, all six authenticated object snapshots and each object's
+target-bound PostgreSQL identity. Every positive fence property and freshness
+must be proved. A null authority is refused until an independent non-deletion
+history adapter exists; current emptiness does not manufacture that evidence.
+
+Only after all six observations succeed does the recorder append signed begin
+and fence-observed events. It retains the random parent challenge, original
+snapshots including false quiescence, and six immutable identity baselines.
+The parent verifies the resulting journal and challenge rather than accepting
+stdout as success. Repeated initialization cannot replace the existing journal.
+An interruption between the two head writes remains an unestablished journal
+for explicit recovery; it does not grant reset authority. The returned head
+and baseline identifiers must be retained outside the journal before normal
+collection. There is no marker installation, bucket cleanup, reset or release
+operation in this command.
+
+The new tests exercise authenticated recording with provider-bound doubles,
+real private files and the real signed journal. They cover refusal before any
+journal head on wrong subject, wrong challenge, a failed fence, missing
+authority or unavailable SQL. The positive case retains six snapshots with
+false quiescence and refuses repeated initialization. The first test run failed
+because the older fixture used a generic bucket; the fixture was corrected to
+the fixed staging bucket without weakening production admission. These are
+local tests, not live fence evidence.
+
+A metadata-only September 7 inspection of all folders in the staging Infisical
+project found no additional Cloudflare Access/operator credential. The existing
+operator folder contains the PostgreSQL operator and runtime URLs only among
+the relevant credential classes. Secret values were not printed or copied.
+
+
+The initial integration check failed when the new command pulled the full Node
+collector into the Worker-binding type-check graph. The recording CLI is now a
+separate entrypoint sharing only the verified-byte launcher with the verifier
+CLI. A dedicated persona-collector TypeScript gate was added to the ordinary
+check command; it covers the default bundle, recording CLI and associated
+tests. It exposed three previously unchecked type errors in the retained reader
+code: the stream reader's required Bun extension, a TextDecoder encoding alias,
+and an ingress-plan literal widening. They were corrected without changing
+provider admission or runtime pins. The full check then passed with the same
+41 warnings and two informational diagnostics.
+
+
+Final local fence-recorder gates passed: check, 3,460 unit tests, 20 Node tests
+and 179 Workerd tests, each exit 0. The ordinary test command's constituent
+suites were run serially; every Vitest invocation explicitly used maxWorkers=1
+and fileParallelism=false at nice level 10. The Workerd HTTP suite emitted its
+expected negative-path exception diagnostics while all 73 tests passed. No
+fresh PostgreSQL baseline, remote CI, default live recorder, restore or reset
+result is claimed. The source remains an implementation checkpoint, not the
+rehearsal gate requested for video.

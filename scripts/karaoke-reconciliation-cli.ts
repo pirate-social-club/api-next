@@ -13,10 +13,13 @@ import {
 } from "./karaoke-reconciliation-adapter.ts";
 
 /** No shell, no token argument, no success-by-stdout. The signed artifacts decide. */
-function collect(
+export function collectKaraokeEvidence(
   config: typeof KaraokeOperatorConfig.Type,
   challenge: KaraokeCollectorChallenge,
   assertionPath: string,
+  command:
+    | "collect-karaoke-reconciliation"
+    | "record-karaoke-fence" = "collect-karaoke-reconciliation",
 ): Promise<void> {
   const bundle = readKaraokePrivateFile(config.collectorPath, 16_777_216);
   if (reconciliationDigest(bundle) !== config.collectorSourceDigest)
@@ -27,7 +30,7 @@ function collect(
     // via KARAOKE_COLLECTOR_CHALLENGE. The private credential path is separate.
     const child = spawn(
       process.execPath,
-      ["run", "-", "collect-karaoke-reconciliation", "--run-directory", config.directory],
+      ["run", "-", command, "--run-directory", config.directory],
       {
         shell: false,
         stdio: ["pipe", "ignore", "ignore"],
@@ -82,7 +85,7 @@ export async function runKaraokeReconciliationCli(
     config,
     assertion,
     {
-      collect: (challenge) => collect(config, challenge, assertionPath),
+      collect: (challenge) => collectKaraokeEvidence(config, challenge, assertionPath),
     },
     dependencies.now,
     dependencies.authenticationFetch,

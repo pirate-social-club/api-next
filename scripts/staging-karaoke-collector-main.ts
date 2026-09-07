@@ -1,9 +1,10 @@
 import { runStagingKaraokeCollector } from "./staging-karaoke-collector-runtime.ts";
+import { recordStagingKaraokeFence } from "./staging-karaoke-record-fence.ts";
 
 // Build with import.meta.main=false for imported diagnostic CLI modules. The
 // verified stdin entrypoint uses this exact argument protocol instead.
 if (
-  process.argv.at(-3) === "collect-karaoke-reconciliation" &&
+  ["collect-karaoke-reconciliation", "record-karaoke-fence"].includes(process.argv.at(-3) ?? "") &&
   process.argv.at(-2) === "--run-directory"
 ) {
   try {
@@ -22,7 +23,11 @@ if (
       !runDirectory
     )
       throw new Error("collector_configuration_missing");
-    await runStagingKaraokeCollector({
+    const execute =
+      process.argv.at(-3) === "record-karaoke-fence"
+        ? recordStagingKaraokeFence
+        : runStagingKaraokeCollector;
+    await execute({
       configPath,
       assertionPath,
       sourceDigest,
