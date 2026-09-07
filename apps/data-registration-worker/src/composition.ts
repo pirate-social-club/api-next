@@ -7,6 +7,7 @@ import {
   type DataRegistrationSigningPolicy,
   makeDataRegistrationSigningCoordinator,
 } from "@pirate/application/data/signing-coordinator";
+import { isExplicitlyEnabled } from "@pirate/platform-cf/cloudflare-orchestration-primitives";
 import {
   type FilebaseIpfsTransport,
   makeFilebaseIpfsPinningAdapter,
@@ -33,7 +34,6 @@ import { makeDataRegistrationStore } from "@pirate/platform-cf/data-registration
 import { makeHyperdriveControlPlaneLayer } from "@pirate/platform-cf/postgres";
 import { Effect } from "effect";
 import type { DataRegistrationWorkerComposition, DataRegistrationWorkerEnv } from "./index.ts";
-import { isDataRegistrationEnabled } from "./posture.ts";
 
 export type DataRegistrationRuntimeEnv = DataRegistrationWorkerEnv &
   Readonly<{
@@ -153,7 +153,7 @@ export function makeDataRegistrationComposition(
     workerId: `data-registration-${crypto.randomUUID()}`,
     leaseSeconds: 60,
   };
-  if (!isDataRegistrationEnabled(env.DATA_REGISTRATION_ENABLED)) {
+  if (!isExplicitlyEnabled(env.DATA_REGISTRATION_ENABLED)) {
     return { queue, workflow: disabledWorkflow() };
   }
 

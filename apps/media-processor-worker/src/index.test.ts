@@ -15,7 +15,6 @@ import {
   makeMediaProcessingWorkflowRunner,
   makeMediaProcessorQueueWorker,
 } from "./index.ts";
-import { isMediaProcessingEnabled } from "./posture.ts";
 
 describe("media processor Worker posture", () => {
   test("drill 3 launch boundary: accepted create with lost response converges through the queue Worker", async () => {
@@ -116,13 +115,6 @@ describe("media processor Worker posture", () => {
     expect(launches).toBe(1);
     expect(row.launchAttempts).toBe(2);
     expect(row.workflowInstanceId).toMatch(/^vaw-[0-9a-f]{64}$/u);
-  });
-
-  test("is disabled by default and requires an exact opt-in", () => {
-    expect(isMediaProcessingEnabled(undefined)).toBe(false);
-    expect(isMediaProcessingEnabled("false")).toBe(false);
-    expect(isMediaProcessingEnabled("TRUE")).toBe(false);
-    expect(isMediaProcessingEnabled("true")).toBe(true);
   });
 
   test("routes video identities away from the song workflow and retries until composed", async () => {
