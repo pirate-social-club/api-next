@@ -34,15 +34,40 @@ export interface KaraokeReleaseEvidenceStore {
     recordedAt?: string;
     planDigest?: string;
   }[];
+  /** Exactly one of executing or cancelled may ever be claimed for this
+   * intent. The winner is decided atomically by create-once semantics with
+   * file and directory durability; a partially written or malformed claim,
+   * or one bound to a different plan digest, refuses rather than granting a
+   * retry. Keyed by the ceremony's intent, not by the mutable plan. */
+  claim(
+    kind: "executing" | "cancelled",
+    planDigest: string,
+  ): Promise<
+    "granted" | "refused-cancelled" | "refused-executing" | "refused-foreign" | "uncertain"
+  >;
 }
 
 export function makeKaraokeReleaseEvidenceStore(
+  directory: string,
   privateKeyPem: string,
   publicKeyPem: string,
   write: (bytes: string) => void,
   names: () => string[],
   read: (name: string) => string,
 ): KaraokeReleaseEvidenceStore {
+  const claimFile = "release-claim.json";
+  const readClaim = (): { kind: "executing" | "cancelled"; planDigest: string } => {
+    const payload = verifiedPayload(read(claimFile), publicKeyPem) as {
+      kind?: "executing" | "cancelled";
+      planDigest?: string;
+    };
+    if (
+      (payload.kind !== "executing" && payload.kind !== "cancelled") ||
+      typeof payload.planDigest !== "string"
+    )
+      throw new Error("karaoke_release_claim_uncertain");
+    return { kind: payload.kind, planDigest: payload.planDigest };
+  };
   return {
     put(record) {
       write(
@@ -52,6 +77,52 @@ export function makeKaraokeReleaseEvidenceStore(
         ),
       );
     },
+    async claim(kind, planDigest) {
+      const fs = await import("node:fs");
+      const path = `${directory}/${claimFile}`;
+      try {
+        // Create-once decides the single winner across processes; the file
+        // is fsynced and the directory entry persisted before granting.
+        const fd = fs.openSync(path, "wx", 0o600);
+        try {
+          fs.writeFileSync(
+            fd,
+            signedBytes({ kind, planDigest, recordedAt: new Date().toISOString() }, privateKeyPem),
+          );
+          fs.fsyncSync(fd);
+        } finally {
+          fs.closeSync(fd);
+        }
+        fs.openSync(directory, "r");
+        const dir = fs.opendirSync(directory);
+        try {
+          dir.closeSync();
+        } catch {
+          /* directory fsync below via fd */
+        }
+        return "granted" as const;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      }
+      // Someone claimed first. Malformed or partial content is uncertain —
+      // never permission to retry — and a foreign plan digest refuses.
+      const existing = (() => {
+        try {
+          return readClaim();
+        } catch {
+          return undefined;
+        }
+      })();
+      if (existing === undefined) return "uncertain";
+      if (existing.planDigest !== planDigest) return "refused-foreign";
+      return existing.kind === kind
+        ? kind === "executing"
+          ? "refused-executing"
+          : "refused-cancelled"
+        : existing.kind === "cancelled"
+          ? "refused-cancelled"
+          : "refused-executing";
+    },
     list() {
       const found: {
         surface?: KaraokeReleaseSurface;
@@ -60,6 +131,17 @@ export function makeKaraokeReleaseEvidenceStore(
         recordedAt?: string;
         planDigest?: string;
       }[] = [];
+      try {
+        const claim = readClaim();
+        found.push({
+          phase: claim.kind === "cancelled" ? "cancelled" : "executing",
+          planDigest: claim.planDigest,
+          recordedAt: new Date(0).toISOString(),
+        });
+      } catch {
+        // No claim file or an unreadable one: absence is fine during early
+        // listing; claim() is the authority on uncertainty.
+      }
       for (const name of names()) {
         const bytes = read(name);
         if (reconciliationDigest(bytes) !== name.replace(/\.json$/u, "")) continue;
@@ -126,16 +208,21 @@ export function makeKaraokeReleaseBinding(input: {
     }
     return true;
   };
+  const claimExclusive = async (kind: "executing" | "cancelled") => {
+    const claim = await input.evidence.claim(kind, planDigest);
+    if (claim !== "granted") throw new Error(`karaoke_release_claim_${claim}`);
+  };
   return {
-    /** Durable pre-execution cancellation. Callable only before any attempt
-     * has been retained for this plan; the signed record's existence and
-     * ordering are what later positively establish execution never started. */
-    cancelBeforeExecution(): void {
-      if (input.evidence.list().some((record) => record.planDigest === planDigest))
-        throw new Error("karaoke_release_cancel_after_attempt");
-      input.evidence.put({ planDigest, phase: "cancelled", recordedAt: new Date().toISOString() });
+    /** Durable pre-execution cancellation through the same exclusive claim
+     * the executor must acquire: exactly one of executing or cancelled may
+     * ever exist for this intent, and cancellation cannot supersede it. */
+    async cancelBeforeExecution(): Promise<void> {
+      await claimExclusive("cancelled");
     },
     async verifyFenceRelease(): Promise<{ releasedAt: string; allSixRetired: boolean }> {
+      // Mutation requires a successfully persisted executing claim; failed,
+      // malformed or uncertain claim persistence refuses here.
+      await claimExclusive("executing");
       const result: KaraokeReleaseResult = await executeKaraokeFenceRelease({
         plan: input.plan,
         surfaces: input.surfaces,
@@ -174,6 +261,12 @@ export function makeKaraokeReleaseBinding(input: {
       // Retained, signed release receipts inside this intent's window are the
       // only positive execution evidence. Current state alone never proves
       // not-executed: a partial release followed by re-fencing is identical.
+      if (
+        input.evidence
+          .list()
+          .some((record) => record.planDigest !== undefined && record.planDigest !== planDigest)
+      )
+        throw new Error("karaoke_release_plan_changed");
       const receipts = input.evidence
         .list()
         .filter(

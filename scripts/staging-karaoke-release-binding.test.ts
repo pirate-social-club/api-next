@@ -42,6 +42,7 @@ function surfaces(
 function evidence(f: ReturnType<typeof fixture>) {
   const writer = openKaraokePrivateWriter(f.journal.directory);
   return makeKaraokeReleaseEvidenceStore(
+    f.journal.directory,
     f.base.privateKeyPem,
     f.base.trust.collectorPublicKeyPem,
     (bytes) => writer.putArtifact(bytes),
@@ -201,6 +202,7 @@ test("mutation success with lost receipt persistence then re-fencing never re-ex
     calls: [] as KaraokeReleaseSurface[],
   };
   const full = evidence(f);
+  void 0;
   const lossy: typeof full = {
     put: (record) => {
       if ((record as { phase?: string }).phase === "released")
@@ -208,6 +210,7 @@ test("mutation success with lost receipt persistence then re-fencing never re-ex
       full.put(record);
     },
     list: () => full.list(),
+    claim: (kind, digest) => full.claim(kind, digest),
   };
   let reFenced = false;
   const binding = makeKaraokeReleaseBinding({
@@ -246,4 +249,98 @@ test("mutation success with lost receipt persistence then re-fencing never re-ex
   ).rejects.toThrow();
   expect(state.calls.length).toBe(callsAfterRetry);
   expect(await binding.reconcileReleasedFence({})).toEqual({ disposition: "unresolved" });
+});
+
+test("concurrent execution and cancellation claims allow exactly one winner", async () => {
+  const f = await ceremony();
+  const state = {
+    fail: null as KaraokeReleaseSurface | null,
+    calls: [] as KaraokeReleaseSurface[],
+  };
+  const exec = makeKaraokeReleaseBinding({
+    plan,
+    surfaces: surfaces(state, f.now),
+    observeRestored: {
+      ingress: async () => "fenced" as const,
+      producers: async () => "fenced" as const,
+      database: async () => "fenced" as const,
+    },
+    evidence: evidence(f),
+    readers: f.base.readers,
+    now: f.now,
+  });
+  const cancelled = await exec.cancelBeforeExecution().then(
+    () => true,
+    () => false,
+  );
+  // After the cancellation claim persisted, execution must be refused.
+  await expect(exec.verifyFenceRelease()).rejects.toThrow("karaoke_release_claim");
+  expect(cancelled).toBe(true);
+  expect(state.calls).toEqual([]);
+  expect(await exec.reconcileReleasedFence({})).toEqual({ disposition: "not-executed" });
+});
+
+test("a malformed claim from interrupted persistence refuses mutation", async () => {
+  const f = await ceremony();
+  const state = {
+    fail: null as KaraokeReleaseSurface | null,
+    calls: [] as KaraokeReleaseSurface[],
+  };
+  const store = evidence(f);
+  const { writeFileSync } = await import("node:fs");
+  // A crash during claim persistence left truncated bytes.
+  writeFileSync(`${f.journal.directory}/release-claim.json`, '{"payl', { mode: 0o600 });
+  const binding = makeKaraokeReleaseBinding({
+    plan,
+    surfaces: surfaces(state, f.now),
+    observeRestored: {
+      ingress: async () => "fenced" as const,
+      producers: async () => "fenced" as const,
+      database: async () => "fenced" as const,
+    },
+    evidence: store,
+    readers: f.base.readers,
+    now: f.now,
+  });
+  await expect(binding.verifyFenceRelease()).rejects.toThrow("karaoke_release_claim_uncertain");
+  await expect(binding.cancelBeforeExecution()).rejects.toThrow("karaoke_release_claim_uncertain");
+  expect(state.calls).toEqual([]);
+});
+
+test("changing the plan during recovery refuses instead of hiding history", async () => {
+  const f = await ceremony();
+  const state = {
+    fail: null as KaraokeReleaseSurface | null,
+    calls: [] as KaraokeReleaseSurface[],
+  };
+  const binding = makeKaraokeReleaseBinding({
+    plan,
+    surfaces: surfaces(state, f.now),
+    observeRestored: {
+      ingress: async () => "fenced" as const,
+      producers: async () => "fenced" as const,
+      database: async () => "fenced" as const,
+    },
+    evidence: evidence(f),
+    readers: f.base.readers,
+    now: f.now,
+  });
+  await binding.cancelBeforeExecution();
+  const altered = makeKaraokeReleaseBinding({
+    plan: { ...plan, surfaceOrder: ["database", "producers", "ingress"] as const },
+    surfaces: surfaces(state, f.now),
+    observeRestored: {
+      ingress: async () => "fenced" as const,
+      producers: async () => "fenced" as const,
+      database: async () => "fenced" as const,
+    },
+    evidence: evidence(f),
+    readers: f.base.readers,
+    now: f.now,
+  });
+  await expect(altered.verifyFenceRelease()).rejects.toThrow(
+    "karaoke_release_claim_refused-foreign",
+  );
+  await expect(altered.reconcileReleasedFence({})).rejects.toThrow("karaoke_release_plan_changed");
+  expect(state.calls).toEqual([]);
 });
