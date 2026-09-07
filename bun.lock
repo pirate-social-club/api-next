@@ -81,13 +81,17 @@
       "name": "@pirate/media-processor-worker",
       "version": "0.0.0",
     },
+    "apps/staging-karaoke-reset-caller": {
+      "name": "@pirate/staging-karaoke-reset-caller",
+      "version": "0.0.0",
+    },
     "apps/video-source-gateway": {
       "name": "@pirate/video-source-gateway",
       "version": "0.0.0",
     },
     "packages/api-client": {
       "name": "@pirate/api-client",
-      "version": "0.62.0",
+      "version": "0.65.0",
     },
     "packages/application": {
       "name": "@pirate/application",
@@ -600,6 +604,8 @@
     "@pirate/platform-cf": ["@pirate/platform-cf@workspace:packages/platform-cf"],
 
     "@pirate/route-label-codec": ["@pirate/route-label-codec@workspace:packages/route-label-codec"],
+
+    "@pirate/staging-karaoke-reset-caller": ["@pirate/staging-karaoke-reset-caller@workspace:apps/staging-karaoke-reset-caller"],
 
     "@pirate/testing": ["@pirate/testing@workspace:packages/testing"],
 

@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./karaoke-reset-caller": "./src/karaoke-reset-caller.ts",
     ".": "./src/index.ts",
     "./cloudflare-access-jwt": "./src/cloudflare-access-jwt.ts",
     "./hns-community-app-api": "./src/hns-community-app-api.ts",
