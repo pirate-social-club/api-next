@@ -74,3 +74,34 @@ Shared-schema integration then passed repository check and 29 focused
 inspection, adapter, CLI and exact fence-decoder tests (80 assertions, exit 0).
 The ordinary suite above remains the pre-integration run; no duplicate broad
 suite is claimed. Operator PR 306 owns its independent remote checks.
+
+## Reviewed deployment observation
+
+The read-only deployment collector requires independently reviewed version IDs
+for all four scoped staging Workers. It reads the deployment API serially twice,
+requires the first deployment to serve exactly one reviewed version at 100%,
+and rejects a changed deployment ID even when the version is unchanged. Older
+matching history cannot satisfy the check. Responses are capped at 256 KiB and
+collection at fifteen seconds; redirects and transport errors fail closed without
+retaining provider error text. The bounded body reader is shared with ingress.
+
+Cloudflare documents the first deployment as the one actively serving traffic:
+https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/deployments/methods/list/
+The pins must come from the reviewed runtime-descendant release receipt, not
+from the same inventory being tested. This component returns deployment identity
+only and executionAuthorized=false. Two matching observations are not proof of
+continuous producer quiescence, queue drain, or reset admission. Live provider
+acceptance and composition with the maintained journal remain outstanding.
+
+The deployment and ingress suites passed together: nine tests, 73 assertions,
+exit 0. This is fixture transport evidence, not a live deployment observation.
+
+The serial ordinary suite then passed: 3,431 unit, 20 Node and 179 Workerd
+tests, exit 0. The final rejected-response body cancellation change passed
+the deployment and ingress suites together: eleven tests, 77 assertions, exit
+0, including a real fifteen-second hung-transport deadline. The broad run
+predates only that cleanup and its focused regression. No PostgreSQL schema or
+query changed, and no new PostgreSQL or remote CI run is claimed here.
+Final repository check passed, exit 0, with the same 41 existing warnings and
+two informational diagnostics. Script-check and staged whitespace checks also
+passed. All checks ran serially with reduced CPU priority for the broad gates.

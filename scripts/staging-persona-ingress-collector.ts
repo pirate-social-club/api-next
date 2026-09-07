@@ -4,6 +4,7 @@ import {
   STAGING_HTTP_INGRESS_HOSTS,
   STAGING_HTTP_WORKER_ID,
 } from "./staging-persona-ingress-fence.ts";
+import { readBoundedProviderJson } from "./staging-provider-response.ts";
 
 const Id = Schema.String.check(Schema.isPattern(/^[a-f0-9-]{32,36}$/u));
 const Destination = Schema.Struct({
@@ -110,26 +111,6 @@ export function verifyStagingIngressBlockPolicies(raw: readonly unknown[]) {
   return policies[0];
 }
 
-async function boundedJson(response: Response) {
-  if (response.status !== 200 || response.body === null)
-    throw new Error("ingress_provider_response");
-  const reader = response.body.getReader();
-  const bytes = new Uint8Array(2_097_152);
-  let count = 0;
-  try {
-    while (true) {
-      const next = await reader.read();
-      if (next.done) break;
-      if (count + next.value.byteLength > bytes.length) throw new Error("ingress_provider_size");
-      bytes.set(next.value, count);
-      count += next.value.byteLength;
-    }
-    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, count)));
-  } finally {
-    void reader.cancel().catch(() => undefined);
-  }
-}
-
 /** Read-only provider inventory and unauthenticated probes. Does not install a fence. */
 export async function collectStagingIngressFence(input: {
   readonly accountId: string;
@@ -159,7 +140,7 @@ export async function collectStagingIngressFence(input: {
                 signal: controller.signal,
               },
             );
-            const envelope = decode(Envelope, await boundedJson(response));
+            const envelope = decode(Envelope, await readBoundedProviderJson(response, 2_097_152));
             const total = envelope.result_info.total_pages;
             if (
               envelope.result_info.page !== page ||
