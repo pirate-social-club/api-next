@@ -36,6 +36,12 @@ Fence evidence requires denied ingress, fenced producers, denied runtime writes
 and reconnection, and zero runtime sessions. The reset runner owns that positive
 database proof. A guessed settle interval does not satisfy it.
 
+Establish that database fence and session drain before the first post-fence
+R2 pass, after ingress maintenance, fenced runtime deployment and all six
+marker installations/readbacks. Reverify maintained fences for the pre-reset
+pass. The word post-fence refers to the complete producer/database fence,
+not solely installation of Durable Object markers.
+
 The installation receipt remains immutable. Reset admission can be eligible
 while `quiescenceEstablished` is false: verified external evidence composes with
 that fact rather than replacing it. The result grants no provider capability.
