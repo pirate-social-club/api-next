@@ -59,6 +59,7 @@ export const noBaselinePostgresTestSuites = [
   "scripts/staging-persona-schema-authority.pg.test.ts",
   "scripts/staging-persona-session-drain.pg.test.ts",
   "scripts/staging-persona-runtime-denial.pg.test.ts",
+  "scripts/staging-persona-database-collector.pg.test.ts",
   "scripts/staging-persona-reset-replay.pg.test.ts",
   "scripts/staging-persona-reconstruct.pg.test.ts",
   "scripts/staging-persona-phased-reset.pg.test.ts",

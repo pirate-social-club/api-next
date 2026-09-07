@@ -136,7 +136,7 @@ async function sqlIdentity(raw: string, expectedRole: string) {
 /** Fixed-target, read-only collector. Secrets remain in process memory. This
  * proves neither a fence nor recovery and cannot invoke reconstruction.
  */
-export async function collectStagingTargetBinding() {
+export async function collectStagingProviderBinding() {
   let phase = "credentials";
   try {
     const adminRaw = process.env.CONTROL_PLANE_POSTGRES_ADMIN_URL;
@@ -208,11 +208,6 @@ export async function collectStagingTargetBinding() {
       object(hyperdrive.caching).disabled !== true
     )
       throw new Error("staging_hyperdrive_target_mismatch");
-    // Sequential fresh sessions do not consume two scarce staging slots at once.
-    phase = "runtime_sql";
-    await sqlIdentity(runtimeRaw, runtime.sqlRole);
-    phase = "admin_sql";
-    await sqlIdentity(adminRaw, admin.sqlRole);
     const tuple = {
       databaseId,
       branchId,
@@ -225,12 +220,29 @@ export async function collectStagingTargetBinding() {
       runtimeRole: runtime.sqlRole,
     };
     return {
+      otherActiveRoleIds: roles
+        .filter((value) => {
+          const role = object(value);
+          return (
+            role.id !== admin.id &&
+            role.id !== runtime.id &&
+            role.expired !== true &&
+            role.deleted_at == null &&
+            role.dropped_at == null &&
+            role.disabled_at == null
+          );
+        })
+        .map((value) => String(object(value).id)),
+      admin,
+      runtime,
+      adminRaw,
+      runtimeRaw,
       observed_at: new Date().toISOString(),
       database_id: databaseId,
       branch_id: branchId,
       hyperdrive_id: hyperdriveId,
       target_binding_sha256: createHash("sha256").update(JSON.stringify(tuple)).digest("hex"),
-      provider_sql_hyperdrive_bound: true,
+      provider_hyperdrive_bound: true,
       caching_disabled: true,
       fence_verified: false,
       recovery_verified: false,
@@ -253,5 +265,26 @@ if (import.meta.main) {
         : "staging_target_binding_unproven",
     );
     process.exitCode = 1;
+  }
+}
+
+/** Pre-fence diagnostic additionally authenticates both SQL sessions. The private
+ * provider collector above is reusable after CONNECT is denied. */
+export async function collectStagingTargetBinding() {
+  const {
+    admin,
+    runtime,
+    adminRaw,
+    runtimeRaw,
+    otherActiveRoleIds: _otherActiveRoleIds,
+    provider_hyperdrive_bound,
+    ...evidence
+  } = await collectStagingProviderBinding();
+  try {
+    await sqlIdentity(runtimeRaw, runtime.sqlRole);
+    await sqlIdentity(adminRaw, admin.sqlRole);
+    return { ...evidence, provider_sql_hyperdrive_bound: provider_hyperdrive_bound };
+  } catch {
+    throw new Error("staging_target_binding_failed:sql_identity");
   }
 }

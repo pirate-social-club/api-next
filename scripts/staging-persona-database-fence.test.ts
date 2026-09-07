@@ -1,4 +1,6 @@
 import { expect, test } from "bun:test";
+import { Schema } from "effect";
+import { FenceEvidence } from "../packages/platform-cf/src/karaoke-reconciliation-evidence.ts";
 import {
   assertFenceEvidenceShape,
   canonicalFenceTime,
@@ -111,6 +113,11 @@ test("artifact bytes are scope-bound and hashable without exposing role names", 
   expect(artifact.id).toMatch(/^[a-f0-9]{64}$/);
   expect(artifact.bytes).not.toContain("runtime-http");
   expect(artifact.bytes).not.toContain("runtimeIdentityFingerprints");
+  expect(() =>
+    Schema.decodeUnknownSync(FenceEvidence, { onExcessProperty: "error" })(
+      JSON.parse(artifact.bytes).data,
+    ),
+  ).not.toThrow();
   expect(Object.keys(JSON.parse(artifact.bytes).data).sort()).toEqual([
     "databaseWrites",
     "ingress",

@@ -1,5 +1,34 @@
 import type { Client } from "pg";
 
+export const RUNTIME_DENIAL_CATALOG_SQL = `
+      WITH roles AS (
+        SELECT oid, rolname, rolsuper, rolcreaterole, rolcreatedb, rolbypassrls, rolreplication
+        FROM pg_catalog.pg_roles WHERE pg_has_role($2::name, oid, 'MEMBER')
+      ), target AS (SELECT oid FROM pg_catalog.pg_namespace WHERE nspname = $1)
+      SELECT
+        (SELECT count(*)::int FROM target) AS schema_count,
+        EXISTS (SELECT FROM roles WHERE rolsuper OR rolcreaterole OR rolcreatedb
+          OR rolbypassrls OR rolreplication OR left(rolname, 3) = 'pg_') AS elevated,
+        EXISTS (SELECT FROM roles WHERE has_database_privilege(roles.oid, current_database(), 'CREATE'))
+          AS database_create,
+        EXISTS (SELECT FROM roles JOIN pg_catalog.pg_shdepend d ON d.refobjid = roles.oid
+          WHERE d.refclassid = 'pg_catalog.pg_authid'::regclass AND d.deptype = 'o'
+            AND d.dbid = (SELECT oid FROM pg_catalog.pg_database WHERE datname = current_database())) AS owns_objects,
+        EXISTS (SELECT FROM roles, target
+          WHERE has_schema_privilege(roles.oid, target.oid, 'USAGE,CREATE')) AS schema_access,
+        EXISTS (SELECT FROM roles, pg_catalog.pg_class c, target
+          WHERE c.relnamespace = target.oid AND c.relkind IN ('r','p','v','m','f')
+          AND (has_table_privilege(roles.oid,c.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
+            OR has_any_column_privilege(roles.oid,c.oid,'SELECT,INSERT,UPDATE,REFERENCES')))
+          AS table_access,
+        EXISTS (SELECT FROM roles, pg_catalog.pg_class c, target
+          WHERE c.relnamespace = target.oid AND c.relkind = 'S'
+            AND has_sequence_privilege(roles.oid,c.oid,'USAGE,SELECT,UPDATE')) AS sequence_access,
+        EXISTS (SELECT FROM roles, pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+          WHERE p.prosecdef AND has_schema_privilege(roles.oid,n.oid,'USAGE')
+            AND has_function_privilege(roles.oid,p.oid,'EXECUTE')) AS definer_access
+    `;
+
 /**
  * Observe a dedicated connection authenticated with runtime credentials.
  * This does not fence writers, verify provider identity, or authorize a reset.
@@ -24,37 +53,7 @@ export async function observeRuntimeDenial(
       throw new Error("identity");
     }
     // Include every membership conservatively, including roles available via SET ROLE.
-    const result = await runtime.query(
-      `
-      WITH roles AS (
-        SELECT oid, rolname, rolsuper, rolcreaterole, rolcreatedb, rolbypassrls, rolreplication
-        FROM pg_catalog.pg_roles WHERE pg_has_role(session_user, oid, 'MEMBER')
-      ), target AS (SELECT oid FROM pg_catalog.pg_namespace WHERE nspname = $1)
-      SELECT
-        (SELECT count(*)::int FROM target) AS schema_count,
-        EXISTS (SELECT FROM roles WHERE rolsuper OR rolcreaterole OR rolcreatedb
-          OR rolbypassrls OR rolreplication OR left(rolname, 3) = 'pg_') AS elevated,
-        EXISTS (SELECT FROM roles WHERE has_database_privilege(roles.oid, current_database(), 'CREATE'))
-          AS database_create,
-        EXISTS (SELECT FROM roles JOIN pg_catalog.pg_shdepend d ON d.refobjid = roles.oid
-          WHERE d.refclassid = 'pg_catalog.pg_authid'::regclass AND d.deptype = 'o'
-            AND d.dbid = (SELECT oid FROM pg_catalog.pg_database WHERE datname = current_database())) AS owns_objects,
-        EXISTS (SELECT FROM roles, target
-          WHERE has_schema_privilege(roles.oid, target.oid, 'USAGE,CREATE')) AS schema_access,
-        EXISTS (SELECT FROM roles, pg_catalog.pg_class c, target
-          WHERE c.relnamespace = target.oid AND c.relkind IN ('r','p','v','m','f')
-          AND (has_table_privilege(roles.oid,c.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
-            OR has_any_column_privilege(roles.oid,c.oid,'SELECT,INSERT,UPDATE,REFERENCES')))
-          AS table_access,
-        EXISTS (SELECT FROM roles, pg_catalog.pg_class c, target
-          WHERE c.relnamespace = target.oid AND c.relkind = 'S'
-            AND has_sequence_privilege(roles.oid,c.oid,'USAGE,SELECT,UPDATE')) AS sequence_access,
-        EXISTS (SELECT FROM roles, pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
-          WHERE p.prosecdef AND has_schema_privilege(roles.oid,n.oid,'USAGE')
-            AND has_function_privilege(roles.oid,p.oid,'EXECUTE')) AS definer_access
-    `,
-      [schema],
-    );
+    const result = await runtime.query(RUNTIME_DENIAL_CATALOG_SQL, [schema, expectedRole]);
     const row = result.rows[0];
     if (
       row?.schema_count !== 1 ||
