@@ -1,3 +1,7 @@
+import { normalizePostgresConnectionString } from "./postgres-connection-string.ts";
+
+export { normalizePostgresConnectionString } from "./postgres-connection-string.ts";
+
 import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -24,15 +28,6 @@ export type MigrationPlan = {
 export type MigrationRunResult =
   | { readonly dryRun: true; readonly plan: readonly MigrationPlan[] }
   | { readonly dryRun: false; readonly result: MigrationApplyResult };
-
-/** Node pg treats sslrootcert as a filesystem path, unlike psql's system value. */
-export function normalizePostgresConnectionString(connectionString: string): string {
-  const url = new URL(connectionString);
-  if (url.searchParams.get("sslrootcert") === "system") {
-    url.searchParams.delete("sslrootcert");
-  }
-  return url.toString();
-}
 
 const migrationDirectory = new URL("../db/postgres/migrations/", import.meta.url);
 

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { Schema } from "effect";
 import { Client } from "pg";
-import { normalizePostgresConnectionString } from "./postgres-migrations.ts";
+import { normalizePostgresConnectionString } from "./postgres-connection-string.ts";
 import { RUNTIME_DENIAL_CATALOG_SQL } from "./staging-persona-runtime-denial.ts";
 import { observeSessionDrain } from "./staging-persona-session-drain.ts";
 import { collectStagingProviderBinding } from "./staging-persona-target-binding.ts";

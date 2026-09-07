@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 import { Client } from "pg";
-import { normalizePostgresConnectionString } from "./postgres-migrations";
+import { normalizePostgresConnectionString } from "./postgres-connection-string.ts";
 
 const execute = promisify(execFile);
 const databaseId = "mvydkmmwh5x4";
