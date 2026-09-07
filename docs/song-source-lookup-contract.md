@@ -107,3 +107,36 @@ The Solid successor owns accessible search/selection and recovery UI after
 contract approval. The API successor owns resolver/persistence/schema work.
 Neither this proposal nor a green picker test closes ordinary song publication,
 manual review, policy block, enrichment or canary acceptance obligations.
+
+## Narrow binding investigation — 2026-09-08
+
+The existing-id repair is independent of the proposed lookup operation, but
+existing source does not supply all its authority. acrcloud-response.ts retains
+providerMatchId, matchKind, title, artists and score; it does not retain a
+canonical Pirate asset identity. processing-workflow.ts acrDecision turns that
+match into requires_reference and a revision-bound evidence reference. Searching
+current apps/packages and PostgreSQL migrations found no authoritative provider-
+recording-to-Pirate-asset mapping. The production video recognition adapter
+explicitly projects such matches as external, not canonical Pirate identities.
+
+A BoundReference must not be constructed merely by copying current audio and
+analysis revisions and attaching an arbitrary published licensed asset. That
+would satisfy the domain shape while failing to establish that the selected
+asset is the reference implicated by the evidence. A provider recording ID is
+not a Pirate asset ID, and titles/artists are not an identity bridge.
+
+Required authority decision for the narrow repair: define the server-owned
+source of provider-recording-to-immutable-asset identity (including who creates
+and verifies the mapping), or explicitly ratify a different author-declared
+reference policy. This is separate from discovery/search, pagination or picker
+UI. Retained external matches without that authority must stay unresolved;
+no arbitrary selection, title matching or test fixture may become binding proof.
+The no-match remix path also needs its declared-source rule made explicit.
+
+Implementation plan after that boundary is established: resolve current owned
+submission and exact unexpired request; load retained current ACR evidence;
+resolve the supplied immutable asset under the approved identity rule; enforce
+source visibility/referenceability and immutable inherited terms; construct
+BoundReference from those server facts; wire default HTTP composition; and
+verify real composition, exact replay and PostgreSQL race boundaries. No new
+lookup endpoint is needed. No runtime repair is claimed by this checkpoint.
