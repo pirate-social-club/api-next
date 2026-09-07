@@ -34,6 +34,7 @@ export * from "./public-post-routes.ts";
 export * from "./registry.ts";
 export * from "./rewards-qualification.ts";
 export * from "./rewards-song-offers.ts";
+export * from "./song-library.ts";
 export * from "./song-owner-video-policy.ts";
 export * from "./song-playback.ts";
 export * from "./study-v2.ts";

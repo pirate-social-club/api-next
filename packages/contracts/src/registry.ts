@@ -102,6 +102,7 @@ import {
   ObserveMegapotPoolFunding,
   OpenSongRewardOffer,
 } from "./rewards-song-offers.ts";
+import { GetTrendingSongs, ListPersonaSongs } from "./song-library.ts";
 import {
   GetPublicSongOwnerPolicy,
   GetSongOwnerPolicy,
@@ -125,6 +126,8 @@ export const registry = {
   GetAvatar,
   RemoveAvatar,
   ...telegramRegistry,
+  ListPersonaSongs,
+  GetTrendingSongs,
   Health,
   CreateVideoPlaybackAccess,
   GetVideoPoster,

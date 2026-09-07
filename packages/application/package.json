@@ -110,6 +110,7 @@
     "./use-cases/content/comment-thread": "./src/use-cases/content/comment-thread.ts",
     "./use-cases/content/song-playback": "./src/use-cases/content/song-playback.ts",
     "./avatars/ports": "./src/avatars/ports.ts",
-    "./use-cases/avatars": "./src/use-cases/avatars.ts"
+    "./use-cases/avatars": "./src/use-cases/avatars.ts",
+    "./use-cases/song-library": "./src/use-cases/song-library.ts"
   }
 }
