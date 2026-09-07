@@ -13,6 +13,7 @@ export const videoPostProjectionSelect = `video_projection.media_kind AS video_m
   origin_post.author_persona_id AS video_origin_author_persona_id,
   stream_ingest.state AS video_stream_state,
   stream_ingest.provider_video_id AS video_playback_ref,
+  stream_enrichment.state AS video_stream_enrichment_state,
   thumbnail_enrichment.state AS video_thumbnail_state,
   video_projection.poster_artifact_ref AS video_thumbnail_artifact_ref,
   video_data_registration.state AS video_data_registration_state`;
@@ -37,7 +38,14 @@ export const videoPostProjectionJoins = `LEFT JOIN media_publication_projections
     ON stream_ingest.operation_id = video_projection.operation_id
   LEFT JOIN media_video_enrichment_outbox AS thumbnail_enrichment
     ON thumbnail_enrichment.submission_id = video_projection.submission_id
+   AND thumbnail_enrichment.operation_id = video_projection.operation_id
+   AND thumbnail_enrichment.post_id = video_projection.post_id
    AND thumbnail_enrichment.enrichment_kind = 'thumbnail'
+  LEFT JOIN media_video_enrichment_outbox AS stream_enrichment
+    ON stream_enrichment.submission_id = video_projection.submission_id
+   AND stream_enrichment.operation_id = video_projection.operation_id
+   AND stream_enrichment.post_id = video_projection.post_id
+   AND stream_enrichment.enrichment_kind = 'stream'
   LEFT JOIN data_registration_operations AS video_data_registration
     ON video_data_registration.submission_id = video_projection.submission_id
    AND video_data_registration.post_id = video_projection.post_id
@@ -92,7 +100,7 @@ export const videoPostProjectionFromRow = (row: Row): PublicVideoPostProjection 
     originalSoundId === null ||
     originVideoPostId === null ||
     originAuthorPersonaId === null ||
-    streamState === null ||
+    (streamState === null && row.video_stream_state !== null) ||
     playbackRef === undefined ||
     thumbnailState === null ||
     thumbnailArtifactRef === null ||
@@ -102,19 +110,28 @@ export const videoPostProjectionFromRow = (row: Row): PublicVideoPostProjection 
   }
 
   const playback: PublicVideoPostProjection["playback"] | null =
-    streamState === "bound"
+    streamState === "bound" || streamState === "ready" || streamState === "failed"
       ? playbackRef === null || requiredText(row, "video_playback_ref") === null
         ? null
-        : { status: "ready", provider: "stream", playback_ref: playbackRef }
-      : ["not_started", "sending", "manual_review"].includes(streamState) && playbackRef === null
-        ? { status: "pending" }
-        : null;
+        : streamState === "ready"
+          ? { status: "ready", provider: "stream", playback_ref: playbackRef }
+          : streamState === "failed"
+            ? { status: "unavailable" }
+            : { status: "pending" }
+      : streamState === "reconciliation_required" && playbackRef === null
+        ? { status: "unavailable" }
+        : (streamState === null || ["not_started", "sending"].includes(streamState)) &&
+            playbackRef === null
+          ? { status: "pending" }
+          : null;
   const thumbnail: PublicVideoPostProjection["thumbnail"] | null =
     thumbnailState === "ready"
       ? { status: "ready", artifact_ref: thumbnailArtifactRef }
-      : ["pending", "running", "failed"].includes(thumbnailState)
-        ? { status: "pending" }
-        : null;
+      : thumbnailState === "failed"
+        ? { status: "unavailable" }
+        : ["pending", "running"].includes(thumbnailState)
+          ? { status: "pending" }
+          : null;
   if (playback === null || thumbnail === null) return null;
 
   return {
@@ -128,7 +145,7 @@ export const videoPostProjectionFromRow = (row: Row): PublicVideoPostProjection 
       origin_video_post_id: originVideoPostId,
       origin_author_persona_id: originAuthorPersonaId,
     },
-    playback,
+    playback: row.video_stream_enrichment_state === "failed" ? { status: "unavailable" } : playback,
     thumbnail,
     data_registration: registration,
     capabilities: { can_post_with_song: false },

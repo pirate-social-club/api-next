@@ -7,10 +7,7 @@ import {
   startNamespaceOwnership,
   startRouteAttachmentOwnership,
 } from "@pirate/application/namespace-ownership";
-import {
-  type TextModeration,
-  TextModerationProviderError,
-} from "@pirate/application/use-cases/content/text-post";
+import { TextModerationProviderError } from "@pirate/application/use-cases/content/text-post";
 import type {
   DanceAttemptSessionAuthorityResolver,
   DanceAttemptUploadAuthority,
@@ -143,6 +140,7 @@ import {
   type HyperdriveConnection,
   makeHyperdriveControlPlaneLayer,
 } from "@pirate/platform-cf/postgres";
+import { makeControlPlanePublicCommunityThreadsStore } from "@pirate/platform-cf/public-community-threads-repository";
 import { makeControlPlanePublicPostSlugStore } from "@pirate/platform-cf/public-post-slug-repository";
 import { makeControlPlanePublicProfileStore } from "@pirate/platform-cf/public-profile-repository";
 import {
@@ -219,6 +217,7 @@ import { makeNamespaceOwnershipHandlers } from "./namespace-ownership-handlers.t
 import { makePersonaHandlers } from "./persona-handlers.ts";
 import { makePlatformPirateHandleHandlers } from "./platform-pirate-handle-handlers.ts";
 import { makeProductHandlers } from "./product-handlers.ts";
+import { makePublicCommunityThreadsHandler } from "./public-community-threads-handler.ts";
 import { makePublicPostRouteHandlers } from "./public-post-route-handlers.ts";
 import { makeSongRewardOfferHandlers } from "./rewards-song-offer-handlers.ts";
 import { makeSongOwnerVideoPolicyHandlers } from "./song-owner-video-policy-handlers.ts";
@@ -229,7 +228,10 @@ import { makeStudyV2Handlers } from "./study-v2-handlers.ts";
 import { createHttpWorker, type EndpointHandler, type Principal } from "./transport.ts";
 import { makeVerificationHandlers } from "./verification-handlers.ts";
 
-export interface HttpWorkerBindings {
+import { makeVideoAccessHandlers, type VideoAccessBindings } from "./video-access-composition.ts";
+
+export interface HttpWorkerBindings extends VideoAccessBindings {
+  readonly CF_VERSION_METADATA?: { readonly id: string };
   readonly CONTROL_PLANE?: unknown;
   readonly STUDY_GENERATION_ENABLED?: string;
   readonly STUDY_GENERATION_OPENROUTER_MODEL?: string;
@@ -780,6 +782,7 @@ export async function createProductionHttpWorker(
       ? {}
       : makeMediaUploadHandlers(makeMediaUploadApplicationCommands(mediaServices, videoServices));
   const contentStore = makeControlPlaneContentStore(controlPlane);
+  const videoAccessHandlers = await makeVideoAccessHandlers(bindings, controlPlane);
   const textPostStore = makeControlPlaneTextSubmissionStore(controlPlane);
   const moderationStore = makeControlPlaneCommunityModerationStore(controlPlane);
   const ageAccessStore = makeControlPlaneAgeAccessStore(controlPlane);
@@ -788,9 +791,6 @@ export async function createProductionHttpWorker(
   });
   // The runtime is installed even when no provider credentials are enabled.
   // Unavailability is a durable manual-review result, never an allow fallback.
-  const textModeration: TextModeration["Service"] = {
-    evaluate: () => Effect.fail(new TextModerationProviderError({ reason: "unavailable" })),
-  };
   const textModerationProvider = config.OPENAI_MODERATION_ENABLED
     ? makeOpenAiTextModerationProvider({
         apiKey: Redacted.value(config.OPENAI_API_KEY),
@@ -939,8 +939,6 @@ export async function createProductionHttpWorker(
     communityStore,
     contentStore,
     textPostStore,
-    textModeration,
-    textPostStoreV2: textPostStore,
     textModerationProvider,
     personaStore,
     feedStore,
@@ -1305,6 +1303,9 @@ export async function createProductionHttpWorker(
     hnsEdgeStatus,
     handlers: {
       ...productHandlers,
+      GetPublicCommunityThreads: makePublicCommunityThreadsHandler({
+        publicCommunityThreadsStore: makeControlPlanePublicCommunityThreadsStore(controlPlane),
+      }),
       ...communityCreationHandlers,
       ...canonicalCommunityRouteHandlers,
       ...publicPostRouteHandlers,
@@ -1326,6 +1327,7 @@ export async function createProductionHttpWorker(
       ...songRewardOfferHandlers,
       ...songOwnerVideoPolicyHandlers,
       ...mediaHandlers,
+      ...videoAccessHandlers,
       ...danceReferenceHandlers,
       ...danceAttemptHandlers,
       GetJwks: () => sessionCrypto.jwks(),

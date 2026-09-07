@@ -11,6 +11,7 @@
     "apps/data-registration-worker",
     "apps/jobs-worker",
     "apps/media-processor-worker",
+    "apps/video-source-gateway",
     "tests"
   ],
   "exclude": [

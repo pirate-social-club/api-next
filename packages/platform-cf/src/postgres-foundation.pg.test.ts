@@ -798,7 +798,11 @@ async function catalogForSchema(admin: Client, schema: string): Promise<SchemaCa
     [schema],
   );
   const columns = await admin.query(
-    `SELECT table_name, column_name, ordinal_position, data_type, is_nullable, column_default
+    // Dropped columns retain physical attribute slots in a migrated database.
+    // Compare visible order, which the normalized baseline can reproduce.
+    `SELECT table_name, column_name,
+       row_number() OVER (PARTITION BY table_name ORDER BY ordinal_position)::integer AS ordinal_position,
+       data_type, is_nullable, column_default
      FROM information_schema.columns
      WHERE table_schema = $1
      ORDER BY table_name, ordinal_position`,
@@ -1070,7 +1074,23 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
-      await applyMigrations(scopedConnectionString, await loadPostgresMigrations());
+      const currentMigrations = await loadPostgresMigrations();
+      expect(currentMigrations.map((entry) => entry.version)).toContain(
+        "0124_video_safety_evidence.sql",
+      );
+      expect(currentMigrations.map((entry) => entry.version)).toContain(
+        "0125_video_publication_failure_reasons.sql",
+      );
+      expect(currentMigrations.map((entry) => entry.version)).not.toContain(
+        "0125_video_safety_evidence.sql",
+      );
+      expect(currentMigrations.map((entry) => entry.version)).toContain(
+        "0127_video_delivery_ingest.sql",
+      );
+      expect(currentMigrations.map((entry) => entry.version)).not.toContain(
+        "0125_video_delivery_ingest.sql",
+      );
+      await applyMigrations(scopedConnectionString, currentMigrations);
       const migratedCatalog = await catalogForSchema(admin, schema);
       const baselineSchema = schemaIdentifier();
       await admin.query(`CREATE SCHEMA ${quoteIdentifier(baselineSchema)}`);
@@ -1379,10 +1399,14 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "media_video_enrichment_outbox",
         "media_video_original_sounds",
         "media_video_publication_decisions",
+        "media_video_publication_wakeups",
         "media_video_reservation_command_replays",
         "media_video_review_holds",
         "media_video_revisions",
         "media_video_rights",
+        "media_video_safety_evidence",
+        "media_video_source_grants",
+        "media_video_stage_facts",
         "media_video_stream_ingests",
         "media_video_transform_attempts",
         "media_video_upload_parts",

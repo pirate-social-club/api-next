@@ -2,11 +2,12 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { ControlPlaneDb } from "@pirate/application";
 import { Effect, Fiber } from "effect";
 import { Client } from "pg";
-
+import { HnsAuthorityDiagnostic, withHnsAuthoritySpan } from "./hns-authority-diagnostics.ts";
 import {
   makeDirectPostgresControlPlaneLayer,
   makeReadOnlyPostgresControlPlaneLayer,
 } from "./postgres";
+import type { WorkerDiagnosticFields } from "./worker-request-diagnostics.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -210,8 +211,79 @@ suite("Postgres 17 control-plane harness", () => {
     completedTestCount += 1;
   });
 
+  test("caller abort terminates the authority backend and records correlated cancellation", async () => {
+    if (connectionString === undefined) throw new Error("test URL was not configured");
+    const admin = new Client({ connectionString });
+    const controller = new AbortController();
+    const records: WorkerDiagnosticFields[] = [];
+    let backendPid: number | undefined;
+    const program = withHnsAuthoritySpan(
+      "authority",
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        const pid = yield* db.execute<{ pid: number }>({
+          label: "hns.diagnostic.backend-pid",
+          text: "SELECT pg_backend_pid() AS pid",
+          values: [],
+          readonly: true,
+        });
+        backendPid = Number(pid.rows[0]?.pid);
+        yield* db.execute({
+          label: "hns.diagnostic.sleep",
+          text: "SELECT pg_sleep(10)",
+          values: [],
+          readonly: true,
+        });
+      }).pipe(Effect.provide(makeDirectPostgresControlPlaneLayer(connectionString))),
+    ).pipe(
+      Effect.provideService(HnsAuthorityDiagnostic, {
+        correlation_id: "12345678-1234-4234-8234-123456789abc",
+        emit: (record) => {
+          records.push(record);
+        },
+      }),
+    );
+    await admin.connect();
+    const result = Effect.runPromiseExit(program, { signal: controller.signal });
+    try {
+      expect(
+        await waitFor(async () => {
+          if (backendPid === undefined) return false;
+          const activity = await admin.query({
+            text: "SELECT 1 FROM pg_stat_activity WHERE pid=$1 AND wait_event='PgSleep'",
+            values: [backendPid],
+          });
+          return activity.rows.length === 1;
+        }, 2_000),
+      ).toBe(true);
+      controller.abort();
+      expect((await result)._tag).toBe("Failure");
+      expect(
+        await waitFor(async () => {
+          const activity = await admin.query({
+            text: "SELECT 1 FROM pg_stat_activity WHERE pid=$1",
+            values: [backendPid],
+          });
+          return activity.rows.length === 0;
+        }, 15_000),
+      ).toBe(true);
+      expect(
+        records.filter((record) => record.outcome === "canceled").map((record) => record.phase),
+      ).toEqual(["query", "authority"]);
+      expect(
+        records.every((record) => record.correlation_id === "12345678-1234-4234-8234-123456789abc"),
+      ).toBe(true);
+      expect(JSON.stringify(records)).not.toContain("pg_sleep");
+    } finally {
+      controller.abort();
+      await result;
+      await admin.end();
+    }
+    completedTestCount += 1;
+  });
+
   afterAll(async () => {
-    if (connectionString !== undefined && completedTestCount === 2) {
+    if (connectionString !== undefined && completedTestCount === 3) {
       await Bun.write(sentinelPath, sentinelContents);
     }
   });

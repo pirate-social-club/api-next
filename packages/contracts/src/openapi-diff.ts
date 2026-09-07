@@ -317,9 +317,8 @@ function requestBodySchema(operation: JsonSchema): JsonSchema | undefined {
   return content?.["application/json"]?.schema;
 }
 
-function responseSchema(response: JsonSchema): JsonSchema | undefined {
-  const content = response.content as Record<string, { schema?: JsonSchema }> | undefined;
-  return content?.["application/json"]?.schema;
+function responseContent(response: JsonSchema): Record<string, { schema?: JsonSchema }> {
+  return (response.content ?? {}) as Record<string, { schema?: JsonSchema }>;
 }
 
 function parameters(operation: JsonSchema): Map<string, JsonSchema> {
@@ -425,13 +424,41 @@ export function diffBreaking(oldDoc: OpenApiDocument, newDoc: OpenApiDocument): 
         breaks.push(`response status removed on ${opKey}: ${status}`);
         continue;
       }
-      const oldSchema = responseSchema(oldResponse);
-      const newSchema = responseSchema(newResponse);
-      if (oldSchema !== undefined && newSchema === undefined) {
-        breaks.push(`response body removed on ${opKey} status ${status}`);
-      } else if (oldSchema !== undefined && newSchema !== undefined) {
-        const where = status === "200" ? `response ${opKey}` : `response ${opKey} status ${status}`;
-        breaks.push(...compareSchema(oldSchema, newSchema, where, "response", oldDoc, newDoc));
+      const oldContent = responseContent(oldResponse);
+      const newContent = responseContent(newResponse);
+      for (const [mediaType, oldMedia] of Object.entries(oldContent)) {
+        const newMedia = newContent[mediaType];
+        if (
+          newMedia === undefined ||
+          (oldMedia.schema !== undefined && newMedia.schema === undefined)
+        ) {
+          breaks.push(`response body removed on ${opKey} status ${status}`);
+        } else if (oldMedia.schema !== undefined && newMedia.schema !== undefined) {
+          const where =
+            status === "200" ? `response ${opKey}` : `response ${opKey} status ${status}`;
+          breaks.push(
+            ...compareSchema(oldMedia.schema, newMedia.schema, where, "response", oldDoc, newDoc),
+          );
+          if (oldMedia.schema.format === "binary" && newMedia.schema.format !== "binary") {
+            breaks.push(`binary response representation changed on ${opKey} status ${status}`);
+          }
+        }
+      }
+      if (oldResponse["x-conditional-authorization"] !== undefined) {
+        if (
+          !valueEquals(
+            oldResponse["x-conditional-authorization"],
+            newResponse["x-conditional-authorization"],
+          )
+        ) {
+          breaks.push(`conditional authorization changed on ${opKey} status ${status}`);
+        }
+        if (!valueEquals(oldResponse.headers, newResponse.headers)) {
+          breaks.push(`conditional response headers changed on ${opKey} status ${status}`);
+        }
+        if (status === "304" && Object.keys(newContent).length !== 0) {
+          breaks.push(`conditional response body added on ${opKey} status ${status}`);
+        }
       }
       const oldCodes = Array.isArray(oldResponse["x-error-codes"])
         ? (oldResponse["x-error-codes"] as unknown[])

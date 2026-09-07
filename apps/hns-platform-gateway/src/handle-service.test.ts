@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { encodeHnsCommunityHandlePersonaGatewayProfileV1 } from "@pirate/application/hns-community-handle-gateway";
+import { encodeHnsCommunityHandlePersonaGatewayProfileV2 } from "@pirate/application/hns-community-handle-gateway";
 import type { HnsHandlePersonaHostAuthorityStateV1 } from "@pirate/application/hns-host-serving";
 import { makeStaticHnsForwarderKeyRegistryV1 } from "@pirate/platform-cf/hns-forwarder-v3";
 import { Effect } from "effect";
@@ -86,7 +86,7 @@ const composition = (
   upstreamFetch: (request: Request) => Promise<Response> | Response,
 ) =>
   makeHnsCommunityHandleGatewayComposition(true, {
-    profile_bytes: encodeHnsCommunityHandlePersonaGatewayProfileV1(),
+    profile_bytes: encodeHnsCommunityHandlePersonaGatewayProfileV2(),
     gateway_deployment_reference: deployment,
     solid_origin: "https://solid.internal",
     solid_access_client_id: "access-client-id",
@@ -169,6 +169,8 @@ describe("HNS community handle-persona gateway", () => {
           ["Authorization", "Bearer must-not-cross"],
           ["Origin", "https://must-not-cross.test"],
           ["X-Forwarded-For", "must-not-cross"],
+          ["X-Pirate-Hns-Diagnostic-Id", "public-forgery"],
+          ["x-pirate-hns-diagnostic-id", "duplicate-forgery"],
         ],
       }),
     );
@@ -182,6 +184,7 @@ describe("HNS community handle-persona gateway", () => {
     expect(observed?.headers.get("authorization")).toBeNull();
     expect(observed?.headers.get("origin")).toBeNull();
     expect(observed?.headers.get("x-forwarded-for")).toBeNull();
+    expect(observed?.headers.get("x-pirate-hns-diagnostic-id")).toBeNull();
     expect(observed?.headers.get("cf-access-client-id")).toBe("access-client-id");
     expect(observed?.headers.get("cf-access-client-secret")).toBe("access-client-secret");
     expect(observed?.headers.get("x-pirate-hns-forwarder-path")).toBe("/");

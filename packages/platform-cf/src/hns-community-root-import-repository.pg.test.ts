@@ -1,9 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { randomUUID } from "node:crypto";
-import {
-  encodeHnsRootImportNameProofResultV1,
-  HNS_ROOT_IMPORT_NAME_PROOF_RESULT_VERSION,
-} from "@pirate/application";
+import { createHash, randomUUID } from "node:crypto";
 import { Effect } from "effect";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
@@ -26,11 +22,6 @@ const suite = connectionString === undefined ? describe.skip : describe;
 const communityId = "community_123e4567-e89b-42d3-a456-426614174000";
 const actorId = "community-root-import-actor";
 const expiresAt = "2099-01-01T00:00:00.000Z";
-
-async function sha256(bytes: Uint8Array): Promise<string> {
-  const result = await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes).buffer);
-  return [...new Uint8Array(result)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-}
 
 function quoted(value: string): string {
   return `"${value.replaceAll('"', '""')}"`;
@@ -65,6 +56,101 @@ const binding = {
 };
 
 suite("community HNS root-import repositories", () => {
+  test("refuses provisional import of the retained operator root without admitting work", async () => {
+    await withSchema(async (connection, admin) => {
+      const root = "retainedroot";
+      const registryRef = "retained-operator-root-test";
+      const registryBytes = new TextEncoder().encode(
+        JSON.stringify([
+          "pirate-operator-managed-root-registry-v1",
+          registryRef,
+          1,
+          [["hns", root, "active"]],
+        ]),
+      );
+      const registryDigest = createHash("sha256").update(registryBytes).digest("hex");
+      await admin.query("INSERT INTO users (user_id,status,account) VALUES ($1,'active','{}')", [
+        actorId,
+      ]);
+      await admin.query(
+        `INSERT INTO communities (community_id,display_name,status,created_by_user_id,
+         route_authority_version,created_at,updated_at)
+         VALUES ($1,'Retained root refusal','active',$2,'optional_route_v2',clock_timestamp(),clock_timestamp())`,
+        [communityId, actorId],
+      );
+      await admin.query(
+        `INSERT INTO community_route_authority_grants
+         (grant_id,community_id,principal_user_id,authority,source_kind,status,granted_at,granted_by_user_id)
+         VALUES ('retained-root-import-grant',$1,$2,'manage_routes','creator_owner','active',clock_timestamp(),$2)`,
+        [communityId, actorId],
+      );
+      await admin.query(
+        `INSERT INTO operator_managed_root_registry_versions
+         (registry_reference,registry_version,registry_digest,registry_bytes,published_at,published_by_operator_principal_id)
+         VALUES ($1,1,$2,$3,clock_timestamp(),'test-operator')`,
+        [registryRef, registryDigest, registryBytes],
+      );
+      await admin.query(
+        `INSERT INTO operator_managed_root_registry_current
+         (registry_kind,registry_reference,registry_version,registry_digest,activated_at,activated_by_operator_principal_id)
+         VALUES ('pirate-operator-managed-root-registry-v1',$1,1,$2,clock_timestamp(),'test-operator')`,
+        [registryRef, registryDigest],
+      );
+      const store = makeControlPlaneHnsCommunityRootImportRepository({
+        environment: "test",
+        provider_binding: binding,
+      });
+      const layer = makeDirectPostgresControlPlaneLayer(connection);
+      const input = {
+        request: {
+          actor_id: actorId,
+          community_id: communityId,
+          root_label: root,
+          idempotency_key: "retained-root-start",
+        },
+        attachment_intent_id: "retained-root-attachment",
+        ceremony_intent_id: "retained-root-ceremony",
+        root_import_session_id: "retained-root-import",
+        provision_job_id: "retained-root-provision",
+        request_sha256: "a".repeat(64),
+      };
+      expect(
+        await Effect.runPromise(Effect.scoped(store.prepare(input).pipe(Effect.provide(layer)))),
+      ).toEqual({ kind: "conflict" });
+      expect(
+        (
+          await admin.query(`SELECT
+        (SELECT count(*)::integer FROM hns_community_root_import_preparations) AS reservations,
+        (SELECT count(*)::integer FROM hns_root_import_sessions) AS sessions,
+        (SELECT count(*)::integer FROM hns_authority_provision_jobs) AS provision_jobs,
+        (SELECT count(*)::integer FROM community_route_attachment_intents) AS attachments`)
+        ).rows,
+      ).toEqual([{ reservations: 0, sessions: 0, provision_jobs: 0, attachments: 0 }]);
+      expect(
+        (
+          await admin.query(`SELECT registry_reference,registry_version,registry_digest
+        FROM operator_managed_root_registry_current`)
+        ).rows,
+      ).toEqual([
+        { registry_reference: registryRef, registry_version: "1", registry_digest: registryDigest },
+      ]);
+      // The refusal is root protection, not missing community authority or quota.
+      expect(
+        (
+          await Effect.runPromise(
+            Effect.scoped(
+              store
+                .prepare({
+                  ...input,
+                  request: { ...input.request, root_label: "availabletestroot" },
+                })
+                .pipe(Effect.provide(layer)),
+            ),
+          )
+        ).kind,
+      ).toBe("created");
+    });
+  });
   test("persists preparation, provider session, root-import session, and exact replay", async () => {
     await withSchema(async (connection, admin) => {
       expect(
@@ -146,6 +232,59 @@ suite("community HNS root-import repositories", () => {
       });
       if (prepared.kind === "conflict" || prepared.kind === "not_found")
         throw new Error("expected preparation");
+      const previousMigration = await Bun.file(
+        new URL(
+          "../../../db/postgres/migrations/0115_hns_community_root_import.sql",
+          import.meta.url,
+        ),
+      ).text();
+      const forwardMigration = await Bun.file(
+        new URL(
+          "../../../db/postgres/migrations/0128_hns_provisional_community_import.sql",
+          import.meta.url,
+        ),
+      ).text();
+      const previousPreparationTable = previousMigration.slice(
+        previousMigration.indexOf("CREATE TABLE hns_community_root_import_preparations"),
+        previousMigration.indexOf(
+          "CREATE FUNCTION reject_hns_community_root_import_preparation_change",
+        ),
+      );
+      const retainedPreparation = (
+        await admin.query(
+          "SELECT to_jsonb(preparation) AS retained FROM hns_community_root_import_preparations preparation",
+        )
+      ).rows[0].retained;
+      await admin.query("BEGIN");
+      try {
+        // Restore the actual pre-amendment table, populate it, and execute the
+        // complete forward migration. Roll back this fixture-only schema change.
+        await admin.query("DROP TABLE hns_community_root_import_preparations");
+        await admin.query(previousPreparationTable);
+        await admin.query(
+          "INSERT INTO hns_community_root_import_preparations SELECT (jsonb_populate_record(NULL::hns_community_root_import_preparations,$1::jsonb)).*",
+          [JSON.stringify(retainedPreparation)],
+        );
+        await admin.query(`DROP FUNCTION hns_community_root_import_reservation_held_v1(text);
+          DROP FUNCTION admit_hns_community_root_import_v1(text,text,text);
+          DROP FUNCTION guard_hns_community_root_import_admission_v1();
+          DROP FUNCTION lock_hns_root_zone_mutation_v1(text,text,boolean,text,text,bigint);`);
+        await admin.query(forwardMigration);
+        expect(
+          (
+            await admin.query(
+              "SELECT admission_kind,start_request_sha256 FROM hns_community_root_import_preparations",
+            )
+          ).rows,
+        ).toEqual([{ admission_kind: "name_signature", start_request_sha256: "1".repeat(64) }]);
+        expect(
+          (await admin.query("SELECT count(*)::integer AS count FROM hns_authority_provision_jobs"))
+            .rows,
+        ).toEqual([{ count: 0 }]);
+      } finally {
+        await admin.query("ROLLBACK");
+      }
+
       expect(
         await Effect.runPromise(
           Effect.scoped(
@@ -284,7 +423,7 @@ suite("community HNS root-import repositories", () => {
         kind: "created",
         session: {
           community_id: communityId,
-          status: "awaiting_ownership",
+          status: "provisioning",
           root_label: "dankmemes",
         },
       });
@@ -300,7 +439,7 @@ suite("community HNS root-import repositories", () => {
         ),
       ).toMatchObject({
         community_id: communityId,
-        status: "awaiting_ownership",
+        status: "provisioning",
         replayed: false,
       });
       expect(
@@ -327,7 +466,7 @@ suite("community HNS root-import repositories", () => {
         community_id: communityId,
         session: {
           root_import_session_id: "community-import-session",
-          status: "awaiting_ownership",
+          status: "provisioning",
         },
       });
       const secondCommunityId = "community_123e4567-e89b-42d3-a456-426614174001";
@@ -385,48 +524,86 @@ suite("community HNS root-import repositories", () => {
             }),
           ),
         ),
-      ).toMatchObject({ kind: "created", value: { root_label: "dankmemes" } });
+      ).toMatchObject({ kind: "conflict" });
 
       expect(await current(actorId, secondCommunityId)).toEqual({
         community_id: secondCommunityId,
         attachment: null,
         session: null,
       });
-      const proofMessageSha256 = "4".repeat(64);
-      const proofSignatureSha256 = "5".repeat(64);
-      const proofBytes = encodeHnsRootImportNameProofResultV1({
-        version: HNS_ROOT_IMPORT_NAME_PROOF_RESULT_VERSION,
-        root_label: "dankmemes",
-        message_sha256: proofMessageSha256,
-        signature_sha256: proofSignatureSha256,
-        safe: true,
-        verified: true,
-      });
-      const provisionBytes = new TextEncoder().encode('{"operation":"provision"}');
       expect(
-        await Effect.runPromise(
-          Effect.scoped(
-            communityStore.beginProvisioning({
-              poll: {
-                actor_id: actorId,
-                community_id: communityId,
-                root_import_session_id: "community-import-session",
-                expected_revision: 1,
-                idempotency_key: "community-import-proof",
-                provisioning_name_signature: btoa("s".repeat(64)),
-              },
-              poll_request_sha256: "6".repeat(64),
-              proof_result_bytes: proofBytes,
-              proof_result_sha256: await sha256(proofBytes),
-              proof_message_sha256: proofMessageSha256,
-              proof_signature_sha256: proofSignatureSha256,
-              provision_job_id: "community-import-provision",
-              provision_request_bytes: provisionBytes,
-              provision_request_sha256: await sha256(provisionBytes),
-            }),
+        (
+          await admin.query(
+            "SELECT count(*)::integer AS count FROM hns_root_import_name_proof_observations",
+          )
+        ).rows,
+      ).toEqual([{ count: 0 }]);
+      expect(
+        (
+          await admin.query(
+            "SELECT provision_authorization_kind,ownership_result_sha256 FROM hns_root_import_sessions WHERE root_import_session_id=$1",
+            ["community-import-session"],
+          )
+        ).rows,
+      ).toEqual([
+        { provision_authorization_kind: "community_provisional", ownership_result_sha256: null },
+      ]);
+      const claim = await admin.query("SELECT * FROM claim_hns_authority_provision_job_v1($1,60)", [
+        "provisional-executor",
+      ]);
+      expect(claim.rows).toHaveLength(1);
+      expect(claim.rows[0]).toMatchObject({
+        root_import_session_id: "community-import-session",
+        operation_kind: "provision_root_v1",
+      });
+      expect(
+        (
+          await admin.query(
+            "SELECT status FROM community_route_attachment_namespace_sessions WHERE namespace_session_id=$1",
+            ["community-import-namespace"],
+          )
+        ).rows,
+      ).toEqual([{ status: "pending" }]);
+
+      expect(
+        (
+          await admin.query(
+            "SELECT lock_hns_root_zone_mutation_v1('dankmemes','pirate-verification=community-import',false,'community-import-provision','wrong-executor',1) AS admitted",
+          )
+        ).rows,
+      ).toEqual([{ admitted: false }]);
+      expect(
+        (
+          await admin.query(
+            "SELECT lock_hns_root_zone_mutation_v1('dankmemes','pirate-verification=community-import',false,'community-import-provision','provisional-executor',2) AS admitted",
+          )
+        ).rows,
+      ).toEqual([{ admitted: false }]);
+      await admin.query("BEGIN");
+      const competing = new Client({ connectionString: connection });
+      await competing.connect();
+      try {
+        expect(
+          (
+            await admin.query(
+              "SELECT lock_hns_root_zone_mutation_v1('dankmemes','pirate-verification=community-import',false,'community-import-provision','provisional-executor',1) AS admitted",
+            )
+          ).rows,
+        ).toEqual([{ admitted: true }]);
+        await expect(
+          competing.query(
+            "SELECT 1 FROM hns_root_import_sessions WHERE root_import_session_id='community-import-session' FOR UPDATE NOWAIT",
           ),
-        ),
-      ).toMatchObject({ kind: "provisioning", session: { revision: 2, replayed: false } });
+        ).rejects.toMatchObject({ code: "55P03" });
+        await expect(
+          competing.query(
+            "SELECT 1 FROM hns_authority_provision_jobs WHERE provision_job_id='community-import-provision' FOR UPDATE NOWAIT",
+          ),
+        ).rejects.toMatchObject({ code: "55P03" });
+      } finally {
+        await admin.query("ROLLBACK");
+        await competing.end();
+      }
 
       const completion = makeControlPlaneRouteAttachmentCompletionStore(layer);
       const completionRequest = {
@@ -500,10 +677,189 @@ suite("community HNS root-import repositories", () => {
         canonical_route_binding_id: null,
       });
 
+      // Failed provisioning can leave a zone without retaining a result.
+      const failure = await admin.query(
+        "SELECT * FROM finalize_hns_authority_provision_job_v1($1,$2,$3,$4,'failed',NULL,NULL,NULL,NULL,'authority_unavailable')",
+        [
+          claim.rows[0].provision_job_id,
+          "provisional-executor",
+          claim.rows[0].lease_fence,
+          claim.rows[0].request_sha256,
+        ],
+      );
+      expect(failure.rows[0].outcome).toBe("failed");
+      const held = async () =>
+        (
+          await admin.query("SELECT hns_community_root_import_reservation_held_v1($1) AS held", [
+            "community-import-session",
+          ])
+        ).rows[0].held;
+      expect(await held()).toBe(true);
+      expect(
+        (
+          await admin.query(
+            "SELECT * FROM claim_hns_root_import_observation_job_v1('cleanup-executor',60)",
+          )
+        ).rows,
+      ).toHaveLength(0);
+      // Age job timestamps across the bounded in-flight request drain window.
+      await admin.query(`UPDATE hns_authority_provision_jobs
+        SET created_at=clock_timestamp()-interval '4 minutes',updated_at=clock_timestamp()-interval '3 minutes'
+        WHERE provision_job_id='community-import-provision'`);
+      const cleanup = (
+        await admin.query(
+          "SELECT * FROM claim_hns_root_import_observation_job_v1('cleanup-executor',60)",
+        )
+      ).rows[0];
+      expect(cleanup).toMatchObject({
+        operation_kind: "teardown_provisional_root_v1",
+        provision_result_bytes: null,
+        publish_plan_bytes: null,
+      });
+      expect(await held()).toBe(true);
+      const finalizeCleanup = (fence: string, outcome: string, code: string) =>
+        admin.query(
+          "SELECT * FROM finalize_hns_root_import_observation_job_v1($1,'cleanup-executor',$2,$3,$4,NULL,NULL,$5)",
+          [cleanup.observation_job_id, fence, cleanup.request_sha256, outcome, code],
+        );
+      expect(
+        (await finalizeCleanup(cleanup.lease_fence, "retry", "zone_teardown_unavailable")).rows[0]
+          .outcome,
+      ).toBe("retry");
+      expect(await held()).toBe(true);
+      const reclaimed = (
+        await admin.query(
+          "SELECT * FROM claim_hns_root_import_observation_job_v1('cleanup-executor',60)",
+        )
+      ).rows[0];
+      expect(
+        (await finalizeCleanup(cleanup.lease_fence, "failed", "session_expired")).rows[0].outcome,
+      ).toBe("lost");
+      expect(await held()).toBe(true);
+      expect(
+        (await finalizeCleanup(reclaimed.lease_fence, "failed", "session_expired")).rows[0].outcome,
+      ).toBe("failed");
+      expect(await held()).toBe(false);
+      expect(
+        (
+          await admin.query(
+            "SELECT lock_hns_root_zone_mutation_v1('dankmemes','pirate-verification=community-import',true,'stale-job','cleanup-executor',1) AS admitted",
+          )
+        ).rows,
+      ).toEqual([{ admitted: false }]);
+
+      expect(
+        (await finalizeCleanup(reclaimed.lease_fence, "failed", "session_expired")).rows[0].outcome,
+      ).toBe("replayed");
+
       await admin.query(
         "UPDATE community_route_authority_grants SET status='revoked',revoked_at=clock_timestamp(),revoked_by_user_id=principal_user_id WHERE grant_id='community-root-import-grant'",
       );
       expect(await current()).toBeNull();
+    });
+  });
+  test("serializes quota races, preserves replay, and retains abandoned admissions", async () => {
+    await withSchema(async (connection, admin) => {
+      const layer = makeDirectPostgresControlPlaneLayer(connection);
+      const store = makeControlPlaneHnsCommunityRootImportRepository({
+        environment: "test",
+        provider_binding: binding,
+      });
+      let next = 0;
+      async function request(actor: string, root?: string) {
+        const n = ++next;
+        const community = `community_${randomUUID()}`;
+        await admin.query(
+          "INSERT INTO users (user_id,status,account) VALUES ($1,'active','{}') ON CONFLICT DO NOTHING",
+          [actor],
+        );
+        await admin.query(
+          `INSERT INTO communities (community_id,display_name,status,created_by_user_id,
+          canonical_route_binding_id,route_authority_version,route_slug,created_at,updated_at)
+          VALUES ($1,'Provisional quota','active',$2,NULL,'optional_route_v2',NULL,clock_timestamp(),clock_timestamp())`,
+          [community, actor],
+        );
+        await admin.query(
+          `INSERT INTO community_route_authority_grants
+          (grant_id,community_id,principal_user_id,authority,source_kind,status,granted_by_user_id,granted_at)
+          VALUES ($1,$2,$3,'manage_routes','creator_owner','active',$3,clock_timestamp())`,
+          [`grant-${n}`, community, actor],
+        );
+        return {
+          request: {
+            actor_id: actor,
+            community_id: community,
+            root_label: root ?? `quota${n}`,
+            idempotency_key: `start-${n}`,
+          },
+          attachment_intent_id: `attachment-${n}`,
+          ceremony_intent_id: `ceremony-${n}`,
+          root_import_session_id: `import-${n}`,
+          provision_job_id: `provision-${n}`,
+          request_sha256: n.toString(16).padStart(64, "0"),
+        };
+      }
+      const prepare = (input: Awaited<ReturnType<typeof request>>) =>
+        Effect.runPromise(Effect.scoped(store.prepare(input).pipe(Effect.provide(layer))));
+      const first = await request("rate-actor");
+      expect((await prepare(first)).kind).toBe("created");
+      expect((await prepare(first)).kind).toBe("replay");
+      const sameCommunity = {
+        ...first,
+        request: { ...first.request, idempotency_key: "different", root_label: "differentroot" },
+        attachment_intent_id: "different-attachment",
+      };
+      expect(await prepare(sameCommunity)).toEqual({ kind: "conflict" });
+      expect((await prepare(await request("rate-actor"))).kind).toBe("created");
+      const third = await request("rate-actor");
+      const fourth = await request("rate-actor");
+      const raced = await Promise.all([prepare(third), prepare(fourth)]);
+      expect(raced.map((x) => x.kind).sort()).toEqual(["conflict", "created"]);
+      expect((await prepare(first)).kind).toBe("replay");
+      const rootA = await request("root-actor-a", "rootrace");
+      const rootB = await request("root-actor-b", "rootrace");
+      expect(
+        (await Promise.all([prepare(rootA), prepare(rootB)])).map((x) => x.kind).sort(),
+      ).toEqual(["conflict", "created"]);
+      // Four held reservations now; fill the deployment ceiling with distinct actors.
+      for (let n = 0; n < 28; n++)
+        expect((await prepare(await request(`global-${n}`))).kind).toBe("created");
+      const overflow = await request("global-overflow");
+      expect(await prepare(overflow)).toEqual({ kind: "conflict" });
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::integer AS count FROM hns_community_root_import_preparations WHERE admission_kind='community_provisional'",
+          )
+        ).rows,
+      ).toEqual([{ count: 32 }]);
+      // Time-controlled fixture: age one immutable preparation without creating
+      // any provision job. No executor could have touched its zone.
+      await admin.query(
+        "ALTER TABLE hns_community_root_import_preparations DISABLE TRIGGER hns_community_root_import_preparations_change_guard",
+      );
+      try {
+        await admin.query(
+          `UPDATE hns_community_root_import_preparations
+          SET created_at=clock_timestamp()-interval '2 hours',expires_at=clock_timestamp()-interval '1 hour'
+          WHERE root_import_session_id=$1`,
+          [first.root_import_session_id],
+        );
+      } finally {
+        await admin.query(
+          "ALTER TABLE hns_community_root_import_preparations ENABLE TRIGGER hns_community_root_import_preparations_change_guard",
+        );
+      }
+      expect(
+        (
+          await admin.query("SELECT hns_community_root_import_reservation_held_v1($1) AS held", [
+            first.root_import_session_id,
+          ])
+        ).rows,
+      ).toEqual([{ held: false }]);
+      expect((await prepare(overflow)).kind).toBe("created");
+      // Releasing infrastructure capacity does not refund the actor's daily admission.
+      expect(await prepare(await request("rate-actor"))).toEqual({ kind: "conflict" });
     });
   });
 });

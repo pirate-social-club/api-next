@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { HnsHandlePersonaHostAuthorityStateV1 } from "@pirate/platform-cf/hns-handle-host-api";
 import { Effect } from "effect";
 import { makeHnsHandleHostApiComposition } from "./hns-handle-host-api-composition.ts";
+import { resolveHnsSolidHandleHostAuthorityRequest } from "./hns-handle-host-api-transport.ts";
 import { createHttpWorker } from "./transport.ts";
 
 const path = "/internal/hns/solid-handle-host-authority/v1/resolve";
@@ -48,6 +49,7 @@ const activeState: HnsHandlePersonaHostAuthorityStateV1 = {
 const worker = (state: HnsHandlePersonaHostAuthorityStateV1 | null) =>
   createHttpWorker({
     hnsHandleHostApi: makeHnsHandleHostApiComposition(true, {
+      protected_origin: "https://api-next.internal",
       access_validator: {
         verify: async (jwt) => {
           if (jwt !== "access-ok") throw new Error("denied");
@@ -104,6 +106,81 @@ describe("HNS handle-host private authority transport", () => {
     expect((await post(app, { method: "PUT" })).status).toBe(400);
     expect((await post(app, { headers: { accept: "text/plain" } })).status).toBe(400);
     expect((await post(app, { body: `${requestText}\n` })).status).toBe(400);
+  });
+
+  test("accepts only canonical diagnostic ids after protected-origin authentication", async () => {
+    const app = worker(activeState);
+    const id = "12345678-1234-4234-8234-123456789abc";
+    for (const value of ["invalid", id.toUpperCase(), `${id}, ${id}`, "x".repeat(1024)]) {
+      const response = await post(app, { headers: { "x-pirate-hns-diagnostic-id": value } });
+      expect(response.status).toBe(400);
+      expect(await response.text()).not.toContain(value);
+    }
+    const accepted = await post(app, { headers: { "x-pirate-hns-diagnostic-id": id } });
+    expect(accepted.status).toBe(200);
+    expect(accepted.headers.get("x-pirate-hns-diagnostic-id")).toBeNull();
+    expect(await accepted.text()).toBe(responseText);
+    expect(
+      (
+        await post(app, {
+          headers: {
+            "cf-access-jwt-assertion": "denied",
+            "x-pirate-hns-diagnostic-id": "invalid",
+          },
+        })
+      ).status,
+    ).toBe(401);
+    const preview = await app.request(`https://preview.workers.dev${path}`, {
+      method: "POST",
+      body: requestText,
+      headers: {
+        accept: "application/json",
+        "content-type": "application/json",
+        "cf-access-jwt-assertion": "access-ok",
+        "x-pirate-hns-diagnostic-id": id,
+      },
+    });
+    expect(preview.status).toBe(401);
+  });
+
+  test("passes caller cancellation into authority work instead of returning a late 503", async () => {
+    const started = Promise.withResolvers<void>();
+    let interrupted = false;
+    const composition = makeHnsHandleHostApiComposition(true, {
+      protected_origin: "https://api-next.internal",
+      access_validator: { verify: async () => undefined },
+      authority_source: {
+        resolve: () =>
+          Effect.gen(function* () {
+            started.resolve();
+            return yield* Effect.never;
+          }).pipe(
+            Effect.onInterrupt(() =>
+              Effect.sync(() => {
+                interrupted = true;
+              }),
+            ),
+          ),
+      },
+    });
+    if (!composition.enabled) throw new Error("test composition disabled");
+    const controller = new AbortController();
+    const request = new Request(`https://api-next.internal${path}`, {
+      method: "POST",
+      body: requestText,
+      signal: controller.signal,
+      headers: {
+        accept: "application/json",
+        "content-type": "application/json",
+        "cf-access-jwt-assertion": "access-ok",
+      },
+    });
+    const result = resolveHnsSolidHandleHostAuthorityRequest(request, composition);
+    await started.promise;
+    const reason = new Error("caller canceled");
+    controller.abort(reason);
+    await expect(result).rejects.toBe(reason);
+    expect(interrupted).toBe(true);
   });
 
   test("fails closed when the composition is absent", async () => {

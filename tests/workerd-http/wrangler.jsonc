@@ -2,6 +2,9 @@
   "name": "pirate-http-worker-test",
   "main": "./entry.ts",
   "compatibility_date": "2026-08-01",
+  "services": [
+    { "binding": "RESET_OPERATOR", "service": "pirate-http-worker-test", "entrypoint": "KaraokeResetOperatorEntrypoint" }
+  ],
   "hyperdrive": [
     {
       "binding": "CONTROL_PLANE",
@@ -10,6 +13,11 @@
     }
   ],
   "vars": {
+    "API_NEXT_ENV": "staging",
+    "KARAOKE_RESET_ENABLED": "true",
+    "KARAOKE_RESET_ACCESS_ISSUER": "https://reset-test.cloudflareaccess.com",
+    "KARAOKE_RESET_ACCESS_AUDIENCE": "reset-test-audience",
+    "KARAOKE_RESET_ACCESS_SUBJECT": "reset-test-operator",
     "CORS_ORIGIN": "https://solid.test",
     "KARAOKE_FINALIZATION_RECOVERY_ENABLED": "true",
     "REGISTRATION_IP_LIMIT": "5",
@@ -20,6 +28,10 @@
   },
   "durable_objects": {
     "bindings": [
+      {
+        "name": "VIDEO_PLAYBACK_RATE_LIMITER",
+        "class_name": "VideoPlaybackRateLimiterDO"
+      },
       {
         "name": "REGISTRATION_IP_LIMITER",
         "class_name": "RegistrationIpRateLimiterDO"
@@ -39,6 +51,10 @@
     ]
   },
   "migrations": [
+    {
+      "tag": "video-rate-v1",
+      "new_sqlite_classes": ["VideoPlaybackRateLimiterDO"]
+    },
     {
       "tag": "v1",
       "new_sqlite_classes": [

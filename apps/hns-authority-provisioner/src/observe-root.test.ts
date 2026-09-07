@@ -101,6 +101,7 @@ describe("HNS root readiness observation", () => {
   test("retains exact chain, signed-zone, shared TLSA, and bounded inventory evidence", async () => {
     const state = await fixture();
     const observed = await observeHnsRootReadinessV1({
+      observation_attempt: { job_id: "observation-job", lease_fence: 1 },
       operation_kind: "observe_root_v1",
       request: state.request,
       publish_plan_bytes: state.provision.publish_plan_bytes,
@@ -140,11 +141,45 @@ describe("HNS root readiness observation", () => {
     ]);
   });
 
+  test("versions distinguish renewal attempts and evidence while exact observation replay is stable", async () => {
+    const state = await fixture();
+    async function observe(fence: number, now: number, validFor = 604_800) {
+      return observeHnsRootReadinessV1({
+        observation_attempt: { job_id: "recurring-renewal-job", lease_fence: fence },
+        operation_kind: "renew_health_v1",
+        request: state.request,
+        publish_plan_bytes: state.provision.publish_plan_bytes,
+        provision_result_bytes: state.provision.result_bytes,
+        ports: {
+          inspect_current_resource: async () => state.plan.replacement_records as never,
+          inspect_zone: async () => ({ ...state.zone, created: false }),
+          observe_live: async () => state.live,
+        },
+        config: { environment: "test", valid_for_seconds: validFor, now: () => now },
+      });
+    }
+    const now = Date.parse("2026-09-05T06:00:00.000Z");
+    const first = await observe(1, now);
+    const replay = await observe(1, now);
+    expect(replay).toEqual(first);
+    const version = async (result: typeof first) =>
+      (await decodeHnsRootImportReadinessResultV1(result.result_bytes)).result
+        .authority_inventory_version;
+    expect(await version(await observe(2, now))).not.toBe(await version(first));
+    expect(await version(await observe(1, now + 1_000))).not.toBe(await version(first));
+    // Spec 012, September 5 erratum: seven days is the ceiling, not a soak.
+    expect(
+      (await decodeHnsRootImportReadinessResultV1(first.result_bytes)).result.valid_until,
+    ).toBe("2026-09-12T06:00:00.000Z");
+    await expect(observe(1, now, 604_801)).rejects.toThrow();
+  });
+
   test("reports owner-update pending without inspecting authority", async () => {
     const state = await fixture();
     let inspectedZone = false;
     await expect(
       observeHnsRootReadinessV1({
+        observation_attempt: { job_id: "observation-job", lease_fence: 1 },
         operation_kind: "observe_root_v1",
         request: state.request,
         publish_plan_bytes: state.provision.publish_plan_bytes,
@@ -166,6 +201,7 @@ describe("HNS root readiness observation", () => {
   test("refuses forged health facts and mismatched authority-zone evidence", async () => {
     const state = await fixture();
     const observed = await observeHnsRootReadinessV1({
+      observation_attempt: { job_id: "observation-job", lease_fence: 1 },
       operation_kind: "observe_root_v1",
       request: state.request,
       publish_plan_bytes: state.provision.publish_plan_bytes,
@@ -217,6 +253,7 @@ describe("HNS root readiness observation", () => {
 
     await expect(
       observeHnsRootReadinessV1({
+        observation_attempt: { job_id: "observation-job", lease_fence: 1 },
         operation_kind: "observe_root_v1",
         request,
         publish_plan_bytes: state.provision.publish_plan_bytes,
@@ -227,6 +264,7 @@ describe("HNS root readiness observation", () => {
     ).rejects.toEqual(new HnsRootReadinessObservationError("invalid_request"));
 
     const renewed = await observeHnsRootReadinessV1({
+      observation_attempt: { job_id: "observation-job", lease_fence: 1 },
       operation_kind: "renew_health_v1",
       request,
       publish_plan_bytes: state.provision.publish_plan_bytes,

@@ -1,6 +1,6 @@
 /// <reference types="@cloudflare/vitest-pool-workers/types" />
 
-import { encodeHnsCommunityHandlePersonaGatewayProfileV1 } from "@pirate/application/hns-community-handle-gateway";
+import { encodeHnsCommunityHandlePersonaGatewayProfileV2 } from "@pirate/application/hns-community-handle-gateway";
 import type { HnsHandlePersonaHostAuthorityStateV1 } from "@pirate/application/hns-host-serving";
 import { makeStaticHnsForwarderKeyRegistryV1 } from "@pirate/platform-cf/hns-forwarder-v3";
 import { Effect } from "effect";
@@ -67,7 +67,7 @@ describe("HNS community handle gateway in Workerd", () => {
   it("proxies exact GET and HEAD roots without browser identity or private headers", async () => {
     const observed: Request[] = [];
     const composition = makeHnsCommunityHandleGatewayComposition(true, {
-      profile_bytes: encodeHnsCommunityHandlePersonaGatewayProfileV1(),
+      profile_bytes: encodeHnsCommunityHandlePersonaGatewayProfileV2(),
       gateway_deployment_reference: deployment,
       solid_origin: "https://solid.internal",
       solid_access_client_id: "access-id",

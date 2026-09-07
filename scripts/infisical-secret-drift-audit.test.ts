@@ -1,19 +1,27 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 
 import {
   auditInfisicalSnapshots,
   fetchInfisicalSnapshots,
+  INFISICAL_POLICIES,
   type InfisicalSnapshot,
   listInfisicalSecretNames,
   parseInfisicalFolderPaths,
   parseInfisicalSecretNames,
 } from "./infisical-secret-drift-audit";
 
+import { CLOUDFLARE_WORKERS, parseJsonc } from "./secret-drift-audit";
+
 const emptySnapshot = (environment: InfisicalSnapshot["environment"]): InfisicalSnapshot => ({
   environment,
   folders:
-    environment === "dev" ? [] : ["/services", "/services/api-next", "/services/api-next/operator"],
+    environment === "dev"
+      ? ["/agents", "/agents/codex"]
+      : ["/services", "/services/api-next", "/services/api-next/operator"],
   secrets: {
+    "/agents": [],
+    "/agents/codex": environment === "dev" ? ["GITHUB_PAT"] : [],
     "/": [],
     "/services/api-next": [],
     "/services/api-next/operator": [],
@@ -111,6 +119,8 @@ describe("Infisical secret drift audit", () => {
       ...emptySnapshot("staging"),
       folders: ["/services", "/services/api-next"],
       secrets: {
+        "/agents": [],
+        "/agents/codex": [],
         "/": [],
         "/services/api-next": [
           "PIRATE_APP_JWT_PRIVATE_KEY",
@@ -222,13 +232,12 @@ describe("Infisical secret drift audit", () => {
     ]);
   });
 
-  test("allows production song-runtime provisioning names without requiring them before ceremony", () => {
+  test("admits optional production provisioning secrets only in their owned paths", () => {
     const prodBase = emptySnapshot("prod");
     const requiredRuntimeNames = [
       "PIRATE_APP_JWT_PRIVATE_KEY",
       "PRIVY_APP_SECRET",
       "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
-      "MEGAPOT_V2_RPC_URL",
       "HNS_EDGE_ALERT_TOKEN",
     ];
     const withoutSigner: InfisicalSnapshot = {
@@ -263,6 +272,206 @@ describe("Infisical secret drift audit", () => {
       },
     };
     expect(auditInfisicalSnapshots([withSigner]).violations).toEqual([]);
+
+    const monitorNames = ["HNS_OPERATOR_ALERT_WEBHOOK_URL", "HNS_OPERATOR_MONITOR_POSTGRES_URL"];
+    expect(
+      auditInfisicalSnapshots([
+        {
+          ...withoutSigner,
+          secrets: {
+            ...withoutSigner.secrets,
+            "/services/api-next/operator": [
+              ...withoutSigner.secrets["/services/api-next/operator"],
+              ...monitorNames,
+            ],
+          },
+        },
+      ]).violations,
+    ).toEqual([]);
+    expect(
+      auditInfisicalSnapshots([
+        {
+          ...withoutSigner,
+          secrets: {
+            ...withoutSigner.secrets,
+            "/services/api-next": [...requiredRuntimeNames, ...monitorNames],
+          },
+        },
+      ]).violations,
+    ).toEqual(
+      monitorNames.map((name) => ({
+        environment: "prod",
+        path: "/services/api-next",
+        kind: "unexpected-secret",
+        name,
+      })),
+    );
+  });
+
+  test("admits optional video secrets only at the staging runtime path", () => {
+    const names = [
+      "VIDEO_WORKFLOW_READ_TOKEN",
+      "VIDEO_STREAM_API_TOKEN",
+      "VIDEO_STREAM_SIGNING_JWK_BASE64",
+      "VIDEO_PLAYBACK_SOURCE_HMAC_BASE64",
+    ];
+    const paths = ["/", "/services/api-next", "/services/api-next/operator"] as const;
+    for (const environment of ["dev", "staging", "prod"] as const) {
+      const base = emptySnapshot(environment);
+      expect(
+        auditInfisicalSnapshots([base]).violations.filter(
+          ({ name }) => name !== undefined && names.includes(name),
+        ),
+      ).toEqual([]);
+      for (const path of paths) {
+        const snapshot = { ...base, secrets: { ...base.secrets, [path]: names } };
+        const unexpected = auditInfisicalSnapshots([snapshot]).violations.filter(
+          ({ kind, name }) =>
+            kind === "unexpected-secret" && name !== undefined && names.includes(name),
+        );
+        expect(unexpected).toEqual(
+          environment === "staging" && path === "/services/api-next"
+            ? []
+            : [...names]
+                .sort()
+                .map((name) => ({ environment, path, kind: "unexpected-secret", name })),
+        );
+      }
+    }
+  });
+
+  test("keeps persona fixture custody optional and restricted to the staging operator path", () => {
+    const names = ["PERSONA_WALLET_E2E_EMAIL", "PERSONA_WALLET_E2E_OTP"];
+    for (const environment of ["dev", "staging", "prod"] as const) {
+      const base = emptySnapshot(environment);
+      expect(
+        auditInfisicalSnapshots([base]).violations.filter(({ name }) => names.includes(name ?? "")),
+      ).toEqual([]);
+      for (const path of [
+        "/",
+        "/agents",
+        "/agents/codex",
+        "/services/api-next",
+        "/services/api-next/operator",
+      ] as const) {
+        const report = auditInfisicalSnapshots([
+          { ...base, secrets: { ...base.secrets, [path]: names } },
+        ]);
+        expect(
+          report.violations.filter(
+            ({ kind, name }) => kind === "unexpected-secret" && names.includes(name ?? ""),
+          ),
+        ).toEqual(
+          environment === "staging" && path === "/services/api-next/operator"
+            ? []
+            : names.map((name) => ({ environment, path, kind: "unexpected-secret", name })),
+        );
+      }
+    }
+  });
+
+  test("requires the exact development proxy credential and rejects other names and folders", () => {
+    const base = emptySnapshot("dev");
+    expect(auditInfisicalSnapshots([base]).violations).toEqual([]);
+    expect(
+      auditInfisicalSnapshots([{ ...base, secrets: { ...base.secrets, "/agents/codex": [] } }])
+        .violations,
+    ).toEqual([
+      {
+        environment: "dev",
+        path: "/agents/codex",
+        kind: "missing-required-secret",
+        name: "GITHUB_PAT",
+      },
+    ]);
+    const report = auditInfisicalSnapshots([
+      {
+        ...base,
+        folders: [...base.folders, "/agents/other"],
+        secrets: {
+          ...base.secrets,
+          "/agents": ["GITHUB_PAT"],
+          "/agents/codex": ["GITHUB_PAT", "UNOWNED_SECRET"],
+        },
+      },
+    ]);
+    expect(report.violations).toEqual([
+      { environment: "dev", path: "/agents/other", kind: "unexpected-folder" },
+      { environment: "dev", path: "/agents", kind: "unexpected-secret", name: "GITHUB_PAT" },
+      {
+        environment: "dev",
+        path: "/agents/codex",
+        kind: "unexpected-secret",
+        name: "UNOWNED_SECRET",
+      },
+    ]);
+    for (const environment of ["staging", "prod"] as const) {
+      const snapshot = emptySnapshot(environment);
+      const report = auditInfisicalSnapshots([
+        {
+          ...snapshot,
+          folders: [...snapshot.folders, "/agents", "/agents/codex"],
+          secrets: { ...snapshot.secrets, "/agents/codex": ["GITHUB_PAT"] },
+        },
+      ]);
+      expect(report.violations).toContainEqual({
+        environment,
+        path: "/agents/codex",
+        kind: "unexpected-folder",
+      });
+      expect(report.violations).toContainEqual({
+        environment,
+        path: "/agents/codex",
+        kind: "unexpected-secret",
+        name: "GITHUB_PAT",
+      });
+    }
+  });
+
+  test("fetches both admitted agent folders without values or reference expansion", async () => {
+    const queriedPaths: string[] = [];
+    const snapshots = await fetchInfisicalSnapshots({
+      baseUrl: "https://infisical.example/api",
+      projectId: "project",
+      token: "test-token",
+      request: async (url) => {
+        const parsed = new URL(url);
+        if (parsed.pathname.endsWith("/folders"))
+          return new Response(
+            JSON.stringify({
+              folders:
+                parsed.searchParams.get("environment") === "dev"
+                  ? [{ relativePath: "/agents" }, { relativePath: "/agents/codex" }]
+                  : [],
+            }),
+          );
+        expect(parsed.searchParams.get("viewSecretValue")).toBe("false");
+        expect(parsed.searchParams.get("expandSecretReferences")).toBe("false");
+        expect(parsed.searchParams.get("recursive")).toBe("false");
+        const path = parsed.searchParams.get("secretPath");
+        if (parsed.searchParams.get("environment") === "dev") queriedPaths.push(path ?? "");
+        return new Response(
+          JSON.stringify({
+            secrets:
+              path === "/agents/codex"
+                ? [{ secretKey: "GITHUB_PAT" }, { secretKey: "UNOWNED_SECRET" }]
+                : [],
+          }),
+        );
+      },
+    });
+    expect(queriedPaths).toEqual(["/", "/agents", "/agents/codex"]);
+    expect(
+      auditInfisicalSnapshots(snapshots.filter(({ environment }) => environment === "dev"))
+        .violations,
+    ).toEqual([
+      {
+        environment: "dev",
+        path: "/agents/codex",
+        kind: "unexpected-secret",
+        name: "UNOWNED_SECRET",
+      },
+    ]);
   });
 
   test("forces the REST query to hide values", async () => {
@@ -330,5 +539,62 @@ describe("Infisical secret drift audit", () => {
           url.includes("environment=dev") && url.includes("secretPath=%2Fservices%2Fapi-next"),
       ),
     ).toBe(false);
+  });
+});
+
+describe("Megapot inventory activation policy", () => {
+  test("permits an absent or provisioned RPC in disabled production but requires it in staging", () => {
+    for (const environment of ["prod", "staging"] as const) {
+      const policy = INFISICAL_POLICIES.find(
+        (item) => item.environment === environment && item.path === "/services/api-next",
+      );
+      expect(policy).toBeDefined();
+      for (const present of [false, true]) {
+        const snapshot = emptySnapshot(environment);
+        const report = auditInfisicalSnapshots([
+          {
+            ...snapshot,
+            secrets: {
+              ...snapshot.secrets,
+              "/services/api-next": [
+                ...(policy?.requiredNames ?? []).filter((name) => name !== "MEGAPOT_V2_RPC_URL"),
+                ...(present ? ["MEGAPOT_V2_RPC_URL"] : []),
+              ],
+            },
+          },
+        ]);
+        expect(report.violations.filter(({ name }) => name === "MEGAPOT_V2_RPC_URL")).toEqual(
+          environment === "staging" && !present
+            ? [
+                expect.objectContaining({
+                  kind: "missing-required-secret",
+                  name: "MEGAPOT_V2_RPC_URL",
+                }),
+              ]
+            : [],
+        );
+      }
+    }
+  });
+
+  test("requires the RPC inventory policy whenever either Worker enables rewards", () => {
+    for (const worker of CLOUDFLARE_WORKERS) {
+      const config = parseJsonc<{
+        env: Record<string, { vars: Record<string, string>; secrets: { required: string[] } }>;
+      }>(readFileSync(new URL(`../${worker.configPath}`, import.meta.url), "utf8"));
+      for (const environment of worker.environments) {
+        const declared = config.env[environment];
+        expect(declared).toBeDefined();
+        expect(["true", "false"]).toContain(declared?.vars.MEGAPOT_REWARDS_ENABLED ?? "");
+        if (declared?.vars.MEGAPOT_REWARDS_ENABLED !== "true") continue;
+        const policy = INFISICAL_POLICIES.find(
+          (item) =>
+            item.environment === (environment === "production" ? "prod" : "staging") &&
+            item.path === "/services/api-next",
+        );
+        expect(policy?.requiredNames).toContain("MEGAPOT_V2_RPC_URL");
+        expect(declared.secrets.required).toContain("MEGAPOT_V2_RPC_URL");
+      }
+    }
   });
 });

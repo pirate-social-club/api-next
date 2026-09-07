@@ -37,6 +37,7 @@
     }
   ],
   "r2_buckets": [
+    { "binding": "MEDIA_INGRESS", "bucket_name": "pirate-media-ingress-development" },
     {
       "binding": "LEARNER_AUDIO",
       "bucket_name": "pirate-learner-audio-development"
@@ -47,6 +48,12 @@
       "binding": "MEDIA_PROCESSING_WORKFLOW",
       "name": "pirate-media-processing",
       "class_name": "MediaProcessingWorkflow",
+      "script_name": "pirate-media-processor-worker"
+    },
+    {
+      "binding": "VIDEO_ANALYSIS_WORKFLOW",
+      "name": "pirate-video-analysis",
+      "class_name": "VideoAnalysisWorkflow",
       "script_name": "pirate-media-processor-worker"
     },
     {
@@ -88,11 +95,13 @@
     "COMMUNITY_MAINTENANCE_ENABLED": "true",
     "MEDIA_PROCESSING_ENABLED": "false",
     "VIDEO_ANALYSIS_ENABLED": "false",
+        "VIDEO_DELIVERY_ENABLED": "false",
     "DATA_REGISTRATION_ENABLED": "false",
     "DATA_REGISTRATION_RPC_URL": "",
     "DATA_REGISTRATION_SIGNER_ADDRESS": "",
     "DATA_REGISTRATION_NATIVE_BALANCE_FLOOR_WEI": "200000000000000000",
     "HNS_OWNERSHIP_ENABLED": "false",
+    "HNS_ROOT_HEALTH_RENEWAL_ENABLED": "false",
     "MEGAPOT_REWARDS_ENABLED": "false",
     "MEGAPOT_CHAIN_ID": "84532",
     "MEGAPOT_ATTESTATION_ID": "megapot-base-sepolia-v2",
@@ -161,6 +170,12 @@
           "script_name": "pirate-media-processor-worker-staging"
         },
         {
+          "binding": "VIDEO_ANALYSIS_WORKFLOW",
+          "name": "pirate-video-analysis-staging",
+          "class_name": "VideoAnalysisWorkflow",
+          "script_name": "pirate-media-processor-worker-staging"
+        },
+        {
           "binding": "DATA_REGISTRATION_WORKFLOW",
           "name": "pirate-data-registration-staging",
           "class_name": "DataRegistrationWorkflow",
@@ -199,11 +214,16 @@
         "COMMUNITY_MAINTENANCE_ENABLED": "true",
         "MEDIA_PROCESSING_ENABLED": "true",
         "VIDEO_ANALYSIS_ENABLED": "false",
+        "VIDEO_DELIVERY_ENABLED": "false",
+        "VIDEO_WORKFLOW_ACCOUNT_ID": "08a4c22cf52e2ecae883e36f80a33f4a",
+        "VIDEO_WORKFLOW_NAME": "pirate-video-analysis-staging",
+        "VIDEO_WORKFLOW_SCRIPT_NAME": "pirate-media-processor-worker-staging",
         "DATA_REGISTRATION_ENABLED": "true",
         "DATA_REGISTRATION_RPC_URL": "https://aeneid.storyrpc.io",
         "DATA_REGISTRATION_SIGNER_ADDRESS": "0xE128f4da57540962FF788d5462aE76671499F05E",
         "DATA_REGISTRATION_NATIVE_BALANCE_FLOOR_WEI": "200000000000000000",
         "HNS_OWNERSHIP_ENABLED": "false",
+        "HNS_ROOT_HEALTH_RENEWAL_ENABLED": "false",
         "HNS_OWNERSHIP_CONFIGURATION_REFERENCE": "hns-owner-staging",
         "HNS_OWNERSHIP_CONFIGURATION_VERSION": "hns-owner-config-v1",
         "MEGAPOT_REWARDS_ENABLED": "true",
@@ -221,6 +241,7 @@
         "MEGAPOT_SHARED_SPONSOR_DAILY_SPEND_CEILING_ATOMIC": "500000000"
       },
       "r2_buckets": [
+        { "binding": "MEDIA_INGRESS", "bucket_name": "pirate-media-ingress-staging" },
         {
           "binding": "LEARNER_AUDIO",
           "bucket_name": "pirate-learner-audio-staging"
@@ -233,6 +254,7 @@
       ],
       "secrets": {
         "required": [
+          "VIDEO_WORKFLOW_READ_TOKEN",
           "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
           "MEGAPOT_V2_RPC_URL",
           "MEGAPOT_CUSTODY_PRIVATE_KEY",
@@ -274,7 +296,7 @@
         ]
       },
       "triggers": {
-        "crons": []
+        "crons": ["*/30 * * * *"]
       },
       "hyperdrive": [
         {
@@ -289,6 +311,12 @@
           "binding": "MEDIA_PROCESSING_WORKFLOW",
           "name": "pirate-media-processing-production",
           "class_name": "MediaProcessingWorkflow",
+          "script_name": "pirate-media-processor-worker-production"
+        },
+        {
+          "binding": "VIDEO_ANALYSIS_WORKFLOW",
+          "name": "pirate-video-analysis-production",
+          "class_name": "VideoAnalysisWorkflow",
           "script_name": "pirate-media-processor-worker-production"
         },
         {
@@ -330,11 +358,13 @@
         "COMMUNITY_MAINTENANCE_ENABLED": "false",
         "MEDIA_PROCESSING_ENABLED": "false",
         "VIDEO_ANALYSIS_ENABLED": "false",
+        "VIDEO_DELIVERY_ENABLED": "false",
         "DATA_REGISTRATION_ENABLED": "false",
         "DATA_REGISTRATION_RPC_URL": "https://aeneid.storyrpc.io",
         "DATA_REGISTRATION_SIGNER_ADDRESS": "0x91016D653FDa20E7C8eb2a1E6710a6504C5d1E7d",
         "DATA_REGISTRATION_NATIVE_BALANCE_FLOOR_WEI": "200000000000000000",
         "HNS_OWNERSHIP_ENABLED": "false",
+        "HNS_ROOT_HEALTH_RENEWAL_ENABLED": "true",
         "MEGAPOT_REWARDS_ENABLED": "false",
         "MEGAPOT_CHAIN_ID": "8453",
         "MEGAPOT_ATTESTATION_ID": "megapot-base-sepolia-v2",
@@ -349,12 +379,8 @@
         "MEGAPOT_SHARED_SPONSOR_DAILY_TICKET_CEILING": "50",
         "MEGAPOT_SHARED_SPONSOR_DAILY_SPEND_CEILING_ATOMIC": "500000000"
       },
-      "r2_buckets": [
-        {
-          "binding": "LEARNER_AUDIO",
-          "bucket_name": "pirate-learner-audio-production"
-        }
-      ],
+      // No learner-audio binding: the first production cron admits renewal only.
+      "r2_buckets": [{ "binding": "MEDIA_INGRESS", "bucket_name": "pirate-media-ingress-production" }],
       "secrets": {
         "required": ["COMMUNITY_PURCHASE_FUNDING_RPC_URL"]
       }

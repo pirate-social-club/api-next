@@ -213,6 +213,7 @@ export type VideoSubmissionState = Readonly<{
   videoRevision: number;
   analysisRevision: number;
   retryCount: number;
+  reconciliationRequired: boolean;
   status: VideoSubmissionStatus;
   phase: VideoSubmissionPhase;
   video: ImmutableVideo | null;
@@ -227,6 +228,8 @@ export type VideoSubmissionState = Readonly<{
     | "hash_failed"
     | "transform_failed"
     | "publication_failed"
+    | "membership_required"
+    | "provider_submission_unconfirmed"
     | "upload_seal_conflict"
     | null;
   postId: string | null;
@@ -414,6 +417,7 @@ export function createOriginalVideoSubmission(
     videoRevision: 0,
     analysisRevision: 0,
     retryCount: 0,
+    reconciliationRequired: false,
     posterTimestampMs: null,
     status: "processing",
     phase: "awaiting_upload",

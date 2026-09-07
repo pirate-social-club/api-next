@@ -1,3 +1,4 @@
+import { Effect } from "effect";
 import type {
   MediaProcessingEventType,
   MediaProcessingWorkflowPayload,
@@ -12,6 +13,11 @@ import {
   consumeVideoAnalysisQueueMessage,
   type VideoAnalysisQueueDependencies,
 } from "../../../packages/application/src/video/analysis-queue.ts";
+import {
+  launchVideoEnrichment,
+  type VideoEnrichmentServices,
+} from "../../../packages/application/src/video/enrichment-workflow.ts";
+import type { VideoWorkflowServices } from "../../../packages/application/src/video/workflow.ts";
 import {
   type CloudflareWorkflowStepDo,
   PROCESSING_WORKFLOW_STEP_OPTIONS,
@@ -28,6 +34,9 @@ export type MediaProcessorWorkerEnv = Readonly<{
 export type MediaProcessorComposition = Readonly<{
   readonly queue: MediaProcessingQueueDependencies;
   readonly videoAnalysis?: VideoAnalysisQueueDependencies;
+  readonly videoWorkflow?: VideoWorkflowServices;
+  readonly videoEnrichment?: Parameters<typeof launchVideoEnrichment>[1];
+  readonly videoEnrichmentWorkflow?: VideoEnrichmentServices;
   readonly workflow: MediaProcessingWorkflowDependencies;
 }>;
 
@@ -63,6 +72,19 @@ export function makeMediaProcessorQueueWorker<Env extends MediaProcessorWorkerEn
       const songMessages: (typeof batch.messages)[number][] = [];
       const videoMessages: (typeof batch.messages)[number][] = [];
       for (const message of batch.messages) {
+        if (
+          typeof message.body === "object" &&
+          message.body !== null &&
+          (message.body as { kind?: unknown }).kind === "video_enrichment"
+        ) {
+          const disposition =
+            composition.videoEnrichment === undefined
+              ? "retry"
+              : await launchVideoEnrichment(message.body, composition.videoEnrichment);
+          if (disposition === "ack") message.ack();
+          else message.retry({ delaySeconds: 30 });
+          continue;
+        }
         if (
           typeof message.body === "object" &&
           message.body !== null &&
@@ -172,10 +194,8 @@ export function makeMediaProcessingWorkflowRunner<Env extends MediaProcessorWork
           }
           return {
             eventType: resolvedEventType,
-            result: await runMediaProcessingWorkflow(
-              payload,
-              resolvedEventType,
-              composition.workflow,
+            result: await Effect.runPromise(
+              runMediaProcessingWorkflow(payload, resolvedEventType, composition.workflow),
             ),
           };
         },

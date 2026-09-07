@@ -1,0 +1,31 @@
+--- a/tasks/records/api-video-execution-completion.md
++++ b/tasks/records/api-video-execution-completion.md
+@@ -393,3 +393,28 @@
+ failure and finalize races without deleting sealing work. Completed ingress
+ cleanup remains a separate obligation. No deployed cleanup configuration was
+ verified and no runtime lifetime changed at this recommendation checkpoint.
++
++## Guarded migration and attempt-store checkpoint — 2026-09-05
++
++Ownership agreement 8fb4707f landed before the clean execution rebase onto
++ba0fd44529d834f491879126cdb8c67c4ec9fcdc. At rebased pre-migration tip
++4f8a2bbf2d5dfb42a176c95a9063f2087ae051f7, the exact ordinary inventory was
++119 SQL files ending in 0119_hns_root_health_renewal.sql, with 0120 absent.
++Delivery was at 223df3a9; HNS deployment was at 7d3c8aae. No helper worktree
++was opened.
++
++Execution f48f9ca6 adds guarded 0120, regenerates the baseline and checksum
++manifest, and extends the read-only preflight. It refuses any existing
++attempt, old poll_wait/running lease, or historical outbox outcome whose
++launch meaning cannot be inferred. Five focused PostgreSQL 17 tests passed.
++Execution a28b4413 adds creation-bound attempt replay and monotonic allocated
++to submitting to started transitions. Its focused PostgreSQL test passed
++15 assertions; it is only the store boundary of drill 7, not the composed
++terminal-provider-failure and changed-poster retry drill.
++
++The outbox repository still uses the old execution schema. Launch-only store
++and consumer, publication wakeups, Workflow runner, concrete composition,
++Wrangler bindings and jobs sweep remain outstanding. These preservation
++commits are not independently deployable. No staging preflight, provider call,
++push or deployment occurred. Full PostgreSQL and remote gates remain owed.
++The lane-owned next-tranche document records validation and remaining scope.

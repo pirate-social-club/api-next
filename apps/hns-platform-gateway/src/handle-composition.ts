@@ -1,5 +1,5 @@
 import {
-  decodeHnsCommunityHandlePersonaGatewayProfileV1,
+  decodeHnsCommunityHandlePersonaGatewayProfileV2,
   HNS_COMMUNITY_HANDLE_PERSONA_GATEWAY_PROFILE,
 } from "@pirate/application/hns-community-handle-gateway";
 import type { HnsForwarderGatewayAuthoritySourceV1 } from "@pirate/application/hns-host-serving";
@@ -100,7 +100,7 @@ export function makeHnsCommunityHandleGatewayComposition(
     throw new Error("HNS community handle gateway composition is incomplete or invalid");
   }
   try {
-    decodeHnsCommunityHandlePersonaGatewayProfileV1(profileBytes);
+    decodeHnsCommunityHandlePersonaGatewayProfileV2(profileBytes);
   } catch {
     throw new Error("HNS community handle gateway composition is incomplete or invalid");
   }

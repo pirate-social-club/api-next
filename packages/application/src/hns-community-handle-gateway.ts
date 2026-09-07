@@ -5,9 +5,9 @@ import {
 } from "./hns-handle-host-api.ts";
 
 export const HNS_COMMUNITY_HANDLE_PERSONA_GATEWAY_VERSION =
-  "pirate-hns-community-handle-persona-public-gateway-v1" as const;
+  "pirate-hns-community-handle-persona-public-gateway-v2" as const;
 export const HNS_COMMUNITY_HANDLE_PERSONA_GATEWAY_SHA256 =
-  "156487e5aff120efa08c1af0dce5a54d42ce32100f1cfb93de350ceac446c37b" as const;
+  "b4440ab21ae73a73d3ab3549bcaaa66c1e27891e22cdd308d4377b0b6eb549dc" as const;
 
 export const HNS_COMMUNITY_HANDLE_PERSONA_GATEWAY_METHODS = Object.freeze(["GET", "HEAD"] as const);
 export const HNS_COMMUNITY_HANDLE_PERSONA_GATEWAY_PATH_MAPS = Object.freeze([
@@ -26,7 +26,7 @@ export const HNS_COMMUNITY_HANDLE_PERSONA_GATEWAY_PATHS = Object.freeze([
   "/p/:personaId",
 ] as const);
 
-export type HnsCommunityHandlePersonaGatewayProfileV1 = readonly [
+export type HnsCommunityHandlePersonaGatewayProfileV2 = readonly [
   version: typeof HNS_COMMUNITY_HANDLE_PERSONA_GATEWAY_VERSION,
   forwarder: typeof HNS_FORWARDER_V3,
   authority_variant: "handle_persona_v1",
@@ -43,12 +43,12 @@ export type HnsCommunityHandlePersonaGatewayProfileV1 = readonly [
   maximum_buffered_response_bytes: 16_777_216,
   gateway_upstream_deadline_milliseconds: 15_000,
   maximum_private_authority_bytes: 4_096,
-  private_authority_deadline_milliseconds: 2_000,
+  private_authority_deadline_milliseconds: 4_000,
   maximum_public_persona_response_bytes: 1_048_576,
   public_persona_deadline_milliseconds: 2_000,
 ];
 
-export const HNS_COMMUNITY_HANDLE_PERSONA_GATEWAY_PROFILE: HnsCommunityHandlePersonaGatewayProfileV1 =
+export const HNS_COMMUNITY_HANDLE_PERSONA_GATEWAY_PROFILE: HnsCommunityHandlePersonaGatewayProfileV2 =
   Object.freeze([
     HNS_COMMUNITY_HANDLE_PERSONA_GATEWAY_VERSION,
     HNS_FORWARDER_V3,
@@ -66,7 +66,7 @@ export const HNS_COMMUNITY_HANDLE_PERSONA_GATEWAY_PROFILE: HnsCommunityHandlePer
     16_777_216,
     15_000,
     4_096,
-    2_000,
+    4_000,
     1_048_576,
     2_000,
   ] as const);
@@ -79,13 +79,13 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 const profileBytes = encoder.encode(JSON.stringify(HNS_COMMUNITY_HANDLE_PERSONA_GATEWAY_PROFILE));
 
-export function encodeHnsCommunityHandlePersonaGatewayProfileV1(): Uint8Array {
+export function encodeHnsCommunityHandlePersonaGatewayProfileV2(): Uint8Array {
   return new Uint8Array(profileBytes);
 }
 
-export function decodeHnsCommunityHandlePersonaGatewayProfileV1(
+export function decodeHnsCommunityHandlePersonaGatewayProfileV2(
   bytes: Uint8Array,
-): HnsCommunityHandlePersonaGatewayProfileV1 {
+): HnsCommunityHandlePersonaGatewayProfileV2 {
   if (
     bytes.byteLength !== profileBytes.byteLength ||
     !bytes.every((byte, index) => byte === profileBytes[index])
@@ -109,7 +109,7 @@ function hex(bytes: Uint8Array): string {
   return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-export async function verifyHnsCommunityHandlePersonaGatewayProfileV1(): Promise<void> {
+export async function verifyHnsCommunityHandlePersonaGatewayProfileV2(): Promise<void> {
   const digest = hex(new Uint8Array(await crypto.subtle.digest("SHA-256", profileBytes)));
   if (digest !== HNS_COMMUNITY_HANDLE_PERSONA_GATEWAY_SHA256) {
     throw new HnsCommunityHandlePersonaGatewayProfileError(

@@ -17,9 +17,14 @@ described below.
 The 2026-08-29 ratchet lane reproduced 0/71/90/0 at pinned audit commit
 `6bca114194f7ac3bae95a2a94ed5c1138d166f3d` and again at implementation base
 `0208464`. It removed or de-exported only proven-unowned or file-internal
-surface, reducing the current baseline to 0/58/80/0. The machine-readable
-counterpart is `knip-hygiene-baseline.json`; `bun run check:knip` requires the
-two records to agree and rejects increases.
+surface, reducing the baseline at that checkpoint to 0/58/80/0. At the 2026-09-05
+planning base `origin/main@6190357f4489ffcdeca041c01592418f0883b316`, the
+measured report was already 0/53/79/0: five exports and one type of headroom
+had accumulated through accepted changes after the ratchet record. This lane
+removed 16 reviewed export findings and leaves the current baseline at
+0/37/79/0; its type count is unchanged at 79. The machine-readable counterpart
+is `knip-hygiene-baseline.json`; `bun run check:knip` requires the two records
+to agree and rejects increases.
 
 ## Retained findings and rationale
 
@@ -83,9 +88,11 @@ de-exported: `HnsCommunityAppGatewayDeploymentManifestV1`,
 
 The retained added export findings are intentional DATA or media processing
 seams: `IPFS_GATEWAY_VERIFICATION_VERSION`; `MEDIA_LYRICS_MAX_LENGTH`;
-`MediaLyricsIdentity`; `MediaTransform`; and `readMp3FrameWindow`. They define
-owned media/DATA pipeline contracts or pure parsing helpers; none is made
-reachable by widening Knip entry points or ignores.
+`MediaLyricsIdentity`; and `MediaTransform`. They define owned media/DATA
+pipeline contracts. The MP3 parser remains in `media-mp3-sample.ts` with its
+direct tests; only the redundant `media-processing-runtime.ts` re-export was
+removed. None of these findings is made reachable by widening Knip entry
+points or ignores.
 
 The retained added type findings are the domain `LyricsAnalysis` state and
 repository workflow inputs `AuthorLyricsSnapshot`, `BeginFinalizeInput`,
@@ -105,5 +112,5 @@ only exemption is the compile-only fixture, which the dependency gate requires.
 
 ## Baseline numbers
 
-Unused exports: 58. Unused exported types: 80. Unused files: 0. Duplicate
+Unused exports: 37. Unused exported types: 79. Unused files: 0. Duplicate
 exports: 0.

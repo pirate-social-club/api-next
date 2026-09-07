@@ -32,6 +32,17 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/hns-continuity-python"
           "$RUNNER_TEMP/hns-continuity-python/bin/pip" install --require-hashes -r scripts/hns-continuity/requirements.txt
           "$RUNNER_TEMP/hns-continuity-python/bin/python" scripts/hns-continuity/verify-authorities.test.py
+          "$RUNNER_TEMP/hns-continuity-python/bin/python" scripts/hns-monitor/zone-freshness.test.py
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.10"
+      - name: Verify zone monitor dependencies on the production Python version
+        run: |
+          python -m venv "$RUNNER_TEMP/hns-monitor-python"
+          "$RUNNER_TEMP/hns-monitor-python/bin/pip" install --require-hashes --only-binary=:all: -r scripts/hns-continuity/requirements.txt
+          "$RUNNER_TEMP/hns-monitor-python/bin/python" scripts/hns-monitor/zone-freshness.test.py
+      - name: Verify secondary DNS release refusal paths
+        run: python3 scripts/hns-secondary-dns/verify-release.test.py
       - run: bun run check
       - run: bun run test
       - name: Resolve OpenAPI baseline

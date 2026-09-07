@@ -1,0 +1,102 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "main": "src/index.ts",
+  "account_id": "08a4c22cf52e2ecae883e36f80a33f4a",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "name": "pirate-video-source-gateway",
+  "workers_dev": false,
+  "preview_urls": false,
+  "hyperdrive": [
+    {
+      "binding": "CONTROL_PLANE",
+      "id": "00000000-0000-0000-0000-000000000000",
+      "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "MEDIA_IMMUTABLE_ORIGINALS",
+      "bucket_name": "pirate-media-immutable-development"
+    }
+  ],
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "invocation_logs": false,
+      "persist": true
+    },
+    "traces": {
+      "enabled": false,
+      "persist": false
+    }
+  },
+  "env": {
+    "staging": {
+      "name": "pirate-video-source-gateway-staging",
+      "workers_dev": false,
+      "preview_urls": false,
+      "hyperdrive": [
+        {
+          "binding": "CONTROL_PLANE",
+          "id": "8cb7658a0f7143359c1becfec6a15c23",
+          "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
+        }
+      ],
+      "r2_buckets": [
+        {
+          "binding": "MEDIA_IMMUTABLE_ORIGINALS",
+          "bucket_name": "pirate-media-immutable-staging"
+        }
+      ],
+      "observability": {
+        "enabled": true,
+        "logs": {
+          "enabled": true,
+          "head_sampling_rate": 1,
+          "invocation_logs": false,
+          "persist": true
+        },
+        "traces": {
+          "enabled": false,
+          "persist": false
+        }
+      }
+    },
+    "production": {
+      "name": "pirate-video-source-gateway-production",
+      "workers_dev": false,
+      "preview_urls": false,
+      "hyperdrive": [
+        {
+          "binding": "CONTROL_PLANE",
+          "id": "884b68c5a7904982a86620ed90032b77",
+          "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
+        }
+      ],
+      "r2_buckets": [
+        {
+          "binding": "MEDIA_IMMUTABLE_ORIGINALS",
+          "bucket_name": "pirate-media-immutable-production"
+        }
+      ],
+      "observability": {
+        "enabled": true,
+        "logs": {
+          "enabled": true,
+          "head_sampling_rate": 1,
+          "invocation_logs": false,
+          "persist": true
+        },
+        "traces": {
+          "enabled": false,
+          "persist": false
+        }
+      }
+    }
+  }
+}

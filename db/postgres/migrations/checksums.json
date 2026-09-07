@@ -120,6 +120,14 @@
     "0117_hns_route_attachment_completion.sql": "fac26341f2a5717157a9db77702f0fd5abab220858c181a4c23198c4c5ba8ba3",
     "0118_hns_community_root_activation.sql": "f49062df910eb1fe89c44a1ac0bcad08857ab3d7978fcbd7480a084dc90838f2",
     "0119_hns_root_health_renewal.sql": "1870db49b6e76c6cd748889e8bdb2a64a2283e2af0515b14c65f1f89d45cc73a",
-    "0120_hns_root_health_renewal_recovery.sql": "c4cf5757d3c6951502186637398504df7b9be02ecbff1b7c30819bb226ada399"
+    "0120_hns_root_health_renewal_recovery.sql": "c4cf5757d3c6951502186637398504df7b9be02ecbff1b7c30819bb226ada399",
+    "0121_hns_imported_inventory_renewal.sql": "3d83fb50b91572af79780bd80deff588aa4d5a8b00f14c3f410793d57bca2977",
+    "0122_video_workflow_execution.sql": "cbaba4484fa88ceed38e3ac8149e70e9309e0308d4e71f215f576038f6db5446",
+    "0123_video_source_grants.sql": "2cbee9ae295db74ca1c01cf70c9e5c1c4dcfa72d821bf22db702a533df956214",
+    "0124_video_safety_evidence.sql": "1def57d4bddd8e1f218f3eb8e0111c1acb0fb9ecbb417b581265eba6d456d4bf",
+    "0125_video_publication_failure_reasons.sql": "3e2d858364ac3ff1f672485c28322d8a9b0ff398d53dd3c7e696ab4fa1c966a4",
+    "0126_hns_renewal_execution_privileges.sql": "79096935d3a49b8fb3b178065264ceca37b167fc488ec1ac905610a091987e36",
+    "0127_video_delivery_ingest.sql": "3b154f8d9ce7aa90d743f719ad6c43033ed9fa8b1875d4b24f59a261d2045bf8",
+    "0128_hns_provisional_community_import.sql": "933ae29b72c704b5bc046e357b7b7bb156e115d11e4a52ce17a81002034897a2"
   }
 }

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { MODERATION_POLICY_CATEGORIES_V1, type ModerationPolicyTableV1 } from "@pirate/contracts";
 import { canonicalTextModerationInput, normalizeTextModerationInput } from "@pirate/domain";
 import { Cause, Effect, Exit, Result } from "effect";
 import {
@@ -9,7 +10,22 @@ import {
 } from "../../ports.ts";
 import { createTextPost, getTextContentSubmission } from "./text-post.ts";
 
-const actor = { userId: "usr_alice", kind: "user" as const };
+const policy = {
+  policy_revision: "text-policy-1",
+  policy_hash: "a".repeat(64),
+  platform_policy_revision: "platform-1",
+  platform_policy_hash: "b".repeat(64),
+  community_policy_revision: "community-1",
+  community_policy_hash: "c".repeat(64),
+  platform_policy: Object.fromEntries(
+    MODERATION_POLICY_CATEGORIES_V1.map((category) => [category, "permit"]),
+  ) as ModerationPolicyTableV1,
+  community_policy: Object.fromEntries(
+    MODERATION_POLICY_CATEGORIES_V1.map((category) => [category, "permit"]),
+  ) as ModerationPolicyTableV1,
+};
+
+const actor = { userId: "usr_author", kind: "user" as const };
 const personaId = "persona-text-author";
 const body = {
   post_type: "text" as const,
@@ -60,21 +76,17 @@ const inputSha = () => {
   return canonical.sha256;
 };
 
-const evaluation = (
-  policyRevision = "text-policy-1",
-  decision: "allow" | "manual_review" = "allow",
-): TextPostModerationEvaluation => ({
-  version: "text-moderation-v1",
-  surface: "text_post",
-  decision,
-  reason_codes: decision === "allow" ? [] : ["provider_timeout"],
-  policy_revision: policyRevision,
-  policy_hash: "a".repeat(64),
+const evaluation = () => ({
+  provider_id: "openai" as const,
+  requested_model: "test-model",
+  returned_model: "test-model",
   input_sha256: inputSha(),
-  evidence_ref: null,
+  matched_categories: [],
+  inputs: [],
 });
 
 const store = (overrides: Partial<TextPostStore["Service"]> = {}): TextPostStore["Service"] => ({
+  readModerationPolicy: () => Effect.succeed(policy),
   checkAuthority: () => Effect.succeed(undefined),
   replay: () => Effect.succeed({ kind: "none" as const }),
   commitTerminal: () => Effect.succeed({ kind: "created" as const, snapshot: published }),
@@ -98,8 +110,10 @@ describe("moderated text post application", () => {
           personaStore,
           textPostStore: store({
             replay: () => Effect.succeed({ kind: "replay", snapshot: published }),
+            checkAuthority: () => Effect.die("replay must precede authority"),
+            readModerationPolicy: () => Effect.die("replay must precede policy"),
           }),
-          textModeration: {
+          textModerationProvider: {
             evaluate: () => {
               calls += 1;
               return Effect.succeed(evaluation());
@@ -112,6 +126,146 @@ describe("moderated text post application", () => {
     expect(calls).toBe(0);
   });
 
+  test("provider absence commits V2 manual review with current policy and author rating", async () => {
+    let committed: Parameters<TextPostStore["Service"]["commitTerminal"]>[0] | undefined;
+    const result = await run(
+      createTextPost(
+        {
+          communityId: "community_1",
+          actor,
+          body: { ...body, author_declared_rating: "adult_18" },
+        },
+        {
+          personaStore,
+          textPostStore: store({
+            commitTerminal: (input) => {
+              committed = input;
+              return Effect.succeed({ kind: "created", snapshot: published });
+            },
+          }),
+        },
+      ),
+    );
+    expect(Exit.isSuccess(result)).toBe(true);
+    expect(committed?.evaluation).toEqual({
+      version: "text-moderation-v2",
+      surface: "text_post",
+      decision: "manual_review",
+      reason_codes: ["provider_unavailable"],
+      policy_revision: policy.policy_revision,
+      policy_hash: policy.policy_hash,
+      platform_policy_revision: policy.platform_policy_revision,
+      platform_policy_hash: policy.platform_policy_hash,
+      community_policy_revision: policy.community_policy_revision,
+      community_policy_hash: policy.community_policy_hash,
+      matched_categories: [],
+      category_decisions: {},
+      effective_policy_decision: "review",
+      author_declared_rating: "adult_18",
+      resulting_content_rating: "adult_18",
+      input_sha256: inputSha(),
+      evidence_ref: null,
+    });
+    expect(committed?.restrictedEvidence).toBeUndefined();
+  });
+
+  test("policy read failure stops before provider and terminal commit", async () => {
+    let commits = 0;
+    let providers = 0;
+    const result = await run(
+      createTextPost(
+        { communityId: "community_1", actor, body },
+        {
+          personaStore,
+          textPostStore: store({
+            readModerationPolicy: () =>
+              Effect.fail(
+                new TextPostRepositoryError({ operation: "authority", reason: "invalid-row" }),
+              ),
+            commitTerminal: () => {
+              commits++;
+              return Effect.succeed({ kind: "created", snapshot: published });
+            },
+          }),
+          textModerationProvider: {
+            evaluate: () => {
+              providers++;
+              return Effect.succeed(evaluation());
+            },
+          },
+        },
+      ),
+    );
+    expect(Exit.isFailure(result)).toBe(true);
+    expect({ commits, providers }).toEqual({ commits: 0, providers: 0 });
+  });
+
+  test.each(["timeout", "invalid", "defect", "hash-mismatch"] as const)(
+    "provider %s degrades without fabricated evidence",
+    async (mode) => {
+      let committed: Parameters<TextPostStore["Service"]["commitTerminal"]>[0] | undefined;
+      const result = await run(
+        createTextPost(
+          { communityId: "community_1", actor, body },
+          {
+            personaStore,
+            textPostStore: store({
+              commitTerminal: (input) => {
+                committed = input;
+                return Effect.succeed({ kind: "created", snapshot: published });
+              },
+            }),
+            textModerationProvider: {
+              evaluate: () =>
+                mode === "defect"
+                  ? Effect.die("invalid provider payload")
+                  : mode === "hash-mismatch"
+                    ? Effect.succeed({ ...evaluation(), input_sha256: "0".repeat(64) })
+                    : Effect.fail(new TextModerationProviderError({ reason: mode })),
+            },
+          },
+        ),
+      );
+      expect(Exit.isSuccess(result)).toBe(true);
+      expect(committed?.evaluation).toMatchObject({
+        version: "text-moderation-v2",
+        decision: "manual_review",
+        reason_codes: [mode === "timeout" ? "provider_timeout" : "provider_invalid"],
+        evidence_ref: null,
+        platform_policy_revision: policy.platform_policy_revision,
+      });
+      expect(committed?.restrictedEvidence).toBeUndefined();
+    },
+  );
+
+  test("stale-policy retries reread the policy and stop at three commits", async () => {
+    const revisions: string[] = [];
+    let reads = 0;
+    const result = await run(
+      createTextPost(
+        { communityId: "community_1", actor, body },
+        {
+          personaStore,
+          textPostStore: store({
+            readModerationPolicy: () =>
+              Effect.succeed({ ...policy, policy_revision: `policy-${++reads}` }),
+            commitTerminal: ({ evaluation }) => {
+              revisions.push(evaluation.policy_revision);
+              return Effect.succeed({
+                kind: "policy-stale",
+                policyRevision: "newer",
+                policyHash: policy.policy_hash,
+              });
+            },
+          }),
+        },
+      ),
+    );
+    expect(Exit.isFailure(result)).toBe(true);
+    expect(revisions).toEqual(["policy-1", "policy-2", "policy-3"]);
+    expect(reads).toBe(3);
+  });
+
   test("includes the target community in the canonical request hash", async () => {
     const requestHashes: string[] = [];
     const services = {
@@ -122,7 +276,7 @@ describe("moderated text post application", () => {
           return Effect.succeed({ kind: "created" as const, snapshot: published });
         },
       }),
-      textModeration: moderation,
+      textModerationProvider: moderation,
     };
     await run(createTextPost({ communityId: "community_1", actor, body }, services));
     await run(createTextPost({ communityId: "community_2", actor, body }, services));
@@ -145,7 +299,7 @@ describe("moderated text post application", () => {
               return Effect.succeed({ kind: "created" as const, snapshot: published });
             },
           }),
-          textModeration: {
+          textModerationProvider: {
             evaluate: () => Effect.fail(new TextModerationProviderError({ reason: "unavailable" })),
           },
         },
@@ -178,7 +332,7 @@ describe("moderated text post application", () => {
                 : Effect.succeed({ kind: "created" as const, snapshot: published });
             },
           }),
-          textModeration: moderation,
+          textModerationProvider: moderation,
         },
       ),
     );
@@ -195,7 +349,7 @@ describe("moderated text post application", () => {
           textPostStore: store({
             replay: () => Effect.succeed({ kind: "conflict", submissionId: "submission_9" }),
           }),
-          textModeration: moderation,
+          textModerationProvider: moderation,
         },
       ),
     );
@@ -227,7 +381,7 @@ describe("moderated text post application", () => {
                 new TextPostRepositoryError({ operation: "authority", reason: "not-found" }),
               ),
           }),
-          textModeration: {
+          textModerationProvider: {
             evaluate: () => {
               moderationCalls += 1;
               return Effect.succeed(evaluation());

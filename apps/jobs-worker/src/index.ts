@@ -171,6 +171,7 @@ export interface JobsWorkerEnv
   readonly MEGAPOT_COMMITMENTS?: R2Bucket;
   readonly API_NEXT_ENV?: string;
   readonly KARAOKE_FINALIZATION_RECOVERY_ENABLED?: string;
+  readonly HNS_ROOT_HEALTH_RENEWAL_ENABLED?: string;
   readonly COMMUNITY_MAINTENANCE_ENABLED?: string;
   readonly COMMUNITY_PURCHASE_FUNDING_RPC_URL?: string;
   readonly MEGAPOT_REWARDS_ENABLED?: string;
@@ -730,6 +731,7 @@ export function makeJobsWorkerDeclarations(
   karaokeFinalization?: Readonly<{
     namespace: import("@pirate/platform-cf").KaraokeFinalizationRecoveryNamespace;
   }>,
+  hnsRootHealthRenewalEnabled = false,
 ) {
   const declarations: Array<JobDeclaration<unknown, ControlPlaneDb | AlertCollector>> = [];
   if (communityMaintenanceEnabled) {
@@ -747,9 +749,9 @@ export function makeJobsWorkerDeclarations(
         force: hns.force,
         environment,
       }),
-      makeHnsRootHealthRenewalJob(sink),
     );
   }
+  if (hnsRootHealthRenewalEnabled) declarations.push(makeHnsRootHealthRenewalJob(sink));
   if (megapot !== null) declarations.push(makeMegapotRewardsJob(sink, megapot));
   if (learnerAudio !== undefined) {
     declarations.push(makeStudySpokenAnswerRecoveryJob(sink, learnerAudio));
@@ -805,6 +807,7 @@ export default {
       config.COMMUNITY_MAINTENANCE_ENABLED,
       env.LEARNER_AUDIO,
       karaokeFinalization,
+      env.HNS_ROOT_HEALTH_RENEWAL_ENABLED === "true",
     );
     const registry = await Effect.runPromise(buildJobRegistry(declarations));
     const dueByLane = groupDueJobsByLane(registry, event.scheduledTime);

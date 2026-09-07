@@ -9,28 +9,9 @@ import type {
   MediaTransformVideoSource,
 } from "@pirate/application/media/transform";
 import { MediaTransformRequestInvalid } from "@pirate/application/media/transform";
-import type {
-  VideoAnalysisProviders,
-  VideoAnalysisRuntimeServices,
-  VideoAnalysisSource,
-} from "@pirate/application/video/analysis";
-import {
-  consumeVideoAnalysisQueueMessage,
-  type VideoAnalysisOutboxRecord,
-  type VideoAnalysisOutboxStore,
-} from "@pirate/application/video/analysis-queue";
-import type {
-  VideoPublicationStore,
-  VideoSubmissionRecord,
-} from "@pirate/application/video/publication";
-import {
-  attachImmutableVideo,
-  createOriginalVideoSubmission,
-  VIDEO_POSTER_POLICY_V1,
-  type VideoSubmissionState,
-} from "@pirate/domain";
+import type { VideoAnalysisSource } from "@pirate/application/video/analysis";
+import { VIDEO_POSTER_POLICY_V1 } from "@pirate/domain";
 import { Effect } from "effect";
-import { dispatchEligibleVideoAnalysisOutbox } from "../apps/jobs-worker/src/video-analysis-outbox-dispatch.ts";
 import {
   LOCAL_VIDEO_FFMPEG_REVISION,
   makeLocalPinnedFfmpegVideoAnalysisEngine,
@@ -123,6 +104,7 @@ function binding(capability: "probe" | "audio" | "frames"): MediaTransformVideoB
     operationId: source().operationId,
     videoRevision: 1,
     analysisRevision: 1,
+    creationRevision: 1,
     canonicalVideoSha256: fixtureSha256,
     requestId: `trusted-video-${capability}`,
   };
@@ -251,178 +233,4 @@ localFixtureSuite("local pinned-FFmpeg video analysis engine", () => {
     ).rejects.toBeInstanceOf(MediaTransformRequestInvalid);
     expect(reads).toBe(0);
   });
-
-  test("recovers a lost completion lease without duplicating publication effects", async () => {
-    const { engine } = makeEngineHarness();
-    let state: VideoSubmissionState = {
-      ...attachImmutableVideo(
-        createOriginalVideoSubmission({
-          submissionId: "trusted-video-submission",
-          operationId: "trusted-video-operation",
-          communityId: "trusted-video-community",
-          actorAccountId: "trusted-video-account",
-          authorPersonaId: "trusted-video-persona",
-          reservationId: "trusted-video-reservation",
-          caption: "Trusted fixture",
-          authorDeclaredRating: "general",
-        }),
-        {
-          videoRevision: 1,
-          immutableRef: source().immutableRef,
-          canonicalSha256: fixtureSha256,
-          contentType: "video/mp4",
-          sizeBytes: fixtureBytes.byteLength,
-        },
-      ),
-      posterTimestampMs: 1_500,
-    };
-    const authorPersona = {
-      persona_id: "trusted-video-persona",
-      object: "persona" as const,
-      display_name: "Trusted Video Fixture",
-      avatar_ref: null,
-      primary_public_handle: null,
-    };
-    const record = (): VideoSubmissionRecord => ({
-      state,
-      authorPersona,
-      updatedAt: "2026-09-04T00:00:00.000Z",
-    });
-    let publicationWrites = 0;
-    let projectionWrites = 0;
-    const publicationStore = {
-      getSubmissionByOperation: async () => record(),
-      commitAnalysisDecision: async ({ nextState }: { nextState: VideoSubmissionState }) => {
-        state = nextState;
-        return record();
-      },
-      publish: async ({ state: published }: { state: VideoSubmissionState }) => {
-        if (state.status !== "published") {
-          publicationWrites += 1;
-          projectionWrites += 1;
-          state = published;
-        }
-        return record();
-      },
-      recordProcessingFailure: async () => record(),
-    } as unknown as VideoPublicationStore;
-
-    const providers: VideoAnalysisProviders = {
-      hash: engine.hash,
-      identifySoundtrack: async () => ({
-        verification: {
-          status: "no_match",
-          evidenceRef: "acr:trusted-fixture:no-match",
-          adapterRevision: "acr-fixture-v1",
-        },
-        evidenceRef: "acr:trusted-fixture:no-match",
-        adapterRevision: "acr-fixture-v1",
-      }),
-      moderate: async ({ caption }) => ({
-        requestId: "safety:trusted-fixture",
-        evidenceRef: "safety:trusted-fixture:allow",
-        minorSafetyEvidenceRef: "minor-safety:trusted-fixture:allow",
-        mediaSafety: "allow",
-        captionSafety: caption === null ? "not_applicable" : "allow",
-        automatedRating: "general",
-        policyRevision: "video-safety-v1",
-        adapterRevision: "video-safety-fixture-v1",
-      }),
-    };
-    const transformAttempts = new Map<string, MediaTransformAttempt>();
-    const runtime = {
-      store: publicationStore,
-      multipart: {},
-      sealer: {},
-      personaServices: {
-        personaStore: {
-          findOwned: () => Effect.die("persona lookup is not part of analysis execution"),
-        },
-      },
-      nowIso: () => "2026-09-04T00:01:00.000Z",
-      randomUuid: () => "00000000-0000-4000-8000-000000000001",
-      analysisProviders: providers,
-      transform: engine,
-      transformAttempts: {
-        loadOrCreate: async ({ binding, initialAttempt }) => {
-          const existing = transformAttempts.get(binding.requestId);
-          if (existing !== undefined) return existing;
-          transformAttempts.set(binding.requestId, initialAttempt);
-          return initialAttempt;
-        },
-        advance: async ({ binding, attempt }) => {
-          transformAttempts.set(binding.requestId, attempt);
-          return attempt;
-        },
-      },
-    } as unknown as VideoAnalysisRuntimeServices;
-
-    let outbox: VideoAnalysisOutboxRecord = {
-      effectIdentity: "video-analysis:trusted-video-operation:v1:c1",
-      submissionId: "trusted-video-submission",
-      operationId: "trusted-video-operation",
-      videoRevision: 1,
-      creationRevision: 1,
-      canonicalVideoSha256: fixtureSha256,
-      state: "pending",
-      deliveryAttempts: 0,
-      claimOwner: null,
-      claimFence: 0,
-    };
-    let loseFirstCompletion = true;
-    const outboxStore: VideoAnalysisOutboxStore = {
-      get: async () => outbox,
-      claim: async (_identity, workerId) => {
-        outbox = {
-          ...outbox,
-          state: "running",
-          deliveryAttempts: outbox.deliveryAttempts + 1,
-          claimOwner: workerId,
-          claimFence: outbox.claimFence + 1,
-        };
-        return outbox;
-      },
-      complete: async () => {
-        if (loseFirstCompletion) {
-          loseFirstCompletion = false;
-          return false;
-        }
-        outbox = { ...outbox, state: "delivered", claimOwner: null };
-        return true;
-      },
-      defer: async () => {
-        outbox = { ...outbox, state: "poll_wait", claimOwner: null };
-        return true;
-      },
-      fail: async () => {
-        outbox = { ...outbox, state: "failed", claimOwner: null };
-        return true;
-      },
-    };
-    const dependencies = { outbox: outboxStore, runtime, workerId: "video-worker-1" };
-    const queued: unknown[] = [];
-    expect(
-      await dispatchEligibleVideoAnalysisOutbox(
-        { listEligible: async () => [{ effectIdentity: outbox.effectIdentity }] },
-        {
-          send: async (message) => {
-            queued.push(message);
-          },
-        },
-      ),
-    ).toEqual({ selected: 1, sent: 1, failed: 0 });
-    const message = queued[0];
-
-    expect(await consumeVideoAnalysisQueueMessage(message, dependencies)).toEqual({
-      disposition: "retry",
-      delaySeconds: 15,
-    });
-    expect(state.status).toBe("published");
-    expect(await consumeVideoAnalysisQueueMessage(message, dependencies)).toEqual({
-      disposition: "ack",
-    });
-    expect(outbox.state).toBe("delivered");
-    expect(publicationWrites).toBe(1);
-    expect(projectionWrites).toBe(1);
-  }, 30_000);
 });

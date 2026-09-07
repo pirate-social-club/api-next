@@ -7,6 +7,20 @@ export interface CloudflareWorkflowStepDo<Options> {
   readonly do: <T>(name: string, options: Options, callback: () => Promise<T>) => Promise<T>;
 }
 
+/** Encodes the exact logical identity without changing existing provider instance names. */
+export async function cloudflareDigestWorkflowId(
+  prefix: "drw" | "vaw",
+  logicalId: string,
+): Promise<string> {
+  if (logicalId.length === 0 || logicalId.length > 512 || logicalId !== logicalId.trim()) {
+    throw new TypeError("invalid logical Workflow identity");
+  }
+  const digest = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(logicalId)),
+  );
+  return `${prefix}-${Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+}
+
 export const isExplicitlyEnabled = (value: string | undefined): boolean => value === "true";
 
 const PRESENT_WORKFLOW_STATUSES = new Set([

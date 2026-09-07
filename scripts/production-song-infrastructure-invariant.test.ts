@@ -40,7 +40,7 @@ const configs = {
 };
 
 describe("disabled production song infrastructure", () => {
-  test("restores every production song runtime gate and schedule to disabled", () => {
+  test("keeps production song runtime gates disabled with the independent HNS cron", () => {
     expect(configs.http.vars).toMatchObject({
       MEDIA_UPLOADS_ENABLED: "false",
       MEGAPOT_REWARDS_ENABLED: "false",
@@ -61,7 +61,9 @@ describe("disabled production song infrastructure", () => {
       DATA_REGISTRATION_ENABLED: "false",
       DATA_REGISTRATION_CHAIN_ID: "1315",
     });
-    expect(configs.jobs.triggers).toEqual({ crons: [] });
+    expect(configs.jobs.vars.HNS_ROOT_HEALTH_RENEWAL_ENABLED).toBe("true");
+    expect(configs.jobs.vars.HNS_OWNERSHIP_ENABLED).toBe("false");
+    expect(configs.jobs.triggers).toEqual({ crons: ["*/30 * * * *"] });
   });
 
   test("keeps queue and schedule Workers off public workers.dev routes", () => {
@@ -88,11 +90,13 @@ describe("disabled production song infrastructure", () => {
       "MEDIA_INGRESS",
       "MEDIA_IMMUTABLE_ORIGINALS",
       "LEARNER_AUDIO",
+      "MEDIA_DERIVED",
     ]);
     expect(resourceNames(configs.http.r2_buckets, "bucket_name")).toEqual([
       "pirate-media-ingress-production",
       "pirate-media-immutable-production",
       "pirate-learner-audio-production",
+      "pirate-media-derived-production",
     ]);
     expect(configs.http.vars).toMatchObject({
       MEDIA_INGRESS_R2_ACCOUNT_ID: ACCOUNT_ID,
@@ -121,6 +125,7 @@ describe("disabled production song infrastructure", () => {
     ]);
     expect(resourceNames(configs.jobs.workflows, "name")).toEqual([
       "pirate-media-processing-production",
+      "pirate-video-analysis-production",
       "pirate-data-registration-production",
     ]);
 
@@ -133,6 +138,7 @@ describe("disabled production song infrastructure", () => {
     ]);
     expect(resourceNames(configs.media.workflows, "name")).toEqual([
       "pirate-media-processing-production",
+      "pirate-video-analysis-production",
     ]);
 
     const dataQueues = configs.data.queues as JsonRecord;

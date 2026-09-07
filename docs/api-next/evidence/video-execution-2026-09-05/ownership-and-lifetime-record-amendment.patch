@@ -1,0 +1,58 @@
+--- a/tasks/records/api-video-execution-completion.md
++++ b/tasks/records/api-video-execution-completion.md
+@@ -358,3 +358,35 @@
+ inventory is preserved under the lane's
+ `docs/api-next/evidence/video-execution-2026-09-05/`, with the full qualification
+ in `docs/api-next/video-execution-checkpoint-2026-09-05.md`.
++
++## Shared execution and delivery ownership — 2026-09-05
++
++Execution owns the media-processor composition video block, analysis outbox,
++transform attempts, exact-object grant table and issuer, and dedicated source
++gateway Worker. Execution also owns publication/moderation/retry changes and
++transactional enrichment-intent creation in the video publication repository.
++Delivery owns the Stream ingest state machine, enrichment consumer, thumbnail
++serving and projection readiness gate. Delivery develops against fixtures and
++consumes the execution grant issuer once it lands; it does not duplicate the
++gateway or concurrently edit the execution-owned composition block. Shared
++wiring changes are integrated serially through execution. Delivery chooses
++its migration number only after execution migration 0120 has merged, with a
++fresh inventory check at that time.
++
++## Concrete upload lifetime recommendation — 2026-09-05
++
++The supplied reviewer recommends min(21600, 3600 + ceil(declared_bytes /
++32768)) seconds: one hour plus transfer time at 32 KiB/s, capped at six hours.
++For 500 MiB this is 19,600 seconds. The reviewer explicitly leaves owner
++ratification pending; this paragraph records a recommendation, not adoption.
++The server persists the deadline once; one-hour renewable part URLs are
++capped by remaining reservation life and cannot extend it. An expired
++reservation returns typed expiry and requires source reselection.
++
++Adoption requires verified cleanup through an incomplete-multipart lifecycle
++rule with an explicit few-day age or scheduled, fenced abort of expired issued
++and claimed reservations with no manifest. Lifecycle cleanup is eventual,
++not a six-hour storage bound. Scheduled abort must handle replay, storage
++failure and finalize races without deleting sealing work. Completed ingress
++cleanup remains a separate obligation. No deployed cleanup configuration was
++verified and no runtime lifetime changed at this recommendation checkpoint.
+--- a/tasks/records/api-video-delivery-completion.md
++++ b/tasks/records/api-video-delivery-completion.md
+@@ -162,3 +162,17 @@
+ must prove real gateway behavior, signed access, no duplicate encode, poster
+ retrieval and feed/Post playback. No tests or account operations have run for
+ this planned record.
++
++## Shared execution and delivery ownership — 2026-09-05
++
++Execution owns the media-processor composition video block, analysis outbox,
++transform attempts, exact-object grant table and issuer, and dedicated source
++gateway Worker. Execution also owns publication/moderation/retry changes and
++transactional enrichment-intent creation in the video publication repository.
++Delivery owns the Stream ingest state machine, enrichment consumer, thumbnail
++serving and projection readiness gate. Delivery develops against fixtures and
++consumes the execution grant issuer once it lands; it does not duplicate the
++gateway or concurrently edit the execution-owned composition block. Shared
++wiring changes are integrated serially through execution. Delivery chooses
++its migration number only after execution migration 0120 has merged, with a
++fresh inventory check at that time.

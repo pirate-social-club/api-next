@@ -1,0 +1,27 @@
+--- a/tasks/records/api-video-execution-completion.md
++++ b/tasks/records/api-video-execution-completion.md
+@@ -454,3 +454,24 @@
+ continues to fail closed rather than equating transport failure with absence.
+ Runner/class/Wrangler composition and provider enablement remain outstanding;
+ no live migration, provider call or deployment occurred.
++
++## Launch-only preservation checkpoint — 2026-09-05
++
++Execution commit 82926a28c250e59e1832439a7b2c25873c941cf9 preserves the
++launch-only consumer, fenced outbox transitions, and jobs recovery for missing,
++terminal and expired-launch cases. The actual runner, adapter split and
++publication wakeups remain outstanding. No rebase or activation occurred.
++
++The final check passed; the full test command passed 2,959 unit, 20 Node and
++131 workerd tests. Full PostgreSQL exited 1 with one catalog comparison
++failure: physical ordinals retain a dropped-column gap. After changing the
++comparison to visible order, all 14 foundation tests and run-specific sentinel
++verification passed. The full command was not rerun; remote CI remains owed.
++The lane validation inventory preserves outcomes and sentinel contents; raw
++logs remain temporary. The local secret-boundary audit found no violations.
++The task-owned PostgreSQL container was stopped after verification.
++
++Next is the adapter allocate/submit/observe split, with a real-store phase
++test and database failures excluded from terminal media outcomes. Keep video
++disabled until the runner, providers, bindings and live absence classification
++are proved. The existing reservation lifetime remains unchanged.

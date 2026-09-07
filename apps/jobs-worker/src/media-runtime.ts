@@ -1,10 +1,26 @@
 import type { ControlPlaneDb, ControlPlaneError } from "@pirate/application";
+import { dispatchVideoPublicationWakeups } from "@pirate/application/video/publication-wakeup";
+import { recoverVideoWorkflowLaunches } from "@pirate/application/video/workflow-recovery";
 import {
   type CloudflareMediaWorkflowBinding,
   makeCloudflareMediaProcessingWorkflowLauncher,
 } from "@pirate/platform-cf/media-processing-cloudflare";
 import { makeMediaProcessingStore } from "@pirate/platform-cf/media-processing-store";
+import { makeControlPlaneVideoAnalysisOutboxRepository } from "@pirate/platform-cf/video-analysis-outbox-repository";
+import {
+  makeConfiguredVideoAnalysisWorkflowLauncher,
+  type VideoAnalysisWorkflowBinding,
+  type VideoWorkflowStatusFetch,
+} from "@pirate/platform-cf/video-analysis-workflow-cloudflare";
+import { makeControlPlaneVideoPublicationStore } from "@pirate/platform-cf/video-publication-repository";
+import { makeVideoPublicationWakeupStore } from "@pirate/platform-cf/video-publication-wakeup-repository";
 import type { Layer } from "effect";
+import { dispatchVideoEnrichment } from "../../../packages/application/src/video/enrichment-dispatch.ts";
+import { makeVideoEnrichmentDispatchSource } from "../../../packages/platform-cf/src/video-enrichment-dispatch-source.ts";
+import {
+  makeVideoReservationCleanup,
+  type VideoIngressAbortBucket,
+} from "../../../packages/platform-cf/src/video-reservation-cleanup.ts";
 import {
   dispatchEligibleMediaOutbox,
   type MediaOutboxDispatchQueue,
@@ -21,8 +37,15 @@ import {
 } from "./video-analysis-outbox-dispatch.ts";
 
 export type MediaJobsBindings = Readonly<{
+  readonly MEDIA_INGRESS?: VideoIngressAbortBucket;
   readonly MEDIA_PROCESSING_ENABLED?: string;
   readonly VIDEO_ANALYSIS_ENABLED?: string;
+  readonly VIDEO_DELIVERY_ENABLED?: string;
+  readonly VIDEO_ANALYSIS_WORKFLOW?: VideoAnalysisWorkflowBinding;
+  readonly VIDEO_WORKFLOW_ACCOUNT_ID?: string;
+  readonly VIDEO_WORKFLOW_NAME?: string;
+  readonly VIDEO_WORKFLOW_SCRIPT_NAME?: string;
+  readonly VIDEO_WORKFLOW_READ_TOKEN?: string;
   readonly MEDIA_PROCESSING_QUEUE?: MediaOutboxDispatchQueue;
   readonly MEDIA_PROCESSING_WORKFLOW?: CloudflareMediaWorkflowBinding;
 }>;
@@ -51,13 +74,44 @@ const workflowIsNeverMissingByThrownError = (): boolean => false;
 export function makeMediaMaintenance(
   env: MediaJobsBindings,
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+  workflowFetch: VideoWorkflowStatusFetch = fetch,
 ): (() => Promise<MediaMaintenanceResult>) | null {
   if (env.MEDIA_PROCESSING_ENABLED !== "true") return null;
   if (env.MEDIA_PROCESSING_QUEUE === undefined || env.MEDIA_PROCESSING_WORKFLOW === undefined) {
     throw new Error("media Queue and Workflow bindings are required when processing is enabled");
   }
   const queue = env.MEDIA_PROCESSING_QUEUE;
+  if (env.VIDEO_DELIVERY_ENABLED === "true" && env.VIDEO_ANALYSIS_WORKFLOW === undefined)
+    throw new Error("video Workflow binding is required when video delivery is enabled");
+  if (env.VIDEO_ANALYSIS_ENABLED === "true" && env.VIDEO_ANALYSIS_WORKFLOW === undefined) {
+    throw new Error("video Workflow binding is required when video analysis is enabled");
+  }
+  const videoRecovery =
+    env.VIDEO_ANALYSIS_ENABLED === "true" && env.VIDEO_ANALYSIS_WORKFLOW !== undefined
+      ? {
+          outbox: makeControlPlaneVideoAnalysisOutboxRepository(runtime),
+          store: makeControlPlaneVideoPublicationStore(runtime),
+          launcher: makeConfiguredVideoAnalysisWorkflowLauncher(
+            env.VIDEO_ANALYSIS_WORKFLOW,
+            {
+              accountId: env.VIDEO_WORKFLOW_ACCOUNT_ID,
+              workflowName: env.VIDEO_WORKFLOW_NAME,
+              scriptName: env.VIDEO_WORKFLOW_SCRIPT_NAME,
+              readToken: env.VIDEO_WORKFLOW_READ_TOKEN,
+            },
+            workflowFetch,
+          ),
+        }
+      : null;
+  if (env.VIDEO_ANALYSIS_ENABLED === "true" && env.MEDIA_INGRESS === undefined)
+    throw new Error("video ingress binding is required for expired-upload cleanup");
+  const cleanup =
+    env.MEDIA_INGRESS === undefined
+      ? null
+      : makeVideoReservationCleanup(runtime, env.MEDIA_INGRESS);
   const source = makeMediaOutboxDispatchSource(runtime);
+  const enrichmentSource =
+    env.VIDEO_DELIVERY_ENABLED === "true" ? makeVideoEnrichmentDispatchSource(runtime) : null;
   const videoSource =
     env.VIDEO_ANALYSIS_ENABLED === "true" ? makeVideoAnalysisOutboxDispatchSource(runtime) : null;
   const store = makeMediaProcessingStore(runtime);
@@ -68,16 +122,31 @@ export function makeMediaMaintenance(
   return () =>
     runMediaMaintenance({
       dispatch: async () => {
-        const [song, video] = await Promise.all([
+        if (cleanup !== null) {
+          const result = await cleanup();
+          if (result.selected > 0)
+            console.log(JSON.stringify({ event: "video-reservation-cleanup", ...result }));
+        }
+        if (videoRecovery !== null) {
+          await recoverVideoWorkflowLaunches(videoRecovery);
+          await dispatchVideoPublicationWakeups({
+            ...videoRecovery,
+            wakeups: makeVideoPublicationWakeupStore(runtime),
+          });
+        }
+        const [song, video, enrichment] = await Promise.all([
           dispatchEligibleMediaOutbox(source, queue),
           videoSource === null
             ? Promise.resolve({ selected: 0, sent: 0, failed: 0 })
             : dispatchEligibleVideoAnalysisOutbox(videoSource, queue),
+          enrichmentSource === null
+            ? Promise.resolve({ selected: 0, sent: 0, failed: 0 })
+            : dispatchVideoEnrichment(enrichmentSource, queue),
         ]);
         return Object.freeze({
-          selected: song.selected + video.selected,
-          sent: song.sent + video.sent,
-          failed: song.failed + video.failed,
+          selected: song.selected + video.selected + enrichment.selected,
+          sent: song.sent + video.sent + enrichment.sent,
+          failed: song.failed + video.failed + enrichment.failed,
         });
       },
       sweep: () => sweepMissingMediaWorkflows({ store, workflow }),

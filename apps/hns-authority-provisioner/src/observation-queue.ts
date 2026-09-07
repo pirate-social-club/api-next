@@ -1,19 +1,28 @@
 import { Client } from "pg";
+import {
+  finalizeImportedInventoryRenewal,
+  HnsInventoryRenewalCommitUnknown,
+} from "../../../packages/platform-cf/src/hns-imported-inventory-renewal.ts";
 
 type HnsRootObservationClaim = Readonly<{
   readonly observation_job_id: string;
   readonly root_import_session_id: string;
-  readonly operation_kind: "observe_root_v1" | "teardown_root_v1" | "renew_health_v1";
   readonly request_bytes: Uint8Array;
   readonly request_sha256: string;
-  readonly publish_plan_bytes: Uint8Array;
-  readonly publish_plan_sha256: string;
-  readonly provision_result_bytes: Uint8Array;
-  readonly provision_result_sha256: string;
   readonly lease_fence: number;
-}>;
+}> &
+  (
+    | Readonly<{ readonly operation_kind: "teardown_provisional_root_v1" }>
+    | Readonly<{
+        readonly operation_kind: "observe_root_v1" | "teardown_root_v1" | "renew_health_v1";
+        readonly publish_plan_bytes: Uint8Array;
+        readonly publish_plan_sha256: string;
+        readonly provision_result_bytes: Uint8Array;
+        readonly provision_result_sha256: string;
+      }>
+  );
 
-type HnsRootObservationFinalizeInput = Readonly<{
+export type HnsRootObservationFinalizeInput = Readonly<{
   readonly observation_job_id: string;
   readonly operation_kind: HnsRootObservationClaim["operation_kind"];
   readonly executor_id: string;
@@ -94,6 +103,26 @@ export function makePostgresHnsRootObservationQueue(
         const publishPlanBytes = bytes(row?.publish_plan_bytes);
         const provisionResultBytes = bytes(row?.provision_result_bytes);
         const leaseFence = positiveInteger(row?.lease_fence);
+        if (row?.operation_kind === "teardown_provisional_root_v1") {
+          if (
+            typeof row.observation_job_id !== "string" ||
+            typeof row.root_import_session_id !== "string" ||
+            requestBytes === null ||
+            typeof row.request_sha256 !== "string" ||
+            !/^[0-9a-f]{64}$/u.test(row.request_sha256) ||
+            leaseFence === null
+          )
+            throw new Error("HNS provisional teardown returned an invalid job");
+          return {
+            observation_job_id: row.observation_job_id,
+            root_import_session_id: row.root_import_session_id,
+            operation_kind: "teardown_provisional_root_v1" as const,
+            request_bytes: requestBytes,
+            request_sha256: row.request_sha256,
+            lease_fence: leaseFence,
+          };
+        }
+
         if (
           typeof row?.observation_job_id !== "string" ||
           typeof row.root_import_session_id !== "string" ||
@@ -128,6 +157,38 @@ export function makePostgresHnsRootObservationQueue(
       }),
     finalize: (input) =>
       withClient(connectionString, async (client) => {
+        if (input.operation_kind === "renew_health_v1" && input.outcome === "ready") {
+          try {
+            return await finalizeImportedInventoryRenewal(client, input);
+          } catch (error) {
+            if (!(error instanceof HnsInventoryRenewalCommitUnknown)) throw error;
+            // Use a new connection; an ambiguous COMMIT must never be followed
+            // by a failure finalization or a fresh observation under this lease.
+            return withClient(connectionString, async (reconcile) => {
+              const retained = await reconcile.query<{ revision: string }>(
+                `SELECT session.revision
+                FROM hns_root_health_renewal_jobs job
+                JOIN hns_root_import_sessions session USING(root_import_session_id)
+                JOIN hns_root_import_observation_jobs observation USING(root_import_session_id)
+                WHERE job.renewal_job_id=$1 AND job.state='completed'
+                  AND job.result_bytes=$2::bytea AND job.result_sha256=$3
+                  AND observation.request_sha256=$4`,
+                [
+                  input.observation_job_id,
+                  Buffer.from(input.result_bytes),
+                  input.result_sha256,
+                  input.request_sha256,
+                ],
+              );
+              if (retained.rows.length !== 1) throw error;
+              return {
+                outcome: "replayed",
+                root_import_session_id: error.rootImportSessionId,
+                session_revision: positiveInteger(retained.rows[0]?.revision),
+              };
+            });
+          }
+        }
         const ready = input.outcome === "ready";
         const finalizer =
           input.operation_kind === "renew_health_v1"

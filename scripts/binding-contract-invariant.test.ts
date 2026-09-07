@@ -3,17 +3,24 @@ import * as BunRuntime from "bun";
 import type { DataRegistrationRuntimeEnv } from "../apps/data-registration-worker/src/composition.ts";
 import type { HttpWorkerBindings } from "../apps/http-worker/src/composition.ts";
 import type { JobsWorkerEnv } from "../apps/jobs-worker/src/index.ts";
-import type { MediaProcessorRuntimeEnv } from "../apps/media-processor-worker/src/composition.ts";
 import type { AlertSinkBindings } from "../packages/platform-cf/src/alert-config.ts";
 import type { RegistrationRateLimiterEnvironment } from "../packages/platform-cf/src/registration-rate-limiter-do.ts";
+import { MEDIA_BINDING_KINDS } from "./media-binding-contract.ts";
 
 type BindingKind = "platform" | "secret" | "var";
 type BindingManifest<T extends object> = { [K in keyof T]-?: BindingKind };
 
-// This is deliberately explicit. `satisfies` makes a newly added source
-// binding fail typecheck until it is classified here, while the runtime audit
-// below checks that the classification agrees with both Wrangler configs.
+// `satisfies` requires every source binding to be classified. The runtime audit
+// checks that these classifications agree with both Wrangler configs.
 const HTTP_BINDING_KINDS = {
+  VIDEO_DELIVERY_ENABLED: "var",
+  VIDEO_STREAM_CUSTOMER_HOST: "var",
+  VIDEO_STREAM_SIGNING_KEY_ID: "var",
+  VIDEO_STREAM_SIGNING_JWK_BASE64: "secret",
+  VIDEO_PLAYBACK_SOURCE_HMAC_BASE64: "secret",
+  VIDEO_PLAYBACK_RATE_LIMITER: "platform",
+  MEDIA_DERIVED: "platform",
+  CF_VERSION_METADATA: "platform",
   CONTROL_PLANE: "platform",
   HNS_OWNER_VERIFIER: "platform",
   REGISTRATION_IP_LIMITER: "platform",
@@ -149,14 +156,22 @@ const JOBS_BINDING_KINDS = {
   MEGAPOT_SHARED_SPONSOR_DAILY_TICKET_CEILING: "var",
   MEGAPOT_SHARED_SPONSOR_DAILY_SPEND_CEILING_ATOMIC: "var",
   HNS_OWNERSHIP_ENABLED: "var",
+  HNS_ROOT_HEALTH_RENEWAL_ENABLED: "var",
   HNS_OWNERSHIP_CONFIGURATION_REFERENCE: "var",
   HNS_OWNERSHIP_CONFIGURATION_VERSION: "var",
   HNS_REVALIDATION_FORCE_ROUTE_BINDING_ID: "var",
   HNS_REVALIDATION_FORCE_EXPECTED_GENERATION: "var",
+  MEDIA_INGRESS: "platform",
   MEDIA_PROCESSING_ENABLED: "var",
   VIDEO_ANALYSIS_ENABLED: "var",
+  VIDEO_DELIVERY_ENABLED: "var",
   MEDIA_PROCESSING_QUEUE: "platform",
   MEDIA_PROCESSING_WORKFLOW: "platform",
+  VIDEO_ANALYSIS_WORKFLOW: "platform",
+  VIDEO_WORKFLOW_ACCOUNT_ID: "var",
+  VIDEO_WORKFLOW_NAME: "var",
+  VIDEO_WORKFLOW_SCRIPT_NAME: "var",
+  VIDEO_WORKFLOW_READ_TOKEN: "secret",
   DATA_REGISTRATION_ENABLED: "var",
   DATA_REGISTRATION_RPC_URL: "var",
   DATA_REGISTRATION_SIGNER_ADDRESS: "var",
@@ -166,25 +181,6 @@ const JOBS_BINDING_KINDS = {
   DANCE_REFERENCE_PROCESSING_ENABLED: "var",
   DANCE_REFERENCE_PROCESSING_QUEUE: "platform",
 } as const satisfies BindingManifest<JobsWorkerEnv>;
-
-const MEDIA_BINDING_KINDS = {
-  CONTROL_PLANE: "platform",
-  MEDIA_PROCESSING_ENABLED: "var",
-  VIDEO_ANALYSIS_ENABLED: "var",
-  MEDIA_PROCESSING_WORKFLOW: "platform",
-  MEDIA_IMMUTABLE_ORIGINALS: "platform",
-  MEDIA_DERIVED_ARTIFACTS: "platform",
-  IMAGE_TRANSFORMATIONS: "platform",
-  ACRCLOUD_IDENTIFY_HOST: "var",
-  ACRCLOUD_ACCESS_KEY: "secret",
-  ACRCLOUD_ACCESS_SECRET: "secret",
-  ELEVENLABS_API_KEY: "secret",
-  OPENAI_API_KEY: "secret",
-  OPENROUTER_API_KEY: "secret",
-  QENCODE_API_KEY: "secret",
-  DATA_REGISTRATION_ENABLED: "var",
-  DATA_REGISTRATION_CHAIN_ID: "var",
-} as const satisfies BindingManifest<MediaProcessorRuntimeEnv>;
 
 const DATA_REGISTRATION_BINDING_KINDS = {
   CONTROL_PLANE: "platform",
@@ -229,6 +225,12 @@ const DATA_CONFIG_PATH = new URL(
 );
 
 interface RawWranglerEnvironment {
+  readonly workflows?: readonly {
+    binding: string;
+    name: string;
+    class_name: string;
+    script_name?: string;
+  }[];
   readonly vars?: Record<string, unknown>;
   readonly secrets?: { readonly required?: readonly unknown[] };
   readonly observability?: {
@@ -682,6 +684,39 @@ describe("source-to-Wrangler binding contract", () => {
     expect(declaredEnvironment(configs.http, "production").secrets).not.toContain(
       "ELEVENLABS_API_KEY",
     );
+  });
+
+  test("video Workflow bindings agree on class, name and processor script in every environment", () => {
+    for (const environment of ENVIRONMENTS) {
+      const suffix = environment === "development" ? "" : `-${environment}`;
+      for (const worker of ["media", "jobs"] as const) {
+        const block = rawEnvironment(configs[worker], environment);
+        expect(block.vars?.VIDEO_ANALYSIS_ENABLED).toBe("false");
+        const bindings = block.workflows?.filter(
+          (item) => item.binding === "VIDEO_ANALYSIS_WORKFLOW",
+        );
+        expect(bindings).toEqual([
+          {
+            binding: "VIDEO_ANALYSIS_WORKFLOW",
+            name: `pirate-video-analysis${suffix}`,
+            class_name: "VideoAnalysisWorkflow",
+            ...(worker === "jobs" ? { script_name: `pirate-media-processor-worker${suffix}` } : {}),
+          },
+        ]);
+      }
+    }
+  });
+
+  test("declares staging video Workflow read access in both Workers while keeping analysis disabled", () => {
+    for (const worker of ["jobs", "media"] as const) {
+      const staging = declaredEnvironment(configs[worker], "staging");
+      expect(staging.vars.VIDEO_ANALYSIS_ENABLED).toBe("false");
+      expect(staging.vars.VIDEO_WORKFLOW_ACCOUNT_ID).toBe("08a4c22cf52e2ecae883e36f80a33f4a");
+      expect(staging.vars.VIDEO_WORKFLOW_NAME).toBe("pirate-video-analysis-staging");
+      expect(staging.vars.VIDEO_WORKFLOW_SCRIPT_NAME).toBe("pirate-media-processor-worker-staging");
+      expect(staging.secrets).toContain("VIDEO_WORKFLOW_READ_TOKEN");
+      expect(staging.vars).not.toHaveProperty("VIDEO_WORKFLOW_READ_TOKEN");
+    }
   });
 
   test("does not declare the retired ElevenLabs logging policy variable", () => {

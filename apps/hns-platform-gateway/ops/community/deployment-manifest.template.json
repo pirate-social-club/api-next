@@ -1,8 +1,8 @@
 {
   "schema": "pirate-hns-community-app-gateway-deployment-v1",
-  "profile_version": "pirate-hns-community-app-interactive-gateway-v2",
+  "profile_version": "pirate-hns-community-app-interactive-gateway-v3",
   "profile_utf8_bytes": 622,
-  "profile_sha256": "f49ac37bd45da71bdf1e1cc65f184729d85f9d72ce811f0551a70f7785aa8d86",
+  "profile_sha256": "c4f4c07252ba10a25467f476cc5b56d50ef9cf02e25ad368a05551d19ba861ed",
   "production_gateway_listener": "127.0.0.1:4069",
   "production_health_listener": "127.0.0.1:4071",
   "shadow_gateway_listener": "127.0.0.1:4169",
@@ -29,7 +29,7 @@
   "maximum_buffered_response_bytes": 16777216,
   "gateway_upstream_deadline_milliseconds": 15000,
   "maximum_private_authority_bytes": 4096,
-  "private_authority_deadline_milliseconds": 2000,
+  "private_authority_deadline_milliseconds": 4000,
   "gateway_certificate_spki_sha256": "__UNRESOLVED_64_LOWERCASE_HEX_SPKI_DIGEST__",
   "api_next_source_commit": "__UNRESOLVED_40_LOWERCASE_HEX_COMMIT__",
   "bundle_sha256": "__UNRESOLVED_64_LOWERCASE_HEX_BUNDLE_DIGEST__"

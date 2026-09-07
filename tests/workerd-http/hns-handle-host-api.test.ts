@@ -62,6 +62,7 @@ describe("HNS handle-host authority API in Workerd", () => {
     let resolutions = 0;
     const app = createHttpWorker({
       hnsHandleHostApi: makeHnsHandleHostApiComposition(true, {
+        protected_origin: "https://worker.internal",
         access_validator: {
           verify: async (assertion) => {
             if (assertion !== "access-workerd") throw new Error("denied");
@@ -88,6 +89,7 @@ describe("HNS handle-host authority API in Workerd", () => {
     let resolutions = 0;
     const app = createHttpWorker({
       hnsHandleHostApi: makeHnsHandleHostApiComposition(true, {
+        protected_origin: "https://worker.internal",
         access_validator: {
           verify: async (assertion) => {
             if (assertion !== "access-workerd") throw new Error("denied");

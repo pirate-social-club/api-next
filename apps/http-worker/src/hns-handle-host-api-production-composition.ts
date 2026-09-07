@@ -56,6 +56,7 @@ export function makeProductionHnsHandleHostApiComposition(input: {
       ...(input.access_fetch === undefined ? {} : { fetchImpl: input.access_fetch }),
     });
     return makeHnsHandleHostApiComposition(true, {
+      protected_origin: protectedOrigin.origin,
       access_validator: accessValidator,
       authority_source: input.authority_source,
     });

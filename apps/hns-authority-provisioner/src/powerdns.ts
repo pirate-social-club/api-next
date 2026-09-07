@@ -33,6 +33,7 @@ type ApiZone = Readonly<{
   readonly serial?: unknown;
   readonly dnssec?: unknown;
   readonly rrsets?: unknown;
+  readonly account?: unknown;
 }>;
 
 type ApiCryptokey = Readonly<{
@@ -43,6 +44,18 @@ type ApiCryptokey = Readonly<{
 
 const responseMaxBytes = 1_048_576;
 const requestTimeoutMs = 5_000;
+
+async function reservationAccount(challenge: string): Promise<string> {
+  const reservationDigest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(challenge),
+  );
+  // PowerDNS SQL backends retain a forty-character account field.
+  return [...new Uint8Array(reservationDigest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("")
+    .slice(0, 40);
+}
 
 function canonicalName(value: string): string {
   return value.endsWith(".") ? value : `${value}.`;
@@ -295,6 +308,11 @@ export function makePowerDnsRootProvisioner(
     const zoneName = canonicalName(input.root_label);
     const zonePath = `/servers/${encodeURIComponent(config.server_id)}/zones/${encodeURIComponent(zoneName)}`;
     const managed = buildManagedRootRrsets({ ...input, ...config });
+    // The account marker is stored atomically with zone creation. A retry can
+    // recover an ambiguous create without adopting another session's zone.
+    const reservation = await reservationAccount(input.challenge_txt_value);
+    const retainedReservation = (value: unknown): boolean =>
+      value !== null && typeof value === "object" && (value as ApiZone).account === reservation;
     const existingResponse = await request("GET", zonePath);
     let created = false;
     let existing: { readonly serial: number; readonly dnssec: boolean } | null;
@@ -303,6 +321,8 @@ export function makePowerDnsRootProvisioner(
     } else {
       if (!existingResponse.response.ok) throw new Error("PowerDNS zone inspection failed");
       existing = parseZone(existingResponse.json, zoneName);
+      if (!retainedReservation(existingResponse.json))
+        throw new Error("PowerDNS zone belongs to another reservation");
     }
     if (existing === null) {
       const create = await request(
@@ -310,6 +330,7 @@ export function makePowerDnsRootProvisioner(
         `/servers/${encodeURIComponent(config.server_id)}/zones`,
         {
           name: zoneName,
+          account: reservation,
           kind: "Master",
           soa_edit_api: "DEFAULT",
           dnssec: true,
@@ -321,6 +342,8 @@ export function makePowerDnsRootProvisioner(
         const raced = await request("GET", zonePath);
         if (!raced.response.ok) throw new Error("PowerDNS zone creation race could not converge");
         existing = parseZone(raced.json, zoneName);
+        if (!retainedReservation(raced.json))
+          throw new Error("PowerDNS zone creation race belongs to another reservation");
       } else {
         if (!create.response.ok) throw new Error("PowerDNS zone creation failed");
         created = true;
@@ -345,6 +368,8 @@ export function makePowerDnsRootProvisioner(
     if (!retained.response.ok) throw new Error("PowerDNS retained zone inspection failed");
     const zone = parseZone(retained.json, zoneName);
     if (!zone.dnssec) throw new Error("PowerDNS retained zone is not DNSSEC-enabled");
+    if (!retainedReservation(retained.json))
+      throw new Error("PowerDNS retained reservation does not match");
     const cryptokeys = await request("GET", `${zonePath}/cryptokeys`);
     if (!cryptokeys.response.ok || !Array.isArray(cryptokeys.json)) {
       throw new Error("PowerDNS DNSSEC key inspection failed");
@@ -356,7 +381,9 @@ export function makePowerDnsRootProvisioner(
       throw new Error("PowerDNS returned invalid DS data");
     }
     const parsedDs = retainedDsRecords(dsRecords);
-    return zoneResult(config, input, zone, parsedDs, created);
+    // A recovered create still belongs to this reservation and must be removed
+    // by its expiry teardown. "created" is retained ownership, not this call's POST.
+    return zoneResult(config, input, zone, parsedDs, true);
   };
 }
 
@@ -364,7 +391,10 @@ export function makePowerDnsRootProvisioner(
 export function makePowerDnsRootTeardown(
   config: Pick<PowerDnsRootProvisionConfig, "api_url" | "api_key" | "server_id">,
   fetcher: PowerDnsFetch = fetch,
-): (input: { readonly root_label: string }) => Promise<void> {
+): (input: {
+  readonly root_label: string;
+  readonly challenge_txt_value?: string;
+}) => Promise<void> {
   if (
     !validEndpoint(config.api_url) ||
     config.api_key.length === 0 ||
@@ -375,6 +405,26 @@ export function makePowerDnsRootTeardown(
   const apiUrl = config.api_url.replace(/\/+$/u, "");
   return async (input) => {
     const zoneName = canonicalName(input.root_label);
+    const zoneUrl = `${apiUrl}/api/v1/servers/${encodeURIComponent(config.server_id)}/zones/${encodeURIComponent(zoneName)}`;
+    const inspect = async () => {
+      const response = await fetcher(zoneUrl, {
+        method: "GET",
+        redirect: "manual",
+        signal: AbortSignal.timeout(requestTimeoutMs),
+        headers: { accept: "application/json", "x-api-key": config.api_key },
+      });
+      const value = await readBoundedJson(response);
+      if (response.status === 404) return null;
+      if (!response.ok) throw new Error("PowerDNS teardown inspection failed");
+      parseZone(value, zoneName);
+      return value as ApiZone;
+    };
+    if (input.challenge_txt_value !== undefined) {
+      const zone = await inspect();
+      if (zone === null) return;
+      if (zone.account !== (await reservationAccount(input.challenge_txt_value)))
+        throw new Error("PowerDNS teardown reservation does not match");
+    }
     const response = await fetcher(
       `${apiUrl}/api/v1/servers/${encodeURIComponent(config.server_id)}/zones/${encodeURIComponent(zoneName)}`,
       {
@@ -388,6 +438,8 @@ export function makePowerDnsRootTeardown(
     if (response.status !== 404 && !response.ok) {
       throw new Error("PowerDNS zone teardown failed");
     }
+    if (input.challenge_txt_value !== undefined && (await inspect()) !== null)
+      throw new Error("PowerDNS zone remains after teardown");
   };
 }
 

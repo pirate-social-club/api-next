@@ -1,0 +1,20 @@
+[Unit]
+Description=Verify the reviewed HNS secondary DNS release
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/bin/python3 /srv/pirate-hns-secondary/current/verify-release.py --release /srv/pirate-hns-secondary/current --manifest-sha256-file /etc/pirate-hns-secondary/manifest.sha256
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX
+TimeoutStartSec=60
+UMask=0077

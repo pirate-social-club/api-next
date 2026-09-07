@@ -1,12 +1,18 @@
 import { AuthError, BadRequest, NamespaceUnavailable, NotFound } from "@pirate/contracts";
 import { CloudflareAccessJwtFailure } from "@pirate/platform-cf/cloudflare-access-jwt";
+import {
+  HNS_DIAGNOSTIC_ID_HEADER,
+  HnsAuthorityDiagnostic,
+  isHnsDiagnosticId,
+  makeHnsAuthorityDiagnostic,
+  withHnsAuthoritySpan,
+} from "@pirate/platform-cf/hns-authority-diagnostics";
 import { CF_ACCESS_ASSERTION_HEADER } from "@pirate/platform-cf/hns-community-app-api";
 import {
   decodeHnsSolidHandleHostAuthorityRequestV1,
   encodeHnsSolidHandleHostAuthorityResponseV1,
   HNS_SOLID_HANDLE_HOST_AUTHORITY_MAX_BYTES,
   HnsHandleHostApiWireFailure,
-  type HnsHandlePersonaHostAuthorityStateV1,
   resolveHnsSolidHandleHostAuthorityV1,
 } from "@pirate/platform-cf/hns-handle-host-api";
 import { Effect } from "effect";
@@ -15,6 +21,7 @@ import type { HnsHandleHostApiComposition } from "./hns-handle-host-api-composit
 type RequestHeaders = Readonly<{ get: (name: string) => string | null }>;
 type HnsHandleHostTransportRequest = Readonly<{
   method: string;
+  url: string;
   headers: RequestHeaders;
   body: ReadableStream<Uint8Array> | null;
   signal: AbortSignal;
@@ -68,6 +75,7 @@ async function authenticateAccess(
   request: HnsHandleHostTransportRequest,
   composition: Extract<HnsHandleHostApiComposition, { readonly enabled: true }>,
 ): Promise<void> {
+  if (new URL(request.url).origin !== composition.protected_origin) throw authenticationFailed();
   const assertion = request.headers.get(CF_ACCESS_ASSERTION_HEADER);
   if (assertion === null || assertion === "" || assertion.includes(",")) {
     throw authenticationFailed();
@@ -93,6 +101,8 @@ export async function resolveHnsSolidHandleHostAuthorityRequest(
     throw invalidRequest();
   }
   await authenticateAccess(request, composition);
+  const diagnosticId = request.headers.get(HNS_DIAGNOSTIC_ID_HEADER);
+  if (diagnosticId !== null && !isHnsDiagnosticId(diagnosticId)) throw invalidRequest();
   const bytes = await readBoundedRequestBody(
     request.clone(),
     HNS_SOLID_HANDLE_HOST_AUTHORITY_MAX_BYTES,
@@ -104,19 +114,31 @@ export async function resolveHnsSolidHandleHostAuthorityRequest(
     if (error instanceof HnsHandleHostApiWireFailure) throw invalidRequest();
     throw error;
   }
-  let state: HnsHandlePersonaHostAuthorityStateV1 | null;
+  const lookup = Effect.suspend(() => composition.authority_source.resolve(decoded[1])).pipe(
+    Effect.mapError(() => infrastructureUnavailable()),
+    Effect.catchDefect(() => Effect.fail(infrastructureUnavailable())),
+    Effect.flatMap((state) =>
+      Effect.try({
+        try: () => {
+          if (state !== null && state.variant !== "handle_persona_v1") throw authorityUnavailable();
+          return encodeHnsSolidHandleHostAuthorityResponseV1(
+            resolveHnsSolidHandleHostAuthorityV1(decoded, state),
+          );
+        },
+        catch: (error) =>
+          error instanceof HnsHandleHostApiWireFailure ? authorityUnavailable() : error,
+      }),
+    ),
+  );
   try {
-    const resolved = await Effect.runPromise(composition.authority_source.resolve(decoded[1]));
-    state = resolved?.variant === "handle_persona_v1" ? resolved : null;
-  } catch {
-    throw infrastructureUnavailable();
-  }
-  try {
-    return encodeHnsSolidHandleHostAuthorityResponseV1(
-      resolveHnsSolidHandleHostAuthorityV1(decoded, state),
+    return await Effect.runPromise(
+      withHnsAuthoritySpan("authority", lookup).pipe(
+        Effect.provideService(HnsAuthorityDiagnostic, makeHnsAuthorityDiagnostic(diagnosticId)),
+      ),
+      { signal: request.signal },
     );
   } catch (error) {
-    if (error instanceof HnsHandleHostApiWireFailure) throw authorityUnavailable();
+    if (request.signal.aborted) throw request.signal.reason ?? error;
     throw error;
   }
 }

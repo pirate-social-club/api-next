@@ -91,7 +91,7 @@ const preparationColumns = `
   preparation.actor_id, preparation.community_id, preparation.attachment_intent_id,
   preparation.ceremony_intent_id, preparation.root_label,
   preparation.root_import_session_id, preparation.provision_job_id,
-  attachment.revision AS attachment_revision, preparation.start_request_sha256,
+  attachment.revision AS attachment_revision, preparation.start_request_sha256, preparation.admission_kind,
   preparation.expires_at`;
 
 // A retained verification attempt supports resuming checks, not a claim that
@@ -333,8 +333,14 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
         return yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
             yield* transaction.execute({
+              label: "hns.community-root-import.lock-admission",
+              text: "SELECT pg_advisory_xact_lock(hashtextextended('hns-community-provisional-admission-v1', 0))",
+              values: [],
+              readonly: false,
+            });
+            yield* transaction.execute({
               label: "hns.community-root-import.lock-root",
-              text: "SELECT pg_advisory_xact_lock(hashtext($1))",
+              text: "SELECT pg_advisory_xact_lock(hashtextextended('hns-root-import:' || $1, 0))",
               values: [input.request.root_label],
               readonly: false,
             });
@@ -388,6 +394,18 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
             if (authorityRow === undefined) return yield* Effect.fail(storageFailure());
             const grantId = authorityRow === null ? null : text(authorityRow, "grant_id");
             if (grantId === null) return { kind: "not_found" } as const;
+            const admission = yield* transaction.execute<Row>({
+              label: "hns.community-root-import.admit",
+              text: "SELECT admit_hns_community_root_import_v1($1,$2,$3) AS admitted",
+              values: [
+                input.request.actor_id,
+                input.request.community_id,
+                input.request.root_label,
+              ],
+              readonly: false,
+            });
+            if (oneRow(admission)?.admitted !== true) return { kind: "conflict" } as const;
+
             const unavailable = yield* transaction.execute<Row>({
               label: "hns.community-root-import.check-root",
               text: `SELECT (
@@ -517,8 +535,8 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
               text: `INSERT INTO hns_community_root_import_preparations (
                        attachment_intent_id,actor_id,community_id,ceremony_intent_id,
                        root_label,root_import_session_id,provision_job_id,
-                       start_idempotency_key,start_request_sha256,expires_at
-                     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::timestamptz)`,
+                       start_idempotency_key,start_request_sha256,expires_at,admission_kind
+                     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::timestamptz,'community_provisional')`,
               values: [
                 input.attachment_intent_id,
                 input.request.actor_id,
@@ -668,7 +686,51 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
             });
             const row = oneRow(inserted);
             if (row === undefined || row === null) return yield* Effect.fail(storageFailure());
-            const response = sessionResponse(row, options.environment, false);
+            if (preparation.admission_kind === "name_signature") {
+              // A retained pre-amendment preparation keeps its original proof gate.
+              const response = sessionResponse(row, options.environment, false);
+              return response === null
+                ? yield* Effect.fail(storageFailure())
+                : ({ kind: "created", session: response } as const);
+            }
+            const provisionRequest = {
+              version: "pirate-hns-authority-provision-request-v1",
+              root_import_session_id: input.preparation.root_import_session_id,
+              namespace_session_id: input.ownership.session_id,
+              root_label: input.preparation.root_label,
+              challenge_txt_value: input.ownership.challenge.challenge_value,
+              expires_at: input.ownership.expires_at,
+            };
+            const requestBytes = new TextEncoder().encode(canonicalJson(provisionRequest));
+            const requestHash = yield* Effect.promise(() => digest(provisionRequest));
+            const started = yield* transaction.execute<Row>({
+              label: "hns.community-root-import.queue-provisional",
+              text: `SELECT * FROM begin_hns_root_import_provision_v2(
+                $1,$2,$3,1,$4,$5,'community_provisional',$5,NULL,NULL,NULL,$6,$7,$8)`,
+              values: [
+                input.preparation.actor_id,
+                input.preparation.community_id,
+                input.preparation.root_import_session_id,
+                input.idempotency_key,
+                input.request_sha256,
+                input.preparation.provision_job_id,
+                requestBytes,
+                requestHash,
+              ],
+              readonly: false,
+            });
+            if (oneRow(started)?.outcome !== "provisioning")
+              return yield* Effect.fail(storageFailure());
+            const retained = yield* transaction.execute<Row>({
+              label: "hns.community-root-import.read-provisional",
+              text: "SELECT * FROM hns_root_import_sessions WHERE root_import_session_id=$1",
+              values: [input.preparation.root_import_session_id],
+              readonly: false,
+            });
+            const retainedRow = oneRow(retained);
+            const response = retainedRow
+              ? sessionResponse(retainedRow, options.environment, false)
+              : null;
             return response === null
               ? yield* Effect.fail(storageFailure())
               : ({ kind: "created", session: response } as const);

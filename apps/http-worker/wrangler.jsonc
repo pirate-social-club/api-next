@@ -2,6 +2,7 @@
   "name": "pirate-http-worker",
   "account_id": "08a4c22cf52e2ecae883e36f80a33f4a",
   "main": "src/index.ts",
+  "version_metadata": { "binding": "CF_VERSION_METADATA" },
   "compatibility_date": "2026-08-01",
   "compatibility_flags": ["nodejs_compat"],
   // HTTP invocation logs are noisy; retain application/error logs in Workers
@@ -47,6 +48,10 @@
         "class_name": "HnsForwarderReplayStoreDO"
       },
       {
+        "name": "VIDEO_PLAYBACK_RATE_LIMITER",
+        "class_name": "VideoPlaybackRateLimiterDO"
+      },
+      {
         "name": "KARAOKE_ATTEMPT",
         "class_name": "KaraokeAttemptDO"
       }
@@ -77,16 +82,23 @@
     {
       "tag": "v5",
       "new_sqlite_classes": ["KaraokeAttemptDO"]
-    }
+    },
+    { "tag": "v6", "new_sqlite_classes": ["VideoPlaybackRateLimiterDO"] }
   ],
   "r2_buckets": [
     {
       "binding": "LEARNER_AUDIO",
       "bucket_name": "pirate-learner-audio-development"
-    }
+    },
+        { "binding": "MEDIA_DERIVED", "bucket_name": "pirate-media-derived-development" }
   ],
   "vars": {
     "API_NEXT_ENV": "development",
+    "VIDEO_DELIVERY_ENABLED": "false",
+    "VIDEO_STREAM_CUSTOMER_HOST": "",
+    "VIDEO_STREAM_SIGNING_KEY_ID": "",
+    // Before enabling delivery, provision VIDEO_STREAM_SIGNING_JWK_BASE64 and
+    // VIDEO_PLAYBACK_SOURCE_HMAC_BASE64 as secrets, never vars.
     "KARAOKE_FINALIZATION_RECOVERY_ENABLED": "false",
     "STUDY_GENERATION_ENABLED": "false",
     "STUDY_GENERATION_OPENROUTER_MODEL": "",
@@ -148,6 +160,7 @@
   "env": {
     "staging": {
       "name": "pirate-http-worker-staging",
+      "version_metadata": { "binding": "CF_VERSION_METADATA" },
       "observability": {
         "enabled": true,
         "logs": {
@@ -182,7 +195,11 @@
             "class_name": "HnsForwarderReplayStoreDO"
           },
           {
-            "name": "KARAOKE_ATTEMPT",
+            "name": "VIDEO_PLAYBACK_RATE_LIMITER",
+        "class_name": "VideoPlaybackRateLimiterDO"
+      },
+      {
+        "name": "KARAOKE_ATTEMPT",
             "class_name": "KaraokeAttemptDO"
           }
         ]
@@ -214,10 +231,16 @@
         {
           "binding": "LEARNER_AUDIO",
           "bucket_name": "pirate-learner-audio-staging"
-        }
+        },
+        { "binding": "MEDIA_DERIVED", "bucket_name": "pirate-media-derived-staging" }
       ],
       "vars": {
         "API_NEXT_ENV": "staging",
+    "VIDEO_DELIVERY_ENABLED": "false",
+    "VIDEO_STREAM_CUSTOMER_HOST": "",
+    "VIDEO_STREAM_SIGNING_KEY_ID": "",
+    // Before enabling delivery, provision VIDEO_STREAM_SIGNING_JWK_BASE64 and
+    // VIDEO_PLAYBACK_SOURCE_HMAC_BASE64 as secrets, never vars.
         "KARAOKE_FINALIZATION_RECOVERY_ENABLED": "true",
         "STUDY_GENERATION_ENABLED": "false",
         "STUDY_GENERATION_OPENROUTER_MODEL": "",
@@ -311,6 +334,23 @@
     },
     "production": {
       "name": "pirate-http-worker-production",
+      "version_metadata": { "binding": "CF_VERSION_METADATA" },
+      // Keep the deployed lifecycle until production video is admitted.
+      // Class creation requires a full deploy, so it must not ride on a
+      // gradual release of unrelated features while video delivery is off.
+      "migrations": [
+        {
+          "tag": "v1",
+          "new_sqlite_classes": [
+            "RegistrationIpRateLimiterDO",
+            "RegistrationApplicationRateLimiterDO"
+          ]
+        },
+        { "tag": "v2", "new_sqlite_classes": ["SelfCallbackCaptureDO"] },
+        { "tag": "v3", "deleted_classes": ["SelfCallbackCaptureDO"] },
+        { "tag": "v4", "new_sqlite_classes": ["HnsForwarderReplayStoreDO"] },
+        { "tag": "v5", "new_sqlite_classes": ["KaraokeAttemptDO"] }
+      ],
       "observability": {
         "enabled": true,
         "logs": {
@@ -388,10 +428,16 @@
         {
           "binding": "LEARNER_AUDIO",
           "bucket_name": "pirate-learner-audio-production"
-        }
+        },
+        { "binding": "MEDIA_DERIVED", "bucket_name": "pirate-media-derived-production" }
       ],
       "vars": {
         "API_NEXT_ENV": "production",
+    "VIDEO_DELIVERY_ENABLED": "false",
+    "VIDEO_STREAM_CUSTOMER_HOST": "",
+    "VIDEO_STREAM_SIGNING_KEY_ID": "",
+    // Before enabling delivery, provision VIDEO_STREAM_SIGNING_JWK_BASE64 and
+    // VIDEO_PLAYBACK_SOURCE_HMAC_BASE64 as secrets, never vars.
         "KARAOKE_FINALIZATION_RECOVERY_ENABLED": "false",
         "STUDY_GENERATION_ENABLED": "false",
         "STUDY_GENERATION_OPENROUTER_MODEL": "",

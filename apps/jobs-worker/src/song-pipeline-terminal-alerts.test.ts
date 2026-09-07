@@ -412,7 +412,7 @@ describe("song pipeline Queue DLQ collector", () => {
     expect(diagnostics).toEqual(["song-pipeline DLQ authority query unavailable"]);
   });
 
-  test("declares both DLQ consumers in every environment while production cron stays empty", async () => {
+  test("declares both DLQ consumers in every environment", async () => {
     const wrangler = BunRuntime.JSONC.parse(
       await BunRuntime.file(new URL("../wrangler.jsonc", import.meta.url)).text(),
     ) as {
@@ -424,7 +424,6 @@ describe("song pipeline Queue DLQ collector", () => {
             readonly queues?: Readonly<{
               consumers?: readonly Readonly<{ queue: string }>[];
             }>;
-            readonly triggers?: Readonly<{ crons?: readonly string[] }>;
           }
         >
       >;
@@ -437,6 +436,5 @@ describe("song pipeline Queue DLQ collector", () => {
         `pirate-media-processing-${environment}-dlq`,
       ]);
     }
-    expect(wrangler.env?.production?.triggers?.crons).toEqual([]);
   });
 });

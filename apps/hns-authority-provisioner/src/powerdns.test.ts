@@ -35,6 +35,7 @@ describe("PowerDNS managed HNS root rrsets", () => {
     const calls: Array<{ readonly method: string; readonly url: string; readonly body: unknown }> =
       [];
     let zoneGets = 0;
+    let account = "";
     const provision = makePowerDnsRootProvisioner(
       {
         api_url: "http://powerdns.test:8081",
@@ -57,7 +58,7 @@ describe("PowerDNS managed HNS root rrsets", () => {
           zoneGets += 1;
           return zoneGets === 1
             ? new Response(null, { status: 404 })
-            : Response.json({ name: "newroot.", serial: 5, dnssec: true });
+            : Response.json({ name: "newroot.", serial: 5, dnssec: true, account });
         }
         if (method === "GET" && path.endsWith("/cryptokeys")) {
           return Response.json([
@@ -81,7 +82,10 @@ describe("PowerDNS managed HNS root rrsets", () => {
             },
           ]);
         }
-        if (method === "POST") return new Response(null, { status: 201 });
+        if (method === "POST") {
+          account = body.account;
+          return new Response(null, { status: 201 });
+        }
         return new Response(null, { status: 204 });
       },
     );
@@ -106,6 +110,76 @@ describe("PowerDNS managed HNS root rrsets", () => {
       "GET /api/v1/servers/localhost/zones/newroot./cryptokeys",
     ]);
     expect(calls[1]?.body).toMatchObject({ kind: "Master", dnssec: true, api_rectify: true });
+  });
+
+  test("recovers an ambiguous create while refusing another reservation before mutation", async () => {
+    const config = {
+      api_url: "http://powerdns.test:8081",
+      api_key: "secret-not-logged",
+      server_id: "localhost",
+      soa_content: "ns1.pirate. hostmaster.pirate. 0 3600 900 1209600 300",
+      axfr_tsig_key_name: "secondary-transfer.",
+      gateway_ipv4: "192.0.2.10",
+      shared_tlsa_association: `3 1 1 ${"A".repeat(64)}`,
+      gateway_deployment_reference: "gateway-deployment-v1",
+      gateway_certificate_spki_sha256: "a".repeat(64),
+      ttl_seconds: 300,
+    };
+    let account: string | null = null;
+    const methods: string[] = [];
+    const provision = makePowerDnsRootProvisioner(config, async (url, init) => {
+      const method = init?.method ?? "GET";
+      methods.push(method);
+      if (method === "POST") {
+        account = JSON.parse(String(init?.body)).account;
+        throw new Error("response lost after zone commit");
+      }
+      if (method === "GET" && String(url).endsWith("/cryptokeys"))
+        return Response.json([{ active: true, ds: [`10875 13 2 ${"a".repeat(64)}`] }]);
+      if (method === "GET")
+        return account === null
+          ? new Response(null, { status: 404 })
+          : Response.json({ name: "newroot.", serial: 5, dnssec: true, account });
+      return new Response(null, { status: 204 });
+    });
+    const input = { root_label: "newroot", challenge_txt_value: "pirate-verification=first" };
+    await expect(provision(input)).rejects.toThrow("response lost");
+    expect(account).toMatch(/^[0-9a-f]{40}$/u);
+    methods.length = 0;
+    await expect(
+      provision({ ...input, challenge_txt_value: "pirate-verification=other" }),
+    ).rejects.toThrow("another reservation");
+    expect(methods).toEqual(["GET"]);
+    methods.length = 0;
+    expect(await provision(input)).toMatchObject({ created: true, dnssec: true });
+    expect(methods).not.toContain("POST");
+    expect(methods).toContain("PATCH");
+    const cleanupMethods: string[] = [];
+    let remove = false;
+    const teardown = makePowerDnsRootTeardown(config, async (_url, init) => {
+      const method = init?.method ?? "GET";
+      cleanupMethods.push(method);
+      if (method === "DELETE") {
+        if (remove) account = null;
+        return new Response(null, { status: 204 });
+      }
+      return account === null
+        ? new Response(null, { status: 404 })
+        : Response.json({ name: "newroot.", serial: 5, dnssec: true, account });
+    });
+    await expect(
+      teardown({ ...input, challenge_txt_value: "pirate-verification=other" }),
+    ).rejects.toThrow("reservation does not match");
+    expect(cleanupMethods).toEqual(["GET"]);
+    cleanupMethods.length = 0;
+    await expect(teardown(input)).rejects.toThrow("remains after teardown");
+    expect(cleanupMethods).toEqual(["GET", "DELETE", "GET"]);
+    remove = true;
+    await teardown(input);
+    expect(account).toBeNull();
+    cleanupMethods.length = 0;
+    await teardown(input);
+    expect(cleanupMethods).toEqual(["GET"]);
   });
 
   test("idempotently deletes one exact abandoned root zone", async () => {

@@ -67,6 +67,7 @@ export function isHnsCommunityAppPrivateHeaderName(name: string): boolean {
   const lower = name.toLowerCase();
   return (
     reservedForwarderHeaders.has(lower) ||
+    lower === "x-pirate-hns-diagnostic-id" ||
     lower === CF_ACCESS_ASSERTION_HEADER ||
     lower === CF_ACCESS_CLIENT_ID_HEADER ||
     lower === CF_ACCESS_CLIENT_SECRET_HEADER ||

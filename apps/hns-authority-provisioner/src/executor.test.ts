@@ -125,76 +125,84 @@ describe("HNS authority provision executor", () => {
     });
   });
 
-  test("tears down a zone created for an expired import before terminal finalization", async () => {
-    const requestBytes = encoder.encode('{"teardown":true}');
-    const publishPlanBytes = encoder.encode('{"plan":true}');
-    const provisionResultBytes = encoder.encode(
-      canonicalJson({
-        version: HNS_AUTHORITY_PROVISION_RESULT_VERSION,
-        root_import_session_id: "root-import-session",
-        root_label: "newroot",
-        nameservers: HNS_AUTHORITY_NAMESERVERS,
-        zone_created: true,
-        zone_dnssec: true,
-        zone_serial: 1,
-        ds_records: [
-          { key_tag: 1, algorithm: 13, digest_type: 2, digest: "a".repeat(64) },
-          { key_tag: 1, algorithm: 13, digest_type: 4, digest: "b".repeat(96) },
-        ],
-        managed_rrset_sha256: "c".repeat(64),
-        shared_tlsa_profile_sha256: "d".repeat(64),
-        gateway_ipv4: "192.0.2.10",
-        gateway_deployment_reference: "gateway-deployment-v1",
-        gateway_certificate_spki_sha256: "e".repeat(64),
-        ttl_seconds: 300,
-      }),
-    );
-    let finalized: unknown;
-    const observationQueue: HnsRootObservationQueue = {
-      claim: async () => ({
-        observation_job_id: "observation-job",
-        root_import_session_id: "root-import-session",
-        operation_kind: "teardown_root_v1",
-        request_bytes: requestBytes,
-        request_sha256: await hash(requestBytes),
-        publish_plan_bytes: publishPlanBytes,
-        publish_plan_sha256: await hash(publishPlanBytes),
-        provision_result_bytes: provisionResultBytes,
-        provision_result_sha256: await hash(provisionResultBytes),
-        lease_fence: 2,
-      }),
-      finalize: async (input) => {
-        finalized = input;
-        return {
-          outcome: "failed",
+  test.each([false, true])(
+    "teardown finalization preserves ambiguous outcomes (%s)",
+    async (ambiguous) => {
+      const requestBytes = encoder.encode('{"teardown":true}');
+      const publishPlanBytes = encoder.encode('{"plan":true}');
+      const provisionResultBytes = encoder.encode(
+        canonicalJson({
+          version: HNS_AUTHORITY_PROVISION_RESULT_VERSION,
           root_import_session_id: "root-import-session",
-          session_revision: 5,
-        };
-      },
-    };
-    const removed: string[] = [];
-    const result = await runHnsAuthorityProvisionExecutorOnce({
-      executor_id: "executor-1",
-      queue: { claim: async () => null, finalize: async () => Promise.reject() },
-      provision: {} as never,
-      observation: {
-        queue: observationQueue,
-        observe: {} as never,
-        teardown_zone: async ({ root_label }) => {
-          removed.push(root_label);
+          root_label: "newroot",
+          nameservers: HNS_AUTHORITY_NAMESERVERS,
+          zone_created: true,
+          zone_dnssec: true,
+          zone_serial: 1,
+          ds_records: [
+            { key_tag: 1, algorithm: 13, digest_type: 2, digest: "a".repeat(64) },
+            { key_tag: 1, algorithm: 13, digest_type: 4, digest: "b".repeat(96) },
+          ],
+          managed_rrset_sha256: "c".repeat(64),
+          shared_tlsa_profile_sha256: "d".repeat(64),
+          gateway_ipv4: "192.0.2.10",
+          gateway_deployment_reference: "gateway-deployment-v1",
+          gateway_certificate_spki_sha256: "e".repeat(64),
+          ttl_seconds: 300,
+        }),
+      );
+      let finalized: unknown;
+      let finalizations = 0;
+      const observationQueue: HnsRootObservationQueue = {
+        claim: async () => ({
+          observation_job_id: "observation-job",
+          root_import_session_id: "root-import-session",
+          operation_kind: "teardown_root_v1",
+          request_bytes: requestBytes,
+          request_sha256: await hash(requestBytes),
+          publish_plan_bytes: publishPlanBytes,
+          publish_plan_sha256: await hash(publishPlanBytes),
+          provision_result_bytes: provisionResultBytes,
+          provision_result_sha256: await hash(provisionResultBytes),
+          lease_fence: 2,
+        }),
+        finalize: async (input) => {
+          finalized = input;
+          finalizations += 1;
+          if (ambiguous) throw new Error("commit acknowledgement lost");
+          return {
+            outcome: "failed",
+            root_import_session_id: "root-import-session",
+            session_revision: 5,
+          };
         },
-        config: { environment: "test", valid_for_seconds: 300 },
-      },
-    });
-    expect(result.outcome).toBe("failed");
-    expect(removed).toEqual(["newroot"]);
-    expect(finalized).toMatchObject({
-      outcome: "failed",
-      operation_kind: "teardown_root_v1",
-      failure_code: "session_expired",
-      lease_fence: 2,
-    });
-  });
+      };
+      const removed: string[] = [];
+      const result = runHnsAuthorityProvisionExecutorOnce({
+        executor_id: "executor-1",
+        queue: { claim: async () => null, finalize: async () => Promise.reject() },
+        provision: {} as never,
+        observation: {
+          queue: observationQueue,
+          observe: {} as never,
+          teardown_zone: async ({ root_label }) => {
+            removed.push(root_label);
+          },
+          config: { environment: "test", valid_for_seconds: 300 },
+        },
+      });
+      if (ambiguous) await expect(result).rejects.toThrow("commit acknowledgement lost");
+      else expect((await result).outcome).toBe("failed");
+      expect(finalizations).toBe(1);
+      expect(removed).toEqual(["newroot"]);
+      expect(finalized).toMatchObject({
+        outcome: "failed",
+        operation_kind: "teardown_root_v1",
+        failure_code: "session_expired",
+        lease_fence: 2,
+      });
+    },
+  );
 });
 
 for (const corruptRequest of [false, true]) {
@@ -273,3 +281,56 @@ for (const corruptRequest of [false, true]) {
     },
   );
 }
+
+test.each([false, true])(
+  "partial provisional cleanup uses retained request bytes; retry=%s",
+  async (fail) => {
+    const state = await fixture();
+    const provision = await state.queue.claim("fixture", 60);
+    if (provision === null) throw new Error("fixture missing");
+    let completion: unknown;
+    const removed: unknown[] = [];
+    const result = await runHnsAuthorityProvisionExecutorOnce({
+      executor_id: "cleanup-executor",
+      queue: { claim: async () => null, finalize: async () => Promise.reject() },
+      provision: {} as never,
+      observation: {
+        queue: {
+          claim: async () => ({
+            observation_job_id: "cleanup",
+            root_import_session_id: provision.root_import_session_id,
+            operation_kind: "teardown_provisional_root_v1",
+            request_bytes: provision.request_bytes,
+            request_sha256: provision.request_sha256,
+            lease_fence: 1,
+          }),
+          finalize: async (input) => {
+            completion = input;
+            return {
+              outcome: input.outcome,
+              root_import_session_id: provision.root_import_session_id,
+              session_revision: 3,
+            };
+          },
+        },
+        observe: {} as never,
+        teardown_zone: async (input) => {
+          removed.push(input);
+          if (fail) throw new Error("authority unavailable");
+        },
+        config: { environment: "test", valid_for_seconds: 300 },
+      },
+    });
+    expect(removed).toEqual([
+      {
+        root_label: "newroot",
+        challenge_txt_value: "pirate-verification=challenge",
+        mutation_lease: { job_id: "cleanup", executor_id: "cleanup-executor", lease_fence: 1 },
+      },
+    ]);
+    expect(result.outcome).toBe(fail ? "retry" : "failed");
+    expect(completion).toMatchObject({
+      failure_code: fail ? "zone_teardown_unavailable" : "session_expired",
+    });
+  },
+);

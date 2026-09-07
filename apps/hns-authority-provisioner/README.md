@@ -30,8 +30,59 @@ provisioner together. The private driver release is independent. Verify the
 live scheduler tick, delayed and terminal counts, remaining serving validity,
 and a real completed renewal after release.
 
-This queue renews health for imported activations. It does not adopt retained
-operator roots or promote authority-inventory successors. Fresh inventory bytes
-in a readiness result are not a persisted inventory promotion. Those gaps must
-be resolved before claiming unattended continuity or retiring operator
-checkpoints. The continuity command remains the recovery procedure.
+Migration 0121 and the matching provisioner promote imported-root inventory
+successors as well as health. Scheduling uses the earlier serving expiry.
+Each observation attempt has a distinct inventory identity. Completion locks
+the job, session, DNS, app-host and sale-namespace predecessors, then inserts
+the immutable inventory and advances every serving dependency in one
+serializable transaction. It shares the maintained continuity command's
+promotion body. Existing username grants keep serving through the current
+sale namespace after the generation advances.
+
+An expired predecessor does not prevent recovery when ownership remains
+current and fresh authenticated evidence validates. The successor must retain
+the deployment environment and structural authority identity. Document 012's
+September 5 erratum caps evidence at 604,800 seconds; shorter leases remain
+valid and no waiting period is required. Changed app or sale generations
+require a new observation attempt. A lost commit acknowledgement is reconciled
+from exact retained completion bytes through a new database connection; it
+must never be converted into an observation failure or a second mutation.
+
+Apply 0121 before deploying this provisioner. Older provisioners continue to
+write health only, so migration alone does not enable inventory continuity.
+Read back an early successor and both app and existing username serving paths
+before claiming production acceptance. Retained operator roots remain outside
+this queue until adoption; their manual checkpoints and certificate renewal
+remain required.
+
+## Wallet-independent provisional imports
+
+Spec 012's September 6 amendment permits a community manager to obtain a
+complete resource before proving root ownership. Migration 0129 admits one
+open import per community, three new provisional admissions per actor over
+24 hours, and 32 held community reservations deployment-wide. Exact replay
+consumes no new admission. The parent-chain TXT and delegation observations
+remain required; provisioning does not grant ownership or activate serving.
+
+Deploy the forward migration and explicitly grant the executor role
+`EXECUTE ON FUNCTION lock_hns_root_zone_mutation_v1(TEXT,TEXT,BOOLEAN,TEXT,TEXT,BIGINT)` before
+this provisioner. Deploy this provisioner before enabling the new HTTP start
+path, and deploy HTTP before the matching frontend. Older provisioners cannot
+consume provisional teardown requests. Resolve the reviewed migration prefix
+explicitly; this release does not authorize unrelated video migrations.
+
+PowerDNS stores a reservation marker in the zone account at creation. A retry
+may reconcile only the matching reservation, including after a lost create
+response. Provisional teardown validates that marker, deletes the zone, and
+reads back absence. Database job and session locks cover the provider mutation
+so a competing completion cannot release and reuse the reservation mid-write.
+The executor aborts provider requests if its lock connection is lost.
+
+The existing teardown queue is populated on the first provisional execution,
+including attempts that never retain a successful provision result. Failed
+attempts retain capacity until confirmed cleanup; a two-minute drain window
+precedes cleanup of a failed provision. Expired, never-attempted preparations
+can release capacity without DNS work. Cleanup exhaustion keeps the reservation
+held for operator reconciliation rather than silently refunding it. Provisioning
+and teardown requests remain individually bounded; no retry is performed by
+the mutation-lock wrapper after an ambiguous transaction acknowledgement.

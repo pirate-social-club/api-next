@@ -81,9 +81,13 @@
       "name": "@pirate/media-processor-worker",
       "version": "0.0.0",
     },
+    "apps/video-source-gateway": {
+      "name": "@pirate/video-source-gateway",
+      "version": "0.0.0",
+    },
     "packages/api-client": {
       "name": "@pirate/api-client",
-      "version": "0.46.0",
+      "version": "0.62.0",
     },
     "packages/application": {
       "name": "@pirate/application",
@@ -600,6 +604,8 @@
     "@pirate/testing": ["@pirate/testing@workspace:packages/testing"],
 
     "@pirate/verifier-response-contract": ["@pirate/verifier-response-contract@workspace:packages/verifier-response-contract"],
+
+    "@pirate/video-source-gateway": ["@pirate/video-source-gateway@workspace:apps/video-source-gateway"],
 
     "@pirate/zkpassport-verifier-runtime": ["@pirate/zkpassport-verifier-runtime@workspace:packages/zkpassport-verifier-runtime"],
 

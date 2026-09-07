@@ -39,23 +39,43 @@ describe("media processor composition", () => {
     expect(composition.workflow.providers).toBeNull();
   });
 
-  test("requires explicit provider composition before video analysis is enabled", () => {
+  test("constructs every video provider from bindings without an adapter argument", () => {
     const base = disabledEnv();
-    expect(() =>
-      makeMediaProcessorComposition({
-        MEDIA_PROCESSING_ENABLED: base.MEDIA_PROCESSING_ENABLED as string,
-        CONTROL_PLANE: base.CONTROL_PLANE as NonNullable<MediaProcessorRuntimeEnv["CONTROL_PLANE"]>,
-        MEDIA_PROCESSING_WORKFLOW: base.MEDIA_PROCESSING_WORKFLOW as NonNullable<
-          MediaProcessorRuntimeEnv["MEDIA_PROCESSING_WORKFLOW"]
-        >,
-        VIDEO_ANALYSIS_ENABLED: "true",
-      }),
-    ).toThrow("video analysis providers are required");
+    const composition = makeMediaProcessorComposition({
+      MEDIA_PROCESSING_ENABLED: base.MEDIA_PROCESSING_ENABLED as string,
+      CONTROL_PLANE: base.CONTROL_PLANE as NonNullable<MediaProcessorRuntimeEnv["CONTROL_PLANE"]>,
+      MEDIA_PROCESSING_WORKFLOW: base.MEDIA_PROCESSING_WORKFLOW as NonNullable<
+        MediaProcessorRuntimeEnv["MEDIA_PROCESSING_WORKFLOW"]
+      >,
+      MEDIA_IMMUTABLE_ORIGINALS: { head: async () => null } as unknown as R2Bucket,
+      MEDIA_DERIVED_ARTIFACTS: { head: async () => null } as unknown as R2Bucket,
+      VIDEO_ANALYSIS_ENABLED: "true",
+      QENCODE_API_KEY: "fixture-qencode-key",
+      VIDEO_SOURCE_GATEWAY_ORIGIN: "https://video-source.example",
+      ACRCLOUD_IDENTIFY_HOST: "identify-eu-west-1.acrcloud.com",
+      ACRCLOUD_ACCESS_KEY: "fixture-access-key",
+      ACRCLOUD_ACCESS_SECRET: "fixture-access-secret",
+      VIDEO_WORKFLOW_ACCOUNT_ID: "a".repeat(32),
+      VIDEO_WORKFLOW_NAME: "video-fixture",
+      VIDEO_WORKFLOW_SCRIPT_NAME: "media-fixture",
+      VIDEO_WORKFLOW_READ_TOKEN: "fixture-workflow-read-token",
+      VIDEO_ANALYSIS_WORKFLOW: {
+        createBatch: async () => [],
+        get: async () => ({ status: async () => ({ status: "running" }) }),
+      },
+    });
+    expect(composition.videoWorkflow?.analysisProviders.identifySoundtrack).toBeFunction();
+    expect(composition.videoWorkflow?.analysisProviders.moderate).toBeFunction();
+    expect(composition.videoWorkflow?.transform).toBeDefined();
   });
 
   test("refuses the Qencode provisioning sentinel before provider work", () => {
     const base = disabledEnv();
-    const providers = {} as VideoAnalysisProviders;
+    const providers = {
+      identifySoundtrack: async () => {
+        throw new Error("not invoked");
+      },
+    } satisfies Partial<VideoAnalysisProviders>;
     expect(() =>
       makeMediaProcessorComposition(
         {
@@ -67,6 +87,10 @@ describe("media processor composition", () => {
             MediaProcessorRuntimeEnv["MEDIA_PROCESSING_WORKFLOW"]
           >,
           VIDEO_ANALYSIS_ENABLED: "true",
+          VIDEO_WORKFLOW_ACCOUNT_ID: "a".repeat(32),
+          VIDEO_WORKFLOW_NAME: "video-fixture",
+          VIDEO_WORKFLOW_SCRIPT_NAME: "media-fixture",
+          VIDEO_WORKFLOW_READ_TOKEN: "fixture-workflow-read-token",
           QENCODE_API_KEY: "PENDING",
         },
         {
@@ -106,7 +130,14 @@ describe("media processor composition", () => {
 
   test("composes the video consumer through the same transform port and maps its sealed key", async () => {
     let observedObjectKey = "";
+    let missingBinding = false;
     const transform: MediaTransformVideoCapabilities = {
+      allocate: (input) =>
+        Effect.succeed({ status: "unavailable", reason: "disabled", attempt: input.attempt }),
+      submit: (input) =>
+        Effect.succeed({ status: "unavailable", reason: "disabled", attempt: input.attempt }),
+      observe: (input) =>
+        Effect.succeed({ status: "unavailable", reason: "disabled", attempt: input.attempt }),
       probe: (input) => {
         observedObjectKey = input.source.objectKey;
         return Effect.succeed({
@@ -120,7 +151,11 @@ describe("media processor composition", () => {
       extractVideoFrames: (input) =>
         Effect.succeed({ status: "unavailable", reason: "disabled", attempt: input.attempt }),
     };
-    const providers = {} as VideoAnalysisProviders;
+    const providers = {
+      identifySoundtrack: async () => {
+        throw new Error("not invoked");
+      },
+    } satisfies Partial<VideoAnalysisProviders>;
     const base = disabledEnv();
     const composition = makeMediaProcessorComposition(
       {
@@ -129,10 +164,43 @@ describe("media processor composition", () => {
         MEDIA_PROCESSING_WORKFLOW: base.MEDIA_PROCESSING_WORKFLOW as NonNullable<
           MediaProcessorRuntimeEnv["MEDIA_PROCESSING_WORKFLOW"]
         >,
+        MEDIA_IMMUTABLE_ORIGINALS: { head: async () => null } as unknown as R2Bucket,
+        MEDIA_DERIVED_ARTIFACTS: { head: async () => null } as unknown as R2Bucket,
         VIDEO_ANALYSIS_ENABLED: "true",
+        VIDEO_WORKFLOW_ACCOUNT_ID: "a".repeat(32),
+        VIDEO_WORKFLOW_NAME: "video-fixture",
+        VIDEO_WORKFLOW_SCRIPT_NAME: "media-fixture",
+        VIDEO_WORKFLOW_READ_TOKEN: "fixture-workflow-read-token",
+        VIDEO_ANALYSIS_WORKFLOW: {
+          createBatch: async () => [],
+          get: async () => {
+            if (missingBinding) throw new Error("instance.not_found");
+            return { status: async () => ({ status: "running" }) };
+          },
+        },
       },
-      { videoAnalysis: { providers, transform } },
+      {
+        videoAnalysis: {
+          providers,
+          transform,
+          workflowFetch: async (input) =>
+            String(input).includes("/instances/")
+              ? Response.json(
+                  { success: false, errors: [{ code: 10400, message: "not found" }] },
+                  { status: 404 },
+                )
+              : Response.json({
+                  success: true,
+                  result: {
+                    name: "video-fixture",
+                    script_name: "media-fixture",
+                    class_name: "VideoAnalysisWorkflow",
+                  },
+                }),
+        },
+      },
     );
+    expect(composition.videoWorkflow).toBeDefined();
     const attempt = {
       version: "media-transform-attempt-v1" as const,
       runtimeFence: { submittedAtMs: 1, runtimeDeadlineMs: 2 },
@@ -144,6 +212,7 @@ describe("media processor composition", () => {
           operationId: "video-operation-1",
           videoRevision: 1,
           analysisRevision: 1,
+          creationRevision: 1,
           canonicalVideoSha256: "a".repeat(64),
           requestId: "video-probe-1",
         },
@@ -157,6 +226,10 @@ describe("media processor composition", () => {
       }) ?? Effect.die("video analysis composition is missing"),
     );
     expect(observedObjectKey).toBe("immutable/video-operation-1/video/1");
+    missingBinding = true;
+    expect(await composition.videoAnalysis?.launcher.get("video-analysis:operation:v1:c1")).toBe(
+      "missing",
+    );
   });
 
   test("maps only the canonical immutable logical reference to a physical R2 key", () => {

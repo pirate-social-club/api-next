@@ -356,6 +356,23 @@ describe("interactive HNS community API transport", () => {
         )
       ).status,
     ).toBe(400);
+    for (const value of ["invalid", "12345678-1234-4234-8234-123456789abc, duplicate"]) {
+      const rejected = await worker.request(
+        "https://api-next.internal/internal/hns/solid-host-authority/v2/resolve",
+        {
+          method: "POST",
+          body,
+          headers: {
+            accept: "application/json",
+            "content-type": "application/json",
+            "cf-access-jwt-assertion": "access-ok",
+            "x-pirate-hns-diagnostic-id": value,
+          },
+        },
+      );
+      expect(rejected.status).toBe(400);
+      expect(await rejected.text()).not.toContain(value);
+    }
     setCurrent({ ...activeState, app_host_activation_status: "suspended" });
     expect(
       (
@@ -382,6 +399,7 @@ describe("interactive HNS community API transport", () => {
         "cf-access-client-id": "client-id",
         "x-pirate-hns-forwarder-signature": "signature",
         "x-pirate-gateway-private": "private",
+        "X-Pirate-Hns-Diagnostic-Id": "public-untrusted",
         origin,
         "idempotency-key": "retained",
       }),

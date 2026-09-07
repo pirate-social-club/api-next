@@ -1,0 +1,34 @@
+{
+  "status": 200,
+  "headers": {
+    "cache-control": "no-store",
+    "content-type": "application/json; charset=UTF-8"
+  },
+  "body": {
+    "community": {
+      "id": "feed-fixture",
+      "object": "community_preview",
+      "route_slug": "feed-fixture",
+      "display_name": "Feed fixture",
+      "membership_mode": "open",
+      "human_verification_lane": null,
+      "member_count": 0,
+      "follower_count": 0,
+      "moderators": [],
+      "membership_gate_summaries": [],
+      "rules": [],
+      "created": 1788220800
+    },
+    "items": [
+      {
+        "kind": "age_locked",
+        "content_rating": "adult_18",
+        "next_action": {
+          "kind": "verify_minimum_age",
+          "minimum_age": 18
+        }
+      }
+    ],
+    "next_cursor": null
+  }
+}

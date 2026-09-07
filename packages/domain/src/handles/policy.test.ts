@@ -9,19 +9,7 @@ import {
   substituteLabelPlaceholders,
   validateLabelClaimRulesInput,
 } from "./label-claim-rules";
-import {
-  assertWritableHandleIssuanceMode,
-  namespaceSupportsSpacesSubspace,
-  normalizeCommunityHandleLabel,
-  parseHandleClaimSettings,
-  protocolIssuanceRequired,
-  sanitizeSettings,
-  withHandlePrefix,
-} from "./policy";
-
-// The old handle-policy modules had no unit suites; these invariants were
-// characterized against the old implementations' observed behavior
-// (2026-08-15) before porting.
+import { normalizeCommunityHandleLabel } from "./policy";
 
 describe("normalizeCommunityHandleLabel", () => {
   test("lowercases, trims, and strips a leading @ and any @suffix", () => {
@@ -58,122 +46,6 @@ describe("normalizeCommunityHandleLabel", () => {
     ]) {
       expect(() => normalizeCommunityHandleLabel(bad)).toThrow("invalid_desired_label");
     }
-  });
-});
-
-describe("parseHandleClaimSettings", () => {
-  test("empty or whitespace json yields no settings", () => {
-    expect(parseHandleClaimSettings(null)).toEqual({});
-    expect(parseHandleClaimSettings("  ")).toEqual({});
-  });
-
-  test("keeps only finite non-negative/positive integers per field", () => {
-    const parsed = parseHandleClaimSettings(
-      JSON.stringify({
-        flat_price_cents: 500,
-        premium_price_cents: -1,
-        premium_max_length: 3.5,
-        min_length: 2,
-        max_length: "12",
-        quote_ttl_seconds: 0,
-        reserved_labels: ["Pirate", 42, "ship"],
-      }),
-    );
-    expect(parsed).toEqual({
-      flat_price_cents: 500,
-      min_length: 2,
-      max_length: 12,
-      reserved_labels: ["Pirate", "ship"],
-    });
-  });
-
-  test("malformed json fails closed", () => {
-    expect(() => parseHandleClaimSettings("{")).toThrow("invalid_settings_json");
-  });
-
-  test("special prices normalize their labels, drop invalid prices, and fail closed on invalid labels", () => {
-    const parsed = parseHandleClaimSettings(
-      JSON.stringify({
-        special_price_cents_by_label: { "@Pirate": 100, other: -5 },
-      }),
-    );
-    expect(parsed.special_price_cents_by_label).toEqual({ pirate: 100 });
-    // An invalid label throws inside the parse try-block: the whole settings
-    // payload is malformed, not silently trimmed.
-    expect(() =>
-      parseHandleClaimSettings(
-        JSON.stringify({ special_price_cents_by_label: { "bad label!": 100 } }),
-      ),
-    ).toThrow("invalid_settings_json");
-  });
-});
-
-describe("issuance mode policy", () => {
-  test("policy writes reject spaces_subspace issuance", () => {
-    expect(() => assertWritableHandleIssuanceMode("spaces_subspace")).toThrow(
-      "protocol_issued_names_unavailable",
-    );
-    expect(assertWritableHandleIssuanceMode("app_internal")).toBeUndefined();
-    expect(assertWritableHandleIssuanceMode(undefined)).toBeUndefined();
-    expect(() => assertWritableHandleIssuanceMode("otherwise")).toThrow("invalid_issuance_mode");
-  });
-
-  test("protocol issuance is required exactly for spaces_subspace settings", () => {
-    expect(protocolIssuanceRequired({ issuance_mode: "spaces_subspace" })).toBe(true);
-    expect(protocolIssuanceRequired({ issuance_mode: "app_internal" })).toBe(false);
-    expect(protocolIssuanceRequired({})).toBe(false);
-  });
-
-  test("spaces-subspace support follows route family or @-prefixed labels", () => {
-    expect(
-      namespaceSupportsSpacesSubspace({
-        display_label: "pirate",
-        normalized_label: "pirate",
-        route_family: "spaces",
-      }),
-    ).toBe(true);
-    expect(
-      namespaceSupportsSpacesSubspace({
-        display_label: "@pirate",
-        normalized_label: "pirate",
-        route_family: "hns",
-      }),
-    ).toBe(true);
-    expect(
-      namespaceSupportsSpacesSubspace({
-        display_label: "pirate",
-        normalized_label: "@pirate",
-        route_family: null,
-      }),
-    ).toBe(true);
-    expect(
-      namespaceSupportsSpacesSubspace({
-        display_label: "pirate",
-        normalized_label: "pirate",
-        route_family: "hns",
-      }),
-    ).toBe(false);
-  });
-});
-
-describe("sanitizeSettings", () => {
-  test("normalizes reserved labels and enforces length ordering", () => {
-    expect(
-      sanitizeSettings({ reserved_labels: ["@Pirate", "ship"], min_length: 1, max_length: 2 }),
-    ).toEqual({ reserved_labels: ["pirate", "ship"], min_length: 1, max_length: 2 });
-    expect(() => sanitizeSettings({ min_length: 5, max_length: 2 })).toThrow(
-      "min_length_must_be_lte_max_length",
-    );
-    expect(() => sanitizeSettings({ quote_ttl_seconds: 30 })).toThrow(
-      "quote_ttl_seconds_must_be_integer_min_60",
-    );
-  });
-});
-
-describe("withHandlePrefix", () => {
-  test("is idempotent for already-prefixed values", () => {
-    expect(withHandlePrefix("nhp", "123")).toBe("nhp_123");
-    expect(withHandlePrefix("nhp", "nhp_123")).toBe("nhp_123");
   });
 });
 

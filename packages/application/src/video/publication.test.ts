@@ -11,6 +11,7 @@ import {
   createVideoSubmission,
   finalizeVideoSubmission,
   normalizeVideoMultipartManifest,
+  projectVideoSubmission,
   reserveVideoUpload,
   retryVideoSubmission,
   VIDEO_MULTIPART_PART_SIZE_BYTES,
@@ -172,6 +173,84 @@ describe("video publication application", () => {
     } satisfies Partial<Conflict>);
   });
 
+  test("reconciliation projects unconfirmed and refuses retry; membership recovery uses publication-only retry", async () => {
+    const initial = createOriginalVideoSubmission({
+      submissionId: "media-submission-video",
+      operationId: "media-operation-video",
+      communityId: "community_video",
+      actorAccountId: actor.userId,
+      authorPersonaId: persona.persona_id,
+      reservationId: "media-reservation-video",
+      caption: null,
+      authorDeclaredRating: "general",
+    });
+    let record: VideoSubmissionRecord = {
+      state: {
+        ...initial,
+        status: "processing_failed",
+        phase: null,
+        failureCode: "transform_failed",
+        reconciliationRequired: true,
+      },
+      eventSequence: 1,
+      updatedAt: "2026-09-06T00:00:00.000Z",
+      authorPersona: {
+        persona_id: persona.persona_id,
+        object: "persona",
+        display_name: "Video Author",
+        avatar_ref: null,
+        primary_public_handle: null,
+      },
+    };
+    expect(projectVideoSubmission(record)).toMatchObject({
+      reason_code: "provider_submission_unconfirmed",
+      retryable: false,
+    });
+    let refused = true;
+    const services = servicesWith({
+      store: storeWith({
+        getSubmissionForAccount: async () => record,
+        retryTechnical: async () => (refused ? { kind: "membership_required" } : { kind: "none" }),
+      }),
+    });
+    const input = {
+      submissionId: initial.submissionId,
+      actor,
+      body: {
+        persona_id: persona.persona_id,
+        idempotency_key: "membership-retry",
+        expected_creation_revision: 1,
+      },
+    };
+    await expect(retryVideoSubmission(input, services)).rejects.toMatchObject({
+      details: { reason_code: "retry_not_allowed" },
+    });
+    const membershipRecord: VideoSubmissionRecord = {
+      ...record,
+      state: { ...record.state, reconciliationRequired: false, failureCode: "membership_required" },
+    };
+    record = membershipRecord;
+    expect(projectVideoSubmission(membershipRecord)).toMatchObject({
+      reason_code: "membership_required",
+      retryable: true,
+    });
+    await expect(retryVideoSubmission(input, services)).rejects.toMatchObject({
+      details: { reason_code: "membership_required" },
+    });
+    refused = false;
+    expect(await retryVideoSubmission(input, services)).toMatchObject({
+      status: "processing",
+      phase: "publish",
+      creation_revision: 2,
+    });
+    expect(
+      projectVideoSubmission({
+        ...membershipRecord,
+        state: { ...membershipRecord.state, retryCount: 3 },
+      }),
+    ).toMatchObject({ retryable: false });
+  });
+
   test("routes a technical retry back to analysis with the sealed revision retained", async () => {
     const initial = createOriginalVideoSubmission({
       submissionId: "media-submission-video",
@@ -200,6 +279,7 @@ describe("video publication application", () => {
       store: storeWith({
         getSubmissionForAccount: async () => ({
           state: failed,
+          eventSequence: 1,
           authorPersona: {
             persona_id: persona.persona_id,
             object: "persona",
@@ -321,6 +401,8 @@ describe("video publication application", () => {
       { communityId: "community_video", actor, body: originalBody },
       services,
     );
+    expect(result.upload.expires_at).toBe("2026-09-04T01:06:21.000Z");
+    expect(result.upload.parts[0]?.expires_at).toBe("2026-09-04T01:01:00.000Z");
     expect(result.upload.part_count).toBe(2);
     expect(result.upload.part_size_bytes).toBe(VIDEO_MULTIPART_PART_SIZE_BYTES);
     expect(result.author_persona_id).toBe(persona.persona_id);
@@ -368,6 +450,7 @@ describe("video publication application", () => {
     });
     const record: VideoSubmissionRecord = {
       state,
+      eventSequence: 1,
       authorPersona: {
         persona_id: persona.persona_id,
         object: "persona",

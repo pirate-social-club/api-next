@@ -21,7 +21,7 @@ export interface KaraokeFinalizationRecoveryStore {
 }
 
 export interface KaraokeFinalizationRedriveResult {
-  readonly outcome: "missing" | "idle" | "scheduled";
+  readonly outcome: "missing" | "idle" | "scheduled" | "fenced";
   readonly rearmed: readonly ("score" | "recording")[];
 }
 
@@ -147,6 +147,9 @@ export const redriveKaraokeFinalizations = Effect.fn("redriveKaraokeFinalization
         rpcFailures += 1;
       } else if (result.outcome === "missing") {
         missing += 1;
+      } else if (result.outcome === "fenced") {
+        // Durable maintenance denial is terminal for this redrive.
+        continue;
       } else {
         if (result.outcome === "scheduled") scheduled += 1;
         rearmed += result.rearmed.length;

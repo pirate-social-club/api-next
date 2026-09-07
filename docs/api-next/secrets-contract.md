@@ -709,6 +709,14 @@ enabled and keep the real staging RPC requirement. Any production rewards
 activation must add a reviewed mainnet RPC credential declaration and provision
 the corresponding value in the same authorized ceremony.
 
+The Infisical production service policy likewise permits this RPC name without
+requiring it while rewards are disabled. Activation must also make the name
+required in that policy; an invariant checks both HTTP and jobs configurations.
+Staging continues to require the RPC. The secret-drift workflow runs both
+name-only audits after successful dependency installation, even when the first
+audit fails. Either audit failure keeps the job failed; cancellation or failed
+setup prevents the second audit from running.
+
 The schema also notes that `secrets` is **not** inherited from the top-level
 environment and must be repeated in every named environment. Both configs do
 repeat it, so no defect there — but it means the jobs Worker's omission of the
@@ -1042,3 +1050,27 @@ matched the CLI token's session ID. The final name-only audit completed through
 that session. The export cache created during synchronization was deleted again
 and remains absent. No rotation of stored application secrets is indicated
 because no application secret value was exposed.
+
+
+## Verified agent and persona fixture custody — 2026-09-07
+
+This amendment supersedes the historical empty-development inventory above.
+Development runtime remains disabled. Development `/agents` must contain no
+secrets, and `/agents/codex` must contain exactly `GITHUB_PAT`. The workspace
+coordinator owns this operator credential. Live Infisical metadata confirms the
+enabled `github` proxied service `90b8f022-5401-4027-bddb-a8b827d00a19`, matching
+`api.github.com`, references that name. Its last recorded use is August 25;
+configured availability does not prove current agent traffic. The audit lists
+both folders with values disabled and rejects extra names, missing credentials
+and additional folders. These paths are not admitted in staging or production.
+Removing the service requires an explicit custody disposition and policy update.
+
+`PERSONA_WALLET_E2E_EMAIL` and `PERSONA_WALLET_E2E_OTP` are optional only at
+staging `/services/api-next/operator`. They are the browser-injected staging
+persona-wallet test identity recorded in `api-data-fast-confirmation-convergence`
+and `solid-persona-wallet-provisioning` in the workspace task register. They are
+not runtime bindings. The accepted `staging-operator-credential-rotation` owner
+decision retains their custody pending upstream rotation. Inventory admission
+does not restore confidentiality or lift the provisioning record's prohibition
+on reusing the disclosed pair in a wallet ceremony. No credential was read,
+rotated, deleted or synchronized by this contract change.

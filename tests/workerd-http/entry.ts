@@ -10,8 +10,6 @@ import {
   type PersonaRecord,
   type PersonaStoreService,
   reportCommunityContent,
-  type TextModeration,
-  TextModerationProviderError,
   TextPostRepositoryError,
   type TextPostStore,
 } from "@pirate/application";
@@ -69,13 +67,16 @@ import {
   VERY_WEB_PROVIDER_ID,
   VERY_WEB_RP_SCOPE,
 } from "../../packages/platform-cf/src/verification/providers/very-web.ts";
+import { videoAccessFixtureHandlers } from "./video-access.fixture.ts";
 
 export { HnsForwarderReplayStoreDO } from "../../packages/platform-cf/src/hns-forwarder-replay-store-do.ts";
 export { KaraokeAttemptDO } from "../../packages/platform-cf/src/karaoke-attempt-do.ts";
+export { KaraokeResetOperatorEntrypoint } from "../../packages/platform-cf/src/karaoke-reset-operator-entrypoint.ts";
 export {
   RegistrationApplicationRateLimiterDO,
   RegistrationIpRateLimiterDO,
 } from "../../packages/platform-cf/src/registration-rate-limiter-do.ts";
+export { VideoPlaybackRateLimiterDO } from "../../packages/platform-cf/src/video-playback-rate-limiter-do.ts";
 
 function toBase64(bytes: ArrayBufferLike): string {
   let binary = "";
@@ -249,14 +250,12 @@ const personaStore: PersonaStoreService = {
 
 const routeAuthorityFixtureId = "community-very-staging-fixture-acceptance-v1";
 const missingRouteTextPostStore: TextPostStore["Service"] = {
+  readModerationPolicy: () => Effect.die("missing route must fail before policy lookup"),
   replay: () => Effect.succeed({ kind: "none" as const }),
   checkAuthority: () =>
     Effect.fail(new TextPostRepositoryError({ operation: "authority", reason: "not-found" })),
   commitTerminal: () => Effect.die("missing route must fail before moderation or commit"),
   getForAuthor: () => Effect.succeed(null),
-};
-const unavailableTextModeration: TextModeration["Service"] = {
-  evaluate: () => Effect.fail(new TextModerationProviderError({ reason: "unavailable" })),
 };
 
 function createPostThroughContract(request: DecodedRequest) {
@@ -275,7 +274,6 @@ function createPostThroughContract(request: DecodedRequest) {
       },
       {
         textPostStore: missingRouteTextPostStore,
-        textModeration: unavailableTextModeration,
         personaStore,
       },
     ),
@@ -482,6 +480,7 @@ const namespaceCompletion: NamespaceOwnershipCompletionServices = {
 };
 
 const moderationFixture: TextPostStore["Service"] = {
+  readModerationPolicy: () => Effect.die("comment fixture must fail before policy lookup"),
   checkAuthority: ({ communityId }) =>
     communityId === "community_nonmember"
       ? Effect.fail(
@@ -723,6 +722,7 @@ const app = createHttpWorker({
   config: { corsOrigin: "https://solid.test" },
   sessionExchange,
   handlers: {
+    ...videoAccessFixtureHandlers(),
     ...verificationHandlers,
     ...makeNamespaceOwnershipHandlers({
       start: namespaceStart,
@@ -767,7 +767,7 @@ const app = createHttpWorker({
           },
           {
             textPostStore: moderationFixture,
-            textModeration: {
+            textModerationProvider: {
               evaluate: () => Effect.die("comment route fixture must fail before moderation"),
             },
             personaStore,

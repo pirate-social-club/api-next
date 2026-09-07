@@ -11,6 +11,7 @@ import {
 } from "@pirate/application";
 import { Effect, Exit, Layer } from "effect";
 import type { ClientConfig } from "pg";
+import { withHnsAuthoritySpan } from "./hns-authority-diagnostics.ts";
 
 export { ControlPlaneDb } from "@pirate/application";
 
@@ -83,6 +84,8 @@ export interface PostgresControlPlaneOptions {
   readonly clientFactory?: PostgresClientFactory;
   readonly logger?: ControlPlaneLogger;
   readonly now?: () => number;
+  readonly connectTimeoutMs?: number;
+  readonly statementTimeoutMs?: number;
 }
 
 const DEFAULT_LOGGER: ControlPlaneLogger = {
@@ -178,6 +181,8 @@ class PostgresSession {
     private readonly now: () => number,
     private readonly transactionSearchPath?: string,
     private readonly readOnly = false,
+    private readonly connectTimeoutMs = CONTROL_PLANE_CONNECT_TIMEOUT_MS,
+    private readonly statementTimeoutMs = CONTROL_PLANE_STATEMENT_TIMEOUT_MS,
   ) {}
 
   get isFenced(): boolean {
@@ -195,37 +200,40 @@ class PostgresSession {
       catch: () =>
         new ControlPlaneAcquireFailed({
           phase: "connection",
-          limitMs: CONTROL_PLANE_CONNECT_TIMEOUT_MS,
+          limitMs: this.connectTimeoutMs,
           elapsedMs: elapsedSince(startedAt, this.now),
         }),
     });
     const interrupted = connection.pipe(Effect.onInterrupt(() => this.terminateEffect()));
-    return Effect.timeout(interrupted, CONTROL_PLANE_CONNECT_TIMEOUT_MS).pipe(
-      Effect.catchIf(
-        isTimeoutError,
-        () =>
-          Effect.fail(
-            new ControlPlaneOperationTimedOut({
-              label: "control-plane.connect",
-              limitMs: CONTROL_PLANE_CONNECT_TIMEOUT_MS,
-              elapsedMs: elapsedSince(startedAt, this.now),
-              outcomeCertainty: this.isAborted ? "aborted" : "unknown",
-            }),
-          ),
-        (error) => Effect.fail(error as ControlPlaneError),
-      ),
-      Effect.tap(() =>
-        Effect.sync(() => {
-          this.connected = true;
-          const elapsedMs = elapsedSince(startedAt, this.now);
-          if (elapsedMs >= CONTROL_PLANE_SLOW_STATEMENT_MS) {
-            this.logger.info("control-plane connection slow", {
-              phase: "connection",
-              elapsedMs,
-              limitMs: CONTROL_PLANE_CONNECT_TIMEOUT_MS,
-            });
-          }
-        }),
+    return withHnsAuthoritySpan(
+      "connection_acquisition",
+      Effect.timeout(interrupted, this.connectTimeoutMs).pipe(
+        Effect.catchIf(
+          isTimeoutError,
+          () =>
+            Effect.fail(
+              new ControlPlaneOperationTimedOut({
+                label: "control-plane.connect",
+                limitMs: this.connectTimeoutMs,
+                elapsedMs: elapsedSince(startedAt, this.now),
+                outcomeCertainty: this.isAborted ? "aborted" : "unknown",
+              }),
+            ),
+          (error) => Effect.fail(error as ControlPlaneError),
+        ),
+        Effect.tap(() =>
+          Effect.sync(() => {
+            this.connected = true;
+            const elapsedMs = elapsedSince(startedAt, this.now);
+            if (elapsedMs >= CONTROL_PLANE_SLOW_STATEMENT_MS) {
+              this.logger.info("control-plane connection slow", {
+                phase: "connection",
+                elapsedMs,
+                limitMs: this.connectTimeoutMs,
+              });
+            }
+          }),
+        ),
       ),
     );
   }
@@ -256,7 +264,7 @@ class PostgresSession {
       return Effect.fail(
         new ControlPlaneOperationTimedOut({
           label: statement.label,
-          limitMs: CONTROL_PLANE_STATEMENT_TIMEOUT_MS,
+          limitMs: this.statementTimeoutMs,
           elapsedMs: 0,
           outcomeCertainty: this.fenced ? "aborted" : "not-started",
         }),
@@ -279,39 +287,42 @@ class PostgresSession {
         }),
     });
     const interrupted = query.pipe(Effect.onInterrupt(() => this.terminateEffect()));
-    return Effect.timeout(interrupted, CONTROL_PLANE_STATEMENT_TIMEOUT_MS).pipe(
-      Effect.catchIf(
-        isTimeoutError,
-        () =>
-          Effect.fail(
-            new ControlPlaneOperationTimedOut({
-              label: statement.label,
-              limitMs: CONTROL_PLANE_STATEMENT_TIMEOUT_MS,
-              elapsedMs: elapsedSince(startedAt, this.now),
-              outcomeCertainty: this.isAborted && this.inTransaction ? "aborted" : "unknown",
-            }),
-          ),
-        (error) => Effect.fail(error as ControlPlaneError),
-      ),
-      Effect.tap(() =>
-        Effect.sync(() => {
-          const elapsedMs = elapsedSince(startedAt, this.now);
-          if (elapsedMs >= CONTROL_PLANE_SLOW_STATEMENT_MS) {
-            this.logger.info("control-plane statement slow", {
-              label: statement.label,
-              elapsedMs,
-              limitMs: CONTROL_PLANE_STATEMENT_TIMEOUT_MS,
-            });
-          }
+    return withHnsAuthoritySpan(
+      "query",
+      Effect.timeout(interrupted, this.statementTimeoutMs).pipe(
+        Effect.catchIf(
+          isTimeoutError,
+          () =>
+            Effect.fail(
+              new ControlPlaneOperationTimedOut({
+                label: statement.label,
+                limitMs: this.statementTimeoutMs,
+                elapsedMs: elapsedSince(startedAt, this.now),
+                outcomeCertainty: this.isAborted && this.inTransaction ? "aborted" : "unknown",
+              }),
+            ),
+          (error) => Effect.fail(error as ControlPlaneError),
+        ),
+        Effect.tap(() =>
+          Effect.sync(() => {
+            const elapsedMs = elapsedSince(startedAt, this.now);
+            if (elapsedMs >= CONTROL_PLANE_SLOW_STATEMENT_MS) {
+              this.logger.info("control-plane statement slow", {
+                label: statement.label,
+                elapsedMs,
+                limitMs: this.statementTimeoutMs,
+              });
+            }
+          }),
+        ),
+        Effect.map((result) => {
+          const final = finalQueryResult(result);
+          return {
+            rows: final.rows as readonly Row[],
+            rowCount: final.rowCount ?? final.rows.length,
+          };
         }),
       ),
-      Effect.map((result) => {
-        const final = finalQueryResult(result);
-        return {
-          rows: final.rows as readonly Row[],
-          rowCount: final.rowCount ?? final.rows.length,
-        };
-      }),
     );
   }
 
@@ -345,7 +356,7 @@ class PostgresSession {
       yield* session.executeInternal({
         label: "control-plane.transaction.statement-timeout",
         text: "SELECT set_config('statement_timeout', $1, true)",
-        values: [`${CONTROL_PLANE_STATEMENT_TIMEOUT_MS}ms`],
+        values: [`${session.statementTimeoutMs}ms`],
         readonly: false,
       });
       yield* session.executeInternal({
@@ -488,11 +499,15 @@ class PostgresTransaction implements ControlPlaneTransaction {
   }
 }
 
-function makeClientConfig(connectionString: string, readOnly: boolean): ClientConfig {
+function makeClientConfig(
+  connectionString: string,
+  readOnly: boolean,
+  options: PostgresControlPlaneOptions,
+): ClientConfig {
   return {
     connectionString,
-    connectionTimeoutMillis: CONTROL_PLANE_CONNECT_TIMEOUT_MS,
-    statement_timeout: CONTROL_PLANE_STATEMENT_TIMEOUT_MS,
+    connectionTimeoutMillis: options.connectTimeoutMs ?? CONTROL_PLANE_CONNECT_TIMEOUT_MS,
+    statement_timeout: options.statementTimeoutMs ?? CONTROL_PLANE_STATEMENT_TIMEOUT_MS,
     idle_in_transaction_session_timeout: CONTROL_PLANE_IDLE_TRANSACTION_TIMEOUT_MS,
     ...(readOnly ? { options: "-c default_transaction_read_only=on" } : {}),
   };
@@ -512,20 +527,35 @@ function makeControlPlaneLayer(
     ControlPlaneDb,
     Effect.gen(function* () {
       const session = yield* Effect.acquireRelease(
-        Effect.tryPromise({
-          try: () =>
-            Promise.resolve(
-              clientFactory(connectionString, makeClientConfig(connectionString, readOnly)),
-            ).then(
-              (client) => new PostgresSession(client, logger, now, transactionSearchPath, readOnly),
-            ),
-          catch: () =>
-            new ControlPlaneAcquireFailed({
-              phase: "acquisition",
-              limitMs: CONTROL_PLANE_CONNECT_TIMEOUT_MS,
-              elapsedMs: 0,
-            }),
-        }),
+        withHnsAuthoritySpan(
+          "client_initialization",
+          Effect.tryPromise({
+            try: () =>
+              Promise.resolve(
+                clientFactory(
+                  connectionString,
+                  makeClientConfig(connectionString, readOnly, options),
+                ),
+              ).then(
+                (client) =>
+                  new PostgresSession(
+                    client,
+                    logger,
+                    now,
+                    transactionSearchPath,
+                    readOnly,
+                    options.connectTimeoutMs,
+                    options.statementTimeoutMs,
+                  ),
+              ),
+            catch: () =>
+              new ControlPlaneAcquireFailed({
+                phase: "acquisition",
+                limitMs: CONTROL_PLANE_CONNECT_TIMEOUT_MS,
+                elapsedMs: 0,
+              }),
+          }),
+        ),
         (resource) => resource.closeEffect(),
         { interruptible: true },
       );

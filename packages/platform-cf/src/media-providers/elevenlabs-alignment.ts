@@ -260,9 +260,3 @@ export class ElevenLabsAlignmentAdapter {
     }
   }
 }
-
-export function makeElevenLabsAlignmentAdapter(
-  options: ElevenLabsAlignmentAdapterOptions = {},
-): ElevenLabsAlignmentAdapter {
-  return new ElevenLabsAlignmentAdapter(options);
-}

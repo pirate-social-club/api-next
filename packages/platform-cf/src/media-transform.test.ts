@@ -18,6 +18,7 @@ describe("disabled media transform", () => {
       operationId: "operation",
       videoRevision: 1,
       analysisRevision: 1,
+      creationRevision: 1,
       canonicalVideoSha256: "a".repeat(64),
       requestId: "request",
     };
@@ -39,6 +40,7 @@ describe("disabled media transform", () => {
           binding,
           source,
           extractionPolicyVersion: "video-audio-m4a-aac-44100-stereo-v1",
+          sourceDurationMs: 10000,
           attempt,
         }),
       ),

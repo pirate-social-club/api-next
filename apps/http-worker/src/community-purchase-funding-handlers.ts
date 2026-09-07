@@ -237,22 +237,20 @@ export function makeCommunityPurchaseFundingObservationHandlers(
       const actorId = actor(request.principal);
       const path = request.params as { readonly operationRef: string };
       const body = request.body as { readonly transaction_hash: string };
-      await Effect.runPromise(
-        getCommunityPurchaseFundingForActor(
-          { operationId: path.operationRef, actorId },
-          services.query,
-        ).pipe(Effect.mapError(wireFailure)),
-      );
       const result = await Effect.runPromise(
-        services.observation
-          .observe({
+        Effect.gen(function* () {
+          yield* getCommunityPurchaseFundingForActor(
+            { operationId: path.operationRef, actorId },
+            services.query,
+          );
+          return yield* services.observation.observe({
             operationId: path.operationRef as CommunityPurchaseOperationId,
             transactionHash: body.transaction_hash as Bytes32,
             ownerId: `http:${actorId}:${path.operationRef}:${body.transaction_hash}`,
             leaseMs: 30_000,
             source: "request",
-          })
-          .pipe(Effect.mapError(wireFailure)),
+          });
+        }).pipe(Effect.mapError(wireFailure)),
       );
       return { ...status(result.entry), replayed: result.replayed };
     },

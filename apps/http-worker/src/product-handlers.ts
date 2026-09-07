@@ -44,8 +44,6 @@ type FeedStoreService = FeedServices["feedStore"];
 type ContentServices = Parameters<typeof getPost>[1];
 type ContentStoreService = ContentServices["contentStore"];
 type TextPostStoreService = ContentServices["textPostStore"];
-type TextModerationService = ContentServices["textModeration"];
-type TextPostStoreV2Service = ContentServices["textPostStoreV2"];
 type TextModerationProviderService = ContentServices["textModerationProvider"];
 type PersonaStoreService = ContentServices["personaStore"];
 type CommunityActor = Parameters<typeof joinCommunity>[0]["actor"];
@@ -56,8 +54,6 @@ export interface ProductHandlerServices {
   readonly communityStore: CommunityStoreService;
   readonly contentStore: ContentStoreService;
   readonly textPostStore?: TextPostStoreService;
-  readonly textModeration?: TextModerationService;
-  readonly textPostStoreV2?: TextPostStoreV2Service;
   readonly textModerationProvider?: TextModerationProviderService;
   readonly personaStore?: PersonaStoreService;
   readonly feedStore: FeedStoreService;
@@ -301,10 +297,6 @@ const createPostHandler = async (request: DecodedRequest, services: ProductHandl
     createPost(createPostInputFrom(request), {
       contentStore: services.contentStore,
       ...(services.textPostStore === undefined ? {} : { textPostStore: services.textPostStore }),
-      ...(services.textModeration === undefined ? {} : { textModeration: services.textModeration }),
-      ...(services.textPostStoreV2 === undefined
-        ? {}
-        : { textPostStoreV2: services.textPostStoreV2 }),
       ...(services.textModerationProvider === undefined
         ? {}
         : { textModerationProvider: services.textModerationProvider }),
@@ -316,10 +308,6 @@ const createCommentHandler = async (request: DecodedRequest, services: ProductHa
   Effect.runPromise(
     createCommentReply(createCommentInputFrom(request), {
       ...(services.textPostStore === undefined ? {} : { textPostStore: services.textPostStore }),
-      ...(services.textModeration === undefined ? {} : { textModeration: services.textModeration }),
-      ...(services.textPostStoreV2 === undefined
-        ? {}
-        : { textPostStoreV2: services.textPostStoreV2 }),
       ...(services.textModerationProvider === undefined
         ? {}
         : { textModerationProvider: services.textModerationProvider }),
@@ -331,10 +319,6 @@ const createReplyHandler = async (request: DecodedRequest, services: ProductHand
   Effect.runPromise(
     createCommentReply(createReplyInputFrom(request), {
       ...(services.textPostStore === undefined ? {} : { textPostStore: services.textPostStore }),
-      ...(services.textModeration === undefined ? {} : { textModeration: services.textModeration }),
-      ...(services.textPostStoreV2 === undefined
-        ? {}
-        : { textPostStoreV2: services.textPostStoreV2 }),
       ...(services.textModerationProvider === undefined
         ? {}
         : { textModerationProvider: services.textModerationProvider }),

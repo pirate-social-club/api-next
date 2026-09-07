@@ -1,9 +1,38 @@
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
+import { unstable_readConfig } from "wrangler";
 
 // Workspace packages resolve to source so the workerd pool bundles one
 // program for both the worker main and the test modules.
 const alias = {
+  "@pirate/application/video/publication-wakeup": new URL(
+    "../../packages/application/src/video/publication-wakeup.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/video-publication-wakeup-repository": new URL(
+    "../../packages/platform-cf/src/video-publication-wakeup-repository.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/application/video/stage-facts": new URL(
+    "../../packages/application/src/video/stage-facts.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/application/video/workflow-recovery": new URL(
+    "../../packages/application/src/video/workflow-recovery.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/video-analysis-outbox-repository": new URL(
+    "../../packages/platform-cf/src/video-analysis-outbox-repository.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/video-publication-repository": new URL(
+    "../../packages/platform-cf/src/video-publication-repository.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/video-analysis-workflow-cloudflare": new URL(
+    "../../packages/platform-cf/src/video-analysis-workflow-cloudflare.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/application/post-slug": new URL(
     "../../packages/application/src/post-slug.ts",
     import.meta.url,
@@ -112,6 +141,15 @@ const alias = {
   ).pathname,
 };
 
+const productionJobsConfiguration = unstable_readConfig(
+  {
+    config: new URL("../../apps/jobs-worker/wrangler.jsonc", import.meta.url).pathname,
+    env: "production",
+  },
+  // Omitting the production learner-audio binding is intentional and tested.
+  { hideWarnings: true },
+);
+
 export default defineConfig({
   resolve: { alias },
   plugins: [
@@ -119,6 +157,7 @@ export default defineConfig({
       wrangler: { configPath: "./apps/jobs-worker/wrangler.jsonc" },
       miniflare: {
         alias,
+        bindings: { PRODUCTION_JOBS_CONFIGURATION: JSON.stringify(productionJobsConfiguration) },
         workers: [
           {
             name: "pirate-media-processor-worker",
@@ -128,6 +167,9 @@ export default defineConfig({
               import { WorkflowEntrypoint } from "cloudflare:workers";
               export class MediaProcessingWorkflow extends WorkflowEntrypoint {
                 async run() { return { outcome: "inert" }; }
+              }
+              export class VideoAnalysisWorkflow extends WorkflowEntrypoint {
+                async run() { return { status: "stopped" }; }
               }
             `,
           },

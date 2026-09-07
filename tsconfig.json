@@ -67,6 +67,7 @@
       "packages/platform-cf",
       "apps/data-registration-worker",
       "apps/jobs-worker",
-      "apps/media-processor-worker"
+      "apps/media-processor-worker",
+      "apps/video-source-gateway"
     ]
 }

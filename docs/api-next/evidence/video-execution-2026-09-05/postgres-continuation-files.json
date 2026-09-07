@@ -1,0 +1,6 @@
+[
+  "packages/platform-cf/src/community-creation-repository.pg.test.ts",
+  "packages/platform-cf/src/media-persistence.pg.test.ts",
+  "packages/platform-cf/src/public-post-slug-repository.pg.test.ts",
+  "packages/platform-cf/src/study-v2-foundation.pg.test.ts"
+]

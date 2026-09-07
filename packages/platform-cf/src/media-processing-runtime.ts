@@ -33,7 +33,6 @@ import {
 export {
   MEDIA_MP3_SAMPLE_ADAPTER_REVISION,
   makeR2Mp3SampleMediaTransform,
-  readMp3FrameWindow,
 } from "./media-mp3-sample.ts";
 
 const IMMUTABLE_REF_PREFIX = "media://immutable/";
@@ -328,7 +327,7 @@ async function selectVerifiedObject(
   return { object: expected, body: selected.body };
 }
 
-async function readBoundedStream(
+export async function readBoundedStream(
   stream: ReadableStream<Uint8Array>,
   maximumBytes: number,
   signal: AbortSignal,

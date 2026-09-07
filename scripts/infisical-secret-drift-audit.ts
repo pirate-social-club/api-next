@@ -9,7 +9,12 @@ export const INFISICAL_RUNTIME_ENABLED = {
   staging: true,
   prod: true,
 } as const satisfies Readonly<Record<InfisicalEnvironment, boolean>>;
-export type InfisicalPath = "/" | "/services/api-next" | "/services/api-next/operator";
+export type InfisicalPath =
+  | "/"
+  | "/agents"
+  | "/agents/codex"
+  | "/services/api-next"
+  | "/services/api-next/operator";
 export type InfisicalDriftKind =
   | "unexpected-folder"
   | "missing-folder"
@@ -35,7 +40,6 @@ const PRODUCTION_RUNTIME_SECRET_NAMES = [
   "PIRATE_APP_JWT_PRIVATE_KEY",
   "PRIVY_APP_SECRET",
   "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
-  "MEGAPOT_V2_RPC_URL",
   "HNS_EDGE_ALERT_TOKEN",
 ] as const;
 
@@ -74,6 +78,15 @@ const STAGING_PROVISIONABLE_MEDIA_RUNTIME_SECRET_NAMES = [
   "MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY",
 ] as const;
 
+// Inventory admission only. These remain optional while video is disabled;
+// provisioning and distribution to each owning Worker need separate authorization.
+const STAGING_PROVISIONABLE_VIDEO_RUNTIME_SECRET_NAMES = [
+  "VIDEO_WORKFLOW_READ_TOKEN",
+  "VIDEO_STREAM_API_TOKEN",
+  "VIDEO_STREAM_SIGNING_JWK_BASE64",
+  "VIDEO_PLAYBACK_SOURCE_HMAC_BASE64",
+] as const;
+
 const STAGING_PROVISIONABLE_HTTP_RUNTIME_SECRET_NAMES = ["OPENAI_API_KEY"] as const;
 const STAGING_MODERATION_E2E_OPERATOR_SECRET_NAMES = [
   "MODERATION_E2E_OWNER_EMAIL",
@@ -82,6 +95,11 @@ const STAGING_MODERATION_E2E_OPERATOR_SECRET_NAMES = [
   "MODERATION_E2E_MEMBER_OTP",
   "MODERATION_E2E_VIEWER_EMAIL",
   "MODERATION_E2E_VIEWER_OTP",
+] as const;
+// Optional fixture custody; upstream rotation remains governed separately.
+const STAGING_PERSONA_E2E_OPERATOR_SECRET_NAMES = [
+  "PERSONA_WALLET_E2E_EMAIL",
+  "PERSONA_WALLET_E2E_OTP",
 ] as const;
 const requiredWhenRuntimeEnabled = (
   environment: InfisicalEnvironment,
@@ -97,6 +115,21 @@ export type InfisicalPolicy = Readonly<{
 
 export const INFISICAL_POLICIES: readonly InfisicalPolicy[] = [
   { environment: "dev", path: "/", requiredNames: [], allowedNames: [] },
+  { environment: "dev", path: "/agents", requiredNames: [], allowedNames: [] },
+  {
+    environment: "dev",
+    path: "/agents/codex",
+    requiredNames: ["GITHUB_PAT"],
+    allowedNames: ["GITHUB_PAT"],
+  },
+  ...(["staging", "prod"] as const).flatMap((environment) =>
+    (["/agents", "/agents/codex"] as const).map((path) => ({
+      environment,
+      path,
+      requiredNames: [],
+      allowedNames: [],
+    })),
+  ),
   { environment: "dev", path: "/services/api-next", requiredNames: [], allowedNames: [] },
   { environment: "dev", path: "/services/api-next/operator", requiredNames: [], allowedNames: [] },
   { environment: "staging", path: "/", requiredNames: [], allowedNames: [] },
@@ -112,6 +145,7 @@ export const INFISICAL_POLICIES: readonly InfisicalPolicy[] = [
       ...STAGING_MEGAPOT_RUNTIME_SECRET_NAMES,
       ...STAGING_PROVISIONABLE_MEDIA_RUNTIME_SECRET_NAMES,
       ...STAGING_PROVISIONABLE_HTTP_RUNTIME_SECRET_NAMES,
+      ...STAGING_PROVISIONABLE_VIDEO_RUNTIME_SECRET_NAMES,
     ],
   },
   {
@@ -122,6 +156,7 @@ export const INFISICAL_POLICIES: readonly InfisicalPolicy[] = [
       ...OPERATOR_SECRET_NAMES,
       "MEGAPOT_REFERRER_PRIVATE_KEY",
       ...STAGING_MODERATION_E2E_OPERATOR_SECRET_NAMES,
+      ...STAGING_PERSONA_E2E_OPERATOR_SECRET_NAMES,
     ],
   },
   {
@@ -136,6 +171,8 @@ export const INFISICAL_POLICIES: readonly InfisicalPolicy[] = [
     requiredNames: requiredWhenRuntimeEnabled("prod", PRODUCTION_RUNTIME_SECRET_NAMES),
     allowedNames: [
       ...PRODUCTION_RUNTIME_SECRET_NAMES,
+      // Optional while production rewards are disabled; activation is guarded in the tests.
+      "MEGAPOT_V2_RPC_URL",
       ...PRODUCTION_PROVISIONABLE_DATA_RUNTIME_SECRET_NAMES,
       ...PRODUCTION_PROVISIONABLE_MEDIA_RUNTIME_SECRET_NAMES,
       ...PRODUCTION_PROVISIONABLE_HTTP_RUNTIME_SECRET_NAMES,
@@ -145,13 +182,17 @@ export const INFISICAL_POLICIES: readonly InfisicalPolicy[] = [
     environment: "prod",
     path: "/services/api-next/operator",
     requiredNames: [...OPERATOR_SECRET_NAMES],
-    allowedNames: [...OPERATOR_SECRET_NAMES],
+    allowedNames: [
+      ...OPERATOR_SECRET_NAMES,
+      "HNS_OPERATOR_MONITOR_POSTGRES_URL",
+      "HNS_OPERATOR_ALERT_WEBHOOK_URL",
+    ],
   },
 ];
 
 export const EXPECTED_INFISICAL_FOLDERS: Readonly<Record<InfisicalEnvironment, readonly string[]>> =
   {
-    dev: [],
+    dev: ["/agents", "/agents/codex"],
     staging: ["/services", "/services/api-next", "/services/api-next/operator"],
     prod: ["/services", "/services/api-next", "/services/api-next/operator"],
   };

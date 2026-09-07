@@ -1,0 +1,3 @@
+bun run db:generate:baseline
+Exit status: 0
+Normalized schema and reset outputs unchanged after the verified rebase and ordinal repair.

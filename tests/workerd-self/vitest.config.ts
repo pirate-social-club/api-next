@@ -2,6 +2,10 @@ import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
 
 const alias = {
+  "@pirate/application/video/stage-facts": new URL(
+    "../../packages/application/src/video/stage-facts.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/application/post-slug": new URL(
     "../../packages/application/src/post-slug.ts",
     import.meta.url,

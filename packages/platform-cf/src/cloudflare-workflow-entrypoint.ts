@@ -1,6 +1,9 @@
 // biome-ignore lint/suspicious/noTsIgnore: cloudflare:workers exists only in the Workers runtime
 // @ts-ignore cloudflare:workers exists only in the Workers runtime
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
+// biome-ignore lint/suspicious/noTsIgnore: cloudflare:workflows exists only in the Workers runtime
+// @ts-ignore cloudflare:workflows exists only in the Workers runtime
+import { NonRetryableError } from "cloudflare:workflows";
 
 type CloudflareWorkflowRunner<Env, Payload, Result, Step> = (
   env: Env,
@@ -21,4 +24,8 @@ export function makeCloudflareWorkflowEntrypoint<Env, Payload, Result, Step>(
       return runner(env, event, step as unknown as Step);
     }
   };
+}
+
+export function makeWorkflowNonRetryableError(message: string): Error {
+  return new NonRetryableError(message);
 }
