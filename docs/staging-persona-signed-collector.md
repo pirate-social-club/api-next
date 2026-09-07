@@ -404,3 +404,33 @@ still have fixture bindings only and must be bound to independently verified
 target identity, approved release/checksum pins, exact ledger and executor
 evidence with server version, SQLSTATE and failing-stage retention, without
 accepting supplied success claims.
+
+
+Second review-fix checkpoint — 2026-09-07. A further inspection found three
+release defects in the first review-fix checkpoint; all three are corrected
+here and the narrower completion claim is adopted for cleanup too.
+
+Uncertain execution now recovers: when a signed release intent exists, no
+executed record does, and the fence can no longer be observed held, the
+command reconciles read-only against an intent-bound observation port
+(reconcileReleasedFence) and never invokes the executing binding again.
+Recovery evidence is authenticated: every release sidecar is Ed25519-signed
+with the pinned collector key, must hash to its content-addressed filename,
+and must bind this ceremony's epoch, bucket, residual disposition and a
+journal predecessor inside the current lineage; an executed record must
+reference its signed intent. Fabricated unsigned records, bytes renamed under
+a foreign digest, and correctly signed cross-ceremony records each refuse.
+
+Journal timing separates recording time from actual release time: the
+released entry is stamped at recording time, preserving monotonicity even
+when a concurrent writer signed after the actual release, while the signed
+release evidence preserves the actual release time. The shared verifier now
+accepts a release-evidence time at or before the recorded release instead of
+requiring equality; its fixture needed no change. A test exercises an actual
+later-timestamped append and proves sorted, monotonic history after recovery.
+
+Cleanup sidecars now carry explicit attribution: every attempt records its
+intent artifact digest and an attemptedAt timestamp, and the stale
+immediate-append function comment is corrected. Automated reconciliation of
+retained cleanup sidecars into later passes remains unfinished and is not
+claimed. Concrete reset/release bindings also remain unfinished source work.

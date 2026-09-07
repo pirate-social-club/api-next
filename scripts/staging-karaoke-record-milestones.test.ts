@@ -9,7 +9,9 @@ import {
   appendKaraokeMaintenanceEvent,
   type KaraokeJournalTrust,
   readKaraokeMaintenanceJournal,
+  signedBytes,
 } from "./karaoke-maintenance-journal.ts";
+import { openKaraokePrivateWriter } from "./karaoke-private-writer.ts";
 import { recordKaraokeObservationPass } from "./staging-karaoke-observation-pass.ts";
 import {
   makeStagingKaraokeR2Observer,
@@ -297,6 +299,20 @@ test("reset origin requires eligible admission, zero counts and fresh completion
   expect(held.head).toBeDefined();
 });
 
+function releaseEvidenceTime(journal: ReturnType<typeof readKaraokeMaintenanceJournal>): string {
+  const released = journal.entries.find(({ entry }) => entry.event.kind === "released");
+  if (released?.entry.event.kind !== "released") throw new Error("missing released entry");
+  for (const id of released.entry.event.evidenceIds) {
+    const parsed = JSON.parse(journal.readArtifact(id)) as {
+      kind?: string;
+      release?: { releasedAt?: string };
+    };
+    if (parsed.kind === "release-evidence" && parsed.release?.releasedAt !== undefined)
+      return parsed.release.releasedAt;
+  }
+  throw new Error("missing release evidence");
+}
+
 test("release recovers from inspection failure after execution with the preserved release time", async () => {
   const { base, pass, resetOrigin, retirementOrigin, state, journal, now } = fixture();
   await pass("post-fence");
@@ -324,8 +340,9 @@ test("release recovers from inspection failure after execution with the preserve
   expect(recovered.executionAuthorized).toBe(false);
   const after = readKaraokeMaintenanceJournal(journal, now());
   expect(after.state).toBe("released");
-  const released = after.entries.find(({ entry }) => entry.event.kind === "released");
-  expect(released?.entry.observedAt).toBe(actualReleasedAt);
+  // The signed release evidence preserves the actual release time; the
+  // journal entry records the later recording time.
+  expect(releaseEvidenceTime(after)).toBe(actualReleasedAt);
 });
 
 test("release recovers from an append failure after execution with the preserved release time", async () => {
@@ -354,8 +371,250 @@ test("release recovers from an append failure after execution with the preserved
   expect(recovered.executionAuthorized).toBe(false);
   const after = readKaraokeMaintenanceJournal(journal, now());
   expect(after.state).toBe("released");
-  const released = after.entries.find(({ entry }) => entry.event.kind === "released");
-  expect(released?.entry.observedAt).toBe(actualReleasedAt);
+  expect(releaseEvidenceTime(after)).toBe(actualReleasedAt);
+});
+
+test("a journal entry timestamped after the release still recovers with monotonic history", async () => {
+  const { base, pass, resetOrigin, retirementOrigin, state, journal, now, append } = fixture();
+  await pass("post-fence");
+  await pass("pre-reset");
+  state.identityPresent = false;
+  await resetOrigin();
+  state.markers = "retired";
+  await pass("retirement");
+  await retirementOrigin();
+  let actualReleasedAt = "";
+  const port = async () => {
+    const result = { releasedAt: now(), allSixRetired: true };
+    actualReleasedAt = result.releasedAt;
+    state.fenceHeld = false;
+    // A concurrent writer signs AFTER the actual release moment.
+    append("fence-observed", now());
+    return result;
+  };
+  await expect(recordKaraokeFenceRelease({ ...base, verifyFenceRelease: port })).rejects.toThrow(
+    "karaoke_journal_head_changed",
+  );
+  const recovered = await recordKaraokeFenceRelease({
+    ...base,
+    verifyFenceRelease: async () => {
+      throw new Error("must not execute again");
+    },
+  });
+  expect(recovered.executionAuthorized).toBe(false);
+  const after = readKaraokeMaintenanceJournal(journal, now());
+  expect(after.state).toBe("released");
+  expect(releaseEvidenceTime(after)).toBe(actualReleasedAt);
+  const times = after.entries.map(({ entry }) => Date.parse(entry.observedAt));
+  expect([...times].sort((left, right) => left - right)).toEqual(times);
+});
+
+async function releaseCeremony() {
+  const { base, pass, resetOrigin, retirementOrigin, state, journal, now } = fixture();
+  await pass("post-fence");
+  await pass("pre-reset");
+  state.identityPresent = false;
+  await resetOrigin();
+  state.markers = "retired";
+  await pass("retirement");
+  await retirementOrigin();
+  return { base, state, journal, now };
+}
+
+test("a fabricated unsigned release sidecar never becomes authority", async () => {
+  {
+    const { base, state, journal, now } = await releaseCeremony();
+    const head = readKaraokeMaintenanceJournal(journal, now()).head;
+    const writer = openKaraokePrivateWriter(journal.directory);
+    try {
+      writer.putArtifact(
+        JSON.stringify({
+          kind: "release-executed",
+          epoch: base.trust.epoch,
+          bucket: base.trust.bucket,
+          residualDispositionId: base.trust.residualDispositionId,
+          expectedHead: head,
+          intentId: "f".repeat(64),
+          release: { releasedAt: now(), allSixRetired: true },
+          source: "execution",
+          recordedAt: now(),
+        }),
+      );
+    } finally {
+      writer.close();
+    }
+    state.fenceHeld = false;
+    await expect(
+      recordKaraokeFenceRelease({
+        ...base,
+        verifyFenceRelease: async () => {
+          throw new Error("must not execute again");
+        },
+      }),
+    ).rejects.toThrow();
+  }
+});
+
+test("a modified release sidecar whose bytes do not hash to its name never becomes authority", async () => {
+  {
+    const { base, state, journal, now } = await releaseCeremony();
+    const head = readKaraokeMaintenanceJournal(journal, now()).head;
+    const writer = openKaraokePrivateWriter(journal.directory);
+    try {
+      const intentId = writer.putArtifact(
+        signedBytes(
+          {
+            kind: "release-intent",
+            epoch: base.trust.epoch,
+            bucket: base.trust.bucket,
+            residualDispositionId: base.trust.residualDispositionId,
+            expectedHead: head,
+            fence: {
+              verifiedAt: now(),
+              ingress: true,
+              producers: true,
+              databaseWrites: true,
+              reconnectDenied: true,
+              runtimeSessions: 0,
+              residualDispositionId: base.trust.residualDispositionId,
+            },
+            recordedAt: now(),
+          },
+          base.privateKeyPem,
+        ),
+      );
+      const executed = signedBytes(
+        {
+          kind: "release-executed",
+          epoch: base.trust.epoch,
+          bucket: base.trust.bucket,
+          residualDispositionId: base.trust.residualDispositionId,
+          expectedHead: head,
+          intentId,
+          release: { releasedAt: now(), allSixRetired: true },
+          source: "execution",
+          recordedAt: now(),
+        },
+        base.privateKeyPem,
+      );
+      // Same valid bytes, stored under a mismatched digest name.
+      const { writeFileSync, chmodSync } = await import("node:fs");
+      const { join } = await import("node:path");
+      const bogus = join(journal.directory, `${"0".repeat(64)}.json`);
+      writeFileSync(bogus, executed, { mode: 0o600 });
+      chmodSync(bogus, 0o600);
+    } finally {
+      writer.close();
+    }
+    state.fenceHeld = false;
+    await expect(
+      recordKaraokeFenceRelease({
+        ...base,
+        verifyFenceRelease: async () => {
+          throw new Error("must not execute again");
+        },
+      }),
+    ).rejects.toThrow("karaoke_release_origin_recovery_denied");
+  }
+});
+
+test("a cross-ceremony release sidecar bound to a foreign journal head never becomes authority", async () => {
+  {
+    const { base, state, journal, now } = await releaseCeremony();
+    const writer = openKaraokePrivateWriter(journal.directory);
+    try {
+      const intentId = writer.putArtifact(
+        signedBytes(
+          {
+            kind: "release-intent",
+            epoch: base.trust.epoch,
+            bucket: base.trust.bucket,
+            residualDispositionId: base.trust.residualDispositionId,
+            expectedHead: { entryId: "a".repeat(64), sequence: 99 },
+            fence: {
+              verifiedAt: now(),
+              ingress: true,
+              producers: true,
+              databaseWrites: true,
+              reconnectDenied: true,
+              runtimeSessions: 0,
+              residualDispositionId: base.trust.residualDispositionId,
+            },
+            recordedAt: now(),
+          },
+          base.privateKeyPem,
+        ),
+      );
+      writer.putArtifact(
+        signedBytes(
+          {
+            kind: "release-executed",
+            epoch: base.trust.epoch,
+            bucket: base.trust.bucket,
+            residualDispositionId: base.trust.residualDispositionId,
+            expectedHead: { entryId: "a".repeat(64), sequence: 99 },
+            intentId,
+            release: { releasedAt: now(), allSixRetired: true },
+            source: "execution",
+            recordedAt: now(),
+          },
+          base.privateKeyPem,
+        ),
+      );
+    } finally {
+      writer.close();
+    }
+    state.fenceHeld = false;
+    await expect(
+      recordKaraokeFenceRelease({
+        ...base,
+        verifyFenceRelease: async () => {
+          throw new Error("must not execute again");
+        },
+      }),
+    ).rejects.toThrow("karaoke_release_origin_recovery_denied");
+  }
+});
+
+test("uncertain execution reconciles read-only from a signed intent without executing again", async () => {
+  const { base, pass, resetOrigin, retirementOrigin, state, journal, now } = fixture();
+  await pass("post-fence");
+  await pass("pre-reset");
+  state.identityPresent = false;
+  await resetOrigin();
+  state.markers = "retired";
+  await pass("retirement");
+  await retirementOrigin();
+  let actualReleasedAt = "";
+  const lost = recordKaraokeFenceRelease({
+    ...base,
+    verifyFenceRelease: async () => {
+      actualReleasedAt = now();
+      state.fenceHeld = false;
+      throw new Error("lost response");
+    },
+  });
+  await expect(lost).rejects.toThrow("lost response");
+  // Without a read-only reconciliation binding the uncertain state refuses.
+  await expect(
+    recordKaraokeFenceRelease({
+      ...base,
+      verifyFenceRelease: async () => {
+        throw new Error("must not execute again");
+      },
+    }),
+  ).rejects.toThrow("karaoke_release_origin_uncertain_denied");
+  const recovered = await recordKaraokeFenceRelease({
+    ...base,
+    verifyFenceRelease: async () => {
+      throw new Error("must not execute again");
+    },
+    reconcileReleasedFence: async () => ({ releasedAt: actualReleasedAt, allSixRetired: true }),
+  });
+  expect(recovered.executionAuthorized).toBe(false);
+  const after = readKaraokeMaintenanceJournal(journal, now());
+  expect(after.state).toBe("released");
+  expect(releaseEvidenceTime(after)).toBe(actualReleasedAt);
 });
 
 test("retirement and release origins refuse wrong state or unretired markers", async () => {

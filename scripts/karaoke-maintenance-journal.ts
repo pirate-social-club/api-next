@@ -55,7 +55,9 @@ export interface KaraokeJournalTrust {
   readonly expectedHead: { readonly entryId: string; readonly sequence: number } | null;
 }
 
-function signedBytes(payload: unknown, privateKeyPem: string) {
+/** Signed private-record format shared by journal entries and durable
+ * ceremony sidecars; only the pinned key holder can produce either. */
+export function signedBytes(payload: unknown, privateKeyPem: string) {
   const key = createPrivateKey(privateKeyPem);
   if (key.asymmetricKeyType !== "ed25519") throw new Error("karaoke_journal_key_denied");
   const bytes = JSON.stringify(payload);
@@ -64,7 +66,7 @@ function signedBytes(payload: unknown, privateKeyPem: string) {
     signature: sign(null, Buffer.from(bytes), key).toString("hex"),
   });
 }
-function verifiedPayload(bytes: string, publicKeyPem: string) {
+export function verifiedPayload(bytes: string, publicKeyPem: string) {
   const signed = decodeReconciliation(Signed, JSON.parse(bytes));
   const key = createPublicKey(publicKeyPem);
   if (

@@ -180,7 +180,7 @@ export async function recordKaraokeCleanupPass(input: {
       const before = await input.r2.observe(snapshot.authority);
       // Durable intent precedes mutation; re-observing an empty bucket can never
       // reconstruct what was about to be removed.
-      sidecar.putArtifact(
+      const intentId = sidecar.putArtifact(
         JSON.stringify({
           kind: "cleanup-intent",
           scope,
@@ -199,7 +199,15 @@ export async function recordKaraokeCleanupPass(input: {
         }),
       );
       const actions = await input.cleaner.clean(snapshot.authority, before, (attempt) => {
-        sidecar.putArtifact(JSON.stringify({ kind: "cleanup-action", scope, attempt }));
+        sidecar.putArtifact(
+          JSON.stringify({
+            kind: "cleanup-action",
+            scope,
+            intentId,
+            attemptedAt: now(),
+            attempt,
+          }),
+        );
       });
       const after = await input.r2.observe(snapshot.authority);
       const count = (observation: typeof before) =>

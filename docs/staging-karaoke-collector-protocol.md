@@ -239,18 +239,22 @@ originates `all-retired` from fresh readbacks of all six retired markers under a
 maintained fence, after the verifier confirms retirement-phase completion for
 every target. A marker that regressed to active refuses the milestone.
 
-`recordKaraokeFenceRelease` originates `released` in three durable stages.
-Intent observes the last held fence in-command and retains that proof before
-the trusted binding runs, so fence evidence can never postdate the release.
-Execution evidence is retained immediately after the binding performs or
-verifies the release. Recovery readback then completes the journal entry from
-the retained record when an inspection failure, append failure or process
-death interrupted the ceremony: the retry no longer requires a held fence,
-does not invoke the binding again, and preserves the actual release time
-(bounded after the all-retired milestone, since a concurrent writer may have
-signed after the release). Distinct retained releases are ambiguous and
-refuse recovery. The release port has no live binding yet either; recording
-cannot perform a release.
+`recordKaraokeFenceRelease` originates `released` in three durable stages,
+every stage an Ed25519-signed sidecar bound to this ceremony's epoch, bucket,
+residual disposition and journal predecessor. Intent observes the last held
+fence and retains that proof before the trusted binding runs. Execution
+evidence is retained immediately after the binding performs or verifies the
+release. Recovery readback completes the journal entry from authenticated
+retained records: a sidecar must hash to its content-addressed filename,
+carry the pinned key's signature, and reference a predecessor inside this
+journal, so fabricated, modified and cross-ceremony records refuse. Uncertain
+execution — the release may have completed without its result becoming
+durable — reconciles read-only against an intent-bound observation
+(`reconcileReleasedFence`) and never executes again. The journal entry
+records when the release was recorded; the signed release evidence preserves
+the actual release time, which may precede it, and the verifier accepts an
+evidence time at or before the recorded release. The release port has no live
+binding yet; recording cannot perform a release.
 
 ## Retirement and follow-up passes
 

@@ -1,3 +1,4 @@
+import { Schema } from "effect";
 import type { CloudflareAccessJwtFetch } from "../packages/platform-cf/src/cloudflare-access-jwt.ts";
 import {
   FenceEvidence,
@@ -6,6 +7,8 @@ import {
 } from "../packages/platform-cf/src/karaoke-reconciliation-evidence.ts";
 import {
   decodeReconciliation,
+  ReconciliationDigest,
+  ReconciliationTime,
   reconciliationMillis,
 } from "../packages/platform-cf/src/karaoke-reconciliation-schema.ts";
 import { KaraokeResetSnapshotSchema } from "../packages/platform-cf/src/karaoke-reset-inspection.ts";
@@ -20,6 +23,8 @@ import {
   appendKaraokeMaintenanceEvent,
   type KaraokeJournalTrust,
   readKaraokeMaintenanceJournal,
+  signedBytes,
+  verifiedPayload,
 } from "./karaoke-maintenance-journal.ts";
 import { openKaraokePrivateArtifacts } from "./karaoke-private-artifacts.ts";
 import { openKaraokePrivateWriter } from "./karaoke-private-writer.ts";
@@ -30,51 +35,146 @@ import type {
 import { verifyKaraokeJournalState } from "./staging-karaoke-journal-manifest.ts";
 import type { KaraokeSigningReaders } from "./staging-karaoke-signing-collector.ts";
 
-type ExecutedSidecar = {
-  readonly release: typeof ReleaseEvidence.Type;
-  readonly intentFence: typeof FenceEvidence.Type;
-};
+const Head = Schema.Struct({
+  entryId: ReconciliationDigest,
+  sequence: Schema.Number.check(Schema.isInt(), Schema.isBetween({ minimum: 0, maximum: 8191 })),
+});
+const IntentRecord = Schema.Struct({
+  kind: Schema.Literal("release-intent"),
+  epoch: ReconciliationDigest,
+  bucket: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1024)),
+  residualDispositionId: ReconciliationDigest,
+  expectedHead: Head,
+  fence: FenceEvidence,
+  recordedAt: ReconciliationTime,
+});
+const ExecutedRecord = Schema.Struct({
+  kind: Schema.Literal("release-executed"),
+  epoch: ReconciliationDigest,
+  bucket: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1024)),
+  residualDispositionId: ReconciliationDigest,
+  expectedHead: Head,
+  intentId: ReconciliationDigest,
+  release: ReleaseEvidence,
+  source: Schema.Literals(["execution", "reconciliation"]),
+  recordedAt: ReconciliationTime,
+});
 
-/** Recovery discovery of a durably retained release that the journal never
- * recorded. Distinct retained releases are ambiguous and refuse recovery. */
-function findRetainedRelease(
+/** Recovery evidence must be authenticated, not merely well-formed: every
+ * sidecar is signed by the pinned collector key, its bytes must hash to its
+ * content-addressed filename, its expected head must exist in this journal's
+ * lineage, and an executed record must bind the signed intent it followed.
+ * File permissions alone establish nothing. */
+function readSignedSidecar(
+  store: ReturnType<typeof openKaraokePrivateArtifacts>,
+  name: string,
+  trust: KaraokeAdapterTrust,
+  journalEntryIds: ReadonlySet<string>,
+): { kind: string; payload: unknown } | undefined {
+  const bytes = store.read(name, 262_144);
+  if (reconciliationDigest(bytes) !== name.replace(/\.json$/u, ""))
+    throw new Error("karaoke_release_origin_recovery_denied");
+  let outer: unknown;
+  try {
+    outer = JSON.parse(bytes);
+  } catch {
+    throw new Error("karaoke_release_origin_recovery_denied");
+  }
+  const claimsReleaseRecord = (candidate: unknown) => {
+    const kind = (candidate as { kind?: string }).kind;
+    return kind === "release-intent" || kind === "release-executed";
+  };
+  const signed = outer as { payload?: unknown; signature?: unknown };
+  // The kind lives inside the signed payload. An unsigned file claiming to be
+  // a release record is fabricated and refuses; signed records must carry the
+  // pinned key's signature, this ceremony's scope and a predecessor inside
+  // this journal, or they refuse as modified or cross-ceremony.
+  let payload: unknown;
+  if (typeof signed.payload === "string") {
+    try {
+      payload = JSON.parse(signed.payload);
+    } catch {
+      payload = undefined;
+    }
+    if (payload === undefined) throw new Error("karaoke_release_origin_recovery_denied");
+    if (!claimsReleaseRecord(payload)) return undefined;
+    payload = verifiedPayload(bytes, trust.collectorPublicKeyPem);
+  } else {
+    if (!claimsReleaseRecord(outer)) return undefined;
+    throw new Error("karaoke_release_origin_recovery_denied");
+  }
+  const record = payload as {
+    kind?: string;
+    epoch?: string;
+    bucket?: string;
+    residualDispositionId?: string;
+    expectedHead?: typeof Head.Type;
+  };
+  const kind = record.kind;
+  if (kind !== "release-intent" && kind !== "release-executed") return undefined;
+  if (
+    record.epoch !== trust.epoch ||
+    record.bucket !== trust.bucket ||
+    record.residualDispositionId !== trust.residualDispositionId ||
+    record.expectedHead?.entryId === undefined ||
+    !journalEntryIds.has(record.expectedHead.entryId)
+  )
+    throw new Error("karaoke_release_origin_recovery_denied");
+  return { kind, payload };
+}
+
+function scanSignedSidecars(
   directory: string,
   trust: KaraokeAdapterTrust,
-): ExecutedSidecar | undefined {
+  journalEntryIds: ReadonlySet<string>,
+): Map<string, { kind: string; payload: unknown }> {
   const store = openKaraokePrivateArtifacts(directory);
   try {
-    const found: ExecutedSidecar[] = [];
+    const found = new Map<string, { kind: string; payload: unknown }>();
     for (const name of store.names()) {
-      const parsed = JSON.parse(store.read(name, 262_144)) as {
-        kind?: string;
-        epoch?: string;
-        bucket?: string;
-        release?: unknown;
-        intentFence?: unknown;
-      };
-      if (parsed.kind !== "release-executed") continue;
-      if (parsed.epoch !== trust.epoch || parsed.bucket !== trust.bucket) continue;
-      found.push({
-        release: decodeReconciliation(ReleaseEvidence, parsed.release ?? null),
-        intentFence: decodeReconciliation(FenceEvidence, parsed.intentFence ?? null),
-      });
+      const sidecar = readSignedSidecar(store, name, trust, journalEntryIds);
+      if (sidecar !== undefined) found.set(name.replace(/\.json$/u, ""), sidecar);
     }
-    if (new Set(found.map((sidecar) => JSON.stringify(sidecar))).size > 1)
-      throw new Error("karaoke_release_origin_recovery_ambiguous");
-    return found[0];
+    return found;
   } finally {
     store.close();
   }
 }
 
+function findRetainedRelease(
+  directory: string,
+  trust: KaraokeAdapterTrust,
+  journalEntryIds: ReadonlySet<string>,
+): { release: typeof ReleaseEvidence.Type; intentFence: typeof FenceEvidence.Type } | undefined {
+  const sidecars = scanSignedSidecars(directory, trust, journalEntryIds);
+  const intents = new Map(
+    [...sidecars]
+      .filter(([, sidecar]) => sidecar?.kind === "release-intent")
+      .map(([id, sidecar]) => [id, decodeReconciliation(IntentRecord, sidecar.payload)] as const),
+  );
+  const results = [...sidecars]
+    .filter(([, sidecar]) => sidecar?.kind === "release-executed")
+    .map(([, sidecar]) => {
+      const record = decodeReconciliation(ExecutedRecord, sidecar.payload);
+      const intent = intents.get(record.intentId);
+      if (intent === undefined) throw new Error("karaoke_release_origin_recovery_denied");
+      return { release: record.release, intentFence: intent.fence, id: record.intentId };
+    });
+  if (new Set(results.map((result) => JSON.stringify(result))).size > 1)
+    throw new Error("karaoke_release_origin_recovery_ambiguous");
+  return results[0];
+}
+
 /** Originates the journal's released entry in three durable stages: intent
- * (last held-fence proof) is retained before the trusted release binding
- * runs; execution evidence is retained immediately after it; recovery
- * readback completes the entry from the retained record when a crash,
- * inspection failure or append failure interrupted the ceremony. The journal
- * entry's time equals the actual release time, preserved across recovery.
- * Recording a release does not perform it, and post-release passes cite
- * historical fence evidence rather than claiming writes stay disabled. */
+ * (last held-fence proof) is signed and retained before the trusted release
+ * binding runs; execution evidence is signed and retained immediately after
+ * it; recovery readback completes the entry from authenticated retained
+ * records when a crash, lost response, inspection failure or append failure
+ * interrupted the ceremony. Uncertain execution — the release may have
+ * completed without its result becoming durable — is reconciled read-only
+ * against an intent-bound observation and never by executing again. The
+ * journal entry records when the release was recorded; the signed release
+ * evidence preserves the actual release time, which may precede it. */
 export async function recordKaraokeFenceRelease(input: {
   readonly trust: KaraokeAdapterTrust;
   readonly journal: KaraokeJournalTrust;
@@ -83,6 +183,7 @@ export async function recordKaraokeFenceRelease(input: {
   readonly challenge: KaraokeCollectorChallenge;
   readonly readers: KaraokeSigningReaders;
   readonly verifyFenceRelease: () => Promise<unknown>;
+  readonly reconcileReleasedFence?: () => Promise<unknown>;
   readonly now?: () => string;
   readonly authenticationFetch?: CloudflareAccessJwtFetch;
 }) {
@@ -113,62 +214,36 @@ export async function recordKaraokeFenceRelease(input: {
     throw new Error("karaoke_release_origin_admission_denied");
   const lastEntry = journal.entries.at(-1)?.entry.observedAt;
   if (lastEntry === undefined) throw new Error("karaoke_release_origin_release_unproven");
-  const retained = findRetainedRelease(input.journal.directory, trust);
+  const journalEntryIds = new Set(journal.entries.map(({ id }) => id));
+  const retained = findRetainedRelease(input.journal.directory, trust, journalEntryIds);
   let heldFence: typeof FenceEvidence.Type;
   let release: typeof ReleaseEvidence.Type;
   const sidecar = openKaraokePrivateWriter(input.journal.directory);
   try {
-    if (retained === undefined) {
-      // Intent: the last held-fence proof is durable before release execution.
-      heldFence = decodeReconciliation(
-        FenceEvidence,
-        (await input.readers.observeMaintainedFence()).fence,
-      );
-      if (
-        !heldFence.ingress ||
-        !heldFence.producers ||
-        !heldFence.databaseWrites ||
-        !heldFence.reconnectDenied ||
-        heldFence.runtimeSessions !== 0 ||
-        heldFence.residualDispositionId !== trust.residualDispositionId ||
-        reconciliationMillis(heldFence.verifiedAt) < started ||
-        reconciliationMillis(heldFence.verifiedAt) > reconciliationMillis(now())
-      )
-        throw new Error("karaoke_release_origin_fence_unproven");
+    const writeIntent = (fence: typeof FenceEvidence.Type) =>
       sidecar.putArtifact(
-        JSON.stringify({
-          kind: "release-intent",
-          epoch: trust.epoch,
-          bucket: trust.bucket,
-          fence: heldFence,
-          recordedAt: now(),
-        }),
+        signedBytes(
+          {
+            kind: "release-intent",
+            epoch: trust.epoch,
+            bucket: trust.bucket,
+            residualDispositionId: trust.residualDispositionId,
+            expectedHead: {
+              entryId: journal.head.entryId,
+              sequence: journal.head.sequence,
+            },
+            fence,
+            recordedAt: now(),
+          },
+          input.privateKeyPem,
+        ),
       );
-      // Execution: the trusted binding performs or verifies the release and
-      // its evidence is retained before any further step can fail.
-      release = decodeReconciliation(ReleaseEvidence, await input.verifyFenceRelease());
-      if (
-        !release.allSixRetired ||
-        reconciliationMillis(release.releasedAt) < reconciliationMillis(lastEntry) ||
-        reconciliationMillis(release.releasedAt) < reconciliationMillis(heldFence.verifiedAt) ||
-        reconciliationMillis(release.releasedAt) > reconciliationMillis(now())
-      )
-        throw new Error("karaoke_release_origin_release_unproven");
-      sidecar.putArtifact(
-        JSON.stringify({
-          kind: "release-executed",
-          epoch: trust.epoch,
-          bucket: trust.bucket,
-          release,
-          intentFence: heldFence,
-        }),
-      );
-    } else {
-      // Recovery: the release already executed durably; the fence can no
-      // longer be observed held and the binding is not invoked again. The
-      // release must postdate the all-retired milestone, not every later
-      // entry: a concurrent writer may have signed something after the
-      // release while this recording was interrupted.
+    if (retained !== undefined) {
+      // Authenticated recovery: the executed record and its signed intent
+      // exist; the fence can no longer be observed held and the binding is
+      // not invoked again. The release must postdate the all-retired
+      // milestone — not every later entry, which a concurrent writer may
+      // have signed after the actual release.
       const milestone = journal.entries
         .filter(({ entry }) => entry.event.kind === "all-retired")
         .at(-1)?.entry.observedAt;
@@ -188,6 +263,110 @@ export async function recordKaraokeFenceRelease(input: {
         reconciliationMillis(release.releasedAt) > reconciliationMillis(now())
       )
         throw new Error("karaoke_release_origin_recovery_unproven");
+    } else {
+      const observed = decodeReconciliation(
+        FenceEvidence,
+        (await input.readers.observeMaintainedFence()).fence,
+      );
+      if (
+        observed.ingress &&
+        observed.producers &&
+        observed.databaseWrites &&
+        observed.reconnectDenied &&
+        observed.runtimeSessions === 0 &&
+        observed.residualDispositionId === trust.residualDispositionId
+      ) {
+        if (
+          reconciliationMillis(observed.verifiedAt) < started ||
+          reconciliationMillis(observed.verifiedAt) > reconciliationMillis(now())
+        )
+          throw new Error("karaoke_release_origin_fence_unproven");
+        heldFence = observed;
+        const intentId = writeIntent(heldFence);
+        release = decodeReconciliation(ReleaseEvidence, await input.verifyFenceRelease());
+        if (
+          !release.allSixRetired ||
+          reconciliationMillis(release.releasedAt) < reconciliationMillis(lastEntry) ||
+          reconciliationMillis(release.releasedAt) < reconciliationMillis(heldFence.verifiedAt) ||
+          reconciliationMillis(release.releasedAt) > reconciliationMillis(now())
+        )
+          throw new Error("karaoke_release_origin_release_unproven");
+        sidecar.putArtifact(
+          signedBytes(
+            {
+              kind: "release-executed",
+              epoch: trust.epoch,
+              bucket: trust.bucket,
+              residualDispositionId: trust.residualDispositionId,
+              expectedHead: {
+                entryId: journal.head.entryId,
+                sequence: journal.head.sequence,
+              },
+              intentId,
+              release,
+              source: "execution",
+              recordedAt: now(),
+            },
+            input.privateKeyPem,
+          ),
+        );
+      } else {
+        // Uncertain execution: a signed intent may exist whose release
+        // completed without its result becoming durable. Reconcile read-only
+        // against the trusted release-state observation; never execute again.
+        const intents = [...scanSignedSidecars(input.journal.directory, trust, journalEntryIds)]
+          .filter(([, sidecar]) => sidecar?.kind === "release-intent")
+          .map(([id, sidecar]) => ({
+            id,
+            record: decodeReconciliation(IntentRecord, sidecar.payload),
+          }))
+          .sort(
+            (left, right) =>
+              reconciliationMillis(left.record.recordedAt) -
+              reconciliationMillis(right.record.recordedAt),
+          );
+        const intent = intents.at(-1)?.record;
+        const intentId = intents.at(-1)?.id;
+        if (
+          input.reconcileReleasedFence === undefined ||
+          intent === undefined ||
+          !intent.fence.ingress ||
+          !intent.fence.producers ||
+          !intent.fence.databaseWrites ||
+          !intent.fence.reconnectDenied ||
+          intent.fence.runtimeSessions !== 0 ||
+          intent.fence.residualDispositionId !== trust.residualDispositionId
+        )
+          throw new Error("karaoke_release_origin_uncertain_denied");
+        release = decodeReconciliation(ReleaseEvidence, await input.reconcileReleasedFence());
+        heldFence = intent.fence;
+        if (
+          !release.allSixRetired ||
+          reconciliationMillis(release.releasedAt) < reconciliationMillis(lastEntry) ||
+          reconciliationMillis(release.releasedAt) < reconciliationMillis(heldFence.verifiedAt) ||
+          reconciliationMillis(release.releasedAt) > reconciliationMillis(now())
+        )
+          throw new Error("karaoke_release_origin_recovery_unproven");
+        sidecar.putArtifact(
+          signedBytes(
+            {
+              kind: "release-executed",
+              epoch: trust.epoch,
+              bucket: trust.bucket,
+              residualDispositionId: trust.residualDispositionId,
+              expectedHead: {
+                entryId: journal.head.entryId,
+                sequence: journal.head.sequence,
+              },
+              ...(intentId === undefined ? {} : { intentId }),
+              release,
+              source: "reconciliation",
+              recordedAt: now(),
+            },
+            input.privateKeyPem,
+          ),
+        );
+      }
     }
     const artifacts = [
       JSON.stringify({ kind: "release-challenge", challenge }),
@@ -224,8 +403,9 @@ export async function recordKaraokeFenceRelease(input: {
     const appended = appendKaraokeMaintenanceEvent({
       trust: input.journal,
       privateKeyPem: input.privateKeyPem,
-      // One release time: the journal entry and ReleaseEvidence must agree.
-      observedAt: release.releasedAt,
+      // Recording time keeps journal monotonicity; the actual release time is
+      // preserved inside the signed release evidence and may precede it.
+      observedAt: now(),
       expectedCurrentHead: journal.head,
       event: { kind: "released", evidenceIds: artifacts.map(reconciliationDigest) },
       artifacts,
