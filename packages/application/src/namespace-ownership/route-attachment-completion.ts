@@ -1,9 +1,13 @@
 import type { HnsPollResultCompletionResponseV1 } from "@pirate/contracts";
 import { canonicalJson } from "@pirate/domain";
 import { Data, Effect, Option, Schema } from "effect";
-import type {
-  NamespaceOwnershipProviderCompleteResult,
-  RouteAttachmentOwnershipSession,
+import {
+  type NamespaceOwnershipProviderCompleteResult,
+  NamespaceOwnershipProviderInvalidResponse,
+  NamespaceOwnershipProviderMisconfigured,
+  NamespaceOwnershipProviderRejected,
+  NamespaceOwnershipProviderUnboundRejected,
+  type RouteAttachmentOwnershipSession,
 } from "./adapter.ts";
 import type { NamespaceOwnershipProviderRegistryService } from "./registry.ts";
 
@@ -127,7 +131,8 @@ export class RouteAttachmentCompletionRejected extends Data.TaggedError(
     | "conflict"
     | "in_flight"
     | "attempt_budget_exhausted"
-    | "provider_unavailable";
+    | "provider_unavailable"
+    | "provider_misconfigured";
   readonly retry_after_seconds?: number;
 }> {}
 
@@ -261,7 +266,7 @@ export const completeRouteAttachmentOwnership = Effect.fn("completeRouteAttachme
       .pipe(
         Effect.matchEffect({
           onSuccess: (value) => Effect.succeed(value),
-          onFailure: () =>
+          onFailure: (error) =>
             services.store
               .release({
                 request: input,
@@ -271,7 +276,15 @@ export const completeRouteAttachmentOwnership = Effect.fn("completeRouteAttachme
               .pipe(
                 Effect.flatMap(() =>
                   Effect.fail(
-                    new RouteAttachmentCompletionRejected({ reason: "provider_unavailable" }),
+                    new RouteAttachmentCompletionRejected({
+                      reason:
+                        error instanceof NamespaceOwnershipProviderRejected ||
+                        error instanceof NamespaceOwnershipProviderUnboundRejected ||
+                        error instanceof NamespaceOwnershipProviderInvalidResponse ||
+                        error instanceof NamespaceOwnershipProviderMisconfigured
+                          ? "provider_misconfigured"
+                          : "provider_unavailable",
+                    }),
                   ),
                 ),
               ),

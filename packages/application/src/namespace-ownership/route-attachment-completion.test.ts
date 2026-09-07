@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { Effect } from "effect";
-import type {
-  NamespaceOwnershipProviderAdapter,
-  NamespaceOwnershipProviderCompleteResult,
+import {
+  type NamespaceOwnershipProviderAdapter,
+  type NamespaceOwnershipProviderCompleteResult,
+  NamespaceOwnershipProviderRejected,
+  NamespaceOwnershipProviderUnavailable,
 } from "./adapter.ts";
 import { makeNamespaceOwnershipProviderRegistry } from "./registry.ts";
 import {
@@ -185,4 +187,49 @@ describe("route attachment ownership completion", () => {
     );
     expect(result).toMatchObject({ status: "verified", replayed: true });
   });
+});
+
+test("poll release preserves deterministic rejection versus transient failure", async () => {
+  for (const [failure, reason] of [
+    [
+      new NamespaceOwnershipProviderRejected({
+        provider_id: "hns.owner.v1",
+        operation: "complete",
+      }),
+      "provider_misconfigured",
+    ],
+    [
+      new NamespaceOwnershipProviderUnavailable({
+        provider_id: "hns.owner.v1",
+        operation: "complete",
+      }),
+      "provider_unavailable",
+    ],
+  ] as const) {
+    let releases = 0;
+    const dependencies = await services(
+      { status: "pending" },
+      store({
+        release: () => {
+          releases++;
+          return Effect.succeed("released");
+        },
+      }),
+    );
+    const registry = await Effect.runPromise(
+      makeNamespaceOwnershipProviderRegistry(
+        [
+          {
+            ...provider({ status: "pending" }),
+            completeRouteAttachment: () => Effect.fail(failure),
+          },
+        ],
+        { now: () => now },
+      ),
+    );
+    await expect(
+      Effect.runPromise(completeRouteAttachmentOwnership(input, { ...dependencies, registry })),
+    ).rejects.toMatchObject({ reason });
+    expect(releases).toBe(1);
+  }
 });

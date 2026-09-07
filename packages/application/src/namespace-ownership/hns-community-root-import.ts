@@ -16,6 +16,7 @@ import {
   decodeHnsRootImportNameProofResultV1,
   HnsRootImportNameSignature,
 } from "./hns-root-import-name-proof.ts";
+import { RouteAttachmentCompletionRejected } from "./route-attachment-completion.ts";
 import type {
   RouteAttachmentOwnershipStartResponse,
   StartRouteAttachmentOwnershipInput,
@@ -325,7 +326,9 @@ function ownershipFailure(error: unknown) {
       error instanceof NamespaceOwnershipProviderRejected ||
       error instanceof NamespaceOwnershipProviderUnboundRejected ||
       error instanceof NamespaceOwnershipProviderInvalidResponse ||
-      error instanceof NamespaceOwnershipProviderMisconfigured
+      error instanceof NamespaceOwnershipProviderMisconfigured ||
+      (error instanceof RouteAttachmentCompletionRejected &&
+        error.reason === "provider_misconfigured")
         ? "ownership_misconfigured"
         : "ownership_unavailable",
   });

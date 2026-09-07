@@ -16,6 +16,7 @@ import {
   encodeHnsRootImportNameProofResultV1,
   HNS_ROOT_IMPORT_NAME_PROOF_RESULT_VERSION,
 } from "./hns-root-import-name-proof.ts";
+import { RouteAttachmentCompletionRejected } from "./route-attachment-completion.ts";
 
 const encoder = new TextEncoder();
 const signature = btoa("s".repeat(64));
@@ -538,6 +539,10 @@ describe("community import provider failure classification", () => {
   for (const [error, reason] of [
     [
       new NamespaceOwnershipProviderRejected({ provider_id: "hns.owner.v1", operation: "start" }),
+      "ownership_misconfigured",
+    ],
+    [
+      new RouteAttachmentCompletionRejected({ reason: "provider_misconfigured" }),
       "ownership_misconfigured",
     ],
     [
