@@ -71,7 +71,12 @@ export async function restoreReviewedResetGrants(
   policy?: ResetGrantPolicy,
 ) {
   const replay = await readResetGrantCatalog(admin);
-  const plan = reconcileResetGrants({ before, replay: replay.grants, reviewed, policy });
+  const plan = reconcileResetGrants({
+    before,
+    replay: replay.grants,
+    reviewed,
+    ...(policy === undefined ? {} : { policy }),
+  });
   if (plan.unfulfilledReviewed.length) throw new Error("reset_reviewed_grants_unfulfilled");
   for (const grant of [...plan.reapply, ...plan.newGrants]) {
     const result = await admin.query(

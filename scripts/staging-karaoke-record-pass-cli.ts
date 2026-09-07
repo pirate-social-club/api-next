@@ -27,6 +27,20 @@ import { prepareKaraokeRecording } from "./staging-karaoke-recording-context.ts"
 
 const Envelope = Schema.Struct({ scope: ReconciliationScope, data: Schema.Unknown });
 
+function admitsPassState(phase: KaraokePassPhase, state: string) {
+  switch (phase) {
+    case "post-fence":
+    case "pre-reset":
+      return state === "held";
+    case "retirement":
+      return state === "reset" || state === "retired";
+    case "follow-up":
+      return state === "released";
+    default:
+      return false;
+  }
+}
+
 /** The operational release time is the authenticated release evidence inside
  * the released entry, never that entry's recording timestamp. */
 function journalReleaseEvidenceTime(
@@ -62,7 +76,7 @@ export async function runKaraokePassRecordingCli(
   if (live.config.expectedJournalHead === null || live.config.baselineIds.length !== 6)
     throw new Error("collector_journal_not_initialized");
   const prior = readKaraokeMaintenanceJournal(live.journalTrust, new Date().toISOString());
-  if (prior.state !== "held") throw new Error("karaoke_pass_fence_not_held");
+  if (!admitsPassState(phase, prior.state)) throw new Error("karaoke_pass_state_denied");
   await collectKaraokeEvidence(config, challenge, assertionPath, "record-karaoke-pass", phase);
   return verifyRecordedKaraokePass({
     config,
@@ -93,7 +107,7 @@ export async function verifyRecordedKaraokePass(input: {
   );
   const added = journal.entries.slice(priorHead.sequence + 1);
   if (
-    journal.state !== "held" ||
+    !admitsPassState(phase, journal.state) ||
     added.length !== KARAOKE_RESET_OBJECT_IDS.length ||
     added.some(
       ({ entry }) =>

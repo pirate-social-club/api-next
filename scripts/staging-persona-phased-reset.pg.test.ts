@@ -7,7 +7,10 @@ import { runPostgresMigrations } from "./postgres-migrations";
 import { compileApprovedStagingPrivileges } from "./staging-persona-approved-privileges";
 import { readResetGrantCatalog } from "./staging-persona-grant-catalog";
 import { localResetRecoveryTool } from "./staging-persona-local-recovery-tool";
-import { reconstructStagingInPhases } from "./staging-persona-phased-reset";
+import {
+  readCompletedStagingReset,
+  reconstructStagingInPhases,
+} from "./staging-persona-phased-reset";
 import { localRecoveryTestUrl } from "./staging-persona-recovery-test-target";
 import {
   loadStagingResetArtifacts,
@@ -182,8 +185,23 @@ suite("phased reset in disposable PostgreSQL 17", () => {
       const admission = await expected(admin, directory, baseline, runtime);
       let removals = 0;
       let replays = 0;
+      let verifiedFenceObservations = 0;
       const result = await reconstructStagingInPhases(admin, artifacts, {
         ...admission,
+        assertFreshFence: async ({ transactionId, privilegeMode }) => {
+          // This is the executor handoff test, not live session admission.
+          // The dedicated drain suite proves the strict observer separately.
+          expect(
+            (await admin.query("SELECT pg_current_xact_id_if_assigned()::text AS xid")).rows[0].xid,
+          ).toBe(transactionId);
+          if (privilegeMode === "verified-reset") {
+            verifiedFenceObservations++;
+            expect(
+              (await admin.query("SELECT count(*)::int AS n FROM api_next.schema_migrations"))
+                .rows[0].n,
+            ).toBe(119);
+          }
+        },
         afterBatch: async (phase) => {
           if (phase === "removing") removals++;
           else replays++;
@@ -192,6 +210,34 @@ suite("phased reset in disposable PostgreSQL 17", () => {
       expect(removals).toBeGreaterThan(0);
       expect(replays).toBe(119);
       expect(result.evidence.ledgerCount).toBe(119);
+      const completion = await result.verifyResetCompletion();
+      expect(completion.version).toBe("staging-karaoke-reset-completion-v1");
+      expect(completion.serverVersion).toBe(
+        (await admin.query("SHOW server_version")).rows[0].server_version,
+      );
+      expect<string | undefined>(completion.terminalMigration).toBe(
+        plan.migrations.at(-1)?.version,
+      );
+      expect(completion.personaCounts).toEqual({
+        unbound: 0,
+        singleCommunity: 0,
+        multiCommunity: 0,
+      });
+      expect(result.executionEvidence.ledger).toEqual(
+        plan.migrations.map(({ version, checksum }) => ({ version, checksum })),
+      );
+      expect<string>(result.executionEvidence.sourceSha).toBe(plan.sourceSha);
+      expect(result.executionEvidence.schemaOid).toBe(admission.schemaOid);
+      expect(verifiedFenceObservations).toBeGreaterThan(0);
+      await expect(readCompletedStagingReset({ ...result })).rejects.toThrow(
+        "reset_executor_completion_not_owned",
+      );
+      const readback = readCompletedStagingReset(result);
+      await expect(result.verifyResetCompletion()).rejects.toThrow("reset_completion_read_pending");
+      await expect(result.completeAfterPairedRelease(async () => {})).rejects.toThrow(
+        "reset_completion_read_pending",
+      );
+      expect((await readback).proof.ledger).toEqual(result.executionEvidence.ledger);
       console.log(
         JSON.stringify({
           localOnly: true,
@@ -207,6 +253,9 @@ suite("phased reset in disposable PostgreSQL 17", () => {
         served = true;
       });
       expect(served).toBe(true);
+      await expect(readCompletedStagingReset(result)).rejects.toThrow(
+        "reset_completion_release_already_attempted",
+      );
       await expect(
         readFile(join(directory, "pirate-staging-api-next.reset-in-progress.json")),
       ).rejects.toMatchObject({ code: "ENOENT" });

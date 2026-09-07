@@ -1,4 +1,6 @@
 import { expect, test } from "bun:test";
+import { ControlPlaneStatementFailed } from "@pirate/application";
+import { Effect } from "effect";
 import { describeRehearsalFailure } from "./staging-persona-rehearsal-failure";
 
 test("failure evidence excludes driver text, details and causes", () => {
@@ -17,4 +19,26 @@ test("failure evidence excludes driver text, details and causes", () => {
     sqlstate: null,
     message_sha256: null,
   });
+});
+
+test("retains SQLSTATE from the actual Effect migration failure without its private label", async () => {
+  let captured: unknown;
+  try {
+    await Effect.runPromise(
+      Effect.fail(
+        new ControlPlaneStatementFailed({
+          label: "private-migration-label",
+          sqlState: "55P03",
+          constraint: null,
+          outcomeCertainty: "unknown",
+        }),
+      ),
+    );
+  } catch (error) {
+    captured = error;
+  }
+  const result = describeRehearsalFailure(captured);
+  expect(result.sqlstate).toBe("55P03");
+  expect(JSON.stringify(result)).not.toContain("private");
+  expect(describeRehearsalFailure({ sqlState: "invalid-private" }).sqlstate).toBeNull();
 });

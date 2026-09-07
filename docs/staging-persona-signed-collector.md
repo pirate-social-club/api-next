@@ -529,3 +529,52 @@ invocation used one worker without file parallelism. An HTTP Worker invocation
 was mistakenly started before the preceding suite exited, interrupted with
 exit 130, then rerun serially to its passing 73-test result. No PostgreSQL or
 remote CI gate was run for this checkpoint. No live provider mutation occurred.
+
+Executor handoff correction — 2026-09-07. Parent pass admission and attestation
+now use the phase's actual journal state: held for post-fence/pre-reset,
+reset or retired for retirement, and released for follow-up. The previous
+unconditional held-state check made the last two CLI phases unusable. A
+full-ceremony fixture exercises the parent verification for all four phases;
+its advanced test clock is not a live 24-hour observation.
+
+The phased executor now emits completion facts from its admitted SQL
+connection after the existing full verification: actual server version,
+schema identity, exact 119-entry checksum ledger, reviewed artifact digests,
+and zero persona-evidence counts. Its process-owned completion reader rejects
+copied result objects, overlapping reads and reads after release verification
+starts. A failed read retains the failed reset marker. This is an internal
+handoff, not a durable signed completion command or a live admission path.
+
+Fresh-fence callbacks receive the executor's actual transaction identity and
+whether final reset verification has succeeded. The transaction-safe drain
+reader never starts or rolls back that transaction, and still excludes only
+its own connection. The standalone observer retains its existing behavior.
+No post-reset ACL exception, extra-session exemption or release operation is
+introduced. The maintained database collector and authenticated reset/release
+commands still need concrete composition; this checkpoint does not claim it.
+
+A local instrumented PG17 replay refused an active autovacuum worker under
+the unchanged all-other-sessions guard. It passed after autovacuum was disabled
+only in the task-owned disposable local server. This is diagnostic evidence,
+not authority to suppress provider sessions or change a staging setting. The
+ordinary executor regression checks the transaction handoff; the separate
+drain suite checks admission. Provider session classification remains a
+rehearsal prerequisite. SQLSTATE retention now also handles the actual Effect
+migration error's sqlState field without emitting its label or driver text.
+
+The executor now has a persistent type-check project included by the existing
+collector gate. It uses the repository's normal application type environment;
+the collector's smaller environment cannot type-check the migration runner's
+full application imports correctly. Strict optional-property checking also
+identified and corrected an explicit undefined policy argument in grant
+restoration without changing its grant semantics.
+
+Local verification passed 11 PostgreSQL reset/recovery and drain tests with
+2,039 assertions, 3,501 unit tests with 20,461 assertions, 20 Node tests and
+179 Worker tests. All heavy checks were serial at nice 10, with one Vitest
+worker and no file parallelism. The local server was PostgreSQL 17.11 with
+25 connections, 64 locks per transaction and prepared transactions disabled;
+the drain suite therefore exercised its prepared-transactions-disabled case,
+not a newly enabled two-phase transaction case. The temporary containers and
+their scratch volumes were removed after fixture databases were dropped.
+No PostgreSQL 18.6, remote CI or live end-to-end acceptance is claimed.

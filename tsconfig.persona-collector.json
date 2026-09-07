@@ -4,6 +4,7 @@
     "scripts/staging-karaoke-collector-main.ts",
     "scripts/staging-karaoke-record-fence-cli.ts",
     "scripts/staging-karaoke-record-pass-cli.ts",
+    "scripts/staging-karaoke-pass-parent-phases.test.ts",
     "scripts/staging-karaoke-record-cleanup-cli.ts",
     "scripts/staging-karaoke-record-retirement-cli.ts",
     "scripts/staging-karaoke-observation-pass.test.ts",

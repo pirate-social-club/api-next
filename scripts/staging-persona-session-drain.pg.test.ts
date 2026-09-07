@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { Client } from "pg";
-import { observeSessionDrain } from "./staging-persona-session-drain";
+import {
+  observeSessionDrain,
+  observeSessionDrainInTransaction,
+} from "./staging-persona-session-drain";
 
 const url = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (!url && process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1") {
@@ -31,6 +34,44 @@ async function fixture(use: (admin: Client, scoped: string, role: string) => Pro
 }
 
 suite("staging reset session-drain observation", () => {
+  test("executor observation preserves its transaction and refuses every other session", async () => {
+    await fixture(async (admin, scoped, role) => {
+      await admin.query("BEGIN");
+      await admin.query("CREATE TABLE executor_retained (id int)");
+      const xid = (await admin.query("SELECT pg_current_xact_id()::text AS xid")).rows[0].xid;
+      try {
+        expect((await observeSessionDrainInTransaction(admin, role, xid)).other_sessions).toBe(0);
+        await expect(observeSessionDrainInTransaction(admin, role, "0")).rejects.toThrow(
+          "session_drain_unproven",
+        );
+        const peer = new Client({ connectionString: scoped });
+        await peer.connect();
+        try {
+          await expect(observeSessionDrainInTransaction(admin, role, xid)).rejects.toThrow(
+            "session_drain_unproven",
+          );
+        } finally {
+          await peer.end();
+        }
+        expect((await admin.query("SELECT pg_current_xact_id()::text AS xid")).rows[0].xid).toBe(
+          xid,
+        );
+        expect(
+          (await admin.query("SELECT to_regclass('executor_retained') IS NOT NULL AS retained"))
+            .rows[0].retained,
+        ).toBe(true);
+      } finally {
+        await admin.query("ROLLBACK");
+      }
+      expect(
+        (await admin.query("SELECT to_regclass('executor_retained') AS retained")).rows[0].retained,
+      ).toBeNull();
+      await expect(observeSessionDrainInTransaction(admin, role, xid)).rejects.toThrow(
+        "session_drain_unproven",
+      );
+    });
+  });
+
   test("a ledger lock can succeed while a different table remains write-locked", async () => {
     await fixture(async (admin, scoped) => {
       await admin.query("CREATE TABLE schema_migrations (version text PRIMARY KEY)");

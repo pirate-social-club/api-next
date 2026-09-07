@@ -4,6 +4,7 @@ import {
   verifyApprovedStagingRuntime,
   verifyStagingRuntimeIdentity,
 } from "./staging-persona-approved-privileges";
+import { readPhasedResetCompletionEvidence } from "./staging-persona-completion-evidence.ts";
 import {
   readResetGrantCatalog,
   restoreReviewedResetGrants,
@@ -26,13 +27,27 @@ import {
 import { assertInplaceSchemaAuthority } from "./staging-persona-schema-authority";
 import { readResetSchemaShape } from "./staging-persona-schema-shape";
 
+type CompletionReadback = Awaited<ReturnType<typeof readPhasedResetCompletionEvidence>>;
+const completedExecutions = new WeakMap<object, () => Promise<CompletionReadback>>();
+
+/** Only an actual successful invocation in this process can supply this port.
+ * Submitted JSON, a matching object shape, and a successful exit code cannot. */
+export async function readCompletedStagingReset(execution: object) {
+  const read = completedExecutions.get(execution);
+  if (!read) throw new Error("reset_executor_completion_not_owned");
+  return read();
+}
+
 /** Trusted in-process admission, NOT JSON flags. Provider/fence/recovery
  * collectors are still separate required work. No standalone live CLI exists.
  */
 type PhasedAdmission = Readonly<{
   assertFenceAndRecovery(): Promise<void>;
   assertBaselineReference(sourceSha: string, digest: string): Promise<void>;
-  assertFreshFence(): Promise<void>;
+  assertFreshFence(context: {
+    readonly transactionId: string | null;
+    readonly privilegeMode: "revoked" | "verified-reset";
+  }): Promise<void>;
   markerDirectory: string;
   recoveryDigest: string;
   targetAndFenceDigest: string;
@@ -127,13 +142,20 @@ export async function reconstructStagingInPhases(
   let maxOwnLocks = 0;
   let maxClusterLocks = 0;
   let maxClosureObjects = 0;
+  let resetVerified = false;
+  const assertFreshFence = (transactionId: string | null) =>
+    admission.assertFreshFence({
+      transactionId,
+      privilegeMode: resetVerified ? "verified-reset" : "revoked",
+    });
   const transaction = async <T>(body: (transactionId: string) => Promise<T>): Promise<T> => {
     if (Date.now() >= admission.validUntilMs)
       throw new Error("reset_admission_expired_restore_required");
-    await admission.assertFreshFence();
+    await assertFreshFence(null);
     await admin.query("BEGIN ISOLATION LEVEL READ COMMITTED");
     try {
       await admin.query("SET LOCAL search_path=pg_catalog");
+      await admin.query("SET LOCAL max_parallel_workers_per_gather=0");
       await admin.query("SET LOCAL lock_timeout='2s'");
       await admin.query("SELECT set_config('statement_timeout',$1,true)", [
         `${admission.replayBudget.statementTimeoutMs}ms`,
@@ -169,7 +191,7 @@ export async function reconstructStagingInPhases(
         locks.cluster > admission.removalBudget.maxClusterLockRows
       )
         throw new Error("reset_final_batch_lock_budget_exceeded_restore_required");
-      await admission.assertFreshFence();
+      await assertFreshFence(row.xid);
       if (Date.now() >= admission.validUntilMs)
         throw new Error("reset_admission_expired_restore_required");
       await admin.query("COMMIT");
@@ -288,15 +310,48 @@ export async function reconstructStagingInPhases(
           completed,
           ...admission.replayBudget,
         });
-        if (completed === plan.migrations.length - 1) await verifyFinal(true);
+        if (completed === plan.migrations.length - 1) {
+          await verifyFinal(true);
+          resetVerified = true;
+        }
       });
       await marker.advance("replaying", ++batches);
       await admission.afterBatch?.("replaying", batches);
     }
     await marker.advance("verifying", batches);
-    const evidence = await transaction(() => verifyFinal());
+    const readCompletion = () =>
+      readPhasedResetCompletionEvidence(admin, {
+        database: admission.database,
+        role: admission.role,
+        schemaOid: admission.schemaOid,
+        baselineDigest: admission.baselineDigest,
+        migrations: plan.migrations,
+      });
+    const { evidence, readback } = await transaction(async () => ({
+      evidence: await verifyFinal(),
+      readback: await readCompletion(),
+    }));
     let releaseVerificationAttempted = false;
-    return Object.freeze({
+    let completionReadPending = false;
+    const verifyCompletion = async () => {
+      if (releaseVerificationAttempted)
+        throw new Error("reset_completion_release_already_attempted");
+      if (completionReadPending) throw new Error("reset_completion_read_pending");
+      completionReadPending = true;
+      try {
+        return await transaction(async () => {
+          await verifyFinal();
+          return readCompletion();
+        });
+      } catch (error) {
+        releaseVerificationAttempted = true;
+        await marker.advance("failed", batches).catch(() => undefined);
+        throw error;
+      } finally {
+        completionReadPending = false;
+      }
+    };
+    const result = Object.freeze({
       batches,
       observedCommitBoundaryLocks: {
         maxOwnLocks,
@@ -305,14 +360,19 @@ export async function reconstructStagingInPhases(
         transientPeaksMayBeMissed: true,
       },
       evidence,
+      executionEvidence: readback.proof,
+      async verifyResetCompletion() {
+        return (await verifyCompletion()).completion;
+      },
       awaitingPairedReleaseVerification: true,
       // Trusted caller verifies serving pair while the external fence remains held.
       async completeAfterPairedRelease(verifyServingPair: () => Promise<void>) {
+        if (completionReadPending) throw new Error("reset_completion_read_pending");
         if (releaseVerificationAttempted)
           throw new Error("reset_release_retry_forbidden_restore_required");
         releaseVerificationAttempted = true;
         try {
-          await admission.assertFreshFence();
+          await assertFreshFence(null);
           await verifyServingPair();
           await transaction(() => verifyFinal());
           await marker.completeAfterVerification();
@@ -322,6 +382,8 @@ export async function reconstructStagingInPhases(
         }
       },
     });
+    completedExecutions.set(result, verifyCompletion);
+    return result;
   } catch (error) {
     await marker.advance("failed", batches).catch(() => undefined);
     // Do not remove marker, lift fence, retry batches, or resume from ledger.
