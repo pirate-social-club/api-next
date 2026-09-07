@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 import { Auth } from "./auth.ts";
 import { endpoint } from "./endpoint.ts";
+import { telegramRegistry } from "./telegram.ts";
 
 export const Health = endpoint({
   method: "GET",
@@ -113,6 +114,7 @@ import * as verification from "./verification.ts";
 import { CreateVideoPlaybackAccess, GetVideoPoster } from "./video-access.ts";
 
 export const registry = {
+  ...telegramRegistry,
   Health,
   CreateVideoPlaybackAccess,
   GetVideoPoster,

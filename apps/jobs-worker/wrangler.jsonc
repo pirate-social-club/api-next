@@ -65,6 +65,7 @@
   ],
   "queues": {
     "producers": [
+        { "binding": "TELEGRAM_QUEUE", "queue": "pirate-community-telegram-development" },
       {
         "binding": "MEDIA_PROCESSING_QUEUE",
         "queue": "pirate-media-processing-development"
@@ -75,6 +76,7 @@
       }
     ],
     "consumers": [
+        { "queue": "pirate-community-telegram-development", "max_batch_size": 1, "max_retries": 3 },
       {
         "queue": "pirate-media-processing-development-dlq",
         "max_batch_size": 10,
@@ -90,6 +92,7 @@
     ]
   },
   "vars": {
+    "TELEGRAM_ENABLED": "false",
     "API_NEXT_ENV": "development",
     "KARAOKE_FINALIZATION_RECOVERY_ENABLED": "false",
     "COMMUNITY_MAINTENANCE_ENABLED": "true",
@@ -184,6 +187,7 @@
       ],
       "queues": {
         "producers": [
+        { "binding": "TELEGRAM_QUEUE", "queue": "pirate-community-telegram-staging" },
           {
             "binding": "MEDIA_PROCESSING_QUEUE",
             "queue": "pirate-media-processing-staging"
@@ -194,6 +198,7 @@
           }
         ],
         "consumers": [
+        { "queue": "pirate-community-telegram-staging", "max_batch_size": 1, "max_retries": 3 },
           {
             "queue": "pirate-media-processing-staging-dlq",
             "max_batch_size": 10,
@@ -209,6 +214,7 @@
         ]
       },
       "vars": {
+    "TELEGRAM_ENABLED": "false",
         "API_NEXT_ENV": "staging",
         "KARAOKE_FINALIZATION_RECOVERY_ENABLED": "true",
         "COMMUNITY_MAINTENANCE_ENABLED": "true",
@@ -328,6 +334,7 @@
       ],
       "queues": {
         "producers": [
+        { "binding": "TELEGRAM_QUEUE", "queue": "pirate-community-telegram-production" },
           {
             "binding": "MEDIA_PROCESSING_QUEUE",
             "queue": "pirate-media-processing-production"
@@ -338,6 +345,7 @@
           }
         ],
         "consumers": [
+        { "queue": "pirate-community-telegram-production", "max_batch_size": 1, "max_retries": 3 },
           {
             "queue": "pirate-media-processing-production-dlq",
             "max_batch_size": 10,
@@ -353,6 +361,7 @@
         ]
       },
       "vars": {
+    "TELEGRAM_ENABLED": "false",
         "API_NEXT_ENV": "production",
         "KARAOKE_FINALIZATION_RECOVERY_ENABLED": "false",
         "COMMUNITY_MAINTENANCE_ENABLED": "false",

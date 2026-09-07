@@ -432,6 +432,7 @@ describe("song pipeline Queue DLQ collector", () => {
     for (const environment of ["development", "staging", "production"] as const) {
       const block = environment === "development" ? wrangler : wrangler.env?.[environment];
       expect(block?.queues?.consumers?.map((consumer) => consumer.queue).sort()).toEqual([
+        `pirate-community-telegram-${environment}`,
         `pirate-data-registration-${environment}-dlq`,
         `pirate-media-processing-${environment}-dlq`,
       ]);
