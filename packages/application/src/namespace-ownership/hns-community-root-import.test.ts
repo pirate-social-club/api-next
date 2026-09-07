@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { Effect } from "effect";
 import {
+  NamespaceOwnershipProviderRejected,
+  NamespaceOwnershipProviderUnavailable,
+} from "./adapter.ts";
+import {
   activateHnsCommunityRootImport,
   getHnsCommunityRootImport,
   type HnsCommunityRootImportPreparation,
@@ -500,7 +504,7 @@ describe("community HNS root import", () => {
       ),
     ).rejects.toMatchObject({
       _tag: "HnsCommunityRootImportRejected",
-      reason: "ownership_unavailable",
+      reason: "ownership_misconfigured",
     });
     expect(dependencies.stored()).toBeUndefined();
   });
@@ -528,4 +532,47 @@ describe("community HNS root import", () => {
       ),
     ).rejects.toMatchObject({ _tag: "HnsCommunityRootImportStorageFailed" });
   });
+});
+
+describe("community import provider failure classification", () => {
+  for (const [error, reason] of [
+    [
+      new NamespaceOwnershipProviderRejected({ provider_id: "hns.owner.v1", operation: "start" }),
+      "ownership_misconfigured",
+    ],
+    [
+      new NamespaceOwnershipProviderUnavailable({
+        provider_id: "hns.owner.v1",
+        operation: "start",
+      }),
+      "ownership_unavailable",
+    ],
+  ] as const)
+    test(`preserves ${reason} without repeating provider start`, async () => {
+      const dependencies = services();
+      let calls = 0;
+      await expect(
+        Effect.runPromise(
+          startHnsCommunityRootImport(
+            {
+              actor_id: "actor-1",
+              community_id: "community-1",
+              root_label: "dankmemes",
+              idempotency_key: "start-1",
+            },
+            {
+              ...dependencies.value,
+              ownership: {
+                start: () => {
+                  calls++;
+                  return Effect.fail(error);
+                },
+              },
+            },
+          ),
+        ),
+      ).rejects.toMatchObject({ reason });
+      expect(calls).toBe(1);
+      expect(dependencies.stored()).toBeUndefined();
+    });
 });

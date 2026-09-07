@@ -16,6 +16,7 @@ import {
   Conflict,
   InternalError,
   NotFound,
+  ProviderMisconfigured,
   ProviderUnavailable,
 } from "@pirate/contracts";
 import { Effect } from "effect";
@@ -31,6 +32,8 @@ function wireFailure(error: unknown): Error {
     return new NotFound({ message: "Community route authority was not found" });
   if (tagged.reason === "conflict")
     return new Conflict({ message: "HNS root import conflicts with durable state" });
+  if (tagged.reason === "ownership_misconfigured")
+    return new ProviderMisconfigured({ message: "HNS ownership setup could not be completed" });
   if (tagged.reason === "ownership_unavailable")
     return new ProviderUnavailable({ message: "HNS ownership provider is unavailable" });
   return new BadRequest({ message: "HNS community root import request is invalid" });

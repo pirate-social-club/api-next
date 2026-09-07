@@ -1,6 +1,8 @@
 import {
   decodeHnsActiveLeaseRenewalRequestBytes,
   HNS_ACTIVE_LEASE_RENEWAL_REQUEST_MAX_BYTES,
+  RouteAttachmentOwnershipProviderStartInput,
+  RouteAttachmentOwnershipSession,
 } from "@pirate/application/namespace-ownership";
 import {
   decodeHnsOwnerRecoveryProviderPollBytes,
@@ -8,6 +10,7 @@ import {
   HNS_OWNER_RECOVERY_PROVIDER_START_MAX_BYTES,
   type HnsOwnerSameRootRecoveryProviderStartV1,
 } from "@pirate/application/route-revalidation";
+import { Option, Schema } from "effect";
 import {
   composeHnsNameProofRuntime,
   composeHnsTargetObserverRuntime,
@@ -19,13 +22,13 @@ import {
   HnsNameProofRuntimeError,
 } from "./name-proof.ts";
 import {
-  type HnsOwnerCreationTargetSession,
+  type HnsOwnerControlTargetSession,
   HnsTargetObserverFacadeError,
   type HnsTargetObserverRuntime,
-  matchesHnsTargetObserverCreationConfiguration,
+  matchesHnsTargetObserverControlConfiguration,
   matchesHnsTargetObserverRecoveryConfiguration,
   observeHnsActiveLeaseRenewal,
-  observeHnsOwnerCreationSession,
+  observeHnsOwnerControlSession,
   observeHnsOwnerRecoverySession,
 } from "./target-observer.ts";
 
@@ -151,7 +154,7 @@ export type Env = Readonly<{
   HnsTargetCompositionBindings;
 
 type JsonObject = Record<string, unknown>;
-type Operation = "creation" | "route_revalidation";
+type Operation = "creation" | "route_attachment" | "route_revalidation";
 type StartInput = JsonObject & { readonly operation: Operation };
 type PollInput = JsonObject & {
   readonly operation: Operation;
@@ -474,7 +477,7 @@ function sessionMatchesPinned(
     readonly version: string;
   }>,
 ): boolean {
-  if (poll.operation === "creation") {
+  if (poll.operation === "creation" || poll.operation === "route_attachment") {
     return (
       matchesPinnedConfiguration(poll.session.provider_configuration, pinned) &&
       poll.session.environment === pinned.environment
@@ -492,6 +495,24 @@ function sessionMatchesPinned(
 
 function parseStart(value: unknown): StartInput | null {
   if (!isObject(value)) return null;
+  if (value.operation_kind === "route_attachment") {
+    const decoded = Schema.decodeUnknownOption(RouteAttachmentOwnershipProviderStartInput, {
+      onExcessProperty: "error",
+    })(value);
+    if (
+      Option.isNone(decoded) ||
+      !safeText(decoded.value.actor_id, 256) ||
+      !safeText(decoded.value.community_id, 256) ||
+      !safeText(decoded.value.attachment_intent_id, 256) ||
+      !safeText(decoded.value.ceremony_intent_id, 256) ||
+      !safeText(decoded.value.environment, 256) ||
+      !exactRoute(decoded.value.route) ||
+      decoded.value.protocol_version !== "hns-txt-v1" ||
+      !exactConfiguration(decoded.value.provider_configuration)
+    )
+      return null;
+    return { ...decoded.value, operation: "route_attachment" };
+  }
   if (hasExactKeys(value, CREATION_START_KEYS)) {
     if (
       !safeText(value.actor_id, 256) ||
@@ -621,6 +642,43 @@ function parseRevalidationSession(value: unknown): JsonObject | null {
 
 function parsePoll(value: unknown, header: string, expectedSource: string): PollInput | null {
   if (!isObject(value)) return null;
+  if (value.operation_kind === "route_attachment") {
+    const decoded = Schema.decodeUnknownOption(
+      Schema.Struct({
+        operation_kind: Schema.Literal("route_attachment"),
+        session: RouteAttachmentOwnershipSession,
+        payload: Schema.Struct({}),
+      }),
+      { onExcessProperty: "error" },
+    )(value);
+    if (Option.isNone(decoded)) return null;
+    const session = decoded.value.session;
+    if (
+      !safeText(session.actor_id, 256) ||
+      !safeText(session.community_id, 256) ||
+      !safeText(session.attachment_intent_id, 256) ||
+      !safeText(session.ceremony_intent_id, 256) ||
+      !safeText(session.environment, 256) ||
+      session.provider_id !== "hns.owner.v1" ||
+      session.protocol_version !== "hns-txt-v1" ||
+      !exactRoute(session.route) ||
+      !exactConfiguration(session.provider_configuration) ||
+      Date.parse(session.expires_at) <= Date.now()
+    )
+      return null;
+    return {
+      ...decoded.value,
+      operation: "route_attachment",
+      session,
+      root_label: session.route.root_label,
+      challenge_name:
+        expectedSource === "hns_parent_chain_txt"
+          ? session.route.root_label
+          : `_pirate.${session.route.root_label}`,
+      upstream_session_ref: session.upstream_session_ref,
+      expires_at: session.expires_at,
+    };
+  }
   const isRevalidation = hasExactKeys(value, REVALIDATION_POLL_KEYS);
   const isCreation = hasExactKeys(value, CREATION_POLL_KEYS);
   if (
@@ -728,9 +786,12 @@ export async function handleRequest(
   env: Env,
   options: Readonly<{
     readonly targetObserver?: HnsTargetObserverRuntime;
+    readonly resolveTargetObserver?: () => Promise<HnsTargetObserverRuntime | undefined>;
     readonly nameProof?: HnsNameProofRuntime;
   }> = {},
 ): Promise<Response> {
+  const resolveObserver = async () =>
+    options.targetObserver ?? (await options.resolveTargetObserver?.());
   const url = new URL(request.url);
   const source = configuredSource(env);
   const pinned = pinnedConfiguration(env);
@@ -805,16 +866,17 @@ export async function handleRequest(
     if (decoded.request.active_lease_renewal_id !== renewalHeader) {
       return errorResponse(400, "invalid_request");
     }
+    const targetObserver = await resolveObserver();
     if (
       source === null ||
       pinned === null ||
       evidenceTtl === null ||
-      options.targetObserver === undefined ||
-      options.targetObserver.configuration.ownership_source !== source ||
-      options.targetObserver.configuration.provider_configuration_reference !== pinned.reference ||
-      options.targetObserver.configuration.provider_configuration_version !== pinned.version ||
-      options.targetObserver.configuration.environment !== pinned.environment ||
-      options.targetObserver.configuration.lease_policy.evidence_lease_seconds !== evidenceTtl
+      targetObserver === undefined ||
+      targetObserver.configuration.ownership_source !== source ||
+      targetObserver.configuration.provider_configuration_reference !== pinned.reference ||
+      targetObserver.configuration.provider_configuration_version !== pinned.version ||
+      targetObserver.configuration.environment !== pinned.environment ||
+      targetObserver.configuration.lease_policy.evidence_lease_seconds !== evidenceTtl
     ) {
       return errorResponse(502, "provider_misconfigured");
     }
@@ -822,7 +884,7 @@ export async function handleRequest(
       return bytesResponse(
         await observeHnsActiveLeaseRenewal(
           decoded.request,
-          options.targetObserver,
+          targetObserver,
           observationHeader,
           request.signal,
         ),
@@ -873,14 +935,15 @@ export async function handleRequest(
       } catch {
         return errorResponse(400, "invalid_request");
       }
-      if (options.targetObserver === undefined) return errorResponse(502, "provider_misconfigured");
+      const targetObserver = await resolveObserver();
+      if (targetObserver === undefined) return errorResponse(502, "provider_misconfigured");
       if (header !== input.session_id) return errorResponse(400, "invalid_request");
       if (
         !matchesPinnedConfiguration(input.provider_configuration, pinned) ||
         input.environment !== pinned.environment ||
-        !matchesHnsTargetObserverRecoveryConfiguration(input, options.targetObserver) ||
-        options.targetObserver.configuration.ownership_source !== source ||
-        options.targetObserver.configuration.lease_policy.evidence_lease_seconds !== evidenceTtl
+        !matchesHnsTargetObserverRecoveryConfiguration(input, targetObserver) ||
+        targetObserver.configuration.ownership_source !== source ||
+        targetObserver.configuration.lease_policy.evidence_lease_seconds !== evidenceTtl
       ) {
         return errorResponse(502, "provider_misconfigured");
       }
@@ -891,17 +954,21 @@ export async function handleRequest(
     const ttl = challengeTtlSeconds(env);
     if (input === null) return errorResponse(400, "invalid_request");
     if (ttl === null) return errorResponse(502, "provider_misconfigured");
-    if (input.operation !== "creation" || options.targetObserver === undefined) {
+    const targetObserver = await resolveObserver();
+    if (
+      (input.operation !== "creation" && input.operation !== "route_attachment") ||
+      targetObserver === undefined
+    ) {
       return errorResponse(502, "provider_misconfigured");
     }
     if (
       !matchesPinnedConfiguration(input.provider_configuration, pinned) ||
       input.environment !== pinned.environment ||
-      options.targetObserver.configuration.provider_configuration_reference !== pinned.reference ||
-      options.targetObserver.configuration.provider_configuration_version !== pinned.version ||
-      options.targetObserver.configuration.environment !== pinned.environment ||
-      options.targetObserver.configuration.ownership_source !== source ||
-      options.targetObserver.configuration.lease_policy.evidence_lease_seconds !== evidenceTtl
+      targetObserver.configuration.provider_configuration_reference !== pinned.reference ||
+      targetObserver.configuration.provider_configuration_version !== pinned.version ||
+      targetObserver.configuration.environment !== pinned.environment ||
+      targetObserver.configuration.ownership_source !== source ||
+      targetObserver.configuration.lease_policy.evidence_lease_seconds !== evidenceTtl
     )
       return errorResponse(502, "provider_misconfigured");
     return startResponse(input, source, ttl);
@@ -914,28 +981,25 @@ export async function handleRequest(
       return errorResponse(400, "invalid_request");
     }
     if (header !== poll.session.session_id) return errorResponse(400, "invalid_request");
+    const targetObserver = await resolveObserver();
     if (observationHeader === null || !safeText(observationHeader, 256)) {
       return errorResponse(400, "invalid_request");
     }
-    if (options.targetObserver === undefined) {
+    if (targetObserver === undefined) {
       return errorResponse(502, "provider_misconfigured");
     }
     if (
       !matchesPinnedConfiguration(poll.session.provider_configuration, pinned) ||
       poll.session.environment !== pinned.environment ||
-      !matchesHnsTargetObserverRecoveryConfiguration(poll.session, options.targetObserver) ||
-      options.targetObserver.configuration.ownership_source !== source ||
-      options.targetObserver.configuration.lease_policy.evidence_lease_seconds !== evidenceTtl
+      !matchesHnsTargetObserverRecoveryConfiguration(poll.session, targetObserver) ||
+      targetObserver.configuration.ownership_source !== source ||
+      targetObserver.configuration.lease_policy.evidence_lease_seconds !== evidenceTtl
     ) {
       return errorResponse(502, "provider_misconfigured");
     }
     try {
       return bytesResponse(
-        await observeHnsOwnerRecoverySession(
-          poll.session,
-          options.targetObserver,
-          observationHeader,
-        ),
+        await observeHnsOwnerRecoverySession(poll.session, targetObserver, observationHeader),
       );
     } catch (error) {
       if (error instanceof HnsTargetObserverFacadeError) {
@@ -953,23 +1017,24 @@ export async function handleRequest(
   }
   const poll = parsePoll(decoded, header, source);
   if (poll === null) return errorResponse(400, "invalid_request");
+  const targetObserver = await resolveObserver();
   if (
-    poll.operation !== "creation" ||
+    (poll.operation !== "creation" && poll.operation !== "route_attachment") ||
     !sessionMatchesPinned(poll, pinned) ||
-    options.targetObserver === undefined ||
-    options.targetObserver.configuration.ownership_source !== source ||
-    options.targetObserver.configuration.lease_policy.evidence_lease_seconds !== evidenceTtl ||
-    !matchesHnsTargetObserverCreationConfiguration(
-      poll.session as unknown as HnsOwnerCreationTargetSession,
-      options.targetObserver,
+    targetObserver === undefined ||
+    targetObserver.configuration.ownership_source !== source ||
+    targetObserver.configuration.lease_policy.evidence_lease_seconds !== evidenceTtl ||
+    !matchesHnsTargetObserverControlConfiguration(
+      poll.session as unknown as HnsOwnerControlTargetSession,
+      targetObserver,
     )
   ) {
     return errorResponse(502, "provider_misconfigured");
   }
   try {
-    const output = await observeHnsOwnerCreationSession(
-      poll.session as unknown as HnsOwnerCreationTargetSession,
-      options.targetObserver,
+    const output = await observeHnsOwnerControlSession(
+      poll.session as unknown as HnsOwnerControlTargetSession,
+      targetObserver,
       observationHeader,
     );
     const target = strictJson(output, POLL_RESPONSE_MAX_BYTES);
@@ -1005,14 +1070,14 @@ const app = {
         ...(nameProof === undefined ? {} : { nameProof }),
       });
     }
-    let targetObserver: HnsTargetObserverRuntime | undefined;
-    try {
-      targetObserver = await composeHnsTargetObserverRuntime(env, request.signal);
-    } catch {
-      targetObserver = undefined;
-    }
     return handleRequest(request, env, {
-      ...(targetObserver === undefined ? {} : { targetObserver }),
+      resolveTargetObserver: async () => {
+        try {
+          return await composeHnsTargetObserverRuntime(env, request.signal);
+        } catch {
+          return undefined;
+        }
+      },
     });
   },
 };
