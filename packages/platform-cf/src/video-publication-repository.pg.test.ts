@@ -534,7 +534,8 @@ suite("video publication PostgreSQL", () => {
       const layer = makeDirectPostgresControlPlaneLayer(connection);
       const store = makeControlPlaneVideoPublicationStore(layer);
       let now = new Date().toISOString();
-      const deadline = new Date(Date.parse(now) + 3_600_000).toISOString();
+      const deadline = new Date(Date.parse(now) + 3_921_000).toISOString();
+      const partDeadline = new Date(Date.parse(now) + 3_600_000).toISOString();
       let renewals = 0;
       const unused = async (): Promise<never> => {
         throw new Error("unexpected upload effect");
@@ -550,11 +551,11 @@ suite("video publication PostgreSQL", () => {
             uploadId: "renew-upload",
             partCount,
             partSizeBytes,
-            expiresAt: deadline,
+            expiresAt: partDeadline,
             parts: [1, 2].map((partNumber) => ({
               partNumber,
               url: `https://upload.invalid/original/${partNumber}`,
-              expiresAt: deadline,
+              expiresAt: partDeadline,
             })),
           }),
           renew: async ({ partNumbers, expiresInSeconds }) => {
@@ -586,6 +587,8 @@ suite("video publication PostgreSQL", () => {
         },
         services,
       );
+      expect(reserved.upload.expires_at).toBe(deadline);
+      expect(reserved.upload.parts[0]?.expires_at).toBe(partDeadline);
       const id = reserved.reservation_id;
       await createVideoSubmission(
         {
@@ -678,7 +681,7 @@ suite("video publication PostgreSQL", () => {
           responseSha256,
           parts: [{ partNumber: 2, url: "https://upload.invalid/stale", expiresAt: deadline }],
         }),
-      ).rejects.toThrow("video reservation action expired");
+      ).rejects.toMatchObject({ details: { reason_code: "action_expired" } });
       expect(renewals).toBe(1);
     });
   });

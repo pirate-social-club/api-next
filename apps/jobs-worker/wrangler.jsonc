@@ -37,6 +37,7 @@
     }
   ],
   "r2_buckets": [
+    { "binding": "MEDIA_INGRESS", "bucket_name": "pirate-media-ingress-development" },
     {
       "binding": "LEARNER_AUDIO",
       "bucket_name": "pirate-learner-audio-development"
@@ -240,6 +241,7 @@
         "MEGAPOT_SHARED_SPONSOR_DAILY_SPEND_CEILING_ATOMIC": "500000000"
       },
       "r2_buckets": [
+        { "binding": "MEDIA_INGRESS", "bucket_name": "pirate-media-ingress-staging" },
         {
           "binding": "LEARNER_AUDIO",
           "bucket_name": "pirate-learner-audio-staging"
@@ -378,7 +380,7 @@
         "MEGAPOT_SHARED_SPONSOR_DAILY_SPEND_CEILING_ATOMIC": "500000000"
       },
       // No learner-audio binding: the first production cron admits renewal only.
-      "r2_buckets": [],
+      "r2_buckets": [{ "binding": "MEDIA_INGRESS", "bucket_name": "pirate-media-ingress-production" }],
       "secrets": {
         "required": ["COMMUNITY_PURCHASE_FUNDING_RPC_URL"]
       }

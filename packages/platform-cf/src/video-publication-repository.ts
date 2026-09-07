@@ -10,6 +10,7 @@ import type {
   VideoReservationRecord,
   VideoSubmissionRecord,
 } from "@pirate/application/video/publication";
+import { Conflict } from "@pirate/contracts";
 import { Effect, type Layer } from "effect";
 import {
   attachImmutableVideo,
@@ -448,7 +449,11 @@ export function makeControlPlaneVideoPublicationStore(
                 ],
                 readonly: false,
               });
-              if (guarded.rowCount !== 1) throw new Error("video reservation action expired");
+              if (guarded.rowCount !== 1)
+                throw new Conflict({
+                  message: "Video upload action expired",
+                  details: { reason_code: "action_expired" },
+                });
               for (const part of input.parts) {
                 yield* tx.execute({
                   label: "video-publication.part-renew",
@@ -521,7 +526,10 @@ export function makeControlPlaneVideoPublicationStore(
                 readonly: false,
               });
               if (reservation.rowCount !== 1)
-                throw new Error("video reservation cannot be claimed");
+                throw new Conflict({
+                  message: "Video upload action expired",
+                  details: { reason_code: "action_expired" },
+                });
               yield* tx.execute({
                 label: "video-publication.submission-insert",
                 text: `INSERT INTO media_post_submissions
@@ -631,7 +639,7 @@ export function makeControlPlaneVideoPublicationStore(
                 label: "video-publication.finalize-reservation",
                 text: `SELECT ${RESERVATION_COLUMNS} FROM media_upload_reservations
                         WHERE reservation_id=$1 AND submission_id=$2 AND operation_id=$3
-                          AND state='claimed' FOR UPDATE`,
+                          AND state IN ('claimed','expired') FOR UPDATE`,
                 values: [
                   current.state.reservationId,
                   current.state.submissionId,
@@ -642,7 +650,26 @@ export function makeControlPlaneVideoPublicationStore(
               const row = reservationResult.rows[0];
               if (row === undefined) throw new Error("video finalize reservation missing");
               const reservation = reservationFromRow(row);
+              if (reservation.state === "expired")
+                throw new Conflict({
+                  message: "Video upload action expired",
+                  details: { reason_code: "action_expired" },
+                });
               const priorManifest = reservation.manifest;
+              if (priorManifest === null) {
+                const live = yield* tx.execute({
+                  label: "video-publication.finalize-expiry",
+                  text: `SELECT reservation_id FROM media_upload_reservations
+                    WHERE reservation_id=$1 AND expires_at>clock_timestamp()`,
+                  values: [reservation.reservationId],
+                  readonly: true,
+                });
+                if (live.rowCount !== 1)
+                  throw new Conflict({
+                    message: "Video upload action expired",
+                    details: { reason_code: "action_expired" },
+                  });
+              }
               if (
                 priorManifest !== null &&
                 JSON.stringify(priorManifest) !== JSON.stringify(input.manifest)
