@@ -206,3 +206,46 @@ pass that re-observes actual state; an upload already gone at abort time is
 retained as a `not-found` action. The parent verifies the six signed pass
 entries and challenge exactly as for an observation pass, and every result still
 denies reset execution authority.
+
+## Reset, retirement and release origins
+
+The journal's `reset-verified`, `all-retired` and `released` entries originate
+only from authenticated commands that re-verify the journal through the real
+reconciliation verifier before appending, under the same challenge protocol,
+exact-head append guard and sixty-second bound as every other entry. A signed
+observation or an `executionAuthorized: false` result is never execution
+authority: none of these commands performs a reset, retirement or release.
+
+`recordKaraokeResetVerification` admits only when the verifier finds all six
+targets pre-reset complete under a maintained fence, then retains the trusted
+reset-executor completion (server version, terminal migration, ledger digest
+and exact zero persona counts with an evidence digest) plus fresh fence, six
+marker inspections and after-reset SQL non-reuse readbacks. The completion port
+has no live binding yet: wiring it to the phased executor's verified output is
+part of the live ceremony composition, and a caller-supplied completion shape
+remains refused.
+
+`record-karaoke-retirement` (with `scripts/staging-karaoke-record-retirement-cli.ts`)
+originates `all-retired` from fresh readbacks of all six retired markers under a
+maintained fence, after the verifier confirms retirement-phase completion for
+every target. A marker that regressed to active refuses the milestone.
+
+`recordKaraokeFenceRelease` originates `released` from the trusted
+fence-release binding after observing the last held fence in-command, so fence
+evidence can never postdate the release. It independently reads back all six
+retired markers, and the journal entry's time equals the release evidence time
+so later passes and the verifier agree on one `releasedAt`. The release port
+has no live binding yet either; recording cannot perform a release.
+
+## Retirement and follow-up passes
+
+The observation pass accepts the closed phases `retirement` and `follow-up` in
+addition to post-fence and pre-reset. Retirement-phase passes require retired
+markers and retired installation receipts, verify after-reset SQL non-reuse,
+and run while the journal is reset, retired or released. A follow-up pass
+requires a recorded release; before release the pass refuses rather than
+fabricating release evidence. Post-release receipts cite the historical
+retained fence and release evidence and never claim that normal writes remain
+disabled. The verifier enforces the genuine 24-hour boundary between the last
+clean retirement baseline and any follow-up pass, and a follow-up that arrives
+early is refused before any journal append.

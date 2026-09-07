@@ -325,3 +325,46 @@ actual R2 request was sent by these tests. The collector type-check and
 touched-file Biome checks passed. Reset, retirement and release journal-origin
 commands, post-retirement and next-day passes, actual rehearsal and live
 fencing remain unfinished; no live provider operation occurred.
+
+
+Milestone-origin checkpoint — 2026-09-07. The reset, retirement and release
+journal origins are implemented and tested. A shared helper
+(scripts/staging-karaoke-journal-manifest.ts) composes the signed journal into
+the reconciliation manifest and runs the real verifier; every origin command
+admits only from the state that verifier establishes, then appends one signed
+entry under the challenge protocol, exact-head guard and sixty-second bound.
+
+recordKaraokeResetVerification admits only when the verifier finds all six
+targets pre-reset complete, retains the trusted completion evidence
+(staging-karaoke-reset-completion-v1: verifiedAt, serverVersion,
+terminalMigration, ledgerDigest, exact zero persona counts,
+personaEvidenceDigest), a fresh maintained fence, six active-marker
+inspections and after-reset SQL non-reuse. The completion must postdate the
+last signed entry. recordKaraokeRetirementCompletion (wired as
+record-karaoke-retirement with its dedicated CLI) originates all-retired from
+fresh retired-marker readbacks after verifier-confirmed retirement passes; a
+regressed marker refuses it. recordKaraokeFenceRelease originates released
+from the trusted fence-release binding, observing the last held fence
+in-command so fence evidence cannot postdate release, independently reading
+back all six retired markers, and writing the journal entry at the release
+evidence time.
+
+The observation pass now accepts retirement and follow-up phases: retired
+markers and installation receipts, after-reset non-reuse, and a follow-up that
+requires a recorded release and cites the historical retained fence and
+release evidence instead of a fresh fence claim. The verifier's genuine
+24-hour boundary rejects an early follow-up before any append.
+
+The reset-completion and fence-release ports have no live bindings yet; wiring
+them to the phased executor and the maintained-fence release is part of the
+live ceremony composition and remains recorded work. Recording a milestone
+never executes it, and every result still denies execution authority.
+
+Focused milestone tests passed through the real signed journal, real
+verifier, fixture Access keys and a fake R2 transport: the full ceremony from
+fence through 24-hour follow-up with observed-stable retention, the 24-hour
+and recorded-release requirements, reset admission/zero-count/state guards,
+and retirement/release state and marker guards including a regressed marker.
+Adjacent suites (observation, cleanup, fence, signing, journal, adapter, CLI)
+reran green. The collector type-check and touched-file Biome checks passed.
+No live provider operation, rehearsal, reset or release occurred.

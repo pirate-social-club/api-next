@@ -2,6 +2,7 @@ import {
   runStagingKaraokeCleanupPass,
   runStagingKaraokeCollector,
   runStagingKaraokeObservationPass,
+  runStagingKaraokeRetirementRecording,
 } from "./staging-karaoke-collector-runtime.ts";
 import { recordStagingKaraokeFence } from "./staging-karaoke-record-fence.ts";
 
@@ -13,6 +14,7 @@ if (
     "record-karaoke-fence",
     "record-karaoke-pass",
     "record-karaoke-cleanup",
+    "record-karaoke-retirement",
   ].includes(process.argv.at(-3) ?? "") &&
   process.argv.at(-2) === "--run-directory"
 ) {
@@ -48,6 +50,8 @@ if (
       await runStagingKaraokeObservationPass(input, process.env.KARAOKE_COLLECTOR_PASS_PHASE);
     else if (process.argv.at(-3) === "record-karaoke-cleanup")
       await runStagingKaraokeCleanupPass(input);
+    else if (process.argv.at(-3) === "record-karaoke-retirement")
+      await runStagingKaraokeRetirementRecording(input);
     else await execute(input);
   } catch {
     console.error("staging_karaoke_collection_denied");

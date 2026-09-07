@@ -21,6 +21,7 @@ import type {
   KaraokeCollectorChallenge,
 } from "./karaoke-reconciliation-adapter.ts";
 import { collectKaraokeEvidence } from "./karaoke-reconciliation-cli.ts";
+import type { KaraokePassPhase } from "./staging-karaoke-observation-pass.ts";
 import { prepareKaraokeRecording } from "./staging-karaoke-recording-context.ts";
 
 const Envelope = Schema.Struct({ scope: ReconciliationScope, data: Schema.Unknown });
@@ -29,7 +30,7 @@ const Envelope = Schema.Struct({ scope: ReconciliationScope, data: Schema.Unknow
 export async function runKaraokePassRecordingCli(
   configPath: string,
   assertionPath: string,
-  phase: "post-fence" | "pre-reset",
+  phase: KaraokePassPhase,
 ) {
   const { config, live, challenge, started } = await prepareKaraokeRecording(
     configPath,
@@ -58,7 +59,7 @@ export async function verifyRecordedKaraokePass(input: {
   readonly journalTrust: KaraokeJournalTrust;
   readonly priorHead: { readonly entryId: string; readonly sequence: number };
   readonly challenge: KaraokeCollectorChallenge;
-  readonly phase: "post-fence" | "pre-reset";
+  readonly phase: KaraokePassPhase;
   readonly started: number;
   readonly nowUtc: string;
 }) {
@@ -114,12 +115,16 @@ export async function verifyRecordedKaraokePass(input: {
         epoch: config.epoch,
         bucket: config.bucket,
         residualDispositionId: config.residualDispositionId,
-        currentFenceEpoch: config.epoch,
-        releasedAt: null,
+        currentFenceEpoch: journal.entries.some(({ entry }) => entry.event.kind === "released")
+          ? null
+          : config.epoch,
+        releasedAt:
+          journal.entries.find(({ entry }) => entry.event.kind === "released")?.entry.observedAt ??
+          null,
         entries: [...entries.values()],
         targets: KARAOKE_RESET_OBJECT_IDS.map((objectId) => ({
           objectId,
-          markerState: "active",
+          markerState: phase === "retirement" || phase === "follow-up" ? "retired" : "active",
           alarm: null,
           sockets: 0,
           keyNotReused: true,
@@ -140,16 +145,22 @@ if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(
     args[0] !== "--config" ||
     args[2] !== "--assertion-file" ||
     args[4] !== "--phase" ||
-    (args[5] !== "post-fence" && args[5] !== "pre-reset")
+    !["post-fence", "pre-reset", "retirement", "follow-up"].includes(args[5] ?? "")
   ) {
     console.error(
-      "Usage: bun scripts/staging-karaoke-record-pass-cli.ts --config <private-file> --assertion-file <private-file> --phase post-fence|pre-reset",
+      "Usage: bun scripts/staging-karaoke-record-pass-cli.ts --config <private-file> --assertion-file <private-file> --phase post-fence|pre-reset|retirement|follow-up",
     );
     process.exitCode = 1;
   } else {
     try {
       console.log(
-        JSON.stringify(await runKaraokePassRecordingCli(args[1] ?? "", args[3] ?? "", args[5])),
+        JSON.stringify(
+          await runKaraokePassRecordingCli(
+            args[1] ?? "",
+            args[3] ?? "",
+            args[5] as KaraokePassPhase,
+          ),
+        ),
       );
     } catch {
       console.error("karaoke_pass_recording_denied");

@@ -21,8 +21,9 @@ export function collectKaraokeEvidence(
     | "collect-karaoke-reconciliation"
     | "record-karaoke-pass"
     | "record-karaoke-cleanup"
+    | "record-karaoke-retirement"
     | "record-karaoke-fence" = "collect-karaoke-reconciliation",
-  phase?: "post-fence" | "pre-reset",
+  phase?: "post-fence" | "pre-reset" | "retirement" | "follow-up",
 ): Promise<void> {
   const bundle = readKaraokePrivateFile(config.collectorPath, 16_777_216);
   if (reconciliationDigest(bundle) !== config.collectorSourceDigest)

@@ -5,6 +5,7 @@ import {
   FenceEvidence,
   ReconciliationManifest,
   ReconciliationScope,
+  ReleaseEvidence,
   reconciliationDigest,
 } from "../packages/platform-cf/src/karaoke-reconciliation-evidence.ts";
 import {
@@ -34,17 +35,20 @@ import type { KaraokeSigningReaders } from "./staging-karaoke-signing-collector.
 
 const Envelope = Schema.Struct({ scope: ReconciliationScope, data: Schema.Unknown });
 type Scope = typeof ReconciliationScope.Type;
-type Phase = "post-fence" | "pre-reset";
+export type KaraokePassPhase = "post-fence" | "pre-reset" | "retirement" | "follow-up";
 
 /** Records observations only. Existing objects/uploads produce incomplete
- * receipts; this function has no cleanup, reset or release capability. */
+ * receipts; this function has no cleanup, reset or release capability.
+ * Retirement and follow-up phases read retired markers; after a recorded
+ * release they cite historical fence and release evidence instead of
+ * pretending normal writes remain disabled. */
 export async function recordKaraokeObservationPass(input: {
   readonly trust: KaraokeAdapterTrust;
   readonly journal: KaraokeJournalTrust;
   readonly privateKeyPem: string;
   readonly assertion: string;
   readonly challenge: KaraokeCollectorChallenge;
-  readonly phase: Phase;
+  readonly phase: KaraokePassPhase;
   readonly readers: KaraokeSigningReaders;
   readonly r2: ReturnType<typeof makeStagingKaraokeR2Observer>;
   readonly now?: () => string;
@@ -53,8 +57,8 @@ export async function recordKaraokeObservationPass(input: {
   const now = input.now ?? (() => new Date().toISOString());
   const started = reconciliationMillis(now());
   const { trust, challenge } = input;
+  const retiredPhase = input.phase === "retirement" || input.phase === "follow-up";
   if (
-    !["post-fence", "pre-reset"].includes(input.phase) ||
     input.journal.expectedHead === null ||
     input.journal.epoch !== trust.epoch ||
     input.journal.collectorSourceDigest !== trust.collectorSourceDigest ||
@@ -68,8 +72,50 @@ export async function recordKaraokeObservationPass(input: {
     throw new Error("karaoke_pass_scope_denied");
   await admitKaraokeResetOperator(trust.operator, input.assertion, input.authenticationFetch);
   const journal = readKaraokeMaintenanceJournal(input.journal, now());
-  if (journal.state !== "held") throw new Error("karaoke_pass_fence_not_held");
+  if (journal.state !== "held" && !retiredPhase) throw new Error("karaoke_pass_fence_not_held");
+  if (
+    retiredPhase &&
+    journal.state !== "reset" &&
+    journal.state !== "retired" &&
+    journal.state !== "released"
+  )
+    throw new Error("karaoke_pass_retirement_state_denied");
+  const releasedEntry = journal.entries.find(({ entry }) => entry.event.kind === "released");
+  const releasedArtifacts = releasedEntry
+    ? releasedEntry.entry.event.evidenceIds.map(
+        (id) =>
+          JSON.parse(journal.readArtifact(id)) as {
+            kind?: string;
+            fence?: unknown;
+            release?: unknown;
+          },
+      )
+    : [];
+  const releaseEvidence = releasedEntry
+    ? decodeReconciliation(
+        ReleaseEvidence,
+        releasedArtifacts.find((artifact) => artifact.kind === "release-evidence")?.release ?? null,
+      )
+    : undefined;
+  if ((input.phase === "follow-up") !== (releaseEvidence !== undefined))
+    throw new Error("karaoke_pass_release_scope_denied");
   const checkFence = async () => {
+    if (releaseEvidence !== undefined) {
+      const historical = releasedArtifacts.find(
+        (artifact) => artifact.kind === "release-held-fence",
+      );
+      const fence = decodeReconciliation(FenceEvidence, historical?.fence ?? null);
+      if (
+        !fence.ingress ||
+        !fence.producers ||
+        !fence.databaseWrites ||
+        !fence.reconnectDenied ||
+        fence.runtimeSessions !== 0 ||
+        fence.residualDispositionId !== trust.residualDispositionId
+      )
+        throw new Error("karaoke_pass_fence_unproven");
+      return { supporting: historical ?? null, fence };
+    }
     const observation = await input.readers.observeMaintainedFence();
     const fence = decodeReconciliation(FenceEvidence, observation.fence);
     if (
@@ -114,9 +160,9 @@ export async function recordKaraokeObservationPass(input: {
     );
     if (
       Object.entries(target).some(([key, value]) => Reflect.get(snapshot, key) !== value) ||
-      snapshot.markerState !== "active" ||
+      snapshot.markerState !== (retiredPhase ? "retired" : "active") ||
       snapshot.initial === null ||
-      snapshot.installationReceipt?.state !== "active" ||
+      snapshot.installationReceipt?.state !== (retiredPhase ? "retired" : "active") ||
       !snapshot.installationReceipt.cancellationSucceeded ||
       snapshot.current.alarm !== null ||
       snapshot.current.sockets !== 0 ||
@@ -125,7 +171,10 @@ export async function recordKaraokeObservationPass(input: {
       reconciliationMillis(snapshot.observedAt) > reconciliationMillis(now())
     )
       throw new Error("karaoke_pass_marker_or_authority_unproven");
-    const nonReuse = await input.readers.verifyNonReuse(snapshot, "before-reset");
+    const nonReuse = await input.readers.verifyNonReuse(
+      snapshot,
+      retiredPhase ? "after-reset" : "before-reset",
+    );
     if (
       !nonReuse.keyNotReused ||
       reconciliationMillis(nonReuse.observedAt) < started ||
@@ -189,7 +238,7 @@ export async function recordKaraokeObservationPass(input: {
       },
       installationReceiptId: retain(snapshot.installationReceipt),
       fenceEvidenceId: retain(initialFence.fence),
-      releaseEvidenceId: null,
+      releaseEvidenceId: releaseEvidence === undefined ? null : retain(releaseEvidence),
       precedingReceiptId: previous.at(-1) ?? null,
       observations: {
         beforeUploadsId: retain(before.uploads),
@@ -214,7 +263,7 @@ export async function recordKaraokeObservationPass(input: {
     pending.push({ objectId, receiptId, evidenceIds });
     targets.push({
       objectId,
-      markerState: "active",
+      markerState: retiredPhase ? "retired" : "active",
       alarm: null,
       sockets: 0,
       keyNotReused: true,
@@ -237,8 +286,8 @@ export async function recordKaraokeObservationPass(input: {
     epoch: trust.epoch,
     bucket: trust.bucket,
     residualDispositionId: trust.residualDispositionId,
-    currentFenceEpoch: trust.epoch,
-    releasedAt: null,
+    currentFenceEpoch: releaseEvidence === undefined ? trust.epoch : null,
+    releasedAt: releasedEntry?.entry.observedAt ?? null,
     targets,
     entries: [...entries.values()],
   });
