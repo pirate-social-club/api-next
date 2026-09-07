@@ -1,0 +1,10 @@
+{
+  "ID": "video-incomplete-multipart-three-days",
+  "Status": "Enabled",
+  "Filter": {
+    "Prefix": "reservations/"
+  },
+  "AbortIncompleteMultipartUpload": {
+    "DaysAfterInitiation": 3
+  }
+}

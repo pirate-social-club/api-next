@@ -401,6 +401,8 @@ describe("video publication application", () => {
       { communityId: "community_video", actor, body: originalBody },
       services,
     );
+    expect(result.upload.expires_at).toBe("2026-09-04T01:06:21.000Z");
+    expect(result.upload.parts[0]?.expires_at).toBe("2026-09-04T01:01:00.000Z");
     expect(result.upload.part_count).toBe(2);
     expect(result.upload.part_size_bytes).toBe(VIDEO_MULTIPART_PART_SIZE_BYTES);
     expect(result.author_persona_id).toBe(persona.persona_id);
