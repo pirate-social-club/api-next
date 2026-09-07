@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { Schema } from "effect";
 import type { CloudflareAccessJwtFetch } from "../packages/platform-cf/src/cloudflare-access-jwt.ts";
 import {
@@ -39,8 +40,11 @@ const Head = Schema.Struct({
   entryId: ReconciliationDigest,
   sequence: Schema.Number.check(Schema.isInt(), Schema.isBetween({ minimum: 0, maximum: 8191 })),
 });
-const IntentRecord = Schema.Struct({
+export const IntentRecord = Schema.Struct({
   kind: Schema.Literal("release-intent"),
+  planDigest: ReconciliationDigest,
+  nonce: ReconciliationDigest,
+  previousNotExecutedId: Schema.NullOr(ReconciliationDigest),
   epoch: ReconciliationDigest,
   bucket: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1024)),
   residualDispositionId: ReconciliationDigest,
@@ -56,7 +60,7 @@ const ReleaseReconciliationOutcome = Schema.Union([
   Schema.Struct({ disposition: Schema.Literal("not-executed") }),
   Schema.Struct({ disposition: Schema.Literal("unresolved") }),
 ]);
-const NotExecutedRecord = Schema.Struct({
+export const NotExecutedRecord = Schema.Struct({
   kind: Schema.Literal("release-not-executed"),
   epoch: ReconciliationDigest,
   bucket: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1024)),
@@ -98,10 +102,9 @@ function readSignedSidecar(
     throw new Error("karaoke_release_origin_recovery_denied");
   }
   const claimsReleaseRecord = (candidate: unknown) => {
-    const kind = (candidate as { kind?: string }).kind;
-    return (
-      kind === "release-intent" || kind === "release-executed" || kind === "release-not-executed"
-    );
+    if (typeof candidate !== "object" || candidate === null) return false;
+    const kind = (candidate as { kind?: unknown }).kind;
+    return typeof kind === "string" && kind.startsWith("release-");
   };
   const signed = outer as { payload?: unknown; signature?: unknown };
   // The kind lives inside the signed payload. An unsigned file claiming to be
@@ -146,12 +149,23 @@ function scanSignedSidecars(
   directory: string,
   trust: KaraokeAdapterTrust,
   journalEntryIds: ReadonlySet<string>,
+  planDigest: string,
 ): Map<string, { kind: string; payload: unknown }> {
   const store = openKaraokePrivateArtifacts(directory);
   try {
     const found = new Map<string, { kind: string; payload: unknown }>();
     for (const name of store.names()) {
       const sidecar = readSignedSidecar(store, name, trust, journalEntryIds);
+      if (
+        sidecar !== undefined &&
+        !["release-intent", "release-executed", "release-not-executed"].includes(sidecar.kind)
+      )
+        throw new Error("karaoke_release_origin_recovery_denied");
+      if (
+        sidecar?.kind === "release-intent" &&
+        decodeReconciliation(IntentRecord, sidecar.payload).planDigest !== planDigest
+      )
+        throw new Error("karaoke_release_plan_changed");
       if (sidecar !== undefined) found.set(name.replace(/\.json$/u, ""), sidecar);
     }
     return found;
@@ -164,8 +178,9 @@ function findRetainedRelease(
   directory: string,
   trust: KaraokeAdapterTrust,
   journalEntryIds: ReadonlySet<string>,
+  planDigest: string,
 ): { release: typeof ReleaseEvidence.Type; intentFence: typeof FenceEvidence.Type } | undefined {
-  const sidecars = scanSignedSidecars(directory, trust, journalEntryIds);
+  const sidecars = scanSignedSidecars(directory, trust, journalEntryIds, planDigest);
   const intents = new Map(
     [...sidecars]
       .filter(([, sidecar]) => sidecar?.kind === "release-intent")
@@ -195,20 +210,26 @@ function findRetainedRelease(
  * journal entry records when the release was recorded; the signed release
  * evidence preserves the actual release time, which may precede it. */
 export async function recordKaraokeFenceRelease(input: {
+  readonly releasePlanDigest: string;
   readonly trust: KaraokeAdapterTrust;
   readonly journal: KaraokeJournalTrust;
   readonly privateKeyPem: string;
   readonly assertion: string;
   readonly challenge: KaraokeCollectorChallenge;
   readonly readers: KaraokeSigningReaders;
-  readonly verifyFenceRelease: () => Promise<unknown>;
-  readonly reconcileReleasedFence?: (pendingIntent: typeof IntentRecord.Type) => Promise<unknown>;
+  readonly verifyFenceRelease: (
+    intent: typeof IntentRecord.Type & { readonly intentId: string },
+  ) => Promise<unknown>;
+  readonly reconcileReleasedFence?: (
+    pendingIntent: typeof IntentRecord.Type & { readonly intentId: string },
+  ) => Promise<unknown>;
   readonly now?: () => string;
   readonly authenticationFetch?: CloudflareAccessJwtFetch;
 }) {
   const now = input.now ?? (() => new Date().toISOString());
   const started = reconciliationMillis(now());
   const { trust, challenge } = input;
+  const planDigest = decodeReconciliation(ReconciliationDigest, input.releasePlanDigest);
   if (
     input.journal.expectedHead === null ||
     input.journal.epoch !== trust.epoch ||
@@ -234,29 +255,31 @@ export async function recordKaraokeFenceRelease(input: {
   const lastEntry = journal.entries.at(-1)?.entry.observedAt;
   if (lastEntry === undefined) throw new Error("karaoke_release_origin_release_unproven");
   const journalEntryIds = new Set(journal.entries.map(({ id }) => id));
-  const retained = findRetainedRelease(input.journal.directory, trust, journalEntryIds);
+  const retained = findRetainedRelease(input.journal.directory, trust, journalEntryIds, planDigest);
   let heldFence: typeof FenceEvidence.Type | undefined;
   let release: typeof ReleaseEvidence.Type | undefined;
   const sidecar = openKaraokePrivateWriter(input.journal.directory);
   try {
-    const writeIntent = (fence: typeof FenceEvidence.Type) =>
-      sidecar.putArtifact(
-        signedBytes(
-          {
-            kind: "release-intent",
-            epoch: trust.epoch,
-            bucket: trust.bucket,
-            residualDispositionId: trust.residualDispositionId,
-            expectedHead: {
-              entryId: journal.head.entryId,
-              sequence: journal.head.sequence,
-            },
-            fence,
-            recordedAt: now(),
-          },
-          input.privateKeyPem,
-        ),
-      );
+    let previousNotExecutedId: string | null = null;
+    const writeIntent = (fence: typeof FenceEvidence.Type) => {
+      const intent = decodeReconciliation(IntentRecord, {
+        kind: "release-intent",
+        planDigest,
+        nonce: randomBytes(32).toString("hex"),
+        previousNotExecutedId,
+        epoch: trust.epoch,
+        bucket: trust.bucket,
+        residualDispositionId: trust.residualDispositionId,
+        expectedHead: {
+          entryId: journal.head.entryId,
+          sequence: journal.head.sequence,
+        },
+        fence,
+        recordedAt: now(),
+      });
+      const intentId = sidecar.putArtifact(signedBytes(intent, input.privateKeyPem));
+      return { ...intent, intentId };
+    };
     if (retained !== undefined) {
       // Authenticated recovery: the executed record and its signed intent
       // exist; the fence can no longer be observed held and the binding is
@@ -288,7 +311,12 @@ export async function recordKaraokeFenceRelease(input: {
       // never proof of release. A pending signed intent is the only
       // uncertain-execution trigger, and it is passed to the read-only
       // reconciliation port explicitly.
-      const sidecars = scanSignedSidecars(input.journal.directory, trust, journalEntryIds);
+      const sidecars = scanSignedSidecars(
+        input.journal.directory,
+        trust,
+        journalEntryIds,
+        planDigest,
+      );
       // Intents with a durable authenticated not-executed disposition are
       // resolved and no longer pending.
       const resolvedIntents = new Set(
@@ -296,6 +324,19 @@ export async function recordKaraokeFenceRelease(input: {
           .filter(([, sidecar]) => sidecar?.kind === "release-not-executed")
           .map(([, sidecar]) => decodeReconciliation(NotExecutedRecord, sidecar.payload).intentId),
       );
+      previousNotExecutedId =
+        [...sidecars]
+          .filter(([, sidecar]) => sidecar.kind === "release-not-executed")
+          .map(([id, sidecar]) => ({
+            id,
+            record: decodeReconciliation(NotExecutedRecord, sidecar.payload),
+          }))
+          .sort(
+            (left, right) =>
+              reconciliationMillis(left.record.recordedAt) -
+              reconciliationMillis(right.record.recordedAt),
+          )
+          .at(-1)?.id ?? null;
       const pending = [...sidecars]
         .filter(([id, sidecar]) => sidecar?.kind === "release-intent" && !resolvedIntents.has(id))
         .map(([id, sidecar]) => ({
@@ -332,7 +373,8 @@ export async function recordKaraokeFenceRelease(input: {
         // unresolved; signing and persistence stay outside any fallback.
         let observed: unknown;
         try {
-          observed = await input.reconcileReleasedFence(intent);
+          if (intentId === undefined) throw new Error("karaoke_release_origin_unresolved");
+          observed = await input.reconcileReleasedFence({ ...intent, intentId });
         } catch {
           observed = { disposition: "unresolved" };
         }
@@ -387,7 +429,7 @@ export async function recordKaraokeFenceRelease(input: {
           // A durable, authenticated not-executed disposition is the only
           // path from a pending intent back to fresh execution; a held fence
           // alone never is.
-          sidecar.putArtifact(
+          previousNotExecutedId = sidecar.putArtifact(
             signedBytes(
               {
                 kind: "release-not-executed",
@@ -421,8 +463,11 @@ export async function recordKaraokeFenceRelease(input: {
         )
           throw new Error("karaoke_release_origin_fence_unproven");
         heldFence = observed;
-        const freshIntentId = writeIntent(heldFence);
-        release = decodeReconciliation(ReleaseEvidence, await input.verifyFenceRelease());
+        const freshIntent = writeIntent(heldFence);
+        release = decodeReconciliation(
+          ReleaseEvidence,
+          await input.verifyFenceRelease(freshIntent),
+        );
         if (
           !release.allSixRetired ||
           reconciliationMillis(release.releasedAt) < reconciliationMillis(lastEntry) ||
@@ -441,7 +486,7 @@ export async function recordKaraokeFenceRelease(input: {
                 entryId: journal.head.entryId,
                 sequence: journal.head.sequence,
               },
-              intentId: freshIntentId,
+              intentId: freshIntent.intentId,
               release,
               source: "execution",
               recordedAt: now(),

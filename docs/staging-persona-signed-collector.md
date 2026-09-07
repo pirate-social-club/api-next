@@ -622,3 +622,53 @@ not-executed. The remaining gap to live use is binding the surface executor
 ports and released-state observers to the actual provider transports, and
 obtaining the reviewed serving-version restoration values; the reviewed
 grant digest and queue identities already exist in recorded approvals.
+
+Release-claim correction — 2026-09-07. The preceding operation checkpoint is
+historical, not the current acceptance statement. Fenced surfaces with no
+receipts never prove non-execution. Only the durable exclusive cancellation
+claim can support that disposition. Surface order is a required reviewed
+plan field, not the historical code default. The strict schema is now actually
+decoded before attempts, including duplicate-target refusal.
+
+The origin now signs the plan digest and a unique intent nonce. Its executing
+and reconciling bindings receive that signed intent's content digest, and the
+evidence store authenticates the referenced intent before granting a claim.
+Both file and directory fsync precede a grant; independent-process tests cover
+execution/cancellation races and interruption at each persistence boundary.
+The earlier implementation opened the directory but did not fsync it.
+
+A cancelled intent remains permanently closed. A fresh intent can proceed
+only by referencing its signed not-executed disposition and atomically
+replacing the exact cancelled claim under the journal lock. Both old and new
+claim bytes are archived before replacement. Tests cover successor races,
+process death with the lock retained, and successful fresh execution through
+the real origin. No interrupted lock is automatically removed.
+
+Successful operations independently observe ingress, producers and database
+restoration before producing a release result. Provider transports, live
+stdin/runtime wiring and parent verification remain unfinished source work.
+The confirmation-time versus operational-release-boundary contract remains
+open, as do exact-SHA independent review and the recorded live prerequisites.
+No provider mutation, rehearsal, deployment or enablement occurred.
+
+Release-claim verification receipt — 2026-09-08. The final local unit gate
+passed 3,532 tests with 22,437 assertions. Node passed 20 tests and the five
+Worker constituents passed 80, 73, 2, 9 and 15 tests. All heavy gates ran
+serially at nice 10, with one Vitest worker and file parallelism disabled.
+The final repository check passed with the existing 41 warnings and two
+infos; script-check reported zero findings across ten changed script files.
+PostgreSQL 17, PostgreSQL 18.6, remote CI and independent review were not run
+for this checkpoint. Publication is not claimed.
+
+The control-plane task check observed 422 valid records and zero warnings.
+Its checkout concurrently contained unrelated active-writer edits, so the
+runner's authoritative task-record update remains pending rather than racing
+that writer. These product-local notes preserve the implementation receipt.
+
+Live transport composition still needs an exact approved ingress reversal,
+not merely an Access application ID: removing a reset-created application
+and restoring a pre-existing policy are different security changes. Neither
+was selected or executed here. The approved surface order, serving-version
+pins, private Access configuration and session-visible database connection
+also remain gates. Missing configuration does not close the unfinished
+transport, command-wiring or release-timestamp contract work.

@@ -287,6 +287,31 @@ Their intent closures survive interruption before fresh admission; restarting
 does not require reconciling an already closed intent again. Original intent
 and disposition files remain retained after recovery.
 
+Each new release intent also signs the exact restoration-plan digest, a
+unique nonce, and the preceding not-executed disposition digest, or null for
+the initial intent. Execution, cancellation and recovery receive the digest
+of those signed intent bytes. A missing or changed plan binding refuses;
+older unbound intents are not migrated or silently re-signed. Unknown record
+kinds claiming the release prefix refuse recovery.
+
+The ceremony claim is created exclusively in the anchored private directory.
+Both the claim file and its parent directory are fsynced before execution is
+granted. Failed or partial persistence never permits another execution. A
+cancelled claim can advance only to a fresh signed intent naming its signed
+not-executed closure. Under the exclusive journal lock, the transition compares
+the exact previous bytes, archives both claims, fsyncs the replacement, renames
+it and fsyncs the directory. The old cancellation remains content-addressed
+evidence. Process death while holding the lock leaves it for explicit recovery;
+there is no automatic stale-lock takeover.
+
+The operation decodes the strict restoration plan before any attempt, refuses
+duplicate targets and bounds each surface confirmation to its invocation.
+Successful execution also independently observes all three surfaces restored.
+These confirmation timestamps are not provider mutation timestamps; their
+equivalence to the verifier's operational release boundary remains unaccepted.
+Authenticated provider transports and the live command composition remain
+unfinished. These filesystem and fixture tests grant no live authority.
+
 ## Retirement and follow-up passes
 
 The observation pass accepts the closed phases `retirement` and `follow-up` in

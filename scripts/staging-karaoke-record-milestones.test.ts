@@ -250,10 +250,13 @@ test("a modified release sidecar whose bytes do not hash to its name never becom
         signedBytes(
           {
             kind: "release-intent",
+            planDigest: base.releasePlanDigest,
+            nonce: "c".repeat(64),
+            previousNotExecutedId: null,
             epoch: base.trust.epoch,
             bucket: base.trust.bucket,
             residualDispositionId: base.trust.residualDispositionId,
-            expectedHead: head,
+            expectedHead: { entryId: head.entryId, sequence: head.sequence },
             fence: {
               verifiedAt: now(),
               ingress: true,
@@ -274,7 +277,7 @@ test("a modified release sidecar whose bytes do not hash to its name never becom
           epoch: base.trust.epoch,
           bucket: base.trust.bucket,
           residualDispositionId: base.trust.residualDispositionId,
-          expectedHead: head,
+          expectedHead: { entryId: head.entryId, sequence: head.sequence },
           intentId,
           release: { releasedAt: now(), allSixRetired: true },
           source: "execution",
@@ -312,6 +315,9 @@ test("a cross-ceremony release sidecar bound to a foreign journal head never bec
         signedBytes(
           {
             kind: "release-intent",
+            planDigest: base.releasePlanDigest,
+            nonce: "c".repeat(64),
+            previousNotExecutedId: null,
             epoch: base.trust.epoch,
             bucket: base.trust.bucket,
             residualDispositionId: base.trust.residualDispositionId,

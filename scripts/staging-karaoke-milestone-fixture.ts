@@ -147,6 +147,7 @@ export function makeKaraokeMilestoneFixture() {
     bucket: trust.bucket,
   };
   const base = {
+    releasePlanDigest: "a".repeat(64),
     trust,
     journal: { ...journal, expectedHead: held.head },
     privateKeyPem,

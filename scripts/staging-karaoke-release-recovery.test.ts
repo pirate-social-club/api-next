@@ -74,6 +74,77 @@ async function retiredCeremony() {
   return fixture;
 }
 
+test("changing the plan after an intent is retained refuses before recovery or fencing", async () => {
+  const { base, journal, now } = await retiredCeremony();
+  await expect(
+    recordKaraokeFenceRelease({
+      ...base,
+      verifyFenceRelease: async () => {
+        throw new Error("interrupted before claim");
+      },
+    }),
+  ).rejects.toThrow("interrupted before claim");
+  const before = readKaraokeMaintenanceJournal(journal, now()).head;
+  let calls = 0;
+  await expect(
+    recordKaraokeFenceRelease({
+      ...base,
+      releasePlanDigest: "f".repeat(64),
+      readers: {
+        ...base.readers,
+        observeMaintainedFence: async () => {
+          calls++;
+          throw new Error("must not fence");
+        },
+      },
+      verifyFenceRelease: async () => {
+        calls++;
+        throw new Error("must not execute");
+      },
+      reconcileReleasedFence: async () => {
+        calls++;
+        throw new Error("must not reconcile");
+      },
+    }),
+  ).rejects.toThrow("karaoke_release_plan_changed");
+  expect(calls).toBe(0);
+  expect(readKaraokeMaintenanceJournal(journal, now()).head).toEqual(before);
+});
+
+test("an unknown signed release record refuses rather than disappearing from recovery", async () => {
+  const { base, journal, now } = await retiredCeremony();
+  const head = readKaraokeMaintenanceJournal(journal, now()).head;
+  const writer = openKaraokePrivateWriter(journal.directory);
+  try {
+    writer.putArtifact(
+      signedBytes(
+        {
+          kind: "release-unrecognized",
+          epoch: base.trust.epoch,
+          bucket: base.trust.bucket,
+          residualDispositionId: base.trust.residualDispositionId,
+          expectedHead: { entryId: head.entryId, sequence: head.sequence },
+          recordedAt: now(),
+        },
+        base.privateKeyPem,
+      ),
+    );
+  } finally {
+    writer.close();
+  }
+  let executions = 0;
+  await expect(
+    recordKaraokeFenceRelease({
+      ...base,
+      verifyFenceRelease: async () => {
+        executions++;
+        throw new Error("must not execute");
+      },
+    }),
+  ).rejects.toThrow("karaoke_release_origin_recovery_denied");
+  expect(executions).toBe(0);
+});
+
 test("an invalid signed pending intent refuses before fence observation or execution", async () => {
   const { base, journal, now } = await retiredCeremony();
   const head = readKaraokeMaintenanceJournal(journal, now()).head;
@@ -83,6 +154,9 @@ test("an invalid signed pending intent refuses before fence observation or execu
       signedBytes(
         {
           kind: "release-intent",
+          planDigest: base.releasePlanDigest,
+          nonce: "c".repeat(64),
+          previousNotExecutedId: null,
           epoch: base.trust.epoch,
           bucket: base.trust.bucket,
           residualDispositionId: base.trust.residualDispositionId,

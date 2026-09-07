@@ -1,5 +1,10 @@
+import { Schema } from "effect";
 import { reconciliationDigest } from "../packages/platform-cf/src/karaoke-reconciliation-evidence.ts";
-import { decodeReconciliation } from "../packages/platform-cf/src/karaoke-reconciliation-schema.ts";
+import {
+  decodeReconciliation,
+  ReconciliationDigest,
+  ReconciliationTime,
+} from "../packages/platform-cf/src/karaoke-reconciliation-schema.ts";
 import { KaraokeResetSnapshotSchema } from "../packages/platform-cf/src/karaoke-reset-inspection.ts";
 import {
   KARAOKE_RESET_GENERATION,
@@ -13,21 +18,37 @@ import type {
   KaraokeAdapterTrust,
   KaraokeCollectorChallenge,
 } from "./karaoke-reconciliation-adapter.ts";
-import { recordKaraokeFenceRelease } from "./staging-karaoke-record-release.ts";
+import {
+  IntentRecord,
+  NotExecutedRecord,
+  recordKaraokeFenceRelease,
+} from "./staging-karaoke-record-release.ts";
+import {
+  persistKaraokeReleaseClaim,
+  replaceCancelledKaraokeReleaseClaim,
+} from "./staging-karaoke-release-claim.ts";
 import {
   executeKaraokeFenceRelease,
-  type KaraokeReleasePlan,
+  KaraokeReleasePlan,
   type KaraokeReleaseResult,
   type KaraokeReleaseSurface,
+  observeKaraokeReleasedSurface,
 } from "./staging-karaoke-release-operation.ts";
 import type { KaraokeSigningReaders } from "./staging-karaoke-signing-collector.ts";
+
+const ClaimRecord = Schema.Struct({
+  kind: Schema.Literals(["executing", "cancelled"]),
+  planDigest: ReconciliationDigest,
+  intentId: ReconciliationDigest,
+  recordedAt: ReconciliationTime,
+});
 
 /** Durable, authenticated surface-attempt evidence. The writer signs with the
  * pinned collector key; the reader verifies signatures and rejects anything
  * unsigned or foreign. */
 export interface KaraokeReleaseEvidenceStore {
   put(record: unknown): void;
-  list(): {
+  list(intentId: string): {
     surface?: KaraokeReleaseSurface;
     phase: string;
     releasedAt?: string;
@@ -42,6 +63,7 @@ export interface KaraokeReleaseEvidenceStore {
   claim(
     kind: "executing" | "cancelled",
     planDigest: string,
+    intentId: string,
   ): Promise<
     "granted" | "refused-cancelled" | "refused-executing" | "refused-foreign" | "uncertain"
   >;
@@ -56,17 +78,20 @@ export function makeKaraokeReleaseEvidenceStore(
   read: (name: string) => string,
 ): KaraokeReleaseEvidenceStore {
   const claimFile = "release-claim.json";
-  const readClaim = (): { kind: "executing" | "cancelled"; planDigest: string } => {
-    const payload = verifiedPayload(read(claimFile), publicKeyPem) as {
-      kind?: "executing" | "cancelled";
-      planDigest?: string;
-    };
-    if (
-      (payload.kind !== "executing" && payload.kind !== "cancelled") ||
-      typeof payload.planDigest !== "string"
-    )
-      throw new Error("karaoke_release_claim_uncertain");
-    return { kind: payload.kind, planDigest: payload.planDigest };
+  const readSigned = (id: string) => {
+    decodeReconciliation(ReconciliationDigest, id);
+    const bytes = read(`${id}.json`);
+    if (reconciliationDigest(bytes) !== id)
+      throw new Error("karaoke_release_evidence_digest_changed");
+    return verifiedPayload(bytes, publicKeyPem);
+  };
+  const readClaim = (): {
+    kind: "executing" | "cancelled";
+    planDigest: string;
+    intentId: string;
+    recordedAt: string;
+  } => {
+    return decodeReconciliation(ClaimRecord, verifiedPayload(read(claimFile), publicKeyPem));
   };
   return {
     put(record) {
@@ -77,33 +102,14 @@ export function makeKaraokeReleaseEvidenceStore(
         ),
       );
     },
-    async claim(kind, planDigest) {
-      const fs = await import("node:fs");
-      const path = `${directory}/${claimFile}`;
-      try {
-        // Create-once decides the single winner across processes; the file
-        // is fsynced and the directory entry persisted before granting.
-        const fd = fs.openSync(path, "wx", 0o600);
-        try {
-          fs.writeFileSync(
-            fd,
-            signedBytes({ kind, planDigest, recordedAt: new Date().toISOString() }, privateKeyPem),
-          );
-          fs.fsyncSync(fd);
-        } finally {
-          fs.closeSync(fd);
-        }
-        fs.openSync(directory, "r");
-        const dir = fs.opendirSync(directory);
-        try {
-          dir.closeSync();
-        } catch {
-          /* directory fsync below via fd */
-        }
-        return "granted" as const;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      }
+    async claim(kind, planDigest, intentId) {
+      const intent = decodeReconciliation(IntentRecord, readSigned(intentId));
+      if (intent.planDigest !== planDigest) throw new Error("karaoke_release_plan_changed");
+      const bytes = signedBytes(
+        { kind, planDigest, intentId, recordedAt: new Date().toISOString() },
+        privateKeyPem,
+      );
+      if (persistKaraokeReleaseClaim(directory, bytes)) return "granted" as const;
       // Someone claimed first. Malformed or partial content is uncertain —
       // never permission to retry — and a foreign plan digest refuses.
       const existing = (() => {
@@ -115,6 +121,45 @@ export function makeKaraokeReleaseEvidenceStore(
       })();
       if (existing === undefined) return "uncertain";
       if (existing.planDigest !== planDigest) return "refused-foreign";
+      if (existing.intentId !== intentId) {
+        if (existing.kind !== "cancelled" || intent.previousNotExecutedId === null)
+          return "refused-foreign";
+        const prior = decodeReconciliation(IntentRecord, readSigned(existing.intentId));
+        const closed = decodeReconciliation(
+          NotExecutedRecord,
+          readSigned(intent.previousNotExecutedId),
+        );
+        if (
+          closed.kind !== "release-not-executed" ||
+          closed.intentId !== existing.intentId ||
+          closed.epoch !== intent.epoch ||
+          closed.bucket !== intent.bucket ||
+          closed.residualDispositionId !== intent.residualDispositionId ||
+          prior.epoch !== intent.epoch ||
+          prior.bucket !== intent.bucket ||
+          prior.residualDispositionId !== intent.residualDispositionId ||
+          prior.planDigest !== planDigest ||
+          Date.parse(closed.recordedAt) < Date.parse(prior.recordedAt) ||
+          Date.parse(closed.recordedAt) > Date.parse(intent.recordedAt) ||
+          closed.expectedHead.sequence < prior.expectedHead.sequence ||
+          closed.expectedHead.sequence > intent.expectedHead.sequence
+        )
+          return "refused-foreign";
+        const previousBytes = read(claimFile);
+        const previous = decodeReconciliation(
+          ClaimRecord,
+          verifiedPayload(previousBytes, publicKeyPem),
+        );
+        if (
+          previous.kind !== "cancelled" ||
+          previous.intentId !== existing.intentId ||
+          previous.planDigest !== planDigest
+        )
+          return "uncertain";
+        return replaceCancelledKaraokeReleaseClaim(directory, previousBytes, bytes)
+          ? "granted"
+          : "uncertain";
+      }
       return existing.kind === kind
         ? kind === "executing"
           ? "refused-executing"
@@ -123,7 +168,7 @@ export function makeKaraokeReleaseEvidenceStore(
           ? "refused-cancelled"
           : "refused-executing";
     },
-    list() {
+    list(intentId) {
       const found: {
         surface?: KaraokeReleaseSurface;
         phase: string;
@@ -133,37 +178,41 @@ export function makeKaraokeReleaseEvidenceStore(
       }[] = [];
       try {
         const claim = readClaim();
+        if (claim.intentId !== intentId) throw new Error("karaoke_release_claim_foreign_intent");
         found.push({
           phase: claim.kind === "cancelled" ? "cancelled" : "executing",
           planDigest: claim.planDigest,
-          recordedAt: new Date(0).toISOString(),
+          recordedAt: claim.recordedAt,
         });
-      } catch {
-        // No claim file or an unreadable one: absence is fine during early
-        // listing; claim() is the authority on uncertainty.
+      } catch (error) {
+        if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
       }
       for (const name of names()) {
         const bytes = read(name);
-        if (reconciliationDigest(bytes) !== name.replace(/\.json$/u, "")) continue;
-        try {
-          const payload = verifiedPayload(bytes, publicKeyPem) as {
-            scope?: string;
-            surface?: KaraokeReleaseSurface;
-            phase?: string;
-            releasedAt?: string;
-            recordedAt?: string;
-            planDigest?: string;
-          };
-          if (payload.scope === "staging-karaoke-release-surface")
-            found.push({
-              ...(payload.surface === undefined ? {} : { surface: payload.surface }),
-              phase: payload.phase ?? "unknown",
-              ...(payload.releasedAt === undefined ? {} : { releasedAt: payload.releasedAt }),
-              ...(payload.recordedAt === undefined ? {} : { recordedAt: payload.recordedAt }),
-              ...(payload.planDigest === undefined ? {} : { planDigest: payload.planDigest }),
-            });
-        } catch {
-          // Unsigned or wrongly keyed records are not evidence.
+        if (reconciliationDigest(bytes) !== name.replace(/\.json$/u, ""))
+          throw new Error("karaoke_release_evidence_digest_changed");
+        const outer = JSON.parse(bytes);
+        const candidate = typeof outer.payload === "string" ? JSON.parse(outer.payload) : outer;
+        if (candidate?.scope !== "staging-karaoke-release-surface") continue;
+        const payload = verifiedPayload(bytes, publicKeyPem) as {
+          scope?: string;
+          surface?: KaraokeReleaseSurface;
+          phase?: string;
+          releasedAt?: string;
+          recordedAt?: string;
+          planDigest?: string;
+          intentId?: string;
+        };
+        if (payload.scope === "staging-karaoke-release-surface") {
+          if (payload.intentId !== intentId)
+            throw new Error("karaoke_release_claim_foreign_intent");
+          found.push({
+            ...(payload.surface === undefined ? {} : { surface: payload.surface }),
+            phase: payload.phase ?? "unknown",
+            ...(payload.releasedAt === undefined ? {} : { releasedAt: payload.releasedAt }),
+            ...(payload.recordedAt === undefined ? {} : { recordedAt: payload.recordedAt }),
+            ...(payload.planDigest === undefined ? {} : { planDigest: payload.planDigest }),
+          });
         }
       }
       return found;
@@ -192,7 +241,18 @@ export function makeKaraokeReleaseBinding(input: {
   readonly readers: KaraokeSigningReaders;
   readonly now?: () => string;
 }) {
-  const planDigest = reconciliationDigest(JSON.stringify(input.plan));
+  // Do not retain caller-owned arrays after binding the signed digest.
+  const plan = decodeReconciliation(KaraokeReleasePlan, structuredClone(input.plan));
+  const planDigest = reconciliationDigest(JSON.stringify(plan));
+  const observeSurfaces = () =>
+    Promise.all(
+      (["ingress", "producers", "database"] as const).map((surface) =>
+        observeKaraokeReleasedSurface({
+          surface,
+          observe: async () => input.observeRestored[surface]?.() ?? "uncertain",
+        }),
+      ),
+    );
   const allSixRetired = async () => {
     for (const objectId of KARAOKE_RESET_OBJECT_IDS) {
       const snapshot = decodeReconciliation(
@@ -208,28 +268,41 @@ export function makeKaraokeReleaseBinding(input: {
     }
     return true;
   };
-  const claimExclusive = async (kind: "executing" | "cancelled") => {
-    const claim = await input.evidence.claim(kind, planDigest);
+  const claimExclusive = async (
+    kind: "executing" | "cancelled",
+    intent: { planDigest: string; intentId: string },
+  ) => {
+    if (intent.planDigest !== planDigest) throw new Error("karaoke_release_plan_changed");
+    const claim = await input.evidence.claim(kind, planDigest, intent.intentId);
     if (claim !== "granted") throw new Error(`karaoke_release_claim_${claim}`);
   };
   return {
     /** Durable pre-execution cancellation through the same exclusive claim
      * the executor must acquire: exactly one of executing or cancelled may
      * ever exist for this intent, and cancellation cannot supersede it. */
-    async cancelBeforeExecution(): Promise<void> {
-      await claimExclusive("cancelled");
+    async cancelBeforeExecution(intent: {
+      readonly planDigest: string;
+      readonly intentId: string;
+    }): Promise<void> {
+      await claimExclusive("cancelled", intent);
     },
-    async verifyFenceRelease(): Promise<{ releasedAt: string; allSixRetired: boolean }> {
+    async verifyFenceRelease(intent: {
+      readonly planDigest: string;
+      readonly intentId: string;
+    }): Promise<{ releasedAt: string; allSixRetired: boolean }> {
+      if (intent.planDigest !== planDigest) throw new Error("karaoke_release_plan_changed");
+      if (!(await allSixRetired())) throw new Error("karaoke_release_markers_unproven");
       // Mutation requires a successfully persisted executing claim; failed,
       // malformed or uncertain claim persistence refuses here.
-      await claimExclusive("executing");
+      await claimExclusive("executing", intent);
       const result: KaraokeReleaseResult = await executeKaraokeFenceRelease({
-        plan: input.plan,
+        plan,
         surfaces: input.surfaces,
         ...(input.now === undefined ? {} : { now: input.now }),
         onAttempt: (record) =>
           input.evidence.put({
             planDigest,
+            intentId: intent.intentId,
             surface: record.surface,
             phase: record.phase,
             ...(record.receipt === undefined
@@ -242,20 +315,17 @@ export function makeKaraokeReleaseBinding(input: {
       });
       if (result.disposition !== "released")
         throw new Error("karaoke_release_operation_unresolved");
+      if (!(await observeSurfaces()).every((surface) => surface === "restored"))
+        throw new Error("karaoke_release_operation_unresolved");
       return { releasedAt: result.releasedAt, allSixRetired: await allSixRetired() };
     },
-    async reconcileReleasedFence(intent: { readonly recordedAt?: string }): Promise<unknown> {
-      const observations = await Promise.all(
-        (Object.keys(input.observeRestored) as KaraokeReleaseSurface[]).map(async (surface) =>
-          (await import("./staging-karaoke-release-operation.ts")).observeKaraokeReleasedSurface({
-            surface,
-            observe: async () => {
-              const observe = input.observeRestored[surface];
-              return observe === undefined ? ("uncertain" as const) : observe();
-            },
-          }),
-        ),
-      );
+    async reconcileReleasedFence(intent: {
+      readonly planDigest: string;
+      readonly intentId: string;
+      readonly recordedAt?: string;
+    }): Promise<unknown> {
+      if (intent.planDigest !== planDigest) throw new Error("karaoke_release_plan_changed");
+      const observations = await observeSurfaces();
       if (observations.some((observation) => observation === "uncertain"))
         return { disposition: "unresolved" };
       // Retained, signed release receipts inside this intent's window are the
@@ -263,12 +333,12 @@ export function makeKaraokeReleaseBinding(input: {
       // not-executed: a partial release followed by re-fencing is identical.
       if (
         input.evidence
-          .list()
+          .list(intent.intentId)
           .some((record) => record.planDigest !== undefined && record.planDigest !== planDigest)
       )
         throw new Error("karaoke_release_plan_changed");
       const receipts = input.evidence
-        .list()
+        .list(intent.intentId)
         .filter(
           (record) =>
             record.phase === "released" &&
@@ -284,7 +354,7 @@ export function makeKaraokeReleaseBinding(input: {
         // recorded before any attempt could start and bound to this plan,
         // positively establishes execution never began.
         const cancelled = input.evidence
-          .list()
+          .list(intent.intentId)
           .some(
             (record) =>
               record.phase === "cancelled" &&
@@ -317,6 +387,7 @@ export function makeKaraokeReleaseBinding(input: {
 
 /** Convenience composition: the origin with the binding's ports. */
 export function recordKaraokeFenceReleaseThroughBinding(input: {
+  readonly releasePlanDigest: string;
   readonly trust: KaraokeAdapterTrust;
   readonly journal: KaraokeJournalTrust;
   readonly privateKeyPem: string;

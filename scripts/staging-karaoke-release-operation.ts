@@ -1,7 +1,9 @@
 import { Schema } from "effect";
 import {
+  decodeReconciliation,
   ReconciliationDigest,
   ReconciliationText,
+  ReconciliationTime,
 } from "../packages/platform-cf/src/karaoke-reconciliation-schema.ts";
 
 const Id = Schema.String.check(Schema.isPattern(/^[a-f0-9-]{32,36}$/u));
@@ -93,9 +95,17 @@ export async function executeKaraokeFenceRelease(input: {
   readonly now?: () => string;
 }) {
   const now = input.now ?? (() => new Date().toISOString());
+  if (typeof input.plan !== "object" || input.plan === null || Array.isArray(input.plan))
+    throw new Error("karaoke_release_plan_incomplete:approved restoration plan");
   const decision = missingDecision(input.plan as Partial<KaraokeReleasePlan>);
   if (decision !== null) throw new Error(`karaoke_release_plan_incomplete:${decision}`);
-  const plan = input.plan as KaraokeReleasePlan;
+  const plan = decodeReconciliation(KaraokeReleasePlan, input.plan);
+  if (
+    new Set(plan.resumeQueues.map((queue) => queue.id)).size !== plan.resumeQueues.length ||
+    new Set(plan.resumeQueues.map((queue) => queue.name)).size !== plan.resumeQueues.length ||
+    new Set(plan.servingWorkers.map((worker) => worker.worker)).size !== plan.servingWorkers.length
+  )
+    throw new Error("karaoke_release_plan_duplicate_target");
   const directives: Record<KaraokeReleaseSurface, unknown> = {
     ingress: { applicationId: plan.ingressApplicationId },
     producers: { resumeQueues: plan.resumeQueues, servingWorkers: plan.servingWorkers },
@@ -108,7 +118,20 @@ export async function executeKaraokeFenceRelease(input: {
   for (const [surface, directive] of order) {
     input.onAttempt?.({ surface, phase: "intent" });
     try {
-      const receipt = await input.surfaces[surface](directive, now);
+      const startedAt = decodeReconciliation(ReconciliationTime, now());
+      const receipt = decodeReconciliation(
+        Schema.Struct({
+          surface: Schema.Literal(surface),
+          releasedAt: ReconciliationTime,
+          receipt: ReconciliationText,
+        }),
+        await input.surfaces[surface](directive, now),
+      );
+      if (
+        Date.parse(receipt.releasedAt) < Date.parse(startedAt) ||
+        Date.parse(receipt.releasedAt) > Date.parse(now())
+      )
+        throw new Error("karaoke_release_confirmation_time_unproven");
       if (receipt.surface !== surface) throw new Error("karaoke_release_surface_mismatch");
       receipts.push(receipt);
       input.onAttempt?.({ surface, phase: "released", receipt });

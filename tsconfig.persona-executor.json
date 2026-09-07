@@ -9,7 +9,9 @@
     "scripts/staging-karaoke-reset-binding.test.ts",
     "scripts/staging-karaoke-reset-binding.ts",
     "scripts/staging-karaoke-release-operation.ts",
+    "scripts/staging-karaoke-release-operation.test.ts",
     "scripts/staging-karaoke-release-binding.ts",
-    "scripts/staging-karaoke-release-binding.test.ts"
+    "scripts/staging-karaoke-release-binding.test.ts",
+    "scripts/staging-karaoke-release-claim.test.ts"
   ]
 }
