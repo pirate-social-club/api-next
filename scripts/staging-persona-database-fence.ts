@@ -104,9 +104,7 @@ function assertRuntimeIdentity(value: RuntimeIdentityFenceObservation): void {
  * privileges and SET ROLE/security-definer paths. Reconnect denial is a
  * separate check: a point-in-time session count cannot stand in for it.
  */
-export function emitDatabaseFenceProof(
-  observation: DatabaseFenceObservation,
-): DatabaseFenceProof {
+export function emitDatabaseFenceProof(observation: DatabaseFenceObservation): DatabaseFenceProof {
   assertCount(observation.otherSessions, "session_drain_unproven");
   assertCount(observation.preparedTransactions, "session_drain_unproven");
   assertCount(observation.activeTransactions, "session_drain_unproven");
@@ -173,7 +171,18 @@ export function encodeFenceEvidenceArtifact(
   scope: unknown,
   evidence: FenceEvidence,
 ): { readonly id: string; readonly bytes: string } {
-  const bytes = JSON.stringify({ scope, data: evidence });
+  assertFenceEvidenceShape(evidence);
+  // Diagnostics belong beside this envelope, never inside the closed verifier shape.
+  const data: FenceEvidence = {
+    verifiedAt: evidence.verifiedAt,
+    ingress: evidence.ingress,
+    producers: evidence.producers,
+    databaseWrites: evidence.databaseWrites,
+    reconnectDenied: evidence.reconnectDenied,
+    runtimeSessions: evidence.runtimeSessions,
+    residualDispositionId: evidence.residualDispositionId,
+  };
+  const bytes = JSON.stringify({ scope, data });
   if (bytes === undefined) throw new Error("fence_artifact_scope_unproven");
   const id = createHash("sha256").update(bytes, "utf8").digest("hex");
   return Object.freeze({ id, bytes });

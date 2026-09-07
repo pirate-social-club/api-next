@@ -37,14 +37,27 @@ test("emits positive proof only after every runtime identity is drained and deni
     databaseWrites: true,
     reconnectDenied: true,
     runtimeSessions: 0,
-    runtimeIdentityFingerprints: [runtimeIdentityFingerprint("runtime-http"), runtimeIdentityFingerprint("runtime-jobs")],
+    runtimeIdentityFingerprints: [
+      runtimeIdentityFingerprint("runtime-http"),
+      runtimeIdentityFingerprint("runtime-jobs"),
+    ],
   });
   for (const change of [
     { otherSessions: 1 },
     { preparedTransactions: 1 },
     { activeTransactions: 1 },
-    { runtimeIdentities: [runtime("runtime-http"), { ...runtime("runtime-jobs"), reconnectDenied: false }] },
-    { runtimeIdentities: [{ ...runtime("runtime-http"), inheritedPrivilegesDenied: false }, runtime("runtime-jobs")] },
+    {
+      runtimeIdentities: [
+        runtime("runtime-http"),
+        { ...runtime("runtime-jobs"), reconnectDenied: false },
+      ],
+    },
+    {
+      runtimeIdentities: [
+        { ...runtime("runtime-http"), inheritedPrivilegesDenied: false },
+        runtime("runtime-jobs"),
+      ],
+    },
   ]) {
     expect(() => emitDatabaseFenceProof({ ...observation, ...change })).toThrow();
   }
@@ -59,7 +72,7 @@ test("composes exact FenceEvidence and preserves the residual disposition bindin
     database: observation,
   });
   expect(evidence).toMatchObject({
-    verifiedAt: "2025-09-07T00:26:40.123Z",
+    verifiedAt: "2025-09-06T23:06:40.123Z",
     ingress: true,
     producers: true,
     databaseWrites: true,
@@ -68,13 +81,15 @@ test("composes exact FenceEvidence and preserves the residual disposition bindin
     residualDispositionId: "a".repeat(64),
   });
   assertFenceEvidenceShape(evidence);
-  expect(() => emitFenceEvidence({
-    verifiedAtMs: 1_757_200_000_123,
-    ingress: false,
-    producers: true,
-    residualDispositionId: "a".repeat(64),
-    database: observation,
-  })).toThrow("fence_components_unproven");
+  expect(() =>
+    emitFenceEvidence({
+      verifiedAtMs: 1_757_200_000_123,
+      ingress: false,
+      producers: true,
+      residualDispositionId: "a".repeat(64),
+      database: observation,
+    }),
+  ).toThrow("fence_components_unproven");
 });
 
 test("artifact bytes are scope-bound and hashable without exposing role names", () => {
@@ -86,12 +101,25 @@ test("artifact bytes are scope-bound and hashable without exposing role names", 
     database: observation,
   });
   const artifact = encodeFenceEvidenceArtifact(
-    { target: { objectId: "object", bucket: "bucket" }, phase: "post-fence", epoch: "c".repeat(64) },
+    {
+      target: { objectId: "object", bucket: "bucket" },
+      phase: "post-fence",
+      epoch: "c".repeat(64),
+    },
     evidence,
   );
   expect(artifact.id).toMatch(/^[a-f0-9]{64}$/);
   expect(artifact.bytes).not.toContain("runtime-http");
-  expect(artifact.bytes).toContain("runtimeIdentityFingerprints");
+  expect(artifact.bytes).not.toContain("runtimeIdentityFingerprints");
+  expect(Object.keys(JSON.parse(artifact.bytes).data).sort()).toEqual([
+    "databaseWrites",
+    "ingress",
+    "producers",
+    "reconnectDenied",
+    "residualDispositionId",
+    "runtimeSessions",
+    "verifiedAt",
+  ]);
 });
 
 test("canonicalizes only exact UTC millisecond timestamps", () => {

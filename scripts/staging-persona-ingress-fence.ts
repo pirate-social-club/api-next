@@ -2,13 +2,11 @@ import { createHash } from "node:crypto";
 
 export const STAGING_HTTP_WORKER_ID = "7ada21fbaf794466bae2eda487299555";
 export const STAGING_HTTP_CUSTOM_DOMAIN = "api-next-staging.pirate.sc";
-export const STAGING_HTTP_WORKERS_DEV =
-  "pirate-http-worker-staging.piratesocialclub.workers.dev";
+export const STAGING_HTTP_WORKERS_DEV = "pirate-http-worker-staging.piratesocialclub.workers.dev";
 export const STAGING_API_SOURCE_SHA = "ba0fd44529d834f491879126cdb8c67c4ec9fcdc";
 export const STAGING_SOLID_SOURCE_SHA = "fa5ce5eff47967efb5f13c04de01e75293d3e230";
 
 const hosts = [STAGING_HTTP_CUSTOM_DOMAIN, STAGING_HTTP_WORKERS_DEV] as const;
-const sha = /^[a-f0-9]{40}$/u;
 const id = /^[a-zA-Z0-9_-]{1,128}$/u;
 
 export type IngressHost = (typeof hosts)[number];
@@ -56,10 +54,6 @@ export interface PersistentIngressFenceObservation {
   readonly probes: readonly IngressProbeObservation[];
 }
 
-function assertSha(value: string, error: string): void {
-  if (!sha.test(value)) throw new Error(error);
-}
-
 function assertId(value: string, error: string): void {
   if (!id.test(value)) throw new Error(error);
 }
@@ -82,9 +76,7 @@ function assertWorkerApplication(application: AccessApplicationObservation): voi
   }
 }
 
-function assertNoSpecificOverride(
-  applications: readonly AccessApplicationObservation[],
-): void {
+function assertNoSpecificOverride(applications: readonly AccessApplicationObservation[]): void {
   for (const application of applications) {
     assertId(application.id, "ingress_application_unproven");
     if (
@@ -207,7 +199,11 @@ export function verifyPersistentIngressFence(
   const observedHosts = new Set<string>();
   for (const probe of observation.probes) {
     assertHost(probe.host);
-    if (observedHosts.has(probe.host) || !probe.denied || probe.accessApplicationId !== expectedApplicationId) {
+    if (
+      observedHosts.has(probe.host) ||
+      !probe.denied ||
+      probe.accessApplicationId !== expectedApplicationId
+    ) {
       throw new Error("ingress_probe_unproven");
     }
     observedHosts.add(probe.host);
@@ -231,9 +227,7 @@ export function ingressFenceFingerprint(value: {
   readonly apiSourceSha: string;
   readonly solidSourceSha: string;
 }): string {
-  return createHash("sha256")
-    .update(JSON.stringify(value), "utf8")
-    .digest("hex");
+  return createHash("sha256").update(JSON.stringify(value), "utf8").digest("hex");
 }
 
 export { hosts as STAGING_HTTP_INGRESS_HOSTS };

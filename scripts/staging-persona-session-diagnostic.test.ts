@@ -72,8 +72,11 @@ test("keeps null identity fields and rejects malformed diagnostics", () => {
 });
 
 test("sorts and rejects duplicate backend PIDs", () => {
-  expect(describeSessionDiagnostics([{ ...session, pid: 2 }, { ...session, pid: 1 }]).map((v) => v.pid)).toEqual([
-    1, 2,
-  ]);
+  expect(
+    describeSessionDiagnostics([
+      { ...session, pid: 2 },
+      { ...session, pid: 1 },
+    ]).map((v) => v.pid),
+  ).toEqual([1, 2]);
   expect(() => describeSessionDiagnostics([session, session])).toThrow("duplicate_pid");
 });

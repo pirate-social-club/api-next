@@ -1,12 +1,12 @@
 import { expect, test } from "bun:test";
 import {
+  normalizeIngressProbe,
   planPersistentIngressFence,
   STAGING_API_SOURCE_SHA,
   STAGING_HTTP_CUSTOM_DOMAIN,
   STAGING_HTTP_WORKER_ID,
   STAGING_HTTP_WORKERS_DEV,
   STAGING_SOLID_SOURCE_SHA,
-  normalizeIngressProbe,
   verifyPersistentIngressFence,
 } from "./staging-persona-ingress-fence";
 
@@ -23,7 +23,11 @@ const workerPolicy = {
 
 test("plans a persistent Worker-level policy without replacing specific applications", () => {
   expect(
-    planPersistentIngressFence({ workerId: STAGING_HTTP_WORKER_ID, existingApplications: [], runtimePins: pins }),
+    planPersistentIngressFence({
+      workerId: STAGING_HTTP_WORKER_ID,
+      existingApplications: [],
+      runtimePins: pins,
+    }),
   ).toMatchObject({ action: "create-worker-policy", survivesNormalDeploy: true });
   expect(
     planPersistentIngressFence({
@@ -31,13 +35,16 @@ test("plans a persistent Worker-level policy without replacing specific applicat
       existingApplications: [workerPolicy],
       runtimePins: pins,
     }),
-  ).toMatchObject({ action: "verify-existing-worker-policy", existingApplicationId: workerPolicy.id });
+  ).toMatchObject({
+    action: "verify-existing-worker-policy",
+    existingApplicationId: workerPolicy.id,
+  });
 });
 
 test("requires the exact Worker, both release pins, and no more-specific allow override", () => {
-  expect(() => planPersistentIngressFence({ workerId: "other", existingApplications: [], runtimePins: pins })).toThrow(
-    "worker_unproven",
-  );
+  expect(() =>
+    planPersistentIngressFence({ workerId: "other", existingApplications: [], runtimePins: pins }),
+  ).toThrow("worker_unproven");
   expect(() =>
     planPersistentIngressFence({
       workerId: STAGING_HTTP_WORKER_ID,
@@ -80,10 +87,13 @@ test("classifies only Access denial responses as denied", () => {
       location: "https://example.cloudflareaccess.com/cdn-cgi/access/login?x=1",
     }).denied,
   ).toBe(true);
-  expect(normalizeIngressProbe({ host: STAGING_HTTP_CUSTOM_DOMAIN, status: 302, location: "/login" }).denied).toBe(
+  expect(
+    normalizeIngressProbe({ host: STAGING_HTTP_CUSTOM_DOMAIN, status: 302, location: "/login" })
+      .denied,
+  ).toBe(false);
+  expect(normalizeIngressProbe({ host: STAGING_HTTP_CUSTOM_DOMAIN, status: 503 }).denied).toBe(
     false,
   );
-  expect(normalizeIngressProbe({ host: STAGING_HTTP_CUSTOM_DOMAIN, status: 503 }).denied).toBe(false);
 });
 
 test("requires both custom-domain and workers.dev denial after both reviewed runtime pins", () => {
@@ -114,7 +124,11 @@ test("requires both custom-domain and workers.dev denial after both reviewed run
   });
   for (const change of [
     { probes: base.probes.slice(0, 1) },
-    { probes: base.probes.map((probe, index) => (index === 1 ? { ...probe, denied: false } : probe)) },
+    {
+      probes: base.probes.map((probe, index) =>
+        index === 1 ? { ...probe, denied: false } : probe,
+      ),
+    },
     { deploymentPins: { ...pins, api: "0".repeat(40) } },
     { workerLevelApplication: { ...workerPolicy, id: "replaced" } },
   ]) {
