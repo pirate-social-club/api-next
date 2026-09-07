@@ -1,0 +1,33 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "pirate-staging-karaoke-reset-caller-disabled",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-07",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": {
+    "enabled": false,
+    "logs": { "enabled": false, "invocation_logs": false, "persist": false },
+    "traces": { "enabled": false, "persist": false }
+  },
+  "vars": { "API_NEXT_ENV": "disabled", "KARAOKE_RESET_ENABLED": "false" },
+  "env": {
+    "staging": {
+      "name": "pirate-staging-karaoke-reset-caller",
+      "workers_dev": false,
+      "preview_urls": false,
+      "observability": {
+        "enabled": false,
+        "logs": { "enabled": false, "invocation_logs": false, "persist": false },
+        "traces": { "enabled": false, "persist": false }
+      },
+      "vars": { "API_NEXT_ENV": "staging", "KARAOKE_RESET_ENABLED": "false" },
+      "services": [{
+        "binding": "RESET_OPERATOR",
+        "service": "pirate-http-worker-staging",
+        "entrypoint": "KaraokeResetOperatorEntrypoint"
+      }]
+    }
+  }
+}

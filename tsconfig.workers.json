@@ -12,6 +12,7 @@
     "apps/jobs-worker",
     "apps/media-processor-worker",
     "apps/video-source-gateway",
+    "apps/staging-karaoke-reset-caller",
     "tests"
   ],
   "exclude": [

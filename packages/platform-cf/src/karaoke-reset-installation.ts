@@ -29,7 +29,7 @@ const Command = Schema.Struct({
 });
 const Count = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0));
 const Axis = Schema.NullOr(Schema.Literals(["pending", "stored", "exhausted"]));
-const Observation = Schema.Struct({
+export const KaraokeResetObservationSchema = Schema.Struct({
   alarm: Schema.NullOr(Count),
   sockets: Count,
   scoreState: Axis,
@@ -37,6 +37,7 @@ const Observation = Schema.Struct({
   archiveKey: Schema.NullOr(Schema.String),
   uploadId: Schema.NullOr(Schema.String),
 });
+const Observation = KaraokeResetObservationSchema;
 export const KaraokeResetReceiptSchema = Schema.Struct({
   ...Command.fields,
   initial: Observation,
@@ -77,6 +78,10 @@ function decode<S extends Schema.ConstraintDecoder<unknown>>(schema: S, value: u
 
 export function decodeKaraokeResetCommand(input: unknown): typeof Command.Type {
   return decode(Command, input);
+}
+
+export function decodeKaraokeResetTarget(input: unknown): typeof KaraokeResetTarget.Type {
+  return decode(KaraokeResetTarget, input);
 }
 
 /** Storage-only barrier; cancellation and bounded drain deliberately happen outside it. */
