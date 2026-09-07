@@ -28,6 +28,7 @@ export const reusablePostgresTestSuites = [
 ] as const;
 
 export const freshSchemaPostgresTestSuites = [
+  "apps/http-worker/src/hns-community-publication.pg.test.ts",
   "apps/http-worker/src/public-community-threads-composition.pg.test.ts",
   "scripts/hns-monitor/snapshot.pg.test.ts",
   "scripts/hns-continuity/promotion.pg.test.ts",

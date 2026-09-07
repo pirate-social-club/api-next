@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
-import type { HnsCommunityRootImportPollServices } from "@pirate/application/namespace-ownership";
+import {
+  type HnsCommunityRootImportPollServices,
+  pollHnsCommunityRootImport,
+} from "@pirate/application/namespace-ownership";
 import {
   GetCurrentHnsCommunityRootImport,
   HnsCommunityRootImportSessionResponseV1,
@@ -118,7 +121,7 @@ test("discovery hides unauthorized communities instead of returning absence", as
   );
 });
 
-test("publication checks remain pollable through pending, unavailable, and confirmed results", async () => {
+test("server publication continuation handles pending, unavailable, and confirmed results", async () => {
   let status: "pending" | "unavailable" | "verified" | "rejected" | "expired" = "pending";
   let observationCalls = 0;
   const services: HnsCommunityRootImportPollServices = {
@@ -167,38 +170,46 @@ test("publication checks remain pollable through pending, unavailable, and confi
       },
     },
   };
-  const handlers = makeHnsCommunityRootImportHandlers(
-    services as Parameters<typeof makeHnsCommunityRootImportHandlers>[0],
-  );
+  const check = () =>
+    Effect.runPromise(
+      pollHnsCommunityRootImport(
+        {
+          actor_id: "actor-panel",
+          community_id: awaiting.community_id,
+          root_import_session_id: awaiting.root_import_session_id,
+          expected_revision: 3,
+          idempotency_key: "poll-panel",
+        },
+        services,
+      ),
+    );
   for (const [next, retry] of [
     ["pending", 1],
     ["unavailable", 30],
   ] as const) {
     status = next;
-    const response = (await handlers.PollHnsCommunityRootImport(request)) as EndpointHandlerResult;
-    expect(response.status).toBe(202);
-    expect(response.body).toMatchObject({
+    const response = await check();
+    expect(response).toMatchObject({
       status: "awaiting_owner_update",
       publication_check_pending: true,
       retry_after_seconds: retry,
       revision: 3,
     });
-    expect(Schema.is(HnsCommunityRootImportSessionResponseV1)(response.body)).toBe(true);
+    expect(Schema.is(HnsCommunityRootImportSessionResponseV1)(response)).toBe(true);
     expect(observationCalls).toBe(0);
   }
   status = "verified";
-  const confirmed = (await handlers.PollHnsCommunityRootImport(request)) as EndpointHandlerResult;
-  expect(confirmed.body).toMatchObject({ status: "observing", revision: 4 });
+  const confirmed = await check();
+  expect(confirmed).toMatchObject({ status: "observing", revision: 4 });
   expect(observationCalls).toBe(1);
   for (const next of ["rejected", "expired"] as const) {
     status = next;
-    const terminal = (await handlers.PollHnsCommunityRootImport(request)) as EndpointHandlerResult;
-    expect(terminal.status).toBe(422);
-    expect(terminal.body).toMatchObject({
+    const terminal = await check();
+    expect(terminal).toMatchObject({
       status: next === "rejected" ? "failed" : "expired",
       retry_after_seconds: null,
     });
-    expect(Schema.is(HnsCommunityRootImportSessionResponseV1)(terminal.body)).toBe(true);
+    expect(Schema.is(HnsCommunityRootImportSessionResponseV1)(terminal)).toBe(true);
     expect(observationCalls).toBe(1);
   }
 });
