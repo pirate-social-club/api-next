@@ -84,7 +84,7 @@ type RecoveryConfigurationAuthority = Pick<
   "provider_id" | "provider_configuration" | "environment"
 >;
 
-export type HnsOwnerCreationTargetSession = Readonly<{
+export type HnsOwnerControlTargetSession = Readonly<{
   readonly provider_id: "hns.owner.v1";
   readonly provider_configuration: Readonly<{
     readonly kind: "managed" | "dynamic";
@@ -123,8 +123,8 @@ export function matchesHnsTargetObserverRecoveryConfiguration(
   );
 }
 
-export function matchesHnsTargetObserverCreationConfiguration(
-  authority: HnsOwnerCreationTargetSession,
+export function matchesHnsTargetObserverControlConfiguration(
+  authority: HnsOwnerControlTargetSession,
   runtime: HnsTargetObserverRuntime,
 ): boolean {
   const configuration = runtime.configuration;
@@ -374,12 +374,12 @@ export async function observeHnsOwnerRecoverySession(
   }
 }
 
-export async function observeHnsOwnerCreationSession(
-  session: HnsOwnerCreationTargetSession,
+export async function observeHnsOwnerControlSession(
+  session: HnsOwnerControlTargetSession,
   runtime: HnsTargetObserverRuntime,
   observationId: string,
 ): Promise<Uint8Array> {
-  if (!matchesHnsTargetObserverCreationConfiguration(session, runtime)) {
+  if (!matchesHnsTargetObserverControlConfiguration(session, runtime)) {
     throw new HnsTargetObserverFacadeError("misconfigured");
   }
   const request: HnsControlObservationRequestV1 = {
