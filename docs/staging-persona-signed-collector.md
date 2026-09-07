@@ -804,3 +804,13 @@ readbacks and transport failures refuse a surface receipt. Exact schedule values
 join the owner-held restoration configuration; this adds no live permission.
 The API contract was checked against the Cloudflare
 [Cron Triggers update reference](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/schedules/methods/update/).
+
+Publication setup now explicitly separates the two Docker-dependent PostgreSQL
+recovery suites from CI's audited general shards. The required recovery job
+uses the pinned PostgreSQL 17.11 service container for client tools and a
+read-only repository token, with no provider secrets. It runs outside Iron
+Proxy's Docker-socket isolation, matching the namespace freshness exception;
+general-shard egress auditing is unchanged. The aggregate postgres17 gate
+requires recovery success as well as namespace and general success. Discovery
+tests prove exact, exhaustive, non-overlapping CI coverage. Local all/general
+partitions still include the recovery suites, so a full local run skips none.

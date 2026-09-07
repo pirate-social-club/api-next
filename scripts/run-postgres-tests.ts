@@ -6,6 +6,24 @@ import {
 
 const namespaceOwnershipTest =
   "packages/platform-cf/src/namespace-ownership-persistence.pg.test.ts";
+const dockerRecoveryTests = [
+  "scripts/staging-persona-phased-reset.pg.test.ts",
+  "scripts/staging-persona-recovery.pg.test.ts",
+] as const;
+
+/** CI's audited runners cannot use Docker. Local general/all partitions
+ * still cover every file; CI splits exactly these recovery transport suites
+ * into a separately required job, never an optional skip flag. */
+export function partitionPostgresRecoveryFiles(files: readonly string[]) {
+  for (const file of dockerRecoveryTests) {
+    if (!files.includes(file))
+      throw new Error(`tracked PostgreSQL recovery suite is missing ${file}`);
+  }
+  return {
+    recovery: [...dockerRecoveryTests],
+    audited: files.filter((file) => !dockerRecoveryTests.some((recovery) => recovery === file)),
+  };
+}
 
 const reusableSuites = new Set<string>(reusablePostgresTestSuites);
 const freshSchemaSuites = new Set<string>(freshSchemaPostgresTestSuites);
@@ -181,7 +199,15 @@ export async function runPostgresTests(): Promise<void> {
     return;
   }
   if (mode === "isolated") return;
-  if (mode !== "general-shard") {
+  if (mode === "recovery") {
+    await runBunTests(
+      "PostgreSQL recovery suite",
+      partitionPostgresRecoveryFiles(partition.general).recovery,
+      postgresTestTimeoutMilliseconds.general,
+    );
+    return;
+  }
+  if (mode !== "general-shard" && mode !== "audited-general-shard") {
     throw new Error(`Unknown PostgreSQL test partition: ${mode}`);
   }
 
@@ -191,7 +217,9 @@ export async function runPostgresTests(): Promise<void> {
     throw new Error("PostgreSQL test shard index must be less than the positive shard count");
   }
   const shards = shardPostgresTestFiles(
-    partition.general,
+    mode === "audited-general-shard"
+      ? partitionPostgresRecoveryFiles(partition.general).audited
+      : partition.general,
     shardCount,
     await postgresTestWeights(partition.general),
   );

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  partitionPostgresRecoveryFiles,
   partitionPostgresTestFiles,
   postgresGeneralShardCount,
   postgresTestFileWeight,
@@ -99,6 +100,16 @@ describe("PostgreSQL test discovery", () => {
     ]);
     expect([...partition.isolated, ...partition.general].sort()).toEqual([...files].sort());
     expect(partition.general).not.toContain(partition.isolated[0]);
+    const ci = partitionPostgresRecoveryFiles(partition.general);
+    expect(ci.recovery).toEqual([
+      "scripts/staging-persona-phased-reset.pg.test.ts",
+      "scripts/staging-persona-recovery.pg.test.ts",
+    ]);
+    expect([...partition.isolated, ...ci.recovery, ...ci.audited].sort()).toEqual(
+      [...files].sort(),
+    );
+    expect(ci.recovery.some((file) => ci.audited.includes(file))).toBe(false);
+    expect(() => partitionPostgresRecoveryFiles(ci.audited)).toThrow("recovery suite is missing");
     expect(partition.general).toContain("scripts/hns-continuity/promotion.pg.test.ts");
     expect(partition.general).toContain(
       "packages/platform-cf/src/hns-root-import-repository.pg.test.ts",
@@ -106,5 +117,23 @@ describe("PostgreSQL test discovery", () => {
     expect(partition.general).toContain(
       "packages/platform-cf/src/hns-community-root-import-repository.pg.test.ts",
     );
+  });
+
+  test("CI requires Docker recovery separately without removing general egress auditing", async () => {
+    const workflow = await Bun.file(new URL("../.github/workflows/ci.yml", import.meta.url)).text();
+    const recovery =
+      workflow.match(/\n {2}postgres17-recovery:\n([\s\S]*?)\n {2}postgres17-general:\n/u)?.[1] ??
+      "";
+    expect(recovery).toContain("CONTROL_PLANE_POSTGRES_TEST_PARTITION: recovery");
+    expect(recovery).toContain(
+      "CONTROL_PLANE_POSTGRES_RECOVERY_TEST_CONTAINER: " + "$" + "{{ job.services.postgres.id }}",
+    );
+    expect(recovery).toContain("fetch-depth: 0");
+    expect(recovery).toContain("permissions:\n      contents: read");
+    expect(workflow).toContain("CONTROL_PLANE_POSTGRES_TEST_PARTITION: audited-general-shard");
+    expect(workflow).toContain(
+      "needs: [postgres17-namespace, postgres17-recovery, postgres17-general]",
+    );
+    expect(workflow).toContain('[[ "$RECOVERY_RESULT" == "success" ]]');
   });
 });
