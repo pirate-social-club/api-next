@@ -24,12 +24,18 @@ import {
   appendKaraokeMaintenanceEvent,
   type KaraokeJournalTrust,
   readKaraokeMaintenanceJournal,
+  signedBytes,
+  verifiedPayload,
 } from "./karaoke-maintenance-journal.ts";
 import { openKaraokePrivateWriter } from "./karaoke-private-writer.ts";
 import type {
   KaraokeAdapterTrust,
   KaraokeCollectorChallenge,
 } from "./karaoke-reconciliation-adapter.ts";
+import {
+  readKaraokeCleanupHistory,
+  retainKaraokeCleanupHistory,
+} from "./staging-karaoke-cleanup-history.ts";
 import { readKaraokePassReceipt } from "./staging-karaoke-journal-manifest.ts";
 import type { makeStagingKaraokeR2Cleaner } from "./staging-karaoke-r2-cleaner.ts";
 import type { makeStagingKaraokeR2Observer } from "./staging-karaoke-r2-observer.ts";
@@ -43,7 +49,7 @@ type Scope = typeof ReconciliationScope.Type;
  * records an incomplete receipt rather than a silent retry. Intent is durable
  * before every mutation and each attempt result is durably retained as it
  * happens, including uncertain outcomes, so interruption cannot erase the
- * action history; each target's receipt is signed and appended immediately.
+ * action history. The whole pass is verified before its six signed appends.
  * This function has no marker, reset or release capability. */
 export async function recordKaraokeCleanupPass(input: {
   readonly trust: KaraokeAdapterTrust;
@@ -83,6 +89,12 @@ export async function recordKaraokeCleanupPass(input: {
     if (last !== undefined && readKaraokePassReceipt(journal, last).receipt.phase !== "post-fence")
       throw new Error("karaoke_cleanup_phase_denied");
   }
+  const history = readKaraokeCleanupHistory({
+    directory: input.journal.directory,
+    trust,
+    journal,
+    nowUtc: now(),
+  });
   const checkFence = async () => {
     const observation = await input.readers.observeMaintainedFence();
     const fence = decodeReconciliation(FenceEvidence, observation.fence);
@@ -118,6 +130,10 @@ export async function recordKaraokeCleanupPass(input: {
   // Durable sidecar store: intent before mutation and every attempt result as
   // it happens, so interruption can never erase the action history.
   const sidecar = openKaraokePrivateWriter(input.journal.directory);
+  const persistSidecar = (bytes: string) => {
+    verifiedPayload(bytes, trust.collectorPublicKeyPem);
+    return sidecar.putArtifact(bytes);
+  };
   let head = journal.head;
   let result: Awaited<ReturnType<typeof verifyKaraokeReconciliation>> | undefined;
   try {
@@ -177,39 +193,61 @@ export async function recordKaraokeCleanupPass(input: {
       };
       const passStarted = now();
       const key = `karaoke/${snapshot.authority.accountId}/${snapshot.authority.attemptId}.pcm`;
+      retainKaraokeCleanupHistory(history, objectId, key, retain);
       const before = await input.r2.observe(snapshot.authority);
       // Durable intent precedes mutation; re-observing an empty bucket can never
       // reconstruct what was about to be removed.
-      const intentId = sidecar.putArtifact(
-        JSON.stringify({
-          kind: "cleanup-intent",
-          scope,
-          key,
-          uploadIds: [
-            ...new Set(
-              before.uploads.pages.flatMap((page) =>
-                page.uploads
-                  .filter((upload) => upload.key === key)
-                  .map((upload) => upload.uploadId),
+      const intentId = persistSidecar(
+        signedBytes(
+          {
+            kind: "cleanup-intent",
+            scope,
+            residualDispositionId: trust.residualDispositionId,
+            expectedHead: { entryId: journal.head.entryId, sequence: journal.head.sequence },
+            key,
+            uploadIds: [
+              ...new Set(
+                before.uploads.pages.flatMap((page) =>
+                  page.uploads
+                    .filter((upload) => upload.key === key)
+                    .map((upload) => upload.uploadId),
+                ),
               ),
-            ),
-          ],
-          headPresent: before.head.state === "present",
-          recordedAt: now(),
-        }),
+            ],
+            headPresent: before.head.state === "present",
+            recordedAt: now(),
+          },
+          input.privateKeyPem,
+        ),
       );
       const actions = await input.cleaner.clean(snapshot.authority, before, (attempt) => {
-        sidecar.putArtifact(
-          JSON.stringify({
-            kind: "cleanup-action",
-            scope,
-            intentId,
-            attemptedAt: now(),
-            attempt,
-          }),
+        persistSidecar(
+          signedBytes(
+            {
+              kind: "cleanup-action",
+              scope,
+              residualDispositionId: trust.residualDispositionId,
+              expectedHead: { entryId: journal.head.entryId, sequence: journal.head.sequence },
+              intentId,
+              attemptedAt: now(),
+              attempt,
+            },
+            input.privateKeyPem,
+          ),
         );
       });
       const after = await input.r2.observe(snapshot.authority);
+      retainKaraokeCleanupHistory(
+        readKaraokeCleanupHistory({
+          directory: input.journal.directory,
+          trust,
+          journal,
+          nowUtc: now(),
+        }),
+        objectId,
+        key,
+        retain,
+      );
       const count = (observation: typeof before) =>
         new Set(
           observation.uploads.pages.flatMap((page) =>

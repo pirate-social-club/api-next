@@ -210,6 +210,17 @@ cannot erase the action history. Re-observing an empty bucket never
 reconstructs that evidence. Recovery is still a fresh pass over actual state;
 an upload already gone at abort time is retained as a `not-found` action.
 
+Cleanup sidecars now carry the pinned collector signature, residual
+disposition and exact journal predecessor as well as target scope. Cleanup
+and observation passes discover and authenticate that history, verify action
+links to their original intents, and embed the exact signed originals in the
+new pass evidence. This includes interrupted intents and uncertain responses;
+neither becomes a successful action or replaces fresh before/after reads.
+Unsigned historical sidecars refuse automatic recovery and require explicit
+review; they are never silently signed on retry. Foreign lineage, wrong scope,
+changed digests and action/key mismatches also refuse. Original files remain
+immutable. Concrete live reset/release bindings remain unfinished.
+
 Phase eligibility is checked before any mutation: cleanup refuses while any
 target's latest receipt is beyond post-fence, so a backward transition cannot
 mutate R2 before the verifier would reject it. The parent verifies the six
@@ -223,7 +234,9 @@ only from authenticated commands that re-verify the journal through the real
 reconciliation verifier before appending, under the same challenge protocol,
 exact-head append guard and sixty-second bound as every other entry. A signed
 observation or an `executionAuthorized: false` result is never execution
-authority: none of these commands performs a reset, retirement or release.
+authority. Reset and retirement origins record verified operations or
+readbacks. The release origin invokes its trusted executing port only after
+admission; that port still has test bindings only, not a live composition.
 
 `recordKaraokeResetVerification` admits only when the verifier finds all six
 targets pre-reset complete under a maintained fence, then retains the trusted
@@ -264,7 +277,7 @@ later appends and read-only reconciliation recover together. Journal entries
 keep monotonic recording timestamps while every manifest derives its
 operational `releasedAt` from the authenticated release evidence, and the
 verifier requires exact agreement with that time. The release port has no
-live binding yet; recording cannot perform a release.
+live binding or authenticated live command path yet.
 
 Invalid pending-intent fence facts refuse before any current fence read.
 Fresh execution accepts only a new ceremony or an authenticated not-executed

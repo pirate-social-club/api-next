@@ -30,6 +30,10 @@ import type {
   KaraokeAdapterTrust,
   KaraokeCollectorChallenge,
 } from "./karaoke-reconciliation-adapter.ts";
+import {
+  readKaraokeCleanupHistory,
+  retainKaraokeCleanupHistory,
+} from "./staging-karaoke-cleanup-history.ts";
 import type { makeStagingKaraokeR2Observer } from "./staging-karaoke-r2-observer.ts";
 import type { KaraokeSigningReaders } from "./staging-karaoke-signing-collector.ts";
 
@@ -72,6 +76,12 @@ export async function recordKaraokeObservationPass(input: {
     throw new Error("karaoke_pass_scope_denied");
   await admitKaraokeResetOperator(trust.operator, input.assertion, input.authenticationFetch);
   const journal = readKaraokeMaintenanceJournal(input.journal, now());
+  const cleanupHistory = readKaraokeCleanupHistory({
+    directory: input.journal.directory,
+    trust,
+    journal,
+    nowUtc: now(),
+  });
   if (journal.state !== "held" && !retiredPhase) throw new Error("karaoke_pass_fence_not_held");
   if (
     retiredPhase &&
@@ -208,6 +218,7 @@ export async function recordKaraokeObservationPass(input: {
     const before = await input.r2.observe(snapshot.authority);
     const after = await input.r2.observe(snapshot.authority);
     const key = `karaoke/${snapshot.authority.accountId}/${snapshot.authority.attemptId}.pcm`;
+    retainKaraokeCleanupHistory(cleanupHistory, objectId, key, retain);
     const count = (observation: typeof before) =>
       new Set(
         observation.uploads.pages.flatMap((page) =>

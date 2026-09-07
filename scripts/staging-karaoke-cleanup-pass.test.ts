@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { reconciliationDigest } from "../packages/platform-cf/src/karaoke-reconciliation-evidence.ts";
@@ -9,8 +9,11 @@ import {
   appendKaraokeMaintenanceEvent,
   type KaraokeJournalTrust,
   readKaraokeMaintenanceJournal,
+  signedBytes,
+  verifiedPayload,
 } from "./karaoke-maintenance-journal.ts";
 import { openKaraokePrivateArtifacts } from "./karaoke-private-artifacts.ts";
+import { openKaraokePrivateWriter } from "./karaoke-private-writer.ts";
 import { recordKaraokeCleanupPass } from "./staging-karaoke-cleanup-pass.ts";
 import { recordKaraokeObservationPass } from "./staging-karaoke-observation-pass.ts";
 import { makeStagingKaraokeR2Cleaner } from "./staging-karaoke-r2-cleaner.ts";
@@ -118,6 +121,7 @@ function fixture() {
     concurrent: false,
     failAbort: false,
     gone: false,
+    loseAbortResponse: false,
     deletes: [] as string[],
   };
   // Per-key provider state; the booleans seed every untouched exact key so a
@@ -168,6 +172,10 @@ function fixture() {
         return new Response(null, { status: 503, headers });
       if (uploadId === "fixture-upload") {
         forKey(key).multipart = false;
+        if (state.loseAbortResponse) {
+          state.loseAbortResponse = false;
+          throw new Error("fixture response lost after abort");
+        }
         return new Response(null, { status: state.gone ? 404 : 204, headers });
       }
       expect(uploadId).not.toBe("neighbor");
@@ -359,7 +367,12 @@ test("interrupted cleanup retains durable intent and action sidecars", async () 
   try {
     const kinds = new Set<string>();
     for (const name of store.names()) {
-      const parsed = JSON.parse(store.read(name, 262_144)) as {
+      const raw = JSON.parse(store.read(name, 262_144));
+      const parsed = (
+        typeof raw.payload === "string"
+          ? verifiedPayload(store.read(name, 262_144), input.trust.collectorPublicKeyPem)
+          : raw
+      ) as {
         kind?: string;
         attempt?: { outcome?: string };
       };
@@ -375,6 +388,115 @@ test("interrupted cleanup retains durable intent and action sidecars", async () 
   expect(recovered.latestPasses.every((pass) => pass.outcome === "observed-empty")).toBe(true);
   const observed = await recordKaraokeObservationPass({ ...input, phase: "pre-reset" });
   expect(observed.resetAdmission).toBe("eligible");
+  const retained = readKaraokeMaintenanceJournal(journal, input.now());
+  const last = retained.entries.at(-1)?.entry;
+  if (!last) throw new Error("missing pass");
+  const history = last.event.evidenceIds
+    .map((id) => JSON.parse(retained.readArtifact(id)))
+    .filter((value) => value.data?.kind === "retained-cleanup-history");
+  expect(history.length).toBeGreaterThanOrEqual(3);
+  expect(
+    history.some((value) => {
+      expect(reconciliationDigest(value.data.signed)).toBe(value.data.artifactId);
+      const payload = verifiedPayload(value.data.signed, input.trust.collectorPublicKeyPem) as {
+        kind: string;
+      };
+      return payload.kind === "cleanup-action";
+    }),
+  ).toBe(true);
+});
+
+test("unsigned cleanup history refuses before any provider write", async () => {
+  const { input, reads, state } = fixture();
+  state.present = true;
+  const writer = openKaraokePrivateWriter(input.journal.directory);
+  try {
+    writer.putArtifact(JSON.stringify({ kind: "cleanup-intent" }));
+  } finally {
+    writer.close();
+  }
+  await expect(recordKaraokeCleanupPass(input)).rejects.toThrow();
+  expect(reads.delete).toBe(0);
+  expect(reads.fence).toBe(0);
+});
+
+test("changing a retained sidecar kind cannot hide its digest mismatch", async () => {
+  const { input, reads } = fixture();
+  const writer = openKaraokePrivateWriter(input.journal.directory);
+  let id: string;
+  try {
+    id = writer.putArtifact(JSON.stringify({ kind: "cleanup-intent" }));
+  } finally {
+    writer.close();
+  }
+  writeFileSync(join(input.journal.directory, `${id}.json`), JSON.stringify({ kind: "unrelated" }));
+  await expect(recordKaraokeCleanupPass(input)).rejects.toThrow(
+    "karaoke_cleanup_history_digest_denied",
+  );
+  expect(reads.delete).toBe(0);
+  expect(reads.fence).toBe(0);
+});
+
+test("lost abort response remains uncertain in signed recovery history", async () => {
+  const { input, state, journal, now } = fixture();
+  state.multipart = true;
+  state.loseAbortResponse = true;
+  await expect(recordKaraokeCleanupPass(input)).rejects.toThrow("karaoke_r2_cleaner_failed");
+  await recordKaraokeObservationPass({ ...input, phase: "post-fence" });
+  const retained = readKaraokeMaintenanceJournal(journal, now());
+  const pass = retained.entries.find(({ entry }) => entry.event.kind === "pass");
+  if (!pass) throw new Error("missing recovery pass");
+  const history = pass.entry.event.evidenceIds
+    .map((id) => JSON.parse(retained.readArtifact(id)))
+    .filter((value) => value.data?.kind === "retained-cleanup-history")
+    .map(
+      (value) =>
+        verifiedPayload(value.data.signed, input.trust.collectorPublicKeyPem) as {
+          kind: string;
+          attempt?: { outcome: string; response: unknown };
+        },
+    );
+  expect(history.some((value) => value.kind === "cleanup-intent")).toBe(true);
+  expect(history.find((value) => value.kind === "cleanup-action")?.attempt).toMatchObject({
+    outcome: "uncertain",
+    response: null,
+  });
+});
+
+test("foreign-lineage signed cleanup history refuses even when the bucket is empty", async () => {
+  const { input, reads, state } = fixture();
+  state.present = true;
+  await recordKaraokeCleanupPass(input);
+  const store = openKaraokePrivateArtifacts(input.journal.directory);
+  let payload: unknown;
+  try {
+    for (const name of store.names()) {
+      const raw = JSON.parse(store.read(name, 262_144));
+      if (typeof raw.payload !== "string") continue;
+      const value = JSON.parse(raw.payload);
+      if (value.kind === "cleanup-intent") {
+        payload = { ...value, expectedHead: { entryId: "f".repeat(64), sequence: 1 } };
+        break;
+      }
+    }
+  } finally {
+    store.close();
+  }
+  if (!payload) throw new Error("missing intent");
+  const writer = openKaraokePrivateWriter(input.journal.directory);
+  try {
+    writer.putArtifact(signedBytes(payload, input.privateKeyPem));
+  } finally {
+    writer.close();
+  }
+  const priorWrites = reads.delete;
+  await expect(recordKaraokeCleanupPass(input)).rejects.toThrow(
+    "karaoke_cleanup_history_scope_denied",
+  );
+  await expect(recordKaraokeObservationPass({ ...input, phase: "pre-reset" })).rejects.toThrow(
+    "karaoke_cleanup_history_scope_denied",
+  );
+  expect(reads.delete).toBe(priorWrites);
 });
 
 test("lost final fence after successful actions leaves no receipt; a fresh pass recovers from actual state", async () => {

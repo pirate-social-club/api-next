@@ -504,3 +504,28 @@ This corrects the two reviewed source defects. Concrete live reset/release
 bindings and automated cleanup-sidecar reconciliation remain unfinished.
 No new PostgreSQL 17/18.6 or remote CI acceptance, provider mutation,
 rehearsal, reset or release is claimed.
+
+Cleanup-history integration — 2026-09-07. Cleanup intent and attempt sidecars
+are now signed with the pinned collector key and bind the exact journal
+predecessor, target scope and residual disposition. Cleanup and observation
+passes authenticate discovered history before acting and carry the exact
+signed originals into their new evidence sets. Current bucket emptiness still
+comes only from fresh provider reads. An uncertain response stays uncertain;
+an intent without an attempt result is not promoted to a successful action.
+
+Original files are retained. Unsigned older sidecars require explicit review,
+not automatic re-signing. Bad signatures, digest changes (including a renamed
+record kind), foreign lineage and broken intent/action attribution refuse.
+Tests exercise interrupted cleanup through a later pre-reset pass, lost abort
+responses, unsigned and foreign-lineage history, and hidden-kind tampering.
+This adds authenticated audit-history carry-forward, not a new provider
+operation. Concrete live reset/release bindings remain unfinished.
+
+Verification passed: repository check with the existing 41 warnings and two
+informational diagnostics; final unit suite 3,499 tests and 20,258 assertions;
+Node 20 tests; Workerd 80/73/2/9/15 tests; collector type-check, touched-file
+Biome and changed-script enforcement. Checks ran at nice 10 and every Vitest
+invocation used one worker without file parallelism. An HTTP Worker invocation
+was mistakenly started before the preceding suite exited, interrupted with
+exit 130, then rerun serially to its passing 73-test result. No PostgreSQL or
+remote CI gate was run for this checkpoint. No live provider mutation occurred.
