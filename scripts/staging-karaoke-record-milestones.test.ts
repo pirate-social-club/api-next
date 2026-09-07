@@ -50,7 +50,7 @@ function fixture() {
   };
   let time = Date.now();
   const now = () => new Date(++time).toISOString();
-  const append = (kind: "begin" | "fence-observed") =>
+  const seed = (kind: "begin" | "fence-observed") =>
     appendKaraokeMaintenanceEvent({
       trust: journal,
       privateKeyPem,
@@ -58,14 +58,24 @@ function fixture() {
       event: { kind, evidenceIds: [trust.residualDispositionId] },
       artifacts: [residual],
     });
-  append("begin");
-  const held = append("fence-observed");
+  seed("begin");
+  const held = seed("fence-observed");
   const reads = { fence: 0, inspection: 0, sql: 0, r2: 0 };
-  // Mutable provider state: markers retire, identity rows disappear at reset.
-  const state = { markers: "active" as "active" | "retired", identityPresent: true };
+  // Mutable provider state: markers retire, identity rows disappear at reset,
+  // and the fence stops holding once the release actually executes.
+  const state = {
+    markers: "active" as "active" | "retired",
+    identityPresent: true,
+    fenceHeld: true,
+    failInspectionOnce: false,
+  };
   const readers: KaraokeSigningReaders = {
     inspect: async (target) => {
       reads.inspection++;
+      if (state.failInspectionOnce) {
+        state.failInspectionOnce = false;
+        throw new Error("fixture inspection failed");
+      }
       const observation = {
         alarm: null,
         sockets: 0,
@@ -104,10 +114,10 @@ function fixture() {
         supporting: { fixture: true },
         fence: {
           verifiedAt: now(),
-          ingress: true,
-          producers: true,
-          databaseWrites: true,
-          reconnectDenied: true,
+          ingress: state.fenceHeld,
+          producers: state.fenceHeld,
+          databaseWrites: state.fenceHeld,
+          reconnectDenied: state.fenceHeld,
           runtimeSessions: 0,
           residualDispositionId: trust.residualDispositionId,
         },
@@ -179,7 +189,19 @@ function fixture() {
   const releaseOrigin = (evidence?: unknown) =>
     recordKaraokeFenceRelease({
       ...base,
-      verifyFenceRelease: async () => evidence ?? release(now()),
+      verifyFenceRelease: async () => {
+        const result = (evidence ?? release(now())) as ReturnType<typeof release>;
+        if (result.allSixRetired) state.fenceHeld = false;
+        return result;
+      },
+    });
+  const append = (kind: "begin" | "fence-observed", when?: string) =>
+    appendKaraokeMaintenanceEvent({
+      trust: journal,
+      privateKeyPem,
+      observedAt: when ?? now(),
+      event: { kind, evidenceIds: [trust.residualDispositionId] },
+      artifacts: [residual],
     });
   return {
     base,
@@ -194,6 +216,7 @@ function fixture() {
     journal,
     now,
     held,
+    append,
     advance: (ms: number) => {
       time += ms;
     },
@@ -272,6 +295,67 @@ test("reset origin requires eligible admission, zero counts and fresh completion
   await expect(resetOrigin()).rejects.toThrow("karaoke_reset_origin_state_denied");
   expect(readKaraokeMaintenanceJournal(journal, now()).state).toBe("reset");
   expect(held.head).toBeDefined();
+});
+
+test("release recovers from inspection failure after execution with the preserved release time", async () => {
+  const { base, pass, resetOrigin, retirementOrigin, state, journal, now } = fixture();
+  await pass("post-fence");
+  await pass("pre-reset");
+  state.identityPresent = false;
+  await resetOrigin();
+  state.markers = "retired";
+  await pass("retirement");
+  await retirementOrigin();
+  let actualReleasedAt = "";
+  const port = async () => {
+    const result = { releasedAt: now(), allSixRetired: true };
+    actualReleasedAt = result.releasedAt;
+    state.fenceHeld = false;
+    return result;
+  };
+  state.failInspectionOnce = true;
+  const attempted = recordKaraokeFenceRelease({ ...base, verifyFenceRelease: port });
+  await expect(attempted).rejects.toThrow("fixture inspection failed");
+  expect(state.fenceHeld).toBe(false);
+  expect(actualReleasedAt).not.toBe("");
+  // The durable release record outlives the interrupted command; the retry
+  // cannot observe a held fence and must complete from the retained record.
+  const recovered = await recordKaraokeFenceRelease({ ...base, verifyFenceRelease: port });
+  expect(recovered.executionAuthorized).toBe(false);
+  const after = readKaraokeMaintenanceJournal(journal, now());
+  expect(after.state).toBe("released");
+  const released = after.entries.find(({ entry }) => entry.event.kind === "released");
+  expect(released?.entry.observedAt).toBe(actualReleasedAt);
+});
+
+test("release recovers from an append failure after execution with the preserved release time", async () => {
+  const { base, pass, resetOrigin, retirementOrigin, state, journal, now, append } = fixture();
+  await pass("post-fence");
+  await pass("pre-reset");
+  state.identityPresent = false;
+  await resetOrigin();
+  state.markers = "retired";
+  await pass("retirement");
+  await retirementOrigin();
+  let actualReleasedAt = "";
+  const port = async () => {
+    const concurrent = now();
+    const result = { releasedAt: now(), allSixRetired: true };
+    actualReleasedAt = result.releasedAt;
+    append("fence-observed", concurrent);
+    state.fenceHeld = false;
+    return result;
+  };
+  // A concurrent journal advance between execution and append refuses the
+  // entry while the release itself has already happened.
+  const raced = recordKaraokeFenceRelease({ ...base, verifyFenceRelease: port });
+  await expect(raced).rejects.toThrow("karaoke_journal_head_changed");
+  const recovered = await recordKaraokeFenceRelease({ ...base, verifyFenceRelease: port });
+  expect(recovered.executionAuthorized).toBe(false);
+  const after = readKaraokeMaintenanceJournal(journal, now());
+  expect(after.state).toBe("released");
+  const released = after.entries.find(({ entry }) => entry.event.kind === "released");
+  expect(released?.entry.observedAt).toBe(actualReleasedAt);
 });
 
 test("retirement and release origins refuse wrong state or unretired markers", async () => {

@@ -14,6 +14,21 @@ export type KaraokeR2CleanObservation = Awaited<
  * before-observation; this module never invents keys, upload IDs or adjacent
  * keys sharing the exact-key prefix. Failed provider responses are recorded as
  * failed actions; a response without a request receipt aborts the command. */
+
+/** One durable attempt fact. "uncertain" means the request was sent and no
+ * verified response receipt exists; it never enters receipt evidence. */
+export type KaraokeCleanAttempt = {
+  readonly kind: "abort" | "delete";
+  readonly key: string;
+  readonly uploadId: string | null;
+  readonly outcome: "succeeded" | "not-found" | "failed" | "uncertain";
+  readonly response: {
+    readonly endpointKind: "staging-bucket-s3";
+    readonly bucket: string;
+    readonly requestId: string;
+    readonly status: number;
+  } | null;
+};
 export function makeStagingKaraokeR2Cleaner(input: {
   readonly accountId: string;
   readonly credentials: StagingCredentials;
@@ -76,6 +91,7 @@ export function makeStagingKaraokeR2Cleaner(input: {
     async clean(
       authority: { readonly accountId: string; readonly attemptId: string },
       observation: KaraokeR2CleanObservation,
+      onAttempt?: (attempt: KaraokeCleanAttempt) => void,
     ) {
       if (
         ![authority.accountId, authority.attemptId].every((value) =>
@@ -97,33 +113,76 @@ export function makeStagingKaraokeR2Cleaner(input: {
       for (const page of observation.uploads.pages)
         for (const upload of page.uploads) {
           if (upload.key !== key || aborted.has(upload.uploadId)) continue;
-          const { status, requestId } = await remove(key, { uploadId: upload.uploadId });
-          aborted.add(upload.uploadId);
-          actions.push({
+          const uploadId = upload.uploadId;
+          let receipt: { status: number; requestId: string };
+          try {
+            receipt = await remove(key, { uploadId });
+          } catch (error) {
+            onAttempt?.({ kind: "abort", key, uploadId, outcome: "uncertain", response: null });
+            throw error;
+          }
+          aborted.add(uploadId);
+          onAttempt?.({
             kind: "abort",
             key,
-            uploadId: upload.uploadId,
-            outcome: outcome(status),
+            uploadId,
+            outcome: outcome(receipt.status),
             response: {
               endpointKind: "staging-bucket-s3",
               bucket: STAGING_KARAOKE_BUCKET,
-              requestId,
-              status,
+              requestId: receipt.requestId,
+              status: receipt.status,
+            },
+          });
+          actions.push({
+            kind: "abort",
+            key,
+            uploadId,
+            outcome: outcome(receipt.status),
+            response: {
+              endpointKind: "staging-bucket-s3",
+              bucket: STAGING_KARAOKE_BUCKET,
+              requestId: receipt.requestId,
+              status: receipt.status,
             },
           });
         }
       if (observation.head.state === "present") {
-        const { status, requestId } = await remove(key, undefined);
+        let receipt: { status: number; requestId: string };
+        try {
+          receipt = await remove(key, undefined);
+        } catch (error) {
+          onAttempt?.({
+            kind: "delete",
+            key,
+            uploadId: null,
+            outcome: "uncertain",
+            response: null,
+          });
+          throw error;
+        }
+        onAttempt?.({
+          kind: "delete",
+          key,
+          uploadId: null,
+          outcome: outcome(receipt.status),
+          response: {
+            endpointKind: "staging-bucket-s3",
+            bucket: STAGING_KARAOKE_BUCKET,
+            requestId: receipt.requestId,
+            status: receipt.status,
+          },
+        });
         actions.push({
           kind: "delete",
           key,
           uploadId: null,
-          outcome: outcome(status),
+          outcome: outcome(receipt.status),
           response: {
             endpointKind: "staging-bucket-s3",
             bucket: STAGING_KARAOKE_BUCKET,
-            requestId,
-            status,
+            requestId: receipt.requestId,
+            status: receipt.status,
           },
         });
       }

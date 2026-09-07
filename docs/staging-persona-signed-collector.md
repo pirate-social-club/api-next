@@ -368,3 +368,39 @@ and retirement/release state and marker guards including a regressed marker.
 Adjacent suites (observation, cleanup, fence, signing, journal, adapter, CLI)
 reran green. The collector type-check and touched-file Biome checks passed.
 No live provider operation, rehearsal, reset or release occurred.
+
+
+Review-fix checkpoint — 2026-09-07. Independent source inspection of the two
+prior checkpoints found two cleanup defects and an unresolved release-recovery
+design; all three are corrected here, and the earlier "complete" wording is
+withdrawn. Correct status: cleanup and milestone recording are implemented as
+checkpoints; cleanup interruption safety and concrete reset/release
+integration remain unfinished.
+
+Cleanup evidence durability now precedes mutation. Before any provider write
+the pass durably retains a content-addressed intent artifact (exact key,
+observed upload IDs, head state); after every single attempt it retains the
+result as it happens, including an "uncertain" outcome when a request was sent
+without a verified response receipt. These fsynced sidecars survive timeout,
+later-target failure, lost final fence, concurrent journal advance and
+process death even when the journal never advances; re-observing an empty
+bucket can no longer erase the action history. A phase-eligibility guard now
+refuses cleanup while any target's latest receipt is beyond post-fence, so a
+backward transition cannot mutate R2 before the verifier would reject it. A
+regression proves cleanup after pre-reset admission performs zero provider
+writes, and another proves interrupted cleanup retains durable intent and
+action sidecars before recovery.
+
+The release origin is now three durable stages: intent (last held-fence proof
+retained before the binding runs), execution (evidence retained immediately
+after it), and recovery readback (the retry completes from the retained record
+without a held fence or a second binding invocation, preserving the actual
+release time bounded after the all-retired milestone). New tests cover
+successful release followed by inspection failure and by append failure; both
+recover with the preserved release time in the signed journal entry. Distinct
+retained releases refuse recovery as ambiguous. The concrete reset/release
+composition remains unfinished source work: the completion and release ports
+still have fixture bindings only and must be bound to independently verified
+target identity, approved release/checksum pins, exact ledger and executor
+evidence with server version, SQLSTATE and failing-stage retention, without
+accepting supplied success claims.

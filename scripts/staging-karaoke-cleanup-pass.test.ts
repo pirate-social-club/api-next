@@ -10,6 +10,7 @@ import {
   type KaraokeJournalTrust,
   readKaraokeMaintenanceJournal,
 } from "./karaoke-maintenance-journal.ts";
+import { openKaraokePrivateArtifacts } from "./karaoke-private-artifacts.ts";
 import { recordKaraokeCleanupPass } from "./staging-karaoke-cleanup-pass.ts";
 import { recordKaraokeObservationPass } from "./staging-karaoke-observation-pass.ts";
 import { makeStagingKaraokeR2Cleaner } from "./staging-karaoke-r2-cleaner.ts";
@@ -329,6 +330,51 @@ test("wrong operator or absent authority refuses before any bucket action", asyn
     expect(state.deletes).toEqual([]);
     expect(readKaraokeMaintenanceJournal(journal, now()).head).toEqual(held.head);
   }
+});
+
+test("cleanup after pre-reset admission performs zero provider writes", async () => {
+  const { input, reads, state, journal, now } = fixture();
+  await recordKaraokeObservationPass({ ...input, phase: "post-fence" });
+  await recordKaraokeObservationPass({ ...input, phase: "pre-reset" });
+  const r2Before = reads.r2;
+  const prior = readKaraokeMaintenanceJournal(journal, now());
+  await expect(recordKaraokeCleanupPass(input)).rejects.toThrow("karaoke_cleanup_phase_denied");
+  expect(reads.r2).toBe(r2Before);
+  expect(state.deletes).toEqual([]);
+  expect(readKaraokeMaintenanceJournal(journal, now()).head).toEqual(prior.head);
+});
+
+test("interrupted cleanup retains durable intent and action sidecars", async () => {
+  const { input, state, journal } = fixture();
+  state.present = true;
+  state.multipart = true;
+  const observe = input.readers.observeMaintainedFence;
+  let seen = 0;
+  input.readers.observeMaintainedFence = async () => {
+    if (++seen === 2) throw new Error("fixture lost fence");
+    return observe();
+  };
+  await expect(recordKaraokeCleanupPass(input)).rejects.toThrow("fixture lost fence");
+  const store = openKaraokePrivateArtifacts(journal.directory);
+  try {
+    const kinds = new Set<string>();
+    for (const name of store.names()) {
+      const parsed = JSON.parse(store.read(name, 262_144)) as {
+        kind?: string;
+        attempt?: { outcome?: string };
+      };
+      if (parsed.kind !== undefined) kinds.add(parsed.kind);
+      if (parsed.kind === "cleanup-action") kinds.add(`cleanup-action:${parsed.attempt?.outcome}`);
+    }
+    expect(kinds.has("cleanup-intent")).toBe(true);
+    expect(kinds.has("cleanup-action:succeeded")).toBe(true);
+  } finally {
+    store.close();
+  }
+  const recovered = await recordKaraokeCleanupPass(input);
+  expect(recovered.latestPasses.every((pass) => pass.outcome === "observed-empty")).toBe(true);
+  const observed = await recordKaraokeObservationPass({ ...input, phase: "pre-reset" });
+  expect(observed.resetAdmission).toBe("eligible");
 });
 
 test("lost final fence after successful actions leaves no receipt; a fresh pass recovers from actual state", async () => {

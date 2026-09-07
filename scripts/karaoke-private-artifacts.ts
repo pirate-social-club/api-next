@@ -1,4 +1,4 @@
-import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readdirSync, readSync } from "node:fs";
 import { openKaraokePrivateDirectory } from "./karaoke-private-directory.ts";
 
 /** Linux runner store. Directory FD anchors reads across pathname replacement. */
@@ -9,6 +9,14 @@ export function openKaraokePrivateArtifacts(directory: string) {
     read(name: string, maximumBytes: number): string {
       if (closed) throw new Error("karaoke_artifact_path_denied");
       return readKaraokePrivateArtifact(anchor, name, maximumBytes);
+    },
+    /** Content-addressed names only, for recovery discovery of retained
+     * sidecars the journal does not reference. Never includes the manifest. */
+    names(): string[] {
+      if (closed) throw new Error("karaoke_artifact_path_denied");
+      return readdirSync(`/proc/self/fd/${anchor.fd}`).filter((name) =>
+        /^[a-f0-9]{64}\.json$/u.test(name),
+      );
     },
     close() {
       if (!closed) {

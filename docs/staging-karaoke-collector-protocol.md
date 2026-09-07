@@ -199,13 +199,22 @@ cleanup pair (`KARAOKE_CLEANUP_R2_ACCESS_KEY_ID` /
 requests. A read-scoped pair cannot clean, and the cleanup pair never signs an
 observation.
 
-An interruption boundary remains: provider actions that complete before a lost
-final fence, a concurrent journal advance or process death leaves real provider
-effects without a receipt. The journal never records them. Recovery is a fresh
-pass that re-observes actual state; an upload already gone at abort time is
-retained as a `not-found` action. The parent verifies the six signed pass
-entries and challenge exactly as for an observation pass, and every result still
-denies reset execution authority.
+Evidence durability precedes mutation. Before any provider write the pass
+retains a durable content-addressed intent artifact naming the exact key,
+observed upload IDs and head state; after every single attempt it retains the
+attempt result as it happens, including an `uncertain` outcome when a request
+was sent and no verified response receipt exists. These sidecars are fsynced
+mode-0600 files in the private store even when the journal never advances, so
+timeout, later-target failure, lost fence, concurrent advance or process death
+cannot erase the action history. Re-observing an empty bucket never
+reconstructs that evidence. Recovery is still a fresh pass over actual state;
+an upload already gone at abort time is retained as a `not-found` action.
+
+Phase eligibility is checked before any mutation: cleanup refuses while any
+target's latest receipt is beyond post-fence, so a backward transition cannot
+mutate R2 before the verifier would reject it. The parent verifies the six
+signed pass entries and challenge exactly as for an observation pass, and
+every result still denies reset execution authority.
 
 ## Reset, retirement and release origins
 
@@ -230,12 +239,18 @@ originates `all-retired` from fresh readbacks of all six retired markers under a
 maintained fence, after the verifier confirms retirement-phase completion for
 every target. A marker that regressed to active refuses the milestone.
 
-`recordKaraokeFenceRelease` originates `released` from the trusted
-fence-release binding after observing the last held fence in-command, so fence
-evidence can never postdate the release. It independently reads back all six
-retired markers, and the journal entry's time equals the release evidence time
-so later passes and the verifier agree on one `releasedAt`. The release port
-has no live binding yet either; recording cannot perform a release.
+`recordKaraokeFenceRelease` originates `released` in three durable stages.
+Intent observes the last held fence in-command and retains that proof before
+the trusted binding runs, so fence evidence can never postdate the release.
+Execution evidence is retained immediately after the binding performs or
+verifies the release. Recovery readback then completes the journal entry from
+the retained record when an inspection failure, append failure or process
+death interrupted the ceremony: the retry no longer requires a held fence,
+does not invoke the binding again, and preserves the actual release time
+(bounded after the all-retired milestone, since a concurrent writer may have
+signed after the release). Distinct retained releases are ambiguous and
+refuse recovery. The release port has no live binding yet either; recording
+cannot perform a release.
 
 ## Retirement and follow-up passes
 
