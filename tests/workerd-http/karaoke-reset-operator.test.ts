@@ -5,6 +5,8 @@ import { setupNetwork } from "@msw/cloudflare";
 import { HttpResponse, http } from "msw";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { KaraokeAttemptDO } from "../../packages/platform-cf/src/karaoke-attempt-do.ts";
+import { verifyKaraokeReconciliation } from "../../packages/platform-cf/src/karaoke-reconciliation.ts";
+import { reconciliationDigest } from "../../packages/platform-cf/src/karaoke-reconciliation-evidence.ts";
 import {
   KARAOKE_RESET_GENERATION,
   KARAOKE_RESET_INVENTORY_DIGEST,
@@ -15,6 +17,7 @@ import {
 import { KARAOKE_RESET_MARKER_KEY } from "../../packages/platform-cf/src/karaoke-reset-marker.ts";
 import { admitKaraokeResetOperator } from "../../packages/platform-cf/src/karaoke-reset-operator-auth.ts";
 import { KaraokeResetOperatorEntrypoint } from "../../packages/platform-cf/src/karaoke-reset-operator-entrypoint.ts";
+import { makeKaraokeReconciliationFixture } from "../../packages/testing/src/karaoke-reconciliation-fixture.ts";
 
 const network = setupNetwork();
 const bindings = {
@@ -221,7 +224,19 @@ describe("staging reset authenticated RPC", () => {
       });
       await state.blockConcurrencyWhile(async () => {});
       useFixtureIdentity(object, state, id);
-      expect((await object.applyReset(token, command(id))).quiescenceEstablished).toBe(false);
+      const installation = await object.applyReset(token, command(id));
+      expect(installation.quiescenceEstablished).toBe(false);
+      const evidence = makeKaraokeReconciliationFixture(
+        KARAOKE_RESET_OBJECT_IDS,
+        reconciliationDigest,
+        { installation: (objectId) => (objectId === id ? installation : undefined) },
+      );
+      const reconciliation = await verifyKaraokeReconciliation(evidence.port, evidence.now);
+      expect(reconciliation.resetAdmission).toBe("eligible");
+      expect(
+        reconciliation.latestPasses.find((pass) => pass.objectId === id)?.quiescenceEstablished,
+      ).toBe(false);
+      expect(installation.quiescenceEstablished).toBe(false);
       const unconfigured = new KaraokeAttemptDO(state, {
         get CONTROL_PLANE(): never {
           calls.pg += 1;
