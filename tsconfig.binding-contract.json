@@ -4,6 +4,10 @@
     "types": ["bun"]
   },
   "include": [
+    "scripts/karaoke-reconciliation-cli.ts",
+    "scripts/karaoke-reconciliation-cli.test.ts",
+    "scripts/karaoke-reconciliation-adapter.test.ts",
+    "scripts/karaoke-reset-caller-binding-contract.test.ts",
     "scripts/binding-contract-invariant.test.ts",
     "scripts/video-source-binding-contract.test.ts",
     "scripts/community-creator-activation-invariant.ts",

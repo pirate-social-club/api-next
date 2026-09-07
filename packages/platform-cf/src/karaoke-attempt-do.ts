@@ -31,6 +31,12 @@ import type { KaraokeFinalizationRedriveResult } from "./karaoke-finalization-re
 import { karaokeFinalizationFailureTransition } from "./karaoke-finalization-retry.ts";
 import { makeControlPlaneKaraokeStore } from "./karaoke-repository.ts";
 import {
+  inspectKaraokeReset,
+  observeKaraokeReset,
+  KARAOKE_RESET_INITIAL_KEY as RESET_INITIAL_KEY,
+  KARAOKE_RESET_RECEIPT_KEY as RESET_RECEIPT_KEY,
+} from "./karaoke-reset-inspection.ts";
+import {
   applyKaraokeResetInstallation,
   KaraokeResetProducerDrain,
   type KaraokeResetReceipt,
@@ -45,8 +51,6 @@ import { type HyperdriveConnection, makeHyperdriveControlPlaneLayer } from "./po
 const TOKEN_TTL_MS = 5 * 60 * 1_000;
 const R2_PART_BYTES = 5 * 1024 * 1024;
 const MAX_SESSION_MS = 30 * 60 * 1_000;
-const RESET_INITIAL_KEY = "karaoke:staging-reset-initial:v1";
-const RESET_RECEIPT_KEY = "karaoke:staging-reset-receipt:v1";
 const RESET_UNSETTLED_KEY = "karaoke:staging-reset-unsettled:v1";
 
 type Row = Readonly<Record<string, unknown>>;
@@ -377,7 +381,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
         },
         readMarker: () => this.runtimeCtx.storage.get(KARAOKE_RESET_MARKER_KEY),
         readInitialObservation: () => this.runtimeCtx.storage.get(RESET_INITIAL_KEY),
-        observe: () => this.observeReset(),
+        observe: () => observeKaraokeReset(this.runtimeCtx, this.sql),
         persist: (marker, initial) =>
           this.runtimeCtx.storage.put({
             [KARAOKE_RESET_MARKER_KEY]: marker,
@@ -405,29 +409,9 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
     );
   }
 
-  private async observeReset(): Promise<unknown> {
-    const tables = new Set(
-      this.sql
-        .exec<{ name: string }>(
-          "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('karaoke_outbox','karaoke_archive')",
-        )
-        .toArray()
-        .map((row) => row.name),
-    );
-    const outbox = tables.has("karaoke_outbox")
-      ? one(this.sql, "SELECT score_state,recording_state FROM karaoke_outbox WHERE id=1")
-      : null;
-    const archive = tables.has("karaoke_archive")
-      ? one(this.sql, "SELECT object_key,upload_id FROM karaoke_archive WHERE id=1")
-      : null;
-    return {
-      alarm: await this.runtimeCtx.storage.getAlarm(),
-      sockets: this.runtimeCtx.getWebSockets().length,
-      scoreState: outbox?.score_state ?? null,
-      recordingState: outbox?.recording_state ?? null,
-      archiveKey: archive?.object_key ?? null,
-      uploadId: archive?.upload_id ?? null,
-    };
+  /** Authenticated readback only; does not invoke the installation protocol. */
+  inspectReset(assertion: string, target: unknown) {
+    return inspectKaraokeReset(this.runtimeCtx, this.sql, this.runtimeEnv, assertion, target);
   }
 
   initialize(authority: KaraokeSessionAuthority) {

@@ -12,6 +12,7 @@ import {
 } from "./check-provider-boundary.mjs";
 
 const INTERNAL = {
+  "apps/staging-karaoke-reset-caller": "@pirate/staging-karaoke-reset-caller",
   "packages/contracts": "@pirate/contracts",
   "packages/api-client": "@pirate/api-client",
   "packages/domain": "@pirate/domain",
@@ -34,6 +35,7 @@ const INTERNAL = {
 };
 
 const ALLOWED = {
+  "@pirate/staging-karaoke-reset-caller": ["@pirate/platform-cf"],
   "@pirate/contracts": ["@pirate/route-label-codec"],
   "@pirate/api-client": [],
   "@pirate/domain": ["@pirate/route-label-codec"],

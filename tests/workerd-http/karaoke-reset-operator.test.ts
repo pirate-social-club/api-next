@@ -2,11 +2,14 @@
 
 import { createExecutionContext, runInDurableObject, env as testEnv } from "cloudflare:test";
 import { setupNetwork } from "@msw/cloudflare";
+import { Schema } from "effect";
 import { HttpResponse, http } from "msw";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { KaraokeAttemptDO } from "../../packages/platform-cf/src/karaoke-attempt-do.ts";
 import { verifyKaraokeReconciliation } from "../../packages/platform-cf/src/karaoke-reconciliation.ts";
 import { reconciliationDigest } from "../../packages/platform-cf/src/karaoke-reconciliation-evidence.ts";
+import { handleKaraokeResetCaller } from "../../packages/platform-cf/src/karaoke-reset-caller.ts";
+import { KaraokeResetSnapshotSchema } from "../../packages/platform-cf/src/karaoke-reset-inspection.ts";
 import {
   KARAOKE_RESET_GENERATION,
   KARAOKE_RESET_INVENTORY_DIGEST,
@@ -133,6 +136,82 @@ describe("staging reset authenticated RPC", () => {
     expect(denied).toBe(true);
   });
 
+  it("denies caller misconfiguration and cross-origin requests before RPC", async () => {
+    let calls = 0;
+    const origin = "https://reset-caller.example.test";
+    const configured = {
+      ...bindings,
+      KARAOKE_RESET_CALLER_ORIGIN: origin,
+      RESET_OPERATOR: {
+        async apply(): Promise<never> {
+          calls += 1;
+          throw new Error("unexpected_rpc");
+        },
+        async inspect(): Promise<never> {
+          calls += 1;
+          throw new Error("unexpected_rpc");
+        },
+      },
+    };
+    const request = (headers: Record<string, string> = {}) =>
+      new Request(`${origin}/command`, {
+        method: "POST",
+        headers: { origin, "content-type": "application/json", ...headers },
+        body: JSON.stringify(command(KARAOKE_RESET_OBJECT_IDS[0])),
+      });
+    for (const candidate of [
+      { ...configured, API_NEXT_ENV: "production" },
+      { ...configured, KARAOKE_RESET_ENABLED: "false" },
+      { ...configured, KARAOKE_RESET_ACCESS_SUBJECT: "" },
+    ])
+      expect((await handleKaraokeResetCaller(request(), candidate)).status).toBe(403);
+    expect(
+      (await handleKaraokeResetCaller(request({ origin: "https://elsewhere.test" }), configured))
+        .status,
+    ).toBe(403);
+    expect(
+      (
+        await handleKaraokeResetCaller(
+          request({ "cf-access-jwt-assertion": "invalid" }),
+          configured,
+        )
+      ).status,
+    ).toBe(403);
+    expect(calls).toBe(0);
+  });
+
+  it("validates bounded commands before forwarding to the real named binding", async () => {
+    const origin = "https://reset-caller.example.test";
+    const token = await assertion();
+    const configured = {
+      ...bindings,
+      KARAOKE_RESET_CALLER_ORIGIN: origin,
+      RESET_OPERATOR: env.RESET_OPERATOR,
+    };
+    const request = (body: string) =>
+      new Request(`${origin}/command`, {
+        method: "POST",
+        headers: { origin, "content-type": "application/json", "cf-access-jwt-assertion": token },
+        body,
+      });
+    for (const body of [
+      "{",
+      "x".repeat(2_049),
+      JSON.stringify({ ...command(KARAOKE_RESET_OBJECT_IDS[0]), generation: "other" }),
+    ]) {
+      expect((await handleKaraokeResetCaller(request(body), configured)).status).toBe(400);
+    }
+    // The local namespace cannot instantiate frozen staging IDs. The authenticated
+    // named binding is reached, then fails closed; no local substitution here.
+    const result = await handleKaraokeResetCaller(
+      request(JSON.stringify(command(KARAOKE_RESET_OBJECT_IDS[0]))),
+      configured,
+    );
+    expect(result.status).toBe(502);
+    expect(result.headers.get("cache-control")).toBe("private, no-store");
+    expect(await result.text()).toBe("");
+  });
+
   it("rejects disabled/production admission without networking and verifies the exact operator", async () => {
     const token = await assertion();
     const before = jwksRequests;
@@ -175,6 +254,49 @@ describe("staging reset authenticated RPC", () => {
         await state.storage.setAlarm(Date.now() + 60_000);
         const receipt = await entrypoint.apply(token, command(objectId));
         receipts.push(receipt);
+        const callerOrigin = "https://reset-caller.example.test";
+        const forwarded = await handleKaraokeResetCaller(
+          new Request(`${callerOrigin}/command`, {
+            method: "POST",
+            headers: {
+              origin: callerOrigin,
+              "content-type": "application/json",
+              "cf-access-jwt-assertion": token,
+            },
+            body: JSON.stringify(command(objectId)),
+          }),
+          { ...bindings, KARAOKE_RESET_CALLER_ORIGIN: callerOrigin, RESET_OPERATOR: entrypoint },
+        );
+        expect(forwarded.status).toBe(200);
+        expect(await forwarded.json()).toEqual(receipt);
+        const { state: _commandState, ...target } = command(objectId);
+        const beforeInspect = await state.storage.list();
+        const inspected = await handleKaraokeResetCaller(
+          new Request(`${callerOrigin}/inspect`, {
+            method: "POST",
+            headers: {
+              origin: callerOrigin,
+              "content-type": "application/json",
+              "cf-access-jwt-assertion": token,
+            },
+            body: JSON.stringify(target),
+          }),
+          { ...bindings, KARAOKE_RESET_CALLER_ORIGIN: callerOrigin, RESET_OPERATOR: entrypoint },
+        );
+        expect(inspected.status).toBe(200);
+        expect(
+          Schema.decodeUnknownSync(KaraokeResetSnapshotSchema, { onExcessProperty: "error" })(
+            await inspected.json(),
+          ),
+        ).toMatchObject({
+          version: "staging-karaoke-reset-inspection-v1",
+          ...target,
+          markerState: "active",
+          installationReceipt: receipt,
+          authority: null,
+          current: receipt.current,
+        });
+        expect(await state.storage.list()).toEqual(beforeInspect);
         expect(receipt.initial.alarm).not.toBeNull();
         expect(await state.storage.get(KARAOKE_RESET_MARKER_KEY)).toMatchObject({
           objectId,
@@ -187,6 +309,7 @@ describe("staging reset authenticated RPC", () => {
         const replay = await entrypoint.apply(token, command(objectId));
         expect(replay.initial).toEqual(receipt.initial);
         expect((await entrypoint.apply(token, command(objectId, "retired"))).state).toBe("retired");
+        expect((await entrypoint.inspect(token, target)).markerState).toBe("retired");
         await expect(entrypoint.apply(token, command(objectId))).rejects.toThrow(
           "karaoke_reset_retired",
         );
@@ -226,6 +349,10 @@ describe("staging reset authenticated RPC", () => {
       useFixtureIdentity(object, state, id);
       const installation = await object.applyReset(token, command(id));
       expect(installation.quiescenceEstablished).toBe(false);
+      const { state: _commandState, ...target } = command(id);
+      const snapshot = await object.inspectReset(token, target);
+      expect(snapshot.installationReceipt?.quiescenceEstablished).toBe(false);
+      expect(snapshot.markerState).toBe("active");
       const evidence = makeKaraokeReconciliationFixture(
         KARAOKE_RESET_OBJECT_IDS,
         reconciliationDigest,
@@ -251,6 +378,88 @@ describe("staging reset authenticated RPC", () => {
       await unconfigured.alarm();
       expect(await unconfigured.redriveFinalization()).toEqual({ outcome: "fenced", rearmed: [] });
       expect(calls).toEqual({ pg: 0, r2: 0 });
+    });
+  });
+
+  it("inspects authority and absent or malformed markers without writes or producer effects", async () => {
+    const stub = env.KARAOKE_ATTEMPT.getByName(`inspect-${crypto.randomUUID()}`);
+    const token = await assertion();
+    await runInDurableObject(stub, async (instance, state) => {
+      const objectId = KARAOKE_RESET_OBJECT_IDS[0];
+      const { state: _commandState, ...target } = command(objectId);
+      useFixtureIdentity(instance, state, objectId);
+      const scheduled = Date.now() + 60_000;
+      await state.storage.setAlarm(scheduled);
+      state.storage.sql.exec(
+        "INSERT INTO karaoke_session (id,authority_json,snapshot_json,server_sequence) VALUES (1,?,'{}',0)",
+        JSON.stringify({
+          accountId: "fixture-account",
+          attemptId: "fixture-attempt",
+          privateField: "must-not-leak",
+        }),
+      );
+      const absent = await instance.inspectReset(token, target);
+      expect(absent).toMatchObject({
+        markerState: "absent",
+        initial: null,
+        installationReceipt: null,
+        current: { alarm: scheduled },
+        authority: { accountId: "fixture-account", attemptId: "fixture-attempt" },
+      });
+      expect(JSON.stringify(absent)).not.toContain("must-not-leak");
+      expect(await state.storage.get(KARAOKE_RESET_MARKER_KEY)).toBeUndefined();
+      expect(await state.storage.getAlarm()).toBe(scheduled);
+      await expect(
+        instance.inspectReset(await assertion({ sub: "wrong" }), target),
+      ).rejects.toThrow();
+      await expect(
+        instance.inspectReset(token, { ...target, objectId: KARAOKE_RESET_OBJECT_IDS[1] }),
+      ).rejects.toThrow();
+      await expect(instance.inspectReset(token, command(objectId))).rejects.toThrow();
+      state.storage.sql.exec("UPDATE karaoke_session SET authority_json='{}'");
+      await expect(instance.inspectReset(token, target)).rejects.toThrow(
+        "karaoke_reset_invalid_evidence",
+      );
+      state.storage.sql.exec("DROP TABLE karaoke_session");
+      state.storage.sql.exec("DROP TABLE karaoke_archive");
+      state.storage.sql.exec("DROP TABLE karaoke_outbox");
+      await state.storage.put(KARAOKE_RESET_MARKER_KEY, { invalid: true });
+      const calls = { pg: 0, r2: 0 };
+      const reconstructed = new KaraokeAttemptDO(state, {
+        ...bindings,
+        get CONTROL_PLANE(): never {
+          calls.pg++;
+          throw new Error("unexpected_pg");
+        },
+        get LEARNER_AUDIO(): never {
+          calls.r2++;
+          throw new Error("unexpected_r2");
+        },
+      });
+      await state.blockConcurrencyWhile(async () => {});
+      useFixtureIdentity(reconstructed, state, objectId);
+      const before = await state.storage.list();
+      const invalid = await reconstructed.inspectReset(token, target);
+      expect(invalid).toMatchObject({
+        markerState: "invalid",
+        initial: null,
+        installationReceipt: null,
+        authority: null,
+        current: { alarm: scheduled, sockets: 0, archiveKey: null, uploadId: null },
+      });
+      expect(await state.storage.list()).toEqual(before);
+      expect(await state.storage.getAlarm()).toBe(scheduled);
+      expect(
+        state.storage.sql
+          .exec("SELECT name FROM sqlite_master WHERE name='karaoke_session'")
+          .toArray(),
+      ).toEqual([]);
+      expect(calls).toEqual({ pg: 0, r2: 0 });
+      await state.storage.put("karaoke:staging-reset-receipt:v1", null);
+      await expect(reconstructed.inspectReset(token, target)).rejects.toThrow(
+        "karaoke_reset_invalid_evidence",
+      );
+      await state.storage.deleteAlarm();
     });
   });
 

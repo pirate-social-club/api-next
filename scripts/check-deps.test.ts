@@ -26,6 +26,7 @@ const dependencyRoots = [
   "apps/http-worker",
   "apps/jobs-worker",
   "apps/video-source-gateway",
+  "apps/staging-karaoke-reset-caller",
   "apps/media-processor-worker",
   "apps/data-registration-worker",
   "apps/hns-owner-verifier",
