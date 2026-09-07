@@ -35,6 +35,8 @@ const preparation: HnsCommunityRootImportPreparation = {
   attachment_revision: 1,
   root_import_session_id: "root-import-1",
   provision_job_id: "provision-1",
+  start_idempotency_key: "retained-start",
+  start_request_sha256: "a".repeat(64),
 };
 
 function services(options: { readonly mismatch?: boolean; readonly conflict?: boolean } = {}) {
@@ -463,11 +465,13 @@ describe("community HNS root import", () => {
       attachment_intent_id: "attachment-1",
       ceremony_intent_id: "ceremony-1",
       expected_revision: 1,
+      idempotency_key: preparation.start_request_sha256,
     });
     expect(dependencies.stored()).toMatchObject({
       preparation,
       ownership: { status: "pending", session_id: "namespace-1" },
-      idempotency_key: "start-1",
+      idempotency_key: preparation.start_idempotency_key,
+      request_sha256: preparation.start_request_sha256,
     });
   });
 

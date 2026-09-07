@@ -113,6 +113,8 @@ export type HnsCommunityRootImportPreparation = Readonly<{
   readonly attachment_revision: number;
   readonly root_import_session_id: string;
   readonly provision_job_id: string;
+  readonly start_idempotency_key: string;
+  readonly start_request_sha256: string;
 }>;
 
 export type HnsCommunityRootImportPrepareOutcome =
@@ -406,7 +408,7 @@ export const startHnsCommunityRootImport = Effect.fn("startHnsCommunityRootImpor
       attachment_intent_id: authority.attachment_intent_id,
       ceremony_intent_id: authority.ceremony_intent_id,
       expected_revision: authority.attachment_revision,
-      idempotency_key: requestSha256,
+      idempotency_key: authority.start_request_sha256,
     })
     .pipe(Effect.mapError(ownershipFailure));
   if (
@@ -422,8 +424,8 @@ export const startHnsCommunityRootImport = Effect.fn("startHnsCommunityRootImpor
   const outcome = yield* services.store.start({
     preparation: authority,
     ownership,
-    idempotency_key: input.idempotency_key,
-    request_sha256: requestSha256,
+    idempotency_key: authority.start_idempotency_key,
+    request_sha256: authority.start_request_sha256,
   });
   if (outcome.kind === "not_found") {
     return yield* new HnsCommunityRootImportRejected({ reason: "not_found" });
