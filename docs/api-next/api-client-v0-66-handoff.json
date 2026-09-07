@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.66.0",
+  "releaseType": "community-owner-activation",
+  "sourceBranch": "feat/persona-pending-wallet-activation-contract",
+  "wireContract": "Named fresh community owner profiles reserve before publication, expose an account-private activate_profile action, and activate through proof-verified wallet prepare/confirm. GET /personas/wallets/evm/pending provides private recovery inventory without changing GET /personas. The community remains absent until its owner is active and named.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.66.0.tgz",
+    "sha256": "b440c060641224f99898b97c37f36505f17ae9fb56cf15f3d79b18b20d74a927",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@fe42382ff9cdf0f25a845876e11568f05d332c82faa84100d992ef8d103f254b",
+    "openapiSha256": "fe42382ff9cdf0f25a845876e11568f05d332c82faa84100d992ef8d103f254b",
+    "clientSha256": "53a370feae6c3a98cd28a7df749624498d35169c45245c89a11b8c3c7a9ba06b"
+  },
+  "verification": {
+    "localCheck": "bun run check exited 0; generated contract and package provenance verified",
+    "ordinaryTests": "3335 unit tests; 20 Node tests; Worker pools 80, 73, 2, 9 and 15 tests passed",
+    "postgres17": "425 general tests across four shards and 35 isolated namespace tests passed; seven reservation cases included",
+    "baseline": "check:baseline:fresh passed against an empty disposable PostgreSQL 17 database",
+    "breaking": "Passed against 5ea53c5983fd80574db20e1f00f070cd4db204ac with exact operation waivers",
+    "releaseGates": "Remote check/postgres17/secret-boundary pending. Not deployed."
+  }
+}

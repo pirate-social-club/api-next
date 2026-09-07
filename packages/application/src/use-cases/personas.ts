@@ -54,6 +54,9 @@ export class PersonaStoreRateLimited extends Data.TaggedError("PersonaStoreRateL
 }> {}
 
 export interface PersonaStoreService {
+  readonly listPendingWallets: (
+    accountId: string,
+  ) => Effect.Effect<readonly PersonaWalletPreparation[], unknown>;
   readonly listByAccount: (accountId: string) => Effect.Effect<readonly PersonaRecord[], unknown>;
   readonly findOwned: (input: {
     readonly accountId: string;
@@ -180,7 +183,12 @@ export const requireActiveOwnedPersona = Effect.fn("requireActiveOwnedPersona")(
 export const listMyPersonas = Effect.fn("listMyPersonas")(function* (
   input: Readonly<{ accountId: string }>,
   services: Pick<PersonaServices, "store">,
-): Effect.fn.Return<Readonly<{ personas: readonly PersonaRecord[] }>, AuthError | InternalError> {
+): Effect.fn.Return<
+  Readonly<{
+    personas: readonly PersonaRecord[];
+  }>,
+  AuthError | InternalError
+> {
   if (!usableId(input.accountId)) {
     return yield* new AuthError({ message: "Authentication failed" });
   }
@@ -188,6 +196,20 @@ export const listMyPersonas = Effect.fn("listMyPersonas")(function* (
     .listByAccount(input.accountId)
     .pipe(Effect.mapError(() => new InternalError({ message: "Persona lookup failed" })));
   return { personas };
+});
+
+export const listMyPendingPersonaWallets = Effect.fn("listMyPendingPersonaWallets")(function* (
+  input: Readonly<{ accountId: string }>,
+  services: Pick<PersonaServices, "store">,
+): Effect.fn.Return<
+  Readonly<{ wallets: readonly PersonaWalletPreparation[] }>,
+  AuthError | InternalError
+> {
+  if (!usableId(input.accountId)) return yield* new AuthError({ message: "Authentication failed" });
+  const wallets = yield* services.store
+    .listPendingWallets(input.accountId)
+    .pipe(Effect.mapError(() => new InternalError({ message: "Pending profile lookup failed" })));
+  return { wallets };
 });
 
 export const createPersona = Effect.fn("createPersona")(function* (

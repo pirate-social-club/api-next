@@ -591,6 +591,7 @@ const CANONICAL_ONLY_ENDPOINTS = new Set([
 const PRIVATE_NO_STORE_ENDPOINTS = new Set([
   "RegisterIdentity",
   "ListMyPersonas",
+  "ListMyPendingPersonaWallets",
   "CreatePersona",
   "PreparePersonaEvmWallet",
   "ConfirmPersonaEvmWallet",

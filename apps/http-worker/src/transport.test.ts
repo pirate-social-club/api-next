@@ -271,7 +271,9 @@ describe("contracts-generated HTTP worker", () => {
   });
 
   it("marks authenticated persona state and its failures private and no-store", async () => {
-    const app = protectedWorker("ListMyPersonas", async () => ({ personas: [] }));
+    const app = protectedWorker("ListMyPersonas", async () => ({
+      personas: [],
+    }));
     const response = await app.request("http://worker.test/personas", {
       headers: { authorization: "account-persona-cache" },
     });
@@ -281,6 +283,19 @@ describe("contracts-generated HTTP worker", () => {
     const unauthorized = await app.request("http://worker.test/personas");
     expect(unauthorized.status).toBe(401);
     expect(unauthorized.headers.get("cache-control")).toBe("private, no-store");
+  });
+
+  it("keeps pending wallet discovery private and rejects anonymous reads", async () => {
+    const app = protectedWorker("ListMyPendingPersonaWallets", async () => ({ wallets: [] }));
+    const response = await app.request("http://worker.test/personas/wallets/evm/pending", {
+      headers: { authorization: "owner-wallet-recovery" },
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(await response.json()).toEqual({ wallets: [] });
+    const anonymous = await app.request("http://worker.test/personas/wallets/evm/pending");
+    expect(anonymous.status).toBe(401);
+    expect(anonymous.headers.get("cache-control")).toBe("private, no-store");
   });
 
   it("requires exact Origin for browser session exchange", async () => {

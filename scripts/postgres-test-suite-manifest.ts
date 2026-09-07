@@ -1,6 +1,7 @@
 export const reusablePostgresTestSuites = [
   "packages/platform-cf/src/activity-qualification-repository.pg.test.ts",
   "packages/platform-cf/src/community-creation-repository.pg.test.ts",
+  "packages/platform-cf/src/community-owner-reservation.pg.test.ts",
   "packages/platform-cf/src/community-purchase-funding-producer-repository.pg.test.ts",
   "packages/platform-cf/src/community-repository.pg.test.ts",
   "packages/platform-cf/src/community-route-repository.pg.test.ts",

@@ -871,6 +871,7 @@ suite("Postgres 17 verification completion repository", () => {
       await createActivePersonaFixture(admin, {
         accountId: "user-a",
         personaId: "persona-user-a",
+        profile: { displayName: "Community owner" },
       });
       // The community-persona boundary gives each created community its own
       // bound persona, so every creation intent in this schema names a
@@ -879,6 +880,7 @@ suite("Postgres 17 verification completion repository", () => {
         await createActivePersonaFixture(admin, {
           accountId: "user-a",
           personaId: `persona-user-${suffix}`,
+          profile: { displayName: `Community owner ${suffix}` },
         });
       }
       const runtime = makeDirectPostgresControlPlaneLayer(connection);
@@ -1390,6 +1392,7 @@ suite("Postgres 17 verification completion repository", () => {
       await createActivePersonaFixture(admin, {
         accountId: "user-a",
         personaId: "persona-user-a",
+        profile: { displayName: "Community owner" },
       });
       const runtime = makeDirectPostgresControlPlaneLayer(creationConnection);
       const creationStore = makeControlPlaneCommunityCreationStore(runtime, {
