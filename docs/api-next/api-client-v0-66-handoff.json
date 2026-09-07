@@ -27,6 +27,6 @@
     "postgres17": "425 general tests across four shards and 35 isolated namespace tests passed; seven reservation cases included",
     "baseline": "check:baseline:fresh passed against an empty disposable PostgreSQL 17 database",
     "breaking": "Passed against 5ea53c5983fd80574db20e1f00f070cd4db204ac with exact operation waivers",
-    "releaseGates": "Remote check/postgres17/secret-boundary pending. Not deployed."
+    "releaseGates": "Required remote checks passed at c18cbd55. Owner-directed rename to next free 0129 passed regenerated baseline (byte-identical), check, 15 owner/creation PostgreSQL cases and 11 migration cases. Refreshed remote checks pending; not deployed. Contract and artifact unchanged."
   }
 }
