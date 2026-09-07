@@ -1,26 +1,9 @@
-import { Schema } from "effect";
 import {
   decodeReconciliation,
-  ReconciliationTime,
   reconciliationMillis,
 } from "../packages/platform-cf/src/karaoke-reconciliation-schema.ts";
-import {
-  KaraokeResetReceiptSchema,
-  KaraokeResetTarget,
-} from "../packages/platform-cf/src/karaoke-reset-installation.ts";
-
-// Frozen with the operator lane; replace this transport decoder with its shared
-// inspection export when that source is integrated. Never accept an open object.
-export const StagingKaraokeInspection = Schema.Struct({
-  version: Schema.Literal("staging-karaoke-reset-inspection-v1"),
-  ...KaraokeResetTarget.fields,
-  observedAt: ReconciliationTime,
-  markerState: Schema.Literals(["absent", "invalid", "active", "retired"]),
-  initial: Schema.NullOr(KaraokeResetReceiptSchema.fields.initial),
-  current: KaraokeResetReceiptSchema.fields.current,
-  authority: Schema.NullOr(Schema.Struct({ accountId: Schema.String, attemptId: Schema.String })),
-  installationReceipt: Schema.NullOr(KaraokeResetReceiptSchema),
-});
+import { KaraokeResetSnapshotSchema } from "../packages/platform-cf/src/karaoke-reset-inspection.ts";
+import { KaraokeResetTarget } from "../packages/platform-cf/src/karaoke-reset-installation.ts";
 
 /** Read-only Access-protected caller. No apply fallback, redirects or token logs. */
 export async function inspectStagingKaraokeObject(input: {
@@ -82,7 +65,7 @@ export async function inspectStagingKaraokeObject(input: {
           size += next.value.byteLength;
         }
         const snapshot = decodeReconciliation(
-          StagingKaraokeInspection,
+          KaraokeResetSnapshotSchema,
           JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, size))),
         );
         const observed = reconciliationMillis(snapshot.observedAt);

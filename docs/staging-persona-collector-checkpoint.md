@@ -31,8 +31,9 @@ The inspection client sends the Access cookie only to the independently selected
 HTTPS origin at POST /inspect. It admits the frozen target shape, refuses
 redirects and mismatched or stale responses, bounds reads to five seconds and
 32 KiB, and retains false installation quiescence. It has no command fallback.
-Its temporary response schema must be replaced by the operator lane's shared
-export at integration; this file is not a second authority for the wire shape.
+It now imports the operator lane's shared snapshot schema after integrating
+reviewed PR 306 source fd5e8f91. There is no duplicate wire decoder definition.
+That source integration is local; remote acceptance is tracked in the record.
 
 ## Verification
 
@@ -67,3 +68,9 @@ caller-supplied booleans or infer producers=true from database denial. These
 observations therefore cannot yet produce a trusted reset-admission manifest.
 The sixth rehearsal and live reset remain behind the recorded source and
 fencing gates; no billed restore was consumed by this checkpoint.
+
+
+Shared-schema integration then passed repository check and 29 focused
+inspection, adapter, CLI and exact fence-decoder tests (80 assertions, exit 0).
+The ordinary suite above remains the pre-integration run; no duplicate broad
+suite is claimed. Operator PR 306 owns its independent remote checks.
