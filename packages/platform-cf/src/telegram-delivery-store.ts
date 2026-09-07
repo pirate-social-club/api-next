@@ -115,7 +115,7 @@ export function makeTelegramDeliveryStore(
             record.attempt,
             confirmed === null ? null : JSON.stringify(confirmed),
             hash,
-            outcome.messageId,
+            operation === "delete" ? null : outcome.messageId,
           ],
         );
       } else {

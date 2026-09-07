@@ -18,6 +18,8 @@ The feature is disabled by default. This change does not provision providers,
 set live webhooks or deploy Workers. An authorized activation must provision
 the environment-specific `pirate-community-telegram-<environment>` queue and
 apply the PostgreSQL migration before enabling either Worker.
+The Wrangler configurations declare the queue even while the feature is
+disabled, so provision the queue before deploying these configurations.
 
 Both HTTP and jobs Workers need `TELEGRAM_PUBLIC_ORIGIN`,
 `TELEGRAM_WEBHOOK_ORIGIN`, `TELEGRAM_CREDENTIAL_ACTIVE_VERSION`, and the secret
@@ -82,3 +84,11 @@ Before live activation, perform an authorized private/channel test covering
 channel selection and confirmation, content publication/edit/withdrawal,
 reward depletion, text/voice replies, credential replacement and disconnect.
 Local fixtures and Storybook are not evidence of live provider delivery.
+
+The voice adapter uploads MP3 through multipart form data, supported by
+[Telegram sendVoice](https://core.telegram.org/bots/api#sendvoice) and
+[ElevenLabs speech generation](https://elevenlabs.io/docs/api-reference/text-to-speech/convert).
+OpenRouter credential validation uses its
+[current-key endpoint](https://openrouter.ai/docs/api/api-reference/api-keys/get-current-key)
+and rejects management keys. These provider contracts were rechecked during
+local implementation review.

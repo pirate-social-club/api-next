@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
-import { acceptTelegramUpdate } from "./delivery.ts";
+import { acceptTelegramUpdate, processTelegramDelivery } from "./delivery.ts";
 import { getTelegramSettings, setAssistantCredential } from "./settings.ts";
 import {
   DEFAULT_ASSISTANT_POLICY,
+  type DeliveryRecord,
   type IntegrationRecord,
   TelegramFailure,
   type TelegramServices,
@@ -128,4 +129,80 @@ test("credential replay avoids another provider validation and stale revisions c
   await expect(setAssistantCredential(service, command)).rejects.toMatchObject({
     reason: "conflict",
   });
+});
+
+const voiceDelivery: DeliveryRecord = {
+  id: "voice-delivery",
+  communityId: "community",
+  botEpoch: "epoch",
+  chatId: "123",
+  kind: "voice",
+  postId: null,
+  state: "pending",
+  desired: { kind: "voice", text: "The answer", media: null, buttons: [] },
+  desiredHash: "answer",
+  confirmed: null,
+  confirmedHash: null,
+  messageId: null,
+  attempt: "attempt",
+  attemptCount: 1,
+  lastError: null,
+  createdAt: "2026-09-08T00:00:00Z",
+};
+
+test("speech failure reserves usage first and fails only the separate voice delivery", async () => {
+  let reserved = false;
+  let finished = false;
+  const service = services({
+    claimDelivery: async () => voiceDelivery,
+    integration: async () => ({
+      ...integration,
+      policy: { ...integration.policy, voice_enabled: true },
+      credentials: {
+        elevenlabs: {
+          ciphertext: "encrypted-speech",
+          status: "valid",
+          checkedAt: "2026-09-08T00:00:00Z",
+        },
+      },
+    }),
+    reserveUsage: async (_community, _epoch, _user, key, _policy, characters) => {
+      expect(key).toBe("speech:voice-delivery:attempt");
+      expect(characters).toBe(10);
+      reserved = true;
+      return true;
+    },
+    finishDelivery: async (delivery, outcome) => {
+      expect(delivery.id).toBe("voice-delivery");
+      expect(outcome).toEqual({ kind: "rejected", code: "preparation_failed", retryAfter: 60 });
+      finished = true;
+    },
+  });
+  service.vault.open = async (ciphertext) =>
+    ciphertext === "encrypted-token"
+      ? JSON.stringify({ token: "fixture-token", secret: "fixture-secret" })
+      : "fixture-speech-key";
+  service.providers = {
+    ...service.providers,
+    synthesize: async () => {
+      expect(reserved).toBe(true);
+      throw new Error("Fixture speech outage");
+    },
+  };
+  await processTelegramDelivery(service, "voice-delivery");
+  expect(finished).toBe(true);
+});
+
+test("rotated bot epochs fence already claimed work before provider access", async () => {
+  let held = false;
+  const service = services({
+    claimDelivery: async () => voiceDelivery,
+    integration: async () => ({ ...integration, botEpoch: "replacement" }),
+    holdDelivery: async (_delivery, code) => {
+      expect(code).toBe("integration_changed");
+      held = true;
+    },
+  });
+  await processTelegramDelivery(service, "voice-delivery");
+  expect(held).toBe(true);
 });

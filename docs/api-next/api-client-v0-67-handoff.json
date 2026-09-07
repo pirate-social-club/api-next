@@ -22,6 +22,9 @@
     "clientSha256": "63f991fb491e85819fa0db64b68e0a8f60bb439121b3a6866217d6550c172b6b"
   },
   "verification": {
-    "status": "Local verification in progress; no deployment or live-provider acceptance."
+    "status": "Local API check, unit, Node, Worker and secret-boundary checks passed. Full PostgreSQL gate remains open after local resource and timing failures. No deployment or live-provider acceptance.",
+    "unitTests": 3364,
+    "focusedPostgresTests": 6,
+    "consumer": "Solid moderation settings, with 19 passing Storybook accessibility and interaction states."
   }
 }

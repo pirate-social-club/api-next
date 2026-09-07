@@ -177,7 +177,12 @@ suite("community Telegram persistence", () => {
         desired: { kind: "text", text: "fixture", media: null, buttons: [] },
         desiredHash: "payload",
       });
-      const claimed = await store.claimDelivery("delivery");
+      const claims = await Promise.all([
+        store.claimDelivery("delivery"),
+        store.claimDelivery("delivery"),
+      ]);
+      expect(claims.filter(Boolean)).toHaveLength(1);
+      const claimed = claims.find((claim) => claim !== null);
       if (!claimed) throw new Error("Missing delivery claim");
       expect(claimed.state).toBe("pending");
       await admin.query(
@@ -225,5 +230,12 @@ suite("community Telegram persistence", () => {
       expect(retried?.confirmedHash).toBe("old");
       expect(retried?.desiredHash).toBe("new");
       expect(retried?.messageId).toBe(9);
+      if (!retried) throw new Error("Missing retry");
+      await store.finishDelivery(retried, { kind: "confirmed", messageId: 9 }, "edit");
+      await store.enqueueDelivery({ ...base, desired: null, desiredHash: null });
+      const withdrawn = await store.claimDelivery("delivery");
+      if (!withdrawn) throw new Error("Missing withdrawal");
+      await store.finishDelivery(withdrawn, { kind: "confirmed", messageId: 9 }, "delete");
+      expect((await store.listDeliveries("telegram-community")).items[0]?.state).toBe("withdrawn");
     }));
 });
