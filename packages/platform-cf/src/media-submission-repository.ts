@@ -2371,6 +2371,26 @@ export function makeControlPlaneMediaSubmissionRepository(
             projection.referenceWakeup === undefined
           )
             return yield* Effect.fail(fail(operation, "invalid-input"));
+          // Binding advances creation, while the accepted terms pointer stays immutable.
+          if (projection.event === "reference_bound" && current.terms !== null)
+            yield* tx.execute({
+              label: "media-reference.creation-snapshot",
+              text: "INSERT INTO media_submission_terms (submission_id,community_id,actor_user_id,operation_id,creation_revision,license_preset,commercial_remix_share_bps,royalty_allocations,access_mode,terms_snapshot,author_persona_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10::jsonb,$11)",
+              values: [
+                current.submissionId,
+                current.communityId,
+                current.actorId,
+                current.operationId,
+                next.creationRevision,
+                current.terms.licensePreset,
+                current.terms.commercialRemixShareBps,
+                json(current.terms.royaltyAllocations),
+                current.terms.accessMode,
+                json(current.terms),
+                current.personaId,
+              ],
+              readonly: false,
+            });
           const updated = yield* tx.execute<Row>({
             label: `media-${operation}.project`,
             text: `${projection.text} RETURNING event_sequence`,
@@ -2504,7 +2524,7 @@ export function makeControlPlaneMediaSubmissionRepository(
       (next, current) => ({
         event: "reference_bound",
         ...(input.outbox === undefined ? {} : { referenceWakeup: input.outbox }),
-        text: "WITH reference_evidence AS (INSERT INTO media_reference_evidence (community_id,actor_user_id,submission_id,operation_id,asset_id,evidence_audio_revision,evidence_analysis_revision,evidence_audio_sha256,evidence_ref,upstream_commercial_rev_share_bps,inherited_license_preset,inherited_commercial_rev_share_bps) VALUES ($10,$11,$12,$13,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (community_id,actor_user_id,submission_id,operation_id,asset_id,evidence_audio_revision,evidence_analysis_revision,evidence_audio_sha256) DO NOTHING RETURNING 1) UPDATE media_post_submissions SET creation_revision=$1,bound_reference_asset_id=$2,bound_reference_evidence_ref=$6,bound_reference_audio_revision=$3,bound_reference_analysis_revision=$4,bound_reference_audio_sha256=$5,bound_reference_upstream_share_bps=$7,status='processing',phase='analysis',action_kind=NULL,action_reference_request_ref=NULL,action_expires_at=NULL,held_revision=NULL,review_ref=NULL,review_reason_code=NULL,review_exhaustion_code=NULL,review_exhaustion_attempt_id=NULL,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$10 AND actor_user_id=$11 AND submission_id=$12 AND creation_revision=$14 AND EXISTS (SELECT 1 FROM reference_evidence UNION ALL SELECT 1 FROM media_reference_evidence WHERE community_id=$10 AND actor_user_id=$11 AND submission_id=$12 AND operation_id=$13 AND asset_id=$2 AND evidence_ref=$6 AND evidence_audio_revision=$3 AND evidence_analysis_revision=$4 AND evidence_audio_sha256=$5 AND upstream_commercial_rev_share_bps IS NOT DISTINCT FROM $7)",
+        text: "WITH reference_evidence AS (INSERT INTO media_reference_evidence (community_id,actor_user_id,submission_id,operation_id,asset_id,evidence_audio_revision,evidence_analysis_revision,evidence_audio_sha256,evidence_ref,upstream_commercial_rev_share_bps,inherited_license_preset,inherited_commercial_rev_share_bps) VALUES ($10,$11,$12,$13,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (community_id,actor_user_id,submission_id,operation_id,asset_id,evidence_audio_revision,evidence_analysis_revision,evidence_audio_sha256) DO NOTHING RETURNING 1) UPDATE media_post_submissions SET creation_revision=$1,bound_reference_asset_id=$2,bound_reference_evidence_ref=$6,bound_reference_audio_revision=$3,bound_reference_analysis_revision=$4,bound_reference_audio_sha256=$5,bound_reference_upstream_share_bps=$7,status='processing',phase=CASE WHEN current_terms_revision IS NULL THEN 'analysis' ELSE 'decision' END,action_kind=NULL,action_reference_request_ref=NULL,action_expires_at=NULL,held_revision=NULL,review_ref=NULL,review_reason_code=NULL,review_exhaustion_code=NULL,review_exhaustion_attempt_id=NULL,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$10 AND actor_user_id=$11 AND submission_id=$12 AND creation_revision=$14 AND EXISTS (SELECT 1 FROM reference_evidence UNION ALL SELECT 1 FROM media_reference_evidence WHERE community_id=$10 AND actor_user_id=$11 AND submission_id=$12 AND operation_id=$13 AND asset_id=$2 AND evidence_ref=$6 AND evidence_audio_revision=$3 AND evidence_analysis_revision=$4 AND evidence_audio_sha256=$5 AND upstream_commercial_rev_share_bps IS NOT DISTINCT FROM $7)",
         values: [
           next.creationRevision,
           input.reference.assetId,

@@ -1238,7 +1238,7 @@ export function transitionMediaSubmission(
         boundReference: command.reference,
         analysis,
         status: "processing",
-        phase: "analysis",
+        phase: current.terms === null ? "analysis" : "decision",
         action: null,
         decision: null,
         decisionRevision: 0,

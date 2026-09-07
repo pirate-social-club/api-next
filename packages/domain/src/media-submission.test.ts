@@ -477,7 +477,7 @@ describe("song media Spec 013 machine", () => {
     );
     expect(bound).toMatchObject({
       status: "processing",
-      phase: "analysis",
+      phase: "decision",
       creationRevision: 3,
       boundReference: { assetId: "upstream" },
     });

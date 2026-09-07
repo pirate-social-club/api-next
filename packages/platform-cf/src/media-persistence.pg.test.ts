@@ -2503,6 +2503,56 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           )
         ).rows,
       ).toEqual([{ count: 1 }]);
+      const wakeup = (
+        await admin.query(
+          "SELECT outbox_event_id,workflow_revision FROM media_submission_outbox WHERE submission_id=$1 AND event_type='decision_wakeup'",
+          [derivative.submission],
+        )
+      ).rows[0];
+      const retainedOnlyProviders = new Proxy({} as MediaProcessingProviders, {
+        get: () => {
+          throw new Error("reference resumption must reuse retained provider evidence");
+        },
+      });
+      expect(
+        await Effect.runPromise(
+          runMediaProcessingWorkflow(
+            {
+              outboxId: wakeup.outbox_event_id,
+              submissionId: derivative.submission,
+              operationId: derivative.operation,
+              workflowRevision: Number(wakeup.workflow_revision),
+            },
+            "decision_wakeup",
+            {
+              store: processing,
+              providers: retainedOnlyProviders,
+              options: {
+                enabled: true,
+                workerId: "reference-resumption-test",
+                now: Date.now,
+                policyRevision: "fixture-v1",
+                transformAdapterRevision: "fixture-v1",
+                metadataAdapterRevision: "fixture-v1",
+                classifierTimeoutMs: 10000,
+                transformRuntimeMs: 60000,
+                maximumSampleBytes: 1000000,
+              },
+            },
+          ),
+        ),
+      ).toMatchObject({ outcome: "published_without_alignment" });
+      expect(
+        (
+          await admin.query(
+            "SELECT a.terms_snapshot = b.terms_snapshot AS unchanged FROM media_submission_terms a JOIN media_submission_terms b ON a.submission_id=b.submission_id WHERE a.submission_id=$1 AND a.creation_revision=2 AND b.creation_revision=3",
+            [derivative.submission],
+          )
+        ).rows,
+      ).toEqual([{ unchanged: true }]);
+      expect(
+        (await processing.loadAuthority(derivative.submission, derivative.operation))?.status,
+      ).toBe("published");
     });
     completedTestCount += 1;
   }, 40_000);
@@ -2618,7 +2668,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         creationRevision: 3,
         analysisRevision: 1,
         status: "processing",
-        phase: "analysis",
+        phase: "decision",
         boundReference: { assetId: "upstream-asset", evidenceRef: "upstream-evidence" },
         analysis: {
           boundReference: { assetId: "upstream-asset", evidenceRef: "upstream-evidence" },

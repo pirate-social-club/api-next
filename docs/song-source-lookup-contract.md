@@ -195,3 +195,12 @@ match tests resolver/persistence behavior only; it cannot prove that the current
 production workflow can create that source. Never manufacture that combination
 for live acceptance. The real source-evidence acquisition path must be specified
 before claiming general cover/remix recovery.
+
+The terminal resumption regression now drives the persisted reference wakeup
+through the real processing workflow and publication store, with every provider
+access rejected by the test. Binding copies the unchanged accepted terms to the
+new creation snapshot while retaining the original terms pointer. Migration
+0132 resumes retained analysis at decision when terms are present; without terms
+it stays at analysis. Both 0131 and 0132 must precede the Worker release. The
+outbox decoder also admits the reference trigger. This proves conditional
+resumption, not establishment of an eligible first source or live acceptance.
