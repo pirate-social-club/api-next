@@ -845,3 +845,13 @@ source through fe201797ee8996a72e1ada5864a5bfd00843db43 received independent rev
 with no remaining blocking findings in either binding. Final commit review and
 remote publication checks are separate gates and are not implied by this local
 receipt. The live configuration and rehearsal boundary remain unchanged.
+
+The first remote run for PR 312 passed the complete postgres17 aggregate and
+secret-boundary, but check failed because ten independent-process claim tests
+invoked the local rtk helper, absent on CI. The test launcher now uses the
+current Bun executable directly and gives child processes an empty PATH,
+proving they need no workstation shell tooling. They inherit the parent test
+suite's scheduling priority. All 16 claim tests and 81 assertions passed
+locally with this correction; their concurrency, interruption and durability
+assertions are unchanged. A fresh remote run is required; the failed check is
+not reclassified as a pass.

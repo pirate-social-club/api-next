@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { execPath } from "node:process";
 import { reconciliationDigest } from "../packages/platform-cf/src/karaoke-reconciliation-evidence.ts";
 import {
   persistKaraokeReleaseClaim,
@@ -27,14 +28,13 @@ const childSource = `
   console.log(JSON.stringify({ pid: process.pid, kind, granted }));
 `;
 async function child(path: string, kind: string, stop = "none", source = childSource) {
-  const process = Bun.spawn(
-    ["rtk", "proxy", "nice", "-n", "10", "bun", "--eval", source, path, kind, stop],
-    {
-      cwd: join(import.meta.dir, ".."),
-      stdout: "pipe",
-      stderr: "pipe",
-    },
-  );
+  const process = Bun.spawn([execPath, "--eval", source, path, kind, stop], {
+    cwd: join(import.meta.dir, ".."),
+    // Children inherit the suite's priority and need no shell tooling on PATH.
+    env: { ...globalThis.process.env, PATH: "" },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
   const [code, output, error] = await Promise.all([
     process.exited,
     new Response(process.stdout).text(),
