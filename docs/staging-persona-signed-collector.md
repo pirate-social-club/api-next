@@ -594,3 +594,31 @@ release OPERATION — performing and independently verifying the approved fence
 release across ingress, producers and database writes — remains unfinished
 source work; the origin's intent/execution/recovery contract and its explicit
 dispositions are the interface it must satisfy.
+
+
+Release-operation checkpoint — 2026-09-07. The concrete release operation
+exists as source. scripts/staging-karaoke-release-operation.ts validates a
+strict reviewed restoration plan (ingress application, queue resume list,
+serving worker versions, reviewed grant digest), refusing an incomplete plan
+before any mutation and naming the missing decision. Surfaces restore in
+fixed order — ingress, producers, database — through thin executor ports the
+live composition binds to the collectors' authenticated transports; every
+attempt reports through onAttempt so the caller retains authenticated,
+intent-bound evidence before and after. A failed surface leaves the result
+unresolved with its completed receipts; the operation never retries and the
+release time is the last confirmed surface restoration. An explicit
+released-state observation path answers restored/fenced/uncertain per
+surface without weakening held-fence validation.
+scripts/staging-karaoke-release-binding.ts is the thin binding: it closes
+over the plan, surfaces, observers, evidence store and signing readers,
+exposes the origin's verifyFenceRelease/reconcileReleasedFence ports, and
+owns no disposition logic — unresolved operations throw to the origin, and
+reconciliation requires three authenticated retained receipts for a release
+time, never reconstructing it from current state. Composition tests prove
+success across surfaces, an uncertain surface leaving the journal retired
+with no second execution, interruption between surfaces recovering through
+read-only reconciliation without re-execution, and all-fenced reconciling as
+not-executed. The remaining gap to live use is binding the surface executor
+ports and released-state observers to the actual provider transports, and
+obtaining the reviewed serving-version restoration values; the reviewed
+grant digest and queue identities already exist in recorded approvals.

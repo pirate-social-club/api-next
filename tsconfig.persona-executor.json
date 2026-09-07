@@ -7,6 +7,9 @@
     "scripts/staging-persona-session-drain.pg.test.ts",
     "scripts/staging-persona-rehearsal-failure.test.ts",
     "scripts/staging-karaoke-reset-binding.test.ts",
-    "scripts/staging-karaoke-reset-binding.ts"
+    "scripts/staging-karaoke-reset-binding.ts",
+    "scripts/staging-karaoke-release-operation.ts",
+    "scripts/staging-karaoke-release-binding.ts",
+    "scripts/staging-karaoke-release-binding.test.ts"
   ]
 }
