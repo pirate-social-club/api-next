@@ -351,7 +351,7 @@ describe("config system (000 §9)", () => {
     expect(JSON.stringify(config)).not.toContain("HNS_OBSERVER_DRIVER");
   });
 
-  test("Wrangler enables only the authorized Very web and OpenAI providers in staging", async () => {
+  test("Wrangler limits provider activation to authorized environments", async () => {
     const config = BunRuntime.JSONC.parse(
       await BunRuntime.file(
         new URL("../../../apps/http-worker/wrangler.jsonc", import.meta.url),
@@ -392,8 +392,11 @@ describe("config system (000 §9)", () => {
     expect(config.secrets?.required ?? []).not.toContain("OPENAI_API_KEY");
     expect(staging?.vars?.OPENAI_MODERATION_ENABLED).toBe("true");
     expect(staging?.secrets?.required ?? []).toContain("OPENAI_API_KEY");
-    expect(production?.vars?.OPENAI_MODERATION_ENABLED).toBe("false");
-    expect(production?.secrets?.required ?? []).not.toContain("OPENAI_API_KEY");
+    expect(production?.vars?.OPENAI_MODERATION_ENABLED).toBe("true");
+    expect(production?.secrets?.required ?? []).toContain("OPENAI_API_KEY");
+    expect(production?.vars?.OPENAI_MODERATION_MODEL).toBe("omni-moderation-2024-09-26");
+    expect(production?.vars?.OPENAI_MODERATION_BASE_URL).toBe("https://api.openai.com/v1");
+    expect(production?.vars?.OPENAI_MODERATION_TIMEOUT_MS).toBe("10000");
     expect(production?.vars?.HNS_OWNERSHIP_ENABLED).toBe("true");
     expect(production?.vars?.HNS_OWNERSHIP_CONFIGURATION_REFERENCE).toBe("hns-owner-production");
     expect(production?.vars?.HNS_OWNERSHIP_CONFIGURATION_VERSION).toBe("hns-owner-config-v1");
