@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { reconciliationDigest } from "../packages/platform-cf/src/karaoke-reconciliation-evidence.ts";
-import { readKaraokeMaintenanceJournal } from "./karaoke-maintenance-journal.ts";
+import { readKaraokeMaintenanceJournal, signedBytes } from "./karaoke-maintenance-journal.ts";
 import { openKaraokePrivateWriter } from "./karaoke-private-writer.ts";
 import {
   disposeMilestoneFixtures,
@@ -18,6 +18,30 @@ import type {
 
 afterEach(disposeMilestoneFixtures);
 const fixture = makeKaraokeMilestoneFixture;
+
+test("even a signed malformed surface record cannot stand for a required receipt", () => {
+  const f = fixture();
+  const writer = openKaraokePrivateWriter(f.journal.directory);
+  try {
+    writer.putArtifact(
+      signedBytes(
+        {
+          scope: "staging-karaoke-release-surface",
+          planDigest: "a".repeat(64),
+          intentId: "b".repeat(64),
+          surface: "foreign",
+          phase: "released",
+          releasedAt: f.now(),
+          receipt: "unproven",
+        },
+        f.base.privateKeyPem,
+      ),
+    );
+  } finally {
+    writer.close();
+  }
+  expect(() => evidence(f).list("b".repeat(64))).toThrow();
+});
 
 const plan: KaraokeReleasePlan = {
   version: "staging-karaoke-release-plan-v1",

@@ -32,12 +32,23 @@ export function readKaraokePrivateArtifact(
   name: string,
   maximumBytes: number,
 ): string {
-  if (
-    !/^(?:manifest\.signed|[a-f0-9]{64})\.json$/u.test(name) ||
-    !Number.isSafeInteger(maximumBytes) ||
-    maximumBytes < 1 ||
-    maximumBytes > 8_388_608
-  ) {
+  if (!/^(?:manifest\.signed|[a-f0-9]{64})\.json$/u.test(name))
+    throw new Error("karaoke_artifact_path_denied");
+  return readPrivateAnchoredFile(anchor, name, maximumBytes);
+}
+
+export function readKaraokePrivateReleaseClaim(
+  anchor: ReturnType<typeof openKaraokePrivateDirectory>,
+): string {
+  return readPrivateAnchoredFile(anchor, "release-claim.json", 262_144);
+}
+
+function readPrivateAnchoredFile(
+  anchor: ReturnType<typeof openKaraokePrivateDirectory>,
+  name: string,
+  maximumBytes: number,
+): string {
+  if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1 || maximumBytes > 8_388_608) {
     throw new Error("karaoke_artifact_path_denied");
   }
   const file = openSync(

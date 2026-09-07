@@ -502,6 +502,7 @@ export async function recordKaraokeFenceRelease(input: {
       throw new Error("karaoke_release_origin_unresolved");
     const artifacts = [
       JSON.stringify({ kind: "release-challenge", challenge }),
+      JSON.stringify({ kind: "release-plan", planDigest }),
       JSON.stringify({ kind: "release-held-fence", fence: heldFence }),
       JSON.stringify({ kind: "release-evidence", release }),
     ];

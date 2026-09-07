@@ -6,8 +6,8 @@ import {
 /** Review proposal, not GRANT SQL or execution authority. Explicit rows are
  * generated from the pinned baseline rather than copied from old database ACLs.
  */
-export function draftStagingPrivilegeProposal() {
-  const artifacts = loadStagingResetArtifacts();
+export function draftStagingPrivilegeProposal(repositoryRoot?: string) {
+  const artifacts = loadStagingResetArtifacts(repositoryRoot);
   const plan = validateStagingResetArtifacts(artifacts);
   const names = (kind: "TABLE" | "SEQUENCE") =>
     [...artifacts.baseline.matchAll(new RegExp(`^CREATE ${kind} ([a-z_][a-z0-9_]*)[ (]`, "gm"))]

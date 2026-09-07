@@ -3,6 +3,7 @@ import { reconciliationDigest } from "../packages/platform-cf/src/karaoke-reconc
 import {
   decodeReconciliation,
   ReconciliationDigest,
+  ReconciliationText,
   ReconciliationTime,
 } from "../packages/platform-cf/src/karaoke-reconciliation-schema.ts";
 import { KaraokeResetSnapshotSchema } from "../packages/platform-cf/src/karaoke-reset-inspection.ts";
@@ -42,6 +43,44 @@ const ClaimRecord = Schema.Struct({
   intentId: ReconciliationDigest,
   recordedAt: ReconciliationTime,
 });
+
+const SurfaceScope = {
+  scope: Schema.Literal("staging-karaoke-release-surface"),
+  planDigest: ReconciliationDigest,
+  intentId: ReconciliationDigest,
+  surface: Schema.Literals(["database", "producers", "ingress"]),
+};
+const SurfaceRecord = Schema.Union([
+  Schema.Struct({ ...SurfaceScope, phase: Schema.Literal("intent") }),
+  Schema.Struct({
+    ...SurfaceScope,
+    phase: Schema.Literal("released"),
+    releasedAt: ReconciliationTime,
+    receipt: ReconciliationText,
+    providerEvidence: Schema.optional(Schema.String.check(Schema.isMaxLength(65_536))),
+  }),
+  Schema.Struct({
+    ...SurfaceScope,
+    phase: Schema.Literal("uncertain"),
+    failure: Schema.optional(
+      Schema.Struct({
+        stage: ReconciliationText,
+        sqlstate: Schema.NullOr(Schema.String.check(Schema.isPattern(/^[0-9A-Z]{5}$/u))),
+      }),
+    ),
+  }),
+]);
+
+function decodeSurfaceRecord(value: unknown) {
+  const record = decodeReconciliation(SurfaceRecord, value);
+  if (
+    record.phase === "released" &&
+    record.providerEvidence !== undefined &&
+    reconciliationDigest(record.providerEvidence) !== record.receipt
+  )
+    throw new Error("karaoke_release_provider_evidence_changed");
+  return record;
+}
 
 /** Durable, authenticated surface-attempt evidence. The writer signs with the
  * pinned collector key; the reader verifies signatures and rejects anything
@@ -97,7 +136,7 @@ export function makeKaraokeReleaseEvidenceStore(
     put(record) {
       write(
         signedBytes(
-          { ...(record as object), scope: "staging-karaoke-release-surface" },
+          decodeSurfaceRecord({ ...(record as object), scope: "staging-karaoke-release-surface" }),
           privateKeyPem,
         ),
       );
@@ -194,24 +233,15 @@ export function makeKaraokeReleaseEvidenceStore(
         const outer = JSON.parse(bytes);
         const candidate = typeof outer.payload === "string" ? JSON.parse(outer.payload) : outer;
         if (candidate?.scope !== "staging-karaoke-release-surface") continue;
-        const payload = verifiedPayload(bytes, publicKeyPem) as {
-          scope?: string;
-          surface?: KaraokeReleaseSurface;
-          phase?: string;
-          releasedAt?: string;
-          recordedAt?: string;
-          planDigest?: string;
-          intentId?: string;
-        };
+        const payload = decodeSurfaceRecord(verifiedPayload(bytes, publicKeyPem));
         if (payload.scope === "staging-karaoke-release-surface") {
           if (payload.intentId !== intentId)
             throw new Error("karaoke_release_claim_foreign_intent");
           found.push({
-            ...(payload.surface === undefined ? {} : { surface: payload.surface }),
-            phase: payload.phase ?? "unknown",
-            ...(payload.releasedAt === undefined ? {} : { releasedAt: payload.releasedAt }),
-            ...(payload.recordedAt === undefined ? {} : { recordedAt: payload.recordedAt }),
-            ...(payload.planDigest === undefined ? {} : { planDigest: payload.planDigest }),
+            surface: payload.surface,
+            phase: payload.phase,
+            ...(payload.phase === "released" ? { releasedAt: payload.releasedAt } : {}),
+            planDigest: payload.planDigest,
           });
         }
       }
@@ -305,11 +335,15 @@ export function makeKaraokeReleaseBinding(input: {
             intentId: intent.intentId,
             surface: record.surface,
             phase: record.phase,
+            ...(record.failure === undefined ? {} : { failure: record.failure }),
             ...(record.receipt === undefined
               ? {}
               : {
                   releasedAt: record.receipt.releasedAt,
                   receipt: record.receipt.receipt,
+                  ...(record.receipt.providerEvidence === undefined
+                    ? {}
+                    : { providerEvidence: record.receipt.providerEvidence }),
                 }),
           }),
       });
@@ -374,7 +408,13 @@ export function makeKaraokeReleaseBinding(input: {
       if (!observations.every((observation) => observation === "restored"))
         return { disposition: "unresolved" };
       const receiptSurfaces = new Set(receipts.map((receipt) => receipt.surface));
-      if (receipts.length < 3 || receiptSurfaces.size < 3) return { disposition: "unresolved" };
+      if (
+        receipts.length !== 3 ||
+        !["database", "producers", "ingress"].every((surface) =>
+          receiptSurfaces.has(surface as KaraokeReleaseSurface),
+        )
+      )
+        return { disposition: "unresolved" };
       const releasedAt = receipts.at(-1)?.releasedAt;
       if (releasedAt === undefined) return { disposition: "unresolved" };
       return {

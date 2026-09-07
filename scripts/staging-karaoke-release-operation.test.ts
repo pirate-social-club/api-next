@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { KaraokeReleaseFailure } from "./staging-karaoke-release-failure.ts";
 import { executeKaraokeFenceRelease } from "./staging-karaoke-release-operation.ts";
 
 // Deliberately synthetic directives, not a reviewed live restoration plan.
@@ -55,4 +56,44 @@ test("unproven confirmation time stops the release after one surface", async () 
     expect(attempts).toBe(1);
     expect(result.receipts).toHaveLength(0);
   }
+});
+
+test("an unproven SQL effect retains stage and SQLSTATE without driver text", async () => {
+  const records: unknown[] = [];
+  const fail = async (): Promise<never> => {
+    throw new KaraokeReleaseFailure(
+      "database-commit",
+      Object.assign(new Error("private driver text"), { code: "40001" }),
+    );
+  };
+  const result = await executeKaraokeFenceRelease({
+    plan,
+    now,
+    surfaces: { database: fail, producers: fail, ingress: fail },
+    onAttempt: (record) => records.push(record),
+  });
+  expect(result.disposition).toBe("unresolved");
+  expect(result.receipts).toHaveLength(0);
+  expect(records.at(-1)).toEqual({
+    surface: "database",
+    phase: "uncertain",
+    failure: { stage: "database-commit", sqlstate: "40001" },
+  });
+  expect(JSON.stringify(records)).not.toContain("private driver text");
+});
+
+test("changed provider evidence cannot produce a receipt", async () => {
+  const execute = async () => ({
+    surface: "database" as const,
+    releasedAt: now(),
+    receipt: "a".repeat(64),
+    providerEvidence: "different evidence",
+  });
+  const result = await executeKaraokeFenceRelease({
+    plan,
+    now,
+    surfaces: { database: execute, producers: execute, ingress: execute },
+  });
+  expect(result.disposition).toBe("unresolved");
+  expect(result.receipts).toHaveLength(0);
 });

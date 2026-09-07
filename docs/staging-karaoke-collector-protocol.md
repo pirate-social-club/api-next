@@ -324,3 +324,18 @@ retained fence and release evidence and never claim that normal writes remain
 disabled. The verifier enforces the genuine 24-hour boundary between the last
 clean retirement baseline and any follow-up pass, and a follow-up that arrives
 early is refused before any journal append.
+
+## Live release command
+
+`record-karaoke-release` composes the authenticated origin with the concrete
+database, producer and ingress transports. The parent release CLI requires
+the fresh release-challenge and release-plan artifacts in the signed journal,
+then runs the real reconciliation verifier. The full private restoration
+directives are bound into the signed plan through restorationDigest; older
+fixture plans without it cannot enter the live composition.
+
+The explicit confirmation flag is `--release-fence`. No default target, grant,
+version or Access reversal is invented. Provider response failures yield no
+completed surface receipt. Retained failure evidence contains only an internal
+stage and SQLSTATE where available. See the signed-collector document for the
+private configuration contract and the release-time document for clock bounds.

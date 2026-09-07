@@ -13,5 +13,6 @@
     "scripts/staging-karaoke-release-binding.ts",
     "scripts/staging-karaoke-release-binding.test.ts",
     "scripts/staging-karaoke-release-claim.test.ts"
+    ,"scripts/staging-karaoke-release-database.pg.test.ts"
   ]
 }

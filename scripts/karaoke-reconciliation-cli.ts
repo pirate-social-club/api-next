@@ -22,6 +22,7 @@ export function collectKaraokeEvidence(
     | "record-karaoke-pass"
     | "record-karaoke-cleanup"
     | "record-karaoke-retirement"
+    | "record-karaoke-release"
     | "record-karaoke-fence" = "collect-karaoke-reconciliation",
   phase?: "post-fence" | "pre-reset" | "retirement" | "follow-up",
 ): Promise<void> {

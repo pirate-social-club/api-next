@@ -54,6 +54,7 @@ export const freshSchemaPostgresTestSuites = [
 ] as const;
 
 export const noBaselinePostgresTestSuites = [
+  "scripts/staging-karaoke-release-database.pg.test.ts",
   "scripts/staging-persona-recovery.pg.test.ts",
   "scripts/staging-persona-dependency-scan.pg.test.ts",
   "scripts/staging-persona-schema-authority.pg.test.ts",

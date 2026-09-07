@@ -1,10 +1,12 @@
 import { Schema } from "effect";
+import { reconciliationDigest } from "../packages/platform-cf/src/karaoke-reconciliation-evidence.ts";
 import {
   decodeReconciliation,
   ReconciliationDigest,
   ReconciliationText,
   ReconciliationTime,
 } from "../packages/platform-cf/src/karaoke-reconciliation-schema.ts";
+import { KaraokeReleaseFailure } from "./staging-karaoke-release-failure.ts";
 
 const Id = Schema.String.check(Schema.isPattern(/^[a-f0-9-]{32,36}$/u));
 const Worker = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128));
@@ -26,6 +28,7 @@ export const KaraokeReleasePlan = Schema.Struct({
     Schema.isMaxLength(16),
   ),
   reviewedGrantDigest: ReconciliationDigest,
+  restorationDigest: Schema.optional(ReconciliationDigest),
   surfaceOrder: Schema.Array(Schema.Literals(["ingress", "producers", "database"] as const)).check(
     Schema.isMinLength(3),
     Schema.isMaxLength(3),
@@ -39,6 +42,7 @@ export type KaraokeSurfaceReceipt = {
   readonly surface: KaraokeReleaseSurface;
   readonly releasedAt: string;
   readonly receipt: string;
+  readonly providerEvidence?: string | undefined;
 };
 
 /** Thin per-surface executors. Live composition binds them to the same
@@ -82,8 +86,9 @@ function missingDecision(plan: Partial<KaraokeReleasePlan>): string | null {
  * uncertain surface leaves the result unresolved with the receipts that did
  * complete; this operation never retries and never re-executes a completed
  * surface. The returned time is the last surface restoration *confirmation*
- * — a lower bound only for surfaces whose response was lost (those produce
- * no receipt), never a substitute for an unknown execution time. */
+ * — an exact collector observation and an upper bound on a proved effect,
+ * not the physical mutation time. A lost response produces neither a receipt
+ * nor a bound from which execution time may be reconstructed. */
 export async function executeKaraokeFenceRelease(input: {
   readonly plan: unknown;
   readonly surfaces: KaraokeReleaseSurfaces;
@@ -91,6 +96,7 @@ export async function executeKaraokeFenceRelease(input: {
     readonly surface: KaraokeReleaseSurface;
     readonly phase: "intent" | "released" | "uncertain";
     readonly receipt?: KaraokeSurfaceReceipt;
+    readonly failure?: { readonly stage: string; readonly sqlstate: string | null };
   }) => void;
   readonly now?: () => string;
 }) {
@@ -124,6 +130,7 @@ export async function executeKaraokeFenceRelease(input: {
           surface: Schema.Literal(surface),
           releasedAt: ReconciliationTime,
           receipt: ReconciliationText,
+          providerEvidence: Schema.optional(Schema.String.check(Schema.isMaxLength(65_536))),
         }),
         await input.surfaces[surface](directive, now),
       );
@@ -133,11 +140,22 @@ export async function executeKaraokeFenceRelease(input: {
       )
         throw new Error("karaoke_release_confirmation_time_unproven");
       if (receipt.surface !== surface) throw new Error("karaoke_release_surface_mismatch");
+      if (
+        receipt.providerEvidence !== undefined &&
+        reconciliationDigest(receipt.providerEvidence) !== receipt.receipt
+      )
+        throw new Error("karaoke_release_provider_evidence_changed");
       receipts.push(receipt);
       input.onAttempt?.({ surface, phase: "released", receipt });
     } catch (error) {
-      input.onAttempt?.({ surface, phase: "uncertain" });
-      void error;
+      input.onAttempt?.({
+        surface,
+        phase: "uncertain",
+        failure:
+          error instanceof KaraokeReleaseFailure
+            ? { stage: error.stage, sqlstate: error.sqlstate }
+            : { stage: surface, sqlstate: null },
+      });
       return { disposition: "unresolved" as const, receipts };
     }
   }

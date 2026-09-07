@@ -9,6 +9,7 @@ test("self-contained stdin bundle denies missing live configuration without runn
     "collect-karaoke-reconciliation",
     "record-karaoke-fence",
     "record-karaoke-pass",
+    "record-karaoke-release",
   ]) {
     const child = spawnSync(
       process.execPath,

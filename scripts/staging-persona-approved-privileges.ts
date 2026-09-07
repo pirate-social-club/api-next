@@ -20,10 +20,11 @@ const restricted = [
 export async function compileApprovedStagingPrivileges(
   admin: Pick<Client, "query">,
   runtimeRole: string,
+  repositoryRoot?: string,
 ) {
   if (!runtimeRole || runtimeRole === "PUBLIC" || /\p{Cc}/u.test(runtimeRole))
     throw new Error("reset_runtime_identity_invalid");
-  const proposal = draftStagingPrivilegeProposal();
+  const proposal = draftStagingPrivilegeProposal(repositoryRoot);
   const grant = (
     objectKind: ResetGrant["objectKind"],
     objectIdentity: string,
@@ -92,9 +93,10 @@ export async function verifyStagingRuntimeIdentity(
 export async function verifyApprovedStagingRuntime(
   admin: Pick<Client, "query">,
   runtimeRole: string,
+  repositoryRoot?: string,
 ) {
   const names = await verifyStagingRuntimeIdentity(admin, runtimeRole);
-  const manifest = await compileApprovedStagingPrivileges(admin, runtimeRole);
+  const manifest = await compileApprovedStagingPrivileges(admin, runtimeRole, repositoryRoot);
   const catalog = await readResetGrantCatalog(admin);
   if (
     catalog.grants.some(

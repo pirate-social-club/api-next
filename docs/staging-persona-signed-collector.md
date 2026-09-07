@@ -672,3 +672,86 @@ was selected or executed here. The approved surface order, serving-version
 pins, private Access configuration and session-visible database connection
 also remain gates. Missing configuration does not close the unfinished
 transport, command-wiring or release-timestamp contract work.
+
+## Concrete release transport composition
+
+The release stdin command is `record-karaoke-release`. Its parent is
+`scripts/staging-karaoke-record-release-cli.ts --config <private-file>
+--assertion-file <private-file> --release-fence`. It uses the pinned collector
+bundle from an api-next checkout as the working directory, so the immutable
+approved Git artifacts can be read independently of the stdin module location.
+It uses the operator assertion path exactly like the other recording commands.
+The parent requires a fresh challenge, approved plan digest, one signed
+released journal entry and the real reconciliation verifier. An exit code
+alone never establishes release. All results retain executionAuthorized false.
+
+`KARAOKE_LIVE_RELEASE_CONFIG` points outside both evidence directories to a
+private `staging-karaoke-live-release-v1` file. It carries the release plan,
+approvedPlanDigest and restoration directives. The plan's restorationDigest
+hashes the schema-decoded restoration object; approvedPlanDigest hashes the
+schema-decoded plan, both through JSON.stringify and SHA-256. Shape and a
+self-consistent digest are not owner approval: use the exact recorded approved
+values. The live composition requires database, producers, ingress order and
+the same ingress application and queue identities as the maintained fence.
+
+Database restoration reuses the approved privilege compiler and catalog-safe
+grant executor, checks the complete runtime-reachable grant digest including
+PUBLIC and SET ROLE paths before commit, then proves it on an independent
+connection. It restores CONNECT only to the independently bound runtime role
+under the explicit restoreRuntimeConnect directive. The private restoration
+input binds targetBindingDigest. Failure evidence retains internal stage and
+SQLSTATE without driver messages or credentials.
+
+Producers restore the four reviewed Worker versions before resuming the four
+named staging queues. Mutation responses and independent deployment IDs must
+agree; two queue scans must agree. Ingress supports an explicitly reviewed
+policy restoration or removal of the exact reset-created application. Both
+require complete inventory and exact configuration digests. Neither choice is
+inferred from current state or selected by this source checkpoint.
+
+Each surface refuses to produce a receipt without proving its effect. Signed
+surface evidence retains the bounded provider proof alongside its digest.
+Transport errors are never restored state. The live observer may report fenced
+only after the existing complete maintained-fence collector succeeds.
+
+The clock distinctions and remaining independent-review question are in
+`staging-karaoke-release-time-contract.md`. No source-level time claim approves
+rehearsal. The concrete private values, verified Access pointer and
+session-visible database connection remain live prerequisites. No live command
+or provider mutation is authorized by these implementation notes.
+
+## Reset-to-release integration hold
+
+Concrete transport wiring exposed an existing incompatible grant contract.
+`executePhasedStagingReset` calls `verifyFinal(true)` in its final replay batch,
+restores reviewed runtime grants, and subsequently requires those grants in
+`verifyApprovedStagingRuntime`. In contrast, `observeMaintainedDatabaseFence`
+requires schema_access, table_access, sequence_access and definer_access all
+false. `recordKaraokeResetVerification` invokes that real fence reader before
+the owned completion binding, and retirement and release admission use it too.
+Consequently a successfully reconstructed runtime grant set cannot pass these
+journal admissions. Correct Access configuration and session visibility do
+not resolve this source-level contradiction.
+
+This hold is separate from the private configuration prerequisites. Resolving
+it changes the reviewed reset-to-release grant handoff: retaining the existing
+ACL-denial fence requires keeping runtime grants denied through reconstruction
+and deferring restoration to release, including treatment of migration/default
+grants and completion verification. Alternatively, a different phase-specific
+fence needs explicit review; CONNECT denial must not be silently substituted
+for the current collector contract. No such semantic change is made here.
+The concrete CLI is not admitted for rehearsal or live use until this is
+resolved and the exact resulting source has independent review.
+
+Checkpoint verification on 2026-09-08: repository check passed with the existing
+41 warnings and two infos; both persona type-check projects and changed-file
+script-check passed. The final unit run passed 3,548 tests with 22,849 assertions
+at nice 10. Node tests passed 20 and the five serial Worker suites
+passed 80, 73, 2, 9 and 15. The new local PostgreSQL grant-readback test passed.
+The full PostgreSQL 17.11 run did not complete: the general suite reached its
+900000 ms limit and reported `general PostgreSQL suite failed with exit 143`.
+This is not PostgreSQL acceptance and provides no PostgreSQL 18.6 evidence.
+Publication, remote checks and independent review remain pending. The local
+test database was stopped; no live provider mutation or rehearsal occurred.
+The control-plane record update was deferred because unrelated records in
+that checkout were being edited by another writer.
