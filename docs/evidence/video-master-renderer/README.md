@@ -479,6 +479,63 @@ checkpoint 4 remains an isolated in-memory model. Cloudflare Container selection
 cold starts, fleet contention, remote bindings, production budgets, and every
 provider and live path also remain unproven, as does phase-two device evidence.
 
+## Checkpoint 8: PostgreSQL and persisted-object recovery
+
+The durable-recovery harness replaces the checkpoint-4 in-memory model with a
+real local PostgreSQL 17 database and a filesystem-backed immutable object
+adapter shared by separate Bun worker processes. The final evidence run used
+local image
+`sha256:e38411452a464af89e5adadb8d223bf53b898d47d6ef918b2d58c08707350449`.
+The database stayed running while renderer processes exited and restarted. The
+object adapter wrote actual bytes under attempt-scoped, hash-bearing keys; the
+payloads were synthetic evidence bytes rather than encoded video masters.
+
+The harness created five operation winners from six render attempts. Every
+attempt, winner, object key, SHA-256, process id, disposition, and render
+invocation was persisted and read back from PostgreSQL. Process-event rows show
+that the write-before-acceptance crash recovered across two process ids and the
+accepted-but-response-lost case used three process ids for write, commit, and
+replay. Their render invocation counts remained exactly one.
+
+The write-before-acceptance process exited after persisting its attempt row and
+object bytes but before inserting a winner. The next process verified those
+same bytes and committed that attempt as the winner without rendering again.
+The lost-response process committed its winner and exited before returning a
+result; replay observed the persisted winner and verified its object hash
+without adding an invocation.
+
+Two processes then raced different hashes for one operation. One serializable
+transaction won. The other first received PostgreSQL SQLSTATE `40001`, retried
+the transaction, observed the winner, and recorded its attempt as a divergent
+loser. The winner row and object key did not change. This is the expected
+database concurrency behavior and makes the transaction retry part of the
+evidence rather than hiding it behind an in-memory lock.
+
+Loser cleanup deleted the divergent object and then deliberately exited before
+recording disposal. A later process treated the absent object as an idempotent
+delete, marked the loser disposed, and left the accepted object intact. Separate
+accepted winners were then corrupted and removed. Replay returned typed
+`winner_bytes_corrupt` and `winner_bytes_missing` results, retained the original
+winner rows, and did not render or accept replacements.
+
+The credential-free evidence command is:
+
+    VIDEO_RENDERER_DURABLE_RECOVERY_EVIDENCE=1 bun test \
+      scripts/video-master-renderer-durable-recovery-evidence.test.ts \
+      --max-concurrency=1
+
+It passed one composed drill with 14 assertions. The full renderer selection
+passed 60 ordinary tests with this Docker-dependent drill skipped by default;
+enabling it passed the additional test. The complete `bun run check` passed.
+Every temporary PostgreSQL container and object directory was removed.
+
+This proves local recovery semantics, not a production adapter. PostgreSQL did
+not restart, the object adapter is a local filesystem rather than R2, and no
+provider response, Worker, Workflow, Stream, DATA, deployment, credential, or
+live media was involved. It does not prove R2 conditional writes, remote object
+visibility, production transaction routing, or recovery after simultaneous
+database and object-store loss.
+
 ## Still unverified
 
 Arbitrary container/codec rotation metadata, broader hostile-media parsing,
@@ -491,7 +548,10 @@ canonical-song coverage rejection, process timeout/kill, diagnostic and attempt
 artifact bounds, local semaphore, and five-run host distribution are now
 covered in addition to the earlier media cases.
 
-The direct-FFmpeg versus `@mediabunny/server` comparison ended in a pinned local
+The local PostgreSQL and filesystem-object drill now covers renderer-process
+crash recovery, acceptance-response loss, database contention, interrupted
+loser cleanup, and missing or corrupt winner bytes. The direct-FFmpeg versus
+`@mediabunny/server` comparison ended in a pinned local
 native abort before media output, so it has no packet, timing, or resource result
 to compare. Cloudflare Container execution, cold starts, remote binding
 behavior, staging R2 reads, Stream ingest, and durable PostgreSQL claims remain
