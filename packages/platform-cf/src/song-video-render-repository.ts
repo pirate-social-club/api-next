@@ -30,6 +30,12 @@ type SourceBindingFailure =
       readonly storedGeneration: number;
     }
   | { readonly kind: "decision_does_not_match_plan"; readonly planId: string }
+  | {
+      readonly kind: "attempt_state_incompatible";
+      readonly attemptId: string;
+      readonly state: string;
+    }
+  | { readonly kind: "seal_transition_lost"; readonly attemptId: string }
   | { readonly kind: "sealed_source_absent"; readonly immutableRef: string }
   | {
       readonly kind: "sealed_source_digest_mismatch";
@@ -126,13 +132,15 @@ export async function sealMaster(client: Client, request: SealRequest): Promise<
       clip_start_samples: string;
       clip_duration_samples: string;
       generation: number;
+      state: string;
     }>(
-      `SELECT p.submission_id, p.clip_start_samples, p.clip_duration_samples, a.generation
+      `SELECT p.submission_id, p.clip_start_samples, p.clip_duration_samples,
+              a.generation, a.state
          FROM media_song_video_render_plans p
          JOIN media_song_video_render_attempts a
            ON a.plan_id = p.plan_id AND a.attempt_id = $2
         WHERE p.plan_id = $1
-        FOR SHARE`,
+        FOR UPDATE OF a`,
       [request.attempt.planId, request.attempt.attemptId],
     );
     const boundRow = bound.rows[0];
@@ -164,6 +172,37 @@ export async function sealMaster(client: Client, request: SealRequest): Promise<
           storedGeneration: boundRow.generation,
         },
       };
+    }
+    // The attempt must be in a state a seal can follow. An identical replay of a
+    // seal that already committed is success; anything else is refused before a
+    // master row is written.
+    if (boundRow.state !== "started") {
+      const existing = await client.query<{
+        master_revision_id: string;
+        master_sha256: string;
+        master_byte_length: string;
+      }>(
+        `SELECT master_revision_id, master_sha256, master_byte_length
+           FROM media_song_video_masters WHERE attempt_id = $1 AND plan_id = $2`,
+        [request.attempt.attemptId, request.attempt.planId],
+      );
+      const priorMaster = existing.rows[0];
+      const identicalReplay =
+        priorMaster !== undefined &&
+        priorMaster.master_revision_id === request.masterRevisionId &&
+        priorMaster.master_sha256 === request.masterSha256 &&
+        BigInt(priorMaster.master_byte_length) === BigInt(request.masterByteLength);
+      await client.query(identicalReplay ? "COMMIT" : "ROLLBACK");
+      return identicalReplay
+        ? { sealed: true, masterRevisionId: priorMaster.master_revision_id }
+        : {
+            sealed: false,
+            failure: {
+              kind: "attempt_state_incompatible",
+              attemptId: request.attempt.attemptId,
+              state: boundRow.state,
+            },
+          };
     }
     if (
       BigInt(boundRow.clip_start_samples) !== BigInt(request.decisionClipStartSamples) ||
@@ -227,10 +266,20 @@ export async function sealMaster(client: Client, request: SealRequest): Promise<
         request.decisionClipDurationSamples,
       ],
     );
-    await client.query(
+    const transitioned = await client.query(
       "UPDATE media_song_video_render_attempts SET state = 'sealed' WHERE attempt_id = $1 AND plan_id = $2 AND state = 'started'",
       [request.attempt.attemptId, request.attempt.planId],
     );
+    if (transitioned.rowCount !== 1) {
+      // The row was locked above, so this should be unreachable. Refusing rather
+      // than committing keeps a master from existing over an untransitioned
+      // attempt if that assumption ever fails.
+      await client.query("ROLLBACK");
+      return {
+        sealed: false,
+        failure: { kind: "seal_transition_lost", attemptId: request.attempt.attemptId },
+      };
+    }
     await client.query("COMMIT");
     return { sealed: true, masterRevisionId: request.masterRevisionId };
   } catch (error) {
@@ -310,6 +359,17 @@ async function acceptMasterOnce(
   }
 }
 
+/** Worker-compatible delay. Bun.sleep is not available in the Workers runtime. */
+function delay(milliseconds: number): Promise<void> {
+  return new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+}
+
+export type AcceptRetryOptions = {
+  /** Injectable so a test can observe the retry path without wall-clock waits. */
+  readonly sleep?: (milliseconds: number) => Promise<void>;
+  readonly onSerializationRetry?: (attempt: number) => void;
+};
+
 /**
  * Bounded retry around the serializable acceptance. Concurrent acceptance can
  * raise SQLSTATE 40001; a retry observes the committed winner rather than
@@ -322,7 +382,9 @@ export async function acceptMaster(
     readonly masterRevisionId: string;
     readonly attemptId: string;
   },
+  options: AcceptRetryOptions = {},
 ): Promise<AcceptOutcome> {
+  const sleep = options.sleep ?? delay;
   let lastError: unknown;
   for (let retry = 0; retry < 5; retry += 1) {
     try {
@@ -330,7 +392,8 @@ export async function acceptMaster(
     } catch (error) {
       lastError = error;
       if (!(error instanceof Error) || !("code" in error) || error.code !== "40001") throw error;
-      await Bun.sleep(10 * (retry + 1));
+      options.onSerializationRetry?.(retry + 1);
+      await sleep(10 * (retry + 1));
     }
   }
   throw lastError instanceof Error ? lastError : new Error("acceptance retry exhausted");
