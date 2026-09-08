@@ -1,6 +1,7 @@
 import {
   confirmPersonaEvmWallet,
   createPersona,
+  listMyPendingPersonaWallets,
   listMyPersonas,
   type PersonaServices,
   type PersonaWalletServices,
@@ -14,6 +15,7 @@ import { withEndpointResult } from "./transport.ts";
 
 export type PersonaHandlers = Readonly<{
   readonly ListMyPersonas: EndpointHandler;
+  readonly ListMyPendingPersonaWallets: EndpointHandler;
   readonly CreatePersona: EndpointHandler;
   readonly PreparePersonaEvmWallet: EndpointHandler;
   readonly ConfirmPersonaEvmWallet: EndpointHandler;
@@ -41,6 +43,10 @@ export function makePersonaHandlers(services: PersonaHandlerServices): PersonaHa
     ListMyPersonas: async (request) =>
       await Effect.runPromise(
         listMyPersonas({ accountId: accountId(request.principal) }, services.personas),
+      ),
+    ListMyPendingPersonaWallets: async (request) =>
+      await Effect.runPromise(
+        listMyPendingPersonaWallets({ accountId: accountId(request.principal) }, services.personas),
       ),
     CreatePersona: async (request) => {
       const result = await Effect.runPromise(

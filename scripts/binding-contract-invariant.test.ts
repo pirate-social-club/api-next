@@ -6,6 +6,7 @@ import type { JobsWorkerEnv } from "../apps/jobs-worker/src/index.ts";
 import type { AlertSinkBindings } from "../packages/platform-cf/src/alert-config.ts";
 import type { RegistrationRateLimiterEnvironment } from "../packages/platform-cf/src/registration-rate-limiter-do.ts";
 import { MEDIA_BINDING_KINDS } from "./media-binding-contract.ts";
+import { TELEGRAM_BINDING_KINDS } from "./telegram-binding-contract.ts";
 
 type BindingKind = "platform" | "secret" | "var";
 type BindingManifest<T extends object> = { [K in keyof T]-?: BindingKind };
@@ -13,6 +14,7 @@ type BindingManifest<T extends object> = { [K in keyof T]-?: BindingKind };
 // `satisfies` requires every source binding to be classified. The runtime audit
 // checks that these classifications agree with both Wrangler configs.
 const HTTP_BINDING_KINDS = {
+  ...TELEGRAM_BINDING_KINDS,
   VIDEO_DELIVERY_ENABLED: "var",
   VIDEO_STREAM_CUSTOMER_HOST: "var",
   VIDEO_STREAM_SIGNING_KEY_ID: "var",
@@ -128,6 +130,7 @@ const ALERT_BINDING_KINDS = {
 } as const satisfies BindingManifest<AlertSinkBindings>;
 
 const JOBS_BINDING_KINDS = {
+  ...TELEGRAM_BINDING_KINDS,
   CF_VERSION_METADATA: "platform",
   CRON_LOCK: "platform",
   CONTROL_PLANE: "platform",

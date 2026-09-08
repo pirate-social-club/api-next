@@ -2,12 +2,13 @@ import {
   activateHnsCommunityRootImport,
   getCurrentHnsCommunityRootImport,
   getHnsCommunityRootImport,
+  type HnsCommunityPublicationQueue,
   type HnsCommunityRootImportActivationServices,
   type HnsCommunityRootImportDiscoveryStore,
   type HnsCommunityRootImportPollServices,
   type HnsCommunityRootImportReadStore,
   type HnsCommunityRootImportStartServices,
-  pollHnsCommunityRootImport,
+  requestHnsCommunityPublicationCheck,
   startHnsCommunityRootImport,
 } from "@pirate/application/namespace-ownership";
 import {
@@ -16,6 +17,7 @@ import {
   Conflict,
   InternalError,
   NotFound,
+  ProviderMisconfigured,
   ProviderUnavailable,
 } from "@pirate/contracts";
 import { Effect } from "effect";
@@ -31,6 +33,8 @@ function wireFailure(error: unknown): Error {
     return new NotFound({ message: "Community route authority was not found" });
   if (tagged.reason === "conflict")
     return new Conflict({ message: "HNS root import conflicts with durable state" });
+  if (tagged.reason === "ownership_misconfigured")
+    return new ProviderMisconfigured({ message: "HNS ownership setup could not be completed" });
   if (tagged.reason === "ownership_unavailable")
     return new ProviderUnavailable({ message: "HNS ownership provider is unavailable" });
   return new BadRequest({ message: "HNS community root import request is invalid" });
@@ -41,6 +45,7 @@ export function makeHnsCommunityRootImportHandlers(
     HnsCommunityRootImportPollServices &
     HnsCommunityRootImportActivationServices &
     Readonly<{
+      readonly publicationQueue: HnsCommunityPublicationQueue;
       readonly store: HnsCommunityRootImportStartServices["store"] &
         HnsCommunityRootImportDiscoveryStore &
         HnsCommunityRootImportReadStore;
@@ -131,7 +136,7 @@ export function makeHnsCommunityRootImportHandlers(
         provisioning_name_signature?: string;
       }>;
       return Effect.runPromise(
-        pollHnsCommunityRootImport(
+        requestHnsCommunityPublicationCheck(
           {
             actor_id: request.principal.subject,
             community_id: params.communityId,
@@ -143,6 +148,7 @@ export function makeHnsCommunityRootImportHandlers(
               : { provisioning_name_signature: body.provisioning_name_signature }),
           },
           services,
+          services.publicationQueue,
         ).pipe(
           Effect.map((result) =>
             withEndpointResult(

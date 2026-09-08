@@ -205,7 +205,19 @@ export const ListMyPersonas = endpoint({
   method: "GET",
   path: "/personas",
   auth: Auth.userOrAdmin(),
-  response: Schema.Struct({ personas: Schema.Array(PrivatePersonaV1) }),
+  response: Schema.Struct({
+    personas: Schema.Array(PrivatePersonaV1),
+  }),
+  successStatus: 200,
+  errors: [AuthError, InternalError],
+});
+
+/** Account-private recovery inventory, separate from public profile projections. */
+export const ListMyPendingPersonaWallets = endpoint({
+  method: "GET",
+  path: "/personas/wallets/evm/pending",
+  auth: Auth.userOrAdmin(),
+  response: Schema.Struct({ wallets: Schema.Array(PersonaEvmWalletPreparationV1) }),
   successStatus: 200,
   errors: [AuthError, InternalError],
 });

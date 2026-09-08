@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Effect } from "effect";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
+import { startHnsCommunityRootImport } from "../../application/src/namespace-ownership/hns-community-root-import.ts";
 import {
   makeControlPlaneHnsCommunityRootImportRepository,
   makeControlPlaneHnsCommunityRootImportStartStore,
@@ -232,6 +233,48 @@ suite("community HNS root-import repositories", () => {
       });
       if (prepared.kind === "conflict" || prepared.kind === "not_found")
         throw new Error("expected preparation");
+      // A verifier failure leaves only this preparation. Reloading the form
+      // supplies a fresh key; both tabs must recover one retained identity.
+      const freshPrepare = (key: string, root = "dankmemes", actor = actorId) =>
+        Effect.runPromise(
+          Effect.scoped(
+            communityStore.prepare({
+              ...prepareInput,
+              request: {
+                ...prepareInput.request,
+                actor_id: actor,
+                root_label: root,
+                idempotency_key: key,
+              },
+              request_sha256: "f".repeat(64),
+              attachment_intent_id: `${key}-attachment`,
+              ceremony_intent_id: `${key}-ceremony`,
+              root_import_session_id: `${key}-session`,
+              provision_job_id: `${key}-job`,
+            }),
+          ),
+        );
+      const resumed = await Promise.all([freshPrepare("reload-one"), freshPrepare("reload-two")]);
+      for (const result of resumed)
+        expect(result).toEqual({ kind: "replay", value: prepared.value });
+      expect(prepared.value).toMatchObject({
+        start_idempotency_key: prepareInput.request.idempotency_key,
+        start_request_sha256: prepareInput.request_sha256,
+      });
+      expect(await freshPrepare("other-root", "anotherroot")).toEqual({ kind: "conflict" });
+      expect(await freshPrepare("other-actor", "dankmemes", "another-actor")).toEqual({
+        kind: "not_found",
+      });
+      expect(await freshPrepare(prepareInput.request.idempotency_key)).toEqual({
+        kind: "conflict",
+      });
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::integer AS count FROM hns_community_root_import_preparations",
+          )
+        ).rows,
+      ).toEqual([{ count: 1 }]);
       const previousMigration = await Bun.file(
         new URL(
           "../../../db/postgres/migrations/0115_hns_community_root_import.sql",
@@ -410,22 +453,34 @@ suite("community HNS root-import repositories", () => {
         replayed: false,
       };
       const started = await Effect.runPromise(
-        Effect.scoped(
-          communityStore.start({
-            preparation: prepared.value,
-            ownership,
-            idempotency_key: "community-import-start",
-            request_sha256: "1".repeat(64),
-          }),
+        startHnsCommunityRootImport(
+          {
+            ...prepareInput.request,
+            idempotency_key: "reload-after-provider-recovery",
+          },
+          {
+            ids: {
+              attachmentIntent: () => "ignored-new-attachment",
+              ceremonyIntent: () => "ignored-new-ceremony",
+              rootImportSession: () => "ignored-new-session",
+              provisionJob: () => "ignored-new-job",
+            },
+            store: communityStore,
+            ownership: {
+              start: (input) => {
+                expect(input.idempotency_key).toBe(prepareInput.request_sha256);
+                expect(input.attachment_intent_id).toBe(prepareInput.attachment_intent_id);
+                return Effect.succeed(ownership);
+              },
+            },
+          },
         ),
       );
       expect(started).toMatchObject({
-        kind: "created",
-        session: {
-          community_id: communityId,
-          status: "provisioning",
-          root_label: "dankmemes",
-        },
+        community_id: communityId,
+        root_import_session_id: prepareInput.root_import_session_id,
+        status: "provisioning",
+        root_label: "dankmemes",
       });
       expect(
         await Effect.runPromise(

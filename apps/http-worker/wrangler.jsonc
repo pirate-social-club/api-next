@@ -8,6 +8,7 @@
   // HTTP invocation logs are noisy; retain application/error logs in Workers
   // Logs at a deliberate rate. Traces stay disabled until a request trace
   // contract exists.
+  "triggers": { "crons": [] },
   "observability": {
     "enabled": true,
     "logs": {
@@ -92,7 +93,9 @@
     },
         { "binding": "MEDIA_DERIVED", "bucket_name": "pirate-media-derived-development" }
   ],
+  "queues": { "producers": [{ "binding": "TELEGRAM_QUEUE", "queue": "pirate-community-telegram-development" }] },
   "vars": {
+    "TELEGRAM_ENABLED": "false",
     "API_NEXT_ENV": "development",
     "VIDEO_DELIVERY_ENABLED": "false",
     "VIDEO_STREAM_CUSTOMER_HOST": "",
@@ -159,6 +162,7 @@
   },
   "env": {
     "staging": {
+      "triggers": { "crons": ["* * * * *"] },
       "name": "pirate-http-worker-staging",
       "version_metadata": { "binding": "CF_VERSION_METADATA" },
       "observability": {
@@ -234,7 +238,12 @@
         },
         { "binding": "MEDIA_DERIVED", "bucket_name": "pirate-media-derived-staging" }
       ],
+      "queues": { "producers": [{ "binding": "TELEGRAM_QUEUE", "queue": "pirate-community-telegram-staging" }] },
       "vars": {
+        "TELEGRAM_ENABLED": "false",
+        "TELEGRAM_PUBLIC_ORIGIN": "https://web-next-staging.pirate.sc",
+        "TELEGRAM_WEBHOOK_ORIGIN": "https://api-next-staging.pirate.sc",
+        "TELEGRAM_CREDENTIAL_ACTIVE_VERSION": "v1",
         "API_NEXT_ENV": "staging",
     "VIDEO_DELIVERY_ENABLED": "false",
     "VIDEO_STREAM_CUSTOMER_HOST": "",
@@ -333,6 +342,7 @@
       }
     },
     "production": {
+      "triggers": { "crons": ["* * * * *"] },
       "name": "pirate-http-worker-production",
       "version_metadata": { "binding": "CF_VERSION_METADATA" },
       // Keep the deployed lifecycle until production video is admitted.
@@ -431,7 +441,9 @@
         },
         { "binding": "MEDIA_DERIVED", "bucket_name": "pirate-media-derived-production" }
       ],
+      "queues": { "producers": [{ "binding": "TELEGRAM_QUEUE", "queue": "pirate-community-telegram-production" }] },
       "vars": {
+        "TELEGRAM_ENABLED": "false",
         "API_NEXT_ENV": "production",
     "VIDEO_DELIVERY_ENABLED": "false",
     "VIDEO_STREAM_CUSTOMER_HOST": "",
@@ -458,7 +470,7 @@
         "SELF_PASS_APP_NAME": "Pirate",
         "SELF_PASS_MOCK_PASSPORT": "false",
         "VERY_OAUTH_ENABLED": "false",
-        "OPENAI_MODERATION_ENABLED": "false",
+        "OPENAI_MODERATION_ENABLED": "true",
         "OPENAI_MODERATION_MODEL": "omni-moderation-2024-09-26",
         "OPENAI_MODERATION_BASE_URL": "https://api.openai.com/v1",
         "OPENAI_MODERATION_TIMEOUT_MS": "10000",
@@ -500,7 +512,8 @@
           "HNS_EDGE_ALERT_TOKEN",
           "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
           "MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID",
-          "MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY"
+          "MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY",
+          "OPENAI_API_KEY"
         ]
       }
     }

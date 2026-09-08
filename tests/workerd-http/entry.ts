@@ -239,6 +239,7 @@ const workerdPersona: PersonaRecord = {
   retired_at: null,
 };
 const personaStore: PersonaStoreService = {
+  listPendingWallets: () => Effect.succeed([]),
   listByAccount: (accountId) =>
     Effect.succeed(accountId === account.user.user_id ? [workerdPersona] : []),
   findOwned: ({ accountId, personaId }) =>

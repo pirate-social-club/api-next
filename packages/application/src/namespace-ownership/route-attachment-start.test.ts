@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { Effect } from "effect";
-import type {
-  NamespaceOwnershipProviderAdapter,
-  RouteAttachmentOwnershipProviderStartInput,
-  RouteAttachmentOwnershipProviderStartResult,
+import {
+  type NamespaceOwnershipProviderAdapter,
+  NamespaceOwnershipProviderRejected,
+  NamespaceOwnershipProviderUnavailable,
+  type RouteAttachmentOwnershipProviderStartInput,
+  type RouteAttachmentOwnershipProviderStartResult,
 } from "./adapter.ts";
 import { hnsRouteAttachmentStartHash } from "./hns-evidence.ts";
 import { makeNamespaceOwnershipProviderRegistry } from "./registry.ts";
@@ -267,4 +269,53 @@ describe("route attachment ownership start", () => {
       ),
     ).rejects.toMatchObject({ reason: "unsupported" });
   });
+});
+
+describe("attachment start provider failure release", () => {
+  for (const failure of [
+    new NamespaceOwnershipProviderRejected({ provider_id: "hns.owner.v1", operation: "start" }),
+    new NamespaceOwnershipProviderUnavailable({ provider_id: "hns.owner.v1", operation: "start" }),
+  ]) {
+    test(`releases ${failure._tag} and permits a later explicit retry`, async () => {
+      let released = 0;
+      let calls = 0;
+      const dependencies = await services({
+        store: store({
+          release: () =>
+            Effect.sync(() => {
+              released++;
+            }),
+        }),
+      });
+      const good = adapter();
+      const registry = await Effect.runPromise(
+        makeNamespaceOwnershipProviderRegistry(
+          [
+            {
+              ...good,
+              startRouteAttachment: (value) => {
+                calls++;
+                return calls === 1 ? Effect.fail(failure) : Effect.succeed(started(value));
+              },
+            },
+          ],
+          { now: () => now },
+        ),
+      );
+      await expect(
+        Effect.runPromise(startRouteAttachmentOwnership(input, { ...dependencies, registry })),
+      ).rejects.toMatchObject({ _tag: failure._tag });
+      expect(released).toBe(1);
+      expect(calls).toBe(1);
+      expect(
+        (
+          await Effect.runPromise(
+            startRouteAttachmentOwnership(input, { ...dependencies, registry }),
+          )
+        ).status,
+      ).toBe("pending");
+      expect(released).toBe(1);
+      expect(calls).toBe(2);
+    });
+  }
 });

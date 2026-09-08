@@ -174,6 +174,23 @@ const mapStorageConflict = (
 
 export function makeControlPlanePersonaRepository() {
   return {
+    listPendingWallets: (accountId: string) =>
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        const result = yield* db.execute<WalletRow>({
+          label: "personas.list-pending-wallets",
+          text: `SELECT wallet.persona_id, wallet.status, wallet.hd_wallet_index,
+                      wallet.address, wallet.assigned_at, wallet.privy_wallet_id, wallet.reservation_idempotency_key
+                 FROM persona_wallet_assignments AS wallet JOIN personas AS persona USING(persona_id)
+                WHERE wallet.account_id=$1 AND persona.account_id=$1
+                  AND persona.status='pending_wallet' AND wallet.status='pending'
+                  AND wallet.chain_account_kind='evm'
+                ORDER BY wallet.hd_wallet_index`,
+          values: [accountId],
+          readonly: true,
+        });
+        return result.rows.map(preparationFromRow);
+      }),
     listByAccount: (accountId: Parameters<PersonaStoreService["listByAccount"]>[0]) =>
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
@@ -850,6 +867,7 @@ export function makeControlPlanePersonaStore(
 ): PersonaStoreService {
   const repository = makeControlPlanePersonaRepository();
   return {
+    listPendingWallets: (accountId) => bind(runtime, repository.listPendingWallets(accountId)),
     listByAccount: (accountId) => bind(runtime, repository.listByAccount(accountId)),
     findOwned: (input) => bind(runtime, repository.findOwned(input)),
     create: (input) => bind(runtime, repository.create(input)),

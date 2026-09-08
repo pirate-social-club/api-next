@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./telegram": "./src/telegram/index.ts",
     ".": "./src/index.ts",
     "./use-cases/account-erasure-orchestration": "./src/use-cases/account-erasure-orchestration.ts",
     "./community-moderation-runtime": "./src/community-moderation-runtime.ts",

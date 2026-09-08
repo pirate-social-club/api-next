@@ -246,7 +246,11 @@ describe("community creation intent application use cases", () => {
   test("resolves a create_new choice without any persona selection lookup", async () => {
     let lookups = 0;
     let createDraft: unknown = null;
-    const createNewDraft = { ...draft, persona: { kind: "create_new" as const } };
+    const createNewDraft = {
+      public_name: "River Room",
+      ...draft,
+      persona: { kind: "create_new" as const },
+    };
     const scoped = services({
       create: ({ body }) => {
         createDraft = body.draft;

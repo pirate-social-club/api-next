@@ -1,6 +1,8 @@
 export const reusablePostgresTestSuites = [
+  "packages/platform-cf/src/telegram-store.pg.test.ts",
   "packages/platform-cf/src/activity-qualification-repository.pg.test.ts",
   "packages/platform-cf/src/community-creation-repository.pg.test.ts",
+  "packages/platform-cf/src/community-owner-reservation.pg.test.ts",
   "packages/platform-cf/src/community-purchase-funding-producer-repository.pg.test.ts",
   "packages/platform-cf/src/community-repository.pg.test.ts",
   "packages/platform-cf/src/community-route-repository.pg.test.ts",
@@ -27,6 +29,7 @@ export const reusablePostgresTestSuites = [
 ] as const;
 
 export const freshSchemaPostgresTestSuites = [
+  "apps/http-worker/src/hns-community-publication.pg.test.ts",
   "apps/http-worker/src/public-community-threads-composition.pg.test.ts",
   "scripts/hns-monitor/snapshot.pg.test.ts",
   "scripts/hns-continuity/promotion.pg.test.ts",

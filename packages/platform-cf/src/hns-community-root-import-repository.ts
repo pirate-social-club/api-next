@@ -91,7 +91,7 @@ const preparationColumns = `
   preparation.actor_id, preparation.community_id, preparation.attachment_intent_id,
   preparation.ceremony_intent_id, preparation.root_label,
   preparation.root_import_session_id, preparation.provision_job_id,
-  attachment.revision AS attachment_revision, preparation.start_request_sha256, preparation.admission_kind,
+  attachment.revision AS attachment_revision, preparation.start_idempotency_key, preparation.start_request_sha256, preparation.admission_kind,
   preparation.expires_at`;
 
 // A retained verification attempt supports resuming checks, not a claim that
@@ -100,14 +100,15 @@ const sessionReadColumns = `session.*,
   CASE WHEN session.status NOT IN ('activated','failed','expired')
          AND (session.expires_at <= clock_timestamp() OR ownership.status='expired')
        THEN 'expired'
+       WHEN session.status='awaiting_owner_update' AND EXISTS (SELECT 1 FROM hns_community_publication_jobs job WHERE job.root_import_session_id=session.root_import_session_id AND job.state='failed') THEN 'failed'
        WHEN session.status NOT IN ('activated','failed','expired') AND ownership.status='failed'
        THEN 'failed' ELSE session.status END AS status,
-  EXISTS (SELECT 1 FROM community_route_attachment_completion_attempts AS attempt
+  (EXISTS (SELECT 1 FROM hns_community_publication_jobs job WHERE job.root_import_session_id=session.root_import_session_id AND job.state IN ('pending','leased')) OR EXISTS (SELECT 1 FROM community_route_attachment_completion_attempts AS attempt
            WHERE attempt.namespace_session_id=session.namespace_session_id
              AND attempt.actor_id=session.actor_id AND attempt.community_id=session.community_id
              AND attempt.attachment_intent_id=session.attachment_intent_id
              AND attempt.expected_revision=session.ownership_expected_revision
-  ) AS publication_check_pending`;
+  )) AS publication_check_pending`;
 
 const ownershipReadJoin = `LEFT JOIN community_route_attachment_namespace_sessions AS ownership
   ON ownership.namespace_session_id=session.namespace_session_id
@@ -123,6 +124,8 @@ function decodePreparation(row: Row): HnsCommunityRootImportPreparation | null {
   const root_import_session_id = text(row, "root_import_session_id");
   const provision_job_id = text(row, "provision_job_id");
   const attachment_revision = integer(row.attachment_revision);
+  const start_idempotency_key = text(row, "start_idempotency_key");
+  const start_request_sha256 = text(row, "start_request_sha256");
   return actor_id === null ||
     community_id === null ||
     attachment_intent_id === null ||
@@ -130,7 +133,9 @@ function decodePreparation(row: Row): HnsCommunityRootImportPreparation | null {
     root_label === null ||
     root_import_session_id === null ||
     provision_job_id === null ||
-    attachment_revision === null
+    attachment_revision === null ||
+    start_idempotency_key === null ||
+    start_request_sha256 === null
     ? null
     : {
         actor_id,
@@ -139,6 +144,8 @@ function decodePreparation(row: Row): HnsCommunityRootImportPreparation | null {
         ceremony_intent_id,
         root_label,
         attachment_revision,
+        start_idempotency_key,
+        start_request_sha256,
         root_import_session_id,
         provision_job_id,
       };
@@ -394,6 +401,39 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
             if (authorityRow === undefined) return yield* Effect.fail(storageFailure());
             const grantId = authorityRow === null ? null : text(authorityRow, "grant_id");
             if (grantId === null) return { kind: "not_found" } as const;
+            // A provider failure can leave a valid preparation without a session.
+            // A fresh browser must resume that reservation, using its retained
+            // request identity, rather than compete with its own admission slot.
+            const resumable = yield* transaction.execute<Row>({
+              label: "hns.community-root-import.resume-preparation",
+              text: `SELECT ${preparationColumns}
+                       FROM hns_community_root_import_preparations AS preparation
+                       JOIN community_route_attachment_intents AS attachment
+                         ON attachment.attachment_intent_id=preparation.attachment_intent_id
+                      WHERE preparation.actor_id=$1 AND preparation.community_id=$2
+                        AND preparation.root_label=$3
+                        AND preparation.expires_at>clock_timestamp()
+                        AND attachment.expires_at>clock_timestamp()
+                        AND attachment.status='verification_required'
+                        AND attachment.provider_binding_hash=$4
+                        AND NOT EXISTS (SELECT 1 FROM hns_root_import_sessions AS session
+                          WHERE session.root_import_session_id=preparation.root_import_session_id)`,
+              values: [
+                input.request.actor_id,
+                input.request.community_id,
+                input.request.root_label,
+                providerBindingHash,
+              ],
+              readonly: false,
+            });
+            const resumableRow = oneRow(resumable);
+            if (resumableRow === undefined) return yield* Effect.fail(storageFailure());
+            if (resumableRow !== null) {
+              const value = decodePreparation(resumableRow);
+              return value === null
+                ? yield* Effect.fail(storageFailure())
+                : ({ kind: "replay", value } as const);
+            }
             const admission = yield* transaction.execute<Row>({
               label: "hns.community-root-import.admit",
               text: "SELECT admit_hns_community_root_import_v1($1,$2,$3) AS admitted",
@@ -560,6 +600,8 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
               attachment_revision: 1,
               root_import_session_id: input.root_import_session_id,
               provision_job_id: input.provision_job_id,
+              start_idempotency_key: input.request.idempotency_key,
+              start_request_sha256: input.request_sha256,
             };
             return { kind: "created", value } as const;
           }),

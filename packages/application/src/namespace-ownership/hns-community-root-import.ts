@@ -7,9 +7,16 @@ import type {
 import { canonicalJson, validCommunityRouteRoot } from "@pirate/domain";
 import { Data, Effect, Option, Schema } from "effect";
 import {
+  NamespaceOwnershipProviderInvalidResponse,
+  NamespaceOwnershipProviderMisconfigured,
+  NamespaceOwnershipProviderRejected,
+  NamespaceOwnershipProviderUnboundRejected,
+} from "./adapter.ts";
+import {
   decodeHnsRootImportNameProofResultV1,
   HnsRootImportNameSignature,
 } from "./hns-root-import-name-proof.ts";
+import { RouteAttachmentCompletionRejected } from "./route-attachment-completion.ts";
 import type {
   RouteAttachmentOwnershipStartResponse,
   StartRouteAttachmentOwnershipInput,
@@ -106,6 +113,8 @@ export type HnsCommunityRootImportPreparation = Readonly<{
   readonly attachment_revision: number;
   readonly root_import_session_id: string;
   readonly provision_job_id: string;
+  readonly start_idempotency_key: string;
+  readonly start_request_sha256: string;
 }>;
 
 export type HnsCommunityRootImportPrepareOutcome =
@@ -301,12 +310,31 @@ export interface HnsCommunityRootImportActivationServices {
 export class HnsCommunityRootImportRejected extends Data.TaggedError(
   "HnsCommunityRootImportRejected",
 )<{
-  readonly reason: "invalid" | "conflict" | "not_found" | "ownership_unavailable";
+  readonly reason:
+    | "invalid"
+    | "conflict"
+    | "not_found"
+    | "ownership_unavailable"
+    | "ownership_misconfigured";
 }> {}
 
 export class HnsCommunityRootImportStorageFailed extends Data.TaggedError(
   "HnsCommunityRootImportStorageFailed",
 ) {}
+
+function ownershipFailure(error: unknown) {
+  return new HnsCommunityRootImportRejected({
+    reason:
+      error instanceof NamespaceOwnershipProviderRejected ||
+      error instanceof NamespaceOwnershipProviderUnboundRejected ||
+      error instanceof NamespaceOwnershipProviderInvalidResponse ||
+      error instanceof NamespaceOwnershipProviderMisconfigured ||
+      (error instanceof RouteAttachmentCompletionRejected &&
+        (error.reason === "provider_misconfigured" || error.reason === "attempt_budget_exhausted"))
+        ? "ownership_misconfigured"
+        : "ownership_unavailable",
+  });
+}
 
 const encoder = new TextEncoder();
 const exactParseOptions = { onExcessProperty: "error" } as const;
@@ -380,13 +408,9 @@ export const startHnsCommunityRootImport = Effect.fn("startHnsCommunityRootImpor
       attachment_intent_id: authority.attachment_intent_id,
       ceremony_intent_id: authority.ceremony_intent_id,
       expected_revision: authority.attachment_revision,
-      idempotency_key: requestSha256,
+      idempotency_key: authority.start_request_sha256,
     })
-    .pipe(
-      Effect.mapError(
-        () => new HnsCommunityRootImportRejected({ reason: "ownership_unavailable" }),
-      ),
-    );
+    .pipe(Effect.mapError(ownershipFailure));
   if (
     ownership.status !== "pending" ||
     ownership.community_id !== authority.community_id ||
@@ -395,13 +419,13 @@ export const startHnsCommunityRootImport = Effect.fn("startHnsCommunityRootImpor
     ownership.challenge.ownership_source !== "hns_parent_chain_txt" ||
     ownership.challenge.challenge_name !== authority.root_label
   ) {
-    return yield* new HnsCommunityRootImportRejected({ reason: "ownership_unavailable" });
+    return yield* new HnsCommunityRootImportRejected({ reason: "ownership_misconfigured" });
   }
   const outcome = yield* services.store.start({
     preparation: authority,
     ownership,
-    idempotency_key: input.idempotency_key,
-    request_sha256: requestSha256,
+    idempotency_key: authority.start_idempotency_key,
+    request_sha256: authority.start_request_sha256,
   });
   if (outcome.kind === "not_found") {
     return yield* new HnsCommunityRootImportRejected({ reason: "not_found" });
@@ -502,7 +526,7 @@ export const pollHnsCommunityRootImport = Effect.fn("pollHnsCommunityRootImport"
         message,
         signature,
       })
-      .pipe(Effect.mapError(() => pollFailure("ownership_unavailable")));
+      .pipe(Effect.mapError(ownershipFailure));
     const proof = yield* Effect.tryPromise({
       try: async () => {
         const result = decodeHnsRootImportNameProofResultV1(verified.result_bytes);
@@ -558,7 +582,7 @@ export const pollHnsCommunityRootImport = Effect.fn("pollHnsCommunityRootImport"
       idempotency_key: input.idempotency_key,
       channel: "poll_result",
     })
-    .pipe(Effect.mapError(() => pollFailure("ownership_unavailable")));
+    .pipe(Effect.mapError(ownershipFailure));
   if (ownership.status === "pending" || ownership.status === "unavailable") {
     return {
       ...current,

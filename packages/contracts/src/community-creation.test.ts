@@ -3,6 +3,7 @@ import { Schema } from "effect";
 import {
   CommitCommunityCreationIntent,
   CommunityCreationIntent,
+  CommunityOwnerPublicName,
   CompiledGatePolicy,
   CreateCommunityCreationIntent,
   GetCommunityCreationIntent,
@@ -73,6 +74,13 @@ const base = {
 };
 
 describe("community creation contracts", () => {
+  test("public names permit spaces and reject blank, control and oversized values", () => {
+    const decode = Schema.decodeUnknownSync(CommunityOwnerPublicName);
+    expect(decode("River Room")).toBe("River Room");
+    for (const value of ["", "   ", "a".repeat(81), "line\nfeed"])
+      expect(() => decode(value)).toThrow();
+  });
+
   test("accepts the provider-neutral compiled human policy", () => {
     expect(Schema.decodeUnknownSync(CompiledGatePolicy)(policy)).toEqual(policy);
     expect(() =>

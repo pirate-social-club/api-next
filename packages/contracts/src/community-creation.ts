@@ -84,6 +84,18 @@ export const CommunityCreationDraftV1 = Schema.Struct({
 });
 export type CommunityCreationDraftV1 = Schema.Schema.Type<typeof CommunityCreationDraftV1>;
 
+export const CommunityOwnerPublicName = Schema.String.check(
+  Schema.makeFilter((value) =>
+    value.trim().length > 0 &&
+    value.length <= 80 &&
+    [...value].every(
+      (character) => character.charCodeAt(0) >= 32 && character.charCodeAt(0) !== 127,
+    )
+      ? undefined
+      : "Expected a public name of 1–80 characters",
+  ),
+);
+
 export const CommunityCreationDraftV2 = Schema.Struct({
   /**
    * Spec 014 section 10.2: the creator persona is either an existing owned
@@ -91,6 +103,7 @@ export const CommunityCreationDraftV2 = Schema.Struct({
    * creation commit. A browser never invents a persona id or a binding.
    */
   persona: PersonaCommunityChoiceV1,
+  public_name: Schema.optional(CommunityOwnerPublicName),
   name: Schema.NonEmptyString,
   description: Schema.NullOr(Schema.String),
   policy: CompiledGatePolicy,
@@ -153,6 +166,7 @@ export const CommunityCreationNextActionV2 = Schema.Union([
     ceremony_intent_id: Schema.NonEmptyString,
     generation: PositiveInteger,
   }),
+  Schema.Struct({ kind: Schema.Literal("activate_profile"), persona_id: Schema.NonEmptyString }),
   Schema.Struct({ kind: Schema.Literal("commit") }),
   Schema.Struct({
     kind: Schema.Literal("wait"),
@@ -374,7 +388,9 @@ export const CommunityCreationIntentV2 = Schema.Struct({
       return "Verification-required intents require a typed human verification action";
     }
     if (intent.status === "commit_ready") {
-      return intent.next_action.kind === "commit"
+      return intent.next_action.kind === "commit" ||
+        (intent.draft.persona.kind === "create_new" &&
+          intent.next_action.kind === "activate_profile")
         ? undefined
         : "Commit-ready intents require a commit action";
     }

@@ -4,6 +4,7 @@ import { makeCommunityPurchaseFundingObservationUseCase } from "@pirate/applicat
 import {
   completeNamespaceOwnership,
   completeRouteAttachmentOwnership,
+  continueHnsCommunityPublication,
   startNamespaceOwnership,
   startRouteAttachmentOwnership,
 } from "@pirate/application/namespace-ownership";
@@ -76,6 +77,7 @@ import { makeDanceReferenceStore } from "@pirate/platform-cf/dance-reference-aut
 import { makeControlPlaneFeedStore } from "@pirate/platform-cf/feed-repository";
 import { makeHandleRecipientTokenVault } from "@pirate/platform-cf/handle-recipient-token-vault";
 import { makeControlPlaneHandleSalesStore } from "@pirate/platform-cf/handle-sales-repository";
+import { makeHnsCommunityPublicationQueue } from "@pirate/platform-cf/hns-community-publication-queue";
 import { makeControlPlaneHnsCommunityRootImportStartStore } from "@pirate/platform-cf/hns-community-root-import-repository";
 import type { HnsEdgeStatusKvNamespace } from "@pirate/platform-cf/hns-edge-status-kv";
 import type { HnsForwarderReplayStoreNamespace } from "@pirate/platform-cf/hns-forwarder-replay-store";
@@ -189,6 +191,10 @@ import { makeControlPlaneVerificationSessionStartStore } from "@pirate/platform-
 import { makeR2VideoMultipartGateway } from "@pirate/platform-cf/video-multipart-r2";
 import { makeControlPlaneVideoPublicationStore } from "@pirate/platform-cf/video-publication-repository";
 import { Effect, Redacted, Schema } from "effect";
+import {
+  makeTelegramServices,
+  type TelegramBindings,
+} from "../../../packages/platform-cf/src/telegram-runtime.ts";
 import { makeActivityQualificationHandlers } from "./activity-qualification-handlers.ts";
 import { makeCanonicalCommunityRouteHandlers } from "./canonical-community-route-handlers.ts";
 import { makeCommunityCreationHandlers } from "./community-creation-handlers.ts";
@@ -225,12 +231,12 @@ import { makeStudyGenerationHandlers } from "./study-generation-handlers.ts";
 import type { StudyGenerationWorkflowPayload } from "./study-generation-workflow.ts";
 import { makeProductionStudySpokenServices } from "./study-spoken-production-composition.ts";
 import { makeStudyV2Handlers } from "./study-v2-handlers.ts";
+import { makeTelegramHandlers } from "./telegram-handlers.ts";
 import { createHttpWorker, type EndpointHandler, type Principal } from "./transport.ts";
 import { makeVerificationHandlers } from "./verification-handlers.ts";
-
 import { makeVideoAccessHandlers, type VideoAccessBindings } from "./video-access-composition.ts";
 
-export interface HttpWorkerBindings extends VideoAccessBindings {
+export interface HttpWorkerBindings extends VideoAccessBindings, TelegramBindings {
   readonly CF_VERSION_METADATA?: { readonly id: string };
   readonly CONTROL_PLANE?: unknown;
   readonly STUDY_GENERATION_ENABLED?: string;
@@ -673,6 +679,7 @@ export async function createProductionHttpWorker(
     throw new Error("HTTP worker configuration is incomplete or invalid");
   }
   const controlPlane = makeHyperdriveControlPlaneLayer(loadHyperdrive(bindings));
+  const telegramHandlers = makeTelegramHandlers(await makeTelegramServices(bindings, controlPlane));
   const danceReferenceHandlers = makeDanceReferenceHandlers(
     makeProductionDanceReferenceServices(
       makeDanceReferenceStore(controlPlane),
@@ -995,10 +1002,13 @@ export async function createProductionHttpWorker(
   const communityHnsBinding = namespaceBindings.find(
     (binding) => binding.requirement === "namespace_ownership" && binding.family === "hns",
   );
-  const hnsCommunityRootImportHandlers =
+  const publicationQueue = makeHnsCommunityPublicationQueue(controlPlane);
+  const hnsCommunityServices:
+    | Omit<Parameters<typeof makeHnsCommunityRootImportHandlers>[0], "publicationQueue">
+    | undefined =
     communityHnsBinding === undefined || bindings.HNS_OWNER_VERIFIER === undefined
-      ? {}
-      : makeHnsCommunityRootImportHandlers({
+      ? undefined
+      : {
           ownership: {
             start: (input) =>
               startRouteAttachmentOwnership(input, {
@@ -1021,7 +1031,23 @@ export async function createProductionHttpWorker(
             environment: config.API_NEXT_ENV,
             provider_binding: communityHnsBinding,
           }),
-        });
+        };
+  const hnsCommunityRootImportHandlers =
+    hnsCommunityServices === undefined
+      ? {}
+      : makeHnsCommunityRootImportHandlers({ ...hnsCommunityServices, publicationQueue });
+  const continuePublicationChecks = async () => {
+    if (hnsCommunityServices === undefined) return;
+    // Bounded work, leased in PostgreSQL; overlapping invocations are fenced.
+    for (let count = 0; count < 8; count++) {
+      if (
+        !(await Effect.runPromise(
+          continueHnsCommunityPublication(hnsCommunityServices, publicationQueue),
+        ))
+      )
+        break;
+    }
+  };
   const sessionCrypto = await makeSessionCrypto({
     privateKeyPem: Redacted.value(config.PIRATE_APP_JWT_PRIVATE_KEY),
     publicKeyPem: Redacted.value(config.PIRATE_APP_JWT_PUBLIC_KEY),
@@ -1296,13 +1322,14 @@ export async function createProductionHttpWorker(
     Effect.runPromise(getMyProfile({ userId: session?.subject ?? "" }, { identityStore }));
   const publicProfile = makePublicProfileHandler({ publicProfileStore });
 
-  return createHttpWorker({
+  const worker = createHttpWorker({
     config: { corsOrigin: config.CORS_ORIGIN },
     hnsCommunityAppApi,
     hnsHandleHostApi,
     hnsEdgeStatus,
     handlers: {
       ...productHandlers,
+      ...telegramHandlers,
       GetPublicCommunityThreads: makePublicCommunityThreadsHandler({
         publicCommunityThreadsStore: makeControlPlanePublicCommunityThreadsStore(controlPlane),
       }),
@@ -1383,4 +1410,5 @@ export async function createProductionHttpWorker(
         }),
       ),
   });
+  return { ...worker, continuePublicationChecks };
 }

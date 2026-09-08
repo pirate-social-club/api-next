@@ -5,6 +5,7 @@ import {
   type CommunityCreationRepositoryFailure,
   type CommunityCreationStore,
   type CommunityCreationStoreService,
+  CommunityOwnerSetupError,
   ControlPlaneDb,
   type ControlPlaneError,
   type ControlPlaneTransaction,
@@ -47,6 +48,7 @@ import {
   VERY_WEB_RP_SCOPE,
 } from "@pirate/domain";
 import { Effect, type Layer, Option, Schema } from "effect";
+import { reserveCommunityOwner } from "./community-owner-reservation.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 
@@ -309,7 +311,16 @@ function nextActionFromRequirements(
     }
     return { kind: "wait", requirement: null, reason_code: "reconciliation_pending" } as const;
   }
-  if (input.status === "commit_ready") return { kind: "commit" } as const;
+  if (input.status === "commit_ready") {
+    if (
+      input.contractVersion === "optional_route_v2" &&
+      typeof row.minted_persona_id === "string" &&
+      row.creator_persona_status !== "active"
+    ) {
+      return { kind: "activate_profile", persona_id: row.minted_persona_id } as const;
+    }
+    return { kind: "commit" } as const;
+  }
   if (input.status === "quota_exceeded" || input.status === "gate_unsupported") {
     return { kind: "blocked", reason: input.status } as const;
   }
@@ -335,15 +346,14 @@ function documentFromRow(row: Row): CommunityCreationIntentDocument | null {
   // A create_new draft has no persona until the terminal creation commit
   // mints one; its presentation stays null until then (spec 014 10.2).
   const draftPersonaKind = jsonValue(row.draft);
-  const createNewWithoutMint =
+  const createNewOwner =
     draftPersonaKind !== null &&
     typeof draftPersonaKind === "object" &&
     "persona" in draftPersonaKind &&
     draftPersonaKind.persona !== null &&
     typeof draftPersonaKind.persona === "object" &&
     "kind" in draftPersonaKind.persona &&
-    draftPersonaKind.persona.kind === "create_new" &&
-    row.minted_persona_id === null;
+    draftPersonaKind.persona.kind === "create_new";
   const human = requirementFromValue(row.human_requirement, "human_identity");
   const namespace = requirementFromValue(row.namespace_requirement, "namespace_ownership");
   // Post-amendment optional-route intents carry no creator authority and no
@@ -364,14 +374,14 @@ function documentFromRow(row: Row): CommunityCreationIntentDocument | null {
     (contractVersion !== "route_v1" && contractVersion !== "optional_route_v2") ||
     (contractVersion === "route_v1" && namespace === null) ||
     (contractVersion === "optional_route_v2" && row.namespace_requirement !== null) ||
-    (contractVersion === "optional_route_v2" &&
-      Option.isNone(publicPersona) &&
-      !createNewWithoutMint)
+    (contractVersion === "optional_route_v2" && Option.isNone(publicPersona) && !createNewOwner)
   ) {
     return null;
   }
   const personaRolePresentation =
-    contractVersion === "optional_route_v2" && Option.isSome(publicPersona)
+    contractVersion === "optional_route_v2" &&
+    Option.isSome(publicPersona) &&
+    (row.minted_persona_id === null || row.creator_persona_status === "active")
       ? ({ role: "owner" as const, persona: publicPersona.value } as const)
       : null;
   const nextAction = nextActionFromRequirements(row, {
@@ -542,6 +552,9 @@ function routeV1ProjectionColumns(intentAlias: string): string {
                  ${intentAlias}.minted_persona_id
                )
           ) AS persona_projection,
+          (SELECT persona.status FROM personas AS persona
+            WHERE persona.account_id = ${intentAlias}.actor_id
+              AND persona.persona_id = ${intentAlias}.minted_persona_id) AS creator_persona_status,
           EXISTS (
             SELECT 1 FROM proof_sessions AS proof
              WHERE proof.creation_ceremony_intent_id = (
@@ -1900,6 +1913,13 @@ export function makeControlPlaneCommunityCreationRepository(
           if (body.expected_revision !== document.revision) {
             return yield* Effect.fail(failure("update", "revision-conflict"));
           }
+          if (
+            row.minted_persona_id !== null &&
+            (JSON.stringify(body.draft.persona) !== JSON.stringify(document.draft.persona) ||
+              body.draft.public_name !== document.draft.public_name)
+          ) {
+            return yield* Effect.fail(failure("update", "constraint"));
+          }
           const requirementFree = document.requirements.human_identity === undefined;
           let nextStatus: "commit_ready" | "gate_unsupported" | "verification_required";
           if (requirementFree) {
@@ -2084,124 +2104,74 @@ export function makeControlPlaneCommunityCreationRepository(
         return yield* Effect.fail(failure("commit", "constraint"));
       }
 
-      // Spec 014 section 10.2: the creation commit either selects the draft's
-      // existing persona (bind-once, serialized on the persona row locked by
-      // the caller) or mints the create_new persona and its binding here.
-      let creatorPersonaId: string;
       let mintedPersonaId: string | null = null;
-      let creatorPresentation: CommunityPersonaRolePresentationV1;
-      if (document.draft.persona.kind === "existing") {
-        creatorPersonaId = document.draft.persona.persona_id;
-        const presentation = document.persona_role_presentation;
-        if (presentation === null || presentation.persona.persona_id !== creatorPersonaId) {
-          return yield* Effect.fail(failure("commit", "constraint"));
+      let creatorPersonaId: string;
+      if (document.draft.persona.kind === "create_new") {
+        if (document.draft.public_name === undefined) {
+          return yield* new CommunityOwnerSetupError(
+            "Enter a public name before continuing community setup",
+          );
         }
-        creatorPresentation = presentation;
-        const existingBinding = yield* transaction.execute<Row>({
-          label: "community.creation.commit-v2.read-creator-binding",
-          text: `SELECT community_id
-                   FROM persona_community_bindings
-                  WHERE persona_id = $1`,
-          values: [creatorPersonaId],
-          readonly: true,
+        const reserved = yield* reserveCommunityOwner(transaction, {
+          accountId: input.actor.userId,
+          intentId: input.intentId,
+          publicName: document.draft.public_name,
         });
-        if (existingBinding.rows.length > 1) {
-          return yield* Effect.fail(failure("commit", "invalid-row"));
-        }
-        // The target community does not exist yet, so any existing binding is
-        // a changed target: a typed conflict before any write (spec 014 10.2).
-        if (existingBinding.rows.length === 1) {
-          return yield* Effect.fail(failure("commit", "constraint"));
+        creatorPersonaId = reserved.personaId;
+        mintedPersonaId = reserved.personaId;
+        if (
+          reserved.status === "pending_wallet" ||
+          document.persona_role_presentation?.persona.persona_id !== reserved.personaId
+        ) {
+          yield* transaction.execute({
+            label: "community.creation.commit-v2.reserve-owner",
+            text: `UPDATE community_creation_intents SET minted_persona_id=$3,
+                     revision=revision+1, updated_at=clock_timestamp()
+                    WHERE intent_id=$1 AND actor_id=$2 AND revision=$4`,
+            values: [input.intentId, input.actor.userId, reserved.personaId, document.revision],
+            readonly: false,
+          });
+          const pendingRow = yield* loadLockedIntent(
+            transaction,
+            input.actor.userId,
+            input.intentId,
+            "commit",
+          );
+          const pending = pendingRow === null ? null : documentFromRow(pendingRow);
+          if (pending === null) return yield* Effect.fail(failure("commit", "invalid-row"));
+          yield* insertRevision(transaction, {
+            intent: pending,
+            actorId: input.actor.userId,
+            operation: "commit",
+            idempotencyKey: body.idempotency_key,
+            requestHash: input.requestHash,
+          });
+          return { document: pending, outcome: "fresh_not_created" as const };
         }
       } else {
-        yield* transaction.execute({
-          label: "community.creation.commit-v2.mint-account-lock",
-          text: "SELECT pg_advisory_xact_lock(hashtextextended($1, 14000046))",
-          values: [JSON.stringify([input.actor.userId, "evm"])],
-          readonly: false,
-        });
-        const capacity = yield* transaction.execute<Row>({
-          label: "community.creation.commit-v2.mint-capacity",
-          text: `SELECT count(*)::text AS slot_count,
-                        count(*) FILTER (
-                          WHERE NOT persona.is_first_persona
-                            AND assignment.created_at > clock_timestamp() - interval '86400 seconds'
-                        )::text AS recent_count
-                   FROM persona_wallet_assignments AS assignment
-                   JOIN personas AS persona USING (persona_id)
-                  WHERE assignment.account_id = $1
-                    AND assignment.chain_account_kind = 'evm'`,
-          values: [input.actor.userId],
-          readonly: true,
-        });
-        const capacityRow = capacity.rows[0];
-        if (
-          capacityRow === undefined ||
-          Number(capacityRow.slot_count) >= 10 ||
-          Number(capacityRow.recent_count) >= 3
-        ) {
-          return yield* Effect.fail(failure("commit", "constraint"));
-        }
-        const next = yield* transaction.execute<Row>({
-          label: "community.creation.commit-v2.mint-allocate-index",
-          text: `SELECT (COALESCE(max(hd_wallet_index), -1) + 1)::text AS hd_wallet_index
-                   FROM persona_wallet_assignments
-                  WHERE account_id = $1 AND chain_account_kind = 'evm'`,
-          values: [input.actor.userId],
-          readonly: true,
-        });
-        const hdWalletIndex = Number(oneRow(next.rows)?.hd_wallet_index);
-        if (!Number.isSafeInteger(hdWalletIndex) || hdWalletIndex < 0) {
-          return yield* Effect.fail(failure("commit", "invalid-row"));
-        }
-        creatorPersonaId = `persona_${crypto.randomUUID().replaceAll("-", "")}`;
-        mintedPersonaId = creatorPersonaId;
-        yield* transaction.execute({
-          label: "community.creation.commit-v2.mint-persona",
-          text: `INSERT INTO personas (
-                   persona_id, account_id, status, is_first_persona, created_at, retired_at
-                 ) VALUES ($1, $2, 'pending_wallet', false, clock_timestamp(), NULL)`,
-          values: [creatorPersonaId, input.actor.userId],
-          readonly: false,
-        });
-        yield* transaction.execute({
-          label: "community.creation.commit-v2.mint-persona-pending-profile",
-          text: `INSERT INTO persona_pending_profiles (
-                   persona_id, display_name, avatar_ref, cover_ref, bio,
-                   preferred_locale, created_at
-                 ) VALUES ($1, NULL, NULL, NULL, NULL, NULL, clock_timestamp())`,
-          values: [creatorPersonaId],
-          readonly: false,
-        });
-        yield* transaction.execute({
-          label: "community.creation.commit-v2.mint-persona-wallet-reservation",
-          text: `INSERT INTO persona_wallet_assignments (
-                   assignment_id, persona_id, account_id, chain_account_kind,
-                   privy_wallet_id, hd_wallet_index, address, status,
-                   reservation_idempotency_key, assigned_at, tombstoned_at,
-                   created_at, updated_at
-                 ) VALUES ($1, $2, $3, 'evm', NULL, $4, NULL, 'pending', $5, NULL, NULL,
-                           clock_timestamp(), clock_timestamp())`,
-          values: [
-            `persona_wallet_${crypto.randomUUID().replaceAll("-", "")}`,
-            creatorPersonaId,
-            input.actor.userId,
-            hdWalletIndex,
-            `creation-${creatorPersonaId}`,
-          ],
-          readonly: false,
-        });
-        creatorPresentation = {
-          role: "owner" as const,
-          persona: {
-            persona_id: creatorPersonaId,
-            object: "persona" as const,
-            display_name: null,
-            avatar_ref: null,
-            primary_public_handle: null,
-          },
-        };
+        creatorPersonaId = document.draft.persona.persona_id;
       }
+      yield* lockActiveOwnedPersona(transaction, input.actor.userId, creatorPersonaId, "commit");
+      const owner = yield* transaction.execute<Row>({
+        label: "community.creation.commit-v2.ready-owner",
+        text: `SELECT public_persona_projection(persona.persona_id) AS presentation
+                 FROM personas AS persona JOIN persona_profiles AS profile USING (persona_id)
+                WHERE persona.account_id=$1 AND persona.persona_id=$2 AND persona.status='active'
+                  AND btrim(profile.display_name) <> ''
+                  AND NOT EXISTS (SELECT 1 FROM persona_community_bindings WHERE persona_id=$2)`,
+        values: [input.actor.userId, creatorPersonaId],
+        readonly: true,
+      });
+      const publicOwner = Schema.decodeUnknownOption(PublicPersonaV1)(owner.rows[0]?.presentation);
+      if (Option.isNone(publicOwner)) {
+        return yield* new CommunityOwnerSetupError(
+          "Choose an active, named profile that has not joined another community",
+        );
+      }
+      const creatorPresentation: CommunityPersonaRolePresentationV1 = {
+        role: "owner",
+        persona: publicOwner.value,
+      };
 
       const communityId = nextCommunityId();
       const membershipId = nextMembershipId();

@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./telegram": "./src/telegram.ts",
     ".": "./src/index.ts",
     "./video-submission": "./src/video-submission.ts",
     "./dance": "./src/dance/index.ts",
