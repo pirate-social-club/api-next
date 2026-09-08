@@ -123,6 +123,14 @@ const alias = {
     "../../packages/platform-cf/src/media-processing-store.ts",
     import.meta.url,
   ).pathname,
+  "@pirate/platform-cf/song-source-recording-consumer": new URL(
+    "../../packages/platform-cf/src/song-source-recording-consumer.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/song-source-recording-repository": new URL(
+    "../../packages/platform-cf/src/song-source-recording-repository.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/platform-cf/cloudflare-workflow-entrypoint": new URL(
     "../../packages/platform-cf/src/cloudflare-workflow-entrypoint.ts",
     import.meta.url,
