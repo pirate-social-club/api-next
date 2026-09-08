@@ -5,6 +5,7 @@ import {
   AddMegapotPoolLeg,
   AssetBonusFundingV1,
   GetMegapotPoolStanding,
+  GetRewardQualificationPolicies,
   GetSongMegapotPool,
   ListMyRewardCredits,
   MegapotFundingV1,
@@ -13,12 +14,54 @@ import {
   ObserveAssetBonusFunding,
   ObserveMegapotPoolFunding,
   OpenSongRewardOffer,
+  RewardQualificationPoliciesV1,
 } from "./rewards-song-offers.ts";
 
 const strict = <S extends Schema.ConstraintDecoder<unknown>>(schema: S) =>
   Schema.decodeUnknownSync(schema, { onExcessProperty: "error" });
 
 describe("song reward offer contracts", () => {
+  test("discloses activity-specific policies without accepting arbitrary sponsor thresholds", () => {
+    const study = {
+      activity: "study",
+      policy: {
+        kind: "study_session_first_pass_v2",
+        qualification_policy_version_id: "study-policy-v2",
+        required_correct_bps: 7_000,
+      },
+    } as const;
+    const karaoke = {
+      activity: "karaoke",
+      policy: {
+        kind: "karaoke_qualification_v2",
+        qualification_policy_version_id: "karaoke-policy-v2",
+        minimum_coverage_bps: 8_500,
+        minimum_final_score_bps: 7_000,
+        minimum_scored_line_count: 5,
+        eligible_playback_kinds: ["full_mix"],
+      },
+    } as const;
+    expect(strict(GetRewardQualificationPolicies.response)({ policies: [study, karaoke] })).toEqual(
+      { policies: [study, karaoke] },
+    );
+    expect(GetRewardQualificationPolicies.auth.policy.kind).toBe("user");
+    expect(() => strict(RewardQualificationPoliciesV1)([])).toThrow();
+    expect(() => strict(RewardQualificationPoliciesV1)([study, study])).toThrow();
+    expect(() =>
+      strict(RewardQualificationPoliciesV1)([{ ...study, activity: "dance" }]),
+    ).toThrow();
+    expect(() =>
+      strict(RewardQualificationPoliciesV1)([
+        { ...study, policy: { ...study.policy, required_correct_bps: 8_000 } },
+      ]),
+    ).toThrow();
+    expect(() =>
+      strict(RewardQualificationPoliciesV1)([
+        { ...karaoke, policy: { ...karaoke.policy, minimum_scored_line_count: undefined } },
+      ]),
+    ).toThrow();
+  });
+
   test("requires the complete server-whitelist identity for an asset bonus", () => {
     const body = AddAssetBonusLeg.request?.body;
     if (body === undefined) throw new Error("asset bonus body missing");

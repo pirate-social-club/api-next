@@ -29,6 +29,10 @@ import type { EndpointHandler, Principal } from "./transport.ts";
 import { withEndpointResult } from "./transport.ts";
 
 export type SongRewardOfferHandlerServices = Readonly<{
+  rewardCatalogAuthority: Readonly<{
+    environment: "test" | "staging";
+    attestationId: string;
+  }> | null;
   clock: Clock["Service"];
   ids: IdGen["Service"];
   store: SongRewardOfferStore;
@@ -44,6 +48,8 @@ export type SongRewardOfferHandlerServices = Readonly<{
 
 export type SongRewardOfferHandlers = Readonly<{
   OpenSongRewardOffer: EndpointHandler;
+  GetRewardQualificationPolicies: EndpointHandler;
+  ListAdmittedRewardAssets: EndpointHandler;
   AddAssetBonusLeg: EndpointHandler;
   AddMegapotPoolLeg: EndpointHandler;
   ObserveAssetBonusFunding: EndpointHandler;
@@ -75,6 +81,10 @@ function optionalAccountId(principal: Principal | null): string | null {
 function wireFailure(error: unknown): Error {
   const tagged = error as { readonly _tag?: string; readonly reason?: string };
   if (tagged._tag === "SongRewardOfferRejected") {
+    if (tagged.reason === "qualification-policy-changed")
+      return new Conflict({ message: "Qualification policy changed; refresh reward terms" });
+    if (tagged.reason === "qualification-policy-unavailable")
+      return new ProviderUnavailable({ message: "Reward qualification policy is unavailable" });
     if (
       tagged.reason === "not-found" ||
       tagged.reason === "song-unavailable" ||
@@ -138,6 +148,7 @@ const offer = (value: SongRewardOffer) => ({
 });
 
 const leg = (value: MegapotPoolLeg) => ({
+  qualification_policies: value.qualificationPolicies,
   object: "megapot_pool_leg" as const,
   leg_id: value.legId,
   offer_id: value.offerId,
@@ -158,6 +169,7 @@ const leg = (value: MegapotPoolLeg) => ({
 });
 
 const assetLeg = (value: AssetBonusLeg) => ({
+  qualification_policies: value.qualificationPolicies,
   object: "asset_bonus_leg" as const,
   leg_id: value.legId,
   offer_id: value.offerId,
@@ -210,6 +222,7 @@ const assetFunding = (value: RewardFundingIntent) => ({
 });
 
 const assetBonusProjection = (value: PublicSongAssetBonusProjection) => ({
+  qualification_policies: value.qualificationPolicies,
   object: "song_asset_bonus_projection" as const,
   offer_id: value.offerId,
   leg_id: value.legId,
@@ -254,6 +267,7 @@ const drawingProjection = (value: NonNullable<PublicSongMegapotPoolProjection["d
 });
 
 const poolProjection = (value: PublicSongMegapotPoolProjection) => ({
+  qualification_policies: value.qualificationPolicies,
   object: "song_megapot_pool_projection" as const,
   offer_id: value.offerId,
   leg_id: value.legId,
@@ -320,6 +334,27 @@ export function makeSongRewardOfferHandlers(
     );
 
   return {
+    ListAdmittedRewardAssets: async (request) => {
+      user(request.principal);
+      if (services.rewardCatalogAuthority === null)
+        throw new ProviderUnavailable({ message: "Testnet reward assets are unavailable" });
+      const query = request.query as { readonly cursor?: string; readonly limit?: string };
+      const result = await run(
+        services.store.listAdmittedAssets({
+          ...services.rewardCatalogAuthority,
+          cursor: query.cursor ?? null,
+          limit: Number(query.limit ?? 25),
+        }),
+      );
+      return withEndpointResult({ items: result.items, next_cursor: result.nextCursor }, 200, {
+        "Cache-Control": "no-store",
+      });
+    },
+    GetRewardQualificationPolicies: async (request) => {
+      user(request.principal);
+      const policies = await run(services.store.qualificationPolicies());
+      return withEndpointResult({ policies }, 200, { "Cache-Control": "no-store" });
+    },
     OpenSongRewardOffer: async (request) => {
       const principal = user(request.principal);
       const path = request.params as { readonly communityId: string; readonly postId: string };
@@ -351,6 +386,9 @@ export function makeSongRewardOfferHandlers(
       const path = request.params as { readonly offerId: string };
       const body = request.body as {
         readonly idempotency_key: string;
+        readonly expected_qualification_policy_versions?: Readonly<
+          Partial<Record<"study" | "karaoke", string>>
+        >;
         readonly persona_id: string;
         readonly funding_amount_atomic: string;
         readonly max_ticket_price_atomic: string;
@@ -367,6 +405,9 @@ export function makeSongRewardOfferHandlers(
           personaId: body.persona_id,
           offerId: path.offerId,
           idempotencyKey: body.idempotency_key,
+          ...(body.expected_qualification_policy_versions === undefined
+            ? {}
+            : { expectedQualificationPolicyVersions: body.expected_qualification_policy_versions }),
           senderAddress: principal.wallet,
           fundingAmountAtomic: BigInt(body.funding_amount_atomic),
           maxTicketPriceAtomic: BigInt(body.max_ticket_price_atomic),
@@ -393,6 +434,9 @@ export function makeSongRewardOfferHandlers(
       const path = request.params as { readonly offerId: string };
       const body = request.body as {
         readonly idempotency_key: string;
+        readonly expected_qualification_policy_versions?: Readonly<
+          Partial<Record<"study" | "karaoke", string>>
+        >;
         readonly persona_id: string;
         readonly funding_amount_atomic: string;
         readonly chain_id: 84_532;
@@ -409,6 +453,9 @@ export function makeSongRewardOfferHandlers(
           personaId: body.persona_id,
           offerId: path.offerId,
           idempotencyKey: body.idempotency_key,
+          ...(body.expected_qualification_policy_versions === undefined
+            ? {}
+            : { expectedQualificationPolicyVersions: body.expected_qualification_policy_versions }),
           senderAddress: principal.wallet,
           fundingAmountAtomic: BigInt(body.funding_amount_atomic),
           chainId: body.chain_id,

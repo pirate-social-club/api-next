@@ -1,3 +1,4 @@
+import type { RewardQualificationPoliciesV1 } from "@pirate/contracts";
 import { Data, type Effect } from "effect";
 
 export class RewardProjectionStorageFailed extends Data.TaggedError(
@@ -66,6 +67,7 @@ export type PublicMegapotDrawingProjection = Readonly<{
 }>;
 
 export type PublicSongMegapotPoolProjection = Readonly<{
+  qualificationPolicies: RewardQualificationPoliciesV1 | null;
   offerId: string;
   legId: string;
   communityId: string;
@@ -87,6 +89,7 @@ export type PublicSongMegapotPoolProjection = Readonly<{
 }>;
 
 export type PublicSongAssetBonusProjection = Readonly<{
+  qualificationPolicies: RewardQualificationPoliciesV1 | null;
   offerId: string;
   legId: string;
   communityId: string;

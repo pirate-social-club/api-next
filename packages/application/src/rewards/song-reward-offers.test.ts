@@ -39,6 +39,7 @@ const leg: MegapotPoolLeg = {
   emptyPoolPolicy: "no_purchase",
   fallbackPayoutPersonaId: null,
   fundedAtomic: 0n,
+  qualificationPolicies: null,
   legTermsHash: `0x${"b".repeat(64)}`,
   ownerPolicyKind: "frozen_policy",
   ownerPolicyRevision: 1,
@@ -59,6 +60,7 @@ const assetLeg: AssetBonusLeg = {
   maxClaims: 10,
   fundedAtomic: 0n,
   fulfilledAtomic: 0n,
+  qualificationPolicies: null,
   legTermsHash: `0x${"c".repeat(64)}`,
   ownerPolicyKind: "frozen_policy",
   ownerPolicyRevision: 1,
@@ -117,6 +119,18 @@ describe("song reward offer application service", () => {
     const legCalls: unknown[] = [];
     const fundingCalls: unknown[] = [];
     const store: SongRewardOfferStore = {
+      listAdmittedAssets: () => Effect.succeed({ items: [], nextCursor: null }),
+      qualificationPolicies: () =>
+        Effect.succeed([
+          {
+            activity: "study",
+            policy: {
+              kind: "study_session_first_pass_v2",
+              qualification_policy_version_id: "study_session_first_pass_v2@1",
+              required_correct_bps: 7000,
+            },
+          },
+        ]),
       openOffer: (input) => {
         openCalls.push(input);
         return Effect.succeed({ offer, replayed: false });
@@ -208,6 +222,18 @@ describe("song reward offer application service", () => {
   test("fails a fallback leg before persistence when disclosure policy is unresolved", async () => {
     const service = makeSongRewardOfferService({
       store: {
+        listAdmittedAssets: () => Effect.succeed({ items: [], nextCursor: null }),
+        qualificationPolicies: () =>
+          Effect.succeed([
+            {
+              activity: "study",
+              policy: {
+                kind: "study_session_first_pass_v2",
+                qualification_policy_version_id: "study_session_first_pass_v2@1",
+                required_correct_bps: 7000,
+              },
+            },
+          ]),
         openOffer: unexpected,
         addMegapotPoolLeg: unexpected,
         addAssetBonusLeg: unexpected,
@@ -254,6 +280,18 @@ describe("song reward offer application service", () => {
     };
     const service = makeSongRewardOfferService({
       store: {
+        listAdmittedAssets: () => Effect.succeed({ items: [], nextCursor: null }),
+        qualificationPolicies: () =>
+          Effect.succeed([
+            {
+              activity: "study",
+              policy: {
+                kind: "study_session_first_pass_v2",
+                qualification_policy_version_id: "study_session_first_pass_v2@1",
+                required_correct_bps: 7000,
+              },
+            },
+          ]),
         openOffer: unexpected,
         addMegapotPoolLeg: unexpected,
         addAssetBonusLeg: (input) => {

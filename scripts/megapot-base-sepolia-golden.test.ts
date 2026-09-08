@@ -59,6 +59,16 @@ const leg = {
   fallback_payout_persona_id: null,
   funded_atomic: "0",
   leg_terms_hash: hash("3"),
+  qualification_policies: [
+    {
+      activity: "study",
+      policy: {
+        kind: "study_session_first_pass_v2",
+        qualification_policy_version_id: "study_session_first_pass_v2@1",
+        required_correct_bps: 7_000,
+      },
+    },
+  ],
 } as const;
 
 const funding = {

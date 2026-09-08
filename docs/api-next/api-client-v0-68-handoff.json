@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.68.0",
+  "releaseType": "testnet-reward-sponsor-readiness",
+  "sourceBranch": "feat/reward-qualification-policy-terms",
+  "wireContract": "Authenticated testnet bonus asset catalog and current activity policy preview; new reward legs freeze qualification policies into immutable terms and disclose them in sponsor and participant reads. Legacy legs explicitly disclose null without changing commitments. Optional expected policy versions reject stale creation reviews and are not sponsor policy selection.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.68.0.tgz",
+    "sha256": "1fbcb42833ef240870e36b8100933565f543db9bd39f1c883baceb36758f3370",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@4b2d386b06b381455e6db943476ccad8332167f58368d051f90c777a301625af",
+    "openapiSha256": "4b2d386b06b381455e6db943476ccad8332167f58368d051f90c777a301625af",
+    "clientSha256": "12d382f340d6709a3c56eb9ecf7c217f16515b0ddbd4368de87a65beabbc3480"
+  },
+  "verification": {
+    "status": "Local API check, baseline freshness, additive OpenAPI check and secret-boundary audit passed. All ordinary test suites passed with bounded local scheduling. Full PostgreSQL run is still in progress. No publication, deployment or live transaction acceptance.",
+    "unitTests": 3599,
+    "nodeTests": 20,
+    "workerTests": 180,
+    "localScheduling": "Unit timeout 30000ms; Worker HTTP, self, HNS verifier and video-source suites used maxWorkers=1 and no file parallelism. Assertions and suite membership were unchanged.",
+    "clientAdoption": "0.68.0 is required for changed leg/projection responses because older clients validate closed objects; funding-effect responses and existing request bodies retain their shapes."
+  }
+}

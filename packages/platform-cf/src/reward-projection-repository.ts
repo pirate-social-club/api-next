@@ -16,6 +16,7 @@ import {
   type RewardProjectionStore,
 } from "@pirate/application";
 import { Effect, type Layer } from "effect";
+import { decodeRewardQualificationPolicies } from "./reward-qualification-policy.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 type InternalMegapotDrawingLifecycleStatus =
@@ -223,6 +224,7 @@ function publicPoolFromRow(row: Row): PublicSongMegapotPoolProjection {
   }
   return {
     offerId: text(row, "offer_id"),
+    qualificationPolicies: decodeRewardQualificationPolicies(row.qualification_policies),
     legId: text(row, "leg_id"),
     communityId: text(row, "community_id"),
     postId: text(row, "post_id"),
@@ -406,6 +408,7 @@ function assetBonusFromRow(row: Row): PublicSongAssetBonusProjection {
   }
   return {
     offerId: text(row, "offer_id"),
+    qualificationPolicies: decodeRewardQualificationPolicies(row.qualification_policies),
     legId: text(row, "leg_id"),
     communityId: text(row, "community_id"),
     postId: text(row, "post_id"),
@@ -441,7 +444,7 @@ export function makeControlPlaneRewardProjectionRepository() {
                           leg.funded_atomic-leg.reserved_atomic-leg.spent_atomic-
                             leg.fulfilled_atomic-leg.refunded_atomic AS available_budget_atomic,
                           leg.max_ticket_price_atomic, leg.entry_cutoff_seconds,
-                          leg.eligible_activities, leg.min_score_bps, leg.empty_pool_policy,
+                          leg.eligible_activities, leg.min_score_bps, leg.empty_pool_policy, leg.qualification_policies,
                           leg.funding_source, drawing.drawing_id,
                           drawing.status AS drawing_status, drawing.entry_cutoff_at,
                           CASE
@@ -546,7 +549,7 @@ export function makeControlPlaneRewardProjectionRepository() {
             text: `SELECT offer.offer_id, offer.community_id, offer.post_id,
                           offer.status AS offer_status, leg.leg_id,
                           leg.status AS leg_status, leg.chain_id, leg.token_address,
-                          leg.token_decimals, leg.token_symbol, leg.asset_policy_version,
+                          leg.token_decimals, leg.token_symbol, leg.asset_policy_version, leg.qualification_policies,
                           leg.amount_per_claim_atomic, leg.max_claims,
                           leg.fulfilled_atomic / leg.amount_per_claim_atomic AS claimed_count,
                           leg.funded_atomic-leg.reserved_atomic-leg.spent_atomic-
