@@ -166,6 +166,7 @@ const JOBS_BINDING_KINDS = {
   HNS_REVALIDATION_FORCE_EXPECTED_GENERATION: "var",
   MEDIA_INGRESS: "platform",
   MEDIA_PROCESSING_ENABLED: "var",
+  SONG_SOURCE_RECORDING_ENABLED: "var",
   VIDEO_ANALYSIS_ENABLED: "var",
   VIDEO_DELIVERY_ENABLED: "var",
   MEDIA_PROCESSING_QUEUE: "platform",
@@ -440,6 +441,12 @@ const MEDIA_ENABLED_REQUIRED = [
   "OPENAI_API_KEY",
 ] as const;
 
+const SONG_SOURCE_RECORDING_REQUIRED = [
+  "ACRCLOUD_CONSOLE_ORIGIN",
+  "ACRCLOUD_CONSOLE_TOKEN",
+  "ACRCLOUD_SOURCE_BUCKET_ID",
+] as const;
+
 const HTTP_STUDY_GENERATION_REQUIRED = [
   "STUDY_GENERATION_ENABLED",
   "STUDY_GENERATION_OPENROUTER_MODEL",
@@ -487,9 +494,14 @@ const requiredNamesFor = (
     return ["DATA_REGISTRATION_ENABLED", ...DATA_ENABLED_REQUIRED, signerSecret];
   }
   if (worker === "media") {
-    return environment.vars.MEDIA_PROCESSING_ENABLED === "true"
-      ? ["MEDIA_PROCESSING_ENABLED", ...MEDIA_ENABLED_REQUIRED]
-      : ["MEDIA_PROCESSING_ENABLED"];
+    const required: string[] =
+      environment.vars.MEDIA_PROCESSING_ENABLED === "true"
+        ? ["MEDIA_PROCESSING_ENABLED", ...MEDIA_ENABLED_REQUIRED]
+        : ["MEDIA_PROCESSING_ENABLED"];
+    if (environment.vars.SONG_SOURCE_RECORDING_ENABLED === "true") {
+      required.push("SONG_SOURCE_RECORDING_ENABLED", ...SONG_SOURCE_RECORDING_REQUIRED);
+    }
+    return required;
   }
   if (worker === "jobs") {
     const required: string[] = [...JOBS_ALWAYS_REQUIRED];
