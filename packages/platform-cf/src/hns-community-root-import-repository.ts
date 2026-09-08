@@ -474,6 +474,39 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
             if (unavailableRow === undefined) return yield* Effect.fail(storageFailure());
             if (unavailableRow?.unavailable !== false) return { kind: "conflict" } as const;
 
+            // The provider challenge can expire before its seven-day parent.
+            // Keep the unique open-parent invariant, retiring only this actor's
+            // expired imports whose provisioned resources have been released.
+            yield* transaction.execute({
+              label: "hns.community-root-import.expire-released-parent",
+              text: `UPDATE community_route_attachment_intents AS attachment
+                        SET status='expired',revision=attachment.revision+1,
+                            updated_at=clock_timestamp()
+                       FROM hns_root_import_sessions AS session
+                      WHERE attachment.attachment_intent_id=session.attachment_intent_id
+                        AND attachment.actor_id=$1 AND attachment.community_id=$2
+                        AND attachment.authority_grant_id=$3
+                        AND attachment.status IN ('verification_required','commit_ready')
+                        AND session.status<>'activated'
+                        AND session.expires_at<=clock_timestamp()
+                        AND NOT hns_community_root_import_reservation_held_v1(session.root_import_session_id)`,
+              values: [input.request.actor_id, input.request.community_id, grantId],
+              readonly: false,
+            });
+            const openAttachment = yield* transaction.execute<Row>({
+              label: "hns.community-root-import.check-open-parent",
+              text: `SELECT EXISTS (
+                       SELECT 1 FROM community_route_attachment_intents
+                        WHERE community_id=$1
+                          AND status IN ('verification_required','commit_ready')
+                     ) AS open`,
+              values: [input.request.community_id],
+              readonly: false,
+            });
+            const openAttachmentRow = oneRow(openAttachment);
+            if (openAttachmentRow === undefined) return yield* Effect.fail(storageFailure());
+            if (openAttachmentRow?.open !== false) return { kind: "conflict" } as const;
+
             const expires = yield* transaction.execute<Row>({
               label: "hns.community-root-import.database-time",
               text: "SELECT (clock_timestamp()+($1::bigint * interval '1 second')) AS expires_at",
