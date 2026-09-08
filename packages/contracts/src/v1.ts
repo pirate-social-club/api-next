@@ -1733,7 +1733,7 @@ export const JoinCommunity = endpoint({
     path: PathCommunity,
     body: Schema.Struct({
       note: Schema.optional(Schema.NullOr(Schema.String)),
-      // Spec 014 section 10.2: a terminal membership commit must resolve a
+      // Spec 014 section 11.2: a terminal membership commit must resolve a
       // persona; a request-mode join carries no choice because an intent
       // never pre-binds identity.
       persona: Schema.optional(PersonaCommunityChoiceV1),

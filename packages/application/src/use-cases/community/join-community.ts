@@ -73,7 +73,7 @@ export const joinCommunity = Effect.fn("joinCommunity")(function* (
     return yield* new MembershipRequired({ message: "Community membership is unavailable" });
   }
 
-  // Spec 014 section 10.2: a join that commits an active membership must
+  // Spec 014 section 11.2: a join that commits an active membership must
   // resolve a persona, while a request-mode join never carries a choice
   // because an intent does not pre-bind identity.
   const body = input.body ?? {};

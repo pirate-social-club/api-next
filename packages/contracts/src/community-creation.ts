@@ -98,7 +98,7 @@ export const CommunityOwnerPublicName = Schema.String.check(
 
 export const CommunityCreationDraftV2 = Schema.Struct({
   /**
-   * Spec 014 section 10.2: the creator persona is either an existing owned
+   * Spec 014 section 11.2: the creator persona is either an existing owned
    * persona or the server-minted create_new choice resolved at the terminal
    * creation commit. A browser never invents a persona id or a binding.
    */

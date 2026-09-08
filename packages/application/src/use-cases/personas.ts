@@ -37,7 +37,7 @@ export type PersonaCreateIntent = Readonly<{
   displayName: string | null;
   bio: string | null;
   preferredLocale: string | null;
-  /** Target community the persona is born bound to (spec 014 section 10.2). */
+  /** Target community the persona is born bound to (spec 014 section 11.2). */
   communityId: string;
 }>;
 
@@ -136,7 +136,7 @@ export interface PersonaWalletStoreService extends Pick<PersonaStoreService, "fi
   /**
    * Atomically retires a public persona or cancels a pending one, tombstones
    * its index, and re-designates any current same-community presentation to
-   * the designated replacement (spec 014 section 10.3).
+   * the designated replacement (spec 014 section 11.3).
    */
   readonly retire: (input: {
     readonly accountId: string;
