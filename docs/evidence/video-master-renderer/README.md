@@ -280,6 +280,57 @@ FFmpeg container image was already present. Creating a new deployment topology
 or pulling an image solely for this checkpoint would not establish the required
 production behavior, so no local Container execution was claimed.
 
+## Checkpoint 6: local container resource enforcement
+
+The environment continuation added a credential-free local Docker harness. It
+builds from the locally cached Linux amd64
+`oven/bun@sha256:5ff609364c049b54eb0ff560ec96319729a972078ef2c755d758f0c6ef89c2d6`
+base and installs the distribution FFmpeg package inside the evidence image.
+The resulting local image was
+`sha256:6bc9adbe4adf3fd9ae2fbe5ac5c2ecca75605f38eaf768426888af950e95961c`.
+The installed package and executable both reported FFmpeg
+`7.1.5-0+deb13u1`. The local image id is reproducibility evidence for this run,
+not a production image pin: the Debian package source is not frozen by this
+Dockerfile.
+
+The runtime had no network, a read-only root filesystem, a 512 MiB `noexec`
+tmpfs, one CPU, no swap beyond the memory allowance, and explicit memory and
+PID cgroups. Two real four-second 640 by 360 H.264/AAC renders started
+concurrently. Each FFmpeg command limited filter threads to one and general
+threads to two so the process topology was an explicit renderer-owned input.
+
+Two runs with a 64-PID ceiling failed with Docker exit 245, first at 384 MiB
+and then at 768 MiB. A complete single render succeeded at 384 MiB with the
+same 64-PID ceiling. Those observations isolate the rejection to the
+two-render concurrency envelope rather than establish an out-of-memory floor;
+the removed failed containers did not retain enough state to assign the exact
+child failure. The harness therefore does not label those failures OOM kills.
+
+With only the PID ceiling raised to 128, the two-job run succeeded at 384 MiB.
+The container reported `cpu.max` as `100000 100000`, `memory.max` as
+402,653,184 bytes, `memory.peak` as 133,926,912 bytes, and `pids.max` as 128.
+Both jobs overlapped, both outputs probed at exactly 4,000 ms, and a root write
+probe failed as required. This proves that the local Docker engine enforced the
+observed cgroup and filesystem envelope for this synthetic concurrency case.
+It establishes neither a production budget nor Cloudflare Container behavior,
+cold starts, fleet contention, durable attempt recovery, or a latency target.
+
+The executable entrypoint is
+`scripts/video-master-renderer-container-evidence.ts`; its focused policy test
+freezes the Docker isolation arguments and rejects incomplete or mismatched
+cgroup facts. The sibling Dockerfile and harness remain isolated from Worker,
+publication, provider, R2, Stream, and DATA composition.
+
+Checkpoint-6 verification passed three focused container-policy tests, all 32
+renderer tests, focused Biome, the complete `bun run check`, and
+`git diff --check`. The full test command passed 2,858 unit tests, 20 Node
+tests, and the 72- and 48-test Workerd groups before one unrelated Self SDK
+construction test exceeded its five-second timeout. That exact two-test group
+passed on an immediate isolated rerun in 2.03 seconds, and the remaining
+nine-test HNS verifier group passed separately. The original aggregate command
+therefore remains a failed invocation with a resolved transient test result;
+it is not reported as an uninterrupted full-gate pass.
+
 Sources retrieved 2026-09-02:
 
 - https://developers.cloudflare.com/containers/
@@ -290,9 +341,11 @@ Sources retrieved 2026-09-02:
 ## Still unverified
 
 Arbitrary container/codec rotation metadata, broader hostile-media parsing,
-production timeout behavior, enforced CPU and memory limits, persistent-disk
-quotas, concurrent real FFmpeg load, and real cleanup after crashes remain
-unverified. The MP4 display-matrix case, corrupt-source redaction, exact
+production timeout behavior, Cloudflare-enforced CPU and memory limits,
+persistent-disk quotas, and real cleanup after crashes remain unverified. The
+local Docker checkpoint now covers enforced cgroups, a read-only root, and two
+concurrent real FFmpeg jobs for one synthetic profile. The MP4 display-matrix
+case, corrupt-source redaction, exact
 canonical-song coverage rejection, process timeout/kill, diagnostic and attempt
 artifact bounds, local semaphore, and five-run host distribution are now
 covered in addition to the earlier media cases.
