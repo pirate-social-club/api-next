@@ -27,6 +27,18 @@ CREATE TABLE media_song_video_render_plans (
 );
 CREATE INDEX media_song_video_render_plans_submission_idx
   ON media_song_video_render_plans (submission_id);
+-- Composite keys so dependents bind to the same work rather than merely to rows
+-- that exist. A separate foreign key per column proves existence, not identity.
+ALTER TABLE media_song_video_render_plans
+  ADD CONSTRAINT media_song_video_render_plans_submission_key UNIQUE (plan_id, submission_id);
+ALTER TABLE media_song_video_render_plans
+  ADD CONSTRAINT media_song_video_render_plans_interval_key
+  UNIQUE (plan_id, clip_start_samples, clip_duration_samples);
+
+-- The sealed source a master claims must belong to that plan's submission, so
+-- this composite target exists for that binding.
+ALTER TABLE media_immutable_objects
+  ADD CONSTRAINT media_immutable_objects_submission_key UNIQUE (immutable_ref, submission_id);
 
 CREATE TABLE media_song_video_render_attempts (
   attempt_id TEXT PRIMARY KEY CHECK (length(attempt_id) BETWEEN 1 AND 128 AND btrim(attempt_id) = attempt_id),
@@ -37,18 +49,22 @@ CREATE TABLE media_song_video_render_attempts (
   started_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp() CHECK (isfinite(started_at)),
   -- Attempt identity is persisted before dispatch, so a stopped worker is always
   -- attributable to a known attempt rather than an unrecorded orphan.
-  UNIQUE (plan_id, generation)
+  UNIQUE (plan_id, generation),
+  -- Composite targets: a master binds attempt, plan and generation together.
+  UNIQUE (attempt_id, plan_id),
+  UNIQUE (attempt_id, plan_id, generation)
 );
 CREATE INDEX media_song_video_render_attempts_plan_idx
   ON media_song_video_render_attempts (plan_id, state);
 
 CREATE TABLE media_song_video_masters (
   master_revision_id TEXT PRIMARY KEY CHECK (length(master_revision_id) BETWEEN 1 AND 128 AND btrim(master_revision_id) = master_revision_id),
-  plan_id TEXT NOT NULL REFERENCES media_song_video_render_plans (plan_id) ON DELETE RESTRICT,
-  attempt_id TEXT NOT NULL UNIQUE REFERENCES media_song_video_render_attempts (attempt_id) ON DELETE RESTRICT,
-  -- The sealed source this master was rendered from, established against the
-  -- stored sealed object rather than accepted from a caller's claim.
-  source_immutable_ref TEXT NOT NULL REFERENCES media_immutable_objects (immutable_ref) ON DELETE RESTRICT,
+  plan_id TEXT NOT NULL,
+  attempt_id TEXT NOT NULL UNIQUE,
+  attempt_generation INTEGER NOT NULL CHECK (attempt_generation >= 1),
+  -- Carried so the source can be bound to this plan's submission structurally.
+  plan_submission_id TEXT NOT NULL,
+  source_immutable_ref TEXT NOT NULL,
   source_sha256 TEXT NOT NULL CHECK (source_sha256 ~ '^[a-f0-9]{64}$'),
   master_sha256 TEXT NOT NULL CHECK (master_sha256 ~ '^[a-f0-9]{64}$'),
   master_byte_length BIGINT NOT NULL CHECK (master_byte_length > 0),
@@ -58,17 +74,35 @@ CREATE TABLE media_song_video_masters (
   decision_clip_start_samples BIGINT NOT NULL CHECK (decision_clip_start_samples >= 0),
   decision_clip_duration_samples BIGINT NOT NULL CHECK (decision_clip_duration_samples > 0),
   sealed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp() CHECK (isfinite(sealed_at)),
+  -- The attempt, its plan and its generation are one binding, not three lookups.
+  FOREIGN KEY (attempt_id, plan_id, attempt_generation)
+    REFERENCES media_song_video_render_attempts (attempt_id, plan_id, generation) ON DELETE RESTRICT,
+  -- The plan and the submission whose source this master may use.
+  FOREIGN KEY (plan_id, plan_submission_id)
+    REFERENCES media_song_video_render_plans (plan_id, submission_id) ON DELETE RESTRICT,
+  -- The source must be an object sealed for that same submission, so a valid
+  -- digest for some other submission's object cannot be bound here.
+  FOREIGN KEY (source_immutable_ref, plan_submission_id)
+    REFERENCES media_immutable_objects (immutable_ref, submission_id) ON DELETE RESTRICT,
+  -- The interval actually applied must be the plan's frozen interval.
+  FOREIGN KEY (plan_id, decision_clip_start_samples, decision_clip_duration_samples)
+    REFERENCES media_song_video_render_plans (plan_id, clip_start_samples, clip_duration_samples) ON DELETE RESTRICT,
   -- Source and master are distinct sealed artifacts; neither substitutes for the
   -- other in any ledger, projection or registration.
   CONSTRAINT song_video_master_identity_distinct CHECK (master_sha256 <> source_sha256),
   -- U.6's ceiling is enforced at seal time against the value that applied.
-  CONSTRAINT song_video_master_within_ceiling CHECK (master_byte_length <= master_ceiling_bytes)
+  CONSTRAINT song_video_master_within_ceiling CHECK (master_byte_length <= master_ceiling_bytes),
+  -- Composite target for acceptance.
+  CONSTRAINT media_song_video_masters_plan_key UNIQUE (master_revision_id, plan_id)
 );
 
 -- Acceptance is a compare-and-set on the plan: at most one master per plan wins,
 -- enforced by the database rather than by application ordering.
 CREATE TABLE media_song_video_accepted_masters (
-  plan_id TEXT PRIMARY KEY REFERENCES media_song_video_render_plans (plan_id) ON DELETE RESTRICT,
-  master_revision_id TEXT NOT NULL UNIQUE REFERENCES media_song_video_masters (master_revision_id) ON DELETE RESTRICT,
-  accepted_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp() CHECK (isfinite(accepted_at))
+  plan_id TEXT PRIMARY KEY,
+  master_revision_id TEXT NOT NULL UNIQUE,
+  accepted_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp() CHECK (isfinite(accepted_at)),
+  -- The accepted master must be a master of this plan, not merely a master.
+  FOREIGN KEY (master_revision_id, plan_id)
+    REFERENCES media_song_video_masters (master_revision_id, plan_id) ON DELETE RESTRICT
 );

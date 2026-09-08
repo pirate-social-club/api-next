@@ -175,7 +175,7 @@ suite("song video render persistence", () => {
     }
   }, 60_000);
 
-  test("accepts exactly one master when two are sealed for one plan", async () => {
+  test("accepts exactly one master under concurrent acceptance on separate connections", async () => {
     {
       await persistRenderPlan(client, { ...basePlan, planId: "plan-race" });
       for (const [attemptId, revisionId, digest, generation] of [
@@ -199,42 +199,172 @@ suite("song video render persistence", () => {
         expect(sealed).toMatchObject({ sealed: true });
       }
 
-      const first = await acceptMaster(client, {
-        planId: "plan-race",
-        masterRevisionId: "master-race-a",
-        attemptId: "attempt-race-a",
-      });
-      const second = await acceptMaster(client, {
-        planId: "plan-race",
-        masterRevisionId: "master-race-b",
-        attemptId: "attempt-race-b",
-      });
-
-      expect(first).toEqual({ accepted: true, masterRevisionId: "master-race-a" });
-      expect(second).toEqual({ accepted: false, winningMasterRevisionId: "master-race-a" });
+      // Two connections, two overlapping serializable transactions. A single
+      // client would serialize these and prove only sequential exclusion.
+      const second = new Client({ connectionString: scoped.toString() });
+      await second.connect();
+      try {
+        const [first, other] = await Promise.all([
+          acceptMaster(client, {
+            planId: "plan-race",
+            masterRevisionId: "master-race-a",
+            attemptId: "attempt-race-a",
+          }),
+          acceptMaster(second, {
+            planId: "plan-race",
+            masterRevisionId: "master-race-b",
+            attemptId: "attempt-race-b",
+          }),
+        ]);
+        const outcomes = [first, other];
+        expect(outcomes.filter((outcome) => outcome.accepted)).toHaveLength(1);
+        expect(outcomes.filter((outcome) => !outcome.accepted)).toHaveLength(1);
+        const winner = outcomes.find((outcome) => outcome.accepted);
+        const loser = outcomes.find((outcome) => !outcome.accepted);
+        if (!winner?.accepted || loser?.accepted !== false) throw new Error("expected one of each");
+        expect(loser.winningMasterRevisionId).toBe(winner.masterRevisionId);
+      } finally {
+        await second.end();
+      }
 
       const accepted = await client.query(
         "SELECT master_revision_id FROM media_song_video_accepted_masters WHERE plan_id = 'plan-race'",
       );
-      expect(accepted.rows).toEqual([{ master_revision_id: "master-race-a" }]);
-
-      // The loser keeps its sealed identity and a recorded disposition; nothing
-      // is erased and no replacement render is authorized.
+      expect(accepted.rows).toHaveLength(1);
       const states = await client.query(
-        "SELECT attempt_id, state, disposition FROM media_song_video_render_attempts WHERE plan_id = 'plan-race' ORDER BY attempt_id",
+        "SELECT state FROM media_song_video_render_attempts WHERE plan_id = 'plan-race' ORDER BY attempt_id",
       );
-      expect(states.rows).toEqual([
-        { attempt_id: "attempt-race-a", state: "accepted", disposition: null },
-        {
-          attempt_id: "attempt-race-b",
-          state: "loser",
-          disposition: "not_first_accepted_master",
-        },
-      ]);
+      expect(states.rows.map((row) => row.state).sort()).toEqual(["accepted", "loser"]);
       const survivingMasters = await client.query(
         "SELECT count(*)::int AS n FROM media_song_video_masters WHERE plan_id = 'plan-race'",
       );
       expect(survivingMasters.rows[0]?.n).toBe(2);
+    }
+  }, 60_000);
+
+  test("replaying the winning acceptance returns success and changes nothing", async () => {
+    {
+      await persistRenderPlan(client, { ...basePlan, planId: "plan-replay" });
+      await startRenderAttempt(client, {
+        attemptId: "attempt-replay",
+        planId: "plan-replay",
+        generation: 1,
+      });
+      await sealMaster(client, {
+        masterRevisionId: "master-replay",
+        attempt: { attemptId: "attempt-replay", planId: "plan-replay", generation: 1 },
+        sourceImmutableRef,
+        claimedSourceSha256: storedSourceSha256,
+        masterSha256: "e".repeat(64),
+        masterByteLength: 1_000,
+        masterCeilingBytes,
+        rendererIdentity: "ffmpeg-7.1.5",
+        rendererPolicyRevision: 1,
+        decisionClipStartSamples: basePlan.clipStartSamples,
+        decisionClipDurationSamples: basePlan.clipDurationSamples,
+      });
+      const input = {
+        planId: "plan-replay",
+        masterRevisionId: "master-replay",
+        attemptId: "attempt-replay",
+      };
+      expect(await acceptMaster(client, input)).toEqual({
+        accepted: true,
+        masterRevisionId: "master-replay",
+      });
+      // The lost-response case: the write already succeeded and the caller
+      // retried. It must not demote its own winning attempt.
+      expect(await acceptMaster(client, input)).toEqual({
+        accepted: true,
+        masterRevisionId: "master-replay",
+      });
+      const state = await client.query(
+        "SELECT state, disposition FROM media_song_video_render_attempts WHERE attempt_id = 'attempt-replay'",
+      );
+      expect(state.rows[0]).toEqual({ state: "accepted", disposition: null });
+    }
+  }, 60_000);
+
+  test("refuses to seal an attempt that belongs to a different plan", async () => {
+    {
+      await persistRenderPlan(client, { ...basePlan, planId: "plan-other-a" });
+      await persistRenderPlan(client, { ...basePlan, planId: "plan-other-b" });
+      await startRenderAttempt(client, {
+        attemptId: "attempt-of-a",
+        planId: "plan-other-a",
+        generation: 1,
+      });
+      const outcome = await sealMaster(client, {
+        masterRevisionId: "master-crossed",
+        // A real attempt and a real plan that are not the same work.
+        attempt: { attemptId: "attempt-of-a", planId: "plan-other-b", generation: 1 },
+        sourceImmutableRef,
+        claimedSourceSha256: storedSourceSha256,
+        masterSha256: "f".repeat(64),
+        masterByteLength: 1_000,
+        masterCeilingBytes,
+        rendererIdentity: "ffmpeg-7.1.5",
+        rendererPolicyRevision: 1,
+        decisionClipStartSamples: basePlan.clipStartSamples,
+        decisionClipDurationSamples: basePlan.clipDurationSamples,
+      });
+      expect(outcome).toMatchObject({ sealed: false, failure: { kind: "attempt_not_of_plan" } });
+    }
+  }, 60_000);
+
+  test("refuses a generation that is not the stored one", async () => {
+    {
+      await persistRenderPlan(client, { ...basePlan, planId: "plan-generation" });
+      await startRenderAttempt(client, {
+        attemptId: "attempt-generation",
+        planId: "plan-generation",
+        generation: 1,
+      });
+      const outcome = await sealMaster(client, {
+        masterRevisionId: "master-generation",
+        attempt: { attemptId: "attempt-generation", planId: "plan-generation", generation: 7 },
+        sourceImmutableRef,
+        claimedSourceSha256: storedSourceSha256,
+        masterSha256: "1".repeat(64),
+        masterByteLength: 1_000,
+        masterCeilingBytes,
+        rendererIdentity: "ffmpeg-7.1.5",
+        rendererPolicyRevision: 1,
+        decisionClipStartSamples: basePlan.clipStartSamples,
+        decisionClipDurationSamples: basePlan.clipDurationSamples,
+      });
+      expect(outcome).toMatchObject({
+        sealed: false,
+        failure: { kind: "attempt_generation_mismatch", storedGeneration: 1 },
+      });
+    }
+  }, 60_000);
+
+  test("refuses an applied interval that is not the plan's frozen interval", async () => {
+    {
+      await persistRenderPlan(client, { ...basePlan, planId: "plan-interval" });
+      await startRenderAttempt(client, {
+        attemptId: "attempt-interval",
+        planId: "plan-interval",
+        generation: 1,
+      });
+      const outcome = await sealMaster(client, {
+        masterRevisionId: "master-interval",
+        attempt: { attemptId: "attempt-interval", planId: "plan-interval", generation: 1 },
+        sourceImmutableRef,
+        claimedSourceSha256: storedSourceSha256,
+        masterSha256: "2".repeat(64),
+        masterByteLength: 1_000,
+        masterCeilingBytes,
+        rendererIdentity: "ffmpeg-7.1.5",
+        rendererPolicyRevision: 1,
+        decisionClipStartSamples: basePlan.clipStartSamples + 1,
+        decisionClipDurationSamples: basePlan.clipDurationSamples,
+      });
+      expect(outcome).toMatchObject({
+        sealed: false,
+        failure: { kind: "decision_does_not_match_plan" },
+      });
     }
   }, 60_000);
 
