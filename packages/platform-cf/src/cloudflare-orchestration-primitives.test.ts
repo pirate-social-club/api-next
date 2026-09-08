@@ -36,7 +36,8 @@ describe("Cloudflare orchestration primitives", () => {
   });
 
   test("enables only the literal true spelling", () => {
-    expect([undefined, "", "TRUE", " true", "true"].map(isExplicitlyEnabled)).toEqual([
+    expect([undefined, "", "false", "TRUE", " true", "true"].map(isExplicitlyEnabled)).toEqual([
+      false,
       false,
       false,
       false,
