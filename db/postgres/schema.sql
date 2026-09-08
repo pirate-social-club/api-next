@@ -26318,6 +26318,101 @@ CREATE TABLE media_song_lyrics_revisions (
     CONSTRAINT media_song_lyrics_revisions_provenance_check CHECK ((provenance = ANY (ARRAY['asr_accepted'::text, 'pasted'::text, 'corrected'::text])))
 );
 
+CREATE TABLE media_song_video_accepted_masters (
+    plan_id text NOT NULL,
+    master_revision_id text NOT NULL,
+    accepted_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT media_song_video_accepted_masters_accepted_at_check CHECK (isfinite(accepted_at))
+);
+
+CREATE TABLE media_song_video_masters (
+    master_revision_id text NOT NULL,
+    plan_id text NOT NULL,
+    attempt_id text NOT NULL,
+    attempt_generation integer NOT NULL,
+    plan_submission_id text NOT NULL,
+    source_immutable_ref text NOT NULL,
+    source_sha256 text NOT NULL,
+    master_sha256 text NOT NULL,
+    master_byte_length bigint NOT NULL,
+    verified_object_key text NOT NULL,
+    verified_object_version text NOT NULL,
+    measured_video_duration_samples bigint NOT NULL,
+    measured_audio_duration_samples bigint NOT NULL,
+    measured_audio_sample_rate_hz integer NOT NULL,
+    measured_audio_channels integer NOT NULL,
+    master_ceiling_bytes bigint NOT NULL,
+    master_policy_revision integer NOT NULL,
+    renderer_identity text NOT NULL,
+    renderer_policy_revision integer NOT NULL,
+    decision_clip_start_samples bigint NOT NULL,
+    decision_clip_duration_samples bigint NOT NULL,
+    sealed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT media_song_video_masters_attempt_generation_check CHECK ((attempt_generation >= 1)),
+    CONSTRAINT media_song_video_masters_decision_clip_duration_samples_check CHECK ((decision_clip_duration_samples > 0)),
+    CONSTRAINT media_song_video_masters_decision_clip_start_samples_check CHECK ((decision_clip_start_samples >= 0)),
+    CONSTRAINT media_song_video_masters_master_byte_length_check CHECK ((master_byte_length > 0)),
+    CONSTRAINT media_song_video_masters_master_ceiling_bytes_check CHECK ((master_ceiling_bytes > 0)),
+    CONSTRAINT media_song_video_masters_master_policy_revision_check CHECK ((master_policy_revision = 1)),
+    CONSTRAINT media_song_video_masters_master_revision_id_check CHECK ((((length(master_revision_id) >= 1) AND (length(master_revision_id) <= 128)) AND (btrim(master_revision_id) = master_revision_id))),
+    CONSTRAINT media_song_video_masters_master_sha256_check CHECK ((master_sha256 ~ '^[a-f0-9]{64}$'::text)),
+    CONSTRAINT media_song_video_masters_measured_audio_channels_check CHECK ((measured_audio_channels >= 1)),
+    CONSTRAINT media_song_video_masters_measured_audio_duration_samples_check CHECK ((measured_audio_duration_samples > 0)),
+    CONSTRAINT media_song_video_masters_measured_audio_sample_rate_hz_check CHECK ((measured_audio_sample_rate_hz = 48000)),
+    CONSTRAINT media_song_video_masters_measured_video_duration_samples_check CHECK ((measured_video_duration_samples > 0)),
+    CONSTRAINT media_song_video_masters_renderer_identity_check CHECK ((btrim(renderer_identity) <> ''::text)),
+    CONSTRAINT media_song_video_masters_renderer_policy_revision_check CHECK ((renderer_policy_revision >= 0)),
+    CONSTRAINT media_song_video_masters_sealed_at_check CHECK (isfinite(sealed_at)),
+    CONSTRAINT media_song_video_masters_source_sha256_check CHECK ((source_sha256 ~ '^[a-f0-9]{64}$'::text)),
+    CONSTRAINT media_song_video_masters_verified_object_key_check CHECK ((btrim(verified_object_key) <> ''::text)),
+    CONSTRAINT media_song_video_masters_verified_object_version_check CHECK ((btrim(verified_object_version) <> ''::text)),
+    CONSTRAINT song_video_master_identity_distinct CHECK ((master_sha256 <> source_sha256)),
+    CONSTRAINT song_video_master_ratified_ceiling CHECK ((master_ceiling_bytes = 524288000)),
+    CONSTRAINT song_video_master_tracks_cover_interval CHECK (((measured_video_duration_samples = decision_clip_duration_samples) AND (measured_audio_duration_samples = decision_clip_duration_samples))),
+    CONSTRAINT song_video_master_within_ceiling CHECK ((master_byte_length <= master_ceiling_bytes))
+);
+
+CREATE TABLE media_song_video_render_attempts (
+    attempt_id text NOT NULL,
+    plan_id text NOT NULL,
+    generation integer NOT NULL,
+    state text NOT NULL,
+    dispatch_output_key text NOT NULL,
+    dispatch_renderer_identity text NOT NULL,
+    dispatch_renderer_policy_revision integer NOT NULL,
+    disposition text,
+    started_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT media_song_video_render_atte_dispatch_renderer_policy_rev_check CHECK ((dispatch_renderer_policy_revision >= 0)),
+    CONSTRAINT media_song_video_render_attemp_dispatch_renderer_identity_check CHECK ((btrim(dispatch_renderer_identity) <> ''::text)),
+    CONSTRAINT media_song_video_render_attempts_attempt_id_check CHECK ((((length(attempt_id) >= 1) AND (length(attempt_id) <= 128)) AND (btrim(attempt_id) = attempt_id))),
+    CONSTRAINT media_song_video_render_attempts_dispatch_output_key_check CHECK ((btrim(dispatch_output_key) <> ''::text)),
+    CONSTRAINT media_song_video_render_attempts_disposition_check CHECK (((disposition IS NULL) OR (btrim(disposition) <> ''::text))),
+    CONSTRAINT media_song_video_render_attempts_generation_check CHECK ((generation >= 1)),
+    CONSTRAINT media_song_video_render_attempts_started_at_check CHECK (isfinite(started_at)),
+    CONSTRAINT media_song_video_render_attempts_state_check CHECK ((state = ANY (ARRAY['started'::text, 'sealed'::text, 'accepted'::text, 'loser'::text, 'abandoned'::text])))
+);
+
+CREATE TABLE media_song_video_render_plans (
+    plan_id text NOT NULL,
+    submission_id text NOT NULL,
+    song_post_id text NOT NULL,
+    song_asset_id text NOT NULL,
+    audio_revision integer NOT NULL,
+    song_duration_samples bigint NOT NULL,
+    clip_start_samples bigint NOT NULL,
+    clip_duration_samples bigint NOT NULL,
+    frozen_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT media_song_video_render_plans_audio_revision_check CHECK ((audio_revision >= 0)),
+    CONSTRAINT media_song_video_render_plans_clip_duration_samples_check CHECK ((clip_duration_samples > 0)),
+    CONSTRAINT media_song_video_render_plans_clip_start_samples_check CHECK ((clip_start_samples >= 0)),
+    CONSTRAINT media_song_video_render_plans_frozen_at_check CHECK (isfinite(frozen_at)),
+    CONSTRAINT media_song_video_render_plans_plan_id_check CHECK ((((length(plan_id) >= 1) AND (length(plan_id) <= 128)) AND (btrim(plan_id) = plan_id))),
+    CONSTRAINT media_song_video_render_plans_song_asset_id_check CHECK ((btrim(song_asset_id) <> ''::text)),
+    CONSTRAINT media_song_video_render_plans_song_duration_samples_check CHECK ((song_duration_samples > 0)),
+    CONSTRAINT media_song_video_render_plans_song_post_id_check CHECK ((btrim(song_post_id) <> ''::text)),
+    CONSTRAINT song_video_plan_canonical_containment CHECK (((clip_start_samples + clip_duration_samples) <= song_duration_samples))
+);
+
 CREATE TABLE media_submission_command_replays (
     community_id text NOT NULL,
     actor_user_id text NOT NULL,
@@ -31094,6 +31189,9 @@ ALTER TABLE ONLY media_immutable_objects
 ALTER TABLE ONLY media_immutable_objects
     ADD CONSTRAINT media_immutable_objects_pkey PRIMARY KEY (immutable_ref);
 
+ALTER TABLE ONLY media_immutable_objects
+    ADD CONSTRAINT media_immutable_objects_submission_key UNIQUE (immutable_ref, submission_id);
+
 ALTER TABLE ONLY media_moderation_actions
     ADD CONSTRAINT media_moderation_actions_community_id_authority_actor_user__key UNIQUE (community_id, authority_actor_user_id, action_id);
 
@@ -31159,6 +31257,45 @@ ALTER TABLE ONLY media_song_lyrics_revisions
 
 ALTER TABLE ONLY media_song_lyrics_revisions
     ADD CONSTRAINT media_song_lyrics_revisions_submission_id_audio_revision_ly_key UNIQUE (submission_id, audio_revision, lyrics_revision);
+
+ALTER TABLE ONLY media_song_video_accepted_masters
+    ADD CONSTRAINT media_song_video_accepted_masters_master_revision_id_key UNIQUE (master_revision_id);
+
+ALTER TABLE ONLY media_song_video_accepted_masters
+    ADD CONSTRAINT media_song_video_accepted_masters_pkey PRIMARY KEY (plan_id);
+
+ALTER TABLE ONLY media_song_video_masters
+    ADD CONSTRAINT media_song_video_masters_attempt_id_key UNIQUE (attempt_id);
+
+ALTER TABLE ONLY media_song_video_masters
+    ADD CONSTRAINT media_song_video_masters_pkey PRIMARY KEY (master_revision_id);
+
+ALTER TABLE ONLY media_song_video_masters
+    ADD CONSTRAINT media_song_video_masters_plan_key UNIQUE (master_revision_id, plan_id);
+
+ALTER TABLE ONLY media_song_video_render_attempts
+    ADD CONSTRAINT media_song_video_render_attem_attempt_id_plan_id_generation_key UNIQUE (attempt_id, plan_id, generation);
+
+ALTER TABLE ONLY media_song_video_render_attempts
+    ADD CONSTRAINT media_song_video_render_attempts_attempt_id_plan_id_key UNIQUE (attempt_id, plan_id);
+
+ALTER TABLE ONLY media_song_video_render_attempts
+    ADD CONSTRAINT media_song_video_render_attempts_dispatch_output_key_key UNIQUE (dispatch_output_key);
+
+ALTER TABLE ONLY media_song_video_render_attempts
+    ADD CONSTRAINT media_song_video_render_attempts_pkey PRIMARY KEY (attempt_id);
+
+ALTER TABLE ONLY media_song_video_render_attempts
+    ADD CONSTRAINT media_song_video_render_attempts_plan_id_generation_key UNIQUE (plan_id, generation);
+
+ALTER TABLE ONLY media_song_video_render_plans
+    ADD CONSTRAINT media_song_video_render_plans_interval_key UNIQUE (plan_id, clip_start_samples, clip_duration_samples);
+
+ALTER TABLE ONLY media_song_video_render_plans
+    ADD CONSTRAINT media_song_video_render_plans_pkey PRIMARY KEY (plan_id);
+
+ALTER TABLE ONLY media_song_video_render_plans
+    ADD CONSTRAINT media_song_video_render_plans_submission_key UNIQUE (plan_id, submission_id);
 
 ALTER TABLE ONLY media_submission_events
     ADD CONSTRAINT media_submission_events_event_id_key UNIQUE (event_id);
@@ -32348,6 +32485,10 @@ CREATE INDEX media_post_submissions_author_idx ON media_post_submissions USING b
 CREATE UNIQUE INDEX media_post_submissions_localization_identity_uidx ON media_post_submissions USING btree (community_id, actor_user_id, post_id, submission_id);
 
 CREATE INDEX media_processing_attempts_claim_idx ON media_processing_attempts USING btree (state, next_eligible_at, lease_expires_at, attempt_id) WHERE (state = ANY (ARRAY['pending'::text, 'running'::text, 'retry_wait'::text, 'poll_wait'::text]));
+
+CREATE INDEX media_song_video_render_attempts_plan_idx ON media_song_video_render_attempts USING btree (plan_id, state);
+
+CREATE INDEX media_song_video_render_plans_submission_idx ON media_song_video_render_plans USING btree (submission_id);
 
 CREATE UNIQUE INDEX media_submission_command_replays_account_replay_uidx ON media_submission_command_replays USING btree (actor_account_id, endpoint_template, idempotency_key) WHERE (actor_persona_id IS NULL);
 
@@ -34968,6 +35109,27 @@ ALTER TABLE ONLY media_song_lyrics_revisions
 
 ALTER TABLE ONLY media_song_lyrics_revisions
     ADD CONSTRAINT media_song_lyrics_transcript_fk FOREIGN KEY (submission_id, audio_revision, base_transcript_revision, canonical_audio_sha256) REFERENCES media_transcript_artifacts(submission_id, audio_revision, analysis_revision, canonical_audio_sha256);
+
+ALTER TABLE ONLY media_song_video_accepted_masters
+    ADD CONSTRAINT media_song_video_accepted_maste_master_revision_id_plan_id_fkey FOREIGN KEY (master_revision_id, plan_id) REFERENCES media_song_video_masters(master_revision_id, plan_id) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY media_song_video_masters
+    ADD CONSTRAINT media_song_video_masters_attempt_id_plan_id_attempt_genera_fkey FOREIGN KEY (attempt_id, plan_id, attempt_generation) REFERENCES media_song_video_render_attempts(attempt_id, plan_id, generation) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY media_song_video_masters
+    ADD CONSTRAINT media_song_video_masters_plan_id_decision_clip_start_sampl_fkey FOREIGN KEY (plan_id, decision_clip_start_samples, decision_clip_duration_samples) REFERENCES media_song_video_render_plans(plan_id, clip_start_samples, clip_duration_samples) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY media_song_video_masters
+    ADD CONSTRAINT media_song_video_masters_plan_id_plan_submission_id_fkey FOREIGN KEY (plan_id, plan_submission_id) REFERENCES media_song_video_render_plans(plan_id, submission_id) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY media_song_video_masters
+    ADD CONSTRAINT media_song_video_masters_source_immutable_ref_plan_submiss_fkey FOREIGN KEY (source_immutable_ref, plan_submission_id) REFERENCES media_immutable_objects(immutable_ref, submission_id) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY media_song_video_masters
+    ADD CONSTRAINT media_song_video_masters_verified_object_key_fkey FOREIGN KEY (verified_object_key) REFERENCES media_song_video_render_attempts(dispatch_output_key) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY media_song_video_render_attempts
+    ADD CONSTRAINT media_song_video_render_attempts_plan_id_fkey FOREIGN KEY (plan_id) REFERENCES media_song_video_render_plans(plan_id) ON DELETE RESTRICT;
 
 ALTER TABLE ONLY media_submission_command_replays
     ADD CONSTRAINT media_submission_command_replays_actor_persona_fk FOREIGN KEY (actor_account_id, actor_persona_id) REFERENCES personas(account_id, persona_id);
