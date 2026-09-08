@@ -436,6 +436,7 @@ pgTest.each(["complete", "revoked", "expired", "limited"] as const)(
           queue: makePostgresHnsRootObservationQueue(connection),
           observe: {
             inspect_current_resource: async () => ready.publish_plan.replacement_records,
+            reconcile_zone: async () => {},
             inspect_zone: async () => ({ ...zoneResult, created: false }),
             observe_live: async () => ({
               authority_views: [authorityView(1), authorityView(2)],

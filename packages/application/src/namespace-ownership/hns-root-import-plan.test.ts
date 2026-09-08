@@ -80,6 +80,52 @@ describe("HNS root import publish plan", () => {
     expect(plan.preserved_unknown_record_types).toEqual(["SYNTH6"]);
   });
 
+  test("preserves an existing matching Pirate delegation and DNSSEC key byte-for-byte", () => {
+    const records = [
+      { type: "GLUE4", ns: "ns1.dankmeme.", address: "44.231.6.183" },
+      { type: "NS", ns: "ns1.pirate." },
+      { type: "TXT", txt: ["pirate-verification=previous"] },
+      {
+        type: "DS",
+        keyTag: 10_875,
+        algorithm: 13,
+        digestType: 4,
+        digest: "AB".repeat(48),
+      },
+      { type: "NS", ns: "ns2.pirate." },
+      {
+        type: "DS",
+        keyTag: 10_875,
+        algorithm: 13,
+        digestType: 2,
+        digest: "CD".repeat(32),
+      },
+    ] as const;
+    const plan = buildHnsRootImportPublishPlanV1({
+      current_records: records,
+      challenge_txt_value: "pirate-verification=current",
+      ds_records: dsRecords,
+    });
+
+    expect(plan.preserved_records).toEqual([
+      records[0],
+      records[1],
+      records[3],
+      records[4],
+      records[5],
+    ]);
+    expect(plan.removed_conflicts).toEqual([records[2]]);
+    expect(plan.added_records).toEqual([{ type: "TXT", txt: ["pirate-verification=current"] }]);
+    expect(plan.replacement_records).toEqual([
+      records[0],
+      records[1],
+      records[3],
+      records[4],
+      records[5],
+      { type: "TXT", txt: ["pirate-verification=current"] },
+    ]);
+  });
+
   test("rejects incomplete or mismatched DS pairs", () => {
     expect(() =>
       buildHnsRootImportPublishPlanV1({

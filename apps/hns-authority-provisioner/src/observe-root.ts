@@ -18,6 +18,7 @@ import {
   HNS_AUTHORITY_NAMESERVERS,
   HNS_AUTHORITY_PROVISION_RESULT_VERSION,
   type HnsAuthorityZoneResult,
+  type HnsZoneMutationLease,
 } from "./provision-root.ts";
 
 export const HNS_ROOT_READINESS_OBSERVATION_REQUEST_VERSION =
@@ -43,6 +44,12 @@ export type HnsRootReadinessObservationPorts = Readonly<{
     readonly root_label: string;
     readonly challenge_txt_value: string;
   }) => Promise<HnsAuthorityZoneResult>;
+  readonly reconcile_zone: (input: {
+    readonly root_label: string;
+    readonly challenge_txt_value: string;
+    readonly expected_ds_records: readonly HnsRootDelegationDsV1[];
+    readonly mutation_lease?: HnsZoneMutationLease;
+  }) => Promise<void>;
   readonly observe_live: (input: {
     readonly root_label: string;
     readonly challenge_txt_value: string;
@@ -312,7 +319,11 @@ export function decodeHnsAuthorityProvisionResultV1(
 }
 
 export async function observeHnsRootReadinessV1(input: {
-  readonly observation_attempt: { readonly job_id: string; readonly lease_fence: number };
+  readonly observation_attempt: {
+    readonly job_id: string;
+    readonly executor_id: string;
+    readonly lease_fence: number;
+  };
   readonly operation_kind: "observe_root_v1" | "renew_health_v1";
   readonly request: HnsRootReadinessObservationRequestV1;
   readonly publish_plan_bytes: Uint8Array;
@@ -322,6 +333,7 @@ export async function observeHnsRootReadinessV1(input: {
 }) {
   if (
     !id(input.observation_attempt.job_id) ||
+    !id(input.observation_attempt.executor_id) ||
     !Number.isSafeInteger(input.observation_attempt.lease_fence) ||
     input.observation_attempt.lease_fence <= 0
   ) {
@@ -360,6 +372,18 @@ export async function observeHnsRootReadinessV1(input: {
     throw new HnsRootReadinessObservationError("owner_update_pending");
   }
   const authorityRecords = chainAuthorityRecords(chainRecords);
+  if (input.operation_kind === "observe_root_v1") {
+    try {
+      await input.ports.reconcile_zone({
+        root_label: input.request.root_label,
+        challenge_txt_value: input.request.challenge_txt_value,
+        expected_ds_records: provision.ds_records,
+        mutation_lease: input.observation_attempt,
+      });
+    } catch {
+      throw new HnsRootReadinessObservationError("authority_unavailable");
+    }
+  }
   let zone: HnsAuthorityZoneResult;
   try {
     zone = await input.ports.inspect_zone({

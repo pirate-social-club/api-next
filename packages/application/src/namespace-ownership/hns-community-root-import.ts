@@ -123,6 +123,7 @@ export type HnsCommunityRootImportPrepareOutcome =
       readonly value: HnsCommunityRootImportPreparation;
     }>
   | Readonly<{ readonly kind: "rate_limited"; readonly retry_after_seconds: number }>
+  | Readonly<{ readonly kind: "ownership_conflict" }>
   | Readonly<{ readonly kind: "conflict" }>
   | Readonly<{ readonly kind: "not_found" }>;
 
@@ -314,6 +315,7 @@ export class HnsCommunityRootImportRejected extends Data.TaggedError(
   readonly reason:
     | "invalid"
     | "conflict"
+    | "ownership_conflict"
     | "not_found"
     | "ownership_unavailable"
     | "ownership_misconfigured"
@@ -402,6 +404,9 @@ export const startHnsCommunityRootImport = Effect.fn("startHnsCommunityRootImpor
   }
   if (prepared.kind === "conflict") {
     return yield* new HnsCommunityRootImportRejected({ reason: "conflict" });
+  }
+  if (prepared.kind === "ownership_conflict") {
+    return yield* new HnsCommunityRootImportRejected({ reason: "ownership_conflict" });
   }
   if (prepared.kind === "rate_limited") {
     return yield* new HnsCommunityRootImportRejected({

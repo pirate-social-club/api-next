@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   buildManagedRootRrsets,
   makePowerDnsRootProvisioner,
+  makePowerDnsRootReconciler,
   makePowerDnsRootTeardown,
 } from "./powerdns.ts";
 
@@ -92,6 +93,7 @@ describe("PowerDNS managed HNS root rrsets", () => {
     const result = await provision({
       root_label: "newroot",
       challenge_txt_value: "pirate-verification=challenge",
+      current_records: [],
     });
     expect(result).toMatchObject({ created: true, dnssec: true, serial: 5 });
     expect(result.ds_records.map((record) => [record.key_tag, record.digest_type])).toEqual([
@@ -142,14 +144,18 @@ describe("PowerDNS managed HNS root rrsets", () => {
           : Response.json({ name: "newroot.", serial: 5, dnssec: true, account });
       return new Response(null, { status: 204 });
     });
-    const input = { root_label: "newroot", challenge_txt_value: "pirate-verification=first" };
+    const input = {
+      root_label: "newroot",
+      challenge_txt_value: "pirate-verification=first",
+      current_records: [],
+    };
     await expect(provision(input)).rejects.toThrow("response lost");
     expect(account).toMatch(/^[0-9a-f]{40}$/u);
     methods.length = 0;
     await expect(
       provision({ ...input, challenge_txt_value: "pirate-verification=other" }),
     ).rejects.toThrow("another reservation");
-    expect(methods).toEqual(["GET"]);
+    expect(methods).toEqual(["GET", "GET"]);
     methods.length = 0;
     expect(await provision(input)).toMatchObject({ created: true, dnssec: true });
     expect(methods).not.toContain("POST");
@@ -180,6 +186,86 @@ describe("PowerDNS managed HNS root rrsets", () => {
     cleanupMethods.length = 0;
     await teardown(input);
     expect(cleanupMethods).toEqual(["GET"]);
+  });
+
+  test("preserves a matching retained zone until chain ownership is proven", async () => {
+    const config = {
+      api_url: "http://powerdns.test:8081",
+      api_key: "secret-not-logged",
+      server_id: "localhost",
+      soa_content: "ns1.pirate. hostmaster.pirate. 0 3600 900 1209600 300",
+      axfr_tsig_key_name: "secondary-transfer.",
+      gateway_ipv4: "192.0.2.10",
+      shared_tlsa_association: `3 1 1 ${"A".repeat(64)}`,
+      gateway_deployment_reference: "gateway-deployment-v1",
+      gateway_certificate_spki_sha256: "a".repeat(64),
+      ttl_seconds: 300,
+    };
+    const ds = [
+      { key_tag: 10_875, algorithm: 13, digest_type: 2 as const, digest: "a".repeat(64) },
+      { key_tag: 10_875, algorithm: 13, digest_type: 4 as const, digest: "b".repeat(96) },
+    ];
+    const calls: string[] = [];
+    const fetcher = async (url: Request | string | URL, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      const path = new URL(String(url)).pathname;
+      calls.push(`${method} ${path}`);
+      if (method === "GET" && path.endsWith("/cryptokeys")) {
+        return Response.json([
+          {
+            active: true,
+            published: true,
+            ds: [`10875 13 2 ${"a".repeat(64)}`, `10875 13 4 ${"b".repeat(96)}`],
+          },
+        ]);
+      }
+      if (method === "GET") {
+        return Response.json({
+          name: "dankmeme.",
+          serial: 12,
+          dnssec: true,
+          account: "older-reservation",
+        });
+      }
+      return new Response(null, { status: 204 });
+    };
+    const provision = makePowerDnsRootProvisioner(config, fetcher);
+    const result = await provision({
+      root_label: "dankmeme",
+      challenge_txt_value: "pirate-verification=fresh",
+      current_records: [
+        { type: "NS", ns: "ns1.pirate." },
+        { type: "NS", ns: "ns2.pirate." },
+        ...ds.map((record) => ({
+          type: "DS",
+          keyTag: record.key_tag,
+          algorithm: record.algorithm,
+          digestType: record.digest_type,
+          digest: record.digest,
+        })),
+      ],
+    });
+    expect(result).toMatchObject({ created: false, ds_records: ds });
+    expect(calls).toEqual([
+      "GET /api/v1/servers/localhost/zones/dankmeme.",
+      "GET /api/v1/servers/localhost/zones/dankmeme./cryptokeys",
+    ]);
+
+    calls.length = 0;
+    const reconcile = makePowerDnsRootReconciler(config, fetcher);
+    await reconcile({
+      root_label: "dankmeme",
+      challenge_txt_value: "pirate-verification=fresh",
+      expected_ds_records: ds,
+    });
+    expect(calls).toEqual([
+      "GET /api/v1/servers/localhost/zones/dankmeme.",
+      "GET /api/v1/servers/localhost/zones/dankmeme./cryptokeys",
+      "PATCH /api/v1/servers/localhost/zones/dankmeme.",
+      "PUT /api/v1/servers/localhost/zones/dankmeme./metadata/TSIG-ALLOW-AXFR",
+      "PUT /api/v1/servers/localhost/zones/dankmeme./rectify",
+      "PUT /api/v1/servers/localhost/zones/dankmeme./notify",
+    ]);
   });
 
   test("idempotently deletes one exact abandoned root zone", async () => {
