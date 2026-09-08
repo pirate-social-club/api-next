@@ -1,5 +1,33 @@
 # Video master renderer spike — checkpoints 1 through 9
 
+## Proposed remote recovery admission — 2026-09-08
+
+The isolated `video-master-renderer-recovery-admission` model makes the next
+decision reviewable without composing a production adapter. Lease expiry alone
+never establishes termination. A stop receipt must identify the exact attempt
+and generation and establish that outstanding writes have drained. Output
+absence evidence must identify that same attempt and generation and follow the
+same stop receipt. An empty listing, unknown lookup, stale generation, foreign
+attempt, or unresolved write cannot authorize abandonment.
+
+Existing output routes to recovery. Sealed and accepted identities route to
+integrity recovery. Only a started attempt with both matching proofs becomes
+eligible for an atomic abandonment transaction, which must recheck current
+attempt state and winner identity. Eligibility is not permission to invoke a
+renderer before that transaction commits.
+
+The recommended adapter proposal is a deterministic attempt output address,
+persisted before dispatch, plus an execution-owner stop-and-drain receipt.
+Lookup failures remain unknown, never absent. The owner must establish what
+drains outstanding object requests and how it prevents later writes before
+this proposal can become a runtime contract. Database generation fencing alone
+prevents stale acceptance but does not stop an old worker consuming resources
+or writing an object. No provider is asserted to supply these guarantees.
+
+Four local tests with 13 assertions exercise the admission model. These are
+policy fixtures, not distributed termination or remote object-store evidence.
+The PostgreSQL recovery harness and public runtime remain unchanged.
+
 Status: five bounded local evidence checkpoints, 2026-09-02. This is not a runtime
 implementation or a renderer selection. No credential, provider request, R2
 object, Stream input, DATA operation, deployment, or production media was used.
