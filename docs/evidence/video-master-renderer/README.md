@@ -1,34 +1,7 @@
 # Video master renderer spike — checkpoints 1 through 9
 
-## Proposed remote recovery admission — 2026-09-08
-
-The isolated `video-master-renderer-recovery-admission` model makes the next
-decision reviewable without composing a production adapter. Lease expiry alone
-never establishes termination. A stop receipt must identify the exact attempt
-and generation and establish that outstanding writes have drained. Output
-absence evidence must identify that same attempt and generation and follow the
-same stop receipt. An empty listing, unknown lookup, stale generation, foreign
-attempt, or unresolved write cannot authorize abandonment.
-
-Existing output routes to recovery. Sealed and accepted identities route to
-integrity recovery. Only a started attempt with both matching proofs becomes
-eligible for an atomic abandonment transaction, which must recheck current
-attempt state and winner identity. Eligibility is not permission to invoke a
-renderer before that transaction commits.
-
-The recommended adapter proposal is a deterministic attempt output address,
-persisted before dispatch, plus an execution-owner stop-and-drain receipt.
-Lookup failures remain unknown, never absent. The owner must establish what
-drains outstanding object requests and how it prevents later writes before
-this proposal can become a runtime contract. Database generation fencing alone
-prevents stale acceptance but does not stop an old worker consuming resources
-or writing an object. No provider is asserted to supply these guarantees.
-
-Four local tests with 13 assertions exercise the admission model. These are
-policy fixtures, not distributed termination or remote object-store evidence.
-The PostgreSQL recovery harness and public runtime remain unchanged.
-
-Status: five bounded local evidence checkpoints, 2026-09-02. This is not a runtime
+Status: nine bounded local evidence checkpoints through 2026-09-08, plus one
+proposed remote recovery-admission model awaiting review. This is not a runtime
 implementation or a renderer selection. No credential, provider request, R2
 object, Stream input, DATA operation, deployment, or production media was used.
 
@@ -638,6 +611,53 @@ The drill now produces seven winners and passes 26 assertions. Recovery of an
 accepted winner with missing or corrupt bytes remains an integrity failure that
 retains the original winner row and never permits replacement, unchanged from
 checkpoint 8.
+
+## Proposed remote recovery admission — 2026-09-08
+
+The isolated `video-master-renderer-recovery-admission` model makes the next
+decision reviewable without composing a production adapter. Lease expiry alone
+never establishes termination. A stop receipt must identify the exact attempt
+and generation and establish that outstanding writes have drained. Output
+absence evidence must identify that same attempt and generation and follow the
+same stop receipt. An empty listing, unknown lookup, stale generation, foreign
+attempt, or unresolved write cannot authorize abandonment.
+
+Existing output routes to recovery. Sealed and accepted identities route to
+integrity recovery. Only a started attempt with both matching proofs becomes
+eligible for an atomic abandonment transaction, which must recheck current
+attempt state and winner identity. Eligibility is not permission to invoke a
+renderer before that transaction commits.
+
+The recommended adapter proposal is a deterministic attempt output address,
+persisted before dispatch, plus an execution-owner stop-and-drain receipt.
+Lookup failures remain unknown, never absent. The owner must establish what
+drains outstanding object requests and how it prevents later writes before
+this proposal can become a runtime contract. Database generation fencing alone
+prevents stale acceptance but does not stop an old worker consuming resources
+or writing an object. No provider is asserted to supply these guarantees.
+
+One asymmetry in the model is deliberate to name rather than leave for a
+reviewer to find. Absence is bound tightly: it must carry the attempt id, the
+generation, and the same stop receipt. Presence is bound by nothing at all, so
+`present` is accepted from any source, for any generation, and regardless of
+whether the worker is confirmed stopped. Feeding an unconfirmed or merely
+lease-expired stop alongside `present` returns `recover_existing_output`, and a
+prior generation's object cannot be distinguished from this attempt's because
+the `present` variant carries no identity.
+
+This is not a replacement loophole. `present` never reaches
+`eligible_for_atomic_abandonment`, so the no-rerender invariant holds on every
+path. The risk runs the other way: recovery can be pointed at an object that is
+still being written or belongs to a different attempt. The local harness is
+protected here because sealing re-verifies the hash, but a remote adapter
+reading a listing has no such check, and the model already treats a remote
+`listing_empty` as untrustworthy while treating `present` as fully trustworthy.
+Before this becomes a runtime contract the owner should decide whether presence
+must carry the same attempt, generation, and integrity binding as absence.
+
+Four local tests with 13 assertions exercise the admission model. These are
+policy fixtures, not distributed termination or remote object-store evidence.
+The PostgreSQL recovery harness and public runtime remain unchanged.
 
 ## Still unverified
 
