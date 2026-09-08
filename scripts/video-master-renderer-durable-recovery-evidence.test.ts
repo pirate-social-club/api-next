@@ -33,13 +33,67 @@ suite("durable renderer recovery across process restarts", () => {
       attemptId: "attempt-missing",
     });
 
-    expect(evidence.winners).toHaveLength(5);
+    // A stopped attempt stays pending until it is conclusively abandoned. Repeated
+    // observation must return the same typed result and must not grow the log.
+    expect(evidence.pendingObservations).toEqual([
+      { kind: "attempt_pending", attemptId: "attempt-stopped" },
+      { kind: "attempt_pending", attemptId: "attempt-stopped" },
+      { kind: "attempt_pending", attemptId: "attempt-stopped" },
+    ]);
+    expect(evidence.pendingObservationEventGrowth).toBe(0);
+
+    // Abandonment needs termination evidence and no completed output.
+    expect(evidence.abandoned).toMatchObject({
+      kind: "attempt_abandoned",
+      attemptId: "attempt-stopped",
+    });
+    expect(evidence.terminations).toEqual([
+      expect.objectContaining({ attempt_id: "attempt-stopped", observed_exit_code: 76 }),
+    ]);
+    expect(evidence.afterAbandon).toMatchObject({ kind: "render_required" });
+    expect(evidence.replacementAccepted).toMatchObject({
+      kind: "winner_committed",
+      attemptId: "attempt-replacement",
+    });
+
+    // A missing object alone never authorizes a replacement render.
+    expect(evidence.uncertainAbandon).toMatchObject({
+      kind: "attempt_output_present",
+      attemptId: "attempt-uncertain",
+      reason: "object",
+    });
+    expect(evidence.acceptedAbandon).toMatchObject({
+      kind: "attempt_not_stopped",
+      attemptId: "attempt-lost",
+      state: "accepted",
+    });
+    expect(
+      evidence.attempts.find((attempt) => attempt.attemptId === "attempt-uncertain"),
+    ).toMatchObject({ state: "started", masterHash: null, objectKey: null });
+    expect(
+      evidence.attempts.find((attempt) => attempt.attemptId === "attempt-stopped"),
+    ).toMatchObject({ state: "abandoned", masterHash: null, objectKey: null });
+
+    // Observing a worker that is still running must not start a second render.
+    expect(evidence.liveObserved).toMatchObject({
+      kind: "attempt_pending",
+      attemptId: "attempt-live",
+    });
+    expect(evidence.liveRecovered).toMatchObject({
+      kind: "winner_committed",
+      attemptId: "attempt-live",
+    });
+
+    expect(evidence.winners).toHaveLength(7);
     expect(evidence.invocations).toEqual([
       expect.objectContaining({ operation_id: "operation-corrupt", count: 1 }),
       expect.objectContaining({ operation_id: "operation-crash", count: 1 }),
+      expect.objectContaining({ operation_id: "operation-live", count: 1 }),
       expect.objectContaining({ operation_id: "operation-lost", count: 1 }),
       expect.objectContaining({ operation_id: "operation-missing", count: 1 }),
       expect.objectContaining({ operation_id: "operation-race", count: 2 }),
+      expect.objectContaining({ operation_id: "operation-stopped", count: 2 }),
+      expect.objectContaining({ operation_id: "operation-uncertain", count: 1 }),
     ]);
     const lostProcessIds = new Set(
       evidence.processEvents

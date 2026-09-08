@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -76,6 +76,23 @@ class FileMasterObjectStore {
     }
   }
 
+  /**
+   * Lists completed objects for an attempt. The key embeds the payload hash, so a
+   * process that never sealed cannot compute it; abandonment needs this directory
+   * read to prove no output exists.
+   */
+  async attemptObjectCount(operationId: string, attemptId: string): Promise<number> {
+    validateIdentifier(operationId, "operation id");
+    validateIdentifier(attemptId, "attempt id");
+    try {
+      const entries = await readdir(join(this.root, "attempts", operationId, attemptId));
+      return entries.filter((entry) => entry.endsWith(".master")).length;
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") return 0;
+      throw error;
+    }
+  }
+
   async deleteIdempotent(key: string): Promise<void> {
     try {
       await unlink(this.pathFor(key));
@@ -120,11 +137,20 @@ async function initializeSchema(connectionString: string, schema: string): Promi
         attempt_id text PRIMARY KEY,
         operation_id text NOT NULL,
         render_input_hash text NOT NULL,
-        master_hash text NOT NULL,
-        object_key text NOT NULL UNIQUE,
-        state text NOT NULL CHECK (state IN ('written', 'accepted', 'loser', 'disposed')),
+        master_hash text,
+        object_key text UNIQUE,
+        probe_byte_length integer,
+        state text NOT NULL CHECK (
+          state IN ('started', 'sealed', 'accepted', 'loser', 'disposed', 'abandoned')
+        ),
         disposition text,
-        created_at timestamptz NOT NULL DEFAULT now()
+        created_at timestamptz NOT NULL DEFAULT now(),
+        sealed_at timestamptz,
+        CHECK (
+          (state = 'started' AND master_hash IS NULL AND object_key IS NULL)
+          OR (state = 'abandoned' AND master_hash IS NULL AND object_key IS NULL)
+          OR (state NOT IN ('started', 'abandoned') AND master_hash IS NOT NULL AND object_key IS NOT NULL)
+        )
       );
       CREATE TABLE ${schema}.renderer_winners (
         operation_id text PRIMARY KEY,
@@ -139,6 +165,12 @@ async function initializeSchema(connectionString: string, schema: string): Promi
         operation_id text NOT NULL,
         process_pid integer NOT NULL,
         invoked_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE TABLE ${schema}.renderer_terminations (
+        attempt_id text PRIMARY KEY REFERENCES ${schema}.renderer_attempts(attempt_id),
+        observer_pid integer NOT NULL,
+        observed_exit_code integer NOT NULL,
+        observed_at timestamptz NOT NULL DEFAULT now()
       );
       CREATE TABLE ${schema}.renderer_events (
         event_id bigserial PRIMARY KEY,
@@ -172,15 +204,19 @@ async function waitForStablePostgres(connectionString: string): Promise<void> {
   throw new Error("PostgreSQL host port did not become stable");
 }
 
-async function writeAttempt(
-  input: AttemptInput,
-): Promise<{ readonly objectKey: string; readonly hash: string }> {
+/**
+ * Records the attempt as started before the renderer is invoked. The attempt
+ * identity is persisted first so a crash anywhere after this point is always
+ * attributable to a known attempt rather than an unrecorded orphan.
+ */
+async function startAttempt(input: {
+  readonly operationId: string;
+  readonly renderInputHash: string;
+  readonly attemptId: string;
+}): Promise<void> {
+  validateIdentifier(input.operationId, "operation id");
+  validateIdentifier(input.attemptId, "attempt id");
   const client = await connect();
-  const store = new FileMasterObjectStore(
-    requiredEnvironment("VIDEO_RENDERER_RECOVERY_OBJECT_ROOT"),
-  );
-  const objectKey = store.keyFor(input);
-  const hash = sha256(input.bytes);
   try {
     await client.query("BEGIN");
     await client.query(
@@ -189,17 +225,123 @@ async function writeAttempt(
     );
     await client.query(
       `INSERT INTO renderer_attempts
-        (attempt_id, operation_id, render_input_hash, master_hash, object_key, state)
-       VALUES ($1, $2, $3, $4, $5, 'written')`,
-      [input.attemptId, input.operationId, input.renderInputHash, hash, objectKey],
+        (attempt_id, operation_id, render_input_hash, state)
+       VALUES ($1, $2, $3, 'started')`,
+      [input.attemptId, input.operationId, input.renderInputHash],
     );
     await client.query(
-      "INSERT INTO renderer_events (process_pid, event_kind, operation_id, attempt_id) VALUES ($1, 'render_written', $2, $3)",
+      "INSERT INTO renderer_events (process_pid, event_kind, operation_id, attempt_id) VALUES ($1, 'attempt_started', $2, $3)",
       [process.pid, input.operationId, input.attemptId],
     );
     await client.query("COMMIT");
-    await store.putImmutable(objectKey, input.bytes);
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    await client.end();
+  }
+}
+
+/**
+ * Seals an attempt only after the immutable object is written and independently
+ * verified. The hash and byte-length probe are persisted in the same transaction,
+ * so a sealed row always implies durable, verified bytes.
+ */
+async function sealAttempt(
+  input: AttemptInput,
+): Promise<{ readonly objectKey: string; readonly hash: string }> {
+  const store = new FileMasterObjectStore(
+    requiredEnvironment("VIDEO_RENDERER_RECOVERY_OBJECT_ROOT"),
+  );
+  const objectKey = store.keyFor(input);
+  const hash = sha256(input.bytes);
+  await store.putImmutable(objectKey, input.bytes);
+  const verified = await store.verify(objectKey, hash);
+  if (verified !== "valid") throw new Error(`refusing to seal ${verified} object`);
+  const client = await connect();
+  try {
+    await client.query("BEGIN");
+    const updated = await client.query(
+      `UPDATE renderer_attempts
+         SET state = 'sealed', master_hash = $2, object_key = $3,
+             probe_byte_length = $4, sealed_at = now()
+       WHERE attempt_id = $1 AND state = 'started'`,
+      [input.attemptId, hash, objectKey, input.bytes.byteLength],
+    );
+    if (updated.rowCount !== 1) throw new Error("attempt was not in the started state");
+    await client.query(
+      "INSERT INTO renderer_events (process_pid, event_kind, operation_id, attempt_id) VALUES ($1, 'attempt_sealed', $2, $3)",
+      [process.pid, input.operationId, input.attemptId],
+    );
+    await client.query("COMMIT");
     return { objectKey, hash };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    await client.end();
+  }
+}
+
+async function renderAndSealAttempt(input: AttemptInput) {
+  await startAttempt(input);
+  return await sealAttempt(input);
+}
+
+/**
+ * Abandons an attempt that is conclusively stopped and produced no output. A
+ * missing object alone never reaches here: the caller must supply termination
+ * evidence, and both a committed winner and any completed attempt object block
+ * abandonment.
+ */
+async function abandonStoppedAttempt(attemptId: string, observedExitCode: number) {
+  const client = await connect();
+  const store = new FileMasterObjectStore(
+    requiredEnvironment("VIDEO_RENDERER_RECOVERY_OBJECT_ROOT"),
+  );
+  try {
+    await client.query("BEGIN");
+    const attemptResult = await client.query<{
+      operation_id: string;
+      state: string;
+    }>("SELECT operation_id, state FROM renderer_attempts WHERE attempt_id = $1 FOR UPDATE", [
+      attemptId,
+    ]);
+    const attempt = attemptResult.rows[0];
+    if (!attempt) throw new Error("attempt not found");
+    if (attempt.state === "abandoned") {
+      await client.query("COMMIT");
+      return { kind: "attempt_already_abandoned", attemptId } as const;
+    }
+    if (attempt.state !== "started") {
+      await client.query("COMMIT");
+      return { kind: "attempt_not_stopped", attemptId, state: attempt.state } as const;
+    }
+    const winner = await client.query("SELECT 1 FROM renderer_winners WHERE operation_id = $1", [
+      attempt.operation_id,
+    ]);
+    if (winner.rowCount !== 0) {
+      await client.query("COMMIT");
+      return { kind: "attempt_output_present", attemptId, reason: "winner" } as const;
+    }
+    const objects = await store.attemptObjectCount(attempt.operation_id, attemptId);
+    if (objects !== 0) {
+      await client.query("COMMIT");
+      return { kind: "attempt_output_present", attemptId, reason: "object" } as const;
+    }
+    await client.query(
+      "INSERT INTO renderer_terminations (attempt_id, observer_pid, observed_exit_code) VALUES ($1, $2, $3)",
+      [attemptId, process.pid, observedExitCode],
+    );
+    await client.query("UPDATE renderer_attempts SET state = 'abandoned' WHERE attempt_id = $1", [
+      attemptId,
+    ]);
+    await client.query(
+      "INSERT INTO renderer_events (process_pid, event_kind, operation_id, attempt_id) VALUES ($1, 'attempt_abandoned', $2, $3)",
+      [process.pid, attempt.operation_id, attemptId],
+    );
+    await client.query("COMMIT");
+    return { kind: "attempt_abandoned", attemptId } as const;
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);
     throw error;
@@ -218,15 +360,26 @@ async function acceptAttemptOnce(attemptId: string) {
     const attemptResult = await client.query<{
       operation_id: string;
       render_input_hash: string;
-      master_hash: string;
-      object_key: string;
+      master_hash: string | null;
+      object_key: string | null;
+      state: string;
     }>(
-      `SELECT operation_id, render_input_hash, master_hash, object_key
+      `SELECT operation_id, render_input_hash, master_hash, object_key, state
        FROM renderer_attempts WHERE attempt_id = $1 FOR UPDATE`,
       [attemptId],
     );
     const attempt = attemptResult.rows[0];
     if (!attempt) throw new Error("attempt not found");
+    if (attempt.state === "accepted") {
+      await client.query("COMMIT");
+      return { kind: "winner_committed", attemptId } as const;
+    }
+    if (attempt.state !== "sealed") {
+      throw new Error(`attempt is ${attempt.state}, not sealed`);
+    }
+    if (!attempt.master_hash || !attempt.object_key) {
+      throw new Error("sealed attempt is missing its persisted object identity");
+    }
     const objectState = await store.verify(attempt.object_key, attempt.master_hash);
     if (objectState !== "valid") throw new Error(`attempt object ${objectState}`);
 
@@ -345,19 +498,54 @@ async function observeOrRecover(operationId: string, renderInputHash: string) {
       return { kind: "winner_observed", attemptId: winner.attempt_id } as const;
     }
 
-    const recoverable = await client.query<{ attempt_id: string }>(
-      `SELECT attempt_id FROM renderer_attempts
-       WHERE operation_id = $1 AND render_input_hash = $2 AND state = 'written'
+    const recoverable = await client.query<{
+      attempt_id: string;
+      master_hash: string;
+      object_key: string;
+    }>(
+      `SELECT attempt_id, master_hash, object_key FROM renderer_attempts
+       WHERE operation_id = $1 AND render_input_hash = $2 AND state = 'sealed'
        ORDER BY created_at, attempt_id LIMIT 1`,
       [operationId, renderInputHash],
     );
     const attempt = recoverable.rows[0];
-    if (!attempt) return { kind: "render_required" } as const;
-    await client.query(
-      "INSERT INTO renderer_events (process_pid, event_kind, operation_id, attempt_id) VALUES ($1, 'written_attempt_recovered', $2, $3)",
-      [process.pid, operationId, attempt.attempt_id],
+    if (attempt) {
+      // Sealing verified these bytes, so their later loss is an integrity failure
+      // rather than an uncertain outcome. It is typed and never replaced, on the
+      // same rule as a winner with missing bytes. No event is written, so repeated
+      // observation cannot grow the log.
+      const sealedState = await store.verify(
+        String(attempt.object_key),
+        String(attempt.master_hash),
+      );
+      if (sealedState !== "valid") {
+        return {
+          kind: `sealed_bytes_${sealedState}` as const,
+          attemptId: attempt.attempt_id,
+        };
+      }
+      await client.query(
+        "INSERT INTO renderer_events (process_pid, event_kind, operation_id, attempt_id) VALUES ($1, 'sealed_attempt_recovered', $2, $3)",
+        [process.pid, operationId, attempt.attempt_id],
+      );
+      return await acceptAttempt(attempt.attempt_id);
+    }
+
+    // A started attempt may still be rendering, may have stopped, or may have an
+    // uncertain object-write outcome. Observation cannot tell those apart, so it
+    // returns a typed pending result, authorizes no render, and deliberately
+    // writes no event: repeated observation must not grow the log.
+    const pending = await client.query<{ attempt_id: string }>(
+      `SELECT attempt_id FROM renderer_attempts
+       WHERE operation_id = $1 AND render_input_hash = $2 AND state = 'started'
+       ORDER BY created_at, attempt_id LIMIT 1`,
+      [operationId, renderInputHash],
     );
-    return await acceptAttempt(attempt.attempt_id);
+    const startedAttempt = pending.rows[0];
+    if (startedAttempt) {
+      return { kind: "attempt_pending", attemptId: startedAttempt.attempt_id } as const;
+    }
+    return { kind: "render_required" } as const;
   } finally {
     await client.end();
   }
@@ -408,7 +596,7 @@ async function runChild(arguments_: readonly string[]): Promise<void> {
       throw new Error("write arguments missing");
     console.log(
       JSON.stringify(
-        await writeAttempt({
+        await renderAndSealAttempt({
           operationId,
           renderInputHash: inputHash,
           attemptId,
@@ -422,13 +610,57 @@ async function runChild(arguments_: readonly string[]): Promise<void> {
     const [operationId, inputHash, attemptId, payload] = arguments_.slice(1);
     if (!operationId || !inputHash || !attemptId || payload === undefined)
       throw new Error("write-crash arguments missing");
-    await writeAttempt({
+    await renderAndSealAttempt({
       operationId,
       renderInputHash: inputHash,
       attemptId,
       bytes: new TextEncoder().encode(payload),
     });
     process.exit(73);
+  }
+  if (command === "start-crash") {
+    const [operationId, inputHash, attemptId] = arguments_.slice(1);
+    if (!operationId || !inputHash || !attemptId) throw new Error("start-crash arguments missing");
+    await startAttempt({ operationId, renderInputHash: inputHash, attemptId });
+    process.exit(76);
+  }
+  if (command === "write-unsealed-crash") {
+    const [operationId, inputHash, attemptId, payload] = arguments_.slice(1);
+    if (!operationId || !inputHash || !attemptId || payload === undefined)
+      throw new Error("write-unsealed-crash arguments missing");
+    const input = {
+      operationId,
+      renderInputHash: inputHash,
+      attemptId,
+      bytes: new TextEncoder().encode(payload),
+    };
+    await startAttempt(input);
+    const store = new FileMasterObjectStore(
+      requiredEnvironment("VIDEO_RENDERER_RECOVERY_OBJECT_ROOT"),
+    );
+    await store.putImmutable(store.keyFor(input), input.bytes);
+    process.exit(77);
+  }
+  if (command === "start-hold") {
+    const [operationId, inputHash, attemptId, payload, holdMs] = arguments_.slice(1);
+    if (!operationId || !inputHash || !attemptId || payload === undefined || !holdMs)
+      throw new Error("start-hold arguments missing");
+    const input = {
+      operationId,
+      renderInputHash: inputHash,
+      attemptId,
+      bytes: new TextEncoder().encode(payload),
+    };
+    await startAttempt(input);
+    await Bun.sleep(Number(holdMs));
+    console.log(JSON.stringify(await sealAttempt(input)));
+    return;
+  }
+  if (command === "abandon") {
+    const [attemptId, observedExitCode] = arguments_.slice(1);
+    if (!attemptId || observedExitCode === undefined) throw new Error("abandon arguments missing");
+    console.log(JSON.stringify(await abandonStoppedAttempt(attemptId, Number(observedExitCode))));
+    return;
   }
   if (command === "accept" || command === "accept-lost-response") {
     const attemptId = arguments_[1];
@@ -471,6 +703,15 @@ async function runProcess(
     new Response(child.stderr).text(),
   ]);
   return { exitCode, stdout: stdout.trim(), stderr: stderr.trim() };
+}
+
+function spawnChild(environment: Readonly<Record<string, string>>, arguments_: readonly string[]) {
+  return Bun.spawn([process.execPath, import.meta.path, "child", ...arguments_], {
+    env: { ...process.env, ...environment },
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
 }
 
 function parsed(result: ChildResult): Record<string, unknown> {
@@ -528,11 +769,16 @@ async function queryRows(connectionString: string, schema: string) {
       `SELECT process_pid, event_kind, operation_id, attempt_id
        FROM ${schema}.renderer_events ORDER BY event_id`,
     );
+    const terminations = await client.query(
+      `SELECT attempt_id, observer_pid, observed_exit_code
+       FROM ${schema}.renderer_terminations ORDER BY attempt_id`,
+    );
     return {
       winners: winners.rows,
       attempts: attempts.rows,
       invocations: invocations.rows,
       events: events.rows,
+      terminations: terminations.rows,
     };
   } finally {
     await client.end();
@@ -642,6 +888,86 @@ export async function runDurableRecoveryEvidence() {
     if (cleanupCrash.exitCode !== 75) throw new Error("cleanup interruption was not observed");
     const cleanupReplay = parsed(await runProcess(environment, ["cleanup", "operation-race"]));
 
+    // A worker that stops after the attempt transaction commits but before any
+    // object exists. Observation must stay typed, must not authorize a render,
+    // and must not grow the event log on repeated attempts.
+    const stoppedStart = await runProcess(environment, [
+      "start-crash",
+      "operation-stopped",
+      "input-f",
+      "attempt-stopped",
+    ]);
+    if (stoppedStart.exitCode !== 76) throw new Error("start-before-object crash was not observed");
+    const eventsBeforePendingObservation = (await queryRows(connectionString, schema)).events
+      .length;
+    const pendingObservations = [
+      parsed(await runProcess(environment, ["observe", "operation-stopped", "input-f"])),
+      parsed(await runProcess(environment, ["observe", "operation-stopped", "input-f"])),
+      parsed(await runProcess(environment, ["observe", "operation-stopped", "input-f"])),
+    ];
+    const eventsAfterPendingObservation = (await queryRows(connectionString, schema)).events.length;
+
+    // The parent observed the child exit, which is this drill's termination
+    // evidence. Only that permits abandonment, and only because no output exists.
+    const abandoned = parsed(
+      await runProcess(environment, ["abandon", "attempt-stopped", String(stoppedStart.exitCode)]),
+    );
+    const afterAbandon = parsed(
+      await runProcess(environment, ["observe", "operation-stopped", "input-f"]),
+    );
+    parsed(
+      await runProcess(environment, [
+        "write",
+        "operation-stopped",
+        "input-f",
+        "attempt-replacement",
+        "master-replacement",
+      ]),
+    );
+    const replacementAccepted = parsed(
+      await runProcess(environment, ["accept", "attempt-replacement"]),
+    );
+
+    // Termination evidence alone is not enough. A stopped worker whose object
+    // write did land leaves an uncertain outcome, and abandoning it would risk a
+    // second render over completed output.
+    const unsealedStop = await runProcess(environment, [
+      "write-unsealed-crash",
+      "operation-uncertain",
+      "input-h",
+      "attempt-uncertain",
+      "master-uncertain",
+    ]);
+    if (unsealedStop.exitCode !== 77) throw new Error("unsealed-object crash was not observed");
+    const uncertainAbandon = parsed(
+      await runProcess(environment, [
+        "abandon",
+        "attempt-uncertain",
+        String(unsealedStop.exitCode),
+      ]),
+    );
+    const acceptedAbandon = parsed(await runProcess(environment, ["abandon", "attempt-lost", "0"]));
+
+    // Observation while the original worker is still running must not start a
+    // second render; the live attempt keeps exactly one invocation.
+    const liveChild = spawnChild(environment, [
+      "start-hold",
+      "operation-live",
+      "input-g",
+      "attempt-live",
+      "master-live",
+      "1200",
+    ]);
+    await Bun.sleep(400);
+    const liveObserved = parsed(
+      await runProcess(environment, ["observe", "operation-live", "input-g"]),
+    );
+    const liveExit = await liveChild.exited;
+    if (liveExit !== 0) throw new Error("held attempt did not seal cleanly");
+    const liveRecovered = parsed(
+      await runProcess(environment, ["observe", "operation-live", "input-g"]),
+    );
+
     parsed(
       await runProcess(environment, [
         "write",
@@ -694,6 +1020,15 @@ export async function runDurableRecoveryEvidence() {
       schema,
       recovered,
       replayed,
+      pendingObservations,
+      pendingObservationEventGrowth: eventsAfterPendingObservation - eventsBeforePendingObservation,
+      abandoned,
+      uncertainAbandon,
+      acceptedAbandon,
+      afterAbandon,
+      replacementAccepted,
+      liveObserved,
+      liveRecovered,
       raceResults,
       cleanupReplay,
       corruptObserved,
@@ -715,6 +1050,7 @@ export async function runDurableRecoveryEvidence() {
       })),
       invocations: rows.invocations,
       processEvents: rows.events,
+      terminations: rows.terminations,
       winnerObjectStates,
     } as const;
   } finally {

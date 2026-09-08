@@ -1,4 +1,4 @@
-# Video master renderer spike — checkpoints 1 through 7
+# Video master renderer spike — checkpoints 1 through 9
 
 Status: five bounded local evidence checkpoints, 2026-09-02. This is not a runtime
 implementation or a renderer selection. No credential, provider request, R2
@@ -500,6 +500,9 @@ replay. Their render invocation counts remained exactly one.
 The write-before-acceptance process exited after persisting its attempt row and
 object bytes but before inserting a winner. The next process verified those
 same bytes and committed that attempt as the winner without rendering again.
+Checkpoint 9 below replaces the two-state model this paragraph describes; the
+observed behaviour is unchanged, but the attempt now passes through an explicit
+started and sealed transition.
 The lost-response process committed its winner and exited before returning a
 result; replay observed the persisted winner and verified its object hash
 without adding an invocation.
@@ -535,6 +538,78 @@ provider response, Worker, Workflow, Stream, DATA, deployment, credential, or
 live media was involved. It does not prove R2 conditional writes, remote object
 visibility, production transaction routing, or recovery after simultaneous
 database and object-store loss.
+
+Two further limits belong on this list. The drill's termination evidence is a
+parent process observing a child exit, which is stronger and cheaper than any
+evidence a distributed deployment will have; a real environment must establish
+that a stopped worker is conclusively stopped before reusing this abandonment
+path, and a lease, fence, or provider-side termination signal is the open design
+question. Attempt abandonment also proves absence of output by listing a local
+directory, which a remote object store cannot answer with the same certainty.
+Repeated observation of an accepted winner with damaged bytes still appends an
+integrity event each time; only the pending and sealed-integrity paths are
+proven not to grow the log.
+
+## Checkpoint 9: explicit attempt lifecycle and stopped-attempt abandonment
+
+Checkpoint 8 committed the attempt row before writing the object bytes and had
+no state between the two. A process stopped in that window left a row whose
+object never existed. Recovery selected that row, failed to verify its object,
+and threw an untyped error; because the row was never advanced, every later
+observation re-selected it, threw again, and appended another recovery event. A
+reproduction against the real database ended with three recovery events, zero
+winners, and no reachable path to a replacement render. The operation was
+permanently wedged. Checkpoint 8 did not cover this window and did not list it.
+
+The ordering is deliberately unchanged. Writing bytes before the attempt row
+would move the same ambiguity into an unrecorded orphan window and weaken the
+persisted attempt identity. A missing object also cannot by itself distinguish a
+worker that stopped before writing from one that is still rendering or one whose
+write outcome is uncertain, so a missing object never authorizes a new render.
+
+The attempt now carries an explicit lifecycle. It is recorded as `started`
+before the renderer is invoked, so any later stop is attributable to a known
+attempt. It becomes `sealed` only after the immutable object is written and
+independently verified, with its hash and byte-length probe persisted in the
+same transaction, so a sealed row always implies durable verified bytes. A
+database constraint enforces that started and abandoned rows carry no object
+identity and every other state carries one. Acceptance operates only on sealed
+attempts.
+
+Recovery of a `started` attempt returns a typed `attempt_pending` result. It
+authorizes no render and deliberately writes no event, so repeated observation
+cannot grow the log. The drill observes a stopped attempt three times, receives
+the same typed result each time, and measures event growth of exactly zero.
+
+Abandonment is the only path from `started` to a replacement render, and it
+requires termination evidence rather than an absent object. In this local drill
+the parent process observing the child exit is that evidence; the observed exit
+code and observer process id are persisted in a `renderer_terminations` row.
+Abandonment additionally refuses whenever completed output might exist. A
+stopped attempt whose object write did land is refused as
+`attempt_output_present` with reason `object` and stays `started`, and an
+attempt that already produced an accepted winner is refused as
+`attempt_not_stopped`. Only after a clean abandonment does observation return
+`render_required`, and the drill then proves exactly one replacement attempt
+succeeds, leaving that operation with two render invocations.
+
+Observation while the original worker is still running returns the same typed
+pending result and starts no second render. The drill observes a deliberately
+held attempt mid-render, then lets it seal and accept normally; that operation
+ends with exactly one render invocation and its original attempt as the winner.
+
+A sealed attempt whose bytes later disappear is now also typed rather than
+thrown, as `sealed_bytes_missing` or `sealed_bytes_corrupt`, and is never
+replaced. Sealing verified those bytes, so their loss is an integrity failure on
+the same rule as a winner with missing bytes rather than an uncertain outcome.
+This extends the ruling beyond the transition that was specified, because the
+untyped throw there was the same wedge one state over; it changes observability
+only, never the no-replacement policy.
+
+The drill now produces seven winners and passes 26 assertions. Recovery of an
+accepted winner with missing or corrupt bytes remains an integrity failure that
+retains the original winner row and never permits replacement, unchanged from
+checkpoint 8.
 
 ## Still unverified
 
