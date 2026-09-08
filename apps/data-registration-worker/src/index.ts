@@ -7,10 +7,10 @@ import { advanceDataRegistrationWorkflow } from "../../../packages/application/s
 import type { DataRegistrationQueueDependencies } from "../../../packages/application/src/data/registration-workflow-queue.ts";
 import {
   type CloudflareWorkflowStepDo,
+  isExplicitlyEnabled,
   PROCESSING_WORKFLOW_STEP_OPTIONS,
 } from "../../../packages/platform-cf/src/cloudflare-orchestration-primitives.ts";
 import { handleDataRegistrationQueueBatch } from "../../../packages/platform-cf/src/data/registration-workflow-cloudflare.ts";
-import { isDataRegistrationEnabled } from "./posture.ts";
 
 export type DataRegistrationWorkerEnv = Readonly<{
   DATA_REGISTRATION_ENABLED?: string;
@@ -39,8 +39,7 @@ const withPosture = <Env extends DataRegistrationWorkerEnv>(
     ...composition.workflow,
     options: {
       enabled:
-        isDataRegistrationEnabled(env.DATA_REGISTRATION_ENABLED) &&
-        composition.workflow.options.enabled,
+        isExplicitlyEnabled(env.DATA_REGISTRATION_ENABLED) && composition.workflow.options.enabled,
     },
   },
 });
@@ -53,7 +52,7 @@ export function makeDataRegistrationQueueWorker<Env extends DataRegistrationWork
       batch: Parameters<typeof handleDataRegistrationQueueBatch>[0],
       env: Env,
     ): Promise<void> => {
-      if (!isDataRegistrationEnabled(env.DATA_REGISTRATION_ENABLED)) {
+      if (!isExplicitlyEnabled(env.DATA_REGISTRATION_ENABLED)) {
         for (const message of batch.messages) message.retry({ delaySeconds: 900 });
         return;
       }

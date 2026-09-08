@@ -19,18 +19,33 @@ import {
   NotFound,
   ProviderMisconfigured,
   ProviderUnavailable,
+  RateLimited,
 } from "@pirate/contracts";
 import { Effect } from "effect";
 import { type EndpointHandler, withEndpointResult } from "./transport.ts";
 
 function wireFailure(error: unknown): Error {
-  const tagged = error as { readonly _tag?: string; readonly reason?: string };
+  const tagged = error as {
+    readonly _tag?: string;
+    readonly reason?: string;
+    readonly retry_after_seconds?: number;
+  };
   if (tagged._tag === "HnsCommunityRootImportStorageFailed")
     return new InternalError({ message: "HNS community root import failed" });
   if (tagged._tag !== "HnsCommunityRootImportRejected")
     return new InternalError({ message: "HNS community root import failed" });
   if (tagged.reason === "not_found")
     return new NotFound({ message: "Community route authority was not found" });
+  if (tagged.reason === "rate_limited" && tagged.retry_after_seconds !== undefined)
+    return new RateLimited({
+      message:
+        "You can prepare three HNS record lists in 24 hours. Try again after the limit resets.",
+      retry_after_seconds: tagged.retry_after_seconds,
+      details: {
+        reason: "hns_preparation_daily_limit",
+        retry_after_seconds: tagged.retry_after_seconds,
+      },
+    });
   if (tagged.reason === "conflict")
     return new Conflict({ message: "HNS root import conflicts with durable state" });
   if (tagged.reason === "ownership_misconfigured")

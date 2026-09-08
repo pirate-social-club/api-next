@@ -36,7 +36,7 @@ export type PersonaIdV1 = Schema.Schema.Type<typeof PersonaIdV1>;
 
 /**
  * Server-validated persona choice for a terminal community membership or
- * community-creation commit (spec 014 section 10.2). A browser never invents
+ * community-creation commit (spec 014 section 11.2). A browser never invents
  * a persona id or a binding: it either names an existing owned persona or
  * asks the server to mint one in the same commit.
  */
@@ -149,7 +149,7 @@ export type PrivatePersonaV1 = Schema.Schema.Type<typeof PrivatePersonaV1>;
 const CreatePersonaRequestV1 = Schema.Struct({
   idempotency_key: boundedIdentifier("idempotency key"),
   /**
-   * Spec 014 section 10.2: creating a further persona outside onboarding
+   * Spec 014 section 11.2: creating a further persona outside onboarding
    * requires a target community; the new persona is born bound there in the
    * creation transaction and the account must hold an active membership.
    */
@@ -168,7 +168,7 @@ const PreparePersonaEvmWalletRequestV1 = Schema.Struct({
 const RetirePersonaRequestV1 = Schema.Struct({
   idempotency_key: boundedIdentifier("idempotency key"),
   /**
-   * Spec 014 section 10.3: retiring a persona that is a community's current
+   * Spec 014 section 11.3: retiring a persona that is a community's current
    * role or activity presentation must atomically designate another active
    * persona bound to the same community, or the retirement is rejected.
    */

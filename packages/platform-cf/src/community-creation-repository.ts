@@ -344,7 +344,7 @@ function documentFromRow(row: Row): CommunityCreationIntentDocument | null {
     jsonValue(row.persona_projection),
   );
   // A create_new draft has no persona until the terminal creation commit
-  // mints one; its presentation stays null until then (spec 014 10.2).
+  // mints one; its presentation stays null until then (spec 014 11.2).
   const draftPersonaKind = jsonValue(row.draft);
   const createNewOwner =
     draftPersonaKind !== null &&

@@ -6,16 +6,8 @@ import {
   makeDataRegistrationQueueWorker,
   makeDataRegistrationWorkflowRunner,
 } from "./index.ts";
-import { isDataRegistrationEnabled } from "./posture.ts";
 
 describe("DATA registration Worker posture", () => {
-  test("is disabled by default and requires an exact opt-in", () => {
-    expect(isDataRegistrationEnabled(undefined)).toBe(false);
-    expect(isDataRegistrationEnabled("false")).toBe(false);
-    expect(isDataRegistrationEnabled("TRUE")).toBe(false);
-    expect(isDataRegistrationEnabled("true")).toBe(true);
-  });
-
   test("runs identifier-only work inside a durable step while disabled", async () => {
     const stepNames: string[] = [];
     const workflow = {

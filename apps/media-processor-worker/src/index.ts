@@ -22,12 +22,10 @@ import {
 import type { VideoWorkflowServices } from "../../../packages/application/src/video/workflow.ts";
 import {
   type CloudflareWorkflowStepDo,
+  isExplicitlyEnabled,
   PROCESSING_WORKFLOW_STEP_OPTIONS,
 } from "../../../packages/platform-cf/src/cloudflare-orchestration-primitives.ts";
 import { handleMediaProcessingQueueBatch } from "../../../packages/platform-cf/src/media-processing-cloudflare.ts";
-import { isMediaProcessingEnabled } from "./posture.ts";
-
-export { isMediaProcessingEnabled } from "./posture.ts";
 
 export type MediaProcessorWorkerEnv = Readonly<{
   readonly MEDIA_PROCESSING_ENABLED?: string;
@@ -58,8 +56,7 @@ const applyRuntimePosture = <Env extends MediaProcessorWorkerEnv>(
     options: {
       ...composition.workflow.options,
       enabled:
-        isMediaProcessingEnabled(env.MEDIA_PROCESSING_ENABLED) &&
-        composition.workflow.options.enabled,
+        isExplicitlyEnabled(env.MEDIA_PROCESSING_ENABLED) && composition.workflow.options.enabled,
     },
   },
 });
