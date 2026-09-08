@@ -11,6 +11,7 @@ import {
   NotFound,
   ProviderMisconfigured,
   ProviderUnavailable,
+  RateLimited,
   RetryableConflict,
 } from "./errors.ts";
 
@@ -463,7 +464,7 @@ export const StartHnsCommunityRootImport = endpoint({
   },
   response: HnsCommunityRootImportSessionResponseV1,
   successStatus: [200, 202],
-  errors: rootImportErrors,
+  errors: [...rootImportErrors, RateLimited],
 });
 
 export const GetCurrentHnsCommunityRootImport = endpoint({

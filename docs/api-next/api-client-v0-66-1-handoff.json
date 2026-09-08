@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.66.1",
+  "sourceBranch": "release/hns-regeneration-admission-feedback",
+  "wireContract": "Scoped production-baseline HNS preparation rate-limit error with retry timing, corresponding to PR321. No other endpoint changes.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.66.1.tgz",
+    "sha256": "0c8701da7dfc5094db51cab43d07fa9b6ba815e706eacd78a3537f09eb95b4db"
+  },
+  "provenance": {
+    "schemaVersion": 1,
+    "package": "@pirate/api-client",
+    "version": "0.66.1",
+    "sourceIdentifier": "api-next-contracts@48d3f08796883441f909f99d5b2761115d833ddfec43edc679e6f48193d367fb",
+    "openapiSha256": "48d3f08796883441f909f99d5b2761115d833ddfec43edc679e6f48193d367fb",
+    "clientSha256": "f4cf02636fc86fbd1a774b778251204dcd52c325ccd4ae9907a5bed4a97135af"
+  },
+  "verification": {
+    "status": "Exact release gates pending; source implementation local gates passed."
+  }
+}
