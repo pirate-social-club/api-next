@@ -444,7 +444,31 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
               ],
               readonly: false,
             });
-            if (oneRow(admission)?.admitted !== true) return { kind: "conflict" } as const;
+            if (oneRow(admission)?.admitted !== true) {
+              // Keep the database admission guard authoritative. Classify a rejected
+              // admission under the same lock, after all replay paths have run.
+              const quota = yield* transaction.execute<Row>({
+                label: "hns.community-root-import.admission-retry",
+                text: `SELECT GREATEST(1, CEIL(EXTRACT(EPOCH FROM
+                          (created_at + interval '24 hours' - clock_timestamp()))))::integer
+                            AS retry_after_seconds
+                         FROM hns_community_root_import_preparations
+                        WHERE actor_id=$1 AND admission_kind='community_provisional'
+                          AND created_at>clock_timestamp()-interval '24 hours'
+                        ORDER BY created_at DESC OFFSET 2 LIMIT 1`,
+                values: [input.request.actor_id],
+                readonly: false,
+              });
+              const quotaRow = oneRow(quota);
+              if (quotaRow === undefined) return yield* Effect.fail(storageFailure());
+              if (quotaRow !== null) {
+                const retryAfter = integer(quotaRow.retry_after_seconds);
+                if (retryAfter === null || retryAfter > 86_400)
+                  return yield* Effect.fail(storageFailure());
+                return { kind: "rate_limited", retry_after_seconds: retryAfter } as const;
+              }
+              return { kind: "conflict" } as const;
+            }
 
             const unavailable = yield* transaction.execute<Row>({
               label: "hns.community-root-import.check-root",

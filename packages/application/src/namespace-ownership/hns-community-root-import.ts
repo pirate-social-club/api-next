@@ -122,6 +122,7 @@ export type HnsCommunityRootImportPrepareOutcome =
       readonly kind: "created" | "replay";
       readonly value: HnsCommunityRootImportPreparation;
     }>
+  | Readonly<{ readonly kind: "rate_limited"; readonly retry_after_seconds: number }>
   | Readonly<{ readonly kind: "conflict" }>
   | Readonly<{ readonly kind: "not_found" }>;
 
@@ -315,7 +316,9 @@ export class HnsCommunityRootImportRejected extends Data.TaggedError(
     | "conflict"
     | "not_found"
     | "ownership_unavailable"
-    | "ownership_misconfigured";
+    | "ownership_misconfigured"
+    | "rate_limited";
+  readonly retry_after_seconds?: number;
 }> {}
 
 export class HnsCommunityRootImportStorageFailed extends Data.TaggedError(
@@ -399,6 +402,12 @@ export const startHnsCommunityRootImport = Effect.fn("startHnsCommunityRootImpor
   }
   if (prepared.kind === "conflict") {
     return yield* new HnsCommunityRootImportRejected({ reason: "conflict" });
+  }
+  if (prepared.kind === "rate_limited") {
+    return yield* new HnsCommunityRootImportRejected({
+      reason: "rate_limited",
+      retry_after_seconds: prepared.retry_after_seconds,
+    });
   }
   const authority = prepared.value;
   const ownership = yield* services.ownership
