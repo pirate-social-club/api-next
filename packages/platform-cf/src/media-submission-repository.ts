@@ -3170,22 +3170,24 @@ export function makeControlPlaneMediaSubmissionRepository(
           ) {
             const registrationId = `song-source:${ownedPostId}:a${current.audioRevision}:${current.audio.canonicalSha256}`;
             const opaqueTitle = `pirate-${registrationId}`;
-            yield* tx.execute({
+            const registration = yield* tx.execute({
               label: "media-publish.song-source-registration",
               text: `INSERT INTO song_source_recording_registrations
                 (registration_id,community_id,actor_user_id,author_persona_id,asset_id,
                  submission_id,operation_id,audio_revision,analysis_revision,publication_revision,
                  terms_revision,canonical_audio_sha256,immutable_audio_ref,provider,bucket_id,
                  verification_sample,opaque_title,license_preset,commercial_remix_share_bps)
-                SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'acrcloud',$14,
-                       sample.result->'value'->'artifact',$15,'commercial-remix',$16
+                SELECT $1,$2,$3,$4,$5,$6,$7,$8::integer,$9::integer,$10::integer,$11::integer,
+                       $12,$13,'acrcloud',$14,sample.result->'value'->'artifact',$15,
+                       'commercial-remix',$16::integer
                   FROM media_processing_attempts sample
                  WHERE sample.submission_id=$6 AND sample.operation_id=$7
-                   AND sample.audio_revision=$8 AND sample.analysis_revision=$9
+                   AND sample.audio_revision=$8::bigint AND sample.analysis_revision=$9::bigint
                    AND sample.stage='sample_primary' AND sample.state='succeeded'
                    AND sample.result->>'kind'='sample'
                    AND sample.result->'value'->>'status'='completed'
-                ON CONFLICT (registration_id) DO NOTHING`,
+                ON CONFLICT (registration_id) DO NOTHING
+                RETURNING registration_id`,
               values: [
                 registrationId,
                 current.communityId,
@@ -3206,7 +3208,11 @@ export function makeControlPlaneMediaSubmissionRepository(
               ],
               readonly: false,
             });
-            yield* tx.execute({
+            if (registration.rowCount !== 1)
+              return yield* Effect.fail(
+                fail("publish", "invalid-row", { submissionId: current.submissionId }),
+              );
+            const sourceOutbox = yield* tx.execute({
               label: "media-publish.song-source-outbox",
               text: `INSERT INTO song_source_recording_outbox
                 (outbox_id,registration_id,effect_identity)
@@ -3215,7 +3221,8 @@ export function makeControlPlaneMediaSubmissionRepository(
                  WHERE r.registration_id=$2 AND r.asset_id=$4 AND r.submission_id=$5
                    AND r.operation_id=$6 AND r.audio_revision=$7
                    AND r.canonical_audio_sha256=$8 AND r.bucket_id=$9
-                ON CONFLICT (outbox_id) DO NOTHING`,
+                ON CONFLICT (outbox_id) DO NOTHING
+                RETURNING outbox_id`,
               values: [
                 `${registrationId}:outbox:v1`,
                 registrationId,
@@ -3229,6 +3236,10 @@ export function makeControlPlaneMediaSubmissionRepository(
               ],
               readonly: false,
             });
+            if (sourceOutbox.rowCount !== 1)
+              return yield* Effect.fail(
+                fail("publish", "invalid-row", { submissionId: current.submissionId }),
+              );
           }
           if (options.dataRegistrationChainId !== undefined) {
             const registrationRevision = 1n;

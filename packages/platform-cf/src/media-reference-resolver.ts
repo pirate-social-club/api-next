@@ -223,10 +223,7 @@ export function makeMediaReferenceResolver(
         matchKind: sourceEvidence.evidence.matchKind,
         providerMatchId: sourceEvidence.evidence.providerMatchId,
       });
-      if (
-        currentIds.size !== 1 ||
-        sourceIdentity !== ([...currentIds][0] ?? "")
-      ) {
+      if (currentIds.size !== 1 || sourceIdentity !== ([...currentIds][0] ?? "")) {
         return reject("reference_recording_unverified");
       }
       const upstreamShare =

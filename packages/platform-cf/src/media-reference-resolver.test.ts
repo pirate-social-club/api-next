@@ -128,12 +128,10 @@ function fixture(
       statement.label === "media-reference.source"
         ? (options.sources ?? [source])
         : statement.label === "media-reference.source-recording-authority"
-          ? (options.upstream ?? [
-              { identification_evidence: attempt("source").result.value },
-            ])
-        : statement.values?.[0] === "current"
-          ? (options.current ?? [attempt("current")])
-          : [];
+          ? (options.upstream ?? [{ identification_evidence: attempt("source").result.value }])
+          : statement.values?.[0] === "current"
+            ? (options.current ?? [attempt("current")])
+            : [];
     return Effect.succeed({ rows: rows as readonly never[], rowCount: rows.length });
   };
   return {
