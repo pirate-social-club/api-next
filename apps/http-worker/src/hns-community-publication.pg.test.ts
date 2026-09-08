@@ -95,7 +95,7 @@ pgTest.each(["complete", "revoked", "expired"] as const)(
         }),
       );
       const store = makeControlPlaneHnsCommunityRootImportStartStore(layer, {
-        session_ttl_seconds: scenario === "expired" ? 60 : 604_800,
+        session_ttl_seconds: 604_800,
         environment: "staging",
         provider_binding: {
           requirement: "namespace_ownership",
@@ -217,6 +217,74 @@ pgTest.each(["complete", "revoked", "expired"] as const)(
         expect(((await (await call(sessionUrl)).json()) as { status: string }).status).toBe(
           "expired",
         );
+        const restartBody = { root_label: "harbor", idempotency_key: "restart" };
+        // Expiry alone cannot free a provisioned zone or its admission slot.
+        expect((await call(base, restartBody)).status).toBe(409);
+        await admin.query(`UPDATE hns_authority_provision_jobs
+          SET created_at=clock_timestamp()-interval '4 minutes',
+              updated_at=clock_timestamp()-interval '3 minutes'`);
+        const cleanup = (
+          await admin.query(
+            "SELECT * FROM claim_hns_root_import_observation_job_v1('expiry-cleanup',60)",
+          )
+        ).rows[0];
+        expect(cleanup.operation_kind).toBe("teardown_provisional_root_v1");
+        expect(
+          (
+            await admin.query(
+              "SELECT * FROM finalize_hns_root_import_observation_job_v1($1,'expiry-cleanup',$2,$3,'failed',NULL,NULL,'session_expired')",
+              [cleanup.observation_job_id, cleanup.lease_fence, cleanup.request_sha256],
+            )
+          ).rows[0].outcome,
+        ).toBe("failed");
+        expect(
+          (
+            await admin.query(
+              "SELECT status,expires_at>clock_timestamp() AS unexpired FROM community_route_attachment_intents",
+            )
+          ).rows,
+        ).toEqual([{ status: "verification_required", unexpired: true }]);
+        // Production failure: the released child leaves a seven-day open parent.
+        const restarted = await call(base, restartBody);
+        expect(restarted.status).toBe(202);
+        const replacement = (await restarted.json()) as { root_import_session_id: string };
+        expect(replacement.root_import_session_id).not.toBe(starting.root_import_session_id);
+        const replay = await call(base, restartBody);
+        expect(replay.status).toBe(200);
+        expect(await replay.json()).toMatchObject({
+          root_import_session_id: replacement.root_import_session_id,
+        });
+        expect(
+          (await call(base, { ...restartBody, idempotency_key: "competing-restart" })).status,
+        ).toBe(409);
+        expect(
+          (
+            await admin.query(
+              "SELECT status,count(*)::integer AS count FROM community_route_attachment_intents GROUP BY status ORDER BY status",
+            )
+          ).rows,
+        ).toEqual([
+          { status: "expired", count: 1 },
+          { status: "verification_required", count: 1 },
+        ]);
+        expect(
+          (
+            await runHnsAuthorityProvisionExecutorOnce({
+              executor_id: "replacement-executor",
+              queue: makePostgresHnsAuthorityProvisionQueue(connection),
+              provision: {
+                inspect_current_resource: async () => [],
+                ensure_zone: async () => zoneResult,
+              },
+            })
+          ).outcome,
+        ).toBe("completed");
+        expect(
+          await (await call(`${base}/${replacement.root_import_session_id}`)).json(),
+        ).toMatchObject({
+          status: "awaiting_owner_update",
+          publish_plan: { replacement_records: expect.any(Array) },
+        });
         return;
       }
       if (scenario === "revoked") {
