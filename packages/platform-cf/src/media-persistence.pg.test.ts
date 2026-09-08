@@ -49,7 +49,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-media-persistence-suite-complete\n";
-const testCount = 42;
+const testCount = 43;
 let completedTestCount = 0;
 const actor = "media_pg_actor",
   moderator = "media_pg_moderator",
@@ -2654,6 +2654,46 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       expect(
         (await processing.loadAuthority(derivative.submission, derivative.operation))?.status,
       ).toBe("published");
+    });
+    completedTestCount += 1;
+  }, 40_000);
+  test("keeps publication successful when source enrollment evidence is unavailable", async () => {
+    await withCurrentSchema(async (admin, connection) => {
+      await createThroughDecision(
+        connection,
+        decision,
+        analysis,
+        false,
+        undefined,
+        false,
+        { submission, operation, reservation },
+        {
+          ...termsFor(personaFor(connection)),
+          licensePreset: "commercial-remix",
+          commercialRemixShareBps: 1234,
+        },
+      );
+      const processing = makeMediaProcessingStore(makeDirectPostgresControlPlaneLayer(connection), {
+        songSourceCatalogBucketId: "8891",
+      });
+      const authority = await processing.loadAuthority(submission, operation);
+      if (authority === null) throw new Error("missing publication authority");
+      expect(await processing.commitPublication(authority)).toBe("committed");
+      expect(
+        (
+          await admin.query(
+            "SELECT registration_id FROM song_source_recording_registrations WHERE submission_id=$1",
+            [submission],
+          )
+        ).rows,
+      ).toEqual([]);
+      expect(
+        (
+          await admin.query("SELECT status FROM media_post_submissions WHERE submission_id=$1", [
+            submission,
+          ])
+        ).rows,
+      ).toEqual([{ status: "published" }]);
     });
     completedTestCount += 1;
   }, 40_000);

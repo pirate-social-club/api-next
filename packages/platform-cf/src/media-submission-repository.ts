@@ -3170,7 +3170,7 @@ export function makeControlPlaneMediaSubmissionRepository(
           ) {
             const registrationId = `song-source:${ownedPostId}:a${current.audioRevision}:${current.audio.canonicalSha256}`;
             const opaqueTitle = `pirate-${registrationId}`;
-            const registration = yield* tx.execute({
+            yield* tx.execute({
               label: "media-publish.song-source-registration",
               text: `INSERT INTO song_source_recording_registrations
                 (registration_id,community_id,actor_user_id,author_persona_id,asset_id,
@@ -3186,8 +3186,7 @@ export function makeControlPlaneMediaSubmissionRepository(
                    AND sample.stage='sample_primary' AND sample.state='succeeded'
                    AND sample.result->>'kind'='sample'
                    AND sample.result->'value'->>'status'='completed'
-                ON CONFLICT (registration_id) DO NOTHING
-                RETURNING registration_id`,
+                ON CONFLICT (registration_id) DO NOTHING`,
               values: [
                 registrationId,
                 current.communityId,
@@ -3208,11 +3207,7 @@ export function makeControlPlaneMediaSubmissionRepository(
               ],
               readonly: false,
             });
-            if (registration.rowCount !== 1)
-              return yield* Effect.fail(
-                fail("publish", "invalid-row", { submissionId: current.submissionId }),
-              );
-            const sourceOutbox = yield* tx.execute({
+            yield* tx.execute({
               label: "media-publish.song-source-outbox",
               text: `INSERT INTO song_source_recording_outbox
                 (outbox_id,registration_id,effect_identity)
@@ -3221,8 +3216,7 @@ export function makeControlPlaneMediaSubmissionRepository(
                  WHERE r.registration_id=$2 AND r.asset_id=$4 AND r.submission_id=$5
                    AND r.operation_id=$6 AND r.audio_revision=$7
                    AND r.canonical_audio_sha256=$8 AND r.bucket_id=$9
-                ON CONFLICT (outbox_id) DO NOTHING
-                RETURNING outbox_id`,
+                ON CONFLICT (outbox_id) DO NOTHING`,
               values: [
                 `${registrationId}:outbox:v1`,
                 registrationId,
@@ -3236,10 +3230,6 @@ export function makeControlPlaneMediaSubmissionRepository(
               ],
               readonly: false,
             });
-            if (sourceOutbox.rowCount !== 1)
-              return yield* Effect.fail(
-                fail("publish", "invalid-row", { submissionId: current.submissionId }),
-              );
           }
           if (options.dataRegistrationChainId !== undefined) {
             const registrationRevision = 1n;
