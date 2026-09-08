@@ -100,8 +100,9 @@ async function fixture() {
 describe("HNS root readiness observation", () => {
   test("retains exact chain, signed-zone, shared TLSA, and bounded inventory evidence", async () => {
     const state = await fixture();
+    let reconciledZone = false;
     const observed = await observeHnsRootReadinessV1({
-      observation_attempt: { job_id: "observation-job", lease_fence: 1 },
+      observation_attempt: { job_id: "observation-job", executor_id: "executor", lease_fence: 1 },
       operation_kind: "observe_root_v1",
       request: state.request,
       publish_plan_bytes: state.provision.publish_plan_bytes,
@@ -109,6 +110,19 @@ describe("HNS root readiness observation", () => {
       ports: {
         inspect_current_resource: async () =>
           [...state.plan.replacement_records].reverse() as never,
+        reconcile_zone: async (input) => {
+          expect(input).toEqual({
+            root_label: "newroot",
+            challenge_txt_value: "pirate-verification=challenge",
+            expected_ds_records: state.zone.ds_records,
+            mutation_lease: {
+              job_id: "observation-job",
+              executor_id: "executor",
+              lease_fence: 1,
+            },
+          });
+          reconciledZone = true;
+        },
         inspect_zone: async () => ({ ...state.zone, created: false }),
         observe_live: async () => state.live,
       },
@@ -119,6 +133,7 @@ describe("HNS root readiness observation", () => {
       },
     });
     const decoded = await decodeHnsRootImportReadinessResultV1(observed.result_bytes);
+    expect(reconciledZone).toBe(true);
     expect(decoded.result).toMatchObject({
       root_label: "newroot",
       powerdns_zone_serial: 7,
@@ -145,13 +160,18 @@ describe("HNS root readiness observation", () => {
     const state = await fixture();
     async function observe(fence: number, now: number, validFor = 604_800) {
       return observeHnsRootReadinessV1({
-        observation_attempt: { job_id: "recurring-renewal-job", lease_fence: fence },
+        observation_attempt: {
+          job_id: "recurring-renewal-job",
+          executor_id: "executor",
+          lease_fence: fence,
+        },
         operation_kind: "renew_health_v1",
         request: state.request,
         publish_plan_bytes: state.provision.publish_plan_bytes,
         provision_result_bytes: state.provision.result_bytes,
         ports: {
           inspect_current_resource: async () => state.plan.replacement_records as never,
+          reconcile_zone: async () => {},
           inspect_zone: async () => ({ ...state.zone, created: false }),
           observe_live: async () => state.live,
         },
@@ -177,15 +197,19 @@ describe("HNS root readiness observation", () => {
   test("reports owner-update pending without inspecting authority", async () => {
     const state = await fixture();
     let inspectedZone = false;
+    let reconciledZone = false;
     await expect(
       observeHnsRootReadinessV1({
-        observation_attempt: { job_id: "observation-job", lease_fence: 1 },
+        observation_attempt: { job_id: "observation-job", executor_id: "executor", lease_fence: 1 },
         operation_kind: "observe_root_v1",
         request: state.request,
         publish_plan_bytes: state.provision.publish_plan_bytes,
         provision_result_bytes: state.provision.result_bytes,
         ports: {
           inspect_current_resource: async () => [{ type: "TXT", txt: ["old"] }],
+          reconcile_zone: async () => {
+            reconciledZone = true;
+          },
           inspect_zone: async () => {
             inspectedZone = true;
             return state.zone;
@@ -195,19 +219,21 @@ describe("HNS root readiness observation", () => {
         config: { environment: "test", valid_for_seconds: 86_400 },
       }),
     ).rejects.toEqual(new HnsRootReadinessObservationError("owner_update_pending"));
+    expect(reconciledZone).toBe(false);
     expect(inspectedZone).toBe(false);
   });
 
   test("refuses forged health facts and mismatched authority-zone evidence", async () => {
     const state = await fixture();
     const observed = await observeHnsRootReadinessV1({
-      observation_attempt: { job_id: "observation-job", lease_fence: 1 },
+      observation_attempt: { job_id: "observation-job", executor_id: "executor", lease_fence: 1 },
       operation_kind: "observe_root_v1",
       request: state.request,
       publish_plan_bytes: state.provision.publish_plan_bytes,
       provision_result_bytes: state.provision.result_bytes,
       ports: {
         inspect_current_resource: async () => state.plan.replacement_records as never,
+        reconcile_zone: async () => {},
         inspect_zone: async () => ({ ...state.zone, created: false }),
         observe_live: async () => state.live,
       },
@@ -242,6 +268,7 @@ describe("HNS root readiness observation", () => {
     const request = { ...state.request, expires_at: "2026-09-07T06:00:00.000Z" };
     const ports = {
       inspect_current_resource: async () => state.plan.replacement_records as never,
+      reconcile_zone: async () => {},
       inspect_zone: async () => ({ ...state.zone, created: false }),
       observe_live: async () => state.live,
     };
@@ -253,7 +280,7 @@ describe("HNS root readiness observation", () => {
 
     await expect(
       observeHnsRootReadinessV1({
-        observation_attempt: { job_id: "observation-job", lease_fence: 1 },
+        observation_attempt: { job_id: "observation-job", executor_id: "executor", lease_fence: 1 },
         operation_kind: "observe_root_v1",
         request,
         publish_plan_bytes: state.provision.publish_plan_bytes,
@@ -264,7 +291,7 @@ describe("HNS root readiness observation", () => {
     ).rejects.toEqual(new HnsRootReadinessObservationError("invalid_request"));
 
     const renewed = await observeHnsRootReadinessV1({
-      observation_attempt: { job_id: "observation-job", lease_fence: 1 },
+      observation_attempt: { job_id: "observation-job", executor_id: "executor", lease_fence: 1 },
       operation_kind: "renew_health_v1",
       request,
       publish_plan_bytes: state.provision.publish_plan_bytes,

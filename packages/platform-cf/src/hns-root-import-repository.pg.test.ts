@@ -1538,6 +1538,28 @@ suite("Postgres 17 HNS root-import repository", () => {
         "SELECT * FROM claim_hns_root_import_observation_job_v1($1,$2)",
         ["authority-executor", 60],
       );
+      expect(
+        (
+          await admin.query(
+            `SELECT lock_hns_root_zone_mutation_v1(
+              'newroot','pirate-verification=challenge',false,
+              'community-observation','wrong-executor',$1
+            ) AS admitted`,
+            [claim.rows[0]?.lease_fence],
+          )
+        ).rows,
+      ).toEqual([{ admitted: false }]);
+      expect(
+        (
+          await admin.query(
+            `SELECT lock_hns_root_zone_mutation_v1(
+              'newroot','pirate-verification=challenge',false,
+              'community-observation','authority-executor',$1
+            ) AS admitted`,
+            [claim.rows[0]?.lease_fence],
+          )
+        ).rows,
+      ).toEqual([{ admitted: true }]);
       const readiness = await makeReadinessArtifact({
         ownershipResultHash: provisioned.ownershipResultHash,
         publishPlanSha256: sha256(provisioned.planBytes),
