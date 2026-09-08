@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { VIDEO_INGEST_POLICY_V1 } from "@pirate/domain";
+import { SONG_VIDEO_MASTER_POLICY_V1, VIDEO_INGEST_POLICY_V1 } from "@pirate/domain";
 import { FILEBASE_IPFS_INTERNAL_MAX_SOURCE_BYTES } from "@pirate/platform-cf/data/filebase-ipfs-pinning";
 import {
   DATA_REGISTRATION_AENEID_SELECTORS,
@@ -44,6 +44,9 @@ describe("DATA registration composition", () => {
     );
     expect(DATA_REGISTRATION_MAX_SOURCE_BYTES).toBeLessThanOrEqual(
       FILEBASE_IPFS_INTERNAL_MAX_SOURCE_BYTES,
+    );
+    expect(DATA_REGISTRATION_MAX_SOURCE_BYTES).toBeGreaterThanOrEqual(
+      SONG_VIDEO_MASTER_POLICY_V1.maxBytes,
     );
   });
   test("accepts the original workflow only when both target and selector match", () => {

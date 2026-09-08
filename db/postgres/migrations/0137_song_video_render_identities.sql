@@ -87,6 +87,7 @@ CREATE TABLE media_song_video_masters (
   measured_audio_sample_rate_hz INTEGER NOT NULL CHECK (measured_audio_sample_rate_hz = 48000),
   measured_audio_channels INTEGER NOT NULL CHECK (measured_audio_channels >= 1),
   master_ceiling_bytes BIGINT NOT NULL CHECK (master_ceiling_bytes > 0),
+  master_policy_revision INTEGER NOT NULL CHECK (master_policy_revision = 1),
   renderer_identity TEXT NOT NULL CHECK (btrim(renderer_identity) <> ''),
   renderer_policy_revision INTEGER NOT NULL CHECK (renderer_policy_revision >= 0),
   decision_clip_start_samples BIGINT NOT NULL CHECK (decision_clip_start_samples >= 0),
@@ -112,6 +113,7 @@ CREATE TABLE media_song_video_masters (
   CONSTRAINT song_video_master_identity_distinct CHECK (master_sha256 <> source_sha256),
   -- U.6's ceiling is enforced at seal time against the value that applied.
   CONSTRAINT song_video_master_within_ceiling CHECK (master_byte_length <= master_ceiling_bytes),
+  CONSTRAINT song_video_master_ratified_ceiling CHECK (master_ceiling_bytes = 524288000),
   -- Both tracks must cover the interval that was applied, so a short track
   -- cannot reach acceptance behind a correct container duration.
   CONSTRAINT song_video_master_tracks_cover_interval CHECK (

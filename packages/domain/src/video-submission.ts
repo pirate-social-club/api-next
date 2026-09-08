@@ -15,6 +15,13 @@ export const VIDEO_INGEST_POLICY_V1 = Object.freeze({
   maxFrameRateMillihertz: 60_000,
 });
 
+/** Spec 013 U.6, adopted 2026-09-09. This is a byte ceiling, not a codec guarantee. */
+export const SONG_VIDEO_MASTER_POLICY_V1 = Object.freeze({
+  version: "song-video-master-policy-v1" as const,
+  policyRevision: 1,
+  maxBytes: 524_288_000,
+});
+
 export const VIDEO_POSTER_POLICY_V1 = Object.freeze({
   version: "video-poster-policy-v1" as const,
   policyRevision: 1,

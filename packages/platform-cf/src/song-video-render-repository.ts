@@ -16,11 +16,12 @@
  * behind those measured facts remains a port, so this establishes binding and
  * hashing rather than real media verification.
  *
- * U.2, U.4, U.5 and U.6 remain open gates. No default is supplied for any of
- * them; the byte ceiling that applied is recorded per master so a later ratified
- * value stays auditable instead of being assumed retroactively.
+ * U.6 was adopted on 2026-09-09. Sealing uses the ratified ceiling, not a
+ * request value, and records the applied ceiling per master. This source
+ * implementation does not authorize staging execution.
  */
 
+import { SONG_VIDEO_MASTER_POLICY_V1 } from "@pirate/domain";
 import type { Client } from "pg";
 
 import {
@@ -93,8 +94,6 @@ export type SealRequest = {
   /** A claim about which source was used, checked here against stored bytes. */
   readonly claimedSourceSha256: string;
 
-  /** U.6's configured ceiling. Supplied by the caller; never defaulted here. */
-  readonly masterCeilingBytes: number;
   readonly decisionClipStartSamples: number;
   readonly decisionClipDurationSamples: number;
 };
@@ -294,7 +293,7 @@ export async function verifyAndSealMaster(
       objectKey: boundRow.dispatch_output_key,
       planClipDurationSamples: Number(boundRow.clip_duration_samples),
       sourceSha256: row.canonical_sha256,
-      masterCeilingBytes: request.masterCeilingBytes,
+      masterCeilingBytes: SONG_VIDEO_MASTER_POLICY_V1.maxBytes,
     });
     if (!verification.verified) {
       await client.query("ROLLBACK");
@@ -325,8 +324,9 @@ export async function verifyAndSealMaster(
           master_ceiling_bytes, renderer_identity, renderer_policy_revision,
           decision_clip_start_samples, decision_clip_duration_samples,
           verified_object_key, verified_object_version, measured_video_duration_samples,
-          measured_audio_duration_samples, measured_audio_sample_rate_hz, measured_audio_channels)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
+          measured_audio_duration_samples, measured_audio_sample_rate_hz, measured_audio_channels,
+          master_policy_revision)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
       [
         request.masterRevisionId,
         request.attempt.planId,
@@ -339,7 +339,7 @@ export async function verifyAndSealMaster(
         row.canonical_sha256,
         verified.masterSha256,
         verified.masterByteLength,
-        request.masterCeilingBytes,
+        SONG_VIDEO_MASTER_POLICY_V1.maxBytes,
         boundRow.dispatch_renderer_identity,
         boundRow.dispatch_renderer_policy_revision,
         request.decisionClipStartSamples,
@@ -350,6 +350,7 @@ export async function verifyAndSealMaster(
         verified.probe.audioDurationSamples,
         verified.probe.audioSampleRateHz,
         verified.probe.audioChannels,
+        SONG_VIDEO_MASTER_POLICY_V1.policyRevision,
       ],
     );
     const transitioned = await client.query(

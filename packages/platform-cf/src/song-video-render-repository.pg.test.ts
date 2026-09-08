@@ -15,8 +15,6 @@ if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && !connectionStrin
 const suite = connectionString ? describe : describe.skip;
 
 const SAMPLE_RATE = 48_000;
-// Test-only. U.6 remains an open gate and nothing in the source supplies a value.
-const masterCeilingBytes = 64 * 1024 * 1024;
 
 const basePlan = {
   submissionId: "media-submission-video-publication",
@@ -130,7 +128,6 @@ suite("song video render persistence", () => {
         attempt: { attemptId: "attempt-mismatch", planId: "plan-mismatch", generation: 1 },
         sourceImmutableRef,
         claimedSourceSha256: "c".repeat(64),
-        masterCeilingBytes,
         decisionClipStartSamples: basePlan.clipStartSamples,
         decisionClipDurationSamples: basePlan.clipDurationSamples,
       });
@@ -162,7 +159,6 @@ suite("song video render persistence", () => {
         attempt: { attemptId: "attempt-absent", planId: "plan-absent", generation: 1 },
         sourceImmutableRef: "media://immutable/not-stored",
         claimedSourceSha256: storedSourceSha256,
-        masterCeilingBytes,
         decisionClipStartSamples: basePlan.clipStartSamples,
         decisionClipDurationSamples: basePlan.clipDurationSamples,
       });
@@ -186,13 +182,12 @@ suite("song video render persistence", () => {
         attempt: { attemptId: "attempt-bound", planId: "plan-bound", generation: 1 },
         sourceImmutableRef,
         claimedSourceSha256: storedSourceSha256,
-        masterCeilingBytes,
         decisionClipStartSamples: basePlan.clipStartSamples,
         decisionClipDurationSamples: basePlan.clipDurationSamples,
       });
       expect(outcome).toMatchObject({ sealed: true });
       const stored = await client.query(
-        "SELECT source_sha256, master_sha256, master_ceiling_bytes FROM media_song_video_masters WHERE master_revision_id = 'master-bound'",
+        "SELECT source_sha256, master_sha256, master_ceiling_bytes, master_policy_revision FROM media_song_video_masters WHERE master_revision_id = 'master-bound'",
       );
       // The master digest is measured from the verified output bytes, and the
       // source digest is the stored one, so neither came from the caller.
@@ -205,6 +200,8 @@ suite("song video render persistence", () => {
       expect(stored.rows[0]).toMatchObject({
         source_sha256: storedSourceSha256,
         master_sha256: measuredHex,
+        master_ceiling_bytes: "524288000",
+        master_policy_revision: 1,
       });
       const facts = await client.query(
         "SELECT verified_object_key, verified_object_version, measured_audio_channels FROM media_song_video_masters WHERE master_revision_id = 'master-bound'",
@@ -234,7 +231,6 @@ suite("song video render persistence", () => {
           attempt: { attemptId, planId: "plan-race", generation },
           sourceImmutableRef,
           claimedSourceSha256: storedSourceSha256,
-          masterCeilingBytes,
           decisionClipStartSamples: basePlan.clipStartSamples,
           decisionClipDurationSamples: basePlan.clipDurationSamples,
         });
@@ -297,7 +293,6 @@ suite("song video render persistence", () => {
         attempt: { attemptId: "attempt-replay", planId: "plan-replay", generation: 1 },
         sourceImmutableRef,
         claimedSourceSha256: storedSourceSha256,
-        masterCeilingBytes,
         decisionClipStartSamples: basePlan.clipStartSamples,
         decisionClipDurationSamples: basePlan.clipDurationSamples,
       });
@@ -338,7 +333,6 @@ suite("song video render persistence", () => {
         attempt: { attemptId: "attempt-of-a", planId: "plan-other-b", generation: 1 },
         sourceImmutableRef,
         claimedSourceSha256: storedSourceSha256,
-        masterCeilingBytes,
         decisionClipStartSamples: basePlan.clipStartSamples,
         decisionClipDurationSamples: basePlan.clipDurationSamples,
       });
@@ -359,7 +353,6 @@ suite("song video render persistence", () => {
         attempt: { attemptId: "attempt-generation", planId: "plan-generation", generation: 7 },
         sourceImmutableRef,
         claimedSourceSha256: storedSourceSha256,
-        masterCeilingBytes,
         decisionClipStartSamples: basePlan.clipStartSamples,
         decisionClipDurationSamples: basePlan.clipDurationSamples,
       });
@@ -383,7 +376,6 @@ suite("song video render persistence", () => {
         attempt: { attemptId: "attempt-interval", planId: "plan-interval", generation: 1 },
         sourceImmutableRef,
         claimedSourceSha256: storedSourceSha256,
-        masterCeilingBytes,
         decisionClipStartSamples: basePlan.clipStartSamples + 1,
         decisionClipDurationSamples: basePlan.clipDurationSamples,
       });
@@ -407,7 +399,6 @@ suite("song video render persistence", () => {
         attempt: { attemptId: "attempt-overlap-a", planId: "plan-overlap", generation: 1 },
         sourceImmutableRef,
         claimedSourceSha256: storedSourceSha256,
-        masterCeilingBytes,
         decisionClipStartSamples: basePlan.clipStartSamples,
         decisionClipDurationSamples: basePlan.clipDurationSamples,
       });
@@ -480,7 +471,6 @@ suite("song video render persistence", () => {
         attempt: { attemptId: "attempt-retry", planId: "plan-retry", generation: 1 },
         sourceImmutableRef,
         claimedSourceSha256: storedSourceSha256,
-        masterCeilingBytes,
         decisionClipStartSamples: basePlan.clipStartSamples,
         decisionClipDurationSamples: basePlan.clipDurationSamples,
       });
@@ -540,7 +530,6 @@ suite("song video render persistence", () => {
         attempt: { attemptId: "attempt-reseal", planId: "plan-reseal", generation: 1 },
         sourceImmutableRef,
         claimedSourceSha256: storedSourceSha256,
-        masterCeilingBytes,
         decisionClipStartSamples: basePlan.clipStartSamples,
         decisionClipDurationSamples: basePlan.clipDurationSamples,
       };
@@ -580,7 +569,6 @@ suite("song video render persistence", () => {
         attempt: { attemptId: "attempt-unverified", planId: "plan-unverified", generation: 1 },
         sourceImmutableRef,
         claimedSourceSha256: storedSourceSha256,
-        masterCeilingBytes,
         decisionClipStartSamples: basePlan.clipStartSamples,
         decisionClipDurationSamples: basePlan.clipDurationSamples,
       };
@@ -668,7 +656,6 @@ suite("song video render persistence", () => {
         attempt: { attemptId: "attempt-out-a", planId: "plan-crossed-output", generation: 1 },
         sourceImmutableRef,
         claimedSourceSha256: storedSourceSha256,
-        masterCeilingBytes,
         decisionClipStartSamples: basePlan.clipStartSamples,
         decisionClipDurationSamples: basePlan.clipDurationSamples,
       });
@@ -686,7 +673,6 @@ suite("song video render persistence", () => {
         attempt: { attemptId: "attempt-out-b", planId: "plan-crossed-output", generation: 2 },
         sourceImmutableRef,
         claimedSourceSha256: storedSourceSha256,
-        masterCeilingBytes,
         decisionClipStartSamples: basePlan.clipStartSamples,
         decisionClipDurationSamples: basePlan.clipDurationSamples,
       });
@@ -729,7 +715,6 @@ suite("song video render persistence", () => {
           attempt: { attemptId: "attempt-version", planId: "plan-version", generation: 1 },
           sourceImmutableRef,
           claimedSourceSha256: storedSourceSha256,
-          masterCeilingBytes,
           decisionClipStartSamples: basePlan.clipStartSamples,
           decisionClipDurationSamples: basePlan.clipDurationSamples,
         },

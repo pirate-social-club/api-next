@@ -14,9 +14,9 @@
  * Binding output to the frozen work is the composed sealing operation's job in
  * `song-video-render-repository.ts`, which loads that work from persistence.
  *
- * U.6 stays unresolved. The byte ceiling is supplied per verification and is
- * never defaulted, so fixture verification can proceed while operational sealing
- * still waits on a ratified value.
+ * The composed sealing path supplies the ratified U.6 ceiling. This lower-level
+ * verifier takes an explicit ceiling so boundary fixtures can exercise rejection
+ * without allocating a production-size artifact.
  */
 
 /**
