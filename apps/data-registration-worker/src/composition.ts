@@ -21,6 +21,7 @@ import {
 } from "@pirate/platform-cf/data/registration-aeneid-chain";
 import { makeDataRegistrationAeneidDirectKeySignerLayer } from "@pirate/platform-cf/data/registration-aeneid-direct-key-signer";
 import {
+  DATA_REGISTRATION_MAX_SOURCE_BYTES,
   makeDataRegistrationArtifactPipeline,
   makePostgresDataRegistrationArtifactAuthorityReader,
 } from "@pirate/platform-cf/data/registration-artifact-pipeline";
@@ -199,7 +200,7 @@ export function makeDataRegistrationComposition(
       token: required(env.FILEBASE_IPFS_TOKEN, "FILEBASE_IPFS_TOKEN"),
       transport: makeFilebaseFetchTransport(),
       limits: {
-        max_source_bytes: 64 * 1024 * 1024,
+        max_source_bytes: DATA_REGISTRATION_MAX_SOURCE_BYTES,
         max_response_bytes: 2 * 1024 * 1024,
         timeout_ms: 120_000,
         pin_convergence_attempts: 8,

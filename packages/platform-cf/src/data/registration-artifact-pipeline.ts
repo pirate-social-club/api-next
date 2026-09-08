@@ -13,10 +13,13 @@ import type {
   DataRegistrationPinResult,
   DataRegistrationPreparedArtifact,
 } from "@pirate/application/data/registration-workflow";
-import { canonicalJson } from "@pirate/domain";
+import { canonicalJson, VIDEO_INGEST_POLICY_V1 } from "@pirate/domain";
 import { Effect, type Layer, Predicate } from "effect";
 
 const IMMUTABLE_REF_PREFIX = "media://immutable/";
+// Spec 008 requires DATA to admit every permitted original-video source. This
+// does not choose U.6's separate song-video master ceiling or enable rendering.
+export const DATA_REGISTRATION_MAX_SOURCE_BYTES = VIDEO_INGEST_POLICY_V1.maxBytes;
 const SHA256 = /^[0-9a-f]{64}$/u;
 const ADDRESS = /^0x[0-9a-f]{40}$/u;
 
