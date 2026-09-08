@@ -7,7 +7,6 @@ type VideoAnalysisOutboxDispatchMessage = Readonly<{
   readonly kind: "video_analysis";
   readonly outbox_id: string;
 }>;
-
 export interface MediaOutboxDispatchQueue {
   readonly send: (
     message: MediaOutboxDispatchMessage | VideoAnalysisOutboxDispatchMessage,

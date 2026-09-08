@@ -1221,6 +1221,8 @@ const validAccountCommand = (input: Omit<CommandInput, "personaId">): boolean =>
 export type MediaSubmissionRepositoryOptions = Readonly<{
   /** When present, publication atomically creates the DATA operation and outbox. */
   dataRegistrationChainId?: bigint;
+  /** Disabled unless a reviewed dedicated custom-file bucket is injected. */
+  songSourceCatalogBucketId?: string;
 }>;
 
 export function makeControlPlaneMediaSubmissionRepository(
@@ -1228,6 +1230,12 @@ export function makeControlPlaneMediaSubmissionRepository(
 ): MediaSubmissionStore {
   if (options.dataRegistrationChainId !== undefined && options.dataRegistrationChainId < 1n) {
     throw new TypeError("invalid DATA registration chain id");
+  }
+  if (
+    options.songSourceCatalogBucketId !== undefined &&
+    !/^[1-9][0-9]*$/u.test(options.songSourceCatalogBucketId)
+  ) {
+    throw new TypeError("invalid song source catalog bucket id");
   }
   const replay: MediaSubmissionStore["replay"] = (input) =>
     Effect.gen(function* () {
@@ -3153,6 +3161,73 @@ export function makeControlPlaneMediaSubmissionRepository(
               sourceLanguage:
                 lyricsAnalysis.status === "ready" ? lyricsAnalysis.primaryLanguageBcp47 : null,
               submissionId: current.submissionId,
+            });
+          }
+          if (
+            options.songSourceCatalogBucketId !== undefined &&
+            current.songType === "original" &&
+            current.terms?.licensePreset === "commercial-remix"
+          ) {
+            const registrationId = `song-source:${ownedPostId}:a${current.audioRevision}:${current.audio.canonicalSha256}`;
+            const opaqueTitle = `pirate-${registrationId}`;
+            yield* tx.execute({
+              label: "media-publish.song-source-registration",
+              text: `INSERT INTO song_source_recording_registrations
+                (registration_id,community_id,actor_user_id,author_persona_id,asset_id,
+                 submission_id,operation_id,audio_revision,analysis_revision,publication_revision,
+                 terms_revision,canonical_audio_sha256,immutable_audio_ref,provider,bucket_id,
+                 verification_sample,opaque_title,license_preset,commercial_remix_share_bps)
+                SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'acrcloud',$14,
+                       sample.result->'value'->'artifact',$15,'commercial-remix',$16
+                  FROM media_processing_attempts sample
+                 WHERE sample.submission_id=$6 AND sample.operation_id=$7
+                   AND sample.audio_revision=$8 AND sample.analysis_revision=$9
+                   AND sample.stage='sample_primary' AND sample.state='succeeded'
+                   AND sample.result->>'kind'='sample'
+                   AND sample.result->'value'->>'status'='completed'
+                ON CONFLICT (registration_id) DO NOTHING`,
+              values: [
+                registrationId,
+                current.communityId,
+                current.actorId,
+                current.personaId,
+                ownedPostId,
+                current.submissionId,
+                current.operationId,
+                current.audioRevision,
+                current.analysisRevision,
+                current.creationRevision,
+                current.creationRevision,
+                current.audio.canonicalSha256,
+                current.audio.immutableRef,
+                options.songSourceCatalogBucketId,
+                opaqueTitle,
+                current.terms.commercialRemixShareBps,
+              ],
+              readonly: false,
+            });
+            yield* tx.execute({
+              label: "media-publish.song-source-outbox",
+              text: `INSERT INTO song_source_recording_outbox
+                (outbox_id,registration_id,effect_identity)
+                SELECT $1,r.registration_id,$3
+                  FROM song_source_recording_registrations r
+                 WHERE r.registration_id=$2 AND r.asset_id=$4 AND r.submission_id=$5
+                   AND r.operation_id=$6 AND r.audio_revision=$7
+                   AND r.canonical_audio_sha256=$8 AND r.bucket_id=$9
+                ON CONFLICT (outbox_id) DO NOTHING`,
+              values: [
+                `${registrationId}:outbox:v1`,
+                registrationId,
+                `song-source-register:${registrationId}:v1`,
+                ownedPostId,
+                current.submissionId,
+                current.operationId,
+                current.audioRevision,
+                current.audio.canonicalSha256,
+                options.songSourceCatalogBucketId,
+              ],
+              readonly: false,
             });
           }
           if (options.dataRegistrationChainId !== undefined) {

@@ -40,6 +40,9 @@ import {
   type QencodeSourceGrantIssuer,
   type QencodeTaskTransport,
 } from "@pirate/platform-cf/qencode-media-transform";
+import { makeSongSourceAcrCloudCatalog } from "@pirate/platform-cf/song-source-acrcloud-catalog";
+import { makeSongSourceRecordingR2Reader } from "@pirate/platform-cf/song-source-recording-r2";
+import { makeSongSourceRecordingRepository } from "@pirate/platform-cf/song-source-recording-repository";
 import { makeControlPlaneVideoAnalysisOutboxRepository } from "@pirate/platform-cf/video-analysis-outbox-repository";
 import {
   makeConfiguredVideoAnalysisWorkflowLauncher,
@@ -74,6 +77,10 @@ export type MediaProcessorRuntimeEnv = MediaProcessorWorkerEnv &
     readonly ACRCLOUD_IDENTIFY_HOST?: string;
     readonly ACRCLOUD_ACCESS_KEY?: string;
     readonly ACRCLOUD_ACCESS_SECRET?: string;
+    readonly ACRCLOUD_CONSOLE_ORIGIN?: string;
+    readonly ACRCLOUD_CONSOLE_TOKEN?: string;
+    readonly ACRCLOUD_SOURCE_BUCKET_ID?: string;
+    readonly SONG_SOURCE_RECORDING_ENABLED?: string;
     readonly ELEVENLABS_API_KEY?: string;
     readonly OPENAI_API_KEY?: string;
     readonly OPENAI_MODERATION_ENABLED?: string;
@@ -355,6 +362,10 @@ export function makeMediaProcessorComposition(
   );
   const runtime = makeHyperdriveControlPlaneLayer(controlPlane);
   const dataRegistrationEnabled = env.DATA_REGISTRATION_ENABLED === "true";
+  const songSourceRecordingEnabled = env.SONG_SOURCE_RECORDING_ENABLED === "true";
+  const songSourceCatalogBucketId = songSourceRecordingEnabled
+    ? requiredText(env.ACRCLOUD_SOURCE_BUCKET_ID, "ACRCLOUD_SOURCE_BUCKET_ID")
+    : undefined;
   const dataRegistrationChainId = dataRegistrationEnabled
     ? BigInt(requiredText(env.DATA_REGISTRATION_CHAIN_ID, "DATA_REGISTRATION_CHAIN_ID"))
     : undefined;
@@ -363,6 +374,7 @@ export function makeMediaProcessorComposition(
   }
   const store = makeMediaProcessingStore(runtime, {
     ...(dataRegistrationChainId === undefined ? {} : { dataRegistrationChainId }),
+    ...(songSourceCatalogBucketId === undefined ? {} : { songSourceCatalogBucketId }),
   });
   const workflow = makeCloudflareMediaProcessingWorkflowLauncher(
     workflowBinding,
@@ -422,6 +434,53 @@ export function makeMediaProcessorComposition(
 
   return {
     queue: { store, workflow, workerId },
+    ...(songSourceRecordingEnabled && songSourceCatalogBucketId !== undefined
+      ? {
+          sourceRecording: {
+            repository: makeSongSourceRecordingRepository(runtime),
+            leaseSeconds: 300,
+            workflow: {
+              enabled: true,
+              workerId,
+              adapterRevision: "acrcloud-adapter-v1",
+              catalog: makeSongSourceAcrCloudCatalog({
+                origin: requiredText(env.ACRCLOUD_CONSOLE_ORIGIN, "ACRCLOUD_CONSOLE_ORIGIN"),
+                bucketId: songSourceCatalogBucketId,
+                token: requiredOperationalSecret(
+                  env.ACRCLOUD_CONSOLE_TOKEN,
+                  "ACRCLOUD_CONSOLE_TOKEN",
+                ),
+                maxResponseBytes: 1_048_576,
+                maxAudioBytes: MAXIMUM_AUDIO_BYTES,
+                request: async (request) => {
+                  const response = await fetch(request.url, {
+                    method: request.method,
+                    headers: request.headers,
+                    ...(request.body === undefined ? {} : { body: request.body }),
+                    signal: request.signal,
+                    redirect: request.redirect,
+                  });
+                  if (response.body === null) throw new TypeError("ACRCloud returned no body");
+                  return { status: response.status, body: response.body };
+                },
+              }),
+              audio: makeSongSourceRecordingR2Reader({
+                immutableOriginals: requiredBinding(
+                  env.MEDIA_IMMUTABLE_ORIGINALS,
+                  "MEDIA_IMMUTABLE_ORIGINALS",
+                ),
+                derivedArtifacts: requiredBinding(
+                  env.MEDIA_DERIVED_ARTIFACTS,
+                  "MEDIA_DERIVED_ARTIFACTS",
+                ),
+                maximumCanonicalBytes: MAXIMUM_AUDIO_BYTES,
+                maximumSampleBytes: 4_000_000,
+              }),
+              identification: makeIdentification(env),
+            },
+          },
+        }
+      : {}),
     ...makeVideoDeliveryComposition(env, runtime),
     ...(videoAnalysisRepository !== undefined &&
     enabledVideoTransform !== undefined &&

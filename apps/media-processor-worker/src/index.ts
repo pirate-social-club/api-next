@@ -1,3 +1,5 @@
+import type { SongSourceRecordingConsumerDependencies } from "@pirate/platform-cf/song-source-recording-consumer";
+import { consumeSongSourceRecording } from "@pirate/platform-cf/song-source-recording-consumer";
 import { Effect } from "effect";
 import type {
   MediaProcessingEventType,
@@ -29,6 +31,7 @@ export { isMediaProcessingEnabled } from "./posture.ts";
 
 export type MediaProcessorWorkerEnv = Readonly<{
   readonly MEDIA_PROCESSING_ENABLED?: string;
+  readonly SONG_SOURCE_RECORDING_ENABLED?: string;
 }>;
 
 export type MediaProcessorComposition = Readonly<{
@@ -38,6 +41,7 @@ export type MediaProcessorComposition = Readonly<{
   readonly videoEnrichment?: Parameters<typeof launchVideoEnrichment>[1];
   readonly videoEnrichmentWorkflow?: VideoEnrichmentServices;
   readonly workflow: MediaProcessingWorkflowDependencies;
+  readonly sourceRecording?: SongSourceRecordingConsumerDependencies;
 }>;
 
 export type ResolveMediaProcessorComposition<Env extends MediaProcessorWorkerEnv> = (
@@ -72,6 +76,20 @@ export function makeMediaProcessorQueueWorker<Env extends MediaProcessorWorkerEn
       const songMessages: (typeof batch.messages)[number][] = [];
       const videoMessages: (typeof batch.messages)[number][] = [];
       for (const message of batch.messages) {
+        if (
+          typeof message.body === "object" &&
+          message.body !== null &&
+          (message.body as { kind?: unknown }).kind === "song_source_recording"
+        ) {
+          const disposition =
+            composition.sourceRecording === undefined
+              ? "retry"
+              : await consumeSongSourceRecording(message.body, composition.sourceRecording);
+          if (disposition === "ack") message.ack();
+          else if (disposition === "retry") message.retry({ delaySeconds: 30 });
+          else message.retry();
+          continue;
+        }
         if (
           typeof message.body === "object" &&
           message.body !== null &&

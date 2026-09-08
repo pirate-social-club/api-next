@@ -47,6 +47,11 @@ const Attempt = Schema.Struct({
     }),
   }),
 });
+const AuthorityEvidence = Schema.Struct({
+  context: Attempt.fields.result.fields.value.fields.context,
+  outcome: Schema.Literal("retained_reference_match"),
+  evidence: Attempt.fields.result.fields.value.fields.evidence,
+});
 
 const reject = (reason: string): never => {
   throw new Conflict({
@@ -167,12 +172,12 @@ export function makeMediaReferenceResolver(
       if (
         source.submission_id === state.submissionId ||
         source.asset_id !== input.upstreamAssetId ||
-        (source.license_preset !== "commercial-remix" && source.commercial_remix_share_bps !== 0)
+        source.license_preset !== "commercial-remix"
       ) {
         return reject("reference_source_terms_unavailable");
       }
       let currentMatches: Awaited<ReturnType<typeof matches>>;
-      let sourceMatches: Awaited<ReturnType<typeof matches>>;
+      let sourceEvidence: Schema.Schema.Type<typeof AuthorityEvidence>;
       try {
         currentMatches = await matches({
           submissionId: state.submissionId,
@@ -182,26 +187,45 @@ export function makeMediaReferenceResolver(
           canonicalAudioSha256: state.audio.canonicalSha256,
           adapterRevision: state.analysis.acr.adapterRevision,
         });
-        sourceMatches = await matches({
-          submissionId: source.submission_id,
-          operationId: source.operation_id,
-          audioRevision: source.audio_revision,
-          analysisRevision: source.analysis_revision,
-          canonicalAudioSha256: source.canonical_audio_sha256,
-          adapterRevision: source.acr_adapter_revision,
-        });
+        const authorityRows = await query(
+          "media-reference.source-recording-authority",
+          `SELECT identification_evidence
+             FROM song_source_recording_registrations
+            WHERE asset_id=$1 AND submission_id=$2 AND operation_id=$3 AND state='ready'
+              AND audio_revision=$4 AND analysis_revision=$5 AND canonical_audio_sha256=$6
+              AND license_preset='commercial-remix' LIMIT 2`,
+          [
+            source.asset_id,
+            source.submission_id,
+            source.operation_id,
+            source.audio_revision,
+            source.analysis_revision,
+            source.canonical_audio_sha256,
+          ],
+        );
+        if (authorityRows.rows.length !== 1) return reject("reference_recording_unverified");
+        sourceEvidence = Schema.decodeUnknownSync(AuthorityEvidence)(
+          authorityRows.rows[0]?.identification_evidence,
+        );
       } catch (error) {
         if (error instanceof InternalError || error instanceof Conflict) throw error;
         return reject("reference_recording_unverified");
       }
       const identity = (attempt: Schema.Schema.Type<typeof Attempt>) =>
-        canonicalJson(attempt.result.value.evidence);
+        canonicalJson({
+          provider: attempt.result.value.evidence.provider,
+          matchKind: attempt.result.value.evidence.matchKind,
+          providerMatchId: attempt.result.value.evidence.providerMatchId,
+        });
       const currentIds = new Set(currentMatches.map(identity));
-      const sourceIds = new Set(sourceMatches.map(identity));
+      const sourceIdentity = canonicalJson({
+        provider: sourceEvidence.evidence.provider,
+        matchKind: sourceEvidence.evidence.matchKind,
+        providerMatchId: sourceEvidence.evidence.providerMatchId,
+      });
       if (
         currentIds.size !== 1 ||
-        sourceIds.size !== 1 ||
-        !sourceIds.has([...currentIds][0] ?? "")
+        sourceIdentity !== ([...currentIds][0] ?? "")
       ) {
         return reject("reference_recording_unverified");
       }
@@ -216,7 +240,7 @@ export function makeMediaReferenceResolver(
         analysisRevision: state.analysis.analysisRevision,
         canonicalAudioSha256: state.audio.canonicalSha256,
         currentEvidence: currentMatches.map((row) => row.evidence_ref),
-        sourceEvidence: sourceMatches.map((row) => row.evidence_ref),
+        sourceEvidence: sourceEvidence.context.requestId,
       });
       const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(proof));
       return {
