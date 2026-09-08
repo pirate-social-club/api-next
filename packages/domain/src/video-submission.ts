@@ -568,15 +568,20 @@ export type SongVideoRenderDecision = Readonly<{
 }>;
 
 /**
- * A master revision sealed after verification. It binds the verified source,
- * the complete render decision applied and the renderer policy; none of those
- * may be claimed at reservation time.
+ * A master revision sealed after verification. It binds the source, the
+ * complete render decision applied and the renderer policy; none of those may
+ * be claimed at reservation time.
+ *
+ * `claimedSourceSha256` is named as a claim on purpose. A digest carried on this
+ * record asserts which source the render used; it is not evidence that the
+ * source was verified. The persistence adapter must establish that binding
+ * against the stored sealed source before the master is treated as accepted.
  */
 export type AcceptedMasterRevision = Readonly<{
   masterRevisionId: string;
   planId: string;
   attemptId: string;
-  verifiedSourceSha256: string;
+  claimedSourceSha256: string;
   masterSha256: string;
   masterByteLength: number;
   decision: SongVideoRenderDecision;
@@ -592,18 +597,28 @@ export type SongVideoOperationalPolicy = Readonly<{
   masterMaxBytes: number;
 }>;
 
-export type SongVideoPolicyAuthority =
-  | Readonly<{ available: true; policy: SongVideoOperationalPolicy }>
-  | Readonly<{ available: false; missing: readonly ("U.5" | "U.6")[] }>;
+/**
+ * Configuration status, which is not approval status. This distinguishes a
+ * value being present and well-formed from that value having been ratified.
+ * U.5 and U.6 remain open gates: configuring them locally satisfies neither,
+ * and nothing here may be read as recorded policy approval.
+ */
+export type SongVideoPolicyConfiguration =
+  | Readonly<{ configured: true; policy: SongVideoOperationalPolicy }>
+  | Readonly<{ configured: false; missing: readonly ("U.5" | "U.6")[] }>;
 
 /**
- * Resolves configured operational policy. Absent configuration yields
- * unavailable authority, never a permissive fallback: a caller that cannot read
- * the policy must refuse the operation rather than proceed on an assumption.
+ * Resolves configured operational policy. Absent or malformed configuration
+ * yields unavailable authority naming the missing gate, never a permissive
+ * fallback: a caller that cannot read the policy must refuse the operation
+ * rather than proceed on an assumption.
+ *
+ * It establishes configuration validity only. Whether those values are the
+ * approved ones is a separate recorded ratification this function cannot see.
  */
-export function resolveSongVideoPolicyAuthority(
+export function resolveSongVideoPolicyConfiguration(
   configured: Partial<SongVideoOperationalPolicy> | null | undefined,
-): SongVideoPolicyAuthority {
+): SongVideoPolicyConfiguration {
   const missing: ("U.5" | "U.6")[] = [];
   const disposition = configured?.sourceOverrunDisposition;
   const masterMaxBytes = configured?.masterMaxBytes;
@@ -618,7 +633,7 @@ export function resolveSongVideoPolicyAuthority(
     missing.push("U.6");
   }
   if (disposition === undefined || masterMaxBytes === undefined || missing.length > 0) {
-    return { available: false, missing };
+    return { configured: false, missing };
   }
-  return { available: true, policy: { sourceOverrunDisposition: disposition, masterMaxBytes } };
+  return { configured: true, policy: { sourceOverrunDisposition: disposition, masterMaxBytes } };
 }

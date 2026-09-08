@@ -6,7 +6,7 @@ import {
   decideOriginalAudioVideo,
   type OriginalAudioVerification,
   publishOriginalVideo,
-  resolveSongVideoPolicyAuthority,
+  resolveSongVideoPolicyConfiguration,
   SONG_VIDEO_SAMPLE_RATE_HZ,
   VIDEO_DERIVED_ARTIFACT_RETENTION_POLICY_V1,
   VIDEO_INGEST_POLICY_V1,
@@ -288,10 +288,10 @@ describe("song-video identities and unresolved policy gates", () => {
   });
 
   test("unconfigured operational policy is unavailable authority, not permission", () => {
-    const authority = resolveSongVideoPolicyAuthority(undefined);
-    expect(authority.available).toBe(false);
-    if (authority.available) throw new Error("expected unavailable authority");
-    expect(authority.missing).toEqual(["U.5", "U.6"]);
+    const status = resolveSongVideoPolicyConfiguration(undefined);
+    expect(status.configured).toBe(false);
+    if (status.configured) throw new Error("expected unavailable authority");
+    expect(status.missing).toEqual(["U.5", "U.6"]);
   });
 
   test("the ratified ingest policy still carries no master byte ceiling", () => {

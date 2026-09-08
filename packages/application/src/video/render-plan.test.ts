@@ -3,7 +3,7 @@ import { describe, expect, it } from "bun:test";
 import {
   type AcceptedMasterRevision,
   type CanonicalSongReference,
-  resolveSongVideoPolicyAuthority,
+  resolveSongVideoPolicyConfiguration,
   SONG_VIDEO_SAMPLE_RATE_HZ,
   type SongVideoOperationalPolicy,
   type SongVideoRenderAttempt,
@@ -45,7 +45,7 @@ const master: AcceptedMasterRevision = {
   masterRevisionId: "master-1",
   planId: "plan-1",
   attemptId: "attempt-1",
-  verifiedSourceSha256: "a".repeat(64),
+  claimedSourceSha256: "a".repeat(64),
   masterSha256: "b".repeat(64),
   masterByteLength: 12_000_000,
   decision: {
@@ -160,15 +160,15 @@ describe("accepted master binding", () => {
     ).toEqual({ accepted: false, reason: "attempt_mismatch" });
   });
 
-  it("refuses a master with no verified source, so a plan cannot stand in for one", () => {
+  it("refuses a master with no source digest, so a plan cannot stand in for one", () => {
     expect(
       checkAcceptedMaster({
         plan,
         attempt,
-        master: { ...master, verifiedSourceSha256: "" },
+        master: { ...master, claimedSourceSha256: "" },
         policy,
       }),
-    ).toEqual({ accepted: false, reason: "unverified_source" });
+    ).toEqual({ accepted: false, reason: "malformed_source_digest" });
   });
 
   it("refuses a master whose identity was substituted for its source", () => {
@@ -176,7 +176,7 @@ describe("accepted master binding", () => {
       checkAcceptedMaster({
         plan,
         attempt,
-        master: { ...master, masterSha256: master.verifiedSourceSha256 },
+        master: { ...master, masterSha256: master.claimedSourceSha256 },
         policy,
       }),
     ).toEqual({ accepted: false, reason: "identity_substituted" });
@@ -222,35 +222,91 @@ describe("accepted master binding", () => {
 
 describe("operational policy authority", () => {
   it("reports unavailable authority when neither unresolved value is configured", () => {
-    expect(resolveSongVideoPolicyAuthority(null)).toEqual({
-      available: false,
+    expect(resolveSongVideoPolicyConfiguration(null)).toEqual({
+      configured: false,
       missing: ["U.5", "U.6"],
     });
   });
 
   it("names exactly which gate is unconfigured rather than falling back", () => {
-    expect(resolveSongVideoPolicyAuthority({ sourceOverrunDisposition: "reject_overrun" })).toEqual(
-      {
-        available: false,
-        missing: ["U.6"],
-      },
-    );
-    expect(resolveSongVideoPolicyAuthority({ masterMaxBytes: 1 })).toEqual({
-      available: false,
+    expect(
+      resolveSongVideoPolicyConfiguration({ sourceOverrunDisposition: "reject_overrun" }),
+    ).toEqual({
+      configured: false,
+      missing: ["U.6"],
+    });
+    expect(resolveSongVideoPolicyConfiguration({ masterMaxBytes: 1 })).toEqual({
+      configured: false,
       missing: ["U.5"],
     });
   });
 
   it("rejects a nonsensical ceiling instead of treating it as permission", () => {
     expect(
-      resolveSongVideoPolicyAuthority({
+      resolveSongVideoPolicyConfiguration({
         sourceOverrunDisposition: "reject_overrun",
         masterMaxBytes: 0,
       }),
-    ).toEqual({ available: false, missing: ["U.6"] });
+    ).toEqual({ configured: false, missing: ["U.6"] });
   });
 
   it("becomes available only when both values are explicitly configured", () => {
-    expect(resolveSongVideoPolicyAuthority(policy)).toEqual({ available: true, policy });
+    expect(resolveSongVideoPolicyConfiguration(policy)).toEqual({ configured: true, policy });
+  });
+});
+
+describe("acceptance revalidates its own prerequisites", () => {
+  it("refuses malformed digests rather than accepting any nonempty string", () => {
+    expect(
+      checkAcceptedMaster({
+        plan,
+        attempt,
+        policy,
+        master: { ...master, claimedSourceSha256: "x", masterSha256: "y" },
+      }),
+    ).toEqual({ accepted: false, reason: "malformed_source_digest" });
+    expect(
+      checkAcceptedMaster({ plan, attempt, policy, master: { ...master, masterSha256: "y" } }),
+    ).toEqual({ accepted: false, reason: "malformed_master_digest" });
+  });
+
+  it("refuses an unconfigured ceiling instead of comparing against it", () => {
+    for (const masterMaxBytes of [Number.NaN, 0, -1, 1.5]) {
+      expect(
+        checkAcceptedMaster({ plan, attempt, master, policy: { ...policy, masterMaxBytes } }),
+      ).toEqual({ accepted: false, reason: "policy_not_configured" });
+    }
+  });
+
+  it("refuses a plan whose interval is not contained, without relying on a prior check", () => {
+    const uncontained = {
+      ...plan,
+      clipStartSamples: song.songDurationSamples,
+      clipDurationSamples: 5 * SONG_VIDEO_SAMPLE_RATE_HZ,
+    };
+    expect(
+      checkAcceptedMaster({
+        plan: uncontained,
+        attempt,
+        policy,
+        master: {
+          ...master,
+          decision: {
+            ...master.decision,
+            clipStartSamples: uncontained.clipStartSamples,
+            clipDurationSamples: uncontained.clipDurationSamples,
+          },
+        },
+      }),
+    ).toEqual({ accepted: false, reason: "plan_not_containable" });
+  });
+
+  it("treats a well-formed source digest as a claim, not as proof of verification", () => {
+    // Structural acceptance says the record is well formed. Establishing that
+    // this digest is the sealed source's digest belongs to the persistence
+    // adapter, and nothing in this result asserts it happened.
+    const accepted = checkAcceptedMaster({ plan, attempt, master, policy });
+    expect(accepted).toEqual({ accepted: true, masterRevisionId: "master-1" });
+    expect(Object.keys(accepted)).not.toContain("sourceVerified");
   });
 });

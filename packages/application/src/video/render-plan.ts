@@ -28,9 +28,12 @@ export type PlanCheck =
 
 /** Rejection reasons surface structurally through MasterCheck. */
 type MasterRejection =
+  | "plan_not_containable"
+  | "policy_not_configured"
   | "plan_mismatch"
   | "attempt_mismatch"
-  | "unverified_source"
+  | "malformed_source_digest"
+  | "malformed_master_digest"
   | "incomplete_render_decision"
   | "decision_does_not_match_plan"
   | "master_exceeds_configured_ceiling"
@@ -46,6 +49,11 @@ function isCount(value: number): boolean {
 
 function isNonEmpty(value: string): boolean {
   return value.trim().length > 0;
+}
+
+/** Well-formedness only. A well-formed digest is not evidence of verification. */
+function isSha256Digest(value: string): boolean {
+  return /^[a-f0-9]{64}$/u.test(value);
 }
 
 /**
@@ -102,10 +110,15 @@ export function checkIntentFields(input: {
 
 /**
  * Binds a sealed master to its plan and attempt. A plan identity alone can
- * never satisfy this: the master must carry a verified source, the complete
+ * never satisfy this: the master must carry a source digest, the complete
  * render decision actually applied, and a renderer policy revision, and its
  * size must be inside the configured ceiling. The ceiling is supplied, never
  * defaulted, because it is an unresolved ratification gate.
+ *
+ * Structural acceptance is not verification. `claimedSourceSha256` is a claim
+ * this function can only check for well-formedness; that the digest is the
+ * sealed source's digest must be established by the persistence adapter against
+ * the stored sealed source, and this result never asserts that it was.
  */
 export function checkAcceptedMaster(input: {
   readonly plan: SongVideoRenderPlan;
@@ -114,6 +127,15 @@ export function checkAcceptedMaster(input: {
   readonly policy: SongVideoOperationalPolicy;
 }): MasterCheck {
   const { plan, attempt, master, policy } = input;
+  // Acceptance revalidates its own prerequisites rather than trusting that a
+  // caller ran the separate checks first. Nothing in these argument types
+  // establishes that the plan was contained or the policy was configured.
+  if (!checkRenderPlan(plan).accepted) {
+    return { accepted: false, reason: "plan_not_containable" };
+  }
+  if (!Number.isSafeInteger(policy.masterMaxBytes) || policy.masterMaxBytes <= 0) {
+    return { accepted: false, reason: "policy_not_configured" };
+  }
   if (attempt.planId !== plan.planId) return { accepted: false, reason: "plan_mismatch" };
   if (master.planId !== plan.planId) return { accepted: false, reason: "plan_mismatch" };
   if (master.attemptId !== attempt.attemptId) {
@@ -122,15 +144,18 @@ export function checkAcceptedMaster(input: {
   if (!isNonEmpty(master.masterRevisionId)) {
     return { accepted: false, reason: "incomplete_render_decision" };
   }
-  if (!isNonEmpty(master.verifiedSourceSha256)) {
-    return { accepted: false, reason: "unverified_source" };
+  if (!isSha256Digest(master.claimedSourceSha256)) {
+    return { accepted: false, reason: "malformed_source_digest" };
+  }
+  if (!isSha256Digest(master.masterSha256)) {
+    return { accepted: false, reason: "malformed_master_digest" };
   }
   // A master that reuses the source digest as its own has had one identity
   // substituted for the other; they are distinct sealed artifacts.
-  if (master.masterSha256 === master.verifiedSourceSha256) {
+  if (master.masterSha256 === master.claimedSourceSha256) {
     return { accepted: false, reason: "identity_substituted" };
   }
-  if (!isNonEmpty(master.masterSha256) || !Number.isSafeInteger(master.masterByteLength)) {
+  if (!Number.isSafeInteger(master.masterByteLength)) {
     return { accepted: false, reason: "incomplete_render_decision" };
   }
   const decision = master.decision;
