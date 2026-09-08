@@ -9,7 +9,7 @@ import { Effect } from "effect";
 import type { Client } from "pg";
 
 export type GrandfatheredCreationDraft = Readonly<{
-  /** Creation persona choice (spec 014 section 10.2): existing or create_new. */
+  /** Creation persona choice (spec 014 section 11.2): existing or create_new. */
   readonly persona: Readonly<
     { readonly kind: "existing"; readonly persona_id: string } | { readonly kind: "create_new" }
   >;

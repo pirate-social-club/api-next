@@ -332,7 +332,7 @@ const joinPersonaConflict = () =>
   new CommunityRepositoryError({ operation: "join", reason: "constraint" });
 
 /**
- * Spec 014 section 10.2: the terminal membership commit resolves exactly one
+ * Spec 014 section 11.2: the terminal membership commit resolves exactly one
  * of three server-validated cases — an active owned persona already bound to
  * the target community, a bind-once unbound persona serialized on the persona
  * row, or a new persona minted with its target-community binding in this
@@ -1218,7 +1218,7 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
 
           if (mode === "request" && input.body.persona !== undefined) {
             // A request-mode intent never pre-binds identity (spec 014
-            // section 10.2); the choice is resolved at approval instead.
+            // section 11.2); the choice is resolved at approval instead.
             return yield* Effect.fail(joinPersonaConflict());
           }
 
