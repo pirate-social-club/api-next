@@ -13,7 +13,8 @@ const planClipDurationSamples = 15 * SAMPLE_RATE;
 const masterCeilingBytes = 1_000_000;
 
 const goodFacts: SongVideoProbeFacts = {
-  containerDurationSamples: planClipDurationSamples,
+  videoDurationSamples: planClipDurationSamples,
+  audioDurationSamples: planClipDurationSamples,
   audioSampleRateHz: SAMPLE_RATE,
   audioChannels: 2,
   hasVideoTrack: true,
@@ -22,7 +23,10 @@ const goodFacts: SongVideoProbeFacts = {
 const bytesOf = (text: string) => new TextEncoder().encode(text);
 
 const storeOf = (map: Record<string, Uint8Array>): SongVideoOutputStore => ({
-  read: async (key) => map[key] ?? null,
+  read: async (key) => {
+    const bytes = map[key];
+    return bytes === undefined ? null : { bytes, objectVersion: `v-${key}` };
+  },
 });
 
 const proberOf = (facts: SongVideoProbeFacts | null): SongVideoOutputProbe => ({
@@ -81,11 +85,15 @@ describe("rendered output verification", () => {
   test("refuses a partial render whose timeline is not the frozen interval", async () => {
     expect(
       await verify({
-        prober: proberOf({ ...goodFacts, containerDurationSamples: planClipDurationSamples - 1 }),
+        prober: proberOf({ ...goodFacts, videoDurationSamples: planClipDurationSamples - 1 }),
       }),
     ).toMatchObject({
       verified: false,
-      failure: { kind: "output_duration_not_plan_interval", planSamples: planClipDurationSamples },
+      failure: {
+        kind: "output_duration_not_plan_interval",
+        track: "video",
+        planSamples: planClipDurationSamples,
+      },
     });
   });
 
@@ -133,5 +141,44 @@ describe("rendered output verification", () => {
       masterCeilingBytes,
     });
     expect(keys.filter((key) => /verified|valid|trusted|ok/i.test(key))).toEqual([]);
+  });
+
+  test("refuses a ceiling that is not a positive safe integer", async () => {
+    // The same failure the acceptance check had, at a new boundary: an unusable
+    // ceiling must refuse rather than pass every comparison silently.
+    for (const masterCeiling of [Number.NaN, 0, -1, 1.5]) {
+      expect(await verify({ masterCeilingBytes: masterCeiling })).toMatchObject({
+        verified: false,
+        failure: { kind: "ceiling_not_configured" },
+      });
+    }
+  });
+
+  test("refuses invalid audio track facts", async () => {
+    for (const channels of [0, -1, 1.5, Number.NaN]) {
+      expect(
+        await verify({ prober: proberOf({ ...goodFacts, audioChannels: channels }) }),
+      ).toMatchObject({
+        verified: false,
+        failure: { kind: "output_audio_track_invalid" },
+      });
+    }
+  });
+
+  test("refuses a short audio track hidden behind a correct video duration", async () => {
+    expect(
+      await verify({
+        prober: proberOf({ ...goodFacts, audioDurationSamples: planClipDurationSamples - 1 }),
+      }),
+    ).toMatchObject({
+      verified: false,
+      failure: { kind: "output_duration_not_plan_interval", track: "audio" },
+    });
+  });
+
+  test("reports the object version so sealing can prove the bytes did not change", async () => {
+    const result = await verify();
+    if (!result.verified) throw new Error("expected verification");
+    expect(result.output.objectVersion).toBe("v-master-1");
   });
 });

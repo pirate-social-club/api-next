@@ -3,18 +3,31 @@
  *
  * Sealing a master must not rest on a caller's word about what was produced.
  * This module reads the completed output's actual bytes, computes its digest and
- * length itself, probes it, and binds the measured facts to the frozen song,
- * source, interval and renderer policy. A caller-supplied verification flag
- * cannot satisfy any of it: no boolean is accepted as evidence anywhere here.
+ * length itself, and checks the probe's measured facts against the frozen
+ * interval. A caller-supplied verification flag cannot satisfy any of it: no
+ * boolean is accepted as evidence anywhere here.
+ *
+ * What this function alone does not establish, stated plainly because an earlier
+ * revision overclaimed it: it receives no song identity, no clip start, no
+ * attempt and no renderer policy, so matching duration and sample rate cannot
+ * distinguish the selected soundtrack from a different song of equal length.
+ * Binding output to the frozen work is the composed sealing operation's job in
+ * `song-video-render-repository.ts`, which loads that work from persistence.
  *
  * U.6 stays unresolved. The byte ceiling is supplied per verification and is
  * never defaulted, so fixture verification can proceed while operational sealing
  * still waits on a ratified value.
  */
 
-/** Reads completed output bytes. Returns null when no completed object exists. */
+/**
+ * Reads completed output bytes with the object version they were read at.
+ * Returns null when no completed object exists. The version lets sealing prove
+ * it is persisting the same bytes that were verified.
+ */
 export type SongVideoOutputStore = {
-  readonly read: (objectKey: string) => Promise<Uint8Array | null>;
+  readonly read: (
+    objectKey: string,
+  ) => Promise<{ readonly bytes: Uint8Array; readonly objectVersion: string } | null>;
 };
 
 /** Measured facts a probe reports about the bytes it was given. */
@@ -23,7 +36,9 @@ export type SongVideoOutputProbe = {
 };
 
 export type SongVideoProbeFacts = {
-  readonly containerDurationSamples: number;
+  /** Measured separately, because one container duration hides a short track. */
+  readonly videoDurationSamples: number;
+  readonly audioDurationSamples: number;
   readonly audioSampleRateHz: number;
   readonly audioChannels: number;
   readonly hasVideoTrack: boolean;
@@ -32,6 +47,7 @@ export type SongVideoProbeFacts = {
 /** Surfaces structurally through OutputVerification. */
 type VerifiedOutput = {
   readonly objectKey: string;
+  readonly objectVersion: string;
   readonly masterSha256: string;
   readonly masterByteLength: number;
   readonly probe: SongVideoProbeFacts;
@@ -47,12 +63,15 @@ type OutputVerificationFailure =
       readonly ceiling: number;
     }
   | { readonly kind: "output_unprobeable"; readonly objectKey: string }
+  | { readonly kind: "ceiling_not_configured"; readonly ceiling: number }
   | {
       readonly kind: "output_duration_not_plan_interval";
+      readonly track: "video" | "audio";
       readonly measuredSamples: number;
       readonly planSamples: number;
     }
   | { readonly kind: "output_audio_not_canonical"; readonly sampleRateHz: number }
+  | { readonly kind: "output_audio_track_invalid"; readonly channels: number }
   | { readonly kind: "output_has_no_video_track" }
   | { readonly kind: "output_is_the_source"; readonly sha256: string };
 
@@ -86,8 +105,21 @@ export async function verifyRenderedOutput(input: {
   /** U.6's configured ceiling, supplied per call and never defaulted. */
   readonly masterCeilingBytes: number;
 }): Promise<OutputVerification> {
-  const bytes = await input.store.read(input.objectKey);
-  if (bytes === null) {
+  // Validate the supplied ceiling before reading anything. A NaN or otherwise
+  // unusable value must refuse rather than pass every comparison silently; this
+  // is the same failure the acceptance check had, at a new boundary.
+  if (!Number.isSafeInteger(input.masterCeilingBytes) || input.masterCeilingBytes <= 0) {
+    return {
+      verified: false,
+      failure: { kind: "ceiling_not_configured", ceiling: input.masterCeilingBytes },
+    };
+  }
+  const read = await input.store.read(input.objectKey);
+  if (read === null) {
+    return { verified: false, failure: { kind: "output_absent", objectKey: input.objectKey } };
+  }
+  const { bytes, objectVersion } = read;
+  if (objectVersion.trim().length === 0) {
     return { verified: false, failure: { kind: "output_absent", objectKey: input.objectKey } };
   }
   if (bytes.byteLength === 0) {
@@ -120,22 +152,39 @@ export async function verifyRenderedOutput(input: {
       failure: { kind: "output_audio_not_canonical", sampleRateHz: probe.audioSampleRateHz },
     };
   }
-  // A partial render is the case this catches: bytes exist and hash cleanly, but
-  // the timeline is not the interval that was frozen.
-  if (probe.containerDurationSamples !== input.planClipDurationSamples) {
+  if (!Number.isSafeInteger(probe.audioChannels) || probe.audioChannels < 1) {
     return {
       verified: false,
-      failure: {
-        kind: "output_duration_not_plan_interval",
-        measuredSamples: probe.containerDurationSamples,
-        planSamples: input.planClipDurationSamples,
-      },
+      failure: { kind: "output_audio_track_invalid", channels: probe.audioChannels },
     };
+  }
+  // A partial render is the case these catch: bytes exist and hash cleanly, but
+  // a track does not cover the frozen interval. Both tracks are checked, because
+  // a single container duration hides a short audio or video track.
+  for (const [track, measuredSamples] of [
+    ["video", probe.videoDurationSamples],
+    ["audio", probe.audioDurationSamples],
+  ] as const) {
+    if (
+      !Number.isSafeInteger(measuredSamples) ||
+      measuredSamples !== input.planClipDurationSamples
+    ) {
+      return {
+        verified: false,
+        failure: {
+          kind: "output_duration_not_plan_interval",
+          track,
+          measuredSamples,
+          planSamples: input.planClipDurationSamples,
+        },
+      };
+    }
   }
   return {
     verified: true,
     output: {
       objectKey: input.objectKey,
+      objectVersion,
       masterSha256,
       masterByteLength: bytes.byteLength,
       probe,

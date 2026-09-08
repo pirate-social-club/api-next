@@ -4,8 +4,8 @@ import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 import {
   acceptMaster,
   persistRenderPlan,
-  sealMaster,
   startRenderAttempt,
+  verifyAndSealMaster,
 } from "./song-video-render-repository.ts";
 import { finalizedFixture, seedVideoActors } from "./video-publication.pg-fixture.ts";
 
@@ -15,7 +15,6 @@ if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && !connectionStrin
 const suite = connectionString ? describe : describe.skip;
 
 const SAMPLE_RATE = 48_000;
-const masterSha256 = "d".repeat(64);
 // Test-only. U.6 remains an open gate and nothing in the source supplies a value.
 const masterCeilingBytes = 64 * 1024 * 1024;
 
@@ -37,6 +36,25 @@ suite("song video render persistence", () => {
   const client = new Client({ connectionString: scoped.toString() });
   let sourceImmutableRef = "";
   let storedSourceSha256 = "";
+
+  // A fixture output object. Its bytes are real; the prober is a port, so this
+  // proves binding and hashing, not real media verification.
+  const outputBytes = new TextEncoder().encode("rendered-song-video-master");
+  const store = {
+    read: async (key: string) =>
+      key === "master-object" ? { bytes: outputBytes, objectVersion: "v1" } : null,
+  };
+  const prober = {
+    probe: async () => ({
+      videoDurationSamples: basePlan.clipDurationSamples,
+      audioDurationSamples: basePlan.clipDurationSamples,
+      audioSampleRateHz: 48_000,
+      audioChannels: 2,
+      hasVideoTrack: true,
+    }),
+  };
+  const seal = (request: Parameters<typeof verifyAndSealMaster>[2]) =>
+    verifyAndSealMaster(client, { store, prober }, request);
 
   beforeAll(async () => {
     await admin.connect();
@@ -87,13 +105,12 @@ suite("song video render persistence", () => {
         planId: "plan-mismatch",
         generation: 1,
       });
-      const outcome = await sealMaster(client, {
+      const outcome = await seal({
         masterRevisionId: "master-mismatch",
         attempt: { attemptId: "attempt-mismatch", planId: "plan-mismatch", generation: 1 },
         sourceImmutableRef,
+        outputObjectKey: "master-object",
         claimedSourceSha256: "c".repeat(64),
-        masterSha256,
-        masterByteLength: 1_000,
         masterCeilingBytes,
         rendererIdentity: "ffmpeg-7.1.5",
         rendererPolicyRevision: 1,
@@ -123,13 +140,12 @@ suite("song video render persistence", () => {
         planId: "plan-absent",
         generation: 1,
       });
-      const outcome = await sealMaster(client, {
+      const outcome = await seal({
         masterRevisionId: "master-absent",
         attempt: { attemptId: "attempt-absent", planId: "plan-absent", generation: 1 },
         sourceImmutableRef: "media://immutable/not-stored",
+        outputObjectKey: "master-object",
         claimedSourceSha256: storedSourceSha256,
-        masterSha256,
-        masterByteLength: 1_000,
         masterCeilingBytes,
         rendererIdentity: "ffmpeg-7.1.5",
         rendererPolicyRevision: 1,
@@ -151,13 +167,12 @@ suite("song video render persistence", () => {
         planId: "plan-bound",
         generation: 1,
       });
-      const outcome = await sealMaster(client, {
+      const outcome = await seal({
         masterRevisionId: "master-bound",
         attempt: { attemptId: "attempt-bound", planId: "plan-bound", generation: 1 },
         sourceImmutableRef,
+        outputObjectKey: "master-object",
         claimedSourceSha256: storedSourceSha256,
-        masterSha256,
-        masterByteLength: 1_000,
         masterCeilingBytes,
         rendererIdentity: "ffmpeg-7.1.5",
         rendererPolicyRevision: 1,
@@ -168,9 +183,23 @@ suite("song video render persistence", () => {
       const stored = await client.query(
         "SELECT source_sha256, master_sha256, master_ceiling_bytes FROM media_song_video_masters WHERE master_revision_id = 'master-bound'",
       );
+      // The master digest is measured from the verified output bytes, and the
+      // source digest is the stored one, so neither came from the caller.
+      const measured = await crypto.subtle.digest("SHA-256", outputBytes);
+      const measuredHex = [...new Uint8Array(measured)]
+        .map((byte) => byte.toString(16).padStart(2, "0"))
+        .join("");
       expect(stored.rows[0]).toMatchObject({
         source_sha256: storedSourceSha256,
-        master_sha256: masterSha256,
+        master_sha256: measuredHex,
+      });
+      const facts = await client.query(
+        "SELECT verified_object_key, verified_object_version, measured_audio_channels FROM media_song_video_masters WHERE master_revision_id = 'master-bound'",
+      );
+      expect(facts.rows[0]).toMatchObject({
+        verified_object_key: "master-object",
+        verified_object_version: "v1",
+        measured_audio_channels: 2,
       });
     }
   }, 60_000);
@@ -183,13 +212,12 @@ suite("song video render persistence", () => {
         ["attempt-race-b", "master-race-b", "c".repeat(64), 2],
       ] as const) {
         await startRenderAttempt(client, { attemptId, planId: "plan-race", generation });
-        const sealed = await sealMaster(client, {
+        const sealed = await seal({
           masterRevisionId: revisionId,
           attempt: { attemptId, planId: "plan-race", generation },
           sourceImmutableRef,
+          outputObjectKey: "master-object",
           claimedSourceSha256: storedSourceSha256,
-          masterSha256: digest,
-          masterByteLength: 1_000,
           masterCeilingBytes,
           rendererIdentity: "ffmpeg-7.1.5",
           rendererPolicyRevision: 1,
@@ -250,13 +278,12 @@ suite("song video render persistence", () => {
         planId: "plan-replay",
         generation: 1,
       });
-      await sealMaster(client, {
+      await seal({
         masterRevisionId: "master-replay",
         attempt: { attemptId: "attempt-replay", planId: "plan-replay", generation: 1 },
         sourceImmutableRef,
+        outputObjectKey: "master-object",
         claimedSourceSha256: storedSourceSha256,
-        masterSha256: "e".repeat(64),
-        masterByteLength: 1_000,
         masterCeilingBytes,
         rendererIdentity: "ffmpeg-7.1.5",
         rendererPolicyRevision: 1,
@@ -294,14 +321,13 @@ suite("song video render persistence", () => {
         planId: "plan-other-a",
         generation: 1,
       });
-      const outcome = await sealMaster(client, {
+      const outcome = await seal({
         masterRevisionId: "master-crossed",
         // A real attempt and a real plan that are not the same work.
         attempt: { attemptId: "attempt-of-a", planId: "plan-other-b", generation: 1 },
         sourceImmutableRef,
+        outputObjectKey: "master-object",
         claimedSourceSha256: storedSourceSha256,
-        masterSha256: "f".repeat(64),
-        masterByteLength: 1_000,
         masterCeilingBytes,
         rendererIdentity: "ffmpeg-7.1.5",
         rendererPolicyRevision: 1,
@@ -320,13 +346,12 @@ suite("song video render persistence", () => {
         planId: "plan-generation",
         generation: 1,
       });
-      const outcome = await sealMaster(client, {
+      const outcome = await seal({
         masterRevisionId: "master-generation",
         attempt: { attemptId: "attempt-generation", planId: "plan-generation", generation: 7 },
         sourceImmutableRef,
+        outputObjectKey: "master-object",
         claimedSourceSha256: storedSourceSha256,
-        masterSha256: "1".repeat(64),
-        masterByteLength: 1_000,
         masterCeilingBytes,
         rendererIdentity: "ffmpeg-7.1.5",
         rendererPolicyRevision: 1,
@@ -348,13 +373,12 @@ suite("song video render persistence", () => {
         planId: "plan-interval",
         generation: 1,
       });
-      const outcome = await sealMaster(client, {
+      const outcome = await seal({
         masterRevisionId: "master-interval",
         attempt: { attemptId: "attempt-interval", planId: "plan-interval", generation: 1 },
         sourceImmutableRef,
+        outputObjectKey: "master-object",
         claimedSourceSha256: storedSourceSha256,
-        masterSha256: "2".repeat(64),
-        masterByteLength: 1_000,
         masterCeilingBytes,
         rendererIdentity: "ffmpeg-7.1.5",
         rendererPolicyRevision: 1,
@@ -376,13 +400,12 @@ suite("song video render persistence", () => {
         planId: "plan-overlap",
         generation: 1,
       });
-      await sealMaster(client, {
+      await seal({
         masterRevisionId: "master-overlap-a",
         attempt: { attemptId: "attempt-overlap-a", planId: "plan-overlap", generation: 1 },
         sourceImmutableRef,
+        outputObjectKey: "master-object",
         claimedSourceSha256: storedSourceSha256,
-        masterSha256: "3".repeat(64),
-        masterByteLength: 1_000,
         masterCeilingBytes,
         rendererIdentity: "ffmpeg-7.1.5",
         rendererPolicyRevision: 1,
@@ -453,13 +476,12 @@ suite("song video render persistence", () => {
         planId: "plan-retry",
         generation: 1,
       });
-      await sealMaster(client, {
+      await seal({
         masterRevisionId: "master-retry",
         attempt: { attemptId: "attempt-retry", planId: "plan-retry", generation: 1 },
         sourceImmutableRef,
+        outputObjectKey: "master-object",
         claimedSourceSha256: storedSourceSha256,
-        masterSha256: "4".repeat(64),
-        masterByteLength: 1_000,
         masterCeilingBytes,
         rendererIdentity: "ffmpeg-7.1.5",
         rendererPolicyRevision: 1,
@@ -521,27 +543,25 @@ suite("song video render persistence", () => {
         masterRevisionId: "master-reseal",
         attempt: { attemptId: "attempt-reseal", planId: "plan-reseal", generation: 1 },
         sourceImmutableRef,
+        outputObjectKey: "master-object",
         claimedSourceSha256: storedSourceSha256,
-        masterSha256: "5".repeat(64),
-        masterByteLength: 1_000,
         masterCeilingBytes,
         rendererIdentity: "ffmpeg-7.1.5",
         rendererPolicyRevision: 1,
         decisionClipStartSamples: basePlan.clipStartSamples,
         decisionClipDurationSamples: basePlan.clipDurationSamples,
       };
-      expect(await sealMaster(client, request)).toMatchObject({ sealed: true });
+      expect(await seal(request)).toMatchObject({ sealed: true });
       // An identical replay of a seal that already committed is success.
-      expect(await sealMaster(client, request)).toEqual({
+      expect(await seal(request)).toEqual({
         sealed: true,
         masterRevisionId: "master-reseal",
       });
       // A different master over the same non-started attempt is refused.
       expect(
-        await sealMaster(client, {
+        await seal({
           ...request,
           masterRevisionId: "master-reseal-2",
-          masterSha256: "6".repeat(64),
         }),
       ).toMatchObject({
         sealed: false,
@@ -551,6 +571,85 @@ suite("song video render persistence", () => {
         "SELECT count(*)::int AS n FROM media_song_video_masters WHERE plan_id = 'plan-reseal'",
       );
       expect(masters.rows[0]?.n).toBe(1);
+    }
+  }, 60_000);
+
+  test("refuses to seal when the output cannot be verified, leaving no master", async () => {
+    {
+      await persistRenderPlan(client, { ...basePlan, planId: "plan-unverified" });
+      await startRenderAttempt(client, {
+        attemptId: "attempt-unverified",
+        planId: "plan-unverified",
+        generation: 1,
+      });
+      const request = {
+        masterRevisionId: "master-unverified",
+        attempt: { attemptId: "attempt-unverified", planId: "plan-unverified", generation: 1 },
+        sourceImmutableRef,
+        outputObjectKey: "master-object",
+        claimedSourceSha256: storedSourceSha256,
+        masterCeilingBytes,
+        rendererIdentity: "ffmpeg-7.1.5",
+        rendererPolicyRevision: 1,
+        decisionClipStartSamples: basePlan.clipStartSamples,
+        decisionClipDurationSamples: basePlan.clipDurationSamples,
+      };
+      // No completed output at that key.
+      const absent = await verifyAndSealMaster(
+        client,
+        { store: { read: async () => null }, prober },
+        request,
+      );
+      expect(absent).toMatchObject({
+        sealed: false,
+        failure: { kind: "output_not_verified", reason: "output_absent" },
+      });
+      // A short audio track behind a correct video duration.
+      const shortAudio = await verifyAndSealMaster(
+        client,
+        {
+          store,
+          prober: {
+            probe: async () => ({
+              videoDurationSamples: basePlan.clipDurationSamples,
+              audioDurationSamples: basePlan.clipDurationSamples - 1,
+              audioSampleRateHz: 48_000,
+              audioChannels: 2,
+              hasVideoTrack: true,
+            }),
+          },
+        },
+        request,
+      );
+      expect(shortAudio).toMatchObject({
+        sealed: false,
+        failure: { kind: "output_not_verified", reason: "output_duration_not_plan_interval" },
+      });
+      // Bytes replaced between verification and commit.
+      let reads = 0;
+      const shifting = {
+        read: async (key: string) => {
+          reads += 1;
+          return key === "master-object"
+            ? { bytes: outputBytes, objectVersion: reads === 1 ? "v1" : "v2" }
+            : null;
+        },
+      };
+      expect(await verifyAndSealMaster(client, { store: shifting, prober }, request)).toMatchObject(
+        {
+          sealed: false,
+          failure: { kind: "output_changed_during_seal" },
+        },
+      );
+
+      const masters = await client.query(
+        "SELECT count(*)::int AS n FROM media_song_video_masters WHERE plan_id = 'plan-unverified'",
+      );
+      expect(masters.rows[0]?.n).toBe(0);
+      const state = await client.query(
+        "SELECT state FROM media_song_video_render_attempts WHERE attempt_id = 'attempt-unverified'",
+      );
+      expect(state.rows[0]?.state).toBe("started");
     }
   }, 60_000);
 

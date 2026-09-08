@@ -68,6 +68,15 @@ CREATE TABLE media_song_video_masters (
   source_sha256 TEXT NOT NULL CHECK (source_sha256 ~ '^[a-f0-9]{64}$'),
   master_sha256 TEXT NOT NULL CHECK (master_sha256 ~ '^[a-f0-9]{64}$'),
   master_byte_length BIGINT NOT NULL CHECK (master_byte_length > 0),
+  -- The verified output object, and the measured facts established from its
+  -- bytes. A master cannot exist without them, so acceptance has no raw-claim
+  -- path: there is nowhere to record an unverified master.
+  verified_object_key TEXT NOT NULL CHECK (btrim(verified_object_key) <> ''),
+  verified_object_version TEXT NOT NULL CHECK (btrim(verified_object_version) <> ''),
+  measured_video_duration_samples BIGINT NOT NULL CHECK (measured_video_duration_samples > 0),
+  measured_audio_duration_samples BIGINT NOT NULL CHECK (measured_audio_duration_samples > 0),
+  measured_audio_sample_rate_hz INTEGER NOT NULL CHECK (measured_audio_sample_rate_hz = 48000),
+  measured_audio_channels INTEGER NOT NULL CHECK (measured_audio_channels >= 1),
   master_ceiling_bytes BIGINT NOT NULL CHECK (master_ceiling_bytes > 0),
   renderer_identity TEXT NOT NULL CHECK (btrim(renderer_identity) <> ''),
   renderer_policy_revision INTEGER NOT NULL CHECK (renderer_policy_revision >= 0),
@@ -92,6 +101,12 @@ CREATE TABLE media_song_video_masters (
   CONSTRAINT song_video_master_identity_distinct CHECK (master_sha256 <> source_sha256),
   -- U.6's ceiling is enforced at seal time against the value that applied.
   CONSTRAINT song_video_master_within_ceiling CHECK (master_byte_length <= master_ceiling_bytes),
+  -- Both tracks must cover the interval that was applied, so a short track
+  -- cannot reach acceptance behind a correct container duration.
+  CONSTRAINT song_video_master_tracks_cover_interval CHECK (
+    measured_video_duration_samples = decision_clip_duration_samples AND
+    measured_audio_duration_samples = decision_clip_duration_samples
+  ),
   -- Composite target for acceptance.
   CONSTRAINT media_song_video_masters_plan_key UNIQUE (master_revision_id, plan_id)
 );

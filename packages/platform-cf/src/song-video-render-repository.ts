@@ -20,6 +20,12 @@
 
 import type { Client } from "pg";
 
+import {
+  type SongVideoOutputProbe,
+  type SongVideoOutputStore,
+  verifyRenderedOutput,
+} from "./song-video-output-verification.ts";
+
 /** Surfaces structurally through SealOutcome. */
 type SourceBindingFailure =
   | { readonly kind: "plan_absent"; readonly planId: string }
@@ -36,6 +42,8 @@ type SourceBindingFailure =
       readonly state: string;
     }
   | { readonly kind: "seal_transition_lost"; readonly attemptId: string }
+  | { readonly kind: "output_not_verified"; readonly reason: string }
+  | { readonly kind: "output_changed_during_seal"; readonly objectKey: string }
   | { readonly kind: "sealed_source_absent"; readonly immutableRef: string }
   | {
       readonly kind: "sealed_source_digest_mismatch";
@@ -74,8 +82,8 @@ export type SealRequest = {
   readonly sourceImmutableRef: string;
   /** A claim about which source was used, checked here against stored bytes. */
   readonly claimedSourceSha256: string;
-  readonly masterSha256: string;
-  readonly masterByteLength: number;
+  /** The completed output to verify. Its digest and length are measured, never supplied. */
+  readonly outputObjectKey: string;
   /** U.6's configured ceiling. Supplied by the caller; never defaulted here. */
   readonly masterCeilingBytes: number;
   readonly rendererIdentity: string;
@@ -122,7 +130,24 @@ export async function startRenderAttempt(client: Client, attempt: PersistedAttem
  * for that immutable reference; an absent object or a mismatch refuses the seal
  * and leaves the attempt untouched.
  */
-export async function sealMaster(client: Client, request: SealRequest): Promise<SealOutcome> {
+/**
+ * Verifies the rendered output and seals a master in one operation.
+ *
+ * Verification is not a caller obligation: there is no path to a master row that
+ * skips it. The frozen work is loaded from persistence first, the output is
+ * verified against that work rather than against caller-supplied facts, and the
+ * measured identity and facts are persisted with the master. The object version
+ * read at verification is re-read before commit, so the bytes that were verified
+ * are the bytes that get sealed.
+ */
+export async function verifyAndSealMaster(
+  client: Client,
+  dependencies: {
+    readonly store: SongVideoOutputStore;
+    readonly prober: SongVideoOutputProbe;
+  },
+  request: SealRequest,
+): Promise<SealOutcome> {
   await client.query("BEGIN");
   try {
     // Read the plan and the attempt together, keyed on the pair, so an attempt
@@ -179,19 +204,18 @@ export async function sealMaster(client: Client, request: SealRequest): Promise<
     if (boundRow.state !== "started") {
       const existing = await client.query<{
         master_revision_id: string;
-        master_sha256: string;
-        master_byte_length: string;
+        verified_object_key: string;
       }>(
-        `SELECT master_revision_id, master_sha256, master_byte_length
+        `SELECT master_revision_id, verified_object_key
            FROM media_song_video_masters WHERE attempt_id = $1 AND plan_id = $2`,
         [request.attempt.attemptId, request.attempt.planId],
       );
       const priorMaster = existing.rows[0];
+      // Replay is judged on the persisted verified object, not on caller facts.
       const identicalReplay =
         priorMaster !== undefined &&
         priorMaster.master_revision_id === request.masterRevisionId &&
-        priorMaster.master_sha256 === request.masterSha256 &&
-        BigInt(priorMaster.master_byte_length) === BigInt(request.masterByteLength);
+        priorMaster.verified_object_key === request.outputObjectKey;
       await client.query(identicalReplay ? "COMMIT" : "ROLLBACK");
       return identicalReplay
         ? { sealed: true, masterRevisionId: priorMaster.master_revision_id }
@@ -240,13 +264,43 @@ export async function sealMaster(client: Client, request: SealRequest): Promise<
         },
       };
     }
+    // Verify the completed output against the work just loaded from persistence,
+    // not against anything the caller asserted about it.
+    const verification = await verifyRenderedOutput({
+      store: dependencies.store,
+      prober: dependencies.prober,
+      objectKey: request.outputObjectKey,
+      planClipDurationSamples: Number(boundRow.clip_duration_samples),
+      sourceSha256: row.canonical_sha256,
+      masterCeilingBytes: request.masterCeilingBytes,
+    });
+    if (!verification.verified) {
+      await client.query("ROLLBACK");
+      return {
+        sealed: false,
+        failure: { kind: "output_not_verified", reason: verification.failure.kind },
+      };
+    }
+    const verified = verification.output;
+    // Re-read the object version before committing, so the bytes that were
+    // verified are the bytes being sealed rather than whatever is there now.
+    const reread = await dependencies.store.read(request.outputObjectKey);
+    if (reread === null || reread.objectVersion !== verified.objectVersion) {
+      await client.query("ROLLBACK");
+      return {
+        sealed: false,
+        failure: { kind: "output_changed_during_seal", objectKey: request.outputObjectKey },
+      };
+    }
     await client.query(
       `INSERT INTO media_song_video_masters
          (master_revision_id, plan_id, attempt_id, attempt_generation, plan_submission_id,
           source_immutable_ref, source_sha256, master_sha256, master_byte_length,
           master_ceiling_bytes, renderer_identity, renderer_policy_revision,
-          decision_clip_start_samples, decision_clip_duration_samples)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+          decision_clip_start_samples, decision_clip_duration_samples,
+          verified_object_key, verified_object_version, measured_video_duration_samples,
+          measured_audio_duration_samples, measured_audio_sample_rate_hz, measured_audio_channels)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
       [
         request.masterRevisionId,
         request.attempt.planId,
@@ -257,13 +311,19 @@ export async function sealMaster(client: Client, request: SealRequest): Promise<
         // The stored digest is written, not the claim, so the row records what
         // was established rather than what was asserted.
         row.canonical_sha256,
-        request.masterSha256,
-        request.masterByteLength,
+        verified.masterSha256,
+        verified.masterByteLength,
         request.masterCeilingBytes,
         request.rendererIdentity,
         request.rendererPolicyRevision,
         request.decisionClipStartSamples,
         request.decisionClipDurationSamples,
+        verified.objectKey,
+        verified.objectVersion,
+        verified.probe.videoDurationSamples,
+        verified.probe.audioDurationSamples,
+        verified.probe.audioSampleRateHz,
+        verified.probe.audioChannels,
       ],
     );
     const transitioned = await client.query(
