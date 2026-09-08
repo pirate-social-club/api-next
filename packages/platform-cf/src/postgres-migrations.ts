@@ -124,7 +124,77 @@ function validateLedgerPrefix(
  * Applies repository migrations in order. Existing versions are immutable:
  * changing a checksum or removing an applied version fails before any new
  * migration is committed.
+ * The caller owns the active transaction, target validation and pinned search_path.
+ * This helper neither opens nor commits a transaction and is not reset authorization.
  */
+export const applyPostgresMigrationsInTransaction = Effect.fn(
+  "applyPostgresMigrationsInTransaction",
+)(function* (
+  transaction: ControlPlaneTransaction,
+  migrations: readonly PostgresMigration[],
+): Effect.fn.Return<
+  MigrationApplyResult,
+  MigrationDefinitionInvalid | MigrationLedgerMismatch | ControlPlaneError
+> {
+  yield* validateDefinitions(migrations);
+  return yield* Effect.gen(function* () {
+    yield* transaction.execute(CREATE_LEDGER);
+    const result = yield* transaction.execute<AppliedMigration>({
+      label: "postgres.migrations.read-ledger",
+      text: "SELECT version, checksum FROM schema_migrations ORDER BY version",
+      values: [],
+      readonly: true,
+    });
+    const applied = new Map(result.rows.map((row) => [row.version, row.checksum]));
+    const defined = new Set(migrations.map((migration) => migration.version));
+
+    for (const [version, checksum] of applied) {
+      if (!defined.has(version)) {
+        return yield* new MigrationLedgerMismatch({
+          reason: "unknown-version",
+          version,
+          expectedVersion: null,
+          actualVersion: version,
+          expectedChecksum: null,
+          actualChecksum: checksum,
+        });
+      }
+    }
+
+    yield* validateLedgerPrefix(
+      [...applied].map(([version, checksum]) => ({ version, checksum })),
+      migrations,
+    );
+
+    for (const [version, checksum] of applied) {
+      const expected = migrations.find((migration) => migration.version === version);
+      if (expected?.checksum !== checksum) {
+        return yield* new MigrationLedgerMismatch({
+          reason: "checksum",
+          version,
+          expectedChecksum: expected?.checksum ?? null,
+          actualChecksum: checksum,
+          expectedVersion: version,
+          actualVersion: version,
+        });
+      }
+    }
+
+    const newlyApplied: string[] = [];
+    for (const migration of migrations) {
+      if (applied.has(migration.version)) continue;
+      yield* applyMigration(transaction, migration);
+      newlyApplied.push(migration.version);
+    }
+
+    return {
+      applied: newlyApplied,
+      currentVersion: migrations.at(-1)?.version ?? null,
+    };
+  });
+});
+
+/** Owns a transaction for ordinary callers; reset tooling uses the supplied-transaction form. */
 export const applyPostgresMigrations = Effect.fn("applyPostgresMigrations")(function* (
   migrations: readonly PostgresMigration[],
 ): Effect.fn.Return<
@@ -134,62 +204,7 @@ export const applyPostgresMigrations = Effect.fn("applyPostgresMigrations")(func
 > {
   yield* validateDefinitions(migrations);
   const db = yield* ControlPlaneDb;
-
   return yield* db.withTransaction((transaction) =>
-    Effect.gen(function* () {
-      yield* transaction.execute(CREATE_LEDGER);
-      const result = yield* transaction.execute<AppliedMigration>({
-        label: "postgres.migrations.read-ledger",
-        text: "SELECT version, checksum FROM schema_migrations ORDER BY version",
-        values: [],
-        readonly: true,
-      });
-      const applied = new Map(result.rows.map((row) => [row.version, row.checksum]));
-      const defined = new Set(migrations.map((migration) => migration.version));
-
-      for (const [version, checksum] of applied) {
-        if (!defined.has(version)) {
-          return yield* new MigrationLedgerMismatch({
-            reason: "unknown-version",
-            version,
-            expectedVersion: null,
-            actualVersion: version,
-            expectedChecksum: null,
-            actualChecksum: checksum,
-          });
-        }
-      }
-
-      yield* validateLedgerPrefix(
-        [...applied].map(([version, checksum]) => ({ version, checksum })),
-        migrations,
-      );
-
-      for (const [version, checksum] of applied) {
-        const expected = migrations.find((migration) => migration.version === version);
-        if (expected?.checksum !== checksum) {
-          return yield* new MigrationLedgerMismatch({
-            reason: "checksum",
-            version,
-            expectedChecksum: expected?.checksum ?? null,
-            actualChecksum: checksum,
-            expectedVersion: version,
-            actualVersion: version,
-          });
-        }
-      }
-
-      const newlyApplied: string[] = [];
-      for (const migration of migrations) {
-        if (applied.has(migration.version)) continue;
-        yield* applyMigration(transaction, migration);
-        newlyApplied.push(migration.version);
-      }
-
-      return {
-        applied: newlyApplied,
-        currentVersion: migrations.at(-1)?.version ?? null,
-      };
-    }),
+    applyPostgresMigrationsInTransaction(transaction, migrations),
   );
 });

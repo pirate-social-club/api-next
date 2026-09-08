@@ -57,6 +57,18 @@ export const freshSchemaPostgresTestSuites = [
 ] as const;
 
 export const noBaselinePostgresTestSuites = [
+  "scripts/staging-karaoke-release-database.pg.test.ts",
+  "scripts/staging-persona-reset-denied-grants.pg.test.ts",
+  "scripts/staging-persona-recovery.pg.test.ts",
+  "scripts/staging-persona-dependency-scan.pg.test.ts",
+  "scripts/staging-persona-schema-authority.pg.test.ts",
+  "scripts/staging-persona-session-drain.pg.test.ts",
+  "scripts/staging-persona-runtime-denial.pg.test.ts",
+  "scripts/staging-persona-database-collector.pg.test.ts",
+  "scripts/staging-karaoke-nonreuse.pg.test.ts",
+  "scripts/staging-persona-reset-replay.pg.test.ts",
+  "scripts/staging-persona-reconstruct.pg.test.ts",
+  "scripts/staging-persona-phased-reset.pg.test.ts",
   "packages/platform-cf/src/hns-renewal-privileges.pg.test.ts",
   "packages/platform-cf/src/video-reconciliation-operator.pg.test.ts",
   "packages/platform-cf/src/video-source-grants.pg.test.ts",

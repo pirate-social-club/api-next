@@ -1,0 +1,21 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "scripts/staging-karaoke-collector-main.ts",
+    "scripts/staging-karaoke-record-fence-cli.ts",
+    "scripts/staging-karaoke-record-pass-cli.ts",
+    "scripts/staging-karaoke-pass-parent-phases.test.ts",
+    "scripts/staging-karaoke-record-cleanup-cli.ts",
+    "scripts/staging-karaoke-record-retirement-cli.ts",
+    "scripts/staging-karaoke-record-release-cli.ts",
+    "scripts/staging-karaoke-release-transports.test.ts",
+    "scripts/staging-karaoke-release-parent.test.ts",
+    "scripts/staging-karaoke-observation-pass.test.ts",
+    "scripts/staging-karaoke-cleanup-pass.test.ts",
+    "scripts/staging-karaoke-record-milestones.test.ts",
+    "scripts/staging-karaoke-release-recovery.test.ts",
+    "scripts/staging-karaoke-record-fence.test.ts",
+    "scripts/staging-karaoke-signing-collector.test.ts"
+  ],
+  "exclude": []
+}

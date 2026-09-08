@@ -1,4 +1,5 @@
 const encoder = new TextEncoder();
+type CryptoBytes = Parameters<typeof crypto.subtle.digest>[1];
 
 const EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
@@ -85,14 +86,14 @@ function canonicalQuery(query: Readonly<Record<string, string>> | undefined): st
 }
 
 async function sha256Hex(value: Uint8Array): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", value as BufferSource);
+  const digest = await crypto.subtle.digest("SHA-256", value as CryptoBytes);
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 async function hmac(key: Uint8Array, value: string): Promise<Uint8Array> {
   const cryptoKey = await crypto.subtle.importKey(
     "raw",
-    key as BufferSource,
+    key as CryptoBytes,
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign"],

@@ -1,0 +1,120 @@
+import { expect, test } from "bun:test";
+import { KaraokeReleaseFailure } from "./staging-karaoke-release-failure.ts";
+import { executeKaraokeFenceRelease } from "./staging-karaoke-release-operation.ts";
+
+// Deliberately synthetic directives, not a reviewed live restoration plan.
+const plan = {
+  version: "staging-karaoke-release-plan-v1",
+  ingressApplicationId: "a".repeat(32),
+  resumeQueues: [{ name: "fixture-queue", id: "b".repeat(32) }],
+  servingWorkers: [{ worker: "fixture-worker", versionId: "c".repeat(32) }],
+  reviewedGrantDigest: "d".repeat(64),
+  surfaceOrder: ["database", "producers", "ingress"],
+};
+const now = () => "2026-09-07T10:00:00.000Z";
+
+test("invalid or duplicate restoration directives refuse before any attempt", async () => {
+  for (const invalid of [
+    null,
+    { ...plan, unexpected: true },
+    { ...plan, ingressApplicationId: "invalid" },
+    { ...plan, surfaceOrder: ["database", "database", "ingress"] },
+    { ...plan, resumeQueues: [...plan.resumeQueues, ...plan.resumeQueues] },
+  ]) {
+    let attempts = 0;
+    const refused = async (): Promise<never> => {
+      attempts++;
+      throw new Error("must not execute");
+    };
+    await expect(
+      executeKaraokeFenceRelease({
+        plan: invalid,
+        now,
+        surfaces: { ingress: refused, producers: refused, database: refused },
+        onAttempt: () => {
+          attempts++;
+        },
+      }),
+    ).rejects.toThrow();
+    expect(attempts).toBe(0);
+  }
+});
+
+test("unproven confirmation time stops the release after one surface", async () => {
+  for (const releasedAt of ["invalid", "2026-09-06T10:00:00.000Z", "2026-09-08T10:00:00.000Z"]) {
+    let attempts = 0;
+    const run = async () => {
+      attempts++;
+      return { surface: "database" as const, releasedAt, receipt: "provider-receipt" };
+    };
+    const result = await executeKaraokeFenceRelease({
+      plan,
+      now,
+      surfaces: { ingress: run, producers: run, database: run },
+    });
+    expect(result.disposition).toBe("unresolved");
+    expect(attempts).toBe(1);
+    expect(result.receipts).toHaveLength(0);
+  }
+});
+
+test("an unproven SQL effect retains stage and SQLSTATE without driver text", async () => {
+  const records: unknown[] = [];
+  const fail = async (): Promise<never> => {
+    throw new KaraokeReleaseFailure(
+      "database-commit",
+      Object.assign(new Error("private driver text"), { code: "40001" }),
+    );
+  };
+  const result = await executeKaraokeFenceRelease({
+    plan,
+    now,
+    surfaces: { database: fail, producers: fail, ingress: fail },
+    onAttempt: (record) => records.push(record),
+  });
+  expect(result.disposition).toBe("unresolved");
+  expect(result.receipts).toHaveLength(0);
+  expect(records.at(-1)).toEqual({
+    surface: "database",
+    phase: "uncertain",
+    failure: { stage: "database-commit", sqlstate: "40001" },
+  });
+  expect(JSON.stringify(records)).not.toContain("private driver text");
+});
+
+test("changed provider evidence cannot produce a receipt", async () => {
+  const execute = async () => ({
+    surface: "database" as const,
+    releasedAt: now(),
+    receipt: "a".repeat(64),
+    providerEvidence: "different evidence",
+  });
+  const result = await executeKaraokeFenceRelease({
+    plan,
+    now,
+    surfaces: { database: execute, producers: execute, ingress: execute },
+  });
+  expect(result.disposition).toBe("unresolved");
+  expect(result.receipts).toHaveLength(0);
+});
+
+test("a backward clock step between surfaces refuses before the next executor starts", async () => {
+  let clock = "2026-09-07T10:00:10.000Z";
+  let reads = 0;
+  let mutations = 0;
+  const execute = async () => {
+    mutations++;
+    return { surface: "database" as const, releasedAt: clock, receipt: "provider-proof" };
+  };
+  const result = await executeKaraokeFenceRelease({
+    plan,
+    now: () => {
+      if (++reads === 3) clock = "2026-09-07T10:00:09.000Z";
+      return clock;
+    },
+    surfaces: { database: execute, producers: execute, ingress: execute },
+  });
+  expect(result.disposition).toBe("unresolved");
+  expect(result.receipts).toHaveLength(1);
+  expect(mutations).toBe(1);
+});

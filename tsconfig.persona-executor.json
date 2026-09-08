@@ -1,0 +1,20 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "packages",
+    "apps",
+    "scripts/staging-persona-phased-reset.pg.test.ts",
+    "scripts/staging-persona-session-drain.pg.test.ts",
+    "scripts/staging-persona-rehearsal-failure.test.ts",
+    "scripts/staging-karaoke-reset-binding.test.ts",
+    "scripts/staging-karaoke-reset-binding.ts",
+    "scripts/staging-karaoke-release-operation.ts",
+    "scripts/staging-karaoke-release-operation.test.ts",
+    "scripts/staging-karaoke-release-binding.ts",
+    "scripts/staging-karaoke-release-binding.test.ts",
+    "scripts/staging-karaoke-release-claim.test.ts"
+    ,"scripts/staging-karaoke-release-database.pg.test.ts"
+    ,"scripts/staging-persona-reset-denied-grants.pg.test.ts"
+    ,"scripts/staging-karaoke-repository-root.test.ts"
+  ]
+}

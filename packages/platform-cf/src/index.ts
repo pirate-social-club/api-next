@@ -274,6 +274,7 @@ export {
 } from "./postgres";
 export {
   applyPostgresMigrations,
+  applyPostgresMigrationsInTransaction,
   type MigrationApplyResult,
   MigrationDefinitionInvalid,
   MigrationLedgerMismatch,

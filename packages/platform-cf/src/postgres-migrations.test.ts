@@ -8,6 +8,7 @@ import { Cause, Effect, Exit, Result } from "effect";
 
 import {
   applyPostgresMigrations,
+  applyPostgresMigrationsInTransaction,
   MigrationLedgerMismatch,
   type PostgresMigration,
 } from "./postgres-migrations";
@@ -47,6 +48,34 @@ function failureOf<A, E>(exit: Exit.Exit<A, E>): E {
 }
 
 describe("Postgres migration ledger prefix", () => {
+  test("supplied transaction form needs no database service and emits no transaction control", async () => {
+    const statements: ControlPlaneStatement[] = [];
+    const transaction = {
+      execute: <Row = unknown>(statement: ControlPlaneStatement) => {
+        statements.push(statement);
+        return Effect.succeed({ rows: [] as readonly Row[], rowCount: 0 });
+      },
+    };
+    const result = await Effect.runPromise(
+      applyPostgresMigrationsInTransaction(transaction, [first, second]),
+    );
+    expect(result).toEqual({
+      applied: [first.version, second.version],
+      currentVersion: second.version,
+    });
+    expect(statements.map((statement) => statement.label)).toEqual([
+      "postgres.migrations.ensure-ledger",
+      "postgres.migrations.read-ledger",
+      "postgres.migrations.0001.sql.apply",
+      "postgres.migrations.0001.sql.record",
+      "postgres.migrations.0002.sql.apply",
+      "postgres.migrations.0002.sql.record",
+    ]);
+    expect(statements.some((statement) => /^(BEGIN|COMMIT|ROLLBACK)\b/.test(statement.text))).toBe(
+      false,
+    );
+  });
+
   test("rejects a ledger containing only 0002 when 0001 is the defined prefix", async () => {
     const result = await Effect.runPromiseExit(
       applyPostgresMigrations([first, second]).pipe(

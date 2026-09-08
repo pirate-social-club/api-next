@@ -141,3 +141,201 @@ history and key non-reuse. Observation-normalization helpers are not those
 collectors. The operator lane implements read-only inspection and the private
 store adapter/CLI. No reset admission, release descendant or live window is
 claimed until those implementations and fresh proofs are reviewed.
+
+
+## Initial journal command
+
+The runner's default collector also accepts `record-karaoke-fence
+--run-directory <private-directory>` through the same verified-stdin boundary.
+The dedicated `scripts/staging-karaoke-record-fence-cli.ts` selects it only with
+`--record-fence`. It records fresh,
+authenticated provider and SQL observations locally and returns no reset
+execution authority. Its private configuration begins with a null retained
+journal head, empty baseline IDs and empty six-object pass history. The parent
+validates the signed resulting head and challenge, then returns the six baseline
+IDs for independent retention. Initialization refuses an existing journal.
+The collector checkpoint document records the two-write interruption boundary
+and the still-unimplemented pass/reset/release command integration.
+
+
+## Observation passes
+
+The default stdin program accepts `record-karaoke-pass` under the same private
+configuration and authenticated challenge protocol. The dedicated pass CLI
+supplies only the closed phase post-fence or pre-reset. R2 credentials remain in
+the child environment and must be separately scoped to the learner-audio staging
+bucket. The child observes rather than cleans. Signed scoped artifacts retain
+both R2 reads, the original installation receipt, SQL non-reuse observation,
+fence readbacks and challenge. Each journal append checks the exact current
+head; the parent verifies the six-entry extension and challenge, then runs the
+real reconciliation verifier. This does not add a reset or release command.
+
+## Cleanup pass
+
+The default stdin program also accepts `record-karaoke-cleanup
+--run-directory <private-directory>` through the verified-stdin boundary, with
+the dedicated `scripts/staging-karaoke-record-cleanup-cli.ts` as its explicit
+parent. Cleanup runs only in the post-fence phase: it is the authorized way to
+remove exact-key remnants that an observation pass recorded as incomplete, and
+the pre-reset pass must still observe empty afterward.
+
+The child reuses the admission, fence, marker, non-reuse and history checks of
+an observation pass, then for each of the six frozen objects observes the bucket,
+cleans, and observes again. Actions derive from the verified before-observation
+only: the cleaner aborts exactly the observed uploads of the exact
+`karaoke/<account>/<attempt>.pcm` key and deletes that key only when its head
+was present. Adjacent keys sharing the prefix are never removal authority. Each
+action retains its provider response receipt, including status and request ID.
+A failed or unexpected provider response records a `failed` action and an
+`incomplete` receipt rather than a silent retry; a response lacking a request
+receipt aborts the command because the evidence cannot be constructed
+truthfully.
+
+Cleanup requires two separately scoped credential pairs in the child
+environment: the observer's read pair (`KARAOKE_COLLECTOR_R2_ACCESS_KEY_ID` /
+`KARAOKE_COLLECTOR_R2_SECRET_ACCESS_KEY`) for before/after evidence, and a
+cleanup pair (`KARAOKE_CLEANUP_R2_ACCESS_KEY_ID` /
+`KARAOKE_CLEANUP_R2_SECRET_ACCESS_KEY`) that signs only the delete-side
+requests. A read-scoped pair cannot clean, and the cleanup pair never signs an
+observation.
+
+Evidence durability precedes mutation. Before any provider write the pass
+retains a durable content-addressed intent artifact naming the exact key,
+observed upload IDs and head state; after every single attempt it retains the
+attempt result as it happens, including an `uncertain` outcome when a request
+was sent and no verified response receipt exists. These sidecars are fsynced
+mode-0600 files in the private store even when the journal never advances, so
+timeout, later-target failure, lost fence, concurrent advance or process death
+cannot erase the action history. Re-observing an empty bucket never
+reconstructs that evidence. Recovery is still a fresh pass over actual state;
+an upload already gone at abort time is retained as a `not-found` action.
+
+Cleanup sidecars now carry the pinned collector signature, residual
+disposition and exact journal predecessor as well as target scope. Cleanup
+and observation passes discover and authenticate that history, verify action
+links to their original intents, and embed the exact signed originals in the
+new pass evidence. This includes interrupted intents and uncertain responses;
+neither becomes a successful action or replaces fresh before/after reads.
+Unsigned historical sidecars refuse automatic recovery and require explicit
+review; they are never silently signed on retry. Foreign lineage, wrong scope,
+changed digests and action/key mismatches also refuse. Original files remain
+immutable. Concrete live reset/release bindings remain unfinished.
+
+Phase eligibility is checked before any mutation: cleanup refuses while any
+target's latest receipt is beyond post-fence, so a backward transition cannot
+mutate R2 before the verifier would reject it. The parent verifies the six
+signed pass entries and challenge exactly as for an observation pass, and
+every result still denies reset execution authority.
+
+## Reset, retirement and release origins
+
+The journal's `reset-verified`, `all-retired` and `released` entries originate
+only from authenticated commands that re-verify the journal through the real
+reconciliation verifier before appending, under the same challenge protocol,
+exact-head append guard and sixty-second bound as every other entry. A signed
+observation or an `executionAuthorized: false` result is never execution
+authority. Reset and retirement origins record verified operations or
+readbacks. The release origin invokes its trusted executing port only after
+admission; that port still has test bindings only, not a live composition.
+
+`recordKaraokeResetVerification` admits only when the verifier finds all six
+targets pre-reset complete under a maintained fence, then retains the trusted
+reset-executor completion (server version, terminal migration, ledger digest
+and exact zero persona counts with an evidence digest) plus fresh fence, six
+marker inspections and after-reset SQL non-reuse readbacks. The completion port
+has no live binding yet: wiring it to the phased executor's verified output is
+part of the live ceremony composition, and a caller-supplied completion shape
+remains refused.
+
+`record-karaoke-retirement` (with `scripts/staging-karaoke-record-retirement-cli.ts`)
+originates `all-retired` from fresh readbacks of all six retired markers under a
+maintained fence, after the verifier confirms retirement-phase completion for
+every target. A marker that regressed to active refuses the milestone.
+
+`recordKaraokeFenceRelease` originates `released` in three durable stages,
+every stage an Ed25519-signed sidecar bound to this ceremony's epoch, bucket,
+residual disposition and journal predecessor. Intent observes the last held
+fence and retains that proof before the trusted binding runs. Execution
+evidence is retained immediately after the binding performs or verifies the
+release. Recovery is selected from an authenticated pending intent before any
+fence observation — the concrete collectors throw when fencing is absent, and
+an observation error is never proof of release — and the pending intent is
+passed explicitly to the read-only reconciliation port
+(`reconcileReleasedFence`), which never executes again. The port returns an
+explicit intent-bound disposition — released, positively verified
+not-executed, or unresolved — and only a durable, signed not-executed
+disposition permits one fresh execution under full admission checks; a held
+fence alone is never such a disposition. Timeouts, malformed evidence and
+persistence failures remain unresolved and never re-execute, because signing
+and artifact persistence stay outside any outcome handling. A sidecar must
+hash to its content-addressed filename, carry the pinned key's signature, and
+reference a predecessor inside this journal, so fabricated, modified and
+cross-ceremony records refuse. The actual release time postdates the
+retirement milestone and the intent's held-fence proof — not entries a
+concurrent writer may have signed after the release — so lost responses,
+later appends and read-only reconciliation recover together. Journal entries
+keep monotonic recording timestamps while every manifest derives its
+operational `releasedAt` from the authenticated release evidence, and the
+verifier requires exact agreement with that time. The release port has no
+live binding or authenticated live command path yet.
+
+Invalid pending-intent fence facts refuse before any current fence read.
+Fresh execution accepts only a new ceremony or an authenticated not-executed
+disposition. The recovery scanner admits not-executed records through the same
+signature, digest, scope and lineage checks as intents and execution records.
+Their intent closures survive interruption before fresh admission; restarting
+does not require reconciling an already closed intent again. Original intent
+and disposition files remain retained after recovery.
+
+Each new release intent also signs the exact restoration-plan digest, a
+unique nonce, and the preceding not-executed disposition digest, or null for
+the initial intent. Execution, cancellation and recovery receive the digest
+of those signed intent bytes. A missing or changed plan binding refuses;
+older unbound intents are not migrated or silently re-signed. Unknown record
+kinds claiming the release prefix refuse recovery.
+
+The ceremony claim is created exclusively in the anchored private directory.
+Both the claim file and its parent directory are fsynced before execution is
+granted. Failed or partial persistence never permits another execution. A
+cancelled claim can advance only to a fresh signed intent naming its signed
+not-executed closure. Under the exclusive journal lock, the transition compares
+the exact previous bytes, archives both claims, fsyncs the replacement, renames
+it and fsyncs the directory. The old cancellation remains content-addressed
+evidence. Process death while holding the lock leaves it for explicit recovery;
+there is no automatic stale-lock takeover.
+
+The operation decodes the strict restoration plan before any attempt, refuses
+duplicate targets and bounds each surface confirmation to its invocation.
+Successful execution also independently observes all three surfaces restored.
+These confirmation timestamps are not provider mutation timestamps; their
+equivalence to the verifier's operational release boundary remains unaccepted.
+Authenticated provider transports and the live command composition remain
+unfinished. These filesystem and fixture tests grant no live authority.
+
+## Retirement and follow-up passes
+
+The observation pass accepts the closed phases `retirement` and `follow-up` in
+addition to post-fence and pre-reset. Retirement-phase passes require retired
+markers and retired installation receipts, verify after-reset SQL non-reuse,
+and run while the journal is reset, retired or released. A follow-up pass
+requires a recorded release; before release the pass refuses rather than
+fabricating release evidence. Post-release receipts cite the historical
+retained fence and release evidence and never claim that normal writes remain
+disabled. The verifier enforces the genuine 24-hour boundary between the last
+clean retirement baseline and any follow-up pass, and a follow-up that arrives
+early is refused before any journal append.
+
+## Live release command
+
+`record-karaoke-release` composes the authenticated origin with the concrete
+database, producer and ingress transports. The parent release CLI requires
+the fresh release-challenge and release-plan artifacts in the signed journal,
+then runs the real reconciliation verifier. The full private restoration
+directives are bound into the signed plan through restorationDigest; older
+fixture plans without it cannot enter the live composition.
+
+The explicit confirmation flag is `--release-fence`. No default target, grant,
+version or Access reversal is invented. Provider response failures yield no
+completed surface receipt. Retained failure evidence contains only an internal
+stage and SQLSTATE where available. See the signed-collector document for the
+private configuration contract and the release-time document for clock bounds.

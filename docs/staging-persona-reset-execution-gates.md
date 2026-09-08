@@ -1,0 +1,355 @@
+# Staging reconstruction execution gates
+
+This is an operator handoff, not an executable authorization receipt. The fixed
+release remains API ba0fd44529d834f491879126cdb8c67c4ec9fcdc and Solid
+fa5ce5eff47967efb5f13c04de01e75293d3e230, through migration 0119. Do not use
+current main to expand the release. Production is not a target.
+
+Current disposition — 2026-09-06. The owner-approved
+[phased amendment](staging-persona-phased-reset-amendment.md) supersedes the
+atomic mechanism and the unadopted phase proposal recorded below. Those two
+sections retain historical measurements, not current execution instructions.
+The internal phased executor is locally proven, but this document is still not
+a live runbook: trusted admission collectors, complete maintenance artifacts,
+provider
+recovery rehearsal and final publication gates remain unfinished. Table locks
+are per removal batch, not held over the whole reset; the continuous producer
+fence is essential. Recovery after committed partial progress means restoring
+the verified capture, not rolling back an earlier transaction or resuming.
+
+Review this handoff together with the phased amendment and
+[privilege proposal](staging-persona-runtime-privileges.review.md). Before
+capture, explicitly resolve whether an external HNS provisioner writes staging;
+if so, its direct SQL connection belongs to the fence as well. Queue purge
+was separately approved on 2026-09-06 for the four exact staging queues below.
+No approval of a proposal
+or passing local suite replaces a provider execution receipt.
+
+## Historical combined transaction proof and capacity
+
+The internal reconstructStagingInTransaction body validates pinned artifacts,
+the direct SQL identity, schema OID, exact 0109 ledger and approved default-ACL
+fingerprint. It removes supported objects, compares the outside catalog before
+and after removal, restores the search path, calls the supplied-transaction
+migration library on the same connection, compares the schema against an
+isolated pinned-baseline measurement, restores only reviewed grants, verifies
+the outside catalog again, and checks the ledger and empty persona evidence.
+It neither opens a connection nor commits. The caller must roll back every
+failure. It is not the missing provider/fence/recovery admission layer.
+
+A local PostgreSQL 17 reconstruction from populated 0109 exhausted shared lock
+memory at migration 0052 with SQLSTATE 53200. The server had
+max_locks_per_transaction=64 and max_connections=100. With the test server
+configured at 512 and 100, the combined tests pass while retaining the one-CPU,
+512-MiB container limit. The successful tests use a non-superuser object owner
+and separately authenticated runtime role. Final-verification failure restores
+the original account, grants and 0109 ledger. The two-minute statement timeout
+is a test choice, not a measured provider limit.
+
+At 2026-09-05T20:09:28.687Z, a rolled-back read through the staging operator
+credential still matched all 109 checksums and reported max_locks_per_transaction
+64, max_connections 25 and max_prepared_transactions 0. No provider setting was
+changed. The current live capacity is below the already-failing local setup.
+Do not attempt the destructive transaction there. Obtain a provider-supported
+capacity disposition and rehearse the entire transaction against restored data
+at that exact capacity first. Raising a local test setting does not authorize
+changing PlanetScale. Splitting the reset into commits would change the approved
+atomic mechanism and is not an automatic fallback.
+
+The transaction body's minimumLockTableEntries must come from the successful
+trusted rehearsal, not a submitted JSON claim. The corresponding settings product
+is a conservative precondition, not a guarantee that entries are available.
+Keep the producer fence and bounded locks; any resource error still aborts.
+PostgreSQL describes this shared pool in its
+[lock-management documentation](https://www.postgresql.org/docs/17/runtime-config-locks.html).
+CI initializes its disposable general-test service with the larger setting using
+[initdb's --set option](https://www.postgresql.org/docs/17/app-initdb.html).
+
+## Historical measured phase proposal
+
+The local-only command `rtk proxy bun scripts/staging-persona-lock-measure.ts
+--local-measure` measures separate removal of populated 0109 and fresh replay
+of 0001–0119. It accepts only the local test URL, creates UUID-named disposable
+databases, rolls removal back and deletes only those databases. It does not
+change the reset executor. A separate observer samples pg_locks every 20 ms;
+the counts are observed lower bounds and may miss transient peaks. Distinct
+lock tags, lock rows and shared-memory capacity are not interchangeable exact
+accounting units, so these numbers must not automatically choose a batch size.
+
+On PostgreSQL 17.11 configured at 512/100/0, removal reached 10,728 rows,
+10,711 non-fast-path rows and 10,728 distinct lock tags in 109 samples over
+5,148 ms. Fresh replay reached 6,840 rows, 6,825 non-fast-path rows and 4,598
+distinct tags in 61 samples over 2,471 ms. Each measurement ran alone in the
+one-CPU, 512-MiB local container. Its setting override was reset afterward and
+the container stopped. The first sampling attempt failed on PostgreSQL's xid
+comparison inside a composite DISTINCT; casting the transaction ID to text
+fixed the observer, and the full measurement rerun passed.
+
+Removal alone therefore needs investigation; batching only replay is not a
+demonstrated solution at staging's last observed 64/25/0 settings. Fresh staging
+inventory and settings reads in this follow-up failed and did not re-establish
+those settings. The final attempt failed during connection with SQLSTATE 53300
+(too many connections), before any settings query. No session was terminated
+and no provider parameter changed.
+
+PlanetScale's parameter table is explicitly the default-visible list, with
+additional parameters searchable. Absence of max_locks_per_transaction from
+that table does not prove it unavailable. max_connections is documented as
+configurable with restart, but attainable bounds and memory cost need checking;
+see the [provider parameter reference](https://planetscale.com/docs/postgres/cluster-configuration/parameters).
+
+A phased reset changes the approved rollback mechanism and needs an explicit
+amendment before implementation. A strict-prefix ledger is accepted by the
+migration runner: it neither fences runtime nor refuses a naive rerun. The
+amendment must specify a durable progress marker surviving removal, its trusted
+reader and start/rerun refusal, continuously maintained producer fencing, no
+automatic resumption, and independently rehearsed recovery after a committed
+partial reset. Final ledger checks alone do not establish these properties.
+The current executor remains atomic; no phased reset or connection increase
+is authorized by this measurement.
+
+## Approved privilege policy
+
+The owner ratified the proposal on 2026-09-06. The approved-privileges compiler
+and phased executor now implement the explicit routine addition, ledger-write
+denial, effective runtime checks and in-place schema authority. The historical
+inventory and proposal rationale below remain evidence; their requests for
+approval are superseded by that ratification, not by inferred old ACLs.
+
+The pinned migration chain issues no named runtime GRANT statements. The older
+rebuild's copied ACLs are evidence, not policy. The composed body supports only
+an explicitly approved keep disposition for the exact default-ACL fingerprint;
+it does not silently remove or rewrite defaults.
+
+The same staging observation found two api_next-scoped default ACL records
+owned by the operator. One grants SELECT, UPDATE and USAGE on future sequences;
+the other grants SELECT, INSERT, UPDATE and DELETE on future tables. Neither
+has grant option. A second read at 2026-09-05T20:14:11.470Z used the actual SQL
+session identity instead of PlanetScale's branch-suffixed connection username
+and confirmed both grantees are the runtime role. The earlier other-role label
+was an observer attribution error, not evidence of a misconfigured database.
+Recommendation: keep those defaults for the paired rollout, subject to explicit
+review of the ledger-table consequence below. The recorded default-ACL digest
+is f0973701f1b93a794190b0a16ab24126ff6bda647a0d4476f6a00f9d75b2329d.
+
+The coordinator must present a role/object/privilege manifest derived from
+runtime operations, with the actual runtime identity independently bound. No
+database CREATE, schema CREATE, ownership, TRUNCATE, grant option or historical
+privilege is justified merely by its presence in the old catalog. An absent
+required grant stops reconstruction; it is never inferred or fabricated.
+
+The offline draft is docs/staging-persona-runtime-privileges.draft.json,
+reproduced by `rtk proxy bun scripts/staging-persona-privilege-proposal.ts --draft`.
+It lists the schema, 349 product tables and two identity sequences from the
+exact baseline. It is a broad application-runtime proposal, not a per-operation
+least-privilege proof. It excludes runtime ledger writes and identifies the
+routine and ledger-override decisions still needed; it is not executable or an
+approved manifest. The owner is asked to review the coordinator's proposal,
+not produce this list from scratch.
+
+## Maintained producer fence
+
+Read-only checks on 2026-09-06 matched the fixed provider database and branch,
+operator/runtime SQL identities and Hyperdrive origin. Hyperdrive caching was
+disabled. This establishes target identity only, not a fence or recovery.
+SSH correction on 2026-09-06: the failed invocation was root@94.103.168.161,
+not the documented operator login. SSH_AUTH_SOCK is available; ubuntu connects
+noninteractively to 94.103.168.161, 81.15.150.159 and 94.103.168.209, and
+sudo -n read-only inspection succeeds. No key repair or transfer is needed.
+The external-producer inventory is recorded in
+[the host inspection](staging-persona-external-producer-inventory.md).
+Target binding and maintained service fencing are still separate from access.
+
+Wrangler 4.123.0 command help and the official queue/workflow references were
+checked for this handoff. Commands below belong to the release coordinator,
+after a reviewed maintenance artifact and receipts exist. They are not actions
+the workspace owner needs to paste or run now.
+
+The fixed staging closure is the HTTP, jobs, media-processor and
+data-registration Workers. All bind Hyperdrive
+8cb7658a0f7143359c1becfec6a15c23. The pinned jobs cron is every minute.
+HTTP has the study-generation Workflow, even though generation is disabled in
+the pinned configuration. Jobs can produce media and DATA messages and consume
+both dead-letter queues. Pause all four queues, not only the two primary queues:
+
+```sh
+rtk proxy bunx wrangler queues pause-delivery pirate-media-processing-staging --env staging
+rtk proxy bunx wrangler queues pause-delivery pirate-data-registration-staging --env staging
+rtk proxy bunx wrangler queues pause-delivery pirate-media-processing-staging-dlq --env staging
+rtk proxy bunx wrangler queues pause-delivery pirate-data-registration-staging-dlq --env staging
+```
+
+For each exact queue, reversal is the same command with resume-delivery in place
+of pause-delivery, but only after release verification. Purge requires a separate
+explicit disposition and retained receipts, using queues purge on each of those
+four names. Never use a wildcard, and do not add --force by default. Queue purge
+does not stop in-flight processing or guarantee deletion of concurrently sent
+messages; [Cloudflare documents those limits](https://developers.cloudflare.com/queues/configuration/pause-purge/).
+
+The maintenance HTTP artifact must answer 503 except health while preserving
+the reviewed bindings and routes. The jobs maintenance configuration must have
+an empty cron list. These artifacts and exact version receipts are still
+required; a documented intent to disable them is not a fence. Capture current
+versions, trigger configuration and reversal before promotion. Verify callbacks,
+Durable Object alarms, probes and other direct producers cannot write. Do not
+use a minimal Worker deployment that silently removes existing bindings.
+
+List all pages of instances for pirate-study-generation-staging,
+pirate-media-processing-staging and pirate-data-registration-staging:
+
+```sh
+rtk proxy bunx wrangler workflows instances list pirate-study-generation-staging --env staging --page 1 --per-page 100
+rtk proxy bunx wrangler workflows instances list pirate-media-processing-staging --env staging --page 1 --per-page 100
+rtk proxy bunx wrangler workflows instances list pirate-data-registration-staging --env staging --page 1 --per-page 100
+```
+
+Reconcile every nonterminal instance, including paused and queued ones, under
+the approved disposition. The command is workflows instances terminate followed
+by the exact workflow name and observed instance ID. Do not manufacture IDs or
+restart terminated old-dataset work after reset. Capture terminal-state readback;
+[the command reference](https://developers.cloudflare.com/workers/wrangler/commands/workflows/)
+does not make one list page proof of complete enumeration. Termination cannot
+undo an already-started external provider effect.
+
+Check Hyperdrive caching read-only and record whether it is disabled. Session
+counts are observations, not the decisive lock probe. The phased reset locks
+the current relation root before its DROP, rejects prepared transactions, and fails
+on a short lock timeout rather than retrying into an uncertain fence. Locks do
+not prevent new producers, sequence calls or new DDL; Worker-level maintenance
+is still essential. Every failure leaves that fence in place.
+
+## Recovery and release
+
+Before destruction, independently bind provider, SQL, credential and Hyperdrive
+identities; make and retain a fresh data-bearing capture inside the maintained
+fence; restore to an isolated branch; verify extensions, data, ACLs and ledger;
+then run the completed reconstruction there with measured capacity and wall time.
+Exercise interruption between committed replay batches and actual restoration
+from capture there. Transaction rollback is not the phased recovery guarantee.
+Local tests do not replace it.
+
+Only after all admission gates and independent review pass may the parent
+rollout execute staging reconstruction, read the committed evidence through a
+fresh connection, deploy the pinned API and Solid pair, and lift the fence.
+Require authenticated product proofs and fresh posts/idempotency keys. No live
+reset, queue purge, Workflow termination, deployment or recovery resource was
+performed while writing this handoff.
+
+## Version-independent HTTP fence candidate
+
+Cloudflare's [Worker-level Access documentation](https://developers.cloudflare.com/workers/configuration/cloudflare-access/)
+now describes a single-Worker destination covering custom domains, workers.dev
+and previews. This is a candidate for the persistent fence; it is not installed
+or verified. Scope only the resolved pirate-http-worker-staging Worker ID with
+an inline deny-everyone policy. Never choose an account-wide destination.
+Inventory more-specific hostname/path Access applications first, since they
+override Worker-level Access. Existing applications must not be overwritten.
+Record the newly created application ID for exact reversal and prove denial
+on every public ingress before capture and after each normal-code deployment.
+
+The displayed Wrangler OAuth permissions have no Access application scope.
+Nevertheless, a read-only account Access-app inventory on 2026-09-06 returned
+HTTP 200, success true and total_count zero (page one, per_page 1000,
+total_pages zero). The existing token stayed in memory and only pagination
+metadata was emitted. No write was attempted: installation authority is
+unproven, not established absent. Exact Worker-ID resolution, a fresh
+precedence inventory and executable receipts remain outstanding. The reviewed
+fence must also account for service-binding callers separately.
+
+A deny-all control blocks health too. Do not silently weaken it with a health
+bypass: either review the denial itself as the ingress probe and use independent
+deployment evidence, or explicitly review a strictly read-only health exception.
+Neither alternative changes the queue, Workflow, cron, helper or recovery gates.
+
+Read-only provider metadata resolves the HTTP Worker ID to
+7ada21fbaf794466bae2eda487299555, with custom domain api-next-staging.pirate.sc
+and workers.dev hostname pirate-http-worker-staging.piratesocialclub.workers.dev;
+preview ingress is disabled. No service bindings were reported on the four
+staging Workers. This does not enumerate external HTTP or direct SQL callers.
+
+The Karaoke alarm boundary is not hypothetical. The staging namespace
+d692b9d32ecc4cb4825510bde88cf97a, named
+pirate-http-worker-staging_KaraokeAttemptDO, contains six objects across two
+cursor pages, with stored data present. Source alarm calls flushOutbox, which
+can finalize an attempt and reconcile a recording through Hyperdrive, then
+reschedule retries. Object enumeration does not reveal pending outboxes or
+alarms. No object was invoked, deleted or modified. HTTP Access alone does not
+fence this producer; a reviewed alarm/outbox disposition and execution receipt
+remain required before the live window. The
+[alarm API](https://developers.cloudflare.com/durable-objects/api/alarms/)
+requires explicit alarm cancellation; normal HTTP denial is not cancellation.
+
+The repeated two-page inventory returned the same six IDs with hasStoredData
+true on every object. SHA-256 of JSON.stringify of the sorted ID list is
+a909a00a14555f0152ce5bc9deb986eef0c4ffb2c50a8a7d6cf25343c26b05db.
+The platform maintenance primitive pins that exact list and namespace; arbitrary
+six-ID caller input is not accepted. It retains a pre-cancellation observation,
+requires exclusive cancellation and socket readback, and requires all six fresh
+post-drain observations to show elapsed finite expiry, no alarm and no sockets.
+Unknown authority is not classified as expired. This primitive has no deployed
+class adapter, RPC admission or HTTP entrypoint and is not a live fence.
+
+Source review found no sufficient fixed drain duration. The pinned Jobs
+recovery has a 45-second caller timeout and at most 50 sequential candidates,
+but an interrupted Durable Object RPC can outlive its caller. Do not use that
+timeout as proof of drain. The maintained closure must cover already-started
+RPCs and delayed alarm delivery, and read the objects again after drain and
+expiry. Cloudflare also documents that getAlarm can return null while an
+alarm is running; null alone is not proof that no finalization is active.
+Temporary-class deployment, event admission and pre-reset rollback still need
+independent review. Do not delete business storage, infer cancellation from
+HTTP denial, or alter the approved normal API sources as a silent workaround.
+
+Independent source review confirms that expiry is a finalization trigger, not
+a write denial. Old objects can mutate their SQLite state and complete R2 work
+before a fresh-schema foreign key rejects their PostgreSQL transaction.
+Consequently the maintenance snapshot primitive cannot authorize restoring
+the unchanged normal class and lifting the fence. A durable per-object
+maintenance marker must be respected before constructor mutations and every
+producer entrypoint, including alarm, RPC and WebSocket callbacks. Introducing
+that guard requires a reviewed release-pin amendment. Until that amendment is
+implemented and reviewed, the live reset remains blocked; no temporary class
+has been deployed and no object has been invoked or changed by this lane.
+
+The reviewed implementation boundary is a separate runtime change, not an
+expansion of this tooling lane. Keep the existing class and namespace. Store
+a versioned marker outside the object's business SQL tables, before cancelling
+alarms or closing sockets. Both active and permanently retired markers deny
+constructor business initialization, alarm work, RPCs, WebSocket callbacks,
+Hyperdrive and R2 effects. Malformed markers also deny work. Retirement is
+monotonic and has no implicit clear or delete operation. If any of the six
+objects cannot be marked and verified, the external producer fence stays held.
+
+Keep migration artifacts pinned to ba0fd445. Both normal API release lines
+need reviewed descendants carrying the same guard protocol; record their
+exact SHAs separately from the migration-source SHA. Do not substitute a newer
+migration chain. After successful reset and release verification, permanently
+retire the six discarded-session objects before lifting the global fence.
+Recovery after failure restores the database capture while retaining the
+object markers. It does not promise restoration of discarded session behavior:
+the provider database capture does not include Durable Object or R2 state.
+
+Required runtime tests include marked constructor and all producer entrypoint
+denial, queued alarms after deployment, malformed-marker denial, generation
+and object mismatch, failed cancellation retaining the marker, monotonic
+retirement, and both amended releases preserving the same marker protocol.
+An authenticated operator entrypoint and its staging-only admission need
+independent review; this document does not introduce a public control route.
+
+The owner-requested smaller disposition now has a real PostgreSQL 17
+counterexample test in staging-persona-reconstruct.pg.test.ts. Against the
+pinned reset baseline, with an account but no Karaoke session or recording,
+the actual repository's score finalization returns a constraint failure and
+leaves zero attempts. Stored-recording reconciliation succeeds and commits
+one learner_audio_artifacts row while sessions and recordings remain empty.
+The artifact has an account FK but no session FK; the subsequent recording
+UPDATE does not require an affected row. This disproves the broad assertion
+that a missing session prevents every central write.
+
+The fixture uses the operator and synthetic abandoned-session input. It is
+not runtime-ACL evidence, not evidence that the final empty reset contains
+an account, and not a live provider reproduction. It isolates schema behavior
+with an existing account. The focused test passed with eight assertions;
+repository check passed with the existing 41 warnings. No runtime fix, marker
+or provider action was introduced. The smaller disposition still needs
+explicit treatment of all producer effects, not just attempt-row counts.

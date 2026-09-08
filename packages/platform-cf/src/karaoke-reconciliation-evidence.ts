@@ -42,7 +42,7 @@ export interface KaraokeReconciliationEvidencePort {
   readArtifact(id: string): Promise<string>;
 }
 
-const ResidualDisposition = Schema.Struct({
+export const ResidualDisposition = Schema.Struct({
   version: Schema.Literal("staging-karaoke-residual-disposition-v1"),
   namespaceId: KaraokeResetTarget.fields.namespaceId,
   generation: KaraokeResetTarget.fields.generation,

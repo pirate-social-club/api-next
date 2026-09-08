@@ -1,0 +1,4237 @@
+{
+  "version": 1,
+  "status": "draft_requires_owner_review",
+  "execution_authorized": false,
+  "source_sha": "ba0fd44529d834f491879126cdb8c67c4ec9fcdc",
+  "baseline_sha256": "8d680727f9869a1b9fe24a76674f29306e527df90b5506ebdc574dec88250102",
+  "role_binding": "runtime SQL identity must be independently verified before use",
+  "rationale": "Shared application runtime reads and mutates product tables; migrations and schema ownership remain operator-only. This broad per-table proposal is not a claim of minimum privileges for every individual operation.",
+  "default_acl_recommendation": "Keep the two observed runtime defaults for the paired rollout, subject to explicit owner approval; assess tighter per-operation privileges separately.",
+  "observed_default_acl_sha256": "f0973701f1b93a794190b0a16ab24126ff6bda647a0d4476f6a00f9d75b2329d",
+  "entries": [
+    {
+      "role": "runtime",
+      "object": "api_next",
+      "kind": "schema",
+      "privileges": [
+        "USAGE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.account_aliases",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.account_language_preferences",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.account_minimum_age_attestations",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.account_streak_clocks",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.account_streak_timezone_actions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.action_challenges",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.action_grants",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.action_intents",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.active_subject_key_bindings",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.activity_qualifications",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.activity_registry",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.assertion_bindings",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.assertion_revalidation_events",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.assertions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.comment_moderation_actions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.comment_moderation_cases",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.comment_publication_projection",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.comment_reports",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.comments",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.communities",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_canonical_route_bindings",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_commerce_allocation_policy_versions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_commerce_donation_partners",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_commerce_donation_policy_versions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_commerce_eligibility_policy_versions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_commerce_listings",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_commerce_money_route_policy_versions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_commerce_operator_ledger",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_commerce_policy_revisions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_commerce_pricing_policy_versions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_commerce_settlement_policy_versions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_content_reports_v2",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_creation_ceremony_attempts",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_creation_ceremony_results",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_creation_intent_revisions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_creation_intents",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_creation_quota_approvals",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_creation_requirement_states",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_creation_subject_claims",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_feed_projection",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_follows",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_handle_offering_actions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_handle_offering_current",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_handle_offering_revisions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_handle_sale_namespace_activation_actions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_handle_sale_namespace_activation_current",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_handle_sale_namespace_activation_revisions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_handle_sales_authority_grants",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_memberships",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_moderation_actions_v2",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_moderation_cases_v2",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_moderation_policy_category_decisions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_moderation_policy_current",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_moderation_policy_revisions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_moderation_system_actions_v1",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_policy_current",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_policy_provider_bindings",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_purchase_allocation_snapshots",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_purchase_availability_reservations",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_purchase_correction_events",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_purchase_donation_snapshots",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_purchase_eligibility_snapshots",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_purchase_funding_journal",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_purchase_funding_plans",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_purchase_funding_receipts",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_purchase_funding_reconciliation_attempts",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_purchase_funding_reconciliation_operator_actions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_purchase_funding_requests",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_purchase_funding_transaction_claims",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_purchase_funding_transitions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_purchase_intents",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_purchase_pricing_snapshots",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_purchase_quotes",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_purchase_route_snapshots",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_purchase_settlement_snapshots",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_purchase_verification_snapshots",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_role_assignments",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_route_active_lease_renewal_attempts",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_route_active_lease_renewal_evidence_snapshots",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_route_active_lease_renewals",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_route_app_host_health",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_route_attachment_ceremony_attempts",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_route_attachment_ceremony_results",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_route_attachment_completion_attempts",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_route_attachment_completion_observations",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_route_attachment_intent_revisions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_route_attachment_intents",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_route_attachment_namespace_sessions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_route_attachment_requirement_states",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_route_attachment_start_reservations",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_route_authority_grants",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_route_hns_control_identities",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_route_lifecycle_transitions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_route_operator_override_audit",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_route_ownership_evidence",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_route_revalidation_completion_attempts",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_route_revalidation_evidence_snapshots",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_route_revalidation_sessions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_route_revalidation_start_reservations",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_streak_days",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_streaks",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.content_publication_outbox",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.custody_solvency_observations",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.dance_attempt_actions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.dance_attempt_evidence",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.dance_attempt_operator_items",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.dance_attempt_outbox",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.dance_attempts",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.dance_choreographies",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.dance_choreography_revisions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.dance_grading_usage_counters",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.dance_media_cleanup_operations",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.dance_reference_actions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.dance_reference_artifacts",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.dance_reference_outbox",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.dance_reference_processing_attempts",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.dance_reference_processing_requests",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.dance_replay_fingerprint_claims",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.dance_session_consents",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.dance_sessions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.dance_song_segments",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.dance_upload_reservations",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.data_registration_artifacts",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.data_registration_attempt_transitions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.data_registration_command_replays",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.data_registration_operations",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.data_registration_outbox",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.data_registration_pin_verifications",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.data_registration_receipt_observations",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.data_registration_signing_attempts",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.decision_records",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.evidence_receipts",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.handle_account_directory_bindings",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.handle_account_offering_grant_counters",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.handle_claim_actions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.handle_claims",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.handle_direct_grant_recipient_token_actions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.handle_direct_grant_recipient_tokens",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.handle_grants",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.handle_issuance_driver_revisions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.handle_key_fences",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.handle_persona_link_confirmation_actions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.handle_persona_link_confirmations",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.handle_persona_public_linkage_states",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.handle_pricing_revisions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.handle_qualification_policy_actions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.handle_qualification_policy_revisions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.handle_quote_actions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.handle_quotes",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.handle_reservation_actions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.handle_reservations",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.handle_reserved_label_revisions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.hns_authority_inventories",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.hns_authority_provision_jobs",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.hns_community_app_host_activation_current",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.hns_community_app_host_activation_revisions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.hns_community_app_host_operations",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.hns_community_root_import_preparations",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.hns_control_observer_configurations",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.hns_control_observer_operations",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.hns_control_observer_reservations",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.hns_control_observer_snapshot_transcript_entries",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.hns_control_observer_snapshots",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.hns_dns_zone_activation_current",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.hns_dns_zone_activation_operations",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.hns_dns_zone_activation_revisions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.hns_dns_zone_health_observations",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.hns_dns_zone_health_operations",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.hns_dns_zone_lifecycle_operations",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.hns_operator_control_promotion_receipts",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.hns_root_health_renewal_jobs",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.hns_root_health_renewal_scheduler_heartbeat",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.hns_root_import_activation_operations",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.hns_root_import_name_proof_observations",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.hns_root_import_observation_jobs",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.hns_root_import_sessions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.hns_root_import_teardown_jobs",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.home_feed_projection",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.identity_credentials",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.karaoke_attempts",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.karaoke_recordings",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.karaoke_sessions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.learner_audio_artifacts",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.localization_lyric_line_lineage",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.localization_lyric_line_occurrences",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.localization_lyric_line_study_units",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.localization_lyric_line_versions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.localization_lyric_reconciliation_decisions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.localization_lyrics_revision_lines",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.localization_source_units",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.localization_study_units",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.localization_translation_jobs",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.localization_translation_selections",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.localization_translation_versions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.media_alignment_projections",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.media_analysis_evidence",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.media_audio_revisions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.media_immutable_objects",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.media_moderation_actions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.media_moderation_projections",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.media_post_submissions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.media_processing_attempts",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.media_publication_decisions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.media_publication_projections",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.media_reference_evidence",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.media_song_lyrics_revisions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.media_submission_command_replays",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.media_submission_events",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.media_submission_outbox",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.media_submission_terms",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.media_timed_lyrics_artifacts",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.media_transcript_artifacts",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.media_upload_reservations",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.media_video_analyses",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.media_video_analysis_outbox",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.media_video_derived_artifacts",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.media_video_enrichment_outbox",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.media_video_original_sounds",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.media_video_publication_decisions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.media_video_reservation_command_replays",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.media_video_review_holds",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.media_video_revisions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.media_video_rights",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.media_video_stream_ingests",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.media_video_transform_attempts",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.media_video_upload_parts",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.megapot_allocation_batches",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.megapot_allocations",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.megapot_claim_effects",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.megapot_claim_receipt_evidence",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.megapot_deployment_attestations",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.megapot_drawing_observations",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.megapot_drawing_sweeps",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.megapot_fallback_cutoff_activity_evidence",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.megapot_fallback_cutoff_evidence",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.megapot_pool_beneficiary_snapshots",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.megapot_pool_commitment_effects",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.megapot_pool_drawing_transitions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.megapot_pool_drawings",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.megapot_pool_shares",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.megapot_pool_snapshot_private_leaves",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.megapot_purchase_receipt_evidence",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.megapot_sweep_ticket_evidence",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.megapot_ticket_inventory",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.megapot_ticket_purchase_effects",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.megapot_ticket_review_evidence",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.megapot_usdc_approval_effects",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.megapot_usdc_approval_receipt_evidence",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.moderation_actions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.moderation_platform_floor_category_decisions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.moderation_platform_floor_current",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.moderation_platform_floor_revisions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.moderation_reports",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.namespace_ownership_completion_attempts",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.namespace_ownership_evidence_snapshots",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.namespace_ownership_sessions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.namespace_ownership_start_reservations",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.observations",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.operator_managed_root_registry_current",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.operator_managed_root_registry_versions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.operator_managed_route_activations",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.operator_managed_route_operations",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.persona_activity_presentation_actions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.persona_activity_presentations",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.persona_community_bindings",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.persona_create_actions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.persona_pending_first_handles",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.persona_pending_profiles",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.persona_profiles",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.persona_retirement_replays",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.persona_role_presentations",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.persona_wallet_assignments",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.persona_wallet_preparation_replays",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.personas",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.platform_operator_route_authority_grants",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.platform_pirate_handle_rate_submissions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.platform_pirate_handle_rename_actions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.platform_pirate_handles",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.platform_pirate_label_policy_revisions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.platform_referral_revenue_ledger",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.platform_sponsorship_budget_entries",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.platform_sponsorship_budgets",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.policy_versions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.post_slug_aliases",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.post_vote_actions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.post_votes",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.posts",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.proof_session_completion_events",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.proof_session_presentations",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.proof_sessions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.public_handle_index",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.qualification_policy_versions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.reward_activity_availability_observations",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.reward_asset_whitelist",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.reward_chain_effect_transitions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.reward_chain_effects",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.reward_eligibility_decisions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.reward_erc20_transfer_receipt_evidence",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.reward_ledger_credits",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.reward_payout_effects",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.reward_refund_effects",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.reward_signer_nonces",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.reward_subject_consumptions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.reward_uniqueness_authorities",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.song_dance_presentations",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.song_derivative_video_policy_observations",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.song_owner_policies",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.song_owner_policy_revisions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.song_reward_bundle_claim_legs",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.song_reward_bundle_claims",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.song_reward_leg_funding_effects",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.song_reward_offer_actions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.song_reward_offer_legs",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.song_reward_offers",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.song_streak_day_activities",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.song_streak_days",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.song_streaks",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.sponsor_daily_ticket_totals",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.sponsor_withdrawal_effects",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.study_attempts_v2",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.study_exercise_versions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.study_language_profile_units",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.study_language_profiles",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.study_lesson_item_state_v2",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.study_presentations_v2",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.study_review_items",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.study_session_answers",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.study_session_items",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.study_session_items_v2",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.study_sessions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.study_sessions_v2",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.study_spoken_answer_commands",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.study_translation_generation_items",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.study_translation_generation_runs",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.study_translation_quality_policies",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.study_translation_quality_registry",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.study_unit_exercise_eligibility",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.subject_key_binding_events",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.subject_keys",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.text_content_held_revisions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.text_content_submissions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.text_moderation_cases",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.text_moderation_evidence",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.text_moderation_policy_current",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.text_moderation_policy_revisions",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.used_action_grants",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.users",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.verification_completion_attempts",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.verification_start_reservations",
+      "kind": "table",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.community_purchase_funding_reconciliation_operato_action_id_seq",
+      "kind": "sequence",
+      "privileges": [
+        "SELECT",
+        "UPDATE",
+        "USAGE"
+      ],
+      "grant_option": false
+    },
+    {
+      "role": "runtime",
+      "object": "api_next.platform_pirate_handle_rate_submissions_submission_id_seq",
+      "kind": "sequence",
+      "privileges": [
+        "SELECT",
+        "UPDATE",
+        "USAGE"
+      ],
+      "grant_option": false
+    }
+  ],
+  "unresolved": [
+    "The table default also affects schema_migrations. Review an explicit runtime ledger-write denial; the current positive-only reconciler does not implement that override.",
+    "Review exact EXECUTE grants for the fenced HNS and song-policy routines separately; the migrations revoke PUBLIC and supply no named runtime grants.",
+    "This proposal is not complete or executable until the routine and ledger dispositions plus runtime binding have been approved."
+  ]
+}
